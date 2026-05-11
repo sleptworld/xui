@@ -1,0 +1,8 @@
+[workspace]
+resolver = "3"
+members = [
+    "xui-interface",
+    "xui",
+    "xui-winit",
+    "xui-example-app"
+]

@@ -1,0 +1,13 @@
+[package]
+name = "xui-example-app"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "xui-example-app"
+path = "src/main.rs"
+
+[dependencies]
+winit = "0.30.12"
+xui = { path = "../xui" }
+xui-winit = { path = "../xui-winit" }

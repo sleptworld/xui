@@ -1,0 +1,8 @@
+[package]
+name = "xui-interface"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bitflags = "2.6.0"
+slotmap = "1.1.1"
