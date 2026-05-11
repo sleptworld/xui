@@ -1,6 +1,9 @@
 use std::any::Any;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
+
+use crate::component::ComponentId;
 
 #[derive(Default)]
 pub struct HookStorage {
@@ -30,30 +33,71 @@ impl HookStorage {
 
 pub struct HookContext<'a> {
     storage: &'a mut HookStorage,
-    dirty_signal: Rc<Cell<bool>>,
+    owner: ComponentId,
+    scheduler: Scheduler,
 }
 
 impl<'a> HookContext<'a> {
-    pub fn new(storage: &'a mut HookStorage, dirty_signal: Rc<Cell<bool>>) -> Self {
+    pub fn new(storage: &'a mut HookStorage, owner: ComponentId, scheduler: Scheduler) -> Self {
         storage.begin();
         Self {
             storage,
-            dirty_signal,
+            owner,
+            scheduler,
         }
     }
 
     pub fn use_state<T: Clone + 'static>(&mut self, init: impl FnOnce() -> T) -> State<T> {
         State {
             value: self.storage.next_slot(init),
-            dirty_signal: self.dirty_signal.clone(),
+            owner: self.owner,
+            scheduler: self.scheduler.clone(),
         }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct Scheduler {
+    inner: Rc<RefCell<SchedulerState>>,
+}
+
+#[derive(Default)]
+struct SchedulerState {
+    dirty_components: HashSet<ComponentId>,
+    root_dirty: bool,
+}
+
+impl Scheduler {
+    pub fn mark_component_dirty(&self, id: ComponentId) {
+        self.inner.borrow_mut().dirty_components.insert(id);
+    }
+
+    pub fn mark_root_dirty(&self) {
+        self.inner.borrow_mut().root_dirty = true;
+    }
+
+    pub fn take_root_dirty(&self) -> bool {
+        let mut inner = self.inner.borrow_mut();
+        let dirty = inner.root_dirty;
+        inner.root_dirty = false;
+        dirty
+    }
+
+    pub fn take_dirty_components(&self) -> Vec<ComponentId> {
+        self.inner.borrow_mut().dirty_components.drain().collect()
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        let inner = self.inner.borrow();
+        inner.root_dirty || !inner.dirty_components.is_empty()
     }
 }
 
 #[derive(Clone)]
 pub struct State<T> {
     value: Rc<RefCell<T>>,
-    dirty_signal: Rc<Cell<bool>>,
+    owner: ComponentId,
+    scheduler: Scheduler,
 }
 
 impl<T: Clone> State<T> {
@@ -63,11 +107,11 @@ impl<T: Clone> State<T> {
 
     pub fn set(&self, value: T) {
         *self.value.borrow_mut() = value;
-        self.dirty_signal.set(true);
+        self.scheduler.mark_component_dirty(self.owner);
     }
 
     pub fn update(&self, update: impl FnOnce(&mut T)) {
         update(&mut self.value.borrow_mut());
-        self.dirty_signal.set(true);
+        self.scheduler.mark_component_dirty(self.owner);
     }
 }

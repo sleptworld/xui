@@ -6,7 +6,9 @@ use winit::error::{EventLoopError, OsError};
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
-use xui::{ControlFlow as XuiControlFlow, GuiRuntime, RuntimeEvent};
+use xui::{
+    core::Size, runtime::ControlFlow as XuiControlFlow, runtime::GuiRuntime, runtime::RuntimeEvent,
+};
 use xui_interface::{Point, RenderBackend};
 
 use crate::translate::translate_window_event;
@@ -163,7 +165,7 @@ impl<B: RenderBackend> ApplicationHandler for WinitRunner<B> {
                 let size = window.inner_size();
                 self.runtime
                     .app_mut()
-                    .resize(xui::Size::new(size.width as f32, size.height as f32));
+                    .resize(Size::new(size.width as f32, size.height as f32));
                 self.window_id = Some(window.id());
                 self.window = Some(window);
                 self.request_redraw_if_dirty();

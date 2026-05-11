@@ -2,6 +2,7 @@ use taffy::prelude as tf;
 pub use xui_interface::TextMeasurer;
 
 use crate::core::{EdgeInsets, Size};
+use crate::font::TextI;
 use crate::widgets::{Button, Column, Container, Element, Label, Row};
 
 #[derive(Debug, Clone, Copy)]
@@ -28,22 +29,23 @@ impl TextMeasurer for MockTextMeasurer {
     }
 }
 
-pub fn style_for_element(element: &Element, measurer: &dyn TextMeasurer) -> tf::Style {
+pub fn style_for_element(element: &Element, measurer: &mut TextI) -> tf::Style {
     match element {
         Element::Label(label) => label_style(label, measurer),
         Element::Button(button) => button_style(button, measurer),
         Element::Column(column) => column_style(column),
         Element::Row(row) => row_style(row),
         Element::Container(container) => container_style(container),
+        Element::Component(_) => panic!("component elements do not have layout style"),
     }
 }
 
-fn label_style(label: &Label, measurer: &dyn TextMeasurer) -> tf::Style {
+fn label_style(label: &Label, measurer: &mut TextI) -> tf::Style {
     let measured = measurer.measure(&label.text, label.font_size);
     fixed_size_style(measured)
 }
 
-fn button_style(button: &Button, measurer: &dyn TextMeasurer) -> tf::Style {
+fn button_style(button: &Button, measurer: &mut TextI) -> tf::Style {
     let text = measurer.measure(&button.text, 14.0);
     fixed_size_style(Size::new(text.width + 16.0, text.height.max(20.0) + 10.0))
 }

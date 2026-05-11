@@ -1,0 +1,13 @@
+[package]
+name = "xui-text"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arrayvec = "0.7.6"
+memmap2 = "0.9.10"
+swash = "0.2.7"
+glam = { workspace = true }
+etagere = "0.3.0"
+
+xui-interface = { path = "../xui-interface" }

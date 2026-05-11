@@ -1,11 +1,11 @@
-use slotmap::{SecondaryMap, SlotMap};
+use slotmap::SlotMap;
 use taffy::prelude as tf;
-use xui_interface::{DirtyFlags, NodeId, TextMeasurer};
+use xui_interface::{DirtyFlags, NodeId};
 
 use crate::core::{Rect, Size};
 use crate::event::{Event, EventContext, EventPhase, EventResult};
+use crate::font::TextI;
 use crate::render::{DamageRegion, PaintCommand};
-use crate::state::HookStorage;
 use crate::widgets::{Element, EventHandler, Key, NodeType, Widget, WidgetKind};
 
 pub struct Node {
@@ -66,7 +66,6 @@ impl Node {
 
 pub struct UiArena {
     nodes: SlotMap<NodeId, Node>,
-    pub hooks: SecondaryMap<NodeId, HookStorage>,
     taffy: tf::TaffyTree,
     root: NodeId,
     damage: DamageRegion,
@@ -106,12 +105,8 @@ impl UiArena {
                 taffy_root,
             )
         });
-        let mut hooks = SecondaryMap::new();
-        hooks.insert(root, HookStorage::default());
-
         Self {
             nodes,
-            hooks,
             taffy,
             root,
             damage: DamageRegion::new(),
@@ -230,7 +225,6 @@ impl UiArena {
 
         let old_layout = self.nodes[id].layout;
         self.damage.add(old_layout);
-        self.hooks.remove(id);
 
         if let Some(parent) = self.nodes[id].parent {
             self.nodes[parent].children.retain(|child| *child != id);
@@ -258,6 +252,7 @@ impl UiArena {
             self.pointer_capture = None;
         }
 
+        let _ = self.taffy.remove(self.nodes[id].taffy_node);
         self.nodes.remove(id);
     }
 
@@ -560,7 +555,7 @@ impl UiArena {
         &mut self,
         parent: NodeId,
         new_children: Vec<Element>,
-        measurer: &dyn TextMeasurer,
+        measurer: &mut TextI,
     ) {
         let old_children = self.nodes[parent].children.clone();
         let mut used = vec![false; old_children.len()];
@@ -623,7 +618,7 @@ impl UiArena {
                 .find(|(index, old_id)| {
                     !used[*index]
                         && self.nodes[*old_id].key.as_ref() == Some(&key)
-                        && self.nodes[*old_id].node_type == new_child.node_type()
+                        && Some(self.nodes[*old_id].node_type) == new_child.node_type()
                 })
                 .map(|(index, _)| index);
         }
@@ -642,7 +637,7 @@ impl UiArena {
         parent: NodeId,
         element: Element,
         position: usize,
-        measurer: &dyn TextMeasurer,
+        measurer: &mut TextI,
     ) -> NodeId {
         let key = element.key();
         let props_hash = element.props_hash();
@@ -650,9 +645,34 @@ impl UiArena {
         let (kind, widget, children) = element.into_parts();
         let id = self.insert_node(parent, kind, key, props_hash, style, widget);
         self.nodes[id].position = position;
-        self.hooks.entry(id).unwrap().or_default();
         self.diff_children(id, children, measurer);
         id
+    }
+
+    pub fn create_widget_from_element(
+        &mut self,
+        parent: NodeId,
+        element: Element,
+        position: usize,
+        measurer: &mut TextI,
+    ) -> (NodeId, Vec<Element>) {
+        let key = element.key();
+        let props_hash = element.props_hash();
+        let style = element.style(measurer);
+        let (kind, widget, children) = element.into_parts();
+        let id = self.insert_node(parent, kind, key, props_hash, style, widget);
+        self.nodes[id].position = position;
+        (id, children)
+    }
+
+    pub fn update_widget_from_element(
+        &mut self,
+        id: NodeId,
+        element: Element,
+        position: usize,
+        measurer: &mut TextI,
+    ) -> Vec<Element> {
+        self.update_widget_node_from_element(id, element, position, measurer)
     }
 
     fn update_node_from_element(
@@ -660,8 +680,19 @@ impl UiArena {
         id: NodeId,
         element: Element,
         position: usize,
-        measurer: &dyn TextMeasurer,
+        measurer: &mut TextI,
     ) {
+        let children = self.update_widget_node_from_element(id, element, position, measurer);
+        self.diff_children(id, children, measurer);
+    }
+
+    fn update_widget_node_from_element(
+        &mut self,
+        id: NodeId,
+        element: Element,
+        position: usize,
+        measurer: &mut TextI,
+    ) -> Vec<Element> {
         let new_props_hash = element.props_hash();
         let new_style = element.style(measurer);
         let (new_kind, new_widget, children) = element.into_parts();
@@ -684,13 +715,11 @@ impl UiArena {
             let widget_flags = node.widget.update_from_kind(&new_kind);
             flags |= widget_flags;
             flags |= crate::widgets::update_kind_from(&mut node.kind, new_kind.clone());
-            if widget_flags.contains(DirtyFlags::TREE) {
-                node.widget = new_widget;
-            }
+            node.widget = new_widget;
         }
 
         self.mark_dirty(id, flags);
-        self.diff_children(id, children, measurer);
+        children
     }
 
     fn remove_subtree_detached(&mut self, id: NodeId) {
@@ -702,7 +731,6 @@ impl UiArena {
             self.remove_subtree_detached(child);
         }
         self.damage.add(self.nodes[id].layout);
-        self.hooks.remove(id);
         if self.focused == Some(id) {
             self.focused = None;
         }
@@ -726,6 +754,29 @@ impl UiArena {
         self.taffy
             .set_children(parent_taffy, &taffy_children)
             .expect("failed to sync taffy children");
+    }
+
+    pub fn set_children(&mut self, parent: NodeId, children: Vec<NodeId>) {
+        if !self.nodes.contains_key(parent) {
+            return;
+        }
+
+        let tree_changed = self.nodes[parent].children != children;
+        self.nodes[parent].children = children;
+        for child in self.nodes[parent].children.clone() {
+            if self.nodes.contains_key(child) {
+                self.nodes[child].parent = Some(parent);
+            }
+        }
+        self.reindex_children(parent);
+        self.sync_taffy_children(parent);
+
+        if tree_changed {
+            self.mark_dirty(
+                parent,
+                DirtyFlags::TREE | DirtyFlags::LAYOUT | DirtyFlags::PAINT,
+            );
+        }
     }
 
     fn reindex_children(&mut self, parent: NodeId) {
@@ -758,13 +809,13 @@ pub fn diff_children(
     tree: &mut UiArena,
     parent: NodeId,
     new_children: Vec<Element>,
-    measurer: &dyn TextMeasurer,
+    measurer: &mut TextI,
 ) {
     tree.diff_children(parent, new_children, measurer);
 }
 
 pub fn should_reuse(old: &Node, new: &Element, position: usize) -> bool {
-    old.node_type == new.node_type()
+    Some(old.node_type) == new.node_type()
         && old.key == new.key()
         && (old.key.is_some() || old.position == position)
 }

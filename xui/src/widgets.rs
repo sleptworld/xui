@@ -1,13 +1,16 @@
+use std::any::TypeId;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use taffy::prelude as tf;
-use xui_interface::{DirtyFlags, Event, EventContext, EventResult, PointerButton, TextMeasurer};
+use xui_interface::{DirtyFlags, Event, EventContext, EventResult, PointerButton};
 pub use xui_interface::{Key, NodeType, Widget, WidgetKind};
 
 use crate::core::{Color, EdgeInsets, Point, Rect, Size};
+use crate::font::TextI;
 use crate::layout::style_for_element;
 use crate::render::PaintCommand;
+use crate::state::HookContext;
 
 pub type EventHandler = Box<dyn FnMut(&Event, &mut EventContext<'_>) -> EventResult>;
 
@@ -17,6 +20,7 @@ pub enum Element {
     Column(Column),
     Row(Row),
     Container(Container),
+    Component(ComponentElement),
 }
 
 impl Element {
@@ -27,16 +31,18 @@ impl Element {
             Self::Column(widget) => widget.key.clone(),
             Self::Row(widget) => widget.key.clone(),
             Self::Container(widget) => widget.key.clone(),
+            Self::Component(component) => component.key.clone(),
         }
     }
 
-    pub fn node_type(&self) -> NodeType {
+    pub fn node_type(&self) -> Option<NodeType> {
         match self {
-            Self::Label(_) => NodeType::Label,
-            Self::Button(_) => NodeType::Button,
-            Self::Column(_) => NodeType::Column,
-            Self::Row(_) => NodeType::Row,
-            Self::Container(_) => NodeType::Container,
+            Self::Label(_) => Some(NodeType::Label),
+            Self::Button(_) => Some(NodeType::Button),
+            Self::Column(_) => Some(NodeType::Column),
+            Self::Row(_) => Some(NodeType::Row),
+            Self::Container(_) => Some(NodeType::Container),
+            Self::Component(_) => None,
         }
     }
 
@@ -67,11 +73,14 @@ impl Element {
                 hash_edge_insets(widget.padding, &mut hasher);
                 hash_color(widget.background, &mut hasher);
             }
+            Self::Component(widget) => {
+                widget.type_id.hash(&mut hasher);
+            }
         }
         hasher.finish()
     }
 
-    pub fn style(&self, measurer: &dyn TextMeasurer) -> tf::Style {
+    pub fn style(&self, measurer: &mut TextI) -> tf::Style {
         style_for_element(self, measurer)
     }
 
@@ -111,6 +120,7 @@ impl Element {
                 };
                 (kind.clone(), widget_from_kind(kind, None), widget.children)
             }
+            Self::Component(_) => panic!("component elements do not have widget parts"),
         }
     }
 
@@ -121,6 +131,30 @@ impl Element {
             Self::Container(widget) => Some(&mut widget.children),
             _ => None,
         }
+    }
+}
+
+pub struct ComponentElement {
+    pub key: Option<Key>,
+    pub type_id: TypeId,
+    pub render: Box<dyn FnMut(&mut HookContext<'_>) -> Element>,
+}
+
+impl ComponentElement {
+    pub fn new<F>(render: F) -> Self
+    where
+        F: FnMut(&mut HookContext<'_>) -> Element + 'static,
+    {
+        Self {
+            key: None,
+            type_id: TypeId::of::<F>(),
+            render: Box::new(render),
+        }
+    }
+
+    pub fn key(mut self, key: impl Into<Key>) -> Self {
+        self.key = Some(key.into());
+        self
     }
 }
 
@@ -338,6 +372,13 @@ pub fn container() -> Container {
     Container::new()
 }
 
+pub fn component<F>(render: F) -> ComponentElement
+where
+    F: FnMut(&mut HookContext<'_>) -> Element + 'static,
+{
+    ComponentElement::new(render)
+}
+
 impl From<Label> for Element {
     fn from(value: Label) -> Self {
         Self::Label(value)
@@ -365,6 +406,12 @@ impl From<Row> for Element {
 impl From<Container> for Element {
     fn from(value: Container) -> Self {
         Self::Container(value)
+    }
+}
+
+impl From<ComponentElement> for Element {
+    fn from(value: ComponentElement) -> Self {
+        Self::Component(value)
     }
 }
 

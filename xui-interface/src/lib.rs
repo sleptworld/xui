@@ -9,7 +9,8 @@ pub use core::{Color, EdgeInsets, Point, Rect, Size};
 pub use dirty::DirtyFlags;
 pub use event::{Event, EventContext, EventPhase, EventResult, Key as InputKey, PointerButton};
 pub use render::{
-    DamageRegion, DrawBackend, MockRenderBackend, PaintCommand, Painter, RenderBackend,
+    DamageRegion, DrawBackend, FontRenderBackend, MockRenderBackend, PaintCommand, Painter,
+    RenderBackend,
 };
 pub use runtime::EventSource;
 pub use widget::{Key, NodeId, NodeType, TextMeasurer, Widget, WidgetKind};

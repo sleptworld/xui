@@ -3,6 +3,12 @@ resolver = "3"
 members = [
     "xui-interface",
     "xui",
+    "xui-macros",
     "xui-winit",
-    "xui-example-app"
+    "xui-example-app",
+    "xui-text",
 ]
+
+
+[workspace.dependencies]
+glam = "0.32.1"

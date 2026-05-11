@@ -4,9 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+etagere = "0.3.0"
 pollster = "0.4.0"
 wgpu = "29.0.3"
 winit = "0.30.12"
 xui = { path = "../xui" }
 xui-interface = { path = "../xui-interface" }
+xui-text = { path = "../xui-text" }
 
+glam = { workspace = true }
+thiserror = "2.0.18"
+log = "0.4.29"

@@ -2,7 +2,7 @@ use winit::event::{
     ElementState, KeyEvent, MouseButton as WinitMouseButton, MouseScrollDelta, WindowEvent,
 };
 use winit::keyboard::{Key as WinitKey, NamedKey};
-use xui::{RuntimeEvent, Size};
+use xui::prelude::{RuntimeEvent, Size};
 use xui_interface::{Event, InputKey, Point, PointerButton};
 
 pub fn translate_mouse_button(button: WinitMouseButton) -> Option<PointerButton> {

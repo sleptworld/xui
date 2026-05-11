@@ -21,13 +21,34 @@ pub enum PaintCommand {
         color: Color,
         width: f32,
     },
+    FillRoundedRect {
+        rect: Rect,
+        radius: f32,
+        color: Color,
+    },
+    StrokeRoundedRect {
+        rect: Rect,
+        radius: f32,
+        color: Color,
+        width: f32,
+    },
+    Line {
+        from: Point,
+        to: Point,
+        color: Color,
+        width: f32,
+    },
     Text {
         position: Point,
         text: String,
         color: Color,
         size: f32,
     },
-    Clip(Rect),
+    // Clip
+    PushClip(Rect),
+    PopClip,
+
+    // Transform
     PushTransform {
         translate: Point,
     },
@@ -83,7 +104,7 @@ pub trait RenderBackend {
         damage: &DamageRegion,
     ) -> Result<(), Self::Error>;
     fn end_frame(&mut self) -> Result<(), Self::Error>;
-    
+
     fn resize(&mut self, size: Size) -> Result<(), Self::Error> {
         Ok(())
     }
@@ -123,4 +144,8 @@ impl RenderBackend for MockRenderBackend {
         self.frames += 1;
         Ok(())
     }
+}
+
+pub trait FontRenderBackend {
+    type Error;
 }
