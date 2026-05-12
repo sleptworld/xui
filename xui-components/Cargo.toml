@@ -1,12 +1,8 @@
 [package]
-name = "xui"
+name = "xui-components"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-slotmap = "1.1.1"
-taffy = "0.10.1"
-xui-components = { path = "../xui-components" }
 xui-interface = { path = "../xui-interface" }
 xui-macros = { path = "../xui-macros" }
-xui-text = { path = "../xui-text" }

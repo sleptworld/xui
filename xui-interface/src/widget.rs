@@ -80,3 +80,16 @@ pub trait Widget {
     fn paint(&self, rect: Rect, commands: &mut Vec<PaintCommand>);
     fn handle_event(&mut self, event: &Event, cx: &mut EventContext<'_>) -> EventResult;
 }
+
+pub trait Component<Context, Output> {
+    fn render(&mut self, cx: &mut Context) -> Output;
+}
+
+impl<F, Context, Output> Component<Context, Output> for F
+where
+    F: FnMut(&mut Context) -> Output,
+{
+    fn render(&mut self, cx: &mut Context) -> Output {
+        self(cx)
+    }
+}

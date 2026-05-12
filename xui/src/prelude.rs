@@ -12,7 +12,7 @@ pub use crate::state::HookContext;
 pub use crate::tree::UiArena;
 pub use crate::widgets::{
     Button, Column, ComponentElement, Container, Element, Key as WidgetKey, Label, NodeType, Row,
-    Widget, button, column, component, container, label, row,
+    Widget, button, column, component, container, key_from_hash, label, row,
 };
 pub use xui_interface::{DirtyFlags, NodeId};
 pub use xui_macros::{component, component_fn, xui};

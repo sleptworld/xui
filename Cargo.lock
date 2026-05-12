@@ -2552,9 +2552,18 @@ version = "0.1.0"
 dependencies = [
  "slotmap",
  "taffy",
+ "xui-components",
  "xui-interface",
  "xui-macros",
  "xui-text",
+]
+
+[[package]]
+name = "xui-components"
+version = "0.1.0"
+dependencies = [
+ "xui-interface",
+ "xui-macros",
 ]
 
 [[package]]
@@ -2599,6 +2608,7 @@ dependencies = [
 name = "xui-winit"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "etagere",
  "glam",
  "log",

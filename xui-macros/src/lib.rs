@@ -5,7 +5,7 @@ use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::{
     Attribute as SynAttribute, Error, Expr, FnArg, Ident, LitStr, Pat, Result, ReturnType,
-    Signature, Token, Visibility, braced, parse_macro_input, parse_quote,
+    Signature, Token, Type, Visibility, braced, parse_macro_input, parse_quote,
 };
 
 #[proc_macro]
@@ -47,7 +47,10 @@ impl Parse for ComponentFunctions {
         }
 
         if functions.is_empty() {
-            return Err(Error::new(input.span(), "component_fn! requires at least one function"));
+            return Err(Error::new(
+                input.span(),
+                "component_fn! requires at least one function",
+            ));
         }
 
         Ok(Self { functions })
@@ -95,38 +98,32 @@ fn expand_component_function(function: &mut ComponentFunction) -> Result<TokenSt
     function.sig.output =
         ReturnType::Type(Default::default(), Box::new(parse_quote!(::xui::Element)));
 
-    match function.sig.inputs.len() {
-        0 => {
-            function
-                .sig
-                .inputs
-                .push(parse_quote!(cx: &mut ::xui::HookContext<'_>));
-        }
-        1 => {
-            let Some(first) = function.sig.inputs.first_mut() else {
-                unreachable!("checked one argument");
-            };
-            match first {
-                FnArg::Typed(arg) => {
-                    if let Pat::Ident(pat) = arg.pat.as_mut() {
-                        pat.ident = TokenIdent::new("cx", pat.ident.span());
-                    }
-                    arg.ty = Box::new(parse_quote!(&mut ::xui::HookContext<'_>));
-                }
-                FnArg::Receiver(receiver) => {
-                    return Err(Error::new(
-                        receiver.span(),
-                        "component functions cannot take self",
-                    ));
-                }
-            }
-        }
-        _ => {
+    for input in &function.sig.inputs {
+        if let FnArg::Receiver(receiver) = input {
             return Err(Error::new(
-                function.sig.inputs.span(),
-                "component functions accept at most one HookContext argument",
+                receiver.span(),
+                "component functions cannot take self",
             ));
         }
+    }
+
+    let has_explicit_cx = function.sig.inputs.first().is_some_and(is_hook_context_arg);
+
+    if has_explicit_cx {
+        let Some(first) = function.sig.inputs.first_mut() else {
+            unreachable!("checked first argument");
+        };
+        if let FnArg::Typed(arg) = first {
+            if let Pat::Ident(pat) = arg.pat.as_mut() {
+                pat.ident = TokenIdent::new("cx", pat.ident.span());
+            }
+            arg.ty = Box::new(parse_quote!(&mut ::xui::HookContext<'_>));
+        }
+    } else {
+        function
+            .sig
+            .inputs
+            .insert(0, parse_quote!(cx: &mut ::xui::HookContext<'_>));
     }
 
     let attrs = &function.attrs;
@@ -151,8 +148,14 @@ fn expand_component_body(body: &TokenStream2) -> Result<TokenStream2> {
         return Ok(body.clone());
     };
 
-    let prefix = tokens[..xml_start].iter().cloned().collect::<TokenStream2>();
-    let xml = tokens[xml_start..].iter().cloned().collect::<TokenStream2>();
+    let prefix = tokens[..xml_start]
+        .iter()
+        .cloned()
+        .collect::<TokenStream2>();
+    let xml = tokens[xml_start..]
+        .iter()
+        .cloned()
+        .collect::<TokenStream2>();
     let node = syn::parse2::<ElementNode>(xml)?;
     let element = expand_node(&node)?;
 
@@ -238,6 +241,25 @@ impl Parse for ElementNode {
     }
 }
 
+fn is_hook_context_arg(arg: &FnArg) -> bool {
+    let FnArg::Typed(arg) = arg else {
+        return false;
+    };
+    type_ends_with_ident(&arg.ty, "HookContext")
+}
+
+fn type_ends_with_ident(ty: &Type, ident: &str) -> bool {
+    match ty {
+        Type::Reference(reference) => type_ends_with_ident(&reference.elem, ident),
+        Type::Path(path) => path
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == ident),
+        _ => false,
+    }
+}
+
 fn parse_attrs(input: ParseStream<'_>) -> Result<Vec<XuiAttribute>> {
     let mut attrs = Vec::new();
     while !(input.peek(Token![>]) || input.peek(Token![/])) {
@@ -264,58 +286,11 @@ fn starts_closing_tag(input: ParseStream<'_>) -> bool {
 
 fn expand_node(node: &ElementNode) -> Result<TokenStream2> {
     match node.name.to_string().as_str() {
-        "container" => expand_container(node),
-        "column" => expand_children_widget(node, quote!(::xui::column())),
-        "row" => expand_children_widget(node, quote!(::xui::row())),
         "label" => expand_label(node),
         "button" => expand_button(node),
         "component" => expand_component(node),
         _ => expand_function_component(node),
     }
-}
-
-fn expand_container(node: &ElementNode) -> Result<TokenStream2> {
-    let mut expr = quote!(::xui::container());
-    for attr in &node.attrs {
-        match attr.name.to_string().as_str() {
-            "key" => {
-                let value = &attr.value;
-                expr = quote!(#expr.key(#value));
-            }
-            "size" => {
-                let value = &attr.value;
-                expr = quote!(#expr.size(#value));
-            }
-            "padding" => {
-                let value = &attr.value;
-                expr = quote!(#expr.padding(#value));
-            }
-            "background" => {
-                let value = &attr.value;
-                expr = quote!(#expr.background(#value));
-            }
-            other => return unsupported_attr(attr, "container", other),
-        }
-    }
-    add_children(expr, &node.children)
-}
-
-fn expand_children_widget(node: &ElementNode, mut expr: TokenStream2) -> Result<TokenStream2> {
-    let tag = node.name.to_string();
-    for attr in &node.attrs {
-        match attr.name.to_string().as_str() {
-            "key" => {
-                let value = &attr.value;
-                expr = quote!(#expr.key(#value));
-            }
-            "gap" => {
-                let value = &attr.value;
-                expr = quote!(#expr.gap(#value));
-            }
-            other => return unsupported_attr(attr, &tag, other),
-        }
-    }
-    add_children(expr, &node.children)
 }
 
 fn expand_label(node: &ElementNode) -> Result<TokenStream2> {
@@ -385,35 +360,74 @@ fn expand_component(node: &ElementNode) -> Result<TokenStream2> {
 }
 
 fn expand_function_component(node: &ElementNode) -> Result<TokenStream2> {
-    if !node.children.is_empty() {
-        return Err(Error::new(
-            node.name.span(),
-            "function component tags must be self-closing in xui! v1",
-        ));
-    }
-
     let mut key = None;
+    let mut props = Vec::new();
     for attr in &node.attrs {
         match attr.name.to_string().as_str() {
             "key" => key = Some(attr.value.clone()),
-            other => return unsupported_attr(attr, &node.name.to_string(), other),
+            _ => props.push(attr),
         }
     }
 
     let component_name = TokenIdent::new(&format!("{}_component", node.name), Span::call_site());
-    let mut expr = quote!(::xui::component(#component_name));
-    if let Some(key) = key {
-        expr = quote!(#expr.key(#key));
-    }
+    let has_children = !node.children.is_empty();
+    let expr = if props.is_empty() && !has_children {
+        let mut expr = quote!(::xui::component(#component_name));
+        if let Some(key) = key {
+            expr = quote!(#expr.key(#key));
+        }
+        expr
+    } else {
+        let props_name = TokenIdent::new(
+            &format!("{}Props", to_pascal_case(&node.name.to_string())),
+            node.name.span(),
+        );
+        let prop_fields = props.iter().map(|attr| {
+            let name = &attr.name;
+            let value = &attr.value;
+            quote!(#name: #value)
+        });
+
+        let key_expr = key
+            .map(|key| quote!(#key))
+            .unwrap_or_else(|| quote!(::xui::key_from_hash(&__xui_props)));
+
+        let children = node
+            .children
+            .iter()
+            .map(expand_child)
+            .collect::<Result<Vec<_>>>()?;
+        quote! {{
+            let __xui_props = #props_name {
+                #(#prop_fields,)*
+                ..::core::default::Default::default()
+            };
+            let __xui_key = #key_expr;
+            ::xui::component(move |cx: &mut ::xui::HookContext<'_>| {
+                ::xui::Element::from(#component_name(cx, __xui_props.clone(), vec![#(#children,)*]))
+            }).key(__xui_key)
+        }}
+    };
+
     Ok(to_element(expr))
 }
 
-fn add_children(mut expr: TokenStream2, children: &[Child]) -> Result<TokenStream2> {
-    for child in children {
-        let child = expand_child(child)?;
-        expr = quote!(#expr.child(#child));
+fn to_pascal_case(value: &str) -> String {
+    let mut output = String::new();
+    let mut uppercase_next = true;
+    for ch in value.chars() {
+        if ch == '_' {
+            uppercase_next = true;
+            continue;
+        }
+        if uppercase_next {
+            output.extend(ch.to_uppercase());
+            uppercase_next = false;
+        } else {
+            output.push(ch);
+        }
     }
-    Ok(to_element(expr))
+    output
 }
 
 fn to_element(expr: TokenStream2) -> TokenStream2 {

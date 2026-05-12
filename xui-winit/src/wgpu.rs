@@ -1,9 +1,11 @@
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use etagere::{Allocation, AllocatorOptions};
 use etagere::{BucketedAtlasAllocator, Size};
 use glam::{Vec2, Vec3};
-use xui_interface::RenderBackend;
+use wgpu::util::DeviceExt;
+use xui_interface::{Color, DamageRegion, PaintCommand, Point, Rect, RenderBackend};
 use xui_text::atlas::FontRenderBackend;
 use xui_text::atlas::RendedGlyphBitmap;
 
@@ -19,7 +21,58 @@ pub struct WGPUBackend {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
+    ui_uniform_buffer: wgpu::Buffer,
+    ui_bind_group: wgpu::BindGroup,
     atlas: Atlas,
+}
+
+const SHAPE_RECT: f32 = 0.0;
+const SHAPE_ROUNDED_RECT: f32 = 1.0;
+const SHAPE_LINE: f32 = 2.0;
+const STROKE_CENTER: f32 = 0.0;
+
+const UI_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 10] = wgpu::vertex_attr_array![
+    0 => Float32x4,
+    1 => Float32x4,
+    2 => Float32x4,
+    3 => Float32x4,
+    4 => Float32x4,
+    5 => Float32x4,
+    6 => Float32x4,
+    7 => Float32x4,
+    8 => Float32x4,
+    9 => Float32x4,
+];
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct UiUniforms {
+    viewport_size: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct UiInstance {
+    bounds: [f32; 4],
+    shape: [f32; 4],
+    clip: [f32; 4],
+    fill_color: [f32; 4],
+    stroke_color: [f32; 4],
+    params: [f32; 4],
+    stroke_params: [f32; 4],
+    projection_color: [f32; 4],
+    projection_params: [f32; 4],
+    extra: [f32; 4],
+}
+
+impl UiInstance {
+    fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &UI_INSTANCE_ATTRIBUTES,
+        }
+    }
 }
 
 impl WGPUBackend {
@@ -68,9 +121,41 @@ impl WGPUBackend {
             source: wgpu::ShaderSource::Wgsl(UI_SHADER_WGSL.into()),
         });
 
+        let ui_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("xui sdf bind group layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        let ui_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("xui sdf uniforms"),
+            contents: bytemuck::bytes_of(&UiUniforms {
+                viewport_size: [size.width as f32, size.height as f32, 0.0, 0.0],
+            }),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let ui_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("xui sdf bind group"),
+            layout: &ui_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: ui_uniform_buffer.as_entire_binding(),
+            }],
+        });
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("xui sdf pipeline layout"),
-            bind_group_layouts: &[],
+            bind_group_layouts: &[Some(&ui_bind_group_layout)],
             immediate_size: 0,
         });
 
@@ -82,7 +167,7 @@ impl WGPUBackend {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
-                buffers: &[],
+                buffers: &[UiInstance::layout()],
             },
 
             fragment: Some(wgpu::FragmentState {
@@ -117,6 +202,8 @@ impl WGPUBackend {
             queue,
             config,
             render_pipeline,
+            ui_uniform_buffer,
+            ui_bind_group,
             atlas,
         }
     }
@@ -264,6 +351,13 @@ impl RenderBackend for WGPUBackend {
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
         }
+        self.queue.write_buffer(
+            &self.ui_uniform_buffer,
+            0,
+            bytemuck::bytes_of(&UiUniforms {
+                viewport_size: [width as f32, height as f32, 0.0, 0.0],
+            }),
+        );
         Ok(())
     }
 
@@ -273,10 +367,19 @@ impl RenderBackend for WGPUBackend {
 
     fn paint(
         &mut self,
-        commands: &[xui_interface::PaintCommand],
-        damage: &xui_interface::DamageRegion,
+        commands: &[PaintCommand],
+        damage: &DamageRegion,
     ) -> Result<(), Self::Error> {
-        let _ = (commands, damage, &self.instance, &self.adapter);
+        let _ = (&self.instance, &self.adapter, damage);
+        let instances = build_ui_instances(
+            commands,
+            Rect::new(
+                0.0,
+                0.0,
+                self.config.width as f32,
+                self.config.height as f32,
+            ),
+        );
 
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
@@ -317,6 +420,15 @@ impl RenderBackend for WGPUBackend {
                 label: Some("xui sdf encoder"),
             });
 
+        let instance_buffer = (!instances.is_empty()).then(|| {
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("xui sdf instances"),
+                    contents: bytemuck::cast_slice(&instances),
+                    usage: wgpu::BufferUsages::VERTEX,
+                })
+        });
+
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("xui sdf render pass"),
@@ -340,13 +452,291 @@ impl RenderBackend for WGPUBackend {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.render_pipeline);
-            pass.draw(0..3, 0..1);
+            pass.set_bind_group(0, &self.ui_bind_group, &[]);
+
+            if let Some(instance_buffer) = &instance_buffer {
+                pass.set_vertex_buffer(0, instance_buffer.slice(..));
+                pass.draw(0..6, 0..instances.len() as u32);
+            }
         }
 
         self.queue.submit(Some(encoder.finish()));
         frame.present();
         Ok(())
     }
+}
+
+fn build_ui_instances(commands: &[PaintCommand], viewport_clip: Rect) -> Vec<UiInstance> {
+    let mut instances = Vec::new();
+    let mut transform_stack = vec![Point::new(0.0, 0.0)];
+    let mut clip_stack = vec![viewport_clip];
+
+    for command in commands {
+        match command {
+            PaintCommand::FillRect { rect, color } => {
+                let rect = translate_rect(*rect, current_transform(&transform_stack));
+                push_rect_instance(
+                    &mut instances,
+                    rect,
+                    0.0,
+                    *color,
+                    Color::TRANSPARENT,
+                    0.0,
+                    current_clip(&clip_stack),
+                );
+            }
+            PaintCommand::StrokeRect { rect, color, width } => {
+                let rect = translate_rect(*rect, current_transform(&transform_stack));
+                push_rect_instance(
+                    &mut instances,
+                    rect,
+                    0.0,
+                    Color::TRANSPARENT,
+                    *color,
+                    *width,
+                    current_clip(&clip_stack),
+                );
+            }
+            PaintCommand::FillRoundedRect {
+                rect,
+                radius,
+                color,
+            } => {
+                let rect = translate_rect(*rect, current_transform(&transform_stack));
+                push_rect_instance(
+                    &mut instances,
+                    rect,
+                    *radius,
+                    *color,
+                    Color::TRANSPARENT,
+                    0.0,
+                    current_clip(&clip_stack),
+                );
+            }
+            PaintCommand::StrokeRoundedRect {
+                rect,
+                radius,
+                color,
+                width,
+            } => {
+                let rect = translate_rect(*rect, current_transform(&transform_stack));
+                push_rect_instance(
+                    &mut instances,
+                    rect,
+                    *radius,
+                    Color::TRANSPARENT,
+                    *color,
+                    *width,
+                    current_clip(&clip_stack),
+                );
+            }
+            PaintCommand::Line {
+                from,
+                to,
+                color,
+                width,
+            } => {
+                let offset = current_transform(&transform_stack);
+                push_line_instance(
+                    &mut instances,
+                    translate_point(*from, offset),
+                    translate_point(*to, offset),
+                    *color,
+                    *width,
+                    current_clip(&clip_stack),
+                );
+            }
+            PaintCommand::Text { .. } => {}
+            PaintCommand::PushClip(rect) => {
+                let rect = translate_rect(*rect, current_transform(&transform_stack));
+                let clip = intersect_rect(current_clip(&clip_stack), rect).unwrap_or(Rect::ZERO);
+                clip_stack.push(clip);
+            }
+            PaintCommand::PopClip => {
+                if clip_stack.len() > 1 {
+                    clip_stack.pop();
+                }
+            }
+            PaintCommand::PushTransform { translate } => {
+                let current = current_transform(&transform_stack);
+                transform_stack.push(Point::new(current.x + translate.x, current.y + translate.y));
+            }
+            PaintCommand::PopTransform => {
+                if transform_stack.len() > 1 {
+                    transform_stack.pop();
+                }
+            }
+
+            PaintCommand::Clear(color) => {
+                let rect = Rect::new(0.0, 0.0, viewport_clip.width, viewport_clip.height);
+                push_rect_instance(
+                    &mut instances,
+                    rect,
+                    0.0,
+                    *color,
+                    Color::TRANSPARENT,
+                    0.0,
+                    viewport_clip,
+                );
+            }
+        }
+    }
+
+    instances
+}
+
+fn push_rect_instance(
+    instances: &mut Vec<UiInstance>,
+    rect: Rect,
+    radius: f32,
+    fill_color: Color,
+    stroke_color: Color,
+    stroke_width: f32,
+    clip: Rect,
+) {
+    if rect.width <= 0.0
+        || rect.height <= 0.0
+        || clip.width <= 0.0
+        || clip.height <= 0.0
+        || (fill_color.a <= 0.0 && stroke_color.a <= 0.0)
+    {
+        return;
+    }
+
+    let stroke_direction = STROKE_CENTER;
+    let projection_color = Color::TRANSPARENT;
+    let projection_offset = Point::new(0.0, 0.0);
+    let projection_blur: f32 = 0.0;
+    let projection_spread: f32 = 0.0;
+
+    let stroke_outset = stroke_outset(stroke_width.max(0.0), stroke_direction) + 1.0;
+    let projection_outset = projection_blur.max(0.0) + projection_spread.max(0.0);
+    let projection_bounds = inflate_rect(
+        translate_rect(rect, projection_offset),
+        projection_outset + 1.0,
+    );
+    let bounds = inflate_rect(rect, stroke_outset).union(projection_bounds);
+    let kind = if radius > 0.0 {
+        SHAPE_ROUNDED_RECT
+    } else {
+        SHAPE_RECT
+    };
+
+    instances.push(UiInstance {
+        bounds: rect_to_array(bounds),
+        shape: rect_to_array(rect),
+        clip: rect_to_array(clip),
+        fill_color: color_to_array(fill_color),
+        stroke_color: color_to_array(stroke_color),
+        params: [kind, radius.max(0.0), 0.0, 0.0],
+        stroke_params: [stroke_width.max(0.0), stroke_direction, 0.0, 0.0],
+        projection_color: color_to_array(projection_color),
+        projection_params: [
+            projection_offset.x,
+            projection_offset.y,
+            projection_blur.max(0.0),
+            projection_spread,
+        ],
+        extra: [0.0; 4],
+    });
+}
+
+fn push_line_instance(
+    instances: &mut Vec<UiInstance>,
+    from: Point,
+    to: Point,
+    color: Color,
+    width: f32,
+    clip: Rect,
+) {
+    if color.a <= 0.0 || width <= 0.0 || clip.width <= 0.0 || clip.height <= 0.0 {
+        return;
+    }
+
+    let min_x = from.x.min(to.x);
+    let min_y = from.y.min(to.y);
+    let max_x = from.x.max(to.x);
+    let max_y = from.y.max(to.y);
+    let bounds = inflate_rect(
+        Rect::new(
+            min_x,
+            min_y,
+            (max_x - min_x).max(1.0),
+            (max_y - min_y).max(1.0),
+        ),
+        width * 0.5 + 1.0,
+    );
+
+    instances.push(UiInstance {
+        bounds: rect_to_array(bounds),
+        shape: rect_to_array(bounds),
+        clip: rect_to_array(clip),
+        fill_color: color_to_array(color),
+        stroke_color: [0.0; 4],
+        params: [SHAPE_LINE, 0.0, 0.0, 0.0],
+        stroke_params: [width, STROKE_CENTER, 0.0, 0.0],
+        projection_color: [0.0; 4],
+        projection_params: [0.0; 4],
+        extra: [from.x, from.y, to.x, to.y],
+    });
+}
+
+fn current_transform(stack: &[Point]) -> Point {
+    stack.last().copied().unwrap_or_default()
+}
+
+fn current_clip(stack: &[Rect]) -> Rect {
+    stack.last().copied().unwrap_or_default()
+}
+
+fn translate_point(point: Point, offset: Point) -> Point {
+    Point::new(point.x + offset.x, point.y + offset.y)
+}
+
+fn translate_rect(rect: Rect, offset: Point) -> Rect {
+    Rect::new(
+        rect.x + offset.x,
+        rect.y + offset.y,
+        rect.width,
+        rect.height,
+    )
+}
+
+fn inflate_rect(rect: Rect, amount: f32) -> Rect {
+    Rect::new(
+        rect.x - amount,
+        rect.y - amount,
+        rect.width + amount * 2.0,
+        rect.height + amount * 2.0,
+    )
+}
+
+fn stroke_outset(width: f32, direction: f32) -> f32 {
+    let width = width.max(0.0);
+    if direction > 0.0 {
+        width
+    } else if direction < 0.0 {
+        0.0
+    } else {
+        width * 0.5
+    }
+}
+
+fn intersect_rect(a: Rect, b: Rect) -> Option<Rect> {
+    let x0 = a.x.max(b.x);
+    let y0 = a.y.max(b.y);
+    let x1 = (a.x + a.width).min(b.x + b.width);
+    let y1 = (a.y + a.height).min(b.y + b.height);
+
+    (x1 > x0 && y1 > y0).then(|| Rect::new(x0, y0, x1 - x0, y1 - y0))
+}
+
+fn rect_to_array(rect: Rect) -> [f32; 4] {
+    [rect.x, rect.y, rect.width, rect.height]
+}
+
+fn color_to_array(color: Color) -> [f32; 4] {
+    [color.r, color.g, color.b, color.a]
 }
 
 pub struct AllocInfo {
@@ -363,6 +753,26 @@ impl FontRenderBackend for WGPUBackend {
         &mut self,
         bitmap: &xui_text::atlas::RendedGlyphBitmap,
     ) -> Result<Self::Allocation, Self::Error> {
+        let queue = &self.queue;
+        let atlas = &mut self.atlas;
+
         return self.atlas.handle_allocation(&self.queue, bitmap);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ui_shader_is_valid_wgsl() {
+        let module =
+            wgpu::naga::front::wgsl::parse_str(UI_SHADER_WGSL).expect("ui.wgsl should parse");
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .expect("ui.wgsl should validate");
     }
 }

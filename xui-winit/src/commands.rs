@@ -14,14 +14,14 @@ impl CmdHandler {
                 self.fill_rect(rect, color);
             }
             PaintCommand::StrokeRect { rect, color, width } => {
-                self.stroke_rect(rect, color, width);
+                self.stroke_rect(rect, color, *width);
             }
             PaintCommand::FillRoundedRect {
                 rect,
                 radius,
                 color,
             } => {
-                self.fill_rounded_rect(rect, radius, color);
+                self.fill_rounded_rect(rect, *radius, color);
             }
             PaintCommand::StrokeRoundedRect {
                 rect,
@@ -29,7 +29,7 @@ impl CmdHandler {
                 color,
                 width,
             } => {
-                self.stroke_rounded_rect(rect, radius, color, width);
+                self.stroke_rounded_rect(rect, *radius, color, *width);
             }
             PaintCommand::Line {
                 from,
@@ -37,7 +37,7 @@ impl CmdHandler {
                 color,
                 width,
             } => {
-                self.line(from, to, color, width);
+                self.line(from, to, color, *width);
             }
             PaintCommand::Text {
                 position,
@@ -45,7 +45,7 @@ impl CmdHandler {
                 color,
                 size,
             } => {
-                self.text(position, text, color, size);
+                self.text(position, text, color, *size);
             }
             PaintCommand::PushClip(rect) => {
                 self.push_clip(rect);
@@ -59,6 +59,8 @@ impl CmdHandler {
             PaintCommand::PopTransform => {
                 self.pop_transform();
             }
+
+            PaintCommand::Clear(color) => {}
         }
     }
 

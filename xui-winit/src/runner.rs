@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::Arc;
 
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -6,9 +7,8 @@ use winit::error::{EventLoopError, OsError};
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
-use xui::{
-    core::Size, runtime::ControlFlow as XuiControlFlow, runtime::GuiRuntime, runtime::RuntimeEvent,
-};
+use xui::App;
+use xui::{runtime::ControlFlow as XuiControlFlow, runtime::GuiRuntime, runtime::RuntimeEvent};
 use xui_interface::{Point, RenderBackend};
 
 use crate::translate::translate_window_event;
@@ -75,24 +75,32 @@ impl<E> From<EventLoopError> for WinitRunError<E> {
     }
 }
 
-pub struct WinitRunner<B: RenderBackend> {
-    runtime: GuiRuntime<B>,
+pub struct WinitRunner<B: RenderBackend, F>
+where
+    F: FnOnce(Arc<Window>) -> (App, B),
+{
+    f_init: Option<F>,
+    runtime: Option<GuiRuntime<B>>,
     options: WinitRunnerOptions,
-    window: Option<Window>,
+    window: Option<Arc<Window>>,
     window_id: Option<WindowId>,
     last_cursor_position: Option<Point>,
     window_error: Option<OsError>,
     render_error: Option<B::Error>,
 }
 
-impl<B: RenderBackend> WinitRunner<B> {
-    pub fn new(runtime: GuiRuntime<B>) -> Self {
-        Self::with_options(runtime, WinitRunnerOptions::default())
+impl<B: RenderBackend, F> WinitRunner<B, F>
+where
+    F: FnOnce(Arc<Window>) -> (App, B),
+{
+    pub fn with_backend_factory(factory: F, option: Option<WinitRunnerOptions>) -> Self {
+        Self::with_options(factory, option.unwrap_or_default())
     }
 
-    pub fn with_options(runtime: GuiRuntime<B>, options: WinitRunnerOptions) -> Self {
+    pub fn with_options(factory: F, options: WinitRunnerOptions) -> Self {
         Self {
-            runtime,
+            f_init: Some(factory),
+            runtime: None,
             options,
             window: None,
             window_id: None,
@@ -103,15 +111,15 @@ impl<B: RenderBackend> WinitRunner<B> {
     }
 
     pub fn runtime(&self) -> &GuiRuntime<B> {
-        &self.runtime
+        self.runtime.as_ref().unwrap()
     }
 
     pub fn runtime_mut(&mut self) -> &mut GuiRuntime<B> {
-        &mut self.runtime
+        self.runtime.as_mut().unwrap()
     }
 
     pub fn window(&self) -> Option<&Window> {
-        self.window.as_ref()
+        self.window.as_deref()
     }
 
     pub fn run(mut self) -> Result<(), WinitRunError<B::Error>> {
@@ -132,21 +140,21 @@ impl<B: RenderBackend> WinitRunner<B> {
             RuntimeEvent::RedrawRequested => self.render(event_loop),
             RuntimeEvent::Exit if self.options.exit_on_close_requested => event_loop.exit(),
             other => {
-                self.runtime.handle_event(other);
+                self.runtime_mut().handle_event(other);
                 self.request_redraw_if_dirty();
             }
         }
     }
 
     fn render(&mut self, event_loop: &ActiveEventLoop) {
-        if let Err(error) = self.runtime.frame() {
+        if let Err(error) = self.runtime_mut().frame() {
             self.render_error = Some(error);
             event_loop.exit();
         }
     }
 
     fn request_redraw_if_dirty(&self) {
-        if self.runtime.app().is_dirty() {
+        if self.runtime().app().is_dirty() {
             if let Some(window) = self.window.as_ref() {
                 window.request_redraw();
             }
@@ -154,7 +162,10 @@ impl<B: RenderBackend> WinitRunner<B> {
     }
 }
 
-impl<B: RenderBackend> ApplicationHandler for WinitRunner<B> {
+impl<B: RenderBackend, F> ApplicationHandler for WinitRunner<B, F>
+where
+    F: FnOnce(Arc<Window>) -> (App, B),
+{
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -162,11 +173,10 @@ impl<B: RenderBackend> ApplicationHandler for WinitRunner<B> {
 
         match event_loop.create_window(self.options.window_attributes.clone()) {
             Ok(window) => {
-                let size = window.inner_size();
-                self.runtime
-                    .app_mut()
-                    .resize(Size::new(size.width as f32, size.height as f32));
                 self.window_id = Some(window.id());
+                let window = Arc::new(window);
+                let (app, backend) = (self.f_init.take().unwrap())(window.clone());
+                self.runtime = Some(GuiRuntime::new(app, backend));
                 self.window = Some(window);
                 self.request_redraw_if_dirty();
             }
@@ -197,7 +207,7 @@ impl<B: RenderBackend> ApplicationHandler for WinitRunner<B> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        match self.runtime.control_flow() {
+        match self.runtime().control_flow() {
             XuiControlFlow::Exit => event_loop.exit(),
             XuiControlFlow::Poll => self.request_redraw_if_dirty(),
             XuiControlFlow::Wait => {}

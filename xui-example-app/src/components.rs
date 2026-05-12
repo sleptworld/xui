@@ -1,4 +1,5 @@
 use xui::prelude::*;
+use xui::components::*;
 
 component_fn! {
     fn badge() {

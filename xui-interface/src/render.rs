@@ -53,6 +53,8 @@ pub enum PaintCommand {
         translate: Point,
     },
     PopTransform,
+
+    Clear(Color),
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
