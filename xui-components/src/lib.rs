@@ -1,9 +1,7 @@
 pub mod widgets;
 use std::hash::{Hash, Hasher};
-use xui_interface::{
-    Color, DirtyFlags, EdgeInsets, Event, EventContext, EventResult, PaintCommand, Point,
-    PointerButton, Rect, Size,
-};
+use widgets::{ButtonWidget, ColumnWidget, ContainerWidget, LabelWidget, RootWidget, RowWidget};
+use xui_interface::{Color, DirtyFlags, EdgeInsets, Event, EventContext, EventResult, Size};
 pub use xui_interface::{Key, NodeType, Widget, WidgetKind};
 
 pub type EventHandler = Box<dyn FnMut(&Event, &mut EventContext<'_>) -> EventResult>;
@@ -304,7 +302,6 @@ pub fn row_component<Child>(
 
     element
 }
-
 
 pub fn widget_from_kind(kind: WidgetKind, on_click: Option<Box<dyn FnMut()>>) -> Box<dyn Widget> {
     match kind {

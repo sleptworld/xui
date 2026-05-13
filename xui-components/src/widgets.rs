@@ -1,4 +1,7 @@
-use xui_interface::{Color, DirtyFlags, Event, EventContext, EventResult, NodeType, PaintCommand, Point, Rect, Widget, WidgetKind};
+use xui_interface::{
+    Color, DirtyFlags, Event, EventContext, EventResult, NodeType, PaintCommand, Point,
+    PointerButton, Rect, Widget, WidgetKind,
+};
 
 pub struct RootWidget;
 

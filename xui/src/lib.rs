@@ -2,6 +2,7 @@ pub mod app;
 pub mod component;
 pub mod core;
 pub mod event;
+pub mod fiber;
 pub mod font;
 pub mod layout;
 pub mod prelude;
