@@ -466,6 +466,15 @@ impl UiArena {
     pub fn compute_layout(&mut self, size: Size) {
         self.layout_passes += 1;
         let root_taffy = self.nodes[self.root].taffy_node;
+        let mut root_style = self.nodes[self.root].style.clone();
+        root_style.size = tf::Size {
+            width: tf::Dimension::length(size.width),
+            height: tf::Dimension::length(size.height),
+        };
+        self.nodes[self.root].style = root_style.clone();
+        self.taffy
+            .set_style(root_taffy, root_style)
+            .expect("failed to update root layout size");
         self.taffy
             .compute_layout(
                 root_taffy,
@@ -673,6 +682,40 @@ impl UiArena {
         measurer: &mut TextI,
     ) -> Vec<Element> {
         self.update_widget_node_from_element(id, element, position, measurer)
+    }
+
+    pub fn update_widget_node_from_parts(
+        &mut self,
+        id: NodeId,
+        key: Option<Key>,
+        props_hash: u64,
+        style: tf::Style,
+        kind: WidgetKind,
+        widget: Box<dyn Widget>,
+    ) {
+        let mut flags = DirtyFlags::empty();
+
+        {
+            let node = self.nodes.get_mut(id).expect("reused node missing");
+            node.key = key;
+            node.new_props_hash = props_hash;
+            if node.old_props_hash != props_hash {
+                flags |= DirtyFlags::PROPS;
+            }
+            if node.style != style {
+                node.style = style.clone();
+                flags |= DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
+                self.taffy
+                    .set_style(node.taffy_node, style)
+                    .expect("failed to update taffy style");
+            }
+            let widget_flags = node.widget.update_from_kind(&kind);
+            flags |= widget_flags;
+            flags |= crate::widgets::update_kind_from(&mut node.kind, kind);
+            node.widget = widget;
+        }
+
+        self.mark_dirty(id, flags);
     }
 
     fn update_node_from_element(

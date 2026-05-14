@@ -20,12 +20,17 @@ impl TextI {
         session.add_text(text);
         let par = session.finish(None);
 
-        let width = 0.0;
+        let font_size = max_width.max(1.0);
+        let width = text.chars().count() as f32 * font_size * 0.58;
         let mut height = 0.0;
 
         for line in par.lines() {
             let size = line.size();
             height += size;
+        }
+
+        if height <= 0.0 {
+            height = font_size * 1.25;
         }
 
         Size::new(width, height)
