@@ -2,11 +2,11 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
-use xui_interface::NodeId;
 
+use crate::fiber::FiberId;
 use crate::lanes::{Lane, LaneRoot, Lanes, NO_LANES, current_update_lane, includes_some_lane};
 
-type HookKey = (NodeId, usize);
+type HookKey = (FiberId, usize);
 type HookApply = Box<dyn FnOnce(&mut dyn Any)>;
 
 #[derive(Default)]
@@ -38,7 +38,7 @@ impl HookStorage {
 
 pub struct HookContext<'a> {
     storage: &'a mut HookStorage,
-    owner: NodeId,
+    owner: FiberId,
     scheduler: Scheduler,
     render_lanes: Lanes,
 }
@@ -46,7 +46,7 @@ pub struct HookContext<'a> {
 impl<'a> HookContext<'a> {
     pub fn new(
         storage: &'a mut HookStorage,
-        owner: NodeId,
+        owner: FiberId,
         scheduler: Scheduler,
         render_lanes: Lanes,
     ) -> Self {
@@ -80,10 +80,10 @@ pub struct Scheduler {
 #[derive(Default)]
 struct SchedulerState {
     lane_root: LaneRoot,
-    dirty_components: HashMap<NodeId, Lanes>,
+    dirty_components: HashMap<FiberId, Lanes>,
     hook_updates: HashMap<HookKey, VecDeque<HookUpdate>>,
-    mounted_components: HashSet<NodeId>,
-    root: Option<NodeId>,
+    mounted_components: HashSet<FiberId>,
+    root: Option<FiberId>,
 }
 
 struct HookUpdate {
@@ -92,24 +92,24 @@ struct HookUpdate {
 }
 
 impl Scheduler {
-    pub fn set_root(&self, id: NodeId) {
+    pub fn set_root(&self, id: FiberId) {
         let mut inner = self.inner.borrow_mut();
         inner.root = Some(id);
         inner.mounted_components.insert(id);
     }
 
-    pub fn mark_mounted(&self, id: NodeId) {
+    pub fn mark_mounted(&self, id: FiberId) {
         self.inner.borrow_mut().mounted_components.insert(id);
     }
 
-    pub fn mark_unmounted(&self, id: NodeId) {
+    pub fn mark_unmounted(&self, id: FiberId) {
         let mut inner = self.inner.borrow_mut();
         inner.mounted_components.remove(&id);
         inner.dirty_components.remove(&id);
         inner.hook_updates.retain(|(owner, _), _| *owner != id);
     }
 
-    pub fn mark_component_dirty(&self, id: NodeId, lane: Lane) {
+    pub fn mark_component_dirty(&self, id: FiberId, lane: Lane) {
         let mut inner = self.inner.borrow_mut();
         if !inner.mounted_components.contains(&id) && inner.root != Some(id) {
             return;
@@ -125,7 +125,7 @@ impl Scheduler {
         }
     }
 
-    pub fn component_lanes(&self, id: NodeId) -> Lanes {
+    pub fn component_lanes(&self, id: FiberId) -> Lanes {
         self.inner
             .borrow()
             .dirty_components
@@ -136,7 +136,7 @@ impl Scheduler {
 
     pub fn enqueue_hook_update<T: 'static>(
         &self,
-        owner: NodeId,
+        owner: FiberId,
         hook_index: usize,
         update: impl FnOnce(&mut T) + 'static,
     ) {
@@ -166,7 +166,7 @@ impl Scheduler {
 
     pub fn apply_hook_updates<T: 'static>(
         &self,
-        owner: NodeId,
+        owner: FiberId,
         hook_index: usize,
         render_lanes: Lanes,
         value: &Rc<RefCell<T>>,
@@ -236,7 +236,7 @@ impl Scheduler {
 #[derive(Clone)]
 pub struct State<T> {
     value: Rc<RefCell<T>>,
-    owner: NodeId,
+    owner: FiberId,
     hook_index: usize,
     scheduler: Scheduler,
 }

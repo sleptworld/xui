@@ -9,8 +9,7 @@ new_key_type! {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NodeType {
-    Root,
+pub enum WidgetType {
     Label,
     Button,
     Column,
@@ -58,14 +57,14 @@ pub enum WidgetKind {
 }
 
 impl WidgetKind {
-    pub fn node_type(&self) -> NodeType {
+    pub fn node_type(&self) -> WidgetType {
         match self {
-            Self::Root => NodeType::Root,
-            Self::Label { .. } => NodeType::Label,
-            Self::Button { .. } => NodeType::Button,
-            Self::Column { .. } => NodeType::Column,
-            Self::Row { .. } => NodeType::Row,
-            Self::Container { .. } => NodeType::Container,
+            Self::Root => WidgetType::Container,
+            Self::Label { .. } => WidgetType::Label,
+            Self::Button { .. } => WidgetType::Button,
+            Self::Column { .. } => WidgetType::Column,
+            Self::Row { .. } => WidgetType::Row,
+            Self::Container { .. } => WidgetType::Container,
         }
     }
 }
@@ -75,7 +74,7 @@ pub trait TextMeasurer {
 }
 
 pub trait Widget {
-    fn node_type(&self) -> NodeType;
+    fn node_type(&self) -> WidgetType;
     fn update_from_kind(&mut self, new_kind: &WidgetKind) -> DirtyFlags;
     fn paint(&self, rect: Rect, commands: &mut Vec<PaintCommand>);
     fn handle_event(&mut self, event: &Event, cx: &mut EventContext<'_>) -> EventResult;

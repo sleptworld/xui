@@ -1,15 +1,21 @@
+use rustc_hash::FxHasher;
+use slotmap::{SecondaryMap, SlotMap, new_key_type};
 use std::any::Any;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
-use rustc_hash::FxHasher;
-use slotmap::SlotMap;
 use taffy::prelude as tf;
-use xui_interface::{DirtyFlags, NodeId, NodeType};
+use xui_interface::DirtyFlags;
+use xui_interface::widget::WidgetType;
 
+use crate::HookContext;
 use crate::core::Rect;
 use crate::lanes::{Lanes, NO_LANES, SYNC_LANE};
 use crate::render::PaintCommand;
 use crate::widgets::{Key, Widget, WidgetKind};
+
+new_key_type! {
+    pub struct FiberId;
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ComponentType(u32);
@@ -25,21 +31,22 @@ impl ComponentType {
 pub type ErasedProps = Box<dyn Any>;
 pub type ErasedPropsRef<'a> = &'a dyn Any;
 
-
 pub struct FiberContext<'a> {
-    node_id: NodeId,
+    node_id: FiberId,
+    hook_context: HookContext<'a>,
     _marker: std::marker::PhantomData<&'a mut ()>,
 }
 
 impl<'a> FiberContext<'a> {
-    fn new(node_id: NodeId) -> Self {
+    pub fn new(node_id: FiberId, hook_context: HookContext<'a>) -> Self {
         Self {
             node_id,
+            hook_context,
             _marker: std::marker::PhantomData,
         }
     }
 
-    pub fn node_id(&self) -> NodeId {
+    pub fn node_id(&self) -> FiberId {
         self.node_id
     }
 }
@@ -219,7 +226,7 @@ pub struct ComponentElement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FiberTag {
     Root,
-    Host(NodeType),
+    Host(WidgetType),
     Component(ComponentType),
 }
 
@@ -258,13 +265,11 @@ pub struct ComponentProps {
     pub props: ErasedProps,
 }
 
-
-
 pub struct Node {
-    pub id: NodeId,
-    pub parent: Option<NodeId>,
-    pub child: Option<NodeId>,
-    pub sibling: Option<NodeId>,
+    pub id: FiberId,
+    pub parent: Option<FiberId>,
+    pub child: Option<FiberId>,
+    pub sibling: Option<FiberId>,
     pub key: Option<Key>,
     pub position: usize,
     pub tag: FiberTag,
@@ -275,13 +280,10 @@ pub struct Node {
     pub pending_children: Option<Vec<FiberElement>>,
     pub memoized_props_hash: u64,
     pub host: Option<HostState>,
-    pub lanes: Lanes,
-    // Describe 
-    pub began: bool,
 }
 
 impl Node {
-    fn root(id: NodeId) -> Self {
+    fn root(id: FiberId) -> Self {
         Self {
             id,
             parent: None,
@@ -297,13 +299,10 @@ impl Node {
             pending_children: None,
             memoized_props_hash: 0,
             host: None,
-            lanes: SYNC_LANE,
-            began: false,
-
         }
     }
 
-    fn host(id: NodeId, element: HostElement, taffy_node: tf::NodeId) -> Self {
+    fn host(id: FiberId, element: HostElement, taffy_node: tf::NodeId) -> Self {
         let tag = FiberTag::Host(element.kind.node_type());
         Self {
             id,
@@ -328,12 +327,10 @@ impl Node {
                 previous_layout: Rect::ZERO,
                 paint_cache: Vec::new(),
             }),
-            lanes: SYNC_LANE,
-            began: false
         }
     }
 
-    fn component(id: NodeId, element: ComponentElement) -> Self {
+    fn component(id: FiberId, element: ComponentElement) -> Self {
         Self {
             id,
             parent: None,
@@ -353,25 +350,25 @@ impl Node {
             pending_children: None,
             memoized_props_hash: 0,
             host: None,
-            lanes: SYNC_LANE,
-            began: false
         }
     }
 
-    pub fn children<'a>(&self, arena: &'a FiberArena) -> NodeChildren<'a> {
-        NodeChildren { arena: arena, child: self.child }
+    pub fn children<'a>(&self, arena: &'a FiberArena) -> NodeChildren<'a, Self> {
+        NodeChildren {
+            arena: arena,
+            child: self.child,
+            _marker: PhantomData,
+        }
     }
-
-
-    
 }
 
-pub struct NodeChildren<'a> {
-    arena: &'a FiberArena,
-    child: Option<NodeId>,
+pub struct NodeChildren<'a, T> {
+    pub arena: &'a FiberArena,
+    pub child: Option<FiberId>,
+    pub _marker: PhantomData<T>,
 }
 
-impl<'a> Iterator for NodeChildren<'a> {
+impl<'a> Iterator for NodeChildren<'a, Node> {
     type Item = &'a Node;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -383,16 +380,16 @@ impl<'a> Iterator for NodeChildren<'a> {
             None
         }
     }
-
 }
 
 pub struct FiberArena {
-    nodes: SlotMap<NodeId, Node>,
+    ids: SlotMap<FiberId, ()>,
+    nodes: SecondaryMap<FiberId, Node>,
     taffy: tf::TaffyTree,
-    root: NodeId,
+    root: FiberId,
     root_taffy: tf::NodeId,
-    next_work: Option<NodeId>,
-    deletions: Vec<NodeId>,
+    next_work: Option<FiberId>,
+    deletions: Vec<FiberId>,
     render_lanes: Lanes,
 }
 
@@ -407,37 +404,40 @@ impl FiberArena {
         let root_taffy = taffy
             .new_leaf(root_style)
             .expect("failed to create fiber root taffy node");
-        let mut nodes = SlotMap::with_key();
-        let root = nodes.insert_with_key(Node::root);
+        let mut ids = SlotMap::with_key();
+        let nodes = SecondaryMap::new();
+        // let root = nodes.insert_with_key(Node::root);
+        let root = ids.insert(());
         Self {
+            ids,
             nodes,
             taffy,
             root,
             root_taffy,
             next_work: None,
             deletions: Vec::new(),
-            render_lanes: NO_LANES
+            render_lanes: NO_LANES,
         }
     }
 
-    pub fn root(&self) -> NodeId {
+    pub fn root(&self) -> FiberId {
         self.root
     }
 
-    pub fn contains(&self, id: NodeId) -> bool {
+    pub fn contains(&self, id: FiberId) -> bool {
         self.nodes.contains_key(id)
     }
 
-    pub fn node(&self, id: NodeId) -> Option<&Node> {
+    pub fn node(&self, id: FiberId) -> Option<&Node> {
         self.nodes.get(id)
     }
 
-    pub fn node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
+    pub fn node_mut(&mut self, id: FiberId) -> Option<&mut Node> {
         self.nodes.get_mut(id)
     }
 
     #[inline]
-    pub fn next_work(&self) -> Option<NodeId> {
+    pub fn next_work(&self) -> Option<FiberId> {
         self.next_work
     }
 
@@ -445,7 +445,7 @@ impl FiberArena {
         &self.taffy
     }
 
-    pub fn children(&self, parent: NodeId) -> Vec<NodeId> {
+    pub fn children(&self, parent: FiberId) -> Vec<FiberId> {
         let mut output = Vec::new();
         let mut child = self.nodes.get(parent).and_then(|node| node.child);
         while let Some(id) = child {
@@ -455,20 +455,20 @@ impl FiberArena {
         output
     }
 
-    pub fn cursor(&self, start: NodeId) -> Cursor<'_> {
+    pub fn cursor(&self, start: FiberId) -> Cursor<'_> {
         Cursor {
             arena: self,
             next: self.nodes.contains_key(start).then_some(start),
         }
     }
 
-    pub fn append_child(&mut self, parent: NodeId, child: NodeId) {
+    pub fn append_child(&mut self, parent: FiberId, child: FiberId) {
         let mut children = self.children(parent);
         children.push(child);
         self.set_children(parent, children);
     }
 
-    pub fn set_children(&mut self, parent: NodeId, children: Vec<NodeId>) {
+    pub fn set_children(&mut self, parent: FiberId, children: Vec<FiberId>) {
         if !self.nodes.contains_key(parent) {
             return;
         }
@@ -484,115 +484,9 @@ impl FiberArena {
         }
     }
 
-    pub fn reconcile(&mut self, root_element: FiberElement, registry: &ComponentRegistry) {
-        self.nodes[self.root].pending_children = Some(vec![root_element]);
-        self.nodes[self.root].dirty.insert(DirtyFlags::TREE);
-        self.next_work = Some(self.root);
-        self.perform_work(registry);
-    }
-
-    pub fn perform_work(&mut self, registry: &ComponentRegistry) {
-        while let Some(work) = self.next_work {
-            self.next_work = self.perform_unit_of_work(work, registry);
-        }
-    }
-
-    pub fn commit(&mut self) {
-        let deletions = std::mem::take(&mut self.deletions);
-        for deletion in deletions {
-            self.remove_subtree_detached(deletion);
-        }
-
-        let nodes: Vec<_> = self.cursor(self.root).collect();
-        for id in nodes.iter().copied() {
-            self.commit_node(id);
-        }
-        for id in nodes {
-            self.sync_host_children(id);
-        }
-    }
-
-    pub fn render(&mut self, root_element: FiberElement, registry: &ComponentRegistry) {
-        self.reconcile(root_element, registry);
-        self.commit();
-    }
-
-    fn perform_unit_of_work(&mut self, id: NodeId, registry: &ComponentRegistry) -> Option<NodeId> {
-        if let Some(child) = self.begin_work(id, registry) {
-            return Some(child);
-        }
-
-        let mut current = id;
-        loop {
-            self.complete_work(current);
-            if let Some(sibling) = self.nodes.get(current).and_then(|node| node.sibling) {
-                return Some(sibling);
-            }
-            current = self.nodes.get(current).and_then(|node| node.parent)?;
-        }
-    }
-
-    fn begin_work(&mut self, id: NodeId, registry: &ComponentRegistry) -> Option<NodeId> {
-        let tag = self.nodes[id].tag;
-        match tag {
-            FiberTag::Root => {
-                let children = self.nodes[id].pending_children.take().unwrap_or_default();
-                self.reconcile_children(id, children);
-            }
-            FiberTag::Host(_) => {
-                let children = self.nodes[id].pending_children.take().unwrap_or_default();
-                self.reconcile_children(id, children);
-            }
-            FiberTag::Component(component_type) => {
-                let rendered = {
-                    let node = self.nodes.get(id).expect("component node missing");
-                    let Some(PendingProps::Component(props)) = node.pending_props.as_ref() else {
-                        return node.child;
-                    };
-                    let mut cx = FiberContext::new(id);
-                    registry
-                        .get(component_type)
-                        .call(&mut cx, props.props.as_ref())
-                };
-                self.reconcile_children(id, vec![rendered]);
-            }
-        }
-        self.nodes[id].child
-    }
-
-    fn complete_work(&mut self, _id: NodeId) {}
-
-    fn reconcile_children(&mut self, parent: NodeId, new_children: Vec<FiberElement>) {
-        let old_children = self.children(parent);
-        let mut used = vec![false; old_children.len()];
-        let mut next_children = Vec::with_capacity(new_children.len());
-
-        for (position, element) in new_children.into_iter().enumerate() {
-            let matched = self.find_reusable_child(&old_children, &used, &element, position);
-            let child = if let Some(old_index) = matched {
-                used[old_index] = true;
-                let id = old_children[old_index];
-                self.prepare_reused_node(id, element, position);
-                id
-            } else {
-                self.create_node_from_element(element, position)
-            };
-            next_children.push(child);
-        }
-
-        for (index, old_child) in old_children.into_iter().enumerate() {
-            if !used[index] {
-                self.deletions.push(old_child);
-            }
-        }
-
-        self.set_children(parent, next_children);
-        self.mark_subtree_dirty(parent, DirtyFlags::TREE);
-    }
-
     fn find_reusable_child(
         &self,
-        old_children: &[NodeId],
+        old_children: &[FiberId],
         used: &[bool],
         element: &FiberElement,
         position: usize,
@@ -623,30 +517,7 @@ impl FiberArena {
             .map(|_| position)
     }
 
-    fn create_node_from_element(&mut self, element: FiberElement, position: usize) -> NodeId {
-        match element {
-            FiberElement::Host(element) => {
-                let taffy_node = self
-                    .taffy
-                    .new_leaf(element.style.clone())
-                    .expect("failed to create fiber taffy node");
-                let id = self
-                    .nodes
-                    .insert_with_key(|id| Node::host(id, element, taffy_node));
-                self.nodes[id].position = position;
-                id
-            }
-            FiberElement::Component(element) => {
-                let id = self
-                    .nodes
-                    .insert_with_key(|id| Node::component(id, element));
-                self.nodes[id].position = position;
-                id
-            }
-        }
-    }
-
-    fn prepare_reused_node(&mut self, id: NodeId, element: FiberElement, position: usize) {
+    fn prepare_reused_node(&mut self, id: FiberId, element: FiberElement, position: usize) {
         let mut effect = EffectTag::None;
         match element {
             FiberElement::Host(element) => {
@@ -690,7 +561,7 @@ impl FiberArena {
         }
     }
 
-    fn commit_node(&mut self, id: NodeId) {
+    fn commit_node(&mut self, id: FiberId) {
         let pending = self.nodes[id].pending_props.take();
         match pending {
             Some(PendingProps::Host(update)) => {
@@ -717,7 +588,7 @@ impl FiberArena {
         self.nodes[id].subtree_dirty = DirtyFlags::empty();
     }
 
-    fn sync_host_children(&mut self, id: NodeId) {
+    fn sync_host_children(&mut self, id: FiberId) {
         let Some(parent_taffy) = self.host_taffy_node(id) else {
             return;
         };
@@ -727,7 +598,7 @@ impl FiberArena {
             .expect("failed to sync fiber taffy children");
     }
 
-    fn host_taffy_node(&self, id: NodeId) -> Option<tf::NodeId> {
+    fn host_taffy_node(&self, id: FiberId) -> Option<tf::NodeId> {
         if id == self.root {
             return Some(self.root_taffy);
         }
@@ -737,7 +608,7 @@ impl FiberArena {
             .map(|host| host.taffy_node)
     }
 
-    fn flatten_host_children(&self, parent: NodeId) -> Vec<tf::NodeId> {
+    fn flatten_host_children(&self, parent: FiberId) -> Vec<tf::NodeId> {
         let mut output = Vec::new();
         let mut child = self.nodes.get(parent).and_then(|node| node.child);
         while let Some(id) = child {
@@ -747,7 +618,7 @@ impl FiberArena {
         output
     }
 
-    fn flatten_host_child(&self, id: NodeId, output: &mut Vec<tf::NodeId>) {
+    fn flatten_host_child(&self, id: FiberId, output: &mut Vec<tf::NodeId>) {
         let Some(node) = self.nodes.get(id) else {
             return;
         };
@@ -764,7 +635,7 @@ impl FiberArena {
         }
     }
 
-    fn remove_subtree_detached(&mut self, id: NodeId) {
+    fn remove_subtree_detached(&mut self, id: FiberId) {
         if id == self.root || !self.nodes.contains_key(id) {
             return;
         }
@@ -780,7 +651,7 @@ impl FiberArena {
         self.nodes.remove(id);
     }
 
-    fn mark_subtree_dirty(&mut self, id: NodeId, flags: DirtyFlags) {
+    fn mark_subtree_dirty(&mut self, id: FiberId, flags: DirtyFlags) {
         if flags.is_empty() || !self.nodes.contains_key(id) {
             return;
         }
@@ -792,6 +663,10 @@ impl FiberArena {
             current = parent;
         }
     }
+
+    pub fn new_id(&mut self) -> FiberId {
+        self.ids.insert(())
+    }
 }
 
 impl Default for FiberArena {
@@ -802,11 +677,11 @@ impl Default for FiberArena {
 
 pub struct Cursor<'a> {
     arena: &'a FiberArena,
-    next: Option<NodeId>,
+    next: Option<FiberId>,
 }
 
 impl Iterator for Cursor<'_> {
-    type Item = NodeId;
+    type Item = FiberId;
 
     fn next(&mut self) -> Option<Self::Item> {
         let current = self.next?;
@@ -816,7 +691,7 @@ impl Iterator for Cursor<'_> {
 }
 
 impl Cursor<'_> {
-    fn next_after(&self, current: NodeId) -> Option<NodeId> {
+    fn next_after(&self, current: FiberId) -> Option<FiberId> {
         if let Some(child) = self.arena.nodes.get(current).and_then(|node| node.child) {
             return Some(child);
         }
@@ -835,326 +710,4 @@ fn fx_hash<T: Hash>(value: &T) -> u64 {
     let mut hasher = FxHasher::default();
     value.hash(&mut hasher);
     hasher.finish()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::widgets::widget_from_kind;
-
-    fn style() -> tf::Style {
-        tf::Style::default()
-    }
-
-    fn host(kind: WidgetKind, children: Vec<FiberElement>) -> FiberElement {
-        FiberElement::host(
-            kind.clone(),
-            widget_from_kind(kind.clone(), None),
-            style(),
-            test_kind_hash(&kind),
-            children,
-        )
-    }
-
-    fn test_kind_hash(kind: &WidgetKind) -> u64 {
-        let mut hasher = FxHasher::default();
-        kind.node_type().hash(&mut hasher);
-        match kind {
-            WidgetKind::Root => {}
-            WidgetKind::Label {
-                text,
-                color,
-                font_size,
-            } => {
-                text.hash(&mut hasher);
-                color.r.to_bits().hash(&mut hasher);
-                color.g.to_bits().hash(&mut hasher);
-                color.b.to_bits().hash(&mut hasher);
-                color.a.to_bits().hash(&mut hasher);
-                font_size.to_bits().hash(&mut hasher);
-            }
-            WidgetKind::Button {
-                text,
-                pressed,
-                hovered,
-            } => {
-                text.hash(&mut hasher);
-                pressed.hash(&mut hasher);
-                hovered.hash(&mut hasher);
-            }
-            WidgetKind::Column { gap } | WidgetKind::Row { gap } => {
-                gap.to_bits().hash(&mut hasher);
-            }
-            WidgetKind::Container { background } => {
-                background.r.to_bits().hash(&mut hasher);
-                background.g.to_bits().hash(&mut hasher);
-                background.b.to_bits().hash(&mut hasher);
-                background.a.to_bits().hash(&mut hasher);
-            }
-        }
-        hasher.finish()
-    }
-
-    fn keyed_host(key: &str, kind: WidgetKind, children: Vec<FiberElement>) -> FiberElement {
-        host(kind, children).key(key)
-    }
-
-    fn label(text: &str) -> FiberElement {
-        host(
-            WidgetKind::Label {
-                text: text.to_owned(),
-                color: crate::core::Color::BLACK,
-                font_size: 14.0,
-            },
-            Vec::new(),
-        )
-    }
-
-    fn row(children: Vec<FiberElement>) -> FiberElement {
-        host(WidgetKind::Row { gap: 0.0 }, children)
-    }
-
-    #[test]
-    fn cursor_traverses_preorder_without_recursion() {
-        let registry = ComponentRegistry::new();
-        let mut arena = FiberArena::new();
-        arena.render(
-            row(vec![
-                keyed_host("a", WidgetKind::Column { gap: 0.0 }, vec![label("a1")]),
-                keyed_host(
-                    "b",
-                    WidgetKind::Container {
-                        background: crate::core::Color::WHITE,
-                    },
-                    vec![],
-                ),
-                keyed_host("c", WidgetKind::Row { gap: 1.0 }, vec![label("c1")]),
-            ]),
-            &registry,
-        );
-
-        let ids: Vec<_> = arena.cursor(arena.root()).collect();
-        let tags: Vec<_> = ids.iter().map(|id| arena.node(*id).unwrap().tag).collect();
-
-        assert_eq!(
-            tags,
-            vec![
-                FiberTag::Root,
-                FiberTag::Host(NodeType::Row),
-                FiberTag::Host(NodeType::Column),
-                FiberTag::Host(NodeType::Label),
-                FiberTag::Host(NodeType::Container),
-                FiberTag::Host(NodeType::Row),
-                FiberTag::Host(NodeType::Label),
-            ]
-        );
-    }
-
-    #[test]
-    fn set_children_maintains_parent_sibling_and_position_links() {
-        let mut arena = FiberArena::new();
-        let a = arena.create_node_from_element(label("a"), 0);
-        let b = arena.create_node_from_element(label("b"), 0);
-        let c = arena.create_node_from_element(label("c"), 0);
-
-        arena.append_child(arena.root(), a);
-        arena.set_children(arena.root(), vec![c, a, b]);
-
-        assert_eq!(arena.children(arena.root()), vec![c, a, b]);
-        assert_eq!(arena.node(c).unwrap().parent, Some(arena.root()));
-        assert_eq!(arena.node(c).unwrap().position, 0);
-        assert_eq!(arena.node(c).unwrap().sibling, Some(a));
-        assert_eq!(arena.node(a).unwrap().position, 1);
-        assert_eq!(arena.node(a).unwrap().sibling, Some(b));
-        assert_eq!(arena.node(b).unwrap().position, 2);
-        assert_eq!(arena.node(b).unwrap().sibling, None);
-    }
-
-    #[test]
-    fn registry_component_commits_flattened_host_children() {
-        fn render_label(_cx: &mut FiberContext<'_>, props: &String) -> FiberElement {
-            label(props)
-        }
-
-        let mut registry = ComponentRegistry::new();
-        let component_type = registry.register("LabelComponent", render_label);
-        let mut arena = FiberArena::new();
-
-        arena.render(
-            row(vec![FiberElement::component(
-                component_type,
-                "inside".to_owned(),
-            )]),
-            &registry,
-        );
-
-        let root_child = arena.children(arena.root())[0];
-        let component = arena.children(root_child)[0];
-        let rendered_label = arena.children(component)[0];
-
-        assert_eq!(
-            arena.node(component).unwrap().tag,
-            FiberTag::Component(component_type)
-        );
-        assert_eq!(
-            arena.node(rendered_label).unwrap().tag,
-            FiberTag::Host(NodeType::Label)
-        );
-        let row_taffy = arena
-            .node(root_child)
-            .unwrap()
-            .host
-            .as_ref()
-            .unwrap()
-            .taffy_node;
-        let label_taffy = arena
-            .node(rendered_label)
-            .unwrap()
-            .host
-            .as_ref()
-            .unwrap()
-            .taffy_node;
-        assert_eq!(arena.taffy.children(row_taffy).unwrap(), vec![label_taffy]);
-    }
-
-    #[test]
-    fn keyed_reorder_reuses_node_ids_and_updates_sibling_order() {
-        let registry = ComponentRegistry::new();
-        let mut arena = FiberArena::new();
-
-        arena.render(
-            row(vec![
-                keyed_host(
-                    "a",
-                    WidgetKind::Label {
-                        text: "a".to_owned(),
-                        color: crate::core::Color::BLACK,
-                        font_size: 14.0,
-                    },
-                    vec![],
-                ),
-                keyed_host(
-                    "b",
-                    WidgetKind::Label {
-                        text: "b".to_owned(),
-                        color: crate::core::Color::BLACK,
-                        font_size: 14.0,
-                    },
-                    vec![],
-                ),
-            ]),
-            &registry,
-        );
-        let row_id = arena.children(arena.root())[0];
-        let before = arena.children(row_id);
-
-        arena.render(
-            row(vec![
-                keyed_host(
-                    "b",
-                    WidgetKind::Label {
-                        text: "b".to_owned(),
-                        color: crate::core::Color::BLACK,
-                        font_size: 14.0,
-                    },
-                    vec![],
-                ),
-                keyed_host(
-                    "a",
-                    WidgetKind::Label {
-                        text: "a".to_owned(),
-                        color: crate::core::Color::BLACK,
-                        font_size: 14.0,
-                    },
-                    vec![],
-                ),
-            ]),
-            &registry,
-        );
-
-        let after = arena.children(row_id);
-        assert_eq!(after, vec![before[1], before[0]]);
-        assert_eq!(arena.node(after[0]).unwrap().sibling, Some(after[1]));
-        assert_eq!(arena.node(after[1]).unwrap().sibling, None);
-    }
-
-    #[test]
-    fn same_key_different_component_type_replaces_subtree() {
-        fn render_a(_cx: &mut FiberContext<'_>, _props: &String) -> FiberElement {
-            label("a")
-        }
-        fn render_b(_cx: &mut FiberContext<'_>, _props: &String) -> FiberElement {
-            label("b")
-        }
-
-        let mut registry = ComponentRegistry::new();
-        let a_type = registry.register("A", render_a);
-        let b_type = registry.register("B", render_b);
-        let mut arena = FiberArena::new();
-
-        arena.render(FiberElement::component(a_type, ()).key("same"), &registry);
-        let first_component = arena.children(arena.root())[0];
-
-        arena.render(FiberElement::component(b_type, ()).key("same"), &registry);
-        let second_component = arena.children(arena.root())[0];
-
-        assert_ne!(first_component, second_component);
-        assert!(!arena.contains(first_component));
-        assert_eq!(
-            arena.node(second_component).unwrap().tag,
-            FiberTag::Component(b_type)
-        );
-    }
-
-    #[test]
-    fn deletion_commit_removes_old_subtree() {
-        let registry = ComponentRegistry::new();
-        let mut arena = FiberArena::new();
-
-        arena.render(
-            row(vec![
-                keyed_host("a", WidgetKind::Column { gap: 0.0 }, vec![label("child")]),
-                keyed_host(
-                    "b",
-                    WidgetKind::Container {
-                        background: crate::core::Color::WHITE,
-                    },
-                    vec![],
-                ),
-            ]),
-            &registry,
-        );
-        let row_id = arena.children(arena.root())[0];
-        let removed_parent = arena.children(row_id)[0];
-        let removed_child = arena.children(removed_parent)[0];
-
-        arena.render(
-            row(vec![keyed_host(
-                "b",
-                WidgetKind::Container {
-                    background: crate::core::Color::WHITE,
-                },
-                vec![],
-            )]),
-            &registry,
-        );
-
-        assert!(!arena.contains(removed_parent));
-        assert!(!arena.contains(removed_child));
-    }
-
-    #[test]
-    fn host_update_marks_update_not_placement() {
-        let registry = ComponentRegistry::new();
-        let mut arena = FiberArena::new();
-
-        arena.render(label("before").key("label"), &registry);
-        let label_id = arena.children(arena.root())[0];
-
-        arena.reconcile(label("after").key("label"), &registry);
-
-        assert_eq!(arena.node(label_id).unwrap().effect, EffectTag::Update);
-        arena.commit();
-        assert_eq!(arena.node(label_id).unwrap().effect, EffectTag::None);
-    }
 }

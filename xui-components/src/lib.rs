@@ -2,7 +2,7 @@ pub mod widgets;
 use std::hash::{Hash, Hasher};
 use widgets::{ButtonWidget, ColumnWidget, ContainerWidget, LabelWidget, RootWidget, RowWidget};
 use xui_interface::{Color, DirtyFlags, EdgeInsets, Event, EventContext, EventResult, Size};
-pub use xui_interface::{Key, NodeType, Widget, WidgetKind};
+pub use xui_interface::{Key, Widget, WidgetKind, WidgetType};
 
 pub type EventHandler = Box<dyn FnMut(&Event, &mut EventContext<'_>) -> EventResult>;
 

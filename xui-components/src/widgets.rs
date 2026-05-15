@@ -1,13 +1,13 @@
 use xui_interface::{
-    Color, DirtyFlags, Event, EventContext, EventResult, NodeType, PaintCommand, Point,
-    PointerButton, Rect, Widget, WidgetKind,
+    Color, DirtyFlags, Event, EventContext, EventResult, PaintCommand, Point, PointerButton, Rect,
+    Widget, WidgetKind, WidgetType,
 };
 
 pub struct RootWidget;
 
 impl Widget for RootWidget {
-    fn node_type(&self) -> NodeType {
-        NodeType::Root
+    fn node_type(&self) -> WidgetType {
+        WidgetType::Container
     }
 
     fn update_from_kind(&mut self, _new_kind: &WidgetKind) -> DirtyFlags {
@@ -30,8 +30,8 @@ pub struct LabelWidget {
 }
 
 impl Widget for LabelWidget {
-    fn node_type(&self) -> NodeType {
-        NodeType::Label
+    fn node_type(&self) -> WidgetType {
+        WidgetType::Label
     }
 
     fn update_from_kind(&mut self, new_kind: &WidgetKind) -> DirtyFlags {
@@ -82,8 +82,8 @@ pub struct ButtonWidget {
 }
 
 impl Widget for ButtonWidget {
-    fn node_type(&self) -> NodeType {
-        NodeType::Button
+    fn node_type(&self) -> WidgetType {
+        WidgetType::Button
     }
 
     fn update_from_kind(&mut self, new_kind: &WidgetKind) -> DirtyFlags {
@@ -170,8 +170,8 @@ pub struct ColumnWidget {
 }
 
 impl Widget for ColumnWidget {
-    fn node_type(&self) -> NodeType {
-        NodeType::Column
+    fn node_type(&self) -> WidgetType {
+        WidgetType::Column
     }
 
     fn update_from_kind(&mut self, new_kind: &WidgetKind) -> DirtyFlags {
@@ -198,8 +198,8 @@ pub struct RowWidget {
 }
 
 impl Widget for RowWidget {
-    fn node_type(&self) -> NodeType {
-        NodeType::Row
+    fn node_type(&self) -> WidgetType {
+        WidgetType::Row
     }
 
     fn update_from_kind(&mut self, new_kind: &WidgetKind) -> DirtyFlags {
@@ -226,8 +226,8 @@ pub struct ContainerWidget {
 }
 
 impl Widget for ContainerWidget {
-    fn node_type(&self) -> NodeType {
-        NodeType::Container
+    fn node_type(&self) -> WidgetType {
+        WidgetType::Container
     }
 
     fn update_from_kind(&mut self, new_kind: &WidgetKind) -> DirtyFlags {

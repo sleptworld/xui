@@ -13,4 +13,4 @@ pub use render::{
     RenderBackend,
 };
 pub use runtime::EventSource;
-pub use widget::{Component, Key, NodeId, NodeType, TextMeasurer, Widget, WidgetKind};
+pub use widget::{Component, Key, NodeId, TextMeasurer, Widget, WidgetKind, WidgetType};
