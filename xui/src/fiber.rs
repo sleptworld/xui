@@ -1,14 +1,13 @@
 use std::any::Any;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
-use std::ops::{Deref, DerefMut};
-
 use rustc_hash::FxHasher;
 use slotmap::SlotMap;
 use taffy::prelude as tf;
 use xui_interface::{DirtyFlags, NodeId, NodeType};
 
 use crate::core::Rect;
+use crate::lanes::{Lanes, NO_LANES, SYNC_LANE};
 use crate::render::PaintCommand;
 use crate::widgets::{Key, Widget, WidgetKind};
 
@@ -26,37 +25,6 @@ impl ComponentType {
 pub type ErasedProps = Box<dyn Any>;
 pub type ErasedPropsRef<'a> = &'a dyn Any;
 
-pub struct Fiber {
-    component_registry: ComponentRegistry,
-    arena: FiberArena,
-}
-
-impl Fiber {
-    pub fn new() -> Self {
-        Self {
-            component_registry: ComponentRegistry::new(),
-            arena: FiberArena::new(),
-        }
-    }
-
-    pub fn get_component(&self, component_type: ComponentType) -> &ComponentDef {
-        self.component_registry.get(component_type)
-    }
-}
-
-impl Deref for Fiber {
-    type Target = FiberArena;
-
-    fn deref(&self) -> &Self::Target {
-        &self.arena
-    }
-}
-
-impl DerefMut for Fiber {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.arena
-    }
-}
 
 pub struct FiberContext<'a> {
     node_id: NodeId,
@@ -290,6 +258,8 @@ pub struct ComponentProps {
     pub props: ErasedProps,
 }
 
+
+
 pub struct Node {
     pub id: NodeId,
     pub parent: Option<NodeId>,
@@ -305,6 +275,9 @@ pub struct Node {
     pub pending_children: Option<Vec<FiberElement>>,
     pub memoized_props_hash: u64,
     pub host: Option<HostState>,
+    pub lanes: Lanes,
+    // Describe 
+    pub began: bool,
 }
 
 impl Node {
@@ -324,6 +297,9 @@ impl Node {
             pending_children: None,
             memoized_props_hash: 0,
             host: None,
+            lanes: SYNC_LANE,
+            began: false,
+
         }
     }
 
@@ -352,6 +328,8 @@ impl Node {
                 previous_layout: Rect::ZERO,
                 paint_cache: Vec::new(),
             }),
+            lanes: SYNC_LANE,
+            began: false
         }
     }
 
@@ -375,8 +353,37 @@ impl Node {
             pending_children: None,
             memoized_props_hash: 0,
             host: None,
+            lanes: SYNC_LANE,
+            began: false
         }
     }
+
+    pub fn children<'a>(&self, arena: &'a FiberArena) -> NodeChildren<'a> {
+        NodeChildren { arena: arena, child: self.child }
+    }
+
+
+    
+}
+
+pub struct NodeChildren<'a> {
+    arena: &'a FiberArena,
+    child: Option<NodeId>,
+}
+
+impl<'a> Iterator for NodeChildren<'a> {
+    type Item = &'a Node;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(id) = self.child.take() {
+            let node = self.arena.node(id);
+            self.child = node.and_then(|n| n.sibling);
+            node
+        } else {
+            None
+        }
+    }
+
 }
 
 pub struct FiberArena {
@@ -386,6 +393,7 @@ pub struct FiberArena {
     root_taffy: tf::NodeId,
     next_work: Option<NodeId>,
     deletions: Vec<NodeId>,
+    render_lanes: Lanes,
 }
 
 impl FiberArena {
@@ -408,6 +416,7 @@ impl FiberArena {
             root_taffy,
             next_work: None,
             deletions: Vec::new(),
+            render_lanes: NO_LANES
         }
     }
 
@@ -425,6 +434,11 @@ impl FiberArena {
 
     pub fn node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
         self.nodes.get_mut(id)
+    }
+
+    #[inline]
+    pub fn next_work(&self) -> Option<NodeId> {
+        self.next_work
     }
 
     pub fn taffy(&self) -> &tf::TaffyTree {
