@@ -1,8 +1,10 @@
 use rustc_hash::FxHasher;
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
+use smallvec::SmallVec;
 use std::any::Any;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
+use std::rc::Rc;
 use taffy::prelude as tf;
 use xui_interface::DirtyFlags;
 use xui_interface::widget::WidgetType;
@@ -11,7 +13,7 @@ use crate::HookContext;
 use crate::core::Rect;
 use crate::lanes::{Lanes, NO_LANES, SYNC_LANE};
 use crate::render::PaintCommand;
-use crate::widgets::{Key, Widget, WidgetKind};
+use crate::widgets::{Key, Widget, WidgetKind, WidgetRef};
 
 new_key_type! {
     pub struct FiberId;
@@ -142,10 +144,10 @@ pub enum FiberElement {
 impl FiberElement {
     pub fn host(
         kind: WidgetKind,
-        widget: Box<dyn Widget>,
+        widget: WidgetRef,
         style: tf::Style,
         props_hash: u64,
-        children: Vec<FiberElement>,
+        children: SmallVec<[Rc<FiberElement>;20]>,
     ) -> Self {
         Self::Host(HostElement {
             key: None,
@@ -157,23 +159,19 @@ impl FiberElement {
         })
     }
 
-    pub fn component<T>(component_type: ComponentType, props: T) -> Self
-    where
-        T: Any + Hash,
+    pub fn component(component_type: ComponentType, props_hash: u64) -> Self
     {
-        Self::component_with_hash(component_type, fx_hash(&props), Box::new(props))
+        Self::component_with_hash(component_type, props_hash)
     }
 
     pub fn component_with_hash(
         component_type: ComponentType,
         props_hash: u64,
-        props: ErasedProps,
     ) -> Self {
         Self::Component(ComponentElement {
             key: None,
             component_type,
             props_hash,
-            props,
         })
     }
 
@@ -187,7 +185,7 @@ impl FiberElement {
 
     pub fn child(mut self, child: FiberElement) -> Self {
         if let Self::Host(element) = &mut self {
-            element.children.push(child);
+            element.children.push(Rc::new(child));
         }
         self
     }
@@ -202,7 +200,7 @@ impl FiberElement {
     fn tag(&self) -> FiberTag {
         match self {
             Self::Host(element) => FiberTag::Host(element.kind.node_type()),
-            Self::Component(element) => FiberTag::Component(element.component_type),
+            Self::Component(_) => FiberTag::Component,
         }
     }
 }
@@ -210,24 +208,23 @@ impl FiberElement {
 pub struct HostElement {
     pub key: Option<Key>,
     pub kind: WidgetKind,
-    pub widget: Box<dyn Widget>,
+    pub widget: WidgetRef,
     pub style: tf::Style,
     pub props_hash: u64,
-    pub children: Vec<FiberElement>,
+    pub children: SmallVec<[Rc<FiberElement>;20]>,
 }
 
 pub struct ComponentElement {
     pub key: Option<Key>,
     pub component_type: ComponentType,
     pub props_hash: u64,
-    pub props: ErasedProps,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FiberTag {
     Root,
     Host(WidgetType),
-    Component(ComponentType),
+    Component,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,7 +236,7 @@ pub enum EffectTag {
 
 pub struct HostState {
     pub kind: WidgetKind,
-    pub widget: Box<dyn Widget>,
+    pub widget: WidgetRef,
     pub taffy_node: tf::NodeId,
     pub style: tf::Style,
     pub layout: Rect,
@@ -254,7 +251,7 @@ pub enum PendingProps {
 
 pub struct HostUpdate {
     pub kind: WidgetKind,
-    pub widget: Box<dyn Widget>,
+    pub widget: WidgetRef,
     pub style: tf::Style,
     pub props_hash: u64,
 }
@@ -277,7 +274,7 @@ pub struct Node {
     pub dirty: DirtyFlags,
     pub subtree_dirty: DirtyFlags,
     pub pending_props: Option<PendingProps>,
-    pub pending_children: Option<Vec<FiberElement>>,
+    pub pending_children: Option<SmallVec<[FiberElement;20]>>,
     pub memoized_props_hash: u64,
     pub host: Option<HostState>,
 }
@@ -316,7 +313,7 @@ impl Node {
             dirty: DirtyFlags::default(),
             subtree_dirty: DirtyFlags::empty(),
             pending_props: None,
-            pending_children: Some(element.children),
+            pending_children: None,
             memoized_props_hash: element.props_hash,
             host: Some(HostState {
                 kind: element.kind,
@@ -338,15 +335,11 @@ impl Node {
             sibling: None,
             key: element.key,
             position: 0,
-            tag: FiberTag::Component(element.component_type),
+            tag: FiberTag::Component,
             effect: EffectTag::Placement,
             dirty: DirtyFlags::STATE,
             subtree_dirty: DirtyFlags::empty(),
-            pending_props: Some(PendingProps::Component(ComponentProps {
-                component_type: element.component_type,
-                props_hash: element.props_hash,
-                props: element.props,
-            })),
+            pending_props: None,
             pending_children: None,
             memoized_props_hash: 0,
             host: None,
@@ -532,7 +525,7 @@ impl FiberArena {
                     effect = EffectTag::Update;
                 }
                 self.nodes[id].key = element.key;
-                self.nodes[id].pending_children = Some(element.children);
+                // self.nodes[id].pending_children = Some(element.children);
                 self.nodes[id].pending_props = Some(PendingProps::Host(HostUpdate {
                     kind: element.kind,
                     widget: element.widget,
@@ -545,11 +538,11 @@ impl FiberArena {
                     effect = EffectTag::Update;
                 }
                 self.nodes[id].key = element.key;
-                self.nodes[id].pending_props = Some(PendingProps::Component(ComponentProps {
-                    component_type: element.component_type,
-                    props_hash: element.props_hash,
-                    props: element.props,
-                }));
+                // self.nodes[id].pending_props = Some(PendingProps::Component(ComponentProps {
+                //     component_type: element.component_type,
+                //     props_hash: element.props_hash,
+                //     props: element.props,
+                // }));
             }
         }
 

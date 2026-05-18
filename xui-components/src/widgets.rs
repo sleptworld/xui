@@ -1,8 +1,11 @@
+use std::fmt::Debug;
+
 use xui_interface::{
     Color, DirtyFlags, Event, EventContext, EventResult, PaintCommand, Point, PointerButton, Rect,
     Widget, WidgetKind, WidgetType,
 };
 
+#[derive(Debug)]
 pub struct RootWidget;
 
 impl Widget for RootWidget {
@@ -23,6 +26,7 @@ impl Widget for RootWidget {
     }
 }
 
+#[derive(Debug)]
 pub struct LabelWidget {
     pub text: String,
     pub color: Color,
@@ -79,6 +83,12 @@ pub struct ButtonWidget {
     pub pressed: bool,
     pub hovered: bool,
     pub on_click: Option<Box<dyn FnMut()>>,
+}
+
+impl Debug for ButtonWidget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad("")
+    }
 }
 
 impl Widget for ButtonWidget {
@@ -165,6 +175,7 @@ impl Widget for ButtonWidget {
     }
 }
 
+#[derive(Debug)]
 pub struct ColumnWidget {
     pub gap: f32,
 }
@@ -193,6 +204,7 @@ impl Widget for ColumnWidget {
     }
 }
 
+#[derive(Debug)]
 pub struct RowWidget {
     pub gap: f32,
 }
@@ -221,6 +233,7 @@ impl Widget for RowWidget {
     }
 }
 
+#[derive(Debug)]
 pub struct ContainerWidget {
     pub background: Color,
 }

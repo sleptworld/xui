@@ -6,14 +6,14 @@ use crate::core::{Rect, Size};
 use crate::event::{Event, EventContext, EventPhase, EventResult};
 use crate::font::TextI;
 use crate::render::{DamageRegion, PaintCommand};
-use crate::widgets::{Element, EventHandler, Key, NodeType, Widget, WidgetKind};
+use crate::widgets::{Element, EventHandler, Key, WidgetType, WidgetKind, Widget};
 
 pub struct Node {
     pub id: NodeId,
     pub parent: Option<NodeId>,
     pub children: Vec<NodeId>,
     pub taffy_node: tf::NodeId,
-    pub node_type: NodeType,
+    pub node_type: WidgetType,
     pub key: Option<Key>,
     pub position: usize,
     pub layout: Rect,

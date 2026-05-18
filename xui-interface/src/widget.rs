@@ -1,4 +1,4 @@
-use std::hash::Hash;
+use std::{fmt::Debug, hash::Hash};
 
 use slotmap::new_key_type;
 
@@ -73,7 +73,7 @@ pub trait TextMeasurer {
     fn measure(&self, text: &str, font_size: f32) -> Size;
 }
 
-pub trait Widget {
+pub trait Widget: Debug {
     fn node_type(&self) -> WidgetType;
     fn update_from_kind(&mut self, new_kind: &WidgetKind) -> DirtyFlags;
     fn paint(&self, rect: Rect, commands: &mut Vec<PaintCommand>);

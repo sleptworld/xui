@@ -6,11 +6,12 @@ use crate::font::TextI;
 use crate::lanes::{Lanes, NO_LANES, current_update_lane, includes_some_lane, should_interrupt};
 use crate::state::{HookContext, HookStorage, Scheduler};
 use crate::tree::UiArena;
-use crate::widgets::{Element, Key};
+use crate::widgets::{Element, Key, WidgetRef};
 use rustc_hash::FxHashMap;
-use slotmap::SlotMap;
+use smallvec::SmallVec;
 use std::any::Any;
 use std::marker::PhantomData;
+use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use taffy as tf;
 use xui_interface::{Widget, WidgetKind};
@@ -25,21 +26,31 @@ pub struct WorkNode {
     key: Option<Key>,
     tag: FiberTag,
     position: usize,
+    // Ref
     current: Option<FiberId>,
     effect: EffectTag,
-    child: Option<FiberId>,
-    sibling: Option<FiberId>,
     children_resolved: bool,
-    pending_children: Option<Vec<Element>>,
+    children:SmallVec<[FiberId; 20]>,
+    pending_children: Option<SmallVec<[Rc<FiberElement>; 20]>>,
     lanes: Lanes,
     child_lanes: Lanes,
     began: bool,
+    host_work: Option<HostWork>,
+    render: Option<ComponentType>
+}
+
+struct HostWork {
+    kind: WidgetKind,
+    widget: Option<WidgetRef>,
+    style: tf::Style,
+    props_hash: u64,
 }
 
 impl WorkNode {
     fn from_current(
         current: &Node,
         parent: Option<FiberId>,
+        children: impl IntoIterator<Item = FiberId>,
         position: usize,
         lanes: Lanes,
         child_lanes: Lanes,
@@ -50,8 +61,8 @@ impl WorkNode {
             key: current.key.clone(),
             position,
             tag: current.tag,
-            child: current.child,
-            sibling: current.sibling,
+            children: children.into_iter().collect(),
+            render: None,
             current: Some(current.id),
             children_resolved: false,
             effect: EffectTag::None,
@@ -59,22 +70,26 @@ impl WorkNode {
             lanes,
             child_lanes,
             began: false,
+            host_work: None
         }
     }
 
     fn from_prepared(
+        nodes: &FiberArena,
         id: FiberId,
         parent: FiberId,
         position: usize,
         prepared: PreparedElement,
-        current: Option<&Node>,
+        current: Option<FiberId>,
         effect: EffectTag,
         lanes: Lanes,
         child_lanes: Lanes,
     ) -> Self {
         let host_node = current
             .as_ref()
-            .and_then(|current| current.host.as_ref().map(|host| host.node_id));
+            .and_then(|current|  {
+                nodes.node(*current)
+            }.and_then(|node| node.host.as_ref().map(|h| h)));
         let (host, render, pending_children) = match prepared.pending {
             PreparedPending::Host {
                 kind,
@@ -100,18 +115,17 @@ impl WorkNode {
             parent: Some(parent),
             key: prepared.key,
             position,
+            host_work: host,
             tag: prepared.tag,
-            current,
-            host_node,
-            host,
-            render,
+            children: SmallVec::new(),
             pending_children,
-            children: Vec::new(),
             children_resolved: false,
             effect,
             lanes,
             child_lanes,
             began: false,
+            render,
+            current
         }
     }
 
@@ -122,27 +136,9 @@ impl WorkNode {
             || includes_some_lane(self.lanes | self.child_lanes, render_lanes)
     }
 
-    fn children<'a>(&self, arena: &'a FiberArena) -> NodeChildren<'a, Self> {
-        NodeChildren {
-            arena,
-            child: self.child,
-            _marker: PhantomData,
-        }
-    }
 }
 
-impl<'a> Iterator for NodeChildren<'a, WorkNode> {
-    type Item = &'a WorkNode;
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(id) = self.child.take() {
-            let node = self.arena.node(id);
-            self.child = node.and_then(|n| n.sibling);
-            node
-        } else {
-            None
-        }
-    }
-}
+
 
 struct PreparedElement {
     key: Option<Key>,
@@ -153,10 +149,10 @@ struct PreparedElement {
 enum PreparedPending {
     Host {
         kind: WidgetKind,
-        widget: Box<dyn Widget>,
+        widget: WidgetRef,
         style: tf::Style,
         props_hash: u64,
-        children: Vec<FiberElement>,
+        children: SmallVec<[Rc<FiberElement>;20]>,
     },
     Component {
         render: ComponentType,
@@ -191,17 +187,17 @@ pub struct ComponentRuntime {
 impl ComponentRuntime {
     pub fn new(root_widget: FiberId, scheduler: Scheduler) -> Self {
         let arena = FiberArena::new();
-        let current = FiberNode { node: root_widget };
         let components_registry = ComponentRegistry::new();
 
         Self {
             components_registry,
             nodes: arena,
-            current,
+            current: root_widget,
             work_in_progress: None,
             scheduler,
             hooks: FxHashMap::default(),
             budget: Duration::from_millis(4),
+            props: FxHashMap::default()
         }
     }
 
@@ -241,7 +237,7 @@ impl ComponentRuntime {
             {
                 self.perform_unit_of_work(measurer);
             }
-            self.commit_finished_work(arena);
+            // self.commit_finished_work(arena);
         }
     }
 
@@ -265,14 +261,14 @@ impl ComponentRuntime {
         loop {
             self.complete_work(current);
             if let Some(sibling) = self.next_sibling_needing_work(current) {
-                if let Some(work) = self.work.as_mut() {
+                if let Some(work) = self.work_in_progress.as_mut() {
                     work.next_work = Some(sibling);
                 }
                 return;
             }
 
             let parent = self
-                .work
+                .work_in_progress
                 .as_ref()
                 .and_then(|work| work.nodes.get(&current))
                 .and_then(|node| node.parent);
@@ -280,7 +276,7 @@ impl ComponentRuntime {
             match parent {
                 Some(parent) => current = parent,
                 None => {
-                    if let Some(work) = self.work.as_mut() {
+                    if let Some(work) = self.work_in_progress.as_mut() {
                         work.next_work = None;
                     }
                     return;
@@ -299,7 +295,7 @@ impl ComponentRuntime {
             return self.first_child_needing_work(id);
         }
 
-        let (tag, should_render, should_reconcile_pending, pending_children) = {
+        let (tag, should_render, should_reconcile_pending, pending_children, render, host) = {
             let work = self.work_in_progress.as_ref().expect("work missing");
             let node = work.node(id).expect("work node missing");
             (
@@ -308,7 +304,9 @@ impl ComponentRuntime {
                     || includes_some_lane(node.lanes, work.render_lanes)
                     || node.current.is_none(),
                 node.pending_children.is_some(),
-                node.pending_children.as_ref().map(Vec::len),
+                node.pending_children.as_ref().map(SmallVec::len),
+                node.render,
+                &node.host_work
             )
         };
 
@@ -317,36 +315,36 @@ impl ComponentRuntime {
         match tag {
             FiberTag::Root => {
                 if should_render {
-                    let render = self
-                        .current_render(id)
-                        .expect("root fiber missing render function");
-                    self.reconcile_children(id, &[element], measurer);
+                    // let render = self
+                    //     .current_render(id)
+                    //     .expect("root fiber missing render function");
+                    // self.reconcile_children(id, &[element], measurer);
                 } else {
                     self.clone_current_children(id);
                 }
             }
-            FiberTag::Component(typ) => {
+            FiberTag::Component => {
                 if should_render {
-                    let render = self.components_registry.get(typ);
-                    let mut cx = FiberContext::new(id, self.hook_context(id, render_lanes));
-                    let props = self.props.get(&id).unwrap();
-                    let element = render.call(&mut cx, props);
-                    self.reconcile_children(id, &[element], measurer);
+                    let render = self.components_registry.get(render.unwrap());
+                    // let mut cx = FiberContext::new(id, self.hook_context(id, render_lanes));
+                    // let props = self.props.get(&id).unwrap();
+                    // let element = render.call(&mut cx, props);
+                    // self.reconcile_children(id, &[element], measurer);
                 } else {
                     self.clone_current_children(id);
                 }
             }
             FiberTag::Host(_) => {
                 if should_reconcile_pending {
-                    let children = self
-                        .work
-                        .as_mut()
-                        .and_then(|work| work.nodes.get_mut(&id))
-                        .and_then(|node| node.pending_children.take())
-                        .unwrap_or_default();
-                    self.reconcile_children(id, children, measurer);
+                    // let children = self
+                    //     .work
+                    //     .as_mut()
+                    //     .and_then(|work| work.nodes.get_mut(&id))
+                    //     .and_then(|node| node.pending_children.take())
+                    //     .unwrap_or_default();
+                    // self.reconcile_children(id, children, measurer);
                 } else if pending_children == Some(0) {
-                    self.reconcile_children(id, Vec::new(), measurer);
+                    // self.reconcile_children(id, Vec::new(), measurer);
                 } else {
                     self.clone_current_children(id);
                 }
@@ -396,7 +394,7 @@ impl ComponentRuntime {
                 } else {
                     EffectTag::None
                 };
-                (current.id, Some(current), effect)
+                (current.id, Some(current.id), effect)
             } else {
                 (self.nodes.new_id(), None, EffectTag::Placement)
             };
@@ -404,14 +402,16 @@ impl ComponentRuntime {
             let (lanes, child_lanes) = current
                 .as_ref()
                 .map(|current| {
+                    let current_node = self.nodes.node(*current).unwrap();
                     (
-                        self.scheduler.component_lanes(current.id) & render_lanes,
-                        child_tree_lanes(&self.nodes, current, &self.scheduler, render_lanes),
+                        self.scheduler.component_lanes(*current) & render_lanes,
+                        child_tree_lanes(&self.nodes, current_node, &self.scheduler, render_lanes),
                     )
                 })
                 .unwrap_or((NO_LANES, NO_LANES));
 
             let node = WorkNode::from_prepared(
+                &self.nodes,
                 id,
                 parent,
                 position,
@@ -421,7 +421,7 @@ impl ComponentRuntime {
                 lanes,
                 child_lanes,
             );
-            self.work
+            self.work_in_progress
                 .as_mut()
                 .expect("work missing")
                 .nodes
@@ -431,15 +431,15 @@ impl ComponentRuntime {
 
         for (index, old_child) in old_children.into_iter().enumerate() {
             if !used[index] {
-                self.work
+                self.work_in_progress
                     .as_mut()
                     .expect("work missing")
                     .deletions
-                    .push(old_child);
+                    .push(old_child.id);
             }
         }
 
-        if let Some(work) = self.work.as_mut() {
+        if let Some(work) = self.work_in_progress.as_mut() {
             if let Some(node) = work.nodes.get_mut(&parent) {
                 node.children = next_children;
                 node.children_resolved = true;
@@ -453,19 +453,19 @@ impl ComponentRuntime {
                 let key = component.key.clone();
                 PreparedElement {
                     key,
-                    tag: FiberTag::Component(component.component_type),
+                    tag: FiberTag::Component,
                     pending: PreparedPending::Component {
                         render: component.component_type,
                     },
                 }
             }
             FiberElement::Host(host) => {
-                let key = host.key;
+                let key = host.key.clone();
                 let props_hash = host.props_hash;
-                let style = host.style;
-                let kind = host.kind;
-                let widget = host.widget;
-                let children = host.children;
+                let style = host.style.clone();
+                let kind = host.kind.clone();
+                let widget = host.widget.clone();
+                let children = host.children.clone();
                 PreparedElement {
                     key,
                     tag: FiberTag::Host(host.widget.node_type()),
@@ -480,6 +480,46 @@ impl ComponentRuntime {
             }
         }
     }
+
+    fn clone_current_children(&mut self, parent: FiberId) {
+        let Some(current_children) = self
+            .work_in_progress
+            .as_ref()
+            .and_then(|work| work.nodes.get(&parent))
+            .and_then(|node| {
+                node.current
+            }).and_then(|id| {
+                self.nodes.node(id)
+            }).map(|n| n.children(&self.nodes).collect::<Vec<_>>())
+        else {
+            return;
+        };
+
+        let render_lanes = self
+            .work_in_progress
+            .as_ref()
+            .map(|work| work.render_lanes)
+            .unwrap_or(NO_LANES);
+        let mut children = SmallVec::with_capacity(current_children.len());
+
+        for (position, current) in current_children.into_iter().enumerate() {
+            let lanes = self.scheduler.component_lanes(current.id) & render_lanes;
+            let child_lanes = child_tree_lanes(&self.nodes,&current, &self.scheduler, render_lanes);
+            self.work_in_progress.as_mut().expect("work missing").nodes.insert(
+                current.id,
+                WorkNode::from_current(current, Some(parent), current.children(&self.nodes).map(|n| n.id), position, lanes, child_lanes),
+            );
+            children.push(current.id);
+        }
+
+        if let Some(work) = self.work_in_progress.as_mut() {
+            if let Some(node) = work.nodes.get_mut(&parent) {
+                node.children = children;
+                node.children_resolved = true;
+            }
+        }
+    }
+
 
     fn render_component(
         &self,
@@ -536,7 +576,7 @@ impl ComponentRuntime {
 
         nodes.insert(
             self.root(),
-            WorkNode::from_current(current_node, None, 0, lanes, child_lanes),
+            WorkNode::from_current(current_node, None,current_node.children(&self.nodes).map(|n|n.id), 0, lanes, child_lanes),
         );
 
         WorkInProgress {
@@ -577,6 +617,19 @@ impl ComponentRuntime {
         }
         marks.insert(node.id, (own, child_lanes));
         own | child_lanes
+    }
+
+    fn next_sibling_needing_work(&self, id: FiberId) -> Option<FiberId> {
+        let work = self.work_in_progress.as_ref()?;
+        let node = work.nodes.get(&id)?;
+        let parent = node.parent?;
+        let siblings = &work.nodes.get(&parent)?.children;
+        let index = siblings.iter().position(|child| *child == id)?;
+        siblings.iter().copied().skip(index + 1).find(|sibling| {
+            work.nodes
+                .get(sibling)
+                .is_some_and(|node| node.needs_work(work.render_lanes))
+        })
     }
 }
 

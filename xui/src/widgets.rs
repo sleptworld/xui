@@ -1,12 +1,14 @@
 use std::any::TypeId;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::ops::Deref;
+use std::rc::Rc;
 
 use taffy::prelude as tf;
 pub use xui_components::{
-    Button, Key, Label, NodeType, Widget, WidgetKind, button, update_kind_from, widget_from_kind,
+    Button, Key, Label,  Widget, WidgetKind, button, update_kind_from, widget_from_kind,
 };
-use xui_interface::{Event, EventContext, EventResult};
+pub use xui_interface::{Event, EventContext, EventResult, WidgetType};
 
 use crate::core::{Color, EdgeInsets};
 use crate::font::TextI;
@@ -18,6 +20,17 @@ pub type Row = xui_components::Row<Element>;
 pub type Container = xui_components::Container<Element>;
 
 pub type EventHandler = Box<dyn FnMut(&Event, &mut EventContext<'_>) -> EventResult>;
+#[derive(Clone, Debug)]
+pub struct WidgetRef {
+    widget: Rc<dyn Widget>
+}
+
+impl Deref for WidgetRef {
+    type Target = dyn Widget;
+    fn deref(&self) -> &Self::Target {
+        &*self.widget
+    }
+}
 
 pub fn key_from_hash<T: Hash>(value: &T) -> Key {
     let mut hasher = DefaultHasher::new();
@@ -46,13 +59,13 @@ impl Element {
         }
     }
 
-    pub fn node_type(&self) -> Option<NodeType> {
+    pub fn node_type(&self) -> Option<WidgetType> {
         match self {
-            Self::Label(_) => Some(NodeType::Label),
-            Self::Button(_) => Some(NodeType::Button),
-            Self::Column(_) => Some(NodeType::Column),
-            Self::Row(_) => Some(NodeType::Row),
-            Self::Container(_) => Some(NodeType::Container),
+            Self::Label(_) => Some(WidgetType::Label),
+            Self::Button(_) => Some(WidgetType::Button),
+            Self::Column(_) => Some(WidgetType::Column),
+            Self::Row(_) => Some(WidgetType::Row),
+            Self::Container(_) => Some(WidgetType::Container),
             Self::Component(_) => None,
         }
     }
