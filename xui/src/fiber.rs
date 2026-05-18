@@ -68,15 +68,15 @@ impl<F, P> TypedComponent<F, P> {
 }
 
 pub trait ComponentFn {
-    fn call(&self, cx: &mut FiberContext<'_>, props: ErasedPropsRef) -> FiberElement;
+    fn call(&self, cx: &FiberContext<'_>, props: ErasedPropsRef) -> FiberElement;
 }
 
 impl<F, P> ComponentFn for TypedComponent<F, P>
 where
     P: Any,
-    F: for<'cx, 'ctx, 'p> Fn(&'cx mut FiberContext<'ctx>, &'p P) -> FiberElement,
+    F: for<'cx, 'ctx, 'p> Fn(&'cx FiberContext<'ctx>, &'p P) -> FiberElement,
 {
-    fn call(&self, cx: &mut FiberContext<'_>, props: ErasedPropsRef) -> FiberElement {
+    fn call(&self, cx: &FiberContext<'_>, props: ErasedPropsRef) -> FiberElement {
         (self.f)(
             cx,
             props
@@ -92,7 +92,7 @@ pub struct ComponentDef {
 }
 
 impl ComponentDef {
-    pub fn call(&self, cx: &mut FiberContext<'_>, props: ErasedPropsRef<'_>) -> FiberElement {
+    pub fn call(&self, cx: &FiberContext<'_>, props: ErasedPropsRef<'_>) -> FiberElement {
         self.create.call(cx, props)
     }
 }
@@ -110,10 +110,10 @@ impl ComponentRegistry {
     pub fn register<P: 'static>(
         &mut self,
         name: &'static str,
-        create: for<'cx, 'ctx, 'p> fn(&'cx mut FiberContext<'ctx>, &'p P) -> FiberElement,
+        create: for<'cx, 'ctx, 'p> fn(&'cx FiberContext<'ctx>, &'p P) -> FiberElement,
     ) -> ComponentType {
         let id = self.components.len() as u32 + 1;
-        let typed_component: TypedComponent<fn(&mut FiberContext<'_>, &P) -> FiberElement, P> =
+        let typed_component: TypedComponent<fn(&FiberContext<'_>, &P) -> FiberElement, P> =
             TypedComponent::new(create);
 
         self.components.push(ComponentDef {
@@ -147,7 +147,7 @@ impl FiberElement {
         widget: WidgetRef,
         style: tf::Style,
         props_hash: u64,
-        children: SmallVec<[Rc<FiberElement>;20]>,
+        children: SmallVec<[Rc<FiberElement>; 20]>,
     ) -> Self {
         Self::Host(HostElement {
             key: None,
@@ -159,15 +159,11 @@ impl FiberElement {
         })
     }
 
-    pub fn component(component_type: ComponentType, props_hash: u64) -> Self
-    {
+    pub fn component(component_type: ComponentType, props_hash: u64) -> Self {
         Self::component_with_hash(component_type, props_hash)
     }
 
-    pub fn component_with_hash(
-        component_type: ComponentType,
-        props_hash: u64,
-    ) -> Self {
+    pub fn component_with_hash(component_type: ComponentType, props_hash: u64) -> Self {
         Self::Component(ComponentElement {
             key: None,
             component_type,
@@ -211,7 +207,7 @@ pub struct HostElement {
     pub widget: WidgetRef,
     pub style: tf::Style,
     pub props_hash: u64,
-    pub children: SmallVec<[Rc<FiberElement>;20]>,
+    pub children: SmallVec<[Rc<FiberElement>; 20]>,
 }
 
 pub struct ComponentElement {
@@ -242,6 +238,7 @@ pub struct HostState {
     pub layout: Rect,
     pub previous_layout: Rect,
     pub paint_cache: Vec<PaintCommand>,
+    pub props_hash: u64,
 }
 
 pub enum PendingProps {
@@ -274,7 +271,7 @@ pub struct Node {
     pub dirty: DirtyFlags,
     pub subtree_dirty: DirtyFlags,
     pub pending_props: Option<PendingProps>,
-    pub pending_children: Option<SmallVec<[FiberElement;20]>>,
+    pub pending_children: Option<SmallVec<[FiberElement; 20]>>,
     pub memoized_props_hash: u64,
     pub host: Option<HostState>,
 }
@@ -659,6 +656,15 @@ impl FiberArena {
 
     pub fn new_id(&mut self) -> FiberId {
         self.ids.insert(())
+    }
+
+    pub fn remove_node(&mut self, id: FiberId) -> Option<Node> {
+        self.ids.remove(id);
+        self.nodes.remove(id)
+    }
+
+    pub fn remove_id(&mut self, id: FiberId) {
+        self.ids.remove(id);
     }
 }
 
