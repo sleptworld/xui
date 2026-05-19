@@ -1,19 +1,19 @@
 use rustc_hash::FxHasher;
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
 use smallvec::SmallVec;
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::rc::Rc;
 use taffy::prelude as tf;
-use xui_interface::DirtyFlags;
 use xui_interface::widget::WidgetType;
+use xui_interface::{DirtyFlags, NodeId};
 
 use crate::HookContext;
 use crate::core::Rect;
-use crate::lanes::{Lanes, NO_LANES, SYNC_LANE};
+use crate::lanes::{Lanes, NO_LANES};
 use crate::render::PaintCommand;
-use crate::widgets::{Key, Widget, WidgetKind, WidgetRef};
+use crate::widgets::{ComponentRender, Key, WidgetKind, WidgetRef};
 
 new_key_type! {
     pub struct FiberId;
@@ -231,13 +231,21 @@ pub enum EffectTag {
 }
 
 pub struct HostState {
+    pub node_id: Option<NodeId>,
     pub kind: WidgetKind,
-    pub widget: WidgetRef,
-    pub taffy_node: tf::NodeId,
+    pub widget: Option<WidgetRef>,
+    pub taffy_node: Option<tf::NodeId>,
     pub style: tf::Style,
     pub layout: Rect,
     pub previous_layout: Rect,
     pub paint_cache: Vec<PaintCommand>,
+    pub props_hash: u64,
+}
+
+#[derive(Clone)]
+pub struct ComponentState {
+    pub type_id: TypeId,
+    pub render: ComponentRender,
     pub props_hash: u64,
 }
 
@@ -274,6 +282,7 @@ pub struct Node {
     pub pending_children: Option<SmallVec<[FiberElement; 20]>>,
     pub memoized_props_hash: u64,
     pub host: Option<HostState>,
+    pub component: Option<ComponentState>,
 }
 
 impl Node {
@@ -293,6 +302,7 @@ impl Node {
             pending_children: None,
             memoized_props_hash: 0,
             host: None,
+            component: None,
         }
     }
 
@@ -313,14 +323,17 @@ impl Node {
             pending_children: None,
             memoized_props_hash: element.props_hash,
             host: Some(HostState {
+                node_id: None,
                 kind: element.kind,
-                widget: element.widget,
-                taffy_node,
+                widget: Some(element.widget),
+                taffy_node: Some(taffy_node),
                 style: element.style,
                 layout: Rect::ZERO,
                 previous_layout: Rect::ZERO,
                 paint_cache: Vec::new(),
+                props_hash: element.props_hash,
             }),
+            component: None,
         }
     }
 
@@ -340,6 +353,7 @@ impl Node {
             pending_children: None,
             memoized_props_hash: 0,
             host: None,
+            component: None,
         }
     }
 
@@ -395,9 +409,9 @@ impl FiberArena {
             .new_leaf(root_style)
             .expect("failed to create fiber root taffy node");
         let mut ids = SlotMap::with_key();
-        let nodes = SecondaryMap::new();
-        // let root = nodes.insert_with_key(Node::root);
+        let mut nodes = SecondaryMap::new();
         let root = ids.insert(());
+        nodes.insert(root, Node::root(root));
         Self {
             ids,
             nodes,
@@ -424,6 +438,12 @@ impl FiberArena {
 
     pub fn node_mut(&mut self, id: FiberId) -> Option<&mut Node> {
         self.nodes.get_mut(id)
+    }
+
+    pub fn insert_node(&mut self, id: FiberId, node: Node) {
+        if self.ids.contains_key(id) {
+            self.nodes.insert(id, node);
+        }
     }
 
     #[inline]
@@ -557,12 +577,14 @@ impl FiberArena {
             Some(PendingProps::Host(update)) => {
                 if let Some(host) = self.nodes[id].host.as_mut() {
                     if host.style != update.style {
-                        self.taffy
-                            .set_style(host.taffy_node, update.style.clone())
-                            .expect("failed to update fiber taffy style");
+                        if let Some(taffy_node) = host.taffy_node {
+                            self.taffy
+                                .set_style(taffy_node, update.style.clone())
+                                .expect("failed to update fiber taffy style");
+                        }
                     }
                     host.kind = update.kind;
-                    host.widget = update.widget;
+                    host.widget = Some(update.widget);
                     host.style = update.style;
                     self.nodes[id].memoized_props_hash = update.props_hash;
                 }
@@ -595,7 +617,7 @@ impl FiberArena {
         self.nodes
             .get(id)
             .and_then(|node| node.host.as_ref())
-            .map(|host| host.taffy_node)
+            .and_then(|host| host.taffy_node)
     }
 
     fn flatten_host_children(&self, parent: FiberId) -> Vec<tf::NodeId> {
@@ -614,7 +636,9 @@ impl FiberArena {
         };
 
         if let Some(host) = node.host.as_ref() {
-            output.push(host.taffy_node);
+            if let Some(taffy_node) = host.taffy_node {
+                output.push(taffy_node);
+            }
             return;
         }
 
@@ -636,7 +660,9 @@ impl FiberArena {
         }
 
         if let Some(host) = self.nodes[id].host.as_ref() {
-            let _ = self.taffy.remove(host.taffy_node);
+            if let Some(taffy_node) = host.taffy_node {
+                let _ = self.taffy.remove(taffy_node);
+            }
         }
         self.nodes.remove(id);
     }

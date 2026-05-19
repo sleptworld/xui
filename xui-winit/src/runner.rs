@@ -9,7 +9,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 use xui::App;
 use xui::{runtime::ControlFlow as XuiControlFlow, runtime::GuiRuntime, runtime::RuntimeEvent};
-use xui_interface::{Point, RenderBackend};
+use xui_interface::{Point, RenderBackend, Size};
 
 use crate::translate::translate_window_event;
 
@@ -150,6 +150,8 @@ where
         if let Err(error) = self.runtime_mut().frame() {
             self.render_error = Some(error);
             event_loop.exit();
+        } else {
+            self.request_redraw_if_dirty();
         }
     }
 
@@ -177,6 +179,11 @@ where
                 let window = Arc::new(window);
                 let (app, backend) = (self.f_init.take().unwrap())(window.clone());
                 self.runtime = Some(GuiRuntime::new(app, backend));
+                let size = window.inner_size();
+                self.runtime_mut().handle_event(RuntimeEvent::Resize(Size::new(
+                    size.width as f32,
+                    size.height as f32,
+                )));
                 self.window = Some(window);
                 self.request_redraw_if_dirty();
             }

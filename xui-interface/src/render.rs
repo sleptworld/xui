@@ -107,6 +107,10 @@ pub trait RenderBackend {
     ) -> Result<(), Self::Error>;
     fn end_frame(&mut self) -> Result<(), Self::Error>;
 
+    fn did_present(&self) -> bool {
+        true
+    }
+
     fn resize(&mut self, size: Size) -> Result<(), Self::Error> {
         Ok(())
     }

@@ -1,4 +1,3 @@
-use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use etagere::{Allocation, AllocatorOptions};
@@ -24,6 +23,9 @@ pub struct WGPUBackend {
     ui_uniform_buffer: wgpu::Buffer,
     ui_bind_group: wgpu::BindGroup,
     atlas: Atlas,
+    scene: SceneTexture,
+    scene_needs_clear: bool,
+    presented_frame: bool,
 }
 
 const SHAPE_RECT: f32 = 0.0;
@@ -113,6 +115,7 @@ impl WGPUBackend {
             .expect("surface not supported by adapter");
 
         config.present_mode = wgpu::PresentMode::AutoVsync;
+        config.usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST;
 
         surface.configure(&device, &config);
 
@@ -193,6 +196,7 @@ impl WGPUBackend {
         });
 
         let atlas = Atlas::new(&device);
+        let scene = SceneTexture::new(&device, &config);
 
         Self {
             instance,
@@ -205,6 +209,44 @@ impl WGPUBackend {
             ui_uniform_buffer,
             ui_bind_group,
             atlas,
+            scene,
+            scene_needs_clear: true,
+            presented_frame: false,
+        }
+    }
+}
+
+struct SceneTexture {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    width: u32,
+    height: u32,
+}
+
+impl SceneTexture {
+    fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
+        let width = config.width.max(1);
+        let height = config.height.max(1);
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("xui scene cache"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        Self {
+            texture,
+            view,
+            width,
+            height,
         }
     }
 }
@@ -350,6 +392,8 @@ impl RenderBackend for WGPUBackend {
             self.config.width = width;
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
+            self.scene = SceneTexture::new(&self.device, &self.config);
+            self.scene_needs_clear = true;
         }
         self.queue.write_buffer(
             &self.ui_uniform_buffer,
@@ -365,27 +409,32 @@ impl RenderBackend for WGPUBackend {
         Ok(())
     }
 
+    fn did_present(&self) -> bool {
+        self.presented_frame
+    }
+
     fn paint(
         &mut self,
         commands: &[PaintCommand],
         damage: &DamageRegion,
     ) -> Result<(), Self::Error> {
-        let _ = (&self.instance, &self.adapter, damage);
-        let instances = build_ui_instances(
-            commands,
-            Rect::new(
-                0.0,
-                0.0,
-                self.config.width as f32,
-                self.config.height as f32,
-            ),
-        );
+        let _ = (&self.instance, &self.adapter);
+        self.presented_frame = false;
+        let scene_clip = damage.bounds().unwrap_or(Rect::new(
+            0.0,
+            0.0,
+            self.config.width as f32,
+            self.config.height as f32,
+        ));
+        let instances = build_ui_instances(commands, scene_clip);
 
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface.configure(&self.device, &self.config);
+                self.scene = SceneTexture::new(&self.device, &self.config);
+                self.scene_needs_clear = true;
                 match self.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(frame)
                     | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -411,9 +460,6 @@ impl RenderBackend for WGPUBackend {
             }
         };
 
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -431,17 +477,21 @@ impl RenderBackend for WGPUBackend {
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("xui sdf render pass"),
+                label: Some("xui scene cache render pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: &self.scene.view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.08,
-                            g: 0.09,
-                            b: 0.11,
-                            a: 1.0,
-                        }),
+                        load: if self.scene_needs_clear {
+                            wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 0.08,
+                                g: 0.09,
+                                b: 0.11,
+                                a: 1.0,
+                            })
+                        } else {
+                            wgpu::LoadOp::Load
+                        },
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,
@@ -455,13 +505,40 @@ impl RenderBackend for WGPUBackend {
             pass.set_bind_group(0, &self.ui_bind_group, &[]);
 
             if let Some(instance_buffer) = &instance_buffer {
+                if let Some(scissor) =
+                    scissor_rect(scene_clip, self.config.width, self.config.height)
+                {
+                    pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
+                }
                 pass.set_vertex_buffer(0, instance_buffer.slice(..));
                 pass.draw(0..6, 0..instances.len() as u32);
             }
         }
+        self.scene_needs_clear = false;
+
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.scene.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: &frame.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width: self.scene.width,
+                height: self.scene.height,
+                depth_or_array_layers: 1,
+            },
+        );
 
         self.queue.submit(Some(encoder.finish()));
         frame.present();
+        self.presented_frame = true;
         Ok(())
     }
 }
@@ -568,10 +645,9 @@ fn build_ui_instances(commands: &[PaintCommand], viewport_clip: Rect) -> Vec<UiI
             }
 
             PaintCommand::Clear(color) => {
-                let rect = Rect::new(0.0, 0.0, viewport_clip.width, viewport_clip.height);
                 push_rect_instance(
                     &mut instances,
-                    rect,
+                    viewport_clip,
                     0.0,
                     *color,
                     Color::TRANSPARENT,
@@ -731,6 +807,15 @@ fn intersect_rect(a: Rect, b: Rect) -> Option<Rect> {
     (x1 > x0 && y1 > y0).then(|| Rect::new(x0, y0, x1 - x0, y1 - y0))
 }
 
+fn scissor_rect(rect: Rect, width: u32, height: u32) -> Option<(u32, u32, u32, u32)> {
+    let x0 = rect.x.floor().max(0.0).min(width as f32) as u32;
+    let y0 = rect.y.floor().max(0.0).min(height as f32) as u32;
+    let x1 = (rect.x + rect.width).ceil().max(0.0).min(width as f32) as u32;
+    let y1 = (rect.y + rect.height).ceil().max(0.0).min(height as f32) as u32;
+
+    (x1 > x0 && y1 > y0).then_some((x0, y0, x1 - x0, y1 - y0))
+}
+
 fn rect_to_array(rect: Rect) -> [f32; 4] {
     [rect.x, rect.y, rect.width, rect.height]
 }
@@ -753,10 +838,7 @@ impl FontRenderBackend for WGPUBackend {
         &mut self,
         bitmap: &xui_text::atlas::RendedGlyphBitmap,
     ) -> Result<Self::Allocation, Self::Error> {
-        let queue = &self.queue;
-        let atlas = &mut self.atlas;
-
-        return self.atlas.handle_allocation(&self.queue, bitmap);
+        self.atlas.handle_allocation(&self.queue, bitmap)
     }
 }
 

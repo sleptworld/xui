@@ -1,5 +1,5 @@
 use crate::component::ComponentRuntime;
-use crate::core::Size;
+use crate::core::{Rect, Size};
 use crate::event::{Event, EventResult};
 use crate::font::TextI;
 use crate::render::RenderBackend;
@@ -17,7 +17,9 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(root_component: impl FnMut(&mut HookContext<'_>) -> Element + 'static) -> Self {
+    pub fn new(
+        root_component: impl for<'a> FnMut(&mut HookContext<'a>) -> Element + 'static,
+    ) -> Self {
         let arena = UiArena::new();
         let scheduler = Scheduler::default();
         let components = ComponentRuntime::new(arena.root(), scheduler.clone(), root_component);
@@ -44,6 +46,8 @@ impl App {
         if self.size != size {
             self.size = size;
             self.arena.mark_subtree_layout_dirty(self.arena.root());
+            self.arena
+                .add_damage(Rect::new(0.0, 0.0, size.width, size.height));
         }
     }
 
@@ -61,14 +65,18 @@ impl App {
         self.rebuild_if_needed();
         self.arena.update_tree(self.arena.root(), self.size);
 
-        let (damage, commands) = self.arena.collect_paint_commands();
+        let (damage, commands) = self.arena.prepare_paint_commands();
         if damage.is_empty() {
             return Ok(());
         }
 
         backend.begin_frame(self.size)?;
         backend.paint(&commands, &damage)?;
-        backend.end_frame()
+        backend.end_frame()?;
+        if backend.did_present() {
+            self.arena.finish_paint();
+        }
+        Ok(())
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -86,6 +94,6 @@ impl App {
     }
 }
 
-pub fn app(root_component: impl FnMut(&mut HookContext<'_>) -> Element + 'static) -> App {
+pub fn app(root_component: impl for<'a> FnMut(&mut HookContext<'a>) -> Element + 'static) -> App {
     App::new(root_component)
 }

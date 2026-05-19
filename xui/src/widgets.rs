@@ -1,4 +1,5 @@
 use std::any::TypeId;
+use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
@@ -6,7 +7,7 @@ use std::rc::Rc;
 
 use taffy::prelude as tf;
 pub use xui_components::{
-    Button, Key, Label,  Widget, WidgetKind, button, update_kind_from, widget_from_kind,
+    Button, Key, Label, Widget, WidgetKind, button, update_kind_from, widget_from_kind,
 };
 pub use xui_interface::{Event, EventContext, EventResult, WidgetType};
 
@@ -20,9 +21,11 @@ pub type Row = xui_components::Row<Element>;
 pub type Container = xui_components::Container<Element>;
 
 pub type EventHandler = Box<dyn FnMut(&Event, &mut EventContext<'_>) -> EventResult>;
+pub type ComponentRender = Rc<RefCell<dyn for<'a> FnMut(&mut HookContext<'a>) -> Element>>;
+
 #[derive(Clone, Debug)]
 pub struct WidgetRef {
-    widget: Rc<dyn Widget>
+    widget: Rc<dyn Widget>,
 }
 
 impl Deref for WidgetRef {
@@ -161,18 +164,18 @@ impl Element {
 pub struct ComponentElement {
     pub key: Option<Key>,
     pub type_id: TypeId,
-    pub render: Box<dyn FnMut(&mut HookContext<'_>) -> Element>,
+    pub render: ComponentRender,
 }
 
 impl ComponentElement {
     pub fn new<F>(render: F) -> Self
     where
-        F: FnMut(&mut HookContext<'_>) -> Element + 'static,
+        F: for<'a> FnMut(&mut HookContext<'a>) -> Element + 'static,
     {
         Self {
             key: None,
             type_id: TypeId::of::<F>(),
-            render: Box::new(render),
+            render: Rc::new(RefCell::new(render)),
         }
     }
 
@@ -200,7 +203,7 @@ pub fn container() -> Container {
 
 pub fn component<F>(render: F) -> ComponentElement
 where
-    F: FnMut(&mut HookContext<'_>) -> Element + 'static,
+    F: for<'a> FnMut(&mut HookContext<'a>) -> Element + 'static,
 {
     ComponentElement::new(render)
 }

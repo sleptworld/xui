@@ -6,7 +6,7 @@ use crate::core::{Rect, Size};
 use crate::event::{Event, EventContext, EventPhase, EventResult};
 use crate::font::TextI;
 use crate::render::{DamageRegion, PaintCommand};
-use crate::widgets::{Element, EventHandler, Key, WidgetType, WidgetKind, Widget};
+use crate::widgets::{Element, EventHandler, Key, Widget, WidgetKind, WidgetType};
 
 pub struct Node {
     pub id: NodeId,
@@ -189,10 +189,7 @@ impl UiArena {
             .set_children(parent_taffy, &taffy_children)
             .expect("failed to attach taffy child");
         self.reindex_children(parent);
-        self.mark_dirty(
-            parent,
-            DirtyFlags::TREE | DirtyFlags::LAYOUT | DirtyFlags::PAINT,
-        );
+        self.mark_dirty(parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
         self.damage.add(self.nodes[child].layout);
         let _ = child_taffy;
     }
@@ -207,10 +204,7 @@ impl UiArena {
         self.taffy
             .set_children(parent_taffy, &[])
             .expect("failed to clear taffy children");
-        self.mark_dirty(
-            parent,
-            DirtyFlags::TREE | DirtyFlags::LAYOUT | DirtyFlags::PAINT,
-        );
+        self.mark_dirty(parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
     }
 
     pub fn remove_subtree(&mut self, id: NodeId) {
@@ -236,10 +230,7 @@ impl UiArena {
                 .collect();
             let _ = self.taffy.set_children(parent_taffy, &taffy_children);
             self.reindex_children(parent);
-            self.mark_dirty(
-                parent,
-                DirtyFlags::TREE | DirtyFlags::LAYOUT | DirtyFlags::PAINT,
-            );
+            self.mark_dirty(parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
         }
 
         if self.focused == Some(id) {
@@ -261,12 +252,10 @@ impl UiArena {
             return;
         }
 
-        {
-            let node = self.nodes.get_mut(id).expect("checked node existence");
-            node.dirty |= flags;
-            if flags.intersects(DirtyFlags::PAINT | DirtyFlags::LAYOUT | DirtyFlags::TREE) {
-                self.damage.add(node.layout);
-            }
+        let node = self.nodes.get_mut(id).expect("checked node existence");
+        node.dirty |= flags;
+        if flags.intersects(DirtyFlags::PAINT | DirtyFlags::STYLE) {
+            self.damage.add(node.layout);
         }
 
         // A parent with no own work can still find the dirty branch below it
@@ -276,6 +265,10 @@ impl UiArena {
             self.nodes[parent].subtree_dirty |= flags;
             current = parent;
         }
+    }
+
+    pub fn add_damage(&mut self, rect: Rect) {
+        self.damage.add(rect);
     }
 
     pub fn clear_dirty(&mut self, id: NodeId) {
@@ -424,7 +417,8 @@ impl UiArena {
             self.compute_layout_if_needed(size);
         }
 
-        if dirty.intersects(DirtyFlags::PAINT | DirtyFlags::LAYOUT | DirtyFlags::STYLE) {
+        let dirty = self.nodes[id].dirty;
+        if dirty.intersects(DirtyFlags::PAINT | DirtyFlags::STYLE) {
             self.repaint_if_needed(id);
         }
 
@@ -513,16 +507,26 @@ impl UiArena {
     }
 
     pub fn collect_paint_commands(&mut self) -> (DamageRegion, Vec<PaintCommand>) {
-        let damage = core::mem::take(&mut self.damage);
+        let (damage, commands) = self.prepare_paint_commands();
+        self.finish_paint();
+        (damage, commands)
+    }
+
+    pub fn prepare_paint_commands(&self) -> (DamageRegion, Vec<PaintCommand>) {
+        let damage = self.damage.clone();
         let mut commands = Vec::new();
         if damage.is_empty() {
             return (damage, commands);
         }
         self.paint_node(self.root, &damage, &mut commands);
+        (damage, commands)
+    }
+
+    pub fn finish_paint(&mut self) {
+        self.damage = DamageRegion::new();
         for (_, node) in self.nodes.iter_mut() {
             node.dirty.remove(DirtyFlags::PAINT);
         }
-        (damage, commands)
     }
 
     fn paint_node(&self, id: NodeId, damage: &DamageRegion, commands: &mut Vec<PaintCommand>) {
@@ -596,10 +600,7 @@ impl UiArena {
         self.sync_taffy_children(parent);
 
         if tree_changed {
-            self.mark_dirty(
-                parent,
-                DirtyFlags::TREE | DirtyFlags::LAYOUT | DirtyFlags::PAINT,
-            );
+            self.mark_dirty(parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
         }
     }
 
@@ -673,6 +674,40 @@ impl UiArena {
         measurer: &mut TextI,
     ) -> Vec<Element> {
         self.update_widget_node_from_element(id, element, position, measurer)
+    }
+
+    pub fn update_widget_node_from_parts(
+        &mut self,
+        id: NodeId,
+        key: Option<Key>,
+        props_hash: u64,
+        style: tf::Style,
+        kind: WidgetKind,
+        widget: Box<dyn Widget>,
+    ) {
+        let mut flags = DirtyFlags::empty();
+
+        {
+            let node = self.nodes.get_mut(id).expect("reused node missing");
+            node.key = key;
+            node.new_props_hash = props_hash;
+            if node.old_props_hash != props_hash {
+                flags |= DirtyFlags::PROPS;
+            }
+            if node.style != style {
+                node.style = style.clone();
+                flags |= DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
+                self.taffy
+                    .set_style(node.taffy_node, style)
+                    .expect("failed to update taffy style");
+            }
+            let widget_flags = node.widget.update_from_kind(&kind);
+            flags |= widget_flags;
+            flags |= crate::widgets::update_kind_from(&mut node.kind, kind);
+            node.widget = widget;
+        }
+
+        self.mark_dirty(id, flags);
     }
 
     fn update_node_from_element(
@@ -772,10 +807,7 @@ impl UiArena {
         self.sync_taffy_children(parent);
 
         if tree_changed {
-            self.mark_dirty(
-                parent,
-                DirtyFlags::TREE | DirtyFlags::LAYOUT | DirtyFlags::PAINT,
-            );
+            self.mark_dirty(parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
         }
     }
 
