@@ -1,6 +1,7 @@
 use crate::component::ComponentRuntime;
 use crate::core::{Rect, Size};
 use crate::event::{Event, EventResult};
+use crate::fiber::ComponentRegistry;
 use crate::font::TextI;
 use crate::render::RenderBackend;
 use crate::state::{HookContext, Scheduler};
@@ -20,9 +21,17 @@ impl App {
     pub fn new(
         root_component: impl for<'a> FnMut(&mut HookContext<'a>) -> Element + 'static,
     ) -> Self {
+        Self::with_component_registry(|_| root_component)
+    }
+
+    pub fn with_component_registry<I, F>(init_components: I) -> Self
+    where
+        I: FnOnce(&mut ComponentRegistry) -> F,
+        F: for<'a> FnMut(&mut HookContext<'a>) -> Element + 'static,
+    {
         let arena = UiArena::new();
         let scheduler = Scheduler::default();
-        let components = ComponentRuntime::new(arena.root(), scheduler.clone(), root_component);
+        let components = ComponentRuntime::new(arena.root(), scheduler.clone(), init_components);
         let mut app = Self {
             arena,
             components,

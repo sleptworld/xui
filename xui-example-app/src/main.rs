@@ -2,7 +2,6 @@ mod components;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 use xui::prelude::*;
-use xui::components::*;
 use xui_winit::{WGPUBackend, WinitRunner, WinitRunnerOptions};
 
 #[component]
@@ -31,16 +30,21 @@ fn counter() {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let app = app(|_| {
-        xui! {
-            <container padding={EdgeInsets::all(16.0)}>
-            <container size={Some(Size::new(100.0,100.0))} background={Color::BLACK}/>
-                <column gap={12.0}>
-                    <label color={Color::BLUE_500}>{"XUI winit example"}</label>
-                    <counter key="counter" />
-                    // <component key="summary" render={components::summary_component} />
-                </column>
-            </container>
+    let app = App::with_component_registry(|registry| {
+        register_counter_component(registry);
+        components::register_components(registry);
+
+        |_| {
+            xui! {
+                <container padding={EdgeInsets::all(16.0)}>
+                <container size={Some(Size::new(100.0,100.0))} background={Color::BLACK}/>
+                    <column gap={12.0}>
+                        <label color={Color::BLUE_500}>{"XUI winit example"}</label>
+                        <counter key="counter" />
+                        // <component key="summary" render={components::summary_component} />
+                    </column>
+                </container>
+            }
         }
     });
 

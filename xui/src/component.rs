@@ -1,12 +1,14 @@
-use crate::fiber::{ComponentState, EffectTag, FiberArena, FiberId, FiberTag, HostState, Node};
+use crate::fiber::{
+    ComponentRegistry, ComponentState, ComponentType, EffectTag, FiberArena, FiberId, FiberTag,
+    HostState, Key, Node,
+};
 use crate::font::TextI;
 use crate::lanes::{Lanes, NO_LANES, current_update_lane, includes_some_lane, should_interrupt};
 use crate::state::{HookContext, HookStorage, Scheduler};
 use crate::tree::UiArena;
-use crate::widgets::{ComponentRender, Element, Key, Widget, WidgetKind};
+use crate::widgets::{ComponentRender, Element, WidgetKind, WidgetRef};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
-use std::any::TypeId;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -34,16 +36,15 @@ pub struct WorkNode {
 
 struct HostWork {
     kind: WidgetKind,
-    widget: Option<Box<dyn Widget>>,
+    widget: Option<WidgetRef>,
     style: tf::Style,
     props_hash: u64,
 }
 
 #[derive(Clone)]
 struct ComponentWork {
-    type_id: TypeId,
-    render: ComponentRender,
-    props_hash: u64,
+    render: ComponentType,
+    key: Option<Key>,
 }
 
 impl WorkNode {
@@ -108,19 +109,9 @@ impl WorkNode {
                 Some(children),
                 None,
             ),
-            PreparedPending::Component {
-                type_id,
-                render,
-                props_hash,
-            } => (
-                None,
-                None,
-                Some(ComponentWork {
-                    type_id,
-                    render,
-                    props_hash,
-                }),
-            ),
+            PreparedPending::Component { key, render } => {
+                (None, None, Some(ComponentWork { render, key }))
+            }
         };
 
         Self {
@@ -155,9 +146,8 @@ impl WorkNode {
 impl ComponentWork {
     fn from_state(state: &ComponentState) -> Self {
         Self {
-            type_id: state.type_id,
-            render: state.render.clone(),
-            props_hash: state.props_hash,
+            render: state.render,
+            key: state.key.clone(),
         }
     }
 }
@@ -171,15 +161,14 @@ struct PreparedElement {
 enum PreparedPending {
     Host {
         kind: WidgetKind,
-        widget: Box<dyn Widget>,
+        widget: WidgetRef,
         style: tf::Style,
         props_hash: u64,
         children: Vec<Element>,
     },
     Component {
-        type_id: TypeId,
-        render: ComponentRender,
-        props_hash: u64,
+        key: Option<Key>,
+        render: ComponentType,
     },
 }
 
@@ -206,17 +195,22 @@ pub struct ComponentRuntime {
     hooks: FxHashMap<FiberId, HookStorage>,
     root_widget: NodeId,
     budget: Duration,
+
+    component_registry: ComponentRegistry,
 }
 
 impl ComponentRuntime {
-    pub fn new<F>(root_widget: NodeId, scheduler: Scheduler, root_render: F) -> Self
+    pub fn new<I, F>(root_widget: NodeId, scheduler: Scheduler, init_components: I) -> Self
     where
+        I: FnOnce(&mut ComponentRegistry) -> F,
         F: for<'a> FnMut(&mut HookContext<'a>) -> Element + 'static,
     {
         let arena = FiberArena::new();
         let current = arena.root();
         scheduler.set_root(current);
         scheduler.mark_component_dirty(current, current_update_lane());
+        let mut component_registry = ComponentRegistry::default();
+        let root_render = init_components(&mut component_registry);
 
         Self {
             nodes: arena,
@@ -227,6 +221,7 @@ impl ComponentRuntime {
             scheduler,
             hooks: FxHashMap::default(),
             budget: Duration::from_millis(4),
+            component_registry,
         }
     }
 
@@ -343,13 +338,21 @@ impl ComponentRuntime {
             )
         };
 
+        macro_rules! cx {
+            ($id: ident) => {{
+                let storage = self.hooks.entry($id).or_default();
+                let cx = HookContext::new(storage, $id, self.scheduler.clone(), render_lanes);
+                cx
+            }};
+        }
+
         match tag {
             FiberTag::Root => {
                 if should_render {
                     let render = self.root_render.clone();
-                    let mut cx = self.hook_context(id, render_lanes);
+                    let mut cx = cx!(id);
                     let element = (render.borrow_mut())(&mut cx);
-                    self.reconcile_children(id, vec![element], measurer);
+                    self.reconcile_children(id, [element], measurer);
                 } else {
                     self.clone_current_children(id);
                 }
@@ -369,8 +372,9 @@ impl ComponentRuntime {
                                 .map(|component| component.render.clone())
                         })
                         .expect("component fiber missing render function");
-                    let mut cx = self.hook_context(id, render_lanes);
-                    let element = (render.borrow_mut())(&mut cx);
+                    let mut cx = cx!(id);
+                    let render = self.component_registry.get(render);
+                    let element = render.call(&mut cx);
                     self.reconcile_children(id, vec![element], measurer);
                 } else {
                     self.clone_current_children(id);
@@ -400,12 +404,10 @@ impl ComponentRuntime {
         self.first_child_needing_work(id)
     }
 
-    fn reconcile_children(
-        &mut self,
-        parent: FiberId,
-        new_children: Vec<Element>,
-        measurer: &mut TextI,
-    ) {
+    fn reconcile_children<I>(&mut self, parent: FiberId, new_children: I, measurer: &mut TextI)
+    where
+        I: IntoIterator<Item = Element>,
+    {
         let old_children = self
             .work_in_progress
             .as_ref()
@@ -426,7 +428,7 @@ impl ComponentRuntime {
             .unwrap_or(NO_LANES);
 
         let mut used = vec![false; old_children.len()];
-        let mut next_children = SmallVec::with_capacity(new_children.len());
+        let mut next_children = SmallVec::with_capacity(20);
 
         for (position, element) in new_children.into_iter().enumerate() {
             let prepared = self.prepare_element(element, measurer);
@@ -522,21 +524,12 @@ impl ComponentRuntime {
         component: crate::widgets::ComponentElement,
         key: Option<Key>,
     ) -> PreparedElement {
-        let props_hash = {
-            let mut hasher = rustc_hash::FxHasher::default();
-            use std::hash::{Hash, Hasher};
-            component.type_id.hash(&mut hasher);
-            key.hash(&mut hasher);
-            hasher.finish()
-        };
-
         PreparedElement {
-            key,
+            key: key.clone(),
             tag: FiberTag::Component,
             pending: PreparedPending::Component {
-                type_id: component.type_id,
+                key,
                 render: component.render,
-                props_hash,
             },
         }
     }
@@ -632,9 +625,8 @@ impl ComponentRuntime {
         };
 
         let component = node.component.as_ref().map(|component| ComponentState {
-            type_id: component.type_id,
-            render: component.render.clone(),
-            props_hash: component.props_hash,
+            key: component.key.clone(),
+            render: component.render,
         });
 
         let frozen = Node {
@@ -652,7 +644,7 @@ impl ComponentRuntime {
             pending_children: None,
             memoized_props_hash: match (&host, &component) {
                 (Some(host), _) => host.props_hash,
-                (_, Some(component)) => component.props_hash,
+                (_, Some(_)) => 0,
                 _ => 0,
             },
             host,
@@ -1020,10 +1012,10 @@ fn can_reuse_prepared(old: &Node, prepared: &PreparedElement) -> bool {
     }
 
     match &prepared.pending {
-        PreparedPending::Component { type_id, .. } => old
+        PreparedPending::Component { render, .. } => old
             .component
             .as_ref()
-            .is_some_and(|component| component.type_id == *type_id),
+            .is_some_and(|component| component.render == *render),
         PreparedPending::Host { .. } => true,
     }
 }
@@ -1035,15 +1027,9 @@ fn prepared_needs_update(current: &Node, prepared: &PreparedElement) -> bool {
 
     match (&current.host, &current.component, &prepared.pending) {
         (Some(_), _, PreparedPending::Host { .. }) => true,
-        (
-            _,
-            Some(component),
-            PreparedPending::Component {
-                type_id,
-                props_hash,
-                ..
-            },
-        ) => component.type_id != *type_id || component.props_hash != *props_hash,
+        (_, Some(component), PreparedPending::Component { key, render, .. }) => {
+            component.render != *render || component.key != *key
+        }
         _ => true,
     }
 }
@@ -1096,11 +1082,7 @@ mod tests {
             Ok(())
         }
 
-        fn paint(
-            &mut self,
-            _: &[PaintCommand],
-            _: &DamageRegion,
-        ) -> Result<(), Self::Error> {
+        fn paint(&mut self, _: &[PaintCommand], _: &DamageRegion) -> Result<(), Self::Error> {
             self.paints += 1;
             Ok(())
         }
@@ -1152,24 +1134,28 @@ mod tests {
 
     #[test]
     fn component_state_rerenders_only_owner_component() {
+        const CHILD: ComponentType = ComponentType::new("xui::tests::owner_child");
+
         let root_renders = Rc::new(Cell::new(0));
         let child_renders = Rc::new(Cell::new(0));
         let root_renders_for_app = root_renders.clone();
-        let child_renders_for_app = child_renders.clone();
+        let child_renders_for_registry = child_renders.clone();
 
-        let mut app = app(move |_| {
-            root_renders_for_app.set(root_renders_for_app.get() + 1);
-            let child_renders_for_component = child_renders_for_app.clone();
-            column()
-                .child(component(move |cx| {
-                    child_renders_for_component.set(child_renders_for_component.get() + 1);
-                    let count = cx.use_state(|| 0);
-                    let count_for_click = count.clone();
-                    button(format!("count: {}", count.get()))
-                        .on_click(move || count_for_click.set(count_for_click.get() + 1))
-                        .into()
-                }))
-                .into()
+        let mut app = App::with_component_registry(move |registry| {
+            let child_renders_for_component = child_renders_for_registry.clone();
+            registry.register(CHILD, move |cx| {
+                child_renders_for_component.set(child_renders_for_component.get() + 1);
+                let count = cx.use_state(|| 0);
+                let count_for_click = count.clone();
+                button(format!("count: {}", count.get()))
+                    .on_click(move || count_for_click.set(count_for_click.get() + 1))
+                    .into()
+            });
+
+            move |_| {
+                root_renders_for_app.set(root_renders_for_app.get() + 1);
+                column().child(component(CHILD)).into()
+            }
         });
 
         let mut backend = MockRenderBackend::default();
@@ -1239,25 +1225,31 @@ mod tests {
 
     #[test]
     fn keyed_component_reorder_preserves_hook_state() {
+        const FIRST: ComponentType = ComponentType::new("xui::tests::keyed_first");
+        const SECOND: ComponentType = ComponentType::new("xui::tests::keyed_second");
+
         let reversed = Rc::new(Cell::new(false));
         let reversed_for_app = reversed.clone();
 
-        let mut app = app(move |_| {
-            let first = component(|cx| {
+        let mut app = App::with_component_registry(move |registry| {
+            registry.register(FIRST, |cx| {
                 let value = cx.use_state(|| "A".to_owned());
                 label(value.get()).into()
-            })
-            .key("a");
-            let second = component(|cx| {
+            });
+            registry.register(SECOND, |cx| {
                 let value = cx.use_state(|| "B".to_owned());
                 label(value.get()).into()
-            })
-            .key("b");
+            });
 
-            if reversed_for_app.get() {
-                row().child(second).child(first).into()
-            } else {
-                row().child(first).child(second).into()
+            move |_| {
+                let first = component(FIRST).key("a");
+                let second = component(SECOND).key("b");
+
+                if reversed_for_app.get() {
+                    row().child(second).child(first).into()
+                } else {
+                    row().child(first).child(second).into()
+                }
             }
         });
 
@@ -1290,13 +1282,17 @@ mod tests {
 
     #[test]
     fn component_child_participates_in_layout() {
-        let mut app = app(|_| {
-            column()
-                .child(component(|_| {
-                    container().size(Size::new(50.0, 20.0)).into()
-                }))
-                .child(container().size(Size::new(30.0, 10.0)))
-                .into()
+        const CHILD: ComponentType = ComponentType::new("xui::tests::layout_child");
+
+        let mut app = App::with_component_registry(|registry| {
+            registry.register(CHILD, |_| container().size(Size::new(50.0, 20.0)).into());
+
+            |_| {
+                column()
+                    .child(component(CHILD))
+                    .child(container().size(Size::new(30.0, 10.0)))
+                    .into()
+            }
         });
         let mut backend = MockRenderBackend::default();
 
@@ -1315,22 +1311,25 @@ mod tests {
 
     #[test]
     fn component_render_update_refreshes_event_handler() {
+        const CAPTURE: ComponentType = ComponentType::new("xui::tests::capture_button");
+
         let value = Rc::new(Cell::new(1));
         let seen = Rc::new(Cell::new(0));
-        let value_for_app = value.clone();
-        let seen_for_app = seen.clone();
+        let value_for_registry = value.clone();
+        let seen_for_registry = seen.clone();
 
-        let mut app = app(move |_| {
-            let value_for_component = value_for_app.clone();
-            let seen_for_component = seen_for_app.clone();
-            component(move |_| {
+        let mut app = App::with_component_registry(move |registry| {
+            let value_for_component = value_for_registry.clone();
+            let seen_for_component = seen_for_registry.clone();
+            registry.register(CAPTURE, move |_| {
                 let captured = value_for_component.get();
                 let seen_for_click = seen_for_component.clone();
                 button("capture")
                     .on_click(move || seen_for_click.set(captured))
                     .into()
-            })
-            .into()
+            });
+
+            |_| component(CAPTURE).into()
         });
         let mut backend = MockRenderBackend::default();
 
@@ -1350,6 +1349,9 @@ mod tests {
 
     #[test]
     fn same_key_different_component_type_replaces_subtree() {
+        const FIRST: ComponentType = ComponentType::new("xui::tests::same_key_first");
+        const SECOND: ComponentType = ComponentType::new("xui::tests::same_key_second");
+
         fn first(_: &mut HookContext<'_>) -> Element {
             label("first").into()
         }
@@ -1360,11 +1362,16 @@ mod tests {
 
         let use_second = Rc::new(Cell::new(false));
         let use_second_for_app = use_second.clone();
-        let mut app = app(move |_| {
-            if use_second_for_app.get() {
-                component(second).key("same").into()
-            } else {
-                component(first).key("same").into()
+        let mut app = App::with_component_registry(move |registry| {
+            registry.register(FIRST, first);
+            registry.register(SECOND, second);
+
+            move |_| {
+                if use_second_for_app.get() {
+                    component(SECOND).key("same").into()
+                } else {
+                    component(FIRST).key("same").into()
+                }
             }
         });
         let mut backend = MockRenderBackend::default();
@@ -1390,19 +1397,25 @@ mod tests {
 
     #[test]
     fn deleting_component_removes_rendered_widget_subtree() {
+        const CHILD: ComponentType = ComponentType::new("xui::tests::delete_child");
+
         let show = Rc::new(Cell::new(true));
         let show_for_app = show.clone();
-        let mut app = app(move |_| {
-            let mut root = column();
-            if show_for_app.get() {
-                root = root.child(component(|_| {
-                    container()
-                        .key("box")
-                        .child(label("child").key("child"))
-                        .into()
-                }));
+        let mut app = App::with_component_registry(move |registry| {
+            registry.register(CHILD, |_| {
+                container()
+                    .key("box")
+                    .child(label("child").key("child"))
+                    .into()
+            });
+
+            move |_| {
+                let mut root = column();
+                if show_for_app.get() {
+                    root = root.child(component(CHILD));
+                }
+                root.into()
             }
-            root.into()
         });
         let mut backend = MockRenderBackend::default();
 

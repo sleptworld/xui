@@ -1,17 +1,18 @@
-use std::any::TypeId;
+pub mod container;
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
 use taffy::prelude as tf;
 pub use xui_components::{
-    Button, Key, Label, Widget, WidgetKind, button, update_kind_from, widget_from_kind,
+    Button, Label, Widget, WidgetKind, button, update_kind_from, widget_from_kind,
 };
 pub use xui_interface::{Event, EventContext, EventResult, WidgetType};
 
 use crate::core::{Color, EdgeInsets};
+use crate::fiber::{ComponentType, Key};
 use crate::font::TextI;
 use crate::layout::style_for_element;
 use crate::state::HookContext;
@@ -23,9 +24,9 @@ pub type Container = xui_components::Container<Element>;
 pub type EventHandler = Box<dyn FnMut(&Event, &mut EventContext<'_>) -> EventResult>;
 pub type ComponentRender = Rc<RefCell<dyn for<'a> FnMut(&mut HookContext<'a>) -> Element>>;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct WidgetRef {
-    widget: Rc<dyn Widget>,
+    widget: Box<dyn Widget>,
 }
 
 impl Deref for WidgetRef {
@@ -35,10 +36,16 @@ impl Deref for WidgetRef {
     }
 }
 
-pub fn key_from_hash<T: Hash>(value: &T) -> Key {
-    let mut hasher = DefaultHasher::new();
-    value.hash(&mut hasher);
-    Key(hasher.finish().to_string())
+impl From<Box<dyn Widget>> for WidgetRef {
+    fn from(widget: Box<dyn Widget>) -> Self {
+        Self { widget }
+    }
+}
+
+impl DerefMut for WidgetRef {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.widget
+    }
 }
 
 pub enum Element {
@@ -101,7 +108,7 @@ impl Element {
                 hash_color(widget.background, &mut hasher);
             }
             Self::Component(widget) => {
-                widget.type_id.hash(&mut hasher);
+                widget.render.hash(&mut hasher);
             }
         }
         hasher.finish()
@@ -111,7 +118,7 @@ impl Element {
         style_for_element(self, measurer)
     }
 
-    pub fn into_parts(self) -> (WidgetKind, Box<dyn Widget>, Vec<Element>) {
+    pub fn into_parts(self) -> (WidgetKind, WidgetRef, Vec<Element>) {
         match self {
             Self::Label(widget) => {
                 let kind = WidgetKind::Label {
@@ -119,7 +126,11 @@ impl Element {
                     color: widget.color,
                     font_size: widget.font_size,
                 };
-                (kind.clone(), widget_from_kind(kind, None), Vec::new())
+                (
+                    kind.clone(),
+                    widget_from_kind(kind, None).into(),
+                    Vec::new(),
+                )
             }
             Self::Button(mut widget) => {
                 let kind = WidgetKind::Button {
@@ -129,23 +140,35 @@ impl Element {
                 };
                 (
                     kind.clone(),
-                    widget_from_kind(kind, widget.on_click.take()),
+                    widget_from_kind(kind, widget.on_click.take()).into(),
                     Vec::new(),
                 )
             }
             Self::Column(widget) => {
                 let kind = WidgetKind::Column { gap: widget.gap };
-                (kind.clone(), widget_from_kind(kind, None), widget.children)
+                (
+                    kind.clone(),
+                    widget_from_kind(kind, None).into(),
+                    widget.children,
+                )
             }
             Self::Row(widget) => {
                 let kind = WidgetKind::Row { gap: widget.gap };
-                (kind.clone(), widget_from_kind(kind, None), widget.children)
+                (
+                    kind.clone(),
+                    widget_from_kind(kind, None).into(),
+                    widget.children,
+                )
             }
             Self::Container(widget) => {
                 let kind = WidgetKind::Container {
                     background: widget.background,
                 };
-                (kind.clone(), widget_from_kind(kind, None), widget.children)
+                (
+                    kind.clone(),
+                    widget_from_kind(kind, None).into(),
+                    widget.children,
+                )
             }
             Self::Component(_) => panic!("component elements do not have widget parts"),
         }
@@ -163,19 +186,14 @@ impl Element {
 
 pub struct ComponentElement {
     pub key: Option<Key>,
-    pub type_id: TypeId,
-    pub render: ComponentRender,
+    pub render: ComponentType,
 }
 
 impl ComponentElement {
-    pub fn new<F>(render: F) -> Self
-    where
-        F: for<'a> FnMut(&mut HookContext<'a>) -> Element + 'static,
-    {
+    pub fn new(component_type: ComponentType) -> Self {
         Self {
             key: None,
-            type_id: TypeId::of::<F>(),
-            render: Rc::new(RefCell::new(render)),
+            render: component_type,
         }
     }
 
@@ -201,10 +219,7 @@ pub fn container() -> Container {
     xui_components::container()
 }
 
-pub fn component<F>(render: F) -> ComponentElement
-where
-    F: for<'a> FnMut(&mut HookContext<'a>) -> Element + 'static,
-{
+pub fn component(render: ComponentType) -> ComponentElement {
     ComponentElement::new(render)
 }
 

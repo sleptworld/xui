@@ -180,10 +180,11 @@ where
                 let (app, backend) = (self.f_init.take().unwrap())(window.clone());
                 self.runtime = Some(GuiRuntime::new(app, backend));
                 let size = window.inner_size();
-                self.runtime_mut().handle_event(RuntimeEvent::Resize(Size::new(
-                    size.width as f32,
-                    size.height as f32,
-                )));
+                self.runtime_mut()
+                    .handle_event(RuntimeEvent::Resize(Size::new(
+                        size.width as f32,
+                        size.height as f32,
+                    )));
                 self.window = Some(window);
                 self.request_redraw_if_dirty();
             }

@@ -4,6 +4,7 @@ pub mod core;
 pub mod event;
 pub mod fiber;
 pub mod font;
+pub mod lanes;
 pub mod layout;
 pub mod prelude;
 pub mod render;
@@ -11,7 +12,6 @@ pub mod runtime;
 pub mod state;
 pub mod tree;
 pub mod widgets;
-pub mod lanes;
 pub use crate::prelude::*;
 pub use xui_components as components;
 

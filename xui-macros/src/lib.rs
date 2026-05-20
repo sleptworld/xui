@@ -21,7 +21,7 @@ pub fn xui(input: TokenStream) -> TokenStream {
 pub fn component(_attrs: TokenStream, item: TokenStream) -> TokenStream {
     let mut function = parse_macro_input!(item as ComponentFunction);
     match expand_component_function(&mut function) {
-        Ok(tokens) => tokens.into(),
+        Ok(expanded) => expanded.tokens.into(),
         Err(error) => error.to_compile_error().into(),
     }
 }
@@ -64,6 +64,11 @@ struct ComponentFunction {
     body: TokenStream2,
 }
 
+struct ExpandedComponentFunction {
+    tokens: TokenStream2,
+    register_name: TokenIdent,
+}
+
 impl Parse for ComponentFunction {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
         let attrs = input.call(SynAttribute::parse_outer)?;
@@ -83,18 +88,29 @@ impl Parse for ComponentFunction {
 
 fn expand_component_functions(functions: &mut ComponentFunctions) -> Result<TokenStream2> {
     let mut output = TokenStream2::new();
+    let mut register_calls = Vec::new();
     for function in &mut functions.functions {
-        output.extend(expand_component_function(function)?);
+        let expanded = expand_component_function(function)?;
+        let register_name = &expanded.register_name;
+        register_calls.push(quote!(#register_name(registry);));
+        output.extend(expanded.tokens);
     }
+    output.extend(quote! {
+        pub fn register_components(registry: &mut ::xui::ComponentRegistry) {
+            #(#register_calls)*
+        }
+    });
     Ok(output)
 }
 
-fn expand_component_function(function: &mut ComponentFunction) -> Result<TokenStream2> {
+fn expand_component_function(
+    function: &mut ComponentFunction,
+) -> Result<ExpandedComponentFunction> {
     let original_name = function.sig.ident.clone();
-    function.sig.ident = TokenIdent::new(
-        &format!("{}_component", original_name),
-        original_name.span(),
-    );
+    let component_name = component_render_name(&original_name);
+    let component_type_name = component_type_name(&original_name);
+    let register_name = component_register_name(&original_name);
+    function.sig.ident = component_name.clone();
     function.sig.output =
         ReturnType::Type(Default::default(), Box::new(parse_quote!(::xui::Element)));
 
@@ -131,12 +147,44 @@ fn expand_component_function(function: &mut ComponentFunction) -> Result<TokenSt
     let sig = &function.sig;
     let body = expand_component_body(&function.body)?;
 
-    Ok(quote! {
-        #(#attrs)*
-        #vis #sig {
-            #body
-        }
+    Ok(ExpandedComponentFunction {
+        register_name: register_name.clone(),
+        tokens: quote! {
+            #(#attrs)*
+            #vis #sig {
+                #body
+            }
+
+            #vis fn #component_type_name() -> ::xui::ComponentType {
+                ::xui::ComponentType::new(concat!(module_path!(), "::", stringify!(#original_name)))
+            }
+
+            #vis fn #register_name(registry: &mut ::xui::ComponentRegistry) -> ::xui::ComponentType {
+                registry.register(#component_type_name(), #component_name)
+            }
+        },
     })
+}
+
+fn component_render_name(original_name: &Ident) -> TokenIdent {
+    TokenIdent::new(
+        &format!("{}_component", original_name),
+        original_name.span(),
+    )
+}
+
+fn component_type_name(original_name: &Ident) -> TokenIdent {
+    TokenIdent::new(
+        &format!("{}_component_type", original_name),
+        original_name.span(),
+    )
+}
+
+fn component_register_name(original_name: &Ident) -> TokenIdent {
+    TokenIdent::new(
+        &format!("register_{}_component", original_name),
+        original_name.span(),
+    )
 }
 
 fn expand_component_body(body: &TokenStream2) -> Result<TokenStream2> {
@@ -288,6 +336,9 @@ fn expand_node(node: &ElementNode) -> Result<TokenStream2> {
     match node.name.to_string().as_str() {
         "label" => expand_label(node),
         "button" => expand_button(node),
+        "column" => expand_stack(node, "column", quote!(::xui::column())),
+        "row" => expand_stack(node, "row", quote!(::xui::row())),
+        "container" => expand_container(node),
         "component" => expand_component(node),
         _ => expand_function_component(node),
     }
@@ -335,6 +386,69 @@ fn expand_button(node: &ElementNode) -> Result<TokenStream2> {
     Ok(to_element(expr))
 }
 
+fn expand_stack(node: &ElementNode, tag: &str, constructor: TokenStream2) -> Result<TokenStream2> {
+    let mut expr = constructor;
+    for attr in &node.attrs {
+        match attr.name.to_string().as_str() {
+            "key" => {
+                let value = &attr.value;
+                expr = quote!(#expr.key(#value));
+            }
+            "gap" => {
+                let value = &attr.value;
+                expr = quote!(#expr.gap(#value));
+            }
+            other => return unsupported_attr(attr, tag, other),
+        }
+    }
+
+    for child in &node.children {
+        let child = expand_child(child)?;
+        expr = quote!(#expr.child(#child));
+    }
+
+    Ok(to_element(expr))
+}
+
+fn expand_container(node: &ElementNode) -> Result<TokenStream2> {
+    let mut attr_stmts = Vec::new();
+    for attr in &node.attrs {
+        let value = &attr.value;
+        match attr.name.to_string().as_str() {
+            "key" => attr_stmts.push(quote! {
+                __xui_element = __xui_element.key(#value);
+            }),
+            "padding" => attr_stmts.push(quote! {
+                __xui_element = __xui_element.padding(#value);
+            }),
+            "background" => attr_stmts.push(quote! {
+                __xui_element = __xui_element.background(#value);
+            }),
+            "size" => attr_stmts.push(quote! {
+                if let Some(__xui_size) = #value {
+                    __xui_element = __xui_element.size(__xui_size);
+                }
+            }),
+            other => return unsupported_attr(attr, "container", other),
+        }
+    }
+
+    let children = node
+        .children
+        .iter()
+        .map(expand_child)
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(quote! {{
+        let mut __xui_element = ::xui::container();
+        #(#attr_stmts)*
+        #(
+            __xui_element = __xui_element.child(#children);
+        )*
+        ::xui::Element::from(__xui_element)
+    }})
+}
+
 fn expand_component(node: &ElementNode) -> Result<TokenStream2> {
     let mut render = None;
     let mut key = None;
@@ -369,65 +483,23 @@ fn expand_function_component(node: &ElementNode) -> Result<TokenStream2> {
         }
     }
 
-    let component_name = TokenIdent::new(&format!("{}_component", node.name), Span::call_site());
+    let component_type_name =
+        TokenIdent::new(&format!("{}_component_type", node.name), Span::call_site());
     let has_children = !node.children.is_empty();
     let expr = if props.is_empty() && !has_children {
-        let mut expr = quote!(::xui::component(#component_name));
+        let mut expr = quote!(::xui::component(#component_type_name()));
         if let Some(key) = key {
             expr = quote!(#expr.key(#key));
         }
         expr
     } else {
-        let props_name = TokenIdent::new(
-            &format!("{}Props", to_pascal_case(&node.name.to_string())),
+        return Err(Error::new(
             node.name.span(),
-        );
-        let prop_fields = props.iter().map(|attr| {
-            let name = &attr.name;
-            let value = &attr.value;
-            quote!(#name: #value)
-        });
-
-        let key_expr = key
-            .map(|key| quote!(#key))
-            .unwrap_or_else(|| quote!(::xui::key_from_hash(&__xui_props)));
-
-        let children = node
-            .children
-            .iter()
-            .map(expand_child)
-            .collect::<Result<Vec<_>>>()?;
-        quote! {{
-            let __xui_props = #props_name {
-                #(#prop_fields,)*
-                ..::core::default::Default::default()
-            };
-            let __xui_key = #key_expr;
-            ::xui::component(move |cx: &mut ::xui::HookContext<'_>| {
-                ::xui::Element::from(#component_name(cx, __xui_props.clone(), vec![#(#children,)*]))
-            }).key(__xui_key)
-        }}
+            "registered function components do not support props or children yet",
+        ));
     };
 
     Ok(to_element(expr))
-}
-
-fn to_pascal_case(value: &str) -> String {
-    let mut output = String::new();
-    let mut uppercase_next = true;
-    for ch in value.chars() {
-        if ch == '_' {
-            uppercase_next = true;
-            continue;
-        }
-        if uppercase_next {
-            output.extend(ch.to_uppercase());
-            uppercase_next = false;
-        } else {
-            output.push(ch);
-        }
-    }
-    output
 }
 
 fn to_element(expr: TokenStream2) -> TokenStream2 {

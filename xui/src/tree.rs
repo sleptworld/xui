@@ -4,9 +4,10 @@ use xui_interface::{DirtyFlags, NodeId};
 
 use crate::core::{Rect, Size};
 use crate::event::{Event, EventContext, EventPhase, EventResult};
+use crate::fiber::Key;
 use crate::font::TextI;
 use crate::render::{DamageRegion, PaintCommand};
-use crate::widgets::{Element, EventHandler, Key, Widget, WidgetKind, WidgetType};
+use crate::widgets::{Element, EventHandler, WidgetKind, WidgetRef, WidgetType};
 
 pub struct Node {
     pub id: NodeId,
@@ -25,7 +26,7 @@ pub struct Node {
     pub style: tf::Style,
     pub paint_cache: Vec<PaintCommand>,
     pub kind: WidgetKind,
-    pub widget: Box<dyn Widget>,
+    pub widget: WidgetRef,
     pub on_event: Option<EventHandler>,
 }
 
@@ -37,7 +38,7 @@ impl Node {
         position: usize,
         props_hash: u64,
         style: tf::Style,
-        widget: Box<dyn Widget>,
+        widget: WidgetRef,
         taffy_node: tf::NodeId,
     ) -> Self {
         let node_type = kind.node_type();
@@ -101,7 +102,7 @@ impl UiArena {
                 0,
                 0,
                 root_style,
-                crate::widgets::widget_from_kind(WidgetKind::Root, None),
+                crate::widgets::widget_from_kind(WidgetKind::Root, None).into(),
                 taffy_root,
             )
         });
@@ -149,7 +150,7 @@ impl UiArena {
 
     pub fn insert(&mut self, parent: NodeId, kind: WidgetKind, style: tf::Style) -> NodeId {
         let widget = crate::widgets::widget_from_kind(kind.clone(), None);
-        self.insert_node(parent, kind, None, 0, style, widget)
+        self.insert_node(parent, kind, None, 0, style, widget.into())
     }
 
     pub fn insert_node(
@@ -159,7 +160,7 @@ impl UiArena {
         key: Option<Key>,
         props_hash: u64,
         style: tf::Style,
-        widget: Box<dyn Widget>,
+        widget: WidgetRef,
     ) -> NodeId {
         let taffy_node = self
             .taffy
@@ -683,7 +684,7 @@ impl UiArena {
         props_hash: u64,
         style: tf::Style,
         kind: WidgetKind,
-        widget: Box<dyn Widget>,
+        widget: WidgetRef,
     ) {
         let mut flags = DirtyFlags::empty();
 

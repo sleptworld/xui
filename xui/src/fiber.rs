@@ -1,11 +1,12 @@
-use rustc_hash::FxHasher;
+use rustc_hash::{FxHashMap, FxHasher};
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
 use smallvec::SmallVec;
-use std::any::{Any, TypeId};
+use std::any::Any;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::rc::Rc;
 use taffy::prelude as tf;
+pub use xui_interface::Key;
 use xui_interface::widget::WidgetType;
 use xui_interface::{DirtyFlags, NodeId};
 
@@ -13,20 +14,24 @@ use crate::HookContext;
 use crate::core::Rect;
 use crate::lanes::{Lanes, NO_LANES};
 use crate::render::PaintCommand;
-use crate::widgets::{ComponentRender, Key, WidgetKind, WidgetRef};
+use crate::widgets::{Element, WidgetKind, WidgetRef};
 
 new_key_type! {
     pub struct FiberId;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ComponentType(u32);
+pub struct ComponentType(&'static str);
 
 impl ComponentType {
-    pub const ROOT: Self = Self(0);
+    pub const ROOT: Self = Self("__xui_root");
 
-    pub const fn new(id: u32) -> Self {
-        Self(id)
+    pub const fn new(name: &'static str) -> Self {
+        Self(name)
+    }
+
+    pub const fn name(self) -> &'static str {
+        self.0
     }
 }
 
@@ -53,36 +58,16 @@ impl<'a> FiberContext<'a> {
     }
 }
 
-pub struct TypedComponent<F, P> {
-    f: F,
-    _props: PhantomData<fn() -> P>,
-}
-
-impl<F, P> TypedComponent<F, P> {
-    pub fn new(f: F) -> Self {
-        Self {
-            f,
-            _props: PhantomData,
-        }
-    }
-}
-
 pub trait ComponentFn {
-    fn call(&self, cx: &FiberContext<'_>, props: ErasedPropsRef) -> FiberElement;
+    fn call(&self, cx: &mut HookContext<'_>) -> Element;
 }
 
-impl<F, P> ComponentFn for TypedComponent<F, P>
+impl<F> ComponentFn for F
 where
-    P: Any,
-    F: for<'cx, 'ctx, 'p> Fn(&'cx FiberContext<'ctx>, &'p P) -> FiberElement,
+    F: for<'a> Fn(&mut HookContext<'a>) -> Element,
 {
-    fn call(&self, cx: &FiberContext<'_>, props: ErasedPropsRef) -> FiberElement {
-        (self.f)(
-            cx,
-            props
-                .downcast_ref::<P>()
-                .expect("invalid component props type"),
-        )
+    fn call(&self, cx: &mut HookContext<'_>) -> Element {
+        (self)(cx)
     }
 }
 
@@ -92,14 +77,14 @@ pub struct ComponentDef {
 }
 
 impl ComponentDef {
-    pub fn call(&self, cx: &FiberContext<'_>, props: ErasedPropsRef<'_>) -> FiberElement {
-        self.create.call(cx, props)
+    pub fn call(&self, cx: &mut HookContext<'_>) -> Element {
+        self.create.call(cx)
     }
 }
 
 #[derive(Default)]
 pub struct ComponentRegistry {
-    components: Vec<ComponentDef>,
+    components: FxHashMap<ComponentType, ComponentDef>,
 }
 
 impl ComponentRegistry {
@@ -107,21 +92,24 @@ impl ComponentRegistry {
         Self::default()
     }
 
-    pub fn register<P: 'static>(
-        &mut self,
-        name: &'static str,
-        create: for<'cx, 'ctx, 'p> fn(&'cx FiberContext<'ctx>, &'p P) -> FiberElement,
-    ) -> ComponentType {
-        let id = self.components.len() as u32 + 1;
-        let typed_component: TypedComponent<fn(&FiberContext<'_>, &P) -> FiberElement, P> =
-            TypedComponent::new(create);
+    pub fn register<F>(&mut self, component_type: ComponentType, create: F) -> ComponentType
+    where
+        F: for<'a> Fn(&mut HookContext<'a>) -> Element + 'static,
+    {
+        let previous = self.components.insert(
+            component_type,
+            ComponentDef {
+                name: component_type.name(),
+                create: Box::new(create),
+            },
+        );
+        assert!(
+            previous.is_none(),
+            "component registered more than once: {}",
+            component_type.name()
+        );
 
-        self.components.push(ComponentDef {
-            name,
-            create: Box::new(typed_component) as Box<dyn ComponentFn>,
-        });
-
-        ComponentType::new(id)
+        component_type
     }
 
     pub fn get(&self, component_type: ComponentType) -> &ComponentDef {
@@ -131,8 +119,8 @@ impl ComponentRegistry {
             "root is not a registered component"
         );
         self.components
-            .get((component_type.0 - 1) as usize)
-            .expect("invalid component type")
+            .get(&component_type)
+            .unwrap_or_else(|| panic!("component is not registered: {}", component_type.name()))
     }
 }
 
@@ -244,9 +232,8 @@ pub struct HostState {
 
 #[derive(Clone)]
 pub struct ComponentState {
-    pub type_id: TypeId,
-    pub render: ComponentRender,
-    pub props_hash: u64,
+    pub render: ComponentType,
+    pub key: Option<Key>,
 }
 
 pub enum PendingProps {
