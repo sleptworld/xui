@@ -2,6 +2,7 @@ pub mod app;
 pub mod component;
 pub mod core;
 pub mod event;
+pub mod event_system;
 pub mod fiber;
 pub mod font;
 pub mod lanes;
@@ -51,7 +52,10 @@ pub use xui_components as components;
 //                     let count = cx.use_state(|| 0);
 //                     let count_for_click = count.clone();
 //                     button(format!("count: {}", count.get()))
-//                         .on_click(move || count_for_click.set(count_for_click.get() + 1))
+//                         .on_click(move |_| {
+//                             count_for_click.set(count_for_click.get() + 1);
+//                             EventResult::Consumed
+//                         })
 //                         .into()
 //                 }))
 //                 .into()
@@ -168,7 +172,10 @@ pub use xui_components as components;
 //                 let captured = value_for_component.get();
 //                 let seen_for_click = seen_for_component.clone();
 //                 button("capture")
-//                     .on_click(move || seen_for_click.set(captured))
+//                     .on_click(move |_| {
+//                         seen_for_click.set(captured);
+//                         EventResult::Consumed
+//                     })
 //                     .into()
 //             })
 //             .into()
@@ -365,8 +372,9 @@ pub use xui_components as components;
 
 // //             column()
 // //                 .child(label(format!("count: {}", count.get())))
-// //                 .child(button("Increment").on_click(move || {
+// //                 .child(button("Increment").on_click(move |_| {
 // //                     count_for_click.set(count_for_click.get() + 1);
+// //                     EventResult::Consumed
 // //                 }))
 // //                 .into()
 // //         });

@@ -1,13 +1,14 @@
 use slotmap::SlotMap;
 use taffy::prelude as tf;
-use xui_interface::{DirtyFlags, NodeId};
+use xui_interface::{DirtyFlags, EventHandlers, NodeId};
 
 use crate::core::{Rect, Size};
-use crate::event::{Event, EventContext, EventPhase, EventResult};
+use crate::event::{Event, EventResult};
+use crate::event_system::{self, EventState};
 use crate::fiber::Key;
 use crate::font::TextI;
 use crate::render::{DamageRegion, PaintCommand};
-use crate::widgets::{Element, EventHandler, WidgetKind, WidgetRef, WidgetType};
+use crate::widgets::{Element, WidgetKind, WidgetRef, WidgetType};
 
 pub struct Node {
     pub id: NodeId,
@@ -27,7 +28,7 @@ pub struct Node {
     pub paint_cache: Vec<PaintCommand>,
     pub kind: WidgetKind,
     pub widget: WidgetRef,
-    pub on_event: Option<EventHandler>,
+    pub event_handlers: EventHandlers,
 }
 
 impl Node {
@@ -39,6 +40,7 @@ impl Node {
         props_hash: u64,
         style: tf::Style,
         widget: WidgetRef,
+        event_handlers: EventHandlers,
         taffy_node: tf::NodeId,
     ) -> Self {
         let node_type = kind.node_type();
@@ -60,7 +62,7 @@ impl Node {
             paint_cache: Vec::new(),
             kind,
             widget,
-            on_event: None,
+            event_handlers,
         }
     }
 }
@@ -70,9 +72,7 @@ pub struct UiArena {
     taffy: tf::TaffyTree,
     root: NodeId,
     damage: DamageRegion,
-    focused: Option<NodeId>,
-    hovered: Option<NodeId>,
-    pointer_capture: Option<NodeId>,
+    event_state: EventState,
     pub update_visits: usize,
     pub layout_passes: usize,
     pub repaint_passes: usize,
@@ -102,7 +102,8 @@ impl UiArena {
                 0,
                 0,
                 root_style,
-                crate::widgets::widget_from_kind(WidgetKind::Root, None).into(),
+                crate::widgets::widget_from_kind(WidgetKind::Root).into(),
+                EventHandlers::default(),
                 taffy_root,
             )
         });
@@ -111,9 +112,7 @@ impl UiArena {
             taffy,
             root,
             damage: DamageRegion::new(),
-            focused: None,
-            hovered: None,
-            pointer_capture: None,
+            event_state: EventState::default(),
             update_visits: 0,
             layout_passes: 0,
             repaint_passes: 0,
@@ -148,9 +147,37 @@ impl UiArena {
         &mut self.taffy
     }
 
+    pub fn focused_node(&self) -> Option<NodeId> {
+        self.event_state.focused()
+    }
+
+    pub fn hovered_node(&self) -> Option<NodeId> {
+        self.event_state.hovered()
+    }
+
+    pub fn pointer_capture_node(&self) -> Option<NodeId> {
+        self.event_state.pointer_capture()
+    }
+
+    pub(crate) fn event_state(&self) -> &EventState {
+        &self.event_state
+    }
+
+    pub(crate) fn event_state_mut(&mut self) -> &mut EventState {
+        &mut self.event_state
+    }
+
     pub fn insert(&mut self, parent: NodeId, kind: WidgetKind, style: tf::Style) -> NodeId {
-        let widget = crate::widgets::widget_from_kind(kind.clone(), None);
-        self.insert_node(parent, kind, None, 0, style, widget.into())
+        let widget = crate::widgets::widget_from_kind(kind.clone());
+        self.insert_node(
+            parent,
+            kind,
+            None,
+            0,
+            style,
+            widget.into(),
+            EventHandlers::default(),
+        )
     }
 
     pub fn insert_node(
@@ -161,6 +188,7 @@ impl UiArena {
         props_hash: u64,
         style: tf::Style,
         widget: WidgetRef,
+        event_handlers: EventHandlers,
     ) -> NodeId {
         let taffy_node = self
             .taffy
@@ -169,7 +197,15 @@ impl UiArena {
         let position = self.nodes[parent].children.len();
         let id = self.nodes.insert_with_key(|id| {
             Node::new(
-                id, kind, key, position, props_hash, style, widget, taffy_node,
+                id,
+                kind,
+                key,
+                position,
+                props_hash,
+                style,
+                widget,
+                event_handlers,
+                taffy_node,
             )
         });
         self.attach(parent, id);
@@ -234,15 +270,7 @@ impl UiArena {
             self.mark_dirty(parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
         }
 
-        if self.focused == Some(id) {
-            self.focused = None;
-        }
-        if self.hovered == Some(id) {
-            self.hovered = None;
-        }
-        if self.pointer_capture == Some(id) {
-            self.pointer_capture = None;
-        }
+        self.event_state.clear_node(id);
 
         let _ = self.taffy.remove(self.nodes[id].taffy_node);
         self.nodes.remove(id);
@@ -319,81 +347,7 @@ impl UiArena {
     }
 
     pub fn dispatch_event(&mut self, event: &Event) -> EventResult {
-        let target = self
-            .pointer_capture
-            .or_else(|| {
-                event
-                    .pointer_position()
-                    .and_then(|point| self.hit_test(point))
-            })
-            .or(self.focused)
-            .unwrap_or(self.root);
-
-        if matches!(event, Event::PointerMove { .. }) {
-            self.hovered = Some(target);
-        }
-
-        let path = self.event_path(target);
-        for id in path.iter().copied().take(path.len().saturating_sub(1)) {
-            if self
-                .dispatch_to_node(id, event, EventPhase::Capture)
-                .is_consumed()
-            {
-                return EventResult::Consumed;
-            }
-        }
-
-        if self
-            .dispatch_to_node(target, event, EventPhase::Target)
-            .is_consumed()
-        {
-            return EventResult::Consumed;
-        }
-
-        for id in path.into_iter().rev().skip(1) {
-            if self
-                .dispatch_to_node(id, event, EventPhase::Bubble)
-                .is_consumed()
-            {
-                return EventResult::Consumed;
-            }
-        }
-
-        EventResult::Ignored
-    }
-
-    fn dispatch_to_node(&mut self, id: NodeId, event: &Event, phase: EventPhase) -> EventResult {
-        let mut request_dirty = DirtyFlags::empty();
-        let result = {
-            let node = match self.nodes.get_mut(id) {
-                Some(node) => node,
-                None => return EventResult::Ignored,
-            };
-            let mut cx = EventContext {
-                node_id: id,
-                phase,
-                request_dirty: &mut request_dirty,
-            };
-
-            if let Some(handler) = node.on_event.as_mut() {
-                let result = handler(event, &mut cx);
-                if result.is_consumed() {
-                    return result;
-                }
-            }
-
-            if phase == EventPhase::Target {
-                node.widget.handle_event(event, &mut cx)
-            } else {
-                EventResult::Ignored
-            }
-        };
-
-        if !request_dirty.is_empty() {
-            self.mark_dirty(id, request_dirty);
-        }
-
-        result
+        event_system::dispatch_event(self, event)
     }
 
     pub fn update_tree(&mut self, root: NodeId, size: Size) {
@@ -644,10 +598,18 @@ impl UiArena {
         let key = element.key();
         let props_hash = element.props_hash();
         let style = element.style(measurer);
-        let (kind, widget, children) = element.into_parts();
-        let id = self.insert_node(parent, kind, key, props_hash, style, widget);
+        let parts = element.into_parts();
+        let id = self.insert_node(
+            parent,
+            parts.kind,
+            key,
+            props_hash,
+            style,
+            parts.widget,
+            parts.event_handlers,
+        );
         self.nodes[id].position = position;
-        self.diff_children(id, children, measurer);
+        self.diff_children(id, parts.children, measurer);
         id
     }
 
@@ -661,10 +623,18 @@ impl UiArena {
         let key = element.key();
         let props_hash = element.props_hash();
         let style = element.style(measurer);
-        let (kind, widget, children) = element.into_parts();
-        let id = self.insert_node(parent, kind, key, props_hash, style, widget);
+        let parts = element.into_parts();
+        let id = self.insert_node(
+            parent,
+            parts.kind,
+            key,
+            props_hash,
+            style,
+            parts.widget,
+            parts.event_handlers,
+        );
         self.nodes[id].position = position;
-        (id, children)
+        (id, parts.children)
     }
 
     pub fn update_widget_from_element(
@@ -685,6 +655,7 @@ impl UiArena {
         style: tf::Style,
         kind: WidgetKind,
         widget: WidgetRef,
+        event_handlers: EventHandlers,
     ) {
         let mut flags = DirtyFlags::empty();
 
@@ -706,6 +677,7 @@ impl UiArena {
             flags |= widget_flags;
             flags |= crate::widgets::update_kind_from(&mut node.kind, kind);
             node.widget = widget;
+            node.event_handlers = event_handlers;
         }
 
         self.mark_dirty(id, flags);
@@ -731,7 +703,7 @@ impl UiArena {
     ) -> Vec<Element> {
         let new_props_hash = element.props_hash();
         let new_style = element.style(measurer);
-        let (new_kind, new_widget, children) = element.into_parts();
+        let parts = element.into_parts();
         let mut flags = DirtyFlags::empty();
 
         {
@@ -748,14 +720,15 @@ impl UiArena {
                     .set_style(node.taffy_node, new_style)
                     .expect("failed to update taffy style");
             }
-            let widget_flags = node.widget.update_from_kind(&new_kind);
+            let widget_flags = node.widget.update_from_kind(&parts.kind);
             flags |= widget_flags;
-            flags |= crate::widgets::update_kind_from(&mut node.kind, new_kind.clone());
-            node.widget = new_widget;
+            flags |= crate::widgets::update_kind_from(&mut node.kind, parts.kind.clone());
+            node.widget = parts.widget;
+            node.event_handlers = parts.event_handlers;
         }
 
         self.mark_dirty(id, flags);
-        children
+        parts.children
     }
 
     fn remove_subtree_detached(&mut self, id: NodeId) {
@@ -767,15 +740,7 @@ impl UiArena {
             self.remove_subtree_detached(child);
         }
         self.damage.add(self.nodes[id].layout);
-        if self.focused == Some(id) {
-            self.focused = None;
-        }
-        if self.hovered == Some(id) {
-            self.hovered = None;
-        }
-        if self.pointer_capture == Some(id) {
-            self.pointer_capture = None;
-        }
+        self.event_state.clear_node(id);
         let _ = self.taffy.remove(self.nodes[id].taffy_node);
         self.nodes.remove(id);
     }

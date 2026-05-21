@@ -1,17 +1,84 @@
-pub mod widgets;
 use std::hash::{Hash, Hasher};
-use widgets::{ButtonWidget, ColumnWidget, ContainerWidget, LabelWidget, RootWidget, RowWidget};
-use xui_interface::{Color, DirtyFlags, EdgeInsets, Event, EventContext, EventResult, Size};
-pub use xui_interface::{Key, Widget, WidgetKind, WidgetType};
+pub use xui_interface::Key;
+use xui_interface::{
+    Color, EdgeInsets, Event, EventContext, EventHandlers, EventResult, InputKey, Size,
+};
 
-pub type EventHandler = Box<dyn FnMut(&Event, &mut EventContext<'_>) -> EventResult>;
+macro_rules! event_handler_methods {
+    () => {
+        pub fn on_event(
+            mut self,
+            handler: impl for<'a> FnMut(&Event, &mut EventContext<'a>) -> EventResult + 'static,
+        ) -> Self {
+            self.event_handlers.on_event = Some(Box::new(handler));
+            self
+        }
 
-#[derive(Debug, Clone)]
+        pub fn on_click(
+            mut self,
+            handler: impl for<'a> FnMut(&mut EventContext<'a>) -> EventResult + 'static,
+        ) -> Self {
+            self.event_handlers.on_click = Some(Box::new(handler));
+            self
+        }
+
+        pub fn on_hover_change(
+            mut self,
+            handler: impl for<'a> FnMut(bool, &mut EventContext<'a>) -> EventResult + 'static,
+        ) -> Self {
+            self.event_handlers.on_hover_change = Some(Box::new(handler));
+            self
+        }
+
+        pub fn on_pointer_down(
+            mut self,
+            handler: impl for<'a> FnMut(&mut EventContext<'a>) -> EventResult + 'static,
+        ) -> Self {
+            self.event_handlers.on_pointer_down = Some(Box::new(handler));
+            self
+        }
+
+        pub fn on_pointer_up(
+            mut self,
+            handler: impl for<'a> FnMut(&mut EventContext<'a>) -> EventResult + 'static,
+        ) -> Self {
+            self.event_handlers.on_pointer_up = Some(Box::new(handler));
+            self
+        }
+
+        pub fn on_pointer_move(
+            mut self,
+            handler: impl for<'a> FnMut(&mut EventContext<'a>) -> EventResult + 'static,
+        ) -> Self {
+            self.event_handlers.on_pointer_move = Some(Box::new(handler));
+            self
+        }
+
+        pub fn on_key_down(
+            mut self,
+            handler: impl for<'a> FnMut(&InputKey, &mut EventContext<'a>) -> EventResult + 'static,
+        ) -> Self {
+            self.event_handlers.on_key_down = Some(Box::new(handler));
+            self
+        }
+
+        pub fn on_key_up(
+            mut self,
+            handler: impl for<'a> FnMut(&InputKey, &mut EventContext<'a>) -> EventResult + 'static,
+        ) -> Self {
+            self.event_handlers.on_key_up = Some(Box::new(handler));
+            self
+        }
+    };
+}
+
+#[derive(Debug)]
 pub struct Label {
     pub key: Option<Key>,
     pub text: String,
     pub color: Color,
     pub font_size: f32,
+    pub event_handlers: EventHandlers,
 }
 
 impl Label {
@@ -21,6 +88,7 @@ impl Label {
             key: None,
             color: Color::BLACK,
             font_size: 14.0,
+            event_handlers: EventHandlers::default(),
         }
     }
 
@@ -33,12 +101,14 @@ impl Label {
         self.key = Some(key.into());
         self
     }
+
+    event_handler_methods!();
 }
 
 pub struct Button {
     pub key: Option<Key>,
     pub text: String,
-    pub on_click: Option<Box<dyn FnMut()>>,
+    pub event_handlers: EventHandlers,
 }
 
 impl Button {
@@ -46,25 +116,23 @@ impl Button {
         Self {
             text: text.into(),
             key: None,
-            on_click: None,
+            event_handlers: EventHandlers::default(),
         }
-    }
-
-    pub fn on_click(mut self, handler: impl FnMut() + 'static) -> Self {
-        self.on_click = Some(Box::new(handler));
-        self
     }
 
     pub fn key(mut self, key: impl Into<Key>) -> Self {
         self.key = Some(key.into());
         self
     }
+
+    event_handler_methods!();
 }
 
 pub struct Column<Child = ()> {
     pub key: Option<Key>,
     pub children: Vec<Child>,
     pub gap: f32,
+    pub event_handlers: EventHandlers,
 }
 
 impl<Child> Column<Child> {
@@ -73,6 +141,7 @@ impl<Child> Column<Child> {
             children: Vec::new(),
             key: None,
             gap: 0.0,
+            event_handlers: EventHandlers::default(),
         }
     }
 
@@ -90,6 +159,8 @@ impl<Child> Column<Child> {
         self.key = Some(key.into());
         self
     }
+
+    event_handler_methods!();
 }
 
 impl<Child> Default for Column<Child> {
@@ -102,6 +173,7 @@ pub struct Row<Child = ()> {
     pub key: Option<Key>,
     pub children: Vec<Child>,
     pub gap: f32,
+    pub event_handlers: EventHandlers,
 }
 
 impl<Child> Row<Child> {
@@ -110,6 +182,7 @@ impl<Child> Row<Child> {
             children: Vec::new(),
             key: None,
             gap: 0.0,
+            event_handlers: EventHandlers::default(),
         }
     }
 
@@ -127,6 +200,8 @@ impl<Child> Row<Child> {
         self.key = Some(key.into());
         self
     }
+
+    event_handler_methods!();
 }
 
 impl<Child> Default for Row<Child> {
@@ -141,6 +216,7 @@ pub struct Container<Child = ()> {
     pub size: Option<Size>,
     pub padding: EdgeInsets,
     pub background: Color,
+    pub event_handlers: EventHandlers,
 }
 
 impl<Child> Container<Child> {
@@ -151,6 +227,7 @@ impl<Child> Container<Child> {
             size: None,
             padding: EdgeInsets::ZERO,
             background: Color::TRANSPARENT,
+            event_handlers: EventHandlers::default(),
         }
     }
 
@@ -178,6 +255,8 @@ impl<Child> Container<Child> {
         self.key = Some(key.into());
         self
     }
+
+    event_handler_methods!();
 }
 
 impl<Child> Default for Container<Child> {
@@ -301,109 +380,6 @@ pub fn row_component<Child>(
     }
 
     element
-}
-
-pub fn widget_from_kind(kind: WidgetKind, on_click: Option<Box<dyn FnMut()>>) -> Box<dyn Widget> {
-    match kind {
-        WidgetKind::Root => Box::new(RootWidget),
-        WidgetKind::Label {
-            text,
-            color,
-            font_size,
-        } => Box::new(LabelWidget {
-            text,
-            color,
-            font_size,
-        }),
-        WidgetKind::Button {
-            text,
-            pressed,
-            hovered,
-        } => Box::new(ButtonWidget {
-            text,
-            pressed,
-            hovered,
-            on_click,
-        }),
-        WidgetKind::Column { gap } => Box::new(ColumnWidget { gap }),
-        WidgetKind::Row { gap } => Box::new(RowWidget { gap }),
-        WidgetKind::Container { background } => Box::new(ContainerWidget { background }),
-    }
-}
-
-pub fn update_kind_from(kind: &mut WidgetKind, new_kind: WidgetKind) -> DirtyFlags {
-    if kind.node_type() != new_kind.node_type() {
-        *kind = new_kind;
-        return DirtyFlags::TREE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
-    }
-
-    match (kind, new_kind) {
-        (
-            WidgetKind::Label {
-                text,
-                color,
-                font_size,
-            },
-            WidgetKind::Label {
-                text: new_text,
-                color: new_color,
-                font_size: new_font_size,
-            },
-        ) => {
-            let mut flags = DirtyFlags::empty();
-            if *text != new_text {
-                *text = new_text;
-                flags |= DirtyFlags::LAYOUT | DirtyFlags::PAINT;
-            }
-            if *font_size != new_font_size {
-                *font_size = new_font_size;
-                flags |= DirtyFlags::LAYOUT | DirtyFlags::PAINT;
-            }
-            if *color != new_color {
-                *color = new_color;
-                flags |= DirtyFlags::PAINT;
-            }
-            flags
-        }
-        (WidgetKind::Button { text, .. }, WidgetKind::Button { text: new_text, .. }) => {
-            if *text != new_text {
-                *text = new_text;
-                DirtyFlags::LAYOUT | DirtyFlags::PAINT
-            } else {
-                DirtyFlags::empty()
-            }
-        }
-        (WidgetKind::Column { gap }, WidgetKind::Column { gap: new_gap }) => {
-            if *gap != new_gap {
-                *gap = new_gap;
-                DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT
-            } else {
-                DirtyFlags::empty()
-            }
-        }
-        (WidgetKind::Row { gap }, WidgetKind::Row { gap: new_gap }) => {
-            if *gap != new_gap {
-                *gap = new_gap;
-                DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT
-            } else {
-                DirtyFlags::empty()
-            }
-        }
-        (
-            WidgetKind::Container { background },
-            WidgetKind::Container {
-                background: new_background,
-            },
-        ) => {
-            if *background != new_background {
-                *background = new_background;
-                DirtyFlags::PAINT
-            } else {
-                DirtyFlags::empty()
-            }
-        }
-        _ => DirtyFlags::empty(),
-    }
 }
 
 fn hash_color<H: Hasher>(color: Color, state: &mut H) {

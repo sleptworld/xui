@@ -1,7 +1,12 @@
 pub use crate::app::{App, app};
 pub use crate::component::ComponentRuntime;
 pub use crate::core::{Color, EdgeInsets, Point, Rect, Size};
-pub use crate::event::{Event, EventPhase, EventResult, Key, PointerButton};
+pub use crate::event::{
+    ClickEventHandler, Event, EventContext, EventHandler, EventHandlers, EventPhase, EventRequest,
+    EventRequests, EventResult, HoverChangeEventHandler, Key, KeyEventHandler, PointerButton,
+    PointerEventHandler,
+};
+pub use crate::event_system::EventState;
 pub use crate::fiber::{ComponentRegistry, ComponentType};
 pub use crate::render::{
     DamageRegion, DrawBackend, MockRenderBackend, PaintCommand, Painter, RenderBackend,

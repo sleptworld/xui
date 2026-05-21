@@ -1,3 +1,5 @@
 pub use xui_interface::{
-    Event, EventContext, EventPhase, EventResult, InputKey as Key, PointerButton,
+    ClickEventHandler, Event, EventContext, EventHandler, EventHandlers, EventPhase, EventRequest,
+    EventRequests, EventResult, HoverChangeEventHandler, InputKey as Key, KeyEventHandler,
+    PointerButton, PointerEventHandler,
 };

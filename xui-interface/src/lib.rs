@@ -7,7 +7,11 @@ pub mod widget;
 
 pub use core::{Color, EdgeInsets, Point, Rect, Size};
 pub use dirty::DirtyFlags;
-pub use event::{Event, EventContext, EventPhase, EventResult, Key as InputKey, PointerButton};
+pub use event::{
+    ClickEventHandler, Event, EventContext, EventHandler, EventHandlers, EventPhase, EventRequest,
+    EventRequests, EventResult, HoverChangeEventHandler, Key as InputKey, KeyEventHandler,
+    PointerButton, PointerEventHandler,
+};
 pub use render::{
     DamageRegion, DrawBackend, FontRenderBackend, MockRenderBackend, PaintCommand, Painter,
     RenderBackend,

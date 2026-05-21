@@ -1,4 +1,5 @@
 use xui_interface::Size;
+use xui_interface::TextMeasurer;
 use xui_text::engine::Engine;
 
 pub struct TextI {
@@ -29,5 +30,11 @@ impl TextI {
         }
 
         Size::new(width, height)
+    }
+}
+
+impl TextMeasurer for TextI {
+    fn measure(&mut self, text: &str, font_size: f32) -> Size {
+        TextI::measure(self, text, font_size)
     }
 }

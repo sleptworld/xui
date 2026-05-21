@@ -35,7 +35,7 @@ impl ComponentType {
     }
 }
 
-pub type ErasedProps = Box<dyn Any>;
+pub type ErasedProps = Rc<dyn Any>;
 pub type ErasedPropsRef<'a> = &'a dyn Any;
 
 pub struct FiberContext<'a> {
@@ -59,15 +59,42 @@ impl<'a> FiberContext<'a> {
 }
 
 pub trait ComponentFn {
-    fn call(&self, cx: &mut HookContext<'_>) -> Element;
+    fn call(&self, cx: &mut HookContext<'_>, props: ErasedPropsRef<'_>) -> Element;
 }
 
 impl<F> ComponentFn for F
 where
     F: for<'a> Fn(&mut HookContext<'a>) -> Element,
 {
-    fn call(&self, cx: &mut HookContext<'_>) -> Element {
+    fn call(&self, cx: &mut HookContext<'_>, _props: ErasedPropsRef<'_>) -> Element {
         (self)(cx)
+    }
+}
+
+struct PropsComponentFn<P, F> {
+    render: F,
+    _marker: PhantomData<P>,
+}
+
+impl<P, F> PropsComponentFn<P, F> {
+    fn new(render: F) -> Self {
+        Self {
+            render,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<P, F> ComponentFn for PropsComponentFn<P, F>
+where
+    P: 'static,
+    F: for<'a> Fn(&mut HookContext<'a>, &P) -> Element,
+{
+    fn call(&self, cx: &mut HookContext<'_>, props: ErasedPropsRef<'_>) -> Element {
+        let props = props
+            .downcast_ref::<P>()
+            .unwrap_or_else(|| panic!("component props type mismatch"));
+        (self.render)(cx, props)
     }
 }
 
@@ -77,8 +104,8 @@ pub struct ComponentDef {
 }
 
 impl ComponentDef {
-    pub fn call(&self, cx: &mut HookContext<'_>) -> Element {
-        self.create.call(cx)
+    pub fn call(&self, cx: &mut HookContext<'_>, props: ErasedPropsRef<'_>) -> Element {
+        self.create.call(cx, props)
     }
 }
 
@@ -101,6 +128,31 @@ impl ComponentRegistry {
             ComponentDef {
                 name: component_type.name(),
                 create: Box::new(create),
+            },
+        );
+        assert!(
+            previous.is_none(),
+            "component registered more than once: {}",
+            component_type.name()
+        );
+
+        component_type
+    }
+
+    pub fn register_with_props<P, F>(
+        &mut self,
+        component_type: ComponentType,
+        create: F,
+    ) -> ComponentType
+    where
+        P: 'static,
+        F: for<'a> Fn(&mut HookContext<'a>, &P) -> Element + 'static,
+    {
+        let previous = self.components.insert(
+            component_type,
+            ComponentDef {
+                name: component_type.name(),
+                create: Box::new(PropsComponentFn::<P, F>::new(create)),
             },
         );
         assert!(
@@ -156,6 +208,7 @@ impl FiberElement {
             key: None,
             component_type,
             props_hash,
+            props: Rc::new(()),
         })
     }
 
@@ -202,6 +255,7 @@ pub struct ComponentElement {
     pub key: Option<Key>,
     pub component_type: ComponentType,
     pub props_hash: u64,
+    pub props: ErasedProps,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -234,6 +288,8 @@ pub struct HostState {
 pub struct ComponentState {
     pub render: ComponentType,
     pub key: Option<Key>,
+    pub props_hash: u64,
+    pub props: ErasedProps,
 }
 
 pub enum PendingProps {
@@ -300,7 +356,7 @@ impl Node {
             parent: None,
             child: None,
             sibling: None,
-            key: element.key,
+            key: element.key.clone(),
             position: 0,
             tag,
             effect: EffectTag::Placement,
@@ -330,7 +386,7 @@ impl Node {
             parent: None,
             child: None,
             sibling: None,
-            key: element.key,
+            key: element.key.clone(),
             position: 0,
             tag: FiberTag::Component,
             effect: EffectTag::Placement,
@@ -338,9 +394,14 @@ impl Node {
             subtree_dirty: DirtyFlags::empty(),
             pending_props: None,
             pending_children: None,
-            memoized_props_hash: 0,
+            memoized_props_hash: element.props_hash,
             host: None,
-            component: None,
+            component: Some(ComponentState {
+                render: element.component_type,
+                key: element.key,
+                props_hash: element.props_hash,
+                props: element.props,
+            }),
         }
     }
 

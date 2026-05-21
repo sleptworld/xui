@@ -4,30 +4,38 @@ use winit::window::Window;
 use xui::prelude::*;
 use xui_winit::{WGPUBackend, WinitRunner, WinitRunnerOptions};
 
-#[component]
-fn counter() {
-    let count = cx.use_state(|| 0);
-    let count_for_increment = count.clone();
-    let count_for_decrement = count.clone();
+component_fn!{
+    fn counter() {
+        let count = cx.use_state(|| 0);
+        let count_for_increment = count.clone();
+        let count_for_decrement = count.clone();
 
-    xui! {
         <column gap={8.0}>
             <label color={Color::BLUE_500}>{format!("Current count: {}", count.get())}</label>
             <button on_click={{
                 let count_for_increment = count_for_increment.clone();
-                move || count_for_increment.set(count_for_increment.get() + 1)
+                move |_| {
+                    count_for_increment.set(count_for_increment.get() + 1);
+                    EventResult::Consumed
+                }
             }}>
                 {"Increment"}
             </button>
             <button on_click={{
                 let count_for_decrement = count_for_decrement.clone();
-                move || count_for_decrement.set(count_for_decrement.get() - 1)
+                move |_| {
+                    count_for_decrement.set(count_for_decrement.get() - 1);
+                    println!("{}", count_for_decrement.get());
+                    EventResult::Consumed
+                }
             }}>
                 {"Decrement"}
             </button>
         </column>
     }
 }
+
+
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = App::with_component_registry(|registry| {
@@ -37,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         |_| {
             xui! {
                 <container padding={EdgeInsets::all(16.0)}>
-                <container size={Some(Size::new(100.0,100.0))} background={Color::BLACK}/>
+                <container size={Some(Size::new(200.0,200.0))} background={Color::BLACK}/>
                     <column gap={12.0}>
                         <label color={Color::BLUE_500}>{"XUI winit example"}</label>
                         <counter key="counter" />

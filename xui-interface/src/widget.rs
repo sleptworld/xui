@@ -70,12 +70,15 @@ impl WidgetKind {
 }
 
 pub trait TextMeasurer {
-    fn measure(&self, text: &str, font_size: f32) -> Size;
+    fn measure(&mut self, text: &str, font_size: f32) -> Size;
 }
 
 pub trait Widget: Debug {
     fn node_type(&self) -> WidgetType;
     fn update_from_kind(&mut self, new_kind: &WidgetKind) -> DirtyFlags;
+    fn measure(&self, _measurer: &mut dyn TextMeasurer) -> Option<Size> {
+        None
+    }
     fn paint(&self, rect: Rect, commands: &mut Vec<PaintCommand>);
     fn handle_event(&mut self, event: &Event, cx: &mut EventContext<'_>) -> EventResult;
 }

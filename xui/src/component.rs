@@ -1,6 +1,6 @@
 use crate::fiber::{
-    ComponentRegistry, ComponentState, ComponentType, EffectTag, FiberArena, FiberId, FiberTag,
-    HostState, Key, Node,
+    ComponentRegistry, ComponentState, ComponentType, EffectTag, ErasedProps, FiberArena, FiberId,
+    FiberTag, HostState, Key, Node,
 };
 use crate::font::TextI;
 use crate::lanes::{Lanes, NO_LANES, current_update_lane, includes_some_lane, should_interrupt};
@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use taffy as tf;
-use xui_interface::{DirtyFlags, NodeId};
+use xui_interface::{DirtyFlags, EventHandlers, NodeId};
 
 pub struct WorkNode {
     id: FiberId,
@@ -37,6 +37,7 @@ pub struct WorkNode {
 struct HostWork {
     kind: WidgetKind,
     widget: Option<WidgetRef>,
+    event_handlers: Option<EventHandlers>,
     style: tf::Style,
     props_hash: u64,
 }
@@ -45,6 +46,8 @@ struct HostWork {
 struct ComponentWork {
     render: ComponentType,
     key: Option<Key>,
+    props_hash: u64,
+    props: ErasedProps,
 }
 
 impl WorkNode {
@@ -96,6 +99,7 @@ impl WorkNode {
             PreparedPending::Host {
                 kind,
                 widget,
+                event_handlers,
                 style,
                 props_hash,
                 children,
@@ -103,15 +107,28 @@ impl WorkNode {
                 Some(HostWork {
                     kind,
                     widget: Some(widget),
+                    event_handlers: Some(event_handlers),
                     style,
                     props_hash,
                 }),
                 Some(children),
                 None,
             ),
-            PreparedPending::Component { key, render } => {
-                (None, None, Some(ComponentWork { render, key }))
-            }
+            PreparedPending::Component {
+                key,
+                render,
+                props_hash,
+                props,
+            } => (
+                None,
+                None,
+                Some(ComponentWork {
+                    render,
+                    key,
+                    props_hash,
+                    props,
+                }),
+            ),
         };
 
         Self {
@@ -148,6 +165,8 @@ impl ComponentWork {
         Self {
             render: state.render,
             key: state.key.clone(),
+            props_hash: state.props_hash,
+            props: state.props.clone(),
         }
     }
 }
@@ -162,6 +181,7 @@ enum PreparedPending {
     Host {
         kind: WidgetKind,
         widget: WidgetRef,
+        event_handlers: EventHandlers,
         style: tf::Style,
         props_hash: u64,
         children: Vec<Element>,
@@ -169,6 +189,8 @@ enum PreparedPending {
     Component {
         key: Option<Key>,
         render: ComponentType,
+        props_hash: u64,
+        props: ErasedProps,
     },
 }
 
@@ -373,9 +395,22 @@ impl ComponentRuntime {
                         })
                         .expect("component fiber missing render function");
                     let mut cx = cx!(id);
+                    let props = self
+                        .work_in_progress
+                        .as_ref()
+                        .and_then(|work| work.node(id))
+                        .and_then(|node| node.component.as_ref())
+                        .map(|component| component.props.clone())
+                        .or_else(|| {
+                            self.nodes
+                                .node(id)
+                                .and_then(|node| node.component.as_ref())
+                                .map(|component| component.props.clone())
+                        })
+                        .expect("component fiber missing props");
                     let render = self.component_registry.get(render);
-                    let element = render.call(&mut cx);
-                    self.reconcile_children(id, vec![element], measurer);
+                    let element = render.call(&mut cx, props.as_ref());
+                    self.reconcile_children(id, [element], measurer);
                 } else {
                     self.clone_current_children(id);
                 }
@@ -503,16 +538,17 @@ impl ComponentRuntime {
                 let props_hash = element.props_hash();
                 let style = element.style(measurer);
                 let tag = FiberTag::Host(element.node_type().expect("host element missing type"));
-                let (kind, widget, children) = element.into_parts();
+                let parts = element.into_parts();
                 PreparedElement {
                     key,
                     tag,
                     pending: PreparedPending::Host {
-                        kind,
-                        widget,
+                        kind: parts.kind,
+                        widget: parts.widget,
+                        event_handlers: parts.event_handlers,
                         style,
                         props_hash,
-                        children,
+                        children: parts.children,
                     },
                 }
             }
@@ -530,6 +566,8 @@ impl ComponentRuntime {
             pending: PreparedPending::Component {
                 key,
                 render: component.render,
+                props_hash: component.props_hash,
+                props: component.props,
             },
         }
     }
@@ -627,6 +665,8 @@ impl ComponentRuntime {
         let component = node.component.as_ref().map(|component| ComponentState {
             key: component.key.clone(),
             render: component.render,
+            props_hash: component.props_hash,
+            props: component.props.clone(),
         });
 
         let frozen = Node {
@@ -644,7 +684,7 @@ impl ComponentRuntime {
             pending_children: None,
             memoized_props_hash: match (&host, &component) {
                 (Some(host), _) => host.props_hash,
-                (_, Some(_)) => 0,
+                (_, Some(component)) => component.props_hash,
                 _ => 0,
             },
             host,
@@ -714,6 +754,9 @@ impl ComponentRuntime {
                         host.props_hash,
                         host.style.clone(),
                         host.widget.take().expect("host widget already committed"),
+                        host.event_handlers
+                            .take()
+                            .expect("host event handlers already committed"),
                     );
                     work.nodes.get_mut(&id).unwrap().host_node = Some(node_id);
                     child_parent_host = node_id;
@@ -735,6 +778,9 @@ impl ComponentRuntime {
                         host.style.clone(),
                         host.kind.clone(),
                         host.widget.take().expect("host widget already committed"),
+                        host.event_handlers
+                            .take()
+                            .expect("host event handlers already committed"),
                     );
                     child_parent_host = node_id;
                 }
@@ -809,11 +855,6 @@ impl ComponentRuntime {
                 node.children_resolved = true;
             }
         }
-    }
-
-    fn hook_context(&mut self, fiber: FiberId, lanes: Lanes) -> HookContext<'_> {
-        let storage = self.hooks.entry(fiber).or_default();
-        HookContext::new(storage, fiber, self.scheduler.clone(), lanes)
     }
 
     fn first_child_needing_work(&self, parent: FiberId) -> Option<FiberId> {
@@ -1027,8 +1068,19 @@ fn prepared_needs_update(current: &Node, prepared: &PreparedElement) -> bool {
 
     match (&current.host, &current.component, &prepared.pending) {
         (Some(_), _, PreparedPending::Host { .. }) => true,
-        (_, Some(component), PreparedPending::Component { key, render, .. }) => {
-            component.render != *render || component.key != *key
+        (
+            _,
+            Some(component),
+            PreparedPending::Component {
+                key,
+                render,
+                props_hash,
+                ..
+            },
+        ) => {
+            component.render != *render
+                || component.key != *key
+                || component.props_hash != *props_hash
         }
         _ => true,
     }
@@ -1050,7 +1102,7 @@ fn child_tree_lanes(
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::convert::Infallible;
     use std::rc::Rc;
 
@@ -1068,6 +1120,17 @@ mod tests {
             position: point,
             button: PointerButton::Primary,
         });
+    }
+
+    fn fill_color_for_node(app: &App, backend: &MockRenderBackend, node: NodeId) -> Option<Color> {
+        let node_rect = app.arena().node(node).unwrap().layout;
+        backend
+            .last_commands
+            .iter()
+            .find_map(|command| match command {
+                PaintCommand::FillRect { rect, color } if *rect == node_rect => Some(*color),
+                _ => None,
+            })
     }
 
     #[derive(Default)]
@@ -1114,6 +1177,107 @@ mod tests {
     }
 
     #[test]
+    fn all_host_builders_register_click_handlers() {
+        let seen = Rc::new(Cell::new(0u8));
+        let mut arena = UiArena::new();
+        let root = arena.root();
+        arena.node_mut(root).unwrap().layout = Rect::new(0.0, 0.0, 100.0, 140.0);
+
+        let mark = |bit| -> ClickEventHandler {
+            let seen = seen.clone();
+            Box::new(move |_| {
+                seen.set(seen.get() | bit);
+                EventResult::Consumed
+            })
+        };
+        let elements: Vec<Element> = vec![
+            label("label").on_click(mark(1)).into(),
+            button("button").on_click(mark(2)).into(),
+            container()
+                .size(Size::new(24.0, 24.0))
+                .on_click(mark(4))
+                .into(),
+            row().on_click(mark(8)).into(),
+            column().on_click(mark(16)).into(),
+        ];
+
+        let mut hosts = Vec::new();
+        for (index, element) in elements.into_iter().enumerate() {
+            let parts = element.into_parts();
+            let host = arena.insert_node(
+                root,
+                parts.kind,
+                None,
+                0,
+                taffy::prelude::Style::default(),
+                parts.widget,
+                parts.event_handlers,
+            );
+            arena.node_mut(host).unwrap().layout = Rect::new(0.0, index as f32 * 28.0, 24.0, 24.0);
+            hosts.push(host);
+        }
+
+        for host in hosts {
+            let rect = arena.node(host).unwrap().layout;
+            let point = Point::new(rect.x + 2.0, rect.y + 2.0);
+            arena.dispatch_event(&Event::PointerDown {
+                position: point,
+                button: PointerButton::Primary,
+            });
+            arena.dispatch_event(&Event::PointerUp {
+                position: point,
+                button: PointerButton::Primary,
+            });
+        }
+
+        assert_eq!(seen.get(), 0b1_1111);
+    }
+
+    #[test]
+    fn button_keeps_visual_pressed_state_while_click_uses_event_props() {
+        let clicks = Rc::new(Cell::new(0));
+        let clicks_for_app = clicks.clone();
+        let mut app = app(move |_| {
+            let clicks_for_handler = clicks_for_app.clone();
+            button("press")
+                .on_click(move |_| {
+                    clicks_for_handler.set(clicks_for_handler.get() + 1);
+                    EventResult::Consumed
+                })
+                .into()
+        });
+        let mut backend = MockRenderBackend::default();
+
+        app.resize(Size::new(200.0, 120.0));
+        app.render(&mut backend).unwrap();
+        let root = app.arena().root();
+        let button_id = app.arena().children(root)[0];
+        let rect = app.arena().node(button_id).unwrap().layout;
+        let point = Point::new(rect.x + 2.0, rect.y + 2.0);
+
+        app.dispatch_event(Event::PointerDown {
+            position: point,
+            button: PointerButton::Primary,
+        });
+        app.render(&mut backend).unwrap();
+        assert_eq!(
+            fill_color_for_node(&app, &backend, button_id),
+            Some(Color::BLUE_500)
+        );
+
+        app.dispatch_event(Event::PointerUp {
+            position: point,
+            button: PointerButton::Primary,
+        });
+        app.render(&mut backend).unwrap();
+        assert_eq!(clicks.get(), 1);
+        assert_eq!(
+            fill_color_for_node(&app, &backend, button_id),
+            Some(Color::GRAY_100)
+        );
+    }
+
+    #[test]
     fn render_without_present_keeps_damage_for_retry() {
         let mut app = app(|_| container().child(label("hello")).into());
         let mut blocked = NonPresentingBackend::default();
@@ -1148,7 +1312,10 @@ mod tests {
                 let count = cx.use_state(|| 0);
                 let count_for_click = count.clone();
                 button(format!("count: {}", count.get()))
-                    .on_click(move || count_for_click.set(count_for_click.get() + 1))
+                    .on_click(move |_| {
+                        count_for_click.set(count_for_click.get() + 1);
+                        EventResult::Consumed
+                    })
                     .into()
             });
 
@@ -1325,7 +1492,10 @@ mod tests {
                 let captured = value_for_component.get();
                 let seen_for_click = seen_for_component.clone();
                 button("capture")
-                    .on_click(move || seen_for_click.set(captured))
+                    .on_click(move |_| {
+                        seen_for_click.set(captured);
+                        EventResult::Consumed
+                    })
                     .into()
             });
 
@@ -1345,6 +1515,150 @@ mod tests {
         click(&mut app, button_id);
 
         assert_eq!(seen.get(), 2);
+    }
+
+    #[derive(Hash)]
+    struct TitleProps {
+        title: String,
+    }
+
+    #[test]
+    fn component_props_drive_registered_component_render() {
+        const TITLE: ComponentType = ComponentType::new("xui::tests::title_props");
+
+        let title = Rc::new(std::cell::RefCell::new("first".to_owned()));
+        let title_for_app = title.clone();
+        let mut app = App::with_component_registry(move |registry| {
+            registry.register_with_props::<TitleProps, _>(TITLE, |_, props| {
+                label(props.title.clone()).into()
+            });
+
+            move |_| {
+                component(TITLE)
+                    .props(TitleProps {
+                        title: title_for_app.borrow().clone(),
+                    })
+                    .into()
+            }
+        });
+        let mut backend = MockRenderBackend::default();
+
+        app.resize(Size::new(200.0, 120.0));
+        app.render(&mut backend).unwrap();
+
+        let root = app.arena().root();
+        let label_id = app.arena().children(root)[0];
+        assert!(matches!(
+            &app.arena().node(label_id).unwrap().kind,
+            WidgetKind::Label { text, .. } if text == "first"
+        ));
+
+        *title.borrow_mut() = "second".to_owned();
+        app.mark_needs_rebuild();
+        app.render(&mut backend).unwrap();
+
+        assert!(matches!(
+            &app.arena().node(label_id).unwrap().kind,
+            WidgetKind::Label { text, .. } if text == "second"
+        ));
+    }
+
+    #[derive(Hash)]
+    struct CounterProps {
+        prefix: String,
+    }
+
+    #[test]
+    fn component_state_update_rerenders_with_current_props() {
+        const COUNTER: ComponentType = ComponentType::new("xui::tests::counter_props");
+
+        let mut app = App::with_component_registry(|registry| {
+            registry.register_with_props::<CounterProps, _>(COUNTER, |cx, props| {
+                let count = cx.use_state(|| 0);
+                let count_for_click = count.clone();
+                button(format!("{}: {}", props.prefix, count.get()))
+                    .on_click(move |_| {
+                        count_for_click.set(count_for_click.get() + 1);
+                        EventResult::Consumed
+                    })
+                    .into()
+            });
+
+            |_| {
+                component(COUNTER)
+                    .props(CounterProps {
+                        prefix: "count".to_owned(),
+                    })
+                    .into()
+            }
+        });
+        let mut backend = MockRenderBackend::default();
+
+        app.resize(Size::new(200.0, 120.0));
+        app.render(&mut backend).unwrap();
+
+        let root = app.arena().root();
+        let button_id = app.arena().children(root)[0];
+        click(&mut app, button_id);
+        app.render(&mut backend).unwrap();
+
+        assert!(matches!(
+            &app.arena().node(button_id).unwrap().kind,
+            WidgetKind::Button { text, .. } if text == "count: 1"
+        ));
+    }
+
+    struct ClickProps {
+        count: i32,
+        on_click: Rc<RefCell<ClickEventHandler>>,
+    }
+
+    #[test]
+    fn component_props_can_explicitly_forward_event_handler_to_host() {
+        const CHILD: ComponentType = ComponentType::new("xui::tests::event_props_child");
+
+        let mut app = App::with_component_registry(|registry| {
+            registry.register_with_props::<ClickProps, _>(CHILD, |_, props| {
+                let on_click = props.on_click.clone();
+                button(format!("count: {}", props.count))
+                    .on_click(move |cx| on_click.borrow_mut()(cx))
+                    .into()
+            });
+
+            move |cx| {
+                let count = cx.use_state(|| 0);
+                let count_for_click = count.clone();
+                let current = count.get();
+                let on_click: ClickEventHandler = Box::new(move |_| {
+                    count_for_click.set(count_for_click.get() + 1);
+                    EventResult::Consumed
+                });
+
+                component(CHILD)
+                    .props_with_hash(
+                        ClickProps {
+                            count: current,
+                            on_click: Rc::new(RefCell::new(on_click)),
+                        },
+                        current as u64,
+                    )
+                    .into()
+            }
+        });
+        let mut backend = MockRenderBackend::default();
+
+        app.resize(Size::new(200.0, 120.0));
+        app.render(&mut backend).unwrap();
+
+        let root = app.arena().root();
+        let button_id = app.arena().children(root)[0];
+        click(&mut app, button_id);
+        app.render(&mut backend).unwrap();
+
+        assert!(matches!(
+            &app.arena().node(button_id).unwrap().kind,
+            WidgetKind::Button { text, .. } if text == "count: 1"
+        ));
     }
 
     #[test]
