@@ -40,6 +40,11 @@ impl Widget for ButtonWidget {
         Some(Size::new(text.width + 16.0, text.height.max(20.0) + 10.0))
     }
 
+    fn on_hovered_change(&mut self, hovered: bool) {
+        println!("hovered: {}", hovered);
+        self.hovered = hovered;
+    }
+
     fn paint(&self, rect: Rect, commands: &mut Vec<PaintCommand>) {
         let background = if self.pressed {
             Color::BLUE_500
@@ -71,31 +76,6 @@ impl Widget for ButtonWidget {
     }
 
     fn handle_event(&mut self, event: &Event, cx: &mut EventContext<'_>) -> EventResult {
-        match event {
-            Event::PointerMove { .. } => {
-                if !self.hovered {
-                    self.hovered = true;
-                    cx.mark_needs_paint();
-                }
-                EventResult::Ignored
-            }
-            Event::PointerDown {
-                button: PointerButton::Primary,
-                ..
-            } => {
-                self.pressed = true;
-                cx.mark_needs_paint();
-                EventResult::Consumed
-            }
-            Event::PointerUp {
-                button: PointerButton::Primary,
-                ..
-            } => {
-                self.pressed = false;
-                cx.mark_needs_paint();
-                EventResult::Consumed
-            }
-            _ => EventResult::Ignored,
-        }
+        EventResult::Consumed
     }
 }

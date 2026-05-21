@@ -81,6 +81,10 @@ pub trait Widget: Debug {
     }
     fn paint(&self, rect: Rect, commands: &mut Vec<PaintCommand>);
     fn handle_event(&mut self, event: &Event, cx: &mut EventContext<'_>) -> EventResult;
+
+    fn on_hovered_change(&mut self, _hovered: bool) {}
+
+    fn on_click(&mut self) {}
 }
 
 pub trait Component<Context, Output> {

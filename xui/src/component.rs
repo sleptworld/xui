@@ -587,14 +587,14 @@ impl ComponentRuntime {
         }
 
         self.commit_work_node(work.root, self.root_widget, arena, &mut work);
-        let next_current = self.freeze_work_tree(work.root, &work);
+        let next_current = self.freeze_work_tree(work.root, &mut work);
         self.current = next_current;
         self.sync_host_children(arena);
         self.scheduler.mark_render_finished(work.render_lanes);
     }
 
-    fn freeze_work_tree(&mut self, id: FiberId, work: &WorkInProgress) -> FiberId {
-        let node = work.nodes.get(&id).expect("freeze missing work node");
+    fn freeze_work_tree(&mut self, id: FiberId, work: &mut WorkInProgress) -> FiberId {
+        let node = work.nodes.remove(&id).expect("freeze missing work node");
 
         if node.effect == EffectTag::None
             && node.lanes == NO_LANES
@@ -605,15 +605,12 @@ impl ComponentRuntime {
             return node.current.unwrap();
         }
 
+        let current_node = node.current.and_then(|n| self.nodes.node(n));
+
         let children: Vec<_> = if !node.children_resolved {
-            node.current
-                .and_then(|current| self.nodes.node(current))
-                .map(|current| {
-                    current
-                        .children(&self.nodes)
-                        .map(|child| child.id)
-                        .collect()
-                })
+            current_node
+                .map(|c| c.children(&self.nodes))
+                .map(|n| n.into_iter().map(|n| n.id).collect())
                 .unwrap_or_default()
         } else {
             node.children
@@ -623,19 +620,32 @@ impl ComponentRuntime {
         };
 
         let host = if matches!(node.tag, FiberTag::Host(_)) {
-            let current_host = node
-                .current
-                .and_then(|current| self.nodes.node(current))
-                .and_then(|current| current.host.as_ref());
-            let kind = node
-                .host_work
-                .as_ref()
-                .map(|host| host.kind.clone())
+            let current_host = current_node.and_then(|c| c.host.as_ref());
+            let node_host_work = node.host_work;
+
+            node_host_work.map(|host| {
+                HostState {
+                     node_id: node.host_node,
+                kind: host.kind,
+                widget: None,
+                taffy_node: current_host.and_then(|host| host.taffy_node),
+                style: host.style,
+                layout: current_host.map(|host| host.layout).unwrap_or_default(),
+                previous_layout: current_host
+                    .map(|host| host.previous_layout)
+                    .unwrap_or_default(),
+                paint_cache: Vec::new(),
+                props_hash:host.props_hash,
+
+                }
+            });
+
+            let kind = node_host_work
+                .map(|host| host.kind)
                 .or_else(|| current_host.map(|host| host.kind.clone()))
                 .expect("host fiber missing host kind");
             let style = node
-                .host_work
-                .as_ref()
+                node.host_work
                 .map(|host| host.style.clone())
                 .or_else(|| current_host.map(|host| host.style.clone()))
                 .expect("host fiber missing host style");

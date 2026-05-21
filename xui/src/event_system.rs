@@ -66,9 +66,7 @@ enum NodeDispatch<'a> {
 }
 
 pub fn dispatch_event(arena: &mut UiArena, event: &Event) -> EventResult {
-    if let Some(result) = update_hover(arena, event) {
-        return result;
-    }
+    update_hover(arena, event);
 
     let target = resolve_target(arena, event);
     if matches!(
@@ -103,55 +101,42 @@ pub fn dispatch_event(arena: &mut UiArena, event: &Event) -> EventResult {
     result
 }
 
-fn update_hover(arena: &mut UiArena, event: &Event) -> Option<EventResult> {
+fn update_hover(arena: &mut UiArena, event: &Event) {
     if let Some(position) = event.pointer_position() {
         let hovered = arena.hit_test(position);
         let new_path = hovered.map(|id| arena.event_path(id)).unwrap_or_default();
-        let old_path = arena.event_state().hovered_path.clone();
+        // let old_path = arena.event_state().hovered_path.clone();
 
-        if old_path != new_path {
-            let common = old_path
-                .iter()
-                .zip(new_path.iter())
-                .take_while(|(old, new)| old == new)
-                .count();
+        // if old_path != new_path {
+        //     // let common = old_path
+        //     //     .iter()
+        //     //     .zip(new_path.iter())
+        //     //     .take_while(|(old, new)| old == new)
+        //     //     .count();
 
-            for id in old_path[common..].iter().rev().copied() {
-                if dispatch_to_node(
-                    arena,
-                    id,
-                    NodeDispatch::HoverChange(false),
-                    EventPhase::Target,
-                )
-                .is_consumed()
-                {
-                    arena.event_state_mut().set_hovered(hovered);
-                    arena.event_state_mut().hovered_path = new_path;
-                    return Some(EventResult::Consumed);
-                }
-            }
+        //     // for id in old_path[common..].iter().rev().copied() {
+        //     //     dispatch_to_node(
+        //     //         arena,
+        //     //         id,
+        //     //         NodeDispatch::HoverChange(false),
+        //     //         EventPhase::Target,
+        //     //     );
+        //     // }
 
-            for id in new_path[common..].iter().copied() {
-                if dispatch_to_node(
-                    arena,
-                    id,
-                    NodeDispatch::HoverChange(true),
-                    EventPhase::Target,
-                )
-                .is_consumed()
-                {
-                    arena.event_state_mut().set_hovered(hovered);
-                    arena.event_state_mut().hovered_path = new_path;
-                    return Some(EventResult::Consumed);
-                }
-            }
+        // }
+
+        for id in new_path.iter().copied() {
+            dispatch_to_node(
+                arena,
+                id,
+                NodeDispatch::HoverChange(true),
+                EventPhase::Target,
+            );
         }
 
         arena.event_state_mut().set_hovered(hovered);
         arena.event_state_mut().hovered_path = new_path;
     }
-
-    None
 }
 
 fn dispatch_event_path(arena: &mut UiArena, target: NodeId, event: &Event) -> EventResult {
@@ -289,7 +274,10 @@ fn dispatch_to_node(
                 .event_handlers
                 .on_hover_change
                 .as_mut()
-                .map(|handler| handler(hovered, &mut cx))
+                .map(|handler| {
+                    node.widget.on_hovered_change(hovered);
+                    handler(hovered, &mut cx)
+                })
                 .unwrap_or(EventResult::Ignored),
             NodeDispatch::Click => node
                 .event_handlers
