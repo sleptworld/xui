@@ -1,14 +1,38 @@
+use std::any::Any;
 use std::fmt::Debug;
 
 use xui_interface::{
-    Color, DirtyFlags, Event, EventContext, EventResult, PaintCommand, Point, PointerButton, Rect,
-    Size, TextMeasurer, Widget, WidgetKind, WidgetType,
+    Color, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, PaintCommand, Point,
+    PointerButton, Rect, Size, TextMeasurer, Widget, WidgetType,
 };
 
+use super::props_hash;
+
 pub struct ButtonWidget {
+    pub key: Option<Key>,
     pub text: String,
+    pub event_handlers: EventHandlers,
     pub pressed: bool,
     pub hovered: bool,
+}
+
+impl ButtonWidget {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            key: None,
+            text: text.into(),
+            event_handlers: EventHandlers::default(),
+            pressed: false,
+            hovered: false,
+        }
+    }
+
+    pub fn key(mut self, key: impl Into<Key>) -> Self {
+        self.key = Some(key.into());
+        self
+    }
+
+    event_handler_methods!();
 }
 
 impl Debug for ButtonWidget {
@@ -18,17 +42,33 @@ impl Debug for ButtonWidget {
 }
 
 impl Widget for ButtonWidget {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
     fn node_type(&self) -> WidgetType {
         WidgetType::Button
     }
 
-    fn update_from_kind(&mut self, new_kind: &WidgetKind) -> DirtyFlags {
-        let WidgetKind::Button { text, .. } = new_kind else {
+    fn key(&self) -> Option<&Key> {
+        self.key.as_ref()
+    }
+
+    fn props_hash(&self) -> u64 {
+        props_hash(&self.text)
+    }
+
+    fn event_handlers_mut(&mut self) -> &mut EventHandlers {
+        &mut self.event_handlers
+    }
+
+    fn update_from(&mut self, next: &dyn Widget) -> DirtyFlags {
+        let Some(next) = next.as_any().downcast_ref::<ButtonWidget>() else {
             return DirtyFlags::TREE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
         };
 
-        if self.text != *text {
-            self.text = text.clone();
+        if self.text != next.text {
+            self.text = next.text.clone();
             DirtyFlags::LAYOUT | DirtyFlags::PAINT
         } else {
             DirtyFlags::empty()
@@ -76,6 +116,26 @@ impl Widget for ButtonWidget {
     }
 
     fn handle_event(&mut self, event: &Event, cx: &mut EventContext<'_>) -> EventResult {
-        EventResult::Consumed
+        match event {
+            Event::PointerDown {
+                button: PointerButton::Primary,
+                ..
+            } => {
+                self.pressed = true;
+                cx.capture_pointer();
+                cx.mark_dirty(DirtyFlags::PAINT);
+                EventResult::Consumed
+            }
+            Event::PointerUp {
+                button: PointerButton::Primary,
+                ..
+            } => {
+                self.pressed = false;
+                cx.release_pointer_capture();
+                cx.mark_dirty(DirtyFlags::PAINT);
+                EventResult::Consumed
+            }
+            _ => EventResult::Consumed,
+        }
     }
 }

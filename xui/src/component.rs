@@ -6,7 +6,7 @@ use crate::font::TextI;
 use crate::lanes::{Lanes, NO_LANES, current_update_lane, includes_some_lane, should_interrupt};
 use crate::state::{HookContext, HookStorage, Scheduler};
 use crate::tree::UiArena;
-use crate::widgets::{ComponentRender, Element, WidgetKind, WidgetRef};
+use crate::widgets::{ComponentRender, Element, WidgetRef};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use std::cell::RefCell;
@@ -35,7 +35,6 @@ pub struct WorkNode {
 }
 
 struct HostWork {
-    kind: WidgetKind,
     widget: Option<WidgetRef>,
     event_handlers: Option<EventHandlers>,
     style: tf::Style,
@@ -97,7 +96,6 @@ impl WorkNode {
 
         let (host_work, pending_children, component) = match prepared.pending {
             PreparedPending::Host {
-                kind,
                 widget,
                 event_handlers,
                 style,
@@ -105,7 +103,6 @@ impl WorkNode {
                 children,
             } => (
                 Some(HostWork {
-                    kind,
                     widget: Some(widget),
                     event_handlers: Some(event_handlers),
                     style,
@@ -179,7 +176,6 @@ struct PreparedElement {
 
 enum PreparedPending {
     Host {
-        kind: WidgetKind,
         widget: WidgetRef,
         event_handlers: EventHandlers,
         style: tf::Style,
@@ -543,7 +539,6 @@ impl ComponentRuntime {
                     key,
                     tag,
                     pending: PreparedPending::Host {
-                        kind: parts.kind,
                         widget: parts.widget,
                         event_handlers: parts.event_handlers,
                         style,
@@ -587,13 +582,13 @@ impl ComponentRuntime {
         }
 
         self.commit_work_node(work.root, self.root_widget, arena, &mut work);
-        let next_current = self.freeze_work_tree(work.root, &mut work);
+        let next_current = Self::freeze_work_tree(&mut self.nodes, work.root, &mut work);
         self.current = next_current;
         self.sync_host_children(arena);
         self.scheduler.mark_render_finished(work.render_lanes);
     }
 
-    fn freeze_work_tree(&mut self, id: FiberId, work: &mut WorkInProgress) -> FiberId {
+    fn freeze_work_tree(nodes: &mut FiberArena, id: FiberId, work: &mut WorkInProgress) -> FiberId {
         let node = work.nodes.remove(&id).expect("freeze missing work node");
 
         if node.effect == EffectTag::None
@@ -605,69 +600,53 @@ impl ComponentRuntime {
             return node.current.unwrap();
         }
 
-        let current_node = node.current.and_then(|n| self.nodes.node(n));
-
         let children: Vec<_> = if !node.children_resolved {
+            let current_node = node.current.and_then(|n| nodes.node(n));
             current_node
-                .map(|c| c.children(&self.nodes))
+                .map(|c| c.children(&nodes))
                 .map(|n| n.into_iter().map(|n| n.id).collect())
                 .unwrap_or_default()
         } else {
             node.children
                 .iter()
-                .map(|child| self.freeze_work_tree(*child, work))
+                .map(|child| Self::freeze_work_tree(nodes, *child, work))
                 .collect()
         };
+
+        let current_node = node.current.and_then(|n| nodes.node(n));
 
         let host = if matches!(node.tag, FiberTag::Host(_)) {
             let current_host = current_node.and_then(|c| c.host.as_ref());
             let node_host_work = node.host_work;
 
-            node_host_work.map(|host| {
-                HostState {
-                     node_id: node.host_node,
-                kind: host.kind,
-                widget: None,
-                taffy_node: current_host.and_then(|host| host.taffy_node),
-                style: host.style,
-                layout: current_host.map(|host| host.layout).unwrap_or_default(),
-                previous_layout: current_host
-                    .map(|host| host.previous_layout)
-                    .unwrap_or_default(),
-                paint_cache: Vec::new(),
-                props_hash:host.props_hash,
-
-                }
-            });
-
-            let kind = node_host_work
-                .map(|host| host.kind)
-                .or_else(|| current_host.map(|host| host.kind.clone()))
-                .expect("host fiber missing host kind");
-            let style = node
-                node.host_work
-                .map(|host| host.style.clone())
-                .or_else(|| current_host.map(|host| host.style.clone()))
-                .expect("host fiber missing host style");
-            let props_hash = node
-                .host_work
-                .as_ref()
-                .map(|host| host.props_hash)
-                .or_else(|| current_host.map(|host| host.props_hash))
-                .unwrap_or_default();
-            Some(HostState {
-                node_id: node.host_node,
-                kind,
-                widget: None,
-                taffy_node: current_host.and_then(|host| host.taffy_node),
-                style,
-                layout: current_host.map(|host| host.layout).unwrap_or_default(),
-                previous_layout: current_host
-                    .map(|host| host.previous_layout)
-                    .unwrap_or_default(),
-                paint_cache: Vec::new(),
-                props_hash,
-            })
+            node_host_work
+                .map(|host| HostState {
+                    node_id: node.host_node,
+                    widget: host.widget,
+                    taffy_node: current_host.and_then(|host| host.taffy_node),
+                    style: host.style,
+                    layout: current_host.map(|host| host.layout).unwrap_or_default(),
+                    previous_layout: current_host
+                        .map(|host| host.previous_layout)
+                        .unwrap_or_default(),
+                    paint_cache: Vec::new(),
+                    props_hash: host.props_hash,
+                })
+                .or_else(|| {
+                    let host_node = current_host.unwrap();
+                    Some(HostState {
+                        node_id: node.host_node,
+                        widget: host_node.widget.clone(),
+                        taffy_node: current_host.and_then(|host| host.taffy_node),
+                        style: host_node.style.clone(),
+                        layout: current_host.map(|host| host.layout).unwrap_or_default(),
+                        previous_layout: current_host
+                            .map(|host| host.previous_layout)
+                            .unwrap_or_default(),
+                        paint_cache: Vec::new(),
+                        props_hash: host_node.props_hash,
+                    })
+                })
         } else {
             None
         };
@@ -701,12 +680,12 @@ impl ComponentRuntime {
             component,
         };
 
-        if let Some(existing) = self.nodes.node_mut(node.id) {
+        if let Some(existing) = nodes.node_mut(node.id) {
             *existing = frozen;
         } else {
-            self.nodes.insert_node(node.id, frozen);
+            nodes.insert_node(node.id, frozen);
         }
-        self.nodes.set_children(node.id, children);
+        nodes.set_children(node.id, children);
         node.id
     }
 
@@ -759,11 +738,13 @@ impl ComponentRuntime {
                         .expect("host placement missing host work");
                     let node_id = arena.insert_node(
                         parent_host,
-                        host.kind.clone(),
                         key,
                         host.props_hash,
                         host.style.clone(),
-                        host.widget.take().expect("host widget already committed"),
+                        host.widget
+                            .as_ref()
+                            .expect("host widget already committed")
+                            .clone(),
                         host.event_handlers
                             .take()
                             .expect("host event handlers already committed"),
@@ -781,16 +762,20 @@ impl ComponentRuntime {
                         .get_mut(&id)
                         .and_then(|node| node.host_work.as_mut())
                         .expect("host update missing host work");
-                    arena.update_widget_node_from_parts(
-                        node_id,
-                        key,
-                        host.props_hash,
-                        host.style.clone(),
-                        host.kind.clone(),
-                        host.widget.take().expect("host widget already committed"),
-                        host.event_handlers
-                            .take()
-                            .expect("host event handlers already committed"),
+                    host.widget = Some(
+                        arena.update_widget_node_from_parts(
+                            node_id,
+                            key,
+                            host.props_hash,
+                            host.style.clone(),
+                            host.widget
+                                .as_ref()
+                                .expect("host widget already committed")
+                                .clone(),
+                            host.event_handlers
+                                .take()
+                                .expect("host event handlers already committed"),
+                        ),
                     );
                     child_parent_host = node_id;
                 }
@@ -1117,7 +1102,7 @@ mod tests {
     use std::rc::Rc;
 
     use crate::prelude::*;
-    use crate::widgets::WidgetKind;
+    use crate::widgets::{ButtonWidget, LabelWidget};
 
     fn click(app: &mut App, node: NodeId) {
         let rect = app.arena().node(node).unwrap().layout;
@@ -1141,6 +1126,28 @@ mod tests {
                 PaintCommand::FillRect { rect, color } if *rect == node_rect => Some(*color),
                 _ => None,
             })
+    }
+
+    fn label_text(app: &App, node: NodeId) -> String {
+        app.arena().node(node).unwrap().widget.with(|widget| {
+            widget
+                .as_any()
+                .downcast_ref::<LabelWidget>()
+                .expect("node is not a label")
+                .text
+                .clone()
+        })
+    }
+
+    fn button_text(app: &App, node: NodeId) -> String {
+        app.arena().node(node).unwrap().widget.with(|widget| {
+            widget
+                .as_any()
+                .downcast_ref::<ButtonWidget>()
+                .expect("node is not a button")
+                .text
+                .clone()
+        })
     }
 
     #[derive(Default)]
@@ -1180,10 +1187,7 @@ mod tests {
         let root = app.arena().root();
         let column_id = app.arena().children(root)[0];
         let label_id = app.arena().children(column_id)[0];
-        assert!(matches!(
-            &app.arena().node(label_id).unwrap().kind,
-            WidgetKind::Label { text, .. } if text == "hello"
-        ));
+        assert_eq!(label_text(&app, label_id), "hello");
     }
 
     #[test]
@@ -1216,7 +1220,6 @@ mod tests {
             let parts = element.into_parts();
             let host = arena.insert_node(
                 root,
-                parts.kind,
                 None,
                 0,
                 taffy::prelude::Style::default(),
@@ -1350,10 +1353,7 @@ mod tests {
 
         assert_eq!(root_renders.get(), 1);
         assert_eq!(child_renders.get(), 2);
-        assert!(matches!(
-            &app.arena().node(button_id).unwrap().kind,
-            WidgetKind::Button { text, .. } if text == "count: 1"
-        ));
+        assert_eq!(button_text(&app, button_id), "count: 1");
     }
 
     #[test]
@@ -1447,14 +1447,8 @@ mod tests {
         let second_after = app.arena().children(row_id)[1];
         assert_eq!(first_after, second_before);
         assert_eq!(second_after, first_before);
-        assert!(matches!(
-            &app.arena().node(first_after).unwrap().kind,
-            WidgetKind::Label { text, .. } if text == "B"
-        ));
-        assert!(matches!(
-            &app.arena().node(second_after).unwrap().kind,
-            WidgetKind::Label { text, .. } if text == "A"
-        ));
+        assert_eq!(label_text(&app, first_after), "B");
+        assert_eq!(label_text(&app, second_after), "A");
     }
 
     #[test]
@@ -1558,19 +1552,13 @@ mod tests {
 
         let root = app.arena().root();
         let label_id = app.arena().children(root)[0];
-        assert!(matches!(
-            &app.arena().node(label_id).unwrap().kind,
-            WidgetKind::Label { text, .. } if text == "first"
-        ));
+        assert_eq!(label_text(&app, label_id), "first");
 
         *title.borrow_mut() = "second".to_owned();
         app.mark_needs_rebuild();
         app.render(&mut backend).unwrap();
 
-        assert!(matches!(
-            &app.arena().node(label_id).unwrap().kind,
-            WidgetKind::Label { text, .. } if text == "second"
-        ));
+        assert_eq!(label_text(&app, label_id), "second");
     }
 
     #[derive(Hash)]
@@ -1612,10 +1600,7 @@ mod tests {
         click(&mut app, button_id);
         app.render(&mut backend).unwrap();
 
-        assert!(matches!(
-            &app.arena().node(button_id).unwrap().kind,
-            WidgetKind::Button { text, .. } if text == "count: 1"
-        ));
+        assert_eq!(button_text(&app, button_id), "count: 1");
     }
 
     struct ClickProps {
@@ -1665,10 +1650,7 @@ mod tests {
         click(&mut app, button_id);
         app.render(&mut backend).unwrap();
 
-        assert!(matches!(
-            &app.arena().node(button_id).unwrap().kind,
-            WidgetKind::Button { text, .. } if text == "count: 1"
-        ));
+        assert_eq!(button_text(&app, button_id), "count: 1");
     }
 
     #[test]
@@ -1713,10 +1695,7 @@ mod tests {
         let second_node = app.arena().children(root)[0];
         assert_ne!(first_node, second_node);
         assert!(!app.arena().contains(first_node));
-        assert!(matches!(
-            &app.arena().node(second_node).unwrap().kind,
-            WidgetKind::Label { text, .. } if text == "second"
-        ));
+        assert_eq!(label_text(&app, second_node), "second");
     }
 
     #[test]

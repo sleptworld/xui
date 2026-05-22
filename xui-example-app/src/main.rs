@@ -4,7 +4,7 @@ use winit::window::Window;
 use xui::prelude::*;
 use xui_winit::{WGPUBackend, WinitRunner, WinitRunnerOptions};
 
-component_fn!{
+component_fn! {
     fn counter() {
         let count = cx.use_state(|| 0);
         let count_for_increment = count.clone();
@@ -34,8 +34,6 @@ component_fn!{
         </column>
     }
 }
-
-
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = App::with_component_registry(|registry| {

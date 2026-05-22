@@ -1,8 +1,10 @@
-use std::{fmt::Debug, hash::Hash};
+use std::{any::Any, fmt::Debug, hash::Hash};
 
 use slotmap::new_key_type;
 
-use crate::{DirtyFlags, Event, EventContext, EventResult, PaintCommand, Rect, Size};
+use crate::{
+    DirtyFlags, Event, EventContext, EventHandlers, EventResult, PaintCommand, Rect, Size,
+};
 
 new_key_type! {
     pub struct NodeId;
@@ -32,50 +34,19 @@ impl From<String> for Key {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum WidgetKind {
-    Root,
-    Label {
-        text: String,
-        color: crate::Color,
-        font_size: f32,
-    },
-    Button {
-        text: String,
-        pressed: bool,
-        hovered: bool,
-    },
-    Column {
-        gap: f32,
-    },
-    Row {
-        gap: f32,
-    },
-    Container {
-        background: crate::Color,
-    },
-}
-
-impl WidgetKind {
-    pub fn node_type(&self) -> WidgetType {
-        match self {
-            Self::Root => WidgetType::Container,
-            Self::Label { .. } => WidgetType::Label,
-            Self::Button { .. } => WidgetType::Button,
-            Self::Column { .. } => WidgetType::Column,
-            Self::Row { .. } => WidgetType::Row,
-            Self::Container { .. } => WidgetType::Container,
-        }
-    }
-}
-
 pub trait TextMeasurer {
     fn measure(&mut self, text: &str, font_size: f32) -> Size;
 }
 
 pub trait Widget: Debug {
+    fn as_any(&self) -> &dyn Any;
     fn node_type(&self) -> WidgetType;
-    fn update_from_kind(&mut self, new_kind: &WidgetKind) -> DirtyFlags;
+    fn key(&self) -> Option<&Key> {
+        None
+    }
+    fn props_hash(&self) -> u64;
+    fn event_handlers_mut(&mut self) -> &mut EventHandlers;
+    fn update_from(&mut self, next: &dyn Widget) -> DirtyFlags;
     fn measure(&self, _measurer: &mut dyn TextMeasurer) -> Option<Size> {
         None
     }

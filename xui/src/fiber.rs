@@ -14,7 +14,7 @@ use crate::HookContext;
 use crate::core::Rect;
 use crate::lanes::{Lanes, NO_LANES};
 use crate::render::PaintCommand;
-use crate::widgets::{Element, WidgetKind, WidgetRef};
+use crate::widgets::{Element, WidgetRef};
 
 new_key_type! {
     pub struct FiberId;
@@ -183,7 +183,6 @@ pub enum FiberElement {
 
 impl FiberElement {
     pub fn host(
-        kind: WidgetKind,
         widget: WidgetRef,
         style: tf::Style,
         props_hash: u64,
@@ -191,7 +190,6 @@ impl FiberElement {
     ) -> Self {
         Self::Host(HostElement {
             key: None,
-            kind,
             widget,
             style,
             props_hash,
@@ -236,7 +234,7 @@ impl FiberElement {
 
     fn tag(&self) -> FiberTag {
         match self {
-            Self::Host(element) => FiberTag::Host(element.kind.node_type()),
+            Self::Host(element) => FiberTag::Host(element.widget.with(|widget| widget.node_type())),
             Self::Component(_) => FiberTag::Component,
         }
     }
@@ -244,7 +242,6 @@ impl FiberElement {
 
 pub struct HostElement {
     pub key: Option<Key>,
-    pub kind: WidgetKind,
     pub widget: WidgetRef,
     pub style: tf::Style,
     pub props_hash: u64,
@@ -274,7 +271,6 @@ pub enum EffectTag {
 
 pub struct HostState {
     pub node_id: Option<NodeId>,
-    pub kind: WidgetKind,
     pub widget: Option<WidgetRef>,
     pub taffy_node: Option<tf::NodeId>,
     pub style: tf::Style,
@@ -298,7 +294,6 @@ pub enum PendingProps {
 }
 
 pub struct HostUpdate {
-    pub kind: WidgetKind,
     pub widget: WidgetRef,
     pub style: tf::Style,
     pub props_hash: u64,
@@ -350,7 +345,7 @@ impl Node {
     }
 
     fn host(id: FiberId, element: HostElement, taffy_node: tf::NodeId) -> Self {
-        let tag = FiberTag::Host(element.kind.node_type());
+        let tag = FiberTag::Host(element.widget.with(|widget| widget.node_type()));
         Self {
             id,
             parent: None,
@@ -367,7 +362,6 @@ impl Node {
             memoized_props_hash: element.props_hash,
             host: Some(HostState {
                 node_id: None,
-                kind: element.kind,
                 widget: Some(element.widget),
                 taffy_node: Some(taffy_node),
                 style: element.style,
@@ -584,7 +578,6 @@ impl FiberArena {
                     .as_ref()
                     .expect("host fiber missing host state");
                 if self.nodes[id].memoized_props_hash != element.props_hash
-                    || host.kind != element.kind
                     || host.style != element.style
                 {
                     effect = EffectTag::Update;
@@ -592,7 +585,6 @@ impl FiberArena {
                 self.nodes[id].key = element.key;
                 // self.nodes[id].pending_children = Some(element.children);
                 self.nodes[id].pending_props = Some(PendingProps::Host(HostUpdate {
-                    kind: element.kind,
                     widget: element.widget,
                     style: element.style,
                     props_hash: element.props_hash,
@@ -631,7 +623,6 @@ impl FiberArena {
                                 .expect("failed to update fiber taffy style");
                         }
                     }
-                    host.kind = update.kind;
                     host.widget = Some(update.widget);
                     host.style = update.style;
                     self.nodes[id].memoized_props_hash = update.props_hash;

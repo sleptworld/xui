@@ -1,17 +1,33 @@
+use std::any::Any;
+
 use xui_interface::{
-    Color, DirtyFlags, Event, EventContext, EventResult, PaintCommand, Rect, Widget, WidgetKind,
+    Color, DirtyFlags, Event, EventContext, EventHandlers, EventResult, PaintCommand, Rect, Widget,
     WidgetType,
 };
 
-#[derive(Debug)]
-pub struct RootWidget;
+#[derive(Debug, Default)]
+pub struct RootWidget {
+    event_handlers: EventHandlers,
+}
 
 impl Widget for RootWidget {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
     fn node_type(&self) -> WidgetType {
         WidgetType::Container
     }
 
-    fn update_from_kind(&mut self, _new_kind: &WidgetKind) -> DirtyFlags {
+    fn props_hash(&self) -> u64 {
+        0
+    }
+
+    fn event_handlers_mut(&mut self) -> &mut EventHandlers {
+        &mut self.event_handlers
+    }
+
+    fn update_from(&mut self, _next: &dyn Widget) -> DirtyFlags {
         DirtyFlags::empty()
     }
 

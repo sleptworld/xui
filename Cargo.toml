@@ -3,7 +3,6 @@ resolver = "3"
 members = [
     "xui-interface",
     "xui",
-    "xui-components",
     "xui-macros",
     "xui-winit",
     "xui-example-app",

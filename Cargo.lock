@@ -2570,18 +2570,9 @@ dependencies = [
  "smallstr",
  "smallvec",
  "taffy",
- "xui-components",
  "xui-interface",
  "xui-macros",
  "xui-text",
-]
-
-[[package]]
-name = "xui-components"
-version = "0.1.0"
-dependencies = [
- "xui-interface",
- "xui-macros",
 ]
 
 [[package]]

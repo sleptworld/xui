@@ -8,7 +8,7 @@ use crate::event_system::{self, EventState};
 use crate::fiber::Key;
 use crate::font::TextI;
 use crate::render::{DamageRegion, PaintCommand};
-use crate::widgets::{Element, WidgetKind, WidgetRef, WidgetType};
+use crate::widgets::{Element, Widget, WidgetRef, WidgetType};
 
 pub struct Node {
     pub id: NodeId,
@@ -26,7 +26,6 @@ pub struct Node {
     pub new_props_hash: u64,
     pub style: tf::Style,
     pub paint_cache: Vec<PaintCommand>,
-    pub kind: WidgetKind,
     pub widget: WidgetRef,
     pub event_handlers: EventHandlers,
 }
@@ -34,7 +33,6 @@ pub struct Node {
 impl Node {
     fn new(
         id: NodeId,
-        kind: WidgetKind,
         key: Option<Key>,
         position: usize,
         props_hash: u64,
@@ -43,7 +41,7 @@ impl Node {
         event_handlers: EventHandlers,
         taffy_node: tf::NodeId,
     ) -> Self {
-        let node_type = kind.node_type();
+        let node_type = widget.with(|widget| widget.node_type());
         Self {
             id,
             parent: None,
@@ -60,7 +58,6 @@ impl Node {
             new_props_hash: props_hash,
             style,
             paint_cache: Vec::new(),
-            kind,
             widget,
             event_handlers,
         }
@@ -97,12 +94,11 @@ impl UiArena {
         let root = nodes.insert_with_key(|id| {
             Node::new(
                 id,
-                WidgetKind::Root,
                 None,
                 0,
                 0,
                 root_style,
-                crate::widgets::widget_from_kind(WidgetKind::Root).into(),
+                crate::widgets::root_widget().into(),
                 EventHandlers::default(),
                 taffy_root,
             )
@@ -167,15 +163,18 @@ impl UiArena {
         &mut self.event_state
     }
 
-    pub fn insert(&mut self, parent: NodeId, kind: WidgetKind, style: tf::Style) -> NodeId {
-        let widget = crate::widgets::widget_from_kind(kind.clone());
+    pub fn insert(
+        &mut self,
+        parent: NodeId,
+        widget: impl Widget + 'static,
+        style: tf::Style,
+    ) -> NodeId {
         self.insert_node(
             parent,
-            kind,
             None,
             0,
             style,
-            widget.into(),
+            WidgetRef::new(widget),
             EventHandlers::default(),
         )
     }
@@ -183,7 +182,6 @@ impl UiArena {
     pub fn insert_node(
         &mut self,
         parent: NodeId,
-        kind: WidgetKind,
         key: Option<Key>,
         props_hash: u64,
         style: tf::Style,
@@ -198,7 +196,6 @@ impl UiArena {
         let id = self.nodes.insert_with_key(|id| {
             Node::new(
                 id,
-                kind,
                 key,
                 position,
                 props_hash,
@@ -407,7 +404,9 @@ impl UiArena {
         self.repaint_passes += 1;
         let rect = self.nodes[id].layout;
         let mut cache = Vec::new();
-        self.nodes[id].widget.paint(rect, &mut cache);
+        self.nodes[id]
+            .widget
+            .with(|widget| widget.paint(rect, &mut cache));
         self.nodes[id].paint_cache = cache;
         self.damage.add(rect);
     }
@@ -492,7 +491,8 @@ impl UiArena {
 
         if damage.intersects(node.layout) {
             if node.paint_cache.is_empty() {
-                node.widget.paint(node.layout, commands);
+                node.widget
+                    .with(|widget| widget.paint(node.layout, commands));
             } else {
                 commands.extend_from_slice(&node.paint_cache);
             }
@@ -601,7 +601,6 @@ impl UiArena {
         let parts = element.into_parts();
         let id = self.insert_node(
             parent,
-            parts.kind,
             key,
             props_hash,
             style,
@@ -626,7 +625,6 @@ impl UiArena {
         let parts = element.into_parts();
         let id = self.insert_node(
             parent,
-            parts.kind,
             key,
             props_hash,
             style,
@@ -653,11 +651,11 @@ impl UiArena {
         key: Option<Key>,
         props_hash: u64,
         style: tf::Style,
-        kind: WidgetKind,
         widget: WidgetRef,
         event_handlers: EventHandlers,
-    ) {
+    ) -> WidgetRef {
         let mut flags = DirtyFlags::empty();
+        let current_widget;
 
         {
             let node = self.nodes.get_mut(id).expect("reused node missing");
@@ -673,14 +671,19 @@ impl UiArena {
                     .set_style(node.taffy_node, style)
                     .expect("failed to update taffy style");
             }
-            let widget_flags = node.widget.update_from_kind(&kind);
+            if node.node_type != widget.with(|widget| widget.node_type()) {
+                flags |= DirtyFlags::TREE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
+            }
+            let widget_flags = node
+                .widget
+                .with_mut(|current| widget.with(|next| current.update_from(next)));
             flags |= widget_flags;
-            flags |= crate::widgets::update_kind_from(&mut node.kind, kind);
-            node.widget = widget;
             node.event_handlers = event_handlers;
+            current_widget = node.widget.clone();
         }
 
         self.mark_dirty(id, flags);
+        current_widget
     }
 
     fn update_node_from_element(
@@ -720,10 +723,13 @@ impl UiArena {
                     .set_style(node.taffy_node, new_style)
                     .expect("failed to update taffy style");
             }
-            let widget_flags = node.widget.update_from_kind(&parts.kind);
+            if node.node_type != parts.widget.with(|widget| widget.node_type()) {
+                flags |= DirtyFlags::TREE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
+            }
+            let widget_flags = node
+                .widget
+                .with_mut(|current| parts.widget.with(|next| current.update_from(next)));
             flags |= widget_flags;
-            flags |= crate::widgets::update_kind_from(&mut node.kind, parts.kind.clone());
-            node.widget = parts.widget;
             node.event_handlers = parts.event_handlers;
         }
 

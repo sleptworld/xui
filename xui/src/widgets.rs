@@ -1,3 +1,113 @@
+use std::any::Any;
+use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::rc::Rc;
+
+use taffy::prelude as tf;
+pub use xui_interface::{EventHandlers, Widget, WidgetType};
+
+use crate::core::{Color, EdgeInsets, Size};
+use crate::fiber::{ComponentType, ErasedProps, Key};
+use crate::font::TextI;
+use crate::state::HookContext;
+
+macro_rules! event_handler_methods {
+    () => {
+        pub fn on_event(
+            mut self,
+            handler: impl for<'a> FnMut(
+                &xui_interface::Event,
+                &mut xui_interface::EventContext<'a>,
+            ) -> xui_interface::EventResult
+            + 'static,
+        ) -> Self {
+            self.event_handlers.on_event = Some(Box::new(handler));
+            self
+        }
+
+        pub fn on_click(
+            mut self,
+            handler: impl for<'a> FnMut(
+                &mut xui_interface::EventContext<'a>,
+            ) -> xui_interface::EventResult
+            + 'static,
+        ) -> Self {
+            self.event_handlers.on_click = Some(Box::new(handler));
+            self
+        }
+
+        pub fn on_hover_change(
+            mut self,
+            handler: impl for<'a> FnMut(
+                bool,
+                &mut xui_interface::EventContext<'a>,
+            ) -> xui_interface::EventResult
+            + 'static,
+        ) -> Self {
+            self.event_handlers.on_hover_change = Some(Box::new(handler));
+            self
+        }
+
+        pub fn on_pointer_down(
+            mut self,
+            handler: impl for<'a> FnMut(
+                &mut xui_interface::EventContext<'a>,
+            ) -> xui_interface::EventResult
+            + 'static,
+        ) -> Self {
+            self.event_handlers.on_pointer_down = Some(Box::new(handler));
+            self
+        }
+
+        pub fn on_pointer_up(
+            mut self,
+            handler: impl for<'a> FnMut(
+                &mut xui_interface::EventContext<'a>,
+            ) -> xui_interface::EventResult
+            + 'static,
+        ) -> Self {
+            self.event_handlers.on_pointer_up = Some(Box::new(handler));
+            self
+        }
+
+        pub fn on_pointer_move(
+            mut self,
+            handler: impl for<'a> FnMut(
+                &mut xui_interface::EventContext<'a>,
+            ) -> xui_interface::EventResult
+            + 'static,
+        ) -> Self {
+            self.event_handlers.on_pointer_move = Some(Box::new(handler));
+            self
+        }
+
+        pub fn on_key_down(
+            mut self,
+            handler: impl for<'a> FnMut(
+                &xui_interface::InputKey,
+                &mut xui_interface::EventContext<'a>,
+            ) -> xui_interface::EventResult
+            + 'static,
+        ) -> Self {
+            self.event_handlers.on_key_down = Some(Box::new(handler));
+            self
+        }
+
+        pub fn on_key_up(
+            mut self,
+            handler: impl for<'a> FnMut(
+                &xui_interface::InputKey,
+                &mut xui_interface::EventContext<'a>,
+            ) -> xui_interface::EventResult
+            + 'static,
+        ) -> Self {
+            self.event_handlers.on_key_up = Some(Box::new(handler));
+            self
+        }
+    };
+}
+
 mod button;
 mod column;
 mod container;
@@ -5,65 +115,46 @@ mod label;
 mod root;
 mod row;
 
-use std::any::Any;
-use std::cell::RefCell;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-use std::ops::{Deref, DerefMut};
-use std::rc::Rc;
-
-use taffy::prelude as tf;
-pub use xui_components::{Button, Label};
-pub use xui_interface::{EventHandlers, Widget, WidgetKind, WidgetType};
-
 pub use button::ButtonWidget;
 pub use column::ColumnWidget;
 pub use container::ContainerWidget;
 pub use label::LabelWidget;
 pub use row::RowWidget;
 
-use crate::core::{Color, EdgeInsets, Size};
-use crate::fiber::{ComponentType, ErasedProps, Key};
-use crate::font::TextI;
-use crate::state::HookContext;
-
-pub type Column = xui_components::Column<Element>;
-pub type Row = xui_components::Row<Element>;
-pub type Container = xui_components::Container<Element>;
-
 pub type ComponentRender = Rc<RefCell<dyn for<'a> FnMut(&mut HookContext<'a>) -> Element>>;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct WidgetRef {
-    widget: Box<dyn Widget>,
+    widget: Rc<RefCell<Box<dyn Widget>>>,
 }
 
-impl Deref for WidgetRef {
-    type Target = dyn Widget;
+impl WidgetRef {
+    pub fn new(widget: impl Widget + 'static) -> Self {
+        Self::from(Box::new(widget) as Box<dyn Widget>)
+    }
 
-    fn deref(&self) -> &Self::Target {
-        &*self.widget
+    pub fn with<R>(&self, f: impl FnOnce(&dyn Widget) -> R) -> R {
+        let widget = self.widget.borrow();
+        f(&**widget)
+    }
+
+    pub fn with_mut<R>(&self, f: impl FnOnce(&mut dyn Widget) -> R) -> R {
+        let mut widget = self.widget.borrow_mut();
+        f(&mut **widget)
     }
 }
 
 impl From<Box<dyn Widget>> for WidgetRef {
     fn from(widget: Box<dyn Widget>) -> Self {
-        Self { widget }
+        Self {
+            widget: Rc::new(RefCell::new(widget)),
+        }
     }
 }
 
-impl DerefMut for WidgetRef {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut *self.widget
-    }
-}
-
-pub enum HostElement {
-    Label(Label),
-    Button(Button),
-    Column(Column),
-    Row(Row),
-    Container(Container),
+pub struct HostElement {
+    widget: WidgetRef,
+    children: Vec<Element>,
 }
 
 pub enum Element {
@@ -72,10 +163,50 @@ pub enum Element {
 }
 
 pub struct HostParts {
-    pub kind: WidgetKind,
     pub widget: WidgetRef,
     pub event_handlers: EventHandlers,
     pub children: Vec<Element>,
+}
+
+impl HostElement {
+    pub fn new(widget: impl Widget + 'static, children: Vec<Element>) -> Self {
+        Self {
+            widget: WidgetRef::new(widget),
+            children,
+        }
+    }
+
+    pub fn key(&self) -> Option<Key> {
+        self.widget.with(|widget| widget.key().cloned())
+    }
+
+    pub fn node_type(&self) -> WidgetType {
+        self.widget.with(|widget| widget.node_type())
+    }
+
+    pub fn props_hash(&self) -> u64 {
+        self.widget.with(|widget| widget.props_hash())
+    }
+
+    pub fn style(&self, measurer: &mut TextI) -> tf::Style {
+        self.widget
+            .with(|widget| style_for_widget(widget, measurer))
+    }
+
+    pub fn into_parts(self) -> HostParts {
+        let event_handlers = self
+            .widget
+            .with_mut(|widget| std::mem::take(widget.event_handlers_mut()));
+        HostParts {
+            widget: self.widget,
+            event_handlers,
+            children: self.children,
+        }
+    }
+
+    pub fn children_mut(&mut self) -> &mut Vec<Element> {
+        &mut self.children
+    }
 }
 
 impl Element {
@@ -123,192 +254,8 @@ impl Element {
 
     pub fn children_mut(&mut self) -> Option<&mut Vec<Element>> {
         match self {
-            Self::Host(host) => host.children_mut(),
+            Self::Host(host) => Some(host.children_mut()),
             Self::Component(_) => None,
-        }
-    }
-}
-
-impl HostElement {
-    pub fn key(&self) -> Option<Key> {
-        match self {
-            Self::Label(widget) => widget.key.clone(),
-            Self::Button(widget) => widget.key.clone(),
-            Self::Column(widget) => widget.key.clone(),
-            Self::Row(widget) => widget.key.clone(),
-            Self::Container(widget) => widget.key.clone(),
-        }
-    }
-
-    pub fn node_type(&self) -> WidgetType {
-        match self {
-            Self::Label(_) => WidgetType::Label,
-            Self::Button(_) => WidgetType::Button,
-            Self::Column(_) => WidgetType::Column,
-            Self::Row(_) => WidgetType::Row,
-            Self::Container(_) => WidgetType::Container,
-        }
-    }
-
-    pub fn props_hash(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.node_type().hash(&mut hasher);
-        self.key().hash(&mut hasher);
-        match self {
-            Self::Label(widget) => {
-                widget.text.hash(&mut hasher);
-                hash_color(widget.color, &mut hasher);
-                widget.font_size.to_bits().hash(&mut hasher);
-            }
-            Self::Button(widget) => {
-                widget.text.hash(&mut hasher);
-            }
-            Self::Column(widget) => {
-                widget.gap.to_bits().hash(&mut hasher);
-            }
-            Self::Row(widget) => {
-                widget.gap.to_bits().hash(&mut hasher);
-            }
-            Self::Container(widget) => {
-                widget
-                    .size
-                    .map(|size| (size.width.to_bits(), size.height.to_bits()))
-                    .hash(&mut hasher);
-                hash_edge_insets(widget.padding, &mut hasher);
-                hash_color(widget.background, &mut hasher);
-            }
-        }
-        hasher.finish()
-    }
-
-    pub fn style(&self, measurer: &mut TextI) -> tf::Style {
-        match self {
-            Self::Label(label) => {
-                let widget = LabelWidget {
-                    text: label.text.clone(),
-                    color: label.color,
-                    font_size: label.font_size,
-                };
-                widget
-                    .measure(measurer)
-                    .map(fixed_size_style)
-                    .unwrap_or_default()
-            }
-            Self::Button(button) => {
-                let widget = ButtonWidget {
-                    text: button.text.clone(),
-                    pressed: false,
-                    hovered: false,
-                };
-                widget
-                    .measure(measurer)
-                    .map(fixed_size_style)
-                    .unwrap_or_default()
-            }
-            Self::Column(column) => tf::Style {
-                display: tf::Display::Flex,
-                flex_direction: tf::FlexDirection::Column,
-                gap: tf::Size {
-                    width: length_percentage(column.gap),
-                    height: length_percentage(column.gap),
-                },
-                ..Default::default()
-            },
-            Self::Row(row) => tf::Style {
-                display: tf::Display::Flex,
-                flex_direction: tf::FlexDirection::Row,
-                gap: tf::Size {
-                    width: length_percentage(row.gap),
-                    height: length_percentage(row.gap),
-                },
-                ..Default::default()
-            },
-            Self::Container(container) => {
-                let mut style = tf::Style {
-                    display: tf::Display::Flex,
-                    flex_direction: tf::FlexDirection::Column,
-                    padding: edge_insets(container.padding),
-                    ..Default::default()
-                };
-
-                if let Some(size) = container.size {
-                    style.size = tf::Size {
-                        width: dimension(size.width),
-                        height: dimension(size.height),
-                    };
-                }
-
-                style
-            }
-        }
-    }
-
-    pub fn into_parts(self) -> HostParts {
-        match self {
-            Self::Label(widget) => {
-                let kind = WidgetKind::Label {
-                    text: widget.text,
-                    color: widget.color,
-                    font_size: widget.font_size,
-                };
-                HostParts {
-                    kind: kind.clone(),
-                    widget: widget_from_kind(kind).into(),
-                    event_handlers: widget.event_handlers,
-                    children: Vec::new(),
-                }
-            }
-            Self::Button(widget) => {
-                let kind = WidgetKind::Button {
-                    text: widget.text,
-                    pressed: false,
-                    hovered: false,
-                };
-                HostParts {
-                    kind: kind.clone(),
-                    widget: widget_from_kind(kind).into(),
-                    event_handlers: widget.event_handlers,
-                    children: Vec::new(),
-                }
-            }
-            Self::Column(widget) => {
-                let kind = WidgetKind::Column { gap: widget.gap };
-                HostParts {
-                    kind: kind.clone(),
-                    widget: widget_from_kind(kind).into(),
-                    event_handlers: widget.event_handlers,
-                    children: widget.children,
-                }
-            }
-            Self::Row(widget) => {
-                let kind = WidgetKind::Row { gap: widget.gap };
-                HostParts {
-                    kind: kind.clone(),
-                    widget: widget_from_kind(kind).into(),
-                    event_handlers: widget.event_handlers,
-                    children: widget.children,
-                }
-            }
-            Self::Container(widget) => {
-                let kind = WidgetKind::Container {
-                    background: widget.background,
-                };
-                HostParts {
-                    kind: kind.clone(),
-                    widget: widget_from_kind(kind).into(),
-                    event_handlers: widget.event_handlers,
-                    children: widget.children,
-                }
-            }
-        }
-    }
-
-    pub fn children_mut(&mut self) -> Option<&mut Vec<Element>> {
-        match self {
-            Self::Column(widget) => Some(&mut widget.children),
-            Self::Row(widget) => Some(&mut widget.children),
-            Self::Container(widget) => Some(&mut widget.children),
-            _ => None,
         }
     }
 }
@@ -354,63 +301,60 @@ impl ComponentElement {
     }
 }
 
-pub fn label(text: impl Into<String>) -> Label {
-    Label::new(text)
+pub fn label(text: impl Into<String>) -> LabelWidget {
+    LabelWidget::new(text)
 }
 
-pub fn button(text: impl Into<String>) -> Button {
-    Button::new(text)
+pub fn button(text: impl Into<String>) -> ButtonWidget {
+    ButtonWidget::new(text)
 }
 
-pub fn column() -> Column {
-    xui_components::column()
+pub fn column() -> ColumnWidget {
+    ColumnWidget::new()
 }
 
-pub fn row() -> Row {
-    xui_components::row()
+pub fn row() -> RowWidget {
+    RowWidget::new()
 }
 
-pub fn container() -> Container {
-    xui_components::container()
+pub fn container() -> ContainerWidget {
+    ContainerWidget::new()
 }
 
 pub fn component(render: ComponentType) -> ComponentElement {
     ComponentElement::new(render)
 }
 
-fn props_hash<T: Hash>(props: &T) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    props.hash(&mut hasher);
-    hasher.finish()
-}
-
-impl From<Label> for Element {
-    fn from(value: Label) -> Self {
-        Self::Host(HostElement::Label(value))
+impl From<LabelWidget> for Element {
+    fn from(value: LabelWidget) -> Self {
+        Self::Host(HostElement::new(value, Vec::new()))
     }
 }
 
-impl From<Button> for Element {
-    fn from(value: Button) -> Self {
-        Self::Host(HostElement::Button(value))
+impl From<ButtonWidget> for Element {
+    fn from(value: ButtonWidget) -> Self {
+        Self::Host(HostElement::new(value, Vec::new()))
     }
 }
 
-impl From<Column> for Element {
-    fn from(value: Column) -> Self {
-        Self::Host(HostElement::Column(value))
+impl From<ColumnWidget> for Element {
+    fn from(mut value: ColumnWidget) -> Self {
+        let children = std::mem::take(&mut value.children);
+        Self::Host(HostElement::new(value, children))
     }
 }
 
-impl From<Row> for Element {
-    fn from(value: Row) -> Self {
-        Self::Host(HostElement::Row(value))
+impl From<RowWidget> for Element {
+    fn from(mut value: RowWidget) -> Self {
+        let children = std::mem::take(&mut value.children);
+        Self::Host(HostElement::new(value, children))
     }
 }
 
-impl From<Container> for Element {
-    fn from(value: Container) -> Self {
-        Self::Host(HostElement::Container(value))
+impl From<ContainerWidget> for Element {
+    fn from(mut value: ContainerWidget) -> Self {
+        let children = std::mem::take(&mut value.children);
+        Self::Host(HostElement::new(value, children))
     }
 }
 
@@ -426,112 +370,68 @@ impl From<HostElement> for Element {
     }
 }
 
-pub fn widget_from_kind(kind: WidgetKind) -> Box<dyn Widget> {
-    match kind {
-        WidgetKind::Root => Box::new(root::RootWidget),
-        WidgetKind::Label {
-            text,
-            color,
-            font_size,
-        } => Box::new(LabelWidget {
-            text,
-            color,
-            font_size,
-        }),
-        WidgetKind::Button {
-            text,
-            pressed,
-            hovered,
-        } => Box::new(ButtonWidget {
-            text,
-            pressed,
-            hovered,
-        }),
-        WidgetKind::Column { gap } => Box::new(ColumnWidget { gap }),
-        WidgetKind::Row { gap } => Box::new(RowWidget { gap }),
-        WidgetKind::Container { background } => Box::new(ContainerWidget { background }),
-    }
+pub fn root_widget() -> Box<dyn Widget> {
+    Box::new(root::RootWidget::default())
 }
 
-pub fn update_kind_from(kind: &mut WidgetKind, new_kind: WidgetKind) -> xui_interface::DirtyFlags {
-    if kind.node_type() != new_kind.node_type() {
-        *kind = new_kind;
-        return xui_interface::DirtyFlags::TREE
-            | xui_interface::DirtyFlags::LAYOUT
-            | xui_interface::DirtyFlags::PAINT;
+pub fn style_for_widget(widget: &dyn Widget, measurer: &mut TextI) -> tf::Style {
+    if let Some(label) = widget.as_any().downcast_ref::<LabelWidget>() {
+        return label
+            .measure(measurer)
+            .map(fixed_size_style)
+            .unwrap_or_default();
     }
 
-    match (kind, new_kind) {
-        (
-            WidgetKind::Label {
-                text,
-                color,
-                font_size,
-            },
-            WidgetKind::Label {
-                text: new_text,
-                color: new_color,
-                font_size: new_font_size,
-            },
-        ) => {
-            let mut flags = xui_interface::DirtyFlags::empty();
-            if *text != new_text {
-                *text = new_text;
-                flags |= xui_interface::DirtyFlags::LAYOUT | xui_interface::DirtyFlags::PAINT;
-            }
-            if *font_size != new_font_size {
-                *font_size = new_font_size;
-                flags |= xui_interface::DirtyFlags::LAYOUT | xui_interface::DirtyFlags::PAINT;
-            }
-            if *color != new_color {
-                *color = new_color;
-                flags |= xui_interface::DirtyFlags::PAINT;
-            }
-            flags
-        }
-        (WidgetKind::Button { text, .. }, WidgetKind::Button { text: new_text, .. }) => {
-            if *text != new_text {
-                *text = new_text;
-                xui_interface::DirtyFlags::LAYOUT | xui_interface::DirtyFlags::PAINT
-            } else {
-                xui_interface::DirtyFlags::empty()
-            }
-        }
-        (WidgetKind::Column { gap }, WidgetKind::Column { gap: new_gap }) => {
-            if *gap != new_gap {
-                *gap = new_gap;
-                xui_interface::DirtyFlags::STYLE
-                    | xui_interface::DirtyFlags::LAYOUT
-                    | xui_interface::DirtyFlags::PAINT
-            } else {
-                xui_interface::DirtyFlags::empty()
-            }
-        }
-        (WidgetKind::Row { gap }, WidgetKind::Row { gap: new_gap }) => {
-            if *gap != new_gap {
-                *gap = new_gap;
-                xui_interface::DirtyFlags::STYLE
-                    | xui_interface::DirtyFlags::LAYOUT
-                    | xui_interface::DirtyFlags::PAINT
-            } else {
-                xui_interface::DirtyFlags::empty()
-            }
-        }
-        (
-            WidgetKind::Container { background },
-            WidgetKind::Container {
-                background: new_background,
-            },
-        ) => {
-            if *background != new_background {
-                *background = new_background;
-                xui_interface::DirtyFlags::PAINT
-            } else {
-                xui_interface::DirtyFlags::empty()
-            }
-        }
-        _ => xui_interface::DirtyFlags::empty(),
+    if let Some(button) = widget.as_any().downcast_ref::<ButtonWidget>() {
+        return button
+            .measure(measurer)
+            .map(fixed_size_style)
+            .unwrap_or_default();
     }
+
+    if let Some(column) = widget.as_any().downcast_ref::<ColumnWidget>() {
+        return tf::Style {
+            display: tf::Display::Flex,
+            flex_direction: tf::FlexDirection::Column,
+            gap: tf::Size {
+                width: length_percentage(column.gap),
+                height: length_percentage(column.gap),
+            },
+            ..Default::default()
+        };
+    }
+
+    if let Some(row) = widget.as_any().downcast_ref::<RowWidget>() {
+        return tf::Style {
+            display: tf::Display::Flex,
+            flex_direction: tf::FlexDirection::Row,
+            gap: tf::Size {
+                width: length_percentage(row.gap),
+                height: length_percentage(row.gap),
+            },
+            ..Default::default()
+        };
+    }
+
+    if let Some(container) = widget.as_any().downcast_ref::<ContainerWidget>() {
+        let mut style = tf::Style {
+            display: tf::Display::Flex,
+            flex_direction: tf::FlexDirection::Column,
+            padding: edge_insets(container.padding),
+            ..Default::default()
+        };
+
+        if let Some(size) = container.size {
+            style.size = tf::Size {
+                width: dimension(size.width),
+                height: dimension(size.height),
+            };
+        }
+
+        return style;
+    }
+
+    tf::Style::default()
 }
 
 fn fixed_size_style(size: Size) -> tf::Style {
@@ -561,14 +461,20 @@ fn length_percentage(value: f32) -> tf::LengthPercentage {
     tf::LengthPercentage::length(value)
 }
 
-fn hash_color(color: Color, hasher: &mut DefaultHasher) {
+pub(super) fn props_hash<T: Hash>(props: &T) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    props.hash(&mut hasher);
+    hasher.finish()
+}
+
+pub(super) fn hash_color<H: Hasher>(color: Color, hasher: &mut H) {
     color.r.to_bits().hash(hasher);
     color.g.to_bits().hash(hasher);
     color.b.to_bits().hash(hasher);
     color.a.to_bits().hash(hasher);
 }
 
-fn hash_edge_insets(value: EdgeInsets, hasher: &mut DefaultHasher) {
+pub(super) fn hash_edge_insets<H: Hasher>(value: EdgeInsets, hasher: &mut H) {
     value.left.to_bits().hash(hasher);
     value.right.to_bits().hash(hasher);
     value.top.to_bits().hash(hasher);

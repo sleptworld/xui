@@ -105,27 +105,24 @@ fn update_hover(arena: &mut UiArena, event: &Event) {
     if let Some(position) = event.pointer_position() {
         let hovered = arena.hit_test(position);
         let new_path = hovered.map(|id| arena.event_path(id)).unwrap_or_default();
-        // let old_path = arena.event_state().hovered_path.clone();
+        let old_path = arena.event_state().hovered_path.clone();
 
-        // if old_path != new_path {
-        //     // let common = old_path
-        //     //     .iter()
-        //     //     .zip(new_path.iter())
-        //     //     .take_while(|(old, new)| old == new)
-        //     //     .count();
+        let common = old_path
+            .iter()
+            .zip(new_path.iter())
+            .take_while(|(old, new)| old == new)
+            .count();
 
-        //     // for id in old_path[common..].iter().rev().copied() {
-        //     //     dispatch_to_node(
-        //     //         arena,
-        //     //         id,
-        //     //         NodeDispatch::HoverChange(false),
-        //     //         EventPhase::Target,
-        //     //     );
-        //     // }
+        for id in old_path[common..].iter().rev().copied() {
+            dispatch_to_node(
+                arena,
+                id,
+                NodeDispatch::HoverChange(false),
+                EventPhase::Target,
+            );
+        }
 
-        // }
-
-        for id in new_path.iter().copied() {
+        for id in new_path[common..].iter().copied() {
             dispatch_to_node(
                 arena,
                 id,
@@ -264,7 +261,8 @@ fn dispatch_to_node(
                     if specialized.is_consumed() {
                         specialized
                     } else if phase == EventPhase::Target {
-                        node.widget.handle_event(event, &mut cx)
+                        node.widget
+                            .with_mut(|widget| widget.handle_event(event, &mut cx))
                     } else {
                         EventResult::Ignored
                     }
@@ -275,7 +273,8 @@ fn dispatch_to_node(
                 .on_hover_change
                 .as_mut()
                 .map(|handler| {
-                    node.widget.on_hovered_change(hovered);
+                    node.widget
+                        .with_mut(|widget| widget.on_hovered_change(hovered));
                     handler(hovered, &mut cx)
                 })
                 .unwrap_or(EventResult::Ignored),
@@ -313,7 +312,7 @@ mod tests {
     use std::rc::Rc;
 
     use taffy::prelude as tf;
-    use xui_interface::{Color, DirtyFlags, NodeId, Point, Rect, WidgetKind};
+    use xui_interface::{Color, DirtyFlags, NodeId, Point, Rect};
 
     use super::*;
 
@@ -322,16 +321,12 @@ mod tests {
         let root = arena.root();
         let parent = arena.insert(
             root,
-            WidgetKind::Container {
-                background: Color::TRANSPARENT,
-            },
+            crate::widgets::ContainerWidget::new().background(Color::TRANSPARENT),
             tf::Style::default(),
         );
         let child = arena.insert(
             parent,
-            WidgetKind::Container {
-                background: Color::TRANSPARENT,
-            },
+            crate::widgets::ContainerWidget::new().background(Color::TRANSPARENT),
             tf::Style::default(),
         );
 

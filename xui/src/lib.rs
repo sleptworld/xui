@@ -14,4 +14,3 @@ pub mod state;
 pub mod tree;
 pub mod widgets;
 pub use crate::prelude::*;
-pub use xui_components as components;
