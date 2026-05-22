@@ -18,7 +18,11 @@ pub use crate::state::HookContext;
 pub use crate::tree::UiArena;
 pub use crate::widgets::{
     ButtonWidget, ColumnWidget, ComponentElement, ContainerWidget, Element, LabelWidget, RowWidget,
-    Widget, button, column, component, container, label, row,
+    TextWidget, Widget, button, column, component, container, label, row, text,
 };
-pub use xui_interface::{DirtyFlags, NodeId};
+pub use xui_interface::{
+    DirtyFlags, FontFamily, FontStyle, FontWeight, LineHeight, NodeId, OverflowWrap,
+    ParagraphStyle, TextAlign, TextBoxStyle, TextContent, TextDecoration, TextOverflow, TextProps,
+    TextStyle, TextVerticalAlign, WhiteSpace,
+};
 pub use xui_macros::{component, component_fn, xui};

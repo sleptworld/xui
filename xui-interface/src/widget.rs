@@ -4,6 +4,7 @@ use slotmap::new_key_type;
 
 use crate::{
     DirtyFlags, Event, EventContext, EventHandlers, EventResult, PaintCommand, Rect, Size,
+    TextProps,
 };
 
 new_key_type! {
@@ -12,6 +13,7 @@ new_key_type! {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WidgetType {
+    Text,
     Label,
     Button,
     Column,
@@ -36,6 +38,10 @@ impl From<String> for Key {
 
 pub trait TextMeasurer {
     fn measure(&mut self, text: &str, font_size: f32) -> Size;
+
+    fn measure_text(&mut self, props: &TextProps) -> Size {
+        self.measure(props.text.as_str(), props.style.font_size)
+    }
 }
 
 pub trait Widget: Debug {
@@ -53,7 +59,9 @@ pub trait Widget: Debug {
     fn paint(&self, rect: Rect, commands: &mut Vec<PaintCommand>);
     fn handle_event(&mut self, event: &Event, cx: &mut EventContext<'_>) -> EventResult;
 
-    fn on_hovered_change(&mut self, _hovered: bool) {}
+    fn on_hovered_change(&mut self, _hovered: bool) -> DirtyFlags {
+        DirtyFlags::empty()
+    }
 
     fn on_click(&mut self) {}
 }

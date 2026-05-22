@@ -107,6 +107,31 @@ fn update_hover(arena: &mut UiArena, event: &Event) {
         let new_path = hovered.map(|id| arena.event_path(id)).unwrap_or_default();
         let old_path = arena.event_state().hovered_path.clone();
 
+        #[cfg(debug_assertions)]
+        {
+            println!("==== OLD PATH ====");
+
+            for o in old_path.iter() {
+                if let Some(w) = arena.node(*o) {
+                    println!(
+                        "Node ID: {:?}, layout: {:?}, type: {:?}",
+                        w.id, w.layout, w.node_type
+                    );
+                }
+            }
+
+            println!("==== NEW PATH ====");
+
+            for n in new_path.iter() {
+                if let Some(w) = arena.node(*n) {
+                    println!(
+                        "Node ID: {:?}, layout: {:?}, type: {:?}",
+                        w.id, w.layout, w.node_type
+                    );
+                }
+            }
+        }
+
         let common = old_path
             .iter()
             .zip(new_path.iter())
@@ -268,16 +293,18 @@ fn dispatch_to_node(
                     }
                 }
             }
-            NodeDispatch::HoverChange(hovered) => node
-                .event_handlers
-                .on_hover_change
-                .as_mut()
-                .map(|handler| {
-                    node.widget
-                        .with_mut(|widget| widget.on_hovered_change(hovered));
-                    handler(hovered, &mut cx)
-                })
-                .unwrap_or(EventResult::Ignored),
+            NodeDispatch::HoverChange(hovered) => {
+                let hover_dirty = node
+                    .widget
+                    .with_mut(|widget| widget.on_hovered_change(hovered));
+                cx.mark_dirty(hover_dirty);
+
+                node.event_handlers
+                    .on_hover_change
+                    .as_mut()
+                    .map(|handler| handler(hovered, &mut cx))
+                    .unwrap_or(EventResult::Ignored)
+            }
             NodeDispatch::Click => node
                 .event_handlers
                 .on_click
@@ -650,5 +677,52 @@ mod tests {
                 (arena.root(), false),
             ]
         );
+    }
+
+    #[test]
+    fn hover_change_notifies_widget_without_registered_handler() {
+        let mut arena = UiArena::new();
+        let root = arena.root();
+        let button = arena.insert(
+            root,
+            crate::widgets::ButtonWidget::new("Press"),
+            tf::Style::default(),
+        );
+
+        arena.node_mut(root).unwrap().layout = Rect::new(0.0, 0.0, 100.0, 100.0);
+        arena.node_mut(button).unwrap().layout = Rect::new(0.0, 0.0, 40.0, 40.0);
+
+        arena.dispatch_event(&Event::PointerMove {
+            position: Point::new(2.0, 2.0),
+        });
+
+        let hovered = arena.node(button).unwrap().widget.with(|widget| {
+            widget
+                .as_any()
+                .downcast_ref::<crate::widgets::ButtonWidget>()
+                .unwrap()
+                .hovered
+        });
+        assert!(hovered);
+        assert!(
+            arena
+                .node(button)
+                .unwrap()
+                .dirty
+                .contains(DirtyFlags::PAINT)
+        );
+
+        arena.dispatch_event(&Event::PointerMove {
+            position: Point::new(80.0, 80.0),
+        });
+
+        let hovered = arena.node(button).unwrap().widget.with(|widget| {
+            widget
+                .as_any()
+                .downcast_ref::<crate::widgets::ButtonWidget>()
+                .unwrap()
+                .hovered
+        });
+        assert!(!hovered);
     }
 }

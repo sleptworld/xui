@@ -80,9 +80,9 @@ impl Widget for ButtonWidget {
         Some(Size::new(text.width + 16.0, text.height.max(20.0) + 10.0))
     }
 
-    fn on_hovered_change(&mut self, hovered: bool) {
-        println!("hovered: {}", hovered);
+    fn on_hovered_change(&mut self, hovered: bool) -> DirtyFlags {
         self.hovered = hovered;
+        DirtyFlags::PAINT
     }
 
     fn paint(&self, rect: Rect, commands: &mut Vec<PaintCommand>) {

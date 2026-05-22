@@ -1102,7 +1102,7 @@ mod tests {
     use std::rc::Rc;
 
     use crate::prelude::*;
-    use crate::widgets::{ButtonWidget, LabelWidget};
+    use crate::widgets::{ButtonWidget, LabelWidget, TextWidget};
 
     fn click(app: &mut App, node: NodeId) {
         let rect = app.arena().node(node).unwrap().layout;
@@ -1146,6 +1146,17 @@ mod tests {
                 .downcast_ref::<ButtonWidget>()
                 .expect("node is not a button")
                 .text
+                .clone()
+        })
+    }
+
+    fn text_props(app: &App, node: NodeId) -> TextProps {
+        app.arena().node(node).unwrap().widget.with(|widget| {
+            widget
+                .as_any()
+                .downcast_ref::<TextWidget>()
+                .expect("node is not text")
+                .props
                 .clone()
         })
     }
@@ -1286,8 +1297,30 @@ mod tests {
         assert_eq!(clicks.get(), 1);
         assert_eq!(
             fill_color_for_node(&app, &backend, button_id),
-            Some(Color::GRAY_100)
+            Some(Color::GRAY_300)
         );
+    }
+
+    #[test]
+    fn text_widget_builds_single_style_text_props() {
+        let mut app = app(|_| {
+            text("hello")
+                .color(Color::BLUE_500)
+                .font_size(20.0)
+                .font_weight(FontWeight::Bold)
+                .into()
+        });
+
+        app.resize(Size::new(200.0, 120.0));
+        let root = app.arena().root();
+        app.arena_mut().update_tree(root, Size::new(200.0, 120.0));
+
+        let text_id = app.arena().children(root)[0];
+        let props = text_props(&app, text_id);
+        assert_eq!(props.text.as_str(), "hello");
+        assert_eq!(props.style.color, Color::BLUE_500);
+        assert_eq!(props.style.font_size, 20.0);
+        assert_eq!(props.style.font_weight, FontWeight::Bold);
     }
 
     #[test]

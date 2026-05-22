@@ -114,12 +114,14 @@ mod container;
 mod label;
 mod root;
 mod row;
+mod text;
 
 pub use button::ButtonWidget;
 pub use column::ColumnWidget;
 pub use container::ContainerWidget;
 pub use label::LabelWidget;
 pub use row::RowWidget;
+pub use text::TextWidget;
 
 pub type ComponentRender = Rc<RefCell<dyn for<'a> FnMut(&mut HookContext<'a>) -> Element>>;
 
@@ -305,6 +307,10 @@ pub fn label(text: impl Into<String>) -> LabelWidget {
     LabelWidget::new(text)
 }
 
+pub fn text(text: impl Into<xui_interface::TextContent>) -> TextWidget {
+    TextWidget::new(text)
+}
+
 pub fn button(text: impl Into<String>) -> ButtonWidget {
     ButtonWidget::new(text)
 }
@@ -327,6 +333,12 @@ pub fn component(render: ComponentType) -> ComponentElement {
 
 impl From<LabelWidget> for Element {
     fn from(value: LabelWidget) -> Self {
+        Self::Host(HostElement::new(value, Vec::new()))
+    }
+}
+
+impl From<TextWidget> for Element {
+    fn from(value: TextWidget) -> Self {
         Self::Host(HostElement::new(value, Vec::new()))
     }
 }
@@ -377,6 +389,13 @@ pub fn root_widget() -> Box<dyn Widget> {
 pub fn style_for_widget(widget: &dyn Widget, measurer: &mut TextI) -> tf::Style {
     if let Some(label) = widget.as_any().downcast_ref::<LabelWidget>() {
         return label
+            .measure(measurer)
+            .map(fixed_size_style)
+            .unwrap_or_default();
+    }
+
+    if let Some(text) = widget.as_any().downcast_ref::<TextWidget>() {
+        return text
             .measure(measurer)
             .map(fixed_size_style)
             .unwrap_or_default();

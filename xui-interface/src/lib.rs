@@ -3,6 +3,7 @@ pub mod dirty;
 pub mod event;
 pub mod render;
 pub mod runtime;
+pub mod text;
 pub mod widget;
 
 pub use core::{Color, EdgeInsets, Point, Rect, Size};
@@ -17,4 +18,9 @@ pub use render::{
     RenderBackend,
 };
 pub use runtime::EventSource;
+pub use text::{
+    FontFamily, FontStyle, FontWeight, LineHeight, OverflowWrap, ParagraphStyle, TextAlign,
+    TextBoxStyle, TextContent, TextDecoration, TextOverflow, TextProps, TextStyle,
+    TextVerticalAlign, WhiteSpace,
+};
 pub use widget::{Component, Key, NodeId, TextMeasurer, Widget, WidgetType};
