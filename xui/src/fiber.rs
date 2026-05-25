@@ -8,7 +8,7 @@ use std::rc::Rc;
 use taffy::prelude as tf;
 pub use xui_interface::Key;
 use xui_interface::widget::WidgetType;
-use xui_interface::{DirtyFlags, NodeId};
+use xui_interface::{ComputedStyle, DirtyFlags, NodeId, Theme};
 
 use crate::HookContext;
 use crate::core::Rect;
@@ -192,6 +192,7 @@ impl FiberElement {
             key: None,
             widget,
             style,
+            computed_style: ComputedStyle::initial(&Theme::default()),
             props_hash,
             children,
         })
@@ -244,6 +245,7 @@ pub struct HostElement {
     pub key: Option<Key>,
     pub widget: WidgetRef,
     pub style: tf::Style,
+    pub computed_style: ComputedStyle,
     pub props_hash: u64,
     pub children: SmallVec<[Rc<FiberElement>; 20]>,
 }
@@ -274,6 +276,7 @@ pub struct HostState {
     pub widget: Option<WidgetRef>,
     pub taffy_node: Option<tf::NodeId>,
     pub style: tf::Style,
+    pub computed_style: ComputedStyle,
     pub layout: Rect,
     pub previous_layout: Rect,
     pub paint_cache: Vec<PaintCommand>,
@@ -296,6 +299,7 @@ pub enum PendingProps {
 pub struct HostUpdate {
     pub widget: WidgetRef,
     pub style: tf::Style,
+    pub computed_style: ComputedStyle,
     pub props_hash: u64,
 }
 
@@ -365,6 +369,7 @@ impl Node {
                 widget: Some(element.widget),
                 taffy_node: Some(taffy_node),
                 style: element.style,
+                computed_style: element.computed_style,
                 layout: Rect::ZERO,
                 previous_layout: Rect::ZERO,
                 paint_cache: Vec::new(),
@@ -579,6 +584,7 @@ impl FiberArena {
                     .expect("host fiber missing host state");
                 if self.nodes[id].memoized_props_hash != element.props_hash
                     || host.style != element.style
+                    || host.computed_style != element.computed_style
                 {
                     effect = EffectTag::Update;
                 }
@@ -587,6 +593,7 @@ impl FiberArena {
                 self.nodes[id].pending_props = Some(PendingProps::Host(HostUpdate {
                     widget: element.widget,
                     style: element.style,
+                    computed_style: element.computed_style,
                     props_hash: element.props_hash,
                 }));
             }
@@ -625,6 +632,7 @@ impl FiberArena {
                     }
                     host.widget = Some(update.widget);
                     host.style = update.style;
+                    host.computed_style = update.computed_style;
                     self.nodes[id].memoized_props_hash = update.props_hash;
                 }
             }

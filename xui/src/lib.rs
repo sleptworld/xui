@@ -11,6 +11,7 @@ pub mod prelude;
 pub mod render;
 pub mod runtime;
 pub mod state;
+pub mod style;
 pub mod tree;
 pub mod widgets;
 pub use crate::prelude::*;

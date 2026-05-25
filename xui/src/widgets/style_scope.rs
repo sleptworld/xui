@@ -2,35 +2,38 @@ use std::any::Any;
 
 use taffy::prelude as tf;
 use xui_interface::{
-    ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, FlexDirectionStyle,
-    Key, PaintCommand, Rect, Style, TextMeasurer, Widget, WidgetType,
+    ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, PaintCommand,
+    Rect, Style, TextMeasurer, Widget, WidgetType,
 };
 
 use super::{Element, LayoutStyledWidget, computed_layout_style, props_hash};
 
-pub struct ColumnWidget {
+pub struct StyleScopeWidget {
     pub key: Option<Key>,
     pub children: Vec<Element>,
     pub style: Style,
+    pub local_style: Style,
     pub event_handlers: EventHandlers,
 }
 
-impl std::fmt::Debug for ColumnWidget {
+impl std::fmt::Debug for StyleScopeWidget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ColumnWidget")
+        f.debug_struct("StyleScopeWidget")
             .field("key", &self.key)
             .field("children", &self.children.len())
             .field("style", &self.style)
+            .field("local_style", &self.local_style)
             .finish()
     }
 }
 
-impl ColumnWidget {
-    pub fn new() -> Self {
+impl StyleScopeWidget {
+    pub fn new(style: Style) -> Self {
         Self {
             key: None,
             children: Vec::new(),
-            style: Style::new(),
+            style,
+            local_style: Style::new(),
             event_handlers: EventHandlers::default(),
         }
     }
@@ -41,7 +44,7 @@ impl ColumnWidget {
     }
 
     pub fn style(mut self, style: Style) -> Self {
-        self.style = style;
+        self.local_style = style;
         self
     }
 
@@ -53,19 +56,13 @@ impl ColumnWidget {
     event_handler_methods!();
 }
 
-impl Default for ColumnWidget {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Widget for ColumnWidget {
+impl Widget for StyleScopeWidget {
     fn as_any(&self) -> &dyn Any {
         self
     }
 
     fn node_type(&self) -> WidgetType {
-        WidgetType::Column
+        WidgetType::StyleScope
     }
 
     fn key(&self) -> Option<&Key> {
@@ -73,7 +70,7 @@ impl Widget for ColumnWidget {
     }
 
     fn props_hash(&self) -> u64 {
-        props_hash(&self.style)
+        props_hash(&(&self.style, &self.local_style))
     }
 
     fn event_handlers_mut(&mut self) -> &mut EventHandlers {
@@ -81,23 +78,25 @@ impl Widget for ColumnWidget {
     }
 
     fn update_from(&mut self, next: &dyn Widget) -> DirtyFlags {
-        let Some(next) = next.as_any().downcast_ref::<ColumnWidget>() else {
+        let Some(next) = next.as_any().downcast_ref::<StyleScopeWidget>() else {
             return DirtyFlags::TREE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
         };
-        if self.style != next.style {
+
+        if self.style != next.style || self.local_style != next.local_style {
             self.style = next.style.clone();
+            self.local_style = next.local_style.clone();
             DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT
         } else {
             DirtyFlags::empty()
         }
     }
 
-    fn default_style(&self) -> Style {
-        Style::new().flex_direction(FlexDirectionStyle::Column)
+    fn style_scope(&self) -> Option<&Style> {
+        Some(&self.style)
     }
 
     fn style(&self) -> &Style {
-        &self.style
+        &self.local_style
     }
 
     fn paint(&self, _rect: Rect, _style: &ComputedStyle, _commands: &mut Vec<PaintCommand>) {}
@@ -107,7 +106,7 @@ impl Widget for ColumnWidget {
     }
 }
 
-impl LayoutStyledWidget for ColumnWidget {
+impl LayoutStyledWidget for StyleScopeWidget {
     fn layout_style(
         &self,
         computed: &ComputedStyle,

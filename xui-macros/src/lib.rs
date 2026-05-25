@@ -5,7 +5,7 @@ use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::{
     Attribute as SynAttribute, Error, Expr, FnArg, Ident, LitStr, Pat, Result, ReturnType,
-    Signature, Token, Type, Visibility, braced, parse_macro_input, parse_quote,
+    Signature, Token, Type, TypeReference, Visibility, braced, parse_macro_input, parse_quote,
 };
 
 #[proc_macro]
@@ -142,6 +142,12 @@ fn expand_component_function(
             .insert(0, parse_quote!(cx: &mut ::xui::HookContext<'_>));
     }
 
+    let props_type = component_props_type(&function.sig)?;
+    let register_call = if let Some(props_type) = props_type {
+        quote!(registry.register_with_props::<#props_type, _>(#component_type_name(), #component_name))
+    } else {
+        quote!(registry.register(#component_type_name(), #component_name))
+    };
     let attrs = &function.attrs;
     let vis = &function.vis;
     let sig = &function.sig;
@@ -160,10 +166,39 @@ fn expand_component_function(
             }
 
             #vis fn #register_name(registry: &mut ::xui::ComponentRegistry) -> ::xui::ComponentType {
-                registry.register(#component_type_name(), #component_name)
+                #register_call
             }
         },
     })
+}
+
+fn component_props_type(sig: &Signature) -> Result<Option<Type>> {
+    let mut props = sig.inputs.iter().skip(1);
+    let Some(arg) = props.next() else {
+        return Ok(None);
+    };
+    if let Some(extra) = props.next() {
+        return Err(Error::new(
+            extra.span(),
+            "component functions support at most one props argument; wrap multiple values in a props struct",
+        ));
+    }
+
+    let FnArg::Typed(arg) = arg else {
+        return Err(Error::new(arg.span(), "component props cannot be self"));
+    };
+    let Type::Reference(TypeReference {
+        mutability: None,
+        elem,
+        ..
+    }) = arg.ty.as_ref()
+    else {
+        return Err(Error::new(
+            arg.ty.span(),
+            "component props argument must be a shared reference like `props: &Props`",
+        ));
+    };
+    Ok(Some((**elem).clone()))
 }
 
 fn component_render_name(original_name: &Ident) -> TokenIdent {
@@ -335,79 +370,215 @@ fn starts_closing_tag(input: ParseStream<'_>) -> bool {
 fn expand_node(node: &ElementNode) -> Result<TokenStream2> {
     match node.name.to_string().as_str() {
         "label" => expand_label(node),
+        "text" => expand_text(node),
         "button" => expand_button(node),
         "column" => expand_stack(node, "column", quote!(::xui::column())),
         "row" => expand_stack(node, "row", quote!(::xui::row())),
         "container" => expand_container(node),
+        "style_scope" => expand_style_scope(node),
         "component" => expand_component(node),
         _ => expand_function_component(node),
     }
 }
 
+fn expand_style_scope(node: &ElementNode) -> Result<TokenStream2> {
+    let mut style = None;
+    let mut style_stmts = Vec::new();
+    let mut element_stmts = Vec::new();
+    for attr in &node.attrs {
+        let value = &attr.value;
+        match attr.name.to_string().as_str() {
+            "style" => style = Some(value.clone()),
+            "key" => element_stmts.push(quote! {
+                __xui_element = __xui_element.key(#value);
+            }),
+            "color" => style_stmts.push(quote! {
+                __xui_scope_style.merge(&::xui::Style::new().color(#value));
+            }),
+            "font_size" => style_stmts.push(quote! {
+                __xui_scope_style.merge(&::xui::Style::new().font_size(#value));
+            }),
+            other => return unsupported_attr(attr, "style_scope", other),
+        }
+    }
+    let children = node
+        .children
+        .iter()
+        .map(expand_child)
+        .collect::<Result<Vec<_>>>()?;
+    let style_init = style
+        .map(|style| quote!(#style))
+        .unwrap_or_else(|| quote!(::xui::Style::new()));
+    Ok(quote! {{
+        let mut __xui_scope_style = #style_init;
+        #(#style_stmts)*
+        let mut __xui_element = ::xui::style_scope(__xui_scope_style);
+        #(#element_stmts)*
+        #(
+            __xui_element = __xui_element.child(#children);
+        )*
+        ::xui::Element::from(__xui_element)
+    }})
+}
+
 fn expand_label(node: &ElementNode) -> Result<TokenStream2> {
     let text = required_text(node, "label")?;
-    let mut expr = quote!(::xui::label(#text));
+    let mut attr_stmts = Vec::new();
     for attr in &node.attrs {
+        let value = &attr.value;
         match attr.name.to_string().as_str() {
-            "key" => {
-                let value = &attr.value;
-                expr = quote!(#expr.key(#value));
-            }
+            "key" => attr_stmts.push(quote! { __xui_element = __xui_element.key(#value); }),
             "text" => {}
+            "style" => attr_stmts.push(quote! { __xui_style.merge(&#value); }),
             "color" => {
-                let value = &attr.value;
-                expr = quote!(#expr.color(#value));
+                attr_stmts.push(quote! { __xui_style.merge(&::xui::Style::new().color(#value)); })
             }
+            "font_size" => attr_stmts
+                .push(quote! { __xui_style.merge(&::xui::Style::new().font_size(#value)); }),
             other => return unsupported_attr(attr, "label", other),
         }
     }
     no_children_except_text(node, "label")?;
-    Ok(to_element(expr))
+    Ok(quote! {{
+        let mut __xui_element = ::xui::label(#text);
+        let mut __xui_style = ::xui::Style::new();
+        #(#attr_stmts)*
+        __xui_element = __xui_element.style(__xui_style);
+        ::xui::Element::from(__xui_element)
+    }})
+}
+
+fn expand_text(node: &ElementNode) -> Result<TokenStream2> {
+    let text = optional_text(node);
+    let mut attr_stmts = Vec::new();
+    for attr in &node.attrs {
+        let value = &attr.value;
+        match attr.name.to_string().as_str() {
+            "key" => attr_stmts.push(quote! { __xui_element = __xui_element.key(#value); }),
+            "text" => {}
+            "props" => attr_stmts.push(quote! { __xui_element = __xui_element.props(#value); }),
+            "paragraph" => {
+                attr_stmts.push(quote! { __xui_element = __xui_element.paragraph(#value); })
+            }
+            "text_box" => {
+                attr_stmts.push(quote! { __xui_element = __xui_element.text_box(#value); })
+            }
+            "overflow_wrap" => {
+                attr_stmts.push(quote! { __xui_element = __xui_element.overflow_wrap(#value); })
+            }
+            "overflow" => {
+                attr_stmts.push(quote! { __xui_element = __xui_element.overflow(#value); })
+            }
+            "max_lines" => {
+                attr_stmts.push(quote! { __xui_element = __xui_element.max_lines(#value); })
+            }
+            "style" => attr_stmts.push(quote! { __xui_style.merge(&#value); }),
+            "color" => {
+                attr_stmts.push(quote! { __xui_style.merge(&::xui::Style::new().color(#value)); })
+            }
+            "font_family" => attr_stmts
+                .push(quote! { __xui_style.merge(&::xui::Style::new().font_family(#value)); }),
+            "font_size" => attr_stmts
+                .push(quote! { __xui_style.merge(&::xui::Style::new().font_size(#value)); }),
+            "font_weight" => attr_stmts
+                .push(quote! { __xui_style.merge(&::xui::Style::new().font_weight(#value)); }),
+            "font_style" => attr_stmts
+                .push(quote! { __xui_style.merge(&::xui::Style::new().font_style(#value)); }),
+            "line_height" => attr_stmts
+                .push(quote! { __xui_style.merge(&::xui::Style::new().line_height(#value)); }),
+            "letter_spacing" => attr_stmts
+                .push(quote! { __xui_style.merge(&::xui::Style::new().letter_spacing(#value)); }),
+            "decoration" => attr_stmts
+                .push(quote! { __xui_style.merge(&::xui::Style::new().decoration(#value)); }),
+            other => return unsupported_attr(attr, "text", other),
+        }
+    }
+    no_children_except_text(node, "text")?;
+    Ok(quote! {{
+        let mut __xui_element = ::xui::text(#text);
+        let mut __xui_style = ::xui::Style::new();
+        #(#attr_stmts)*
+        __xui_element = __xui_element.style(__xui_style);
+        ::xui::Element::from(__xui_element)
+    }})
 }
 
 fn expand_button(node: &ElementNode) -> Result<TokenStream2> {
     let text = required_text(node, "button")?;
-    let mut expr = quote!(::xui::button(#text));
+    let mut attr_stmts = Vec::new();
     for attr in &node.attrs {
+        let value = &attr.value;
         match attr.name.to_string().as_str() {
-            "key" => {
-                let value = &attr.value;
-                expr = quote!(#expr.key(#value));
-            }
+            "key" => attr_stmts.push(quote! { __xui_element = __xui_element.key(#value); }),
             "text" => {}
             "on_click" => {
-                let value = &attr.value;
-                expr = quote!(#expr.on_click(#value));
+                attr_stmts.push(quote! { __xui_element = __xui_element.on_click(#value); });
             }
+            "style" => attr_stmts.push(quote! { __xui_style.merge(&#value); }),
+            "hover_style" => {
+                attr_stmts.push(quote! { __xui_element = __xui_element.hover_style(#value); })
+            }
+            "pressed_style" => {
+                attr_stmts.push(quote! { __xui_element = __xui_element.pressed_style(#value); })
+            }
+            "disabled_style" => {
+                attr_stmts.push(quote! { __xui_element = __xui_element.disabled_style(#value); })
+            }
+            "background" => attr_stmts
+                .push(quote! { __xui_style.merge(&::xui::Style::new().background(#value)); }),
+            "color" => {
+                attr_stmts.push(quote! { __xui_style.merge(&::xui::Style::new().color(#value)); })
+            }
+            "font_size" => attr_stmts
+                .push(quote! { __xui_style.merge(&::xui::Style::new().font_size(#value)); }),
             other => return unsupported_attr(attr, "button", other),
         }
     }
     no_children_except_text(node, "button")?;
-    Ok(to_element(expr))
+    Ok(quote! {{
+        let mut __xui_element = ::xui::button(#text);
+        let mut __xui_style = ::xui::Style::new();
+        #(#attr_stmts)*
+        __xui_element = __xui_element.style(__xui_style);
+        ::xui::Element::from(__xui_element)
+    }})
 }
 
 fn expand_stack(node: &ElementNode, tag: &str, constructor: TokenStream2) -> Result<TokenStream2> {
-    let mut expr = constructor;
+    let mut attr_stmts = Vec::new();
     for attr in &node.attrs {
+        let value = &attr.value;
         match attr.name.to_string().as_str() {
-            "key" => {
-                let value = &attr.value;
-                expr = quote!(#expr.key(#value));
-            }
+            "key" => attr_stmts.push(quote! { __xui_element = __xui_element.key(#value); }),
+            "style" => attr_stmts.push(quote! { __xui_style.merge(&#value); }),
             "gap" => {
-                let value = &attr.value;
-                expr = quote!(#expr.gap(#value));
+                attr_stmts.push(quote! { __xui_style.merge(&::xui::Style::new().gap(#value)); })
             }
+            "padding" => {
+                attr_stmts.push(quote! { __xui_style.merge(&::xui::Style::new().padding(#value)); })
+            }
+            "background" => attr_stmts
+                .push(quote! { __xui_style.merge(&::xui::Style::new().background(#value)); }),
             other => return unsupported_attr(attr, tag, other),
         }
     }
 
-    for child in &node.children {
-        let child = expand_child(child)?;
-        expr = quote!(#expr.child(#child));
-    }
+    let children = node
+        .children
+        .iter()
+        .map(expand_child)
+        .collect::<Result<Vec<_>>>()?;
 
-    Ok(to_element(expr))
+    Ok(quote! {{
+        let mut __xui_element = #constructor;
+        let mut __xui_style = ::xui::Style::new();
+        #(#attr_stmts)*
+        __xui_element = __xui_element.style(__xui_style);
+        #(
+            __xui_element = __xui_element.child(#children);
+        )*
+        ::xui::Element::from(__xui_element)
+    }})
 }
 
 fn expand_container(node: &ElementNode) -> Result<TokenStream2> {
@@ -418,16 +589,28 @@ fn expand_container(node: &ElementNode) -> Result<TokenStream2> {
             "key" => attr_stmts.push(quote! {
                 __xui_element = __xui_element.key(#value);
             }),
+            "style" => attr_stmts.push(quote! {
+                __xui_style.merge(&#value);
+            }),
             "padding" => attr_stmts.push(quote! {
-                __xui_element = __xui_element.padding(#value);
+                __xui_style.merge(&::xui::Style::new().padding(#value));
             }),
             "background" => attr_stmts.push(quote! {
-                __xui_element = __xui_element.background(#value);
+                __xui_style.merge(&::xui::Style::new().background(#value));
             }),
             "size" => attr_stmts.push(quote! {
                 if let Some(__xui_size) = #value {
-                    __xui_element = __xui_element.size(__xui_size);
+                    __xui_style.merge(&::xui::Style::new().size(__xui_size));
                 }
+            }),
+            "border_color" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().border_color(#value));
+            }),
+            "border_width" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().border_width(#value));
+            }),
+            "border_radius" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().border_radius(#value));
             }),
             other => return unsupported_attr(attr, "container", other),
         }
@@ -441,7 +624,9 @@ fn expand_container(node: &ElementNode) -> Result<TokenStream2> {
 
     Ok(quote! {{
         let mut __xui_element = ::xui::container();
+        let mut __xui_style = ::xui::Style::new();
         #(#attr_stmts)*
+        __xui_element = __xui_element.style(__xui_style);
         #(
             __xui_element = __xui_element.child(#children);
         )*
@@ -475,10 +660,12 @@ fn expand_component(node: &ElementNode) -> Result<TokenStream2> {
 
 fn expand_function_component(node: &ElementNode) -> Result<TokenStream2> {
     let mut key = None;
+    let mut props_value = None;
     let mut props = Vec::new();
     for attr in &node.attrs {
         match attr.name.to_string().as_str() {
             "key" => key = Some(attr.value.clone()),
+            "props" => props_value = Some(attr.value.clone()),
             _ => props.push(attr),
         }
     }
@@ -491,11 +678,14 @@ fn expand_function_component(node: &ElementNode) -> Result<TokenStream2> {
         if let Some(key) = key {
             expr = quote!(#expr.key(#key));
         }
+        if let Some(props_value) = props_value {
+            expr = quote!(#expr.props(#props_value));
+        }
         expr
     } else {
         return Err(Error::new(
             node.name.span(),
-            "registered function components do not support props or children yet",
+            "registered function components support only `key` and `props` attributes, and do not support children yet",
         ));
     };
 
@@ -528,6 +718,20 @@ fn required_text(node: &ElementNode, tag: &str) -> Result<TokenStream2> {
         node.name.span(),
         format!("{tag} requires text=\"...\" or a single braced text expression"),
     ))
+}
+
+fn optional_text(node: &ElementNode) -> TokenStream2 {
+    for attr in &node.attrs {
+        if attr.name == "text" {
+            return attr.value.clone();
+        }
+    }
+    if node.children.len() == 1 {
+        if let Child::Expr(expr) = &node.children[0] {
+            return expr.into_token_stream();
+        }
+    }
+    quote!("")
 }
 
 fn no_children_except_text(node: &ElementNode, tag: &str) -> Result<()> {

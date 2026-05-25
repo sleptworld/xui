@@ -5,13 +5,13 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use taffy::prelude as tf;
-use xui_interface::TextMeasurer;
 pub use xui_interface::{EventHandlers, Widget, WidgetType};
+use xui_interface::{TextContent, TextMeasurer, widget};
 
-use crate::core::{Color, EdgeInsets, Size};
+use crate::core::{EdgeInsets, Size};
 use crate::fiber::{ComponentType, ErasedProps, Key};
-use crate::font::TextI;
 use crate::state::HookContext;
+use crate::style::{ComputedStyle, DisplayStyle, FlexDirectionStyle, Style, Theme};
 
 macro_rules! event_handler_methods {
     () => {
@@ -115,25 +115,28 @@ mod container;
 mod label;
 mod root;
 mod row;
+mod style_scope;
 mod text;
 
 pub use button::ButtonWidget;
 pub use column::ColumnWidget;
 pub use container::ContainerWidget;
 pub use label::LabelWidget;
+pub(crate) use label::apply_text_style;
 pub use row::RowWidget;
+pub use style_scope::StyleScopeWidget;
 pub use text::TextWidget;
 
 pub type ComponentRender = Rc<RefCell<dyn for<'a> FnMut(&mut HookContext<'a>) -> Element>>;
 
 #[derive(Clone, Debug)]
 pub struct WidgetRef {
-    widget: Rc<RefCell<Box<dyn Widget>>>,
+    widget: Rc<RefCell<Box<dyn LayoutStyledWidget>>>,
 }
 
 impl WidgetRef {
-    pub fn new(widget: impl Widget + 'static) -> Self {
-        Self::from(Box::new(widget) as Box<dyn Widget>)
+    pub fn new(widget: impl LayoutStyledWidget + 'static) -> Self {
+        Self::from(Box::new(widget) as Box<dyn LayoutStyledWidget>)
     }
 
     pub fn with<R>(&self, f: impl FnOnce(&dyn Widget) -> R) -> R {
@@ -145,10 +148,15 @@ impl WidgetRef {
         let mut widget = self.widget.borrow_mut();
         f(&mut **widget)
     }
+
+    pub fn layout_with<R>(&self, f: impl FnOnce(&dyn LayoutStyledWidget) -> R) -> R {
+        let widget = self.widget.borrow();
+        f(&**widget)
+    }
 }
 
-impl From<Box<dyn Widget>> for WidgetRef {
-    fn from(widget: Box<dyn Widget>) -> Self {
+impl From<Box<dyn LayoutStyledWidget>> for WidgetRef {
+    fn from(widget: Box<dyn LayoutStyledWidget>) -> Self {
         Self {
             widget: Rc::new(RefCell::new(widget)),
         }
@@ -172,7 +180,7 @@ pub struct HostParts {
 }
 
 impl HostElement {
-    pub fn new(widget: impl Widget + 'static, children: Vec<Element>) -> Self {
+    pub fn new(widget: impl LayoutStyledWidget + 'static, children: Vec<Element>) -> Self {
         Self {
             widget: WidgetRef::new(widget),
             children,
@@ -193,7 +201,12 @@ impl HostElement {
 
     pub fn style<T: TextMeasurer>(&self, measurer: &mut T) -> tf::Style {
         self.widget
-            .with(|widget| style_for_widget(widget, measurer))
+            .layout_with(|widget| style_for_widget(widget, measurer))
+    }
+
+    pub fn computed_style(&self, parent: &ComputedStyle, theme: &Theme) -> ComputedStyle {
+        self.widget
+            .with(|widget| computed_style_for_widget(widget, parent, theme))
     }
 
     pub fn into_parts(self) -> HostParts {
@@ -312,7 +325,7 @@ pub fn text(text: impl Into<xui_interface::TextContent>) -> TextWidget {
     TextWidget::new(text)
 }
 
-pub fn button(text: impl Into<String>) -> ButtonWidget {
+pub fn button(text: impl Into<TextContent>) -> ButtonWidget {
     ButtonWidget::new(text)
 }
 
@@ -326,6 +339,10 @@ pub fn row() -> RowWidget {
 
 pub fn container() -> ContainerWidget {
     ContainerWidget::new()
+}
+
+pub fn style_scope(style: Style) -> StyleScopeWidget {
+    StyleScopeWidget::new(style)
 }
 
 pub fn component(render: ComponentType) -> ComponentElement {
@@ -371,6 +388,13 @@ impl From<ContainerWidget> for Element {
     }
 }
 
+impl From<StyleScopeWidget> for Element {
+    fn from(mut value: StyleScopeWidget) -> Self {
+        let children = std::mem::take(&mut value.children);
+        Self::Host(HostElement::new(value, children))
+    }
+}
+
 impl From<ComponentElement> for Element {
     fn from(value: ComponentElement) -> Self {
         Self::Component(value)
@@ -383,75 +407,86 @@ impl From<HostElement> for Element {
     }
 }
 
-pub fn root_widget() -> Box<dyn Widget> {
+pub fn root_widget() -> Box<dyn LayoutStyledWidget> {
     Box::new(root::RootWidget::default())
 }
 
-pub fn style_for_widget<T: TextMeasurer>(widget: &dyn Widget, measurer: &mut T) -> tf::Style {
-    if let Some(label) = widget.as_any().downcast_ref::<LabelWidget>() {
-        return label
-            .measure(measurer)
-            .map(fixed_size_style)
-            .unwrap_or_default();
+pub fn computed_style_for_widget(
+    widget: &dyn Widget,
+    parent: &ComputedStyle,
+    theme: &Theme,
+) -> ComputedStyle {
+    let mut computed = parent.inherited_from(theme);
+    if let Some(scope) = widget.style_scope() {
+        computed.apply(parent, scope, theme);
     }
-
-    if widget.as_any().downcast_ref::<TextWidget>().is_some() {
-        return tf::Style::default();
-    }
-
-    if let Some(button) = widget.as_any().downcast_ref::<ButtonWidget>() {
-        return button
-            .measure(measurer)
-            .map(fixed_size_style)
-            .unwrap_or_default();
-    }
-
-    if let Some(column) = widget.as_any().downcast_ref::<ColumnWidget>() {
-        return tf::Style {
-            display: tf::Display::Flex,
-            flex_direction: tf::FlexDirection::Column,
-            gap: tf::Size {
-                width: length_percentage(column.gap),
-                height: length_percentage(column.gap),
-            },
-            ..Default::default()
-        };
-    }
-
-    if let Some(row) = widget.as_any().downcast_ref::<RowWidget>() {
-        return tf::Style {
-            display: tf::Display::Flex,
-            flex_direction: tf::FlexDirection::Row,
-            gap: tf::Size {
-                width: length_percentage(row.gap),
-                height: length_percentage(row.gap),
-            },
-            ..Default::default()
-        };
-    }
-
-    if let Some(container) = widget.as_any().downcast_ref::<ContainerWidget>() {
-        let mut style = tf::Style {
-            display: tf::Display::Flex,
-            flex_direction: tf::FlexDirection::Column,
-            padding: edge_insets(container.padding),
-            ..Default::default()
-        };
-
-        if let Some(size) = container.size {
-            style.size = tf::Size {
-                width: dimension(size.width),
-                height: dimension(size.height),
-            };
-        }
-
-        return style;
-    }
-
-    tf::Style::default()
+    computed.apply(parent, &widget.default_style(), theme);
+    computed.apply(parent, widget.style(), theme);
+    computed.apply(parent, &widget.state_style(widget.state()), theme);
+    computed
 }
 
-fn fixed_size_style(size: Size) -> tf::Style {
+pub fn style_for_widget<T: TextMeasurer>(
+    widget: &dyn LayoutStyledWidget,
+    measurer: &mut T,
+) -> tf::Style {
+    let theme = Theme::default();
+    let computed = computed_style_for_widget(widget, &ComputedStyle::initial(&theme), &theme);
+    taffy_style_for_widget(widget, &computed, measurer)
+}
+
+#[inline]
+pub fn taffy_style_for_widget<T: TextMeasurer>(
+    widget: &dyn LayoutStyledWidget,
+    computed: &ComputedStyle,
+    measurer: &mut T,
+) -> tf::Style {
+    return widget.layout_style(computed, measurer);
+}
+
+pub fn computed_layout_style(computed: &ComputedStyle) -> tf::Style {
+    let layout = computed.layout;
+    let mut style = tf::Style {
+        display: match layout.display {
+            DisplayStyle::Flex => tf::Display::Flex,
+            DisplayStyle::None => tf::Display::None,
+        },
+        flex_direction: match layout.flex_direction {
+            FlexDirectionStyle::Row => tf::FlexDirection::Row,
+            FlexDirectionStyle::Column => tf::FlexDirection::Column,
+        },
+        gap: tf::Size {
+            width: length_percentage(layout.gap),
+            height: length_percentage(layout.gap),
+        },
+        margin: edge_insets_auto(layout.margin),
+        padding: edge_insets(layout.padding),
+        ..Default::default()
+    };
+
+    if let Some(size) = layout.size {
+        style.size = tf::Size {
+            width: dimension(size.width),
+            height: dimension(size.height),
+        };
+    }
+    if let Some(size) = layout.min_size {
+        style.min_size = tf::Size {
+            width: dimension(size.width),
+            height: dimension(size.height),
+        };
+    }
+    if let Some(size) = layout.max_size {
+        style.max_size = tf::Size {
+            width: dimension(size.width),
+            height: dimension(size.height),
+        };
+    }
+
+    style
+}
+
+pub(super) fn fixed_size_style(size: Size) -> tf::Style {
     tf::Style {
         size: tf::Size {
             width: dimension(size.width),
@@ -470,6 +505,15 @@ fn edge_insets(value: EdgeInsets) -> tf::Rect<tf::LengthPercentage> {
     }
 }
 
+fn edge_insets_auto(value: EdgeInsets) -> tf::Rect<tf::LengthPercentageAuto> {
+    tf::Rect {
+        left: tf::LengthPercentageAuto::length(value.left),
+        right: tf::LengthPercentageAuto::length(value.right),
+        top: tf::LengthPercentageAuto::length(value.top),
+        bottom: tf::LengthPercentageAuto::length(value.bottom),
+    }
+}
+
 fn dimension(value: f32) -> tf::Dimension {
     tf::Dimension::length(value)
 }
@@ -484,16 +528,6 @@ pub(super) fn props_hash<T: Hash>(props: &T) -> u64 {
     hasher.finish()
 }
 
-pub(super) fn hash_color<H: Hasher>(color: Color, hasher: &mut H) {
-    color.r.to_bits().hash(hasher);
-    color.g.to_bits().hash(hasher);
-    color.b.to_bits().hash(hasher);
-    color.a.to_bits().hash(hasher);
-}
-
-pub(super) fn hash_edge_insets<H: Hasher>(value: EdgeInsets, hasher: &mut H) {
-    value.left.to_bits().hash(hasher);
-    value.right.to_bits().hash(hasher);
-    value.top.to_bits().hash(hasher);
-    value.bottom.to_bits().hash(hasher);
+pub trait LayoutStyledWidget: Widget {
+    fn layout_style(&self, computed: &ComputedStyle, measurer: &mut dyn TextMeasurer) -> tf::Style;
 }

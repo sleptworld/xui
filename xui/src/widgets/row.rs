@@ -1,16 +1,17 @@
 use std::any::Any;
 
+use taffy::prelude as tf;
 use xui_interface::{
-    DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, PaintCommand, Rect, Widget,
-    WidgetType,
+    ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, FlexDirectionStyle,
+    Key, PaintCommand, Rect, Style, TextMeasurer, Widget, WidgetType,
 };
 
-use super::{Element, props_hash};
+use super::{Element, LayoutStyledWidget, computed_layout_style, props_hash};
 
 pub struct RowWidget {
     pub key: Option<Key>,
     pub children: Vec<Element>,
-    pub gap: f32,
+    pub style: Style,
     pub event_handlers: EventHandlers,
 }
 
@@ -19,7 +20,7 @@ impl std::fmt::Debug for RowWidget {
         f.debug_struct("RowWidget")
             .field("key", &self.key)
             .field("children", &self.children.len())
-            .field("gap", &self.gap)
+            .field("style", &self.style)
             .finish()
     }
 }
@@ -29,7 +30,7 @@ impl RowWidget {
         Self {
             key: None,
             children: Vec::new(),
-            gap: 0.0,
+            style: Style::new(),
             event_handlers: EventHandlers::default(),
         }
     }
@@ -39,8 +40,8 @@ impl RowWidget {
         self
     }
 
-    pub fn gap(mut self, gap: f32) -> Self {
-        self.gap = gap;
+    pub fn style(mut self, style: Style) -> Self {
+        self.style = style;
         self
     }
 
@@ -72,7 +73,7 @@ impl Widget for RowWidget {
     }
 
     fn props_hash(&self) -> u64 {
-        props_hash(&self.gap.to_bits())
+        props_hash(&self.style)
     }
 
     fn event_handlers_mut(&mut self) -> &mut EventHandlers {
@@ -83,17 +84,35 @@ impl Widget for RowWidget {
         let Some(next) = next.as_any().downcast_ref::<RowWidget>() else {
             return DirtyFlags::TREE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
         };
-        if self.gap != next.gap {
-            self.gap = next.gap;
+        if self.style != next.style {
+            self.style = next.style.clone();
             DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT
         } else {
             DirtyFlags::empty()
         }
     }
 
-    fn paint(&self, _rect: Rect, _commands: &mut Vec<PaintCommand>) {}
+    fn default_style(&self) -> Style {
+        Style::new().flex_direction(FlexDirectionStyle::Row)
+    }
+
+    fn style(&self) -> &Style {
+        &self.style
+    }
+
+    fn paint(&self, _rect: Rect, _style: &ComputedStyle, _commands: &mut Vec<PaintCommand>) {}
 
     fn handle_event(&mut self, _event: &Event, _cx: &mut EventContext<'_>) -> EventResult {
         EventResult::Ignored
+    }
+}
+
+impl LayoutStyledWidget for RowWidget {
+    fn layout_style(
+        &self,
+        computed: &ComputedStyle,
+        _measurer: &mut dyn TextMeasurer,
+    ) -> tf::Style {
+        computed_layout_style(computed)
     }
 }

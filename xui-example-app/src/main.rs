@@ -3,6 +3,7 @@ use winit::dpi::PhysicalSize;
 use winit::window::Window;
 use xui::font::TextI;
 use xui::prelude::*;
+use xui_components::button::*;
 use xui_winit::{WGPUBackend, WinitRunner, WinitRunnerOptions};
 
 component_fn! {
@@ -49,6 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         <label color={Color::BLUE_500}>{"XUI winit example"}</label>
                         <counter key="counter" />
                         // <component key="summary" render={components::summary_component} />
+                        <pbutton props={ButtonProps{text: "test".into()}}/>
                     </column>
                 </container>
             }

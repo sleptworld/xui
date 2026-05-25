@@ -3,8 +3,8 @@ use std::{any::Any, fmt::Debug, hash::Hash};
 use slotmap::new_key_type;
 
 use crate::{
-    DirtyFlags, Event, EventContext, EventHandlers, EventResult, PaintCommand, Rect, Size,
-    TextContent, TextLayoutConstraints, TextProps,
+    ComputedStyle, ComputedTextStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult,
+    PaintCommand, Rect, Size, Style, TextContent, TextLayoutConstraints, WidgetState,
 };
 
 new_key_type! {
@@ -19,6 +19,7 @@ pub enum WidgetType {
     Column,
     Row,
     Container,
+    StyleScope,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -37,21 +38,14 @@ impl From<String> for Key {
 }
 
 pub trait TextMeasurer {
-    fn measure_text(&mut self, props: &TextProps) -> Size;
+    fn measure_text(&mut self, text: &str, props: &ComputedTextStyle) -> Size;
 
     fn measure_text_with_constraints(
         &mut self,
-        props: &TextProps,
+        text: &str,
+        props: &ComputedTextStyle,
         _constraints: TextLayoutConstraints,
-    ) -> Size {
-        self.measure_text(props)
-    }
-
-    fn measure(&mut self, text: &str, font_size: f32) -> Size {
-        let mut props = TextProps::new(TextContent::copy_from(text));
-        props.style.font_size = font_size;
-        self.measure_text(&props)
-    }
+    ) -> Size;
 }
 
 pub trait Widget: Debug {
@@ -63,10 +57,26 @@ pub trait Widget: Debug {
     fn props_hash(&self) -> u64;
     fn event_handlers_mut(&mut self) -> &mut EventHandlers;
     fn update_from(&mut self, next: &dyn Widget) -> DirtyFlags;
-    fn measure(&self, _measurer: &mut dyn TextMeasurer) -> Option<Size> {
+    fn default_style(&self) -> Style {
+        Style::new()
+    }
+    fn style(&self) -> &Style {
+        static STYLE: std::sync::LazyLock<Style> = std::sync::LazyLock::new(Style::new);
+        &STYLE
+    }
+    fn state_style(&self, _state: WidgetState) -> Style {
+        Style::new()
+    }
+    fn state(&self) -> WidgetState {
+        WidgetState::default()
+    }
+    fn style_scope(&self) -> Option<&Style> {
         None
     }
-    fn paint(&self, rect: Rect, commands: &mut Vec<PaintCommand>);
+    fn measure(&self, _style: &ComputedStyle, _measurer: &mut dyn TextMeasurer) -> Option<Size> {
+        None
+    }
+    fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>);
     fn handle_event(&mut self, event: &Event, cx: &mut EventContext<'_>) -> EventResult;
 
     fn on_hovered_change(&mut self, _hovered: bool) -> DirtyFlags {
@@ -74,6 +84,10 @@ pub trait Widget: Debug {
     }
 
     fn on_click(&mut self) {}
+
+    fn text(&self) -> Option<TextContent> {
+        None
+    }
 }
 
 pub trait Component<Context, Output> {

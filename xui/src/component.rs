@@ -2,11 +2,13 @@ use crate::fiber::{
     ComponentRegistry, ComponentState, ComponentType, EffectTag, ErasedProps, FiberArena, FiberId,
     FiberTag, HostState, Key, Node,
 };
-use crate::font::TextI;
 use crate::lanes::{Lanes, NO_LANES, current_update_lane, includes_some_lane, should_interrupt};
 use crate::state::{HookContext, HookStorage, Scheduler};
+use crate::style::{ComputedStyle, Theme};
 use crate::tree::UiArena;
-use crate::widgets::{ComponentRender, Element, WidgetRef};
+use crate::widgets::{
+    ComponentRender, Element, WidgetRef, computed_style_for_widget, taffy_style_for_widget,
+};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use std::cell::RefCell;
@@ -38,6 +40,7 @@ struct HostWork {
     widget: Option<WidgetRef>,
     event_handlers: Option<EventHandlers>,
     style: tf::Style,
+    computed_style: ComputedStyle,
     props_hash: u64,
 }
 
@@ -99,6 +102,7 @@ impl WorkNode {
                 widget,
                 event_handlers,
                 style,
+                computed_style,
                 props_hash,
                 children,
             } => (
@@ -106,6 +110,7 @@ impl WorkNode {
                     widget: Some(widget),
                     event_handlers: Some(event_handlers),
                     style,
+                    computed_style,
                     props_hash,
                 }),
                 Some(children),
@@ -179,6 +184,7 @@ enum PreparedPending {
         widget: WidgetRef,
         event_handlers: EventHandlers,
         style: tf::Style,
+        computed_style: ComputedStyle,
         props_hash: u64,
         children: Vec<Element>,
     },
@@ -277,18 +283,19 @@ impl ComponentRuntime {
             }
 
             self.ensure_work();
+            let theme = arena.theme();
             while self
                 .work_in_progress
                 .as_ref()
                 .is_some_and(|work| work.next_work.is_some())
             {
-                self.perform_unit_of_work(measurer);
+                self.perform_unit_of_work(measurer, theme);
             }
             self.commit_finished_work(arena);
         }
     }
 
-    fn perform_unit_of_work<T: TextMeasurer>(&mut self, measurer: &mut T) {
+    fn perform_unit_of_work<T: TextMeasurer>(&mut self, measurer: &mut T, theme: &Theme) {
         let Some(id) = self
             .work_in_progress
             .as_ref()
@@ -297,7 +304,7 @@ impl ComponentRuntime {
             return;
         };
 
-        if let Some(child) = self.begin_work(id, measurer) {
+        if let Some(child) = self.begin_work(id, measurer, theme) {
             if let Some(work) = self.work_in_progress.as_mut() {
                 work.next_work = Some(child);
             }
@@ -332,7 +339,12 @@ impl ComponentRuntime {
         }
     }
 
-    fn begin_work<T: TextMeasurer>(&mut self, id: FiberId, measurer: &mut T) -> Option<FiberId> {
+    fn begin_work<T: TextMeasurer>(
+        &mut self,
+        id: FiberId,
+        measurer: &mut T,
+        theme: &Theme,
+    ) -> Option<FiberId> {
         if self
             .work_in_progress
             .as_ref()
@@ -370,7 +382,7 @@ impl ComponentRuntime {
                     let render = self.root_render.clone();
                     let mut cx = cx!(id);
                     let element = (render.borrow_mut())(&mut cx);
-                    self.reconcile_children(id, [element], measurer);
+                    self.reconcile_children(id, [element], measurer, theme);
                 } else {
                     self.clone_current_children(id);
                 }
@@ -406,7 +418,7 @@ impl ComponentRuntime {
                         .expect("component fiber missing props");
                     let render = self.component_registry.get(render);
                     let element = render.call(&mut cx, props.as_ref());
-                    self.reconcile_children(id, [element], measurer);
+                    self.reconcile_children(id, [element], measurer, theme);
                 } else {
                     self.clone_current_children(id);
                 }
@@ -419,7 +431,7 @@ impl ComponentRuntime {
                         .and_then(|w| w.nodes.get_mut(&id))
                         .and_then(|node| node.pending_children.take())
                         .unwrap_or_default();
-                    self.reconcile_children(id, children, measurer);
+                    self.reconcile_children(id, children, measurer, theme);
                 } else {
                     self.clone_current_children(id);
                 }
@@ -440,6 +452,7 @@ impl ComponentRuntime {
         parent: FiberId,
         new_children: I,
         measurer: &mut T,
+        theme: &Theme,
     ) where
         I: IntoIterator<Item = Element>,
     {
@@ -466,7 +479,7 @@ impl ComponentRuntime {
         let mut next_children = SmallVec::with_capacity(20);
 
         for (position, element) in new_children.into_iter().enumerate() {
-            let prepared = self.prepare_element(element, measurer);
+            let prepared = self.prepare_element(parent, element, measurer, theme);
             let matched =
                 find_reusable_child(&self.nodes, &old_children, &used, &prepared, position);
             let (id, current, effect) = if let Some(old_index) = matched {
@@ -532,17 +545,33 @@ impl ComponentRuntime {
 
     fn prepare_element<T: TextMeasurer>(
         &self,
+        parent: FiberId,
         element: Element,
         measurer: &mut T,
+        theme: &Theme,
     ) -> PreparedElement {
         let key = element.key();
         match element {
             Element::Component(component) => self.prepare_component_element(component, key),
             element => {
                 let props_hash = element.props_hash();
-                let style = element.style(measurer);
                 let tag = FiberTag::Host(element.node_type().expect("host element missing type"));
                 let parts = element.into_parts();
+                let computed_style = if let Some(parent_style) = self.parent_style_for_work(parent)
+                {
+                    parts
+                        .widget
+                        .with(|widget| computed_style_for_widget(widget, &parent_style, theme))
+                } else {
+                    let parent_style = ComputedStyle::initial(theme);
+                    parts
+                        .widget
+                        .with(|widget| computed_style_for_widget(widget, &parent_style, theme))
+                };
+
+                let style = parts.widget.layout_with(|widget| {
+                    taffy_style_for_widget(widget, &computed_style, measurer)
+                });
                 PreparedElement {
                     key,
                     tag,
@@ -550,12 +579,37 @@ impl ComponentRuntime {
                         widget: parts.widget,
                         event_handlers: parts.event_handlers,
                         style,
+                        computed_style,
                         props_hash,
                         children: parts.children,
                     },
                 }
             }
         }
+    }
+
+    fn parent_style_for_work(&self, parent: FiberId) -> Option<&ComputedStyle> {
+        let mut cursor = Some(parent);
+        while let Some(id) = cursor {
+            if let Some(host) = self
+                .work_in_progress
+                .as_ref()
+                .and_then(|work| work.nodes.get(&id))
+                .and_then(|node| node.host_work.as_ref())
+            {
+                return Some(&host.computed_style);
+            }
+            if let Some(host) = self.nodes.node(id).and_then(|node| node.host.as_ref()) {
+                return Some(&host.computed_style);
+            }
+            cursor = self
+                .work_in_progress
+                .as_ref()
+                .and_then(|work| work.nodes.get(&id))
+                .and_then(|node| node.parent)
+                .or_else(|| self.nodes.node(id).and_then(|node| node.parent));
+        }
+        None
     }
 
     fn prepare_component_element(
@@ -633,6 +687,7 @@ impl ComponentRuntime {
                     widget: host.widget,
                     taffy_node: current_host.and_then(|host| host.taffy_node),
                     style: host.style,
+                    computed_style: host.computed_style,
                     layout: current_host.map(|host| host.layout).unwrap_or_default(),
                     previous_layout: current_host
                         .map(|host| host.previous_layout)
@@ -647,6 +702,7 @@ impl ComponentRuntime {
                         widget: host_node.widget.clone(),
                         taffy_node: current_host.and_then(|host| host.taffy_node),
                         style: host_node.style.clone(),
+                        computed_style: host_node.computed_style.clone(),
                         layout: current_host.map(|host| host.layout).unwrap_or_default(),
                         previous_layout: current_host
                             .map(|host| host.previous_layout)
@@ -749,6 +805,7 @@ impl ComponentRuntime {
                         key,
                         host.props_hash,
                         host.style.clone(),
+                        host.computed_style.clone(),
                         host.widget
                             .as_ref()
                             .expect("host widget already committed")
@@ -776,6 +833,7 @@ impl ComponentRuntime {
                             key,
                             host.props_hash,
                             host.style.clone(),
+                            host.computed_style.clone(),
                             host.widget
                                 .as_ref()
                                 .expect("host widget already committed")

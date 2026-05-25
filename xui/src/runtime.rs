@@ -5,7 +5,7 @@ use crate::core::Size;
 use crate::event::{Event, EventResult};
 use crate::render::RenderBackend;
 pub use xui_interface::EventSource;
-use xui_interface::{TextMeasurer, text};
+use xui_interface::TextMeasurer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlFlow {

@@ -96,6 +96,12 @@ impl From<&'static str> for TextContent {
     }
 }
 
+impl<'a> From<&'a String> for TextContent {
+    fn from(value: &'a String) -> Self {
+        Self::Shared(Arc::from(value.as_str()))
+    }
+}
+
 impl From<String> for TextContent {
     fn from(value: String) -> Self {
         Self::Shared(Arc::from(value))

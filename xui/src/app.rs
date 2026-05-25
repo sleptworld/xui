@@ -5,6 +5,7 @@ use crate::fiber::ComponentRegistry;
 use crate::lanes::{event_lane, with_update_lane};
 use crate::render::RenderBackend;
 use crate::state::{HookContext, Scheduler};
+use crate::style::Theme;
 use crate::tree::UiArena;
 use crate::widgets::Element;
 use xui_interface::{DirtyFlags, TextMeasurer};
@@ -47,6 +48,14 @@ impl App {
 
     pub fn arena_mut(&mut self) -> &mut UiArena {
         &mut self.arena
+    }
+
+    pub fn theme(&self) -> &Theme {
+        self.arena.theme()
+    }
+
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.arena.set_theme(theme);
     }
 
     pub fn resize(&mut self, size: Size) {

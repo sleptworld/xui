@@ -2576,11 +2576,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "xui-components"
+version = "0.1.0"
+dependencies = [
+ "xui",
+]
+
+[[package]]
 name = "xui-example-app"
 version = "0.1.0"
 dependencies = [
  "winit",
  "xui",
+ "xui-components",
  "xui-winit",
 ]
 

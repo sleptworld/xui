@@ -113,7 +113,7 @@ pub trait RenderBackend<T> {
         true
     }
 
-    fn resize(&mut self, size: Size) -> Result<(), Self::Error> {
+    fn resize(&mut self, _size: Size) -> Result<(), Self::Error> {
         Ok(())
     }
 }

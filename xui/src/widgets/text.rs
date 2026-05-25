@@ -1,18 +1,19 @@
 use std::any::Any;
 
+use taffy::prelude as tf;
 use xui_interface::{
-    DirtyFlags, Event, EventContext, EventHandlers, EventResult, FontFamily, FontStyle, FontWeight,
-    Key, LineHeight, OverflowWrap, PaintCommand, ParagraphStyle, Rect, Size, TextBoxStyle,
-    TextContent, TextMeasurer, TextOverflow, TextPaintCommand, TextProps, TextStyle, Widget,
-    WidgetType,
+    ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, OverflowWrap,
+    PaintCommand, ParagraphStyle, Rect, Size, Style, TextBoxStyle, TextContent, TextMeasurer,
+    TextOverflow, TextPaintCommand, TextProps, Widget, WidgetType,
 };
 
-use super::props_hash;
+use super::{LayoutStyledWidget, computed_layout_style, label::apply_text_style, props_hash};
 
 #[derive(Debug)]
 pub struct TextWidget {
     pub key: Option<Key>,
     pub props: TextProps,
+    pub style: Style,
     pub event_handlers: EventHandlers,
 }
 
@@ -21,6 +22,7 @@ impl TextWidget {
         Self {
             key: None,
             props: TextProps::new(text),
+            style: Style::new(),
             event_handlers: EventHandlers::default(),
         }
     }
@@ -35,8 +37,8 @@ impl TextWidget {
         self
     }
 
-    pub fn style(mut self, style: TextStyle) -> Self {
-        self.props.style = style;
+    pub fn style(mut self, style: Style) -> Self {
+        self.style = style;
         self
     }
 
@@ -47,41 +49,6 @@ impl TextWidget {
 
     pub fn text_box(mut self, text_box: TextBoxStyle) -> Self {
         self.props.text_box = text_box;
-        self
-    }
-
-    pub fn color(mut self, color: crate::core::Color) -> Self {
-        self.props.style.color = color;
-        self
-    }
-
-    pub fn font_family(mut self, font_family: FontFamily) -> Self {
-        self.props.style.font_family = font_family;
-        self
-    }
-
-    pub fn font_size(mut self, font_size: f32) -> Self {
-        self.props.style.font_size = font_size;
-        self
-    }
-
-    pub fn font_weight(mut self, font_weight: FontWeight) -> Self {
-        self.props.style.font_weight = font_weight;
-        self
-    }
-
-    pub fn font_style(mut self, font_style: FontStyle) -> Self {
-        self.props.style.font_style = font_style;
-        self
-    }
-
-    pub fn line_height(mut self, line_height: LineHeight) -> Self {
-        self.props.style.line_height = line_height;
-        self
-    }
-
-    pub fn letter_spacing(mut self, letter_spacing: f32) -> Self {
-        self.props.style.letter_spacing = letter_spacing;
         self
     }
 
@@ -108,6 +75,16 @@ impl TextWidget {
     event_handler_methods!();
 }
 
+impl LayoutStyledWidget for TextWidget {
+    fn layout_style(
+        &self,
+        computed: &ComputedStyle,
+        _measurer: &mut dyn TextMeasurer,
+    ) -> tf::Style {
+        computed_layout_style(computed)
+    }
+}
+
 impl Widget for TextWidget {
     fn as_any(&self) -> &dyn Any {
         self
@@ -122,7 +99,12 @@ impl Widget for TextWidget {
     }
 
     fn props_hash(&self) -> u64 {
-        props_hash(&self.props)
+        props_hash(&(
+            &self.props.text,
+            &self.props.paragraph,
+            &self.props.text_box,
+            &self.style,
+        ))
     }
 
     fn event_handlers_mut(&mut self) -> &mut EventHandlers {
@@ -136,56 +118,37 @@ impl Widget for TextWidget {
 
         let mut flags = DirtyFlags::empty();
         if self.props.text != next.props.text
-            || text_layout_style(&self.props) != text_layout_style(&next.props)
+            || self.props.paragraph != next.props.paragraph
+            || self.props.text_box != next.props.text_box
+            || self.style != next.style
         {
-            flags |= DirtyFlags::LAYOUT | DirtyFlags::PAINT;
-        } else if self.props.style.color != next.props.style.color
-            || self.props.style.decoration != next.props.style.decoration
-        {
-            flags |= DirtyFlags::PAINT;
+            flags |= DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
         }
 
         self.props = next.props.clone();
+        self.style = next.style.clone();
         flags
     }
 
-    fn measure(&self, measurer: &mut dyn TextMeasurer) -> Option<Size> {
-        Some(measurer.measure_text(&self.props))
+    fn style(&self) -> &Style {
+        &self.style
     }
 
-    fn paint(&self, rect: Rect, commands: &mut Vec<PaintCommand>) {
-        commands.push(PaintCommand::Text(TextPaintCommand {
-            rect,
-            props: self.props.clone(),
-        }));
+    fn measure(&self, style: &ComputedStyle, measurer: &mut dyn TextMeasurer) -> Option<Size> {
+        Some(measurer.measure_text(self.props.text.as_str(), &style.text))
+    }
+
+    fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
+        let mut props = self.props.clone();
+        apply_text_style(&mut props, style);
+        commands.push(PaintCommand::Text(TextPaintCommand { rect, props }));
     }
 
     fn handle_event(&mut self, _event: &Event, _cx: &mut EventContext<'_>) -> EventResult {
         EventResult::Ignored
     }
-}
 
-fn text_layout_style(props: &TextProps) -> TextLayoutStyle<'_> {
-    TextLayoutStyle {
-        font_family: &props.style.font_family,
-        font_size: props.style.font_size,
-        font_weight: props.style.font_weight,
-        font_style: props.style.font_style,
-        line_height: props.style.line_height,
-        letter_spacing: props.style.letter_spacing,
-        paragraph: &props.paragraph,
-        text_box: &props.text_box,
+    fn text(&self) -> Option<TextContent> {
+        Some(self.props.text.clone())
     }
-}
-
-#[derive(PartialEq)]
-struct TextLayoutStyle<'a> {
-    font_family: &'a FontFamily,
-    font_size: f32,
-    font_weight: FontWeight,
-    font_style: FontStyle,
-    line_height: LineHeight,
-    letter_spacing: f32,
-    paragraph: &'a ParagraphStyle,
-    text_box: &'a TextBoxStyle,
 }

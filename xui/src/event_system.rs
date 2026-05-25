@@ -348,12 +348,14 @@ mod tests {
         let root = arena.root();
         let parent = arena.insert(
             root,
-            crate::widgets::ContainerWidget::new().background(Color::TRANSPARENT),
+            crate::widgets::ContainerWidget::new()
+                .style(crate::Style::new().background(Color::TRANSPARENT)),
             tf::Style::default(),
         );
         let child = arena.insert(
             parent,
-            crate::widgets::ContainerWidget::new().background(Color::TRANSPARENT),
+            crate::widgets::ContainerWidget::new()
+                .style(crate::Style::new().background(Color::TRANSPARENT)),
             tf::Style::default(),
         );
 

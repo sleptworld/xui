@@ -6,7 +6,7 @@ members = [
     "xui-macros",
     "xui-winit",
     "xui-example-app",
-    "xui-text",
+    "xui-text", "xui-components",
 ]
 
 

@@ -727,7 +727,12 @@ impl WGPUBackend {
             return Ok(());
         }
 
-        let par = text.layout_text(&command.props, TextLayoutConstraints::max_width(rect.width));
+        let style: xui_interface::ComputedTextStyle = (&command.props.style).into();
+        let par = text.layout_text(
+            command.props.text.as_str(),
+            &style,
+            TextLayoutConstraints::max_width(rect.width),
+        );
         for line in par.lines() {
             let baseline_y = rect.y + line.baseline();
             let mut pen_x = rect.x + line.offset();

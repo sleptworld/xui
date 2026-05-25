@@ -16,10 +16,16 @@ pub use crate::runtime::{
     ControlFlow, EventSource, FrameReport, GuiRuntime, QueueEventSource, RuntimeEvent,
 };
 pub use crate::state::HookContext;
+pub use crate::style::{
+    ColorToken, ColorValue, ComputedLayoutStyle, ComputedPaintStyle, ComputedStyle,
+    ComputedTextStyle, DisplayStyle, FlexDirectionStyle, FontSizeToken, LengthValue, RadiusToken,
+    SpacingToken, Style, StyleValue, Theme, WidgetState,
+};
 pub use crate::tree::UiArena;
 pub use crate::widgets::{
-    ButtonWidget, ColumnWidget, ComponentElement, ContainerWidget, Element, LabelWidget, RowWidget,
-    TextWidget, Widget, button, column, component, container, label, row, text,
+    ButtonWidget, ColumnWidget, ComponentElement, ContainerWidget, Element, LabelWidget,
+    LayoutStyledWidget, RowWidget, StyleScopeWidget, TextWidget, Widget, button, column, component,
+    container, label, row, style_scope, text,
 };
 pub use xui_interface::{
     DirtyFlags, FontFamily, FontStyle, FontWeight, LineHeight, NodeId, OverflowWrap,

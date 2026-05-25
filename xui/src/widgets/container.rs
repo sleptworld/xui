@@ -1,20 +1,17 @@
 use std::any::Any;
 
+use taffy::prelude as tf;
 use xui_interface::{
-    DirtyFlags, EdgeInsets, Event, EventContext, EventHandlers, EventResult, Key, PaintCommand,
-    Rect, Size, Widget, WidgetType,
+    ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, PaintCommand,
+    Rect, Style, TextMeasurer, Widget, WidgetType,
 };
 
-use crate::core::Color;
-
-use super::{Element, hash_color, hash_edge_insets};
+use super::{Element, LayoutStyledWidget, computed_layout_style, props_hash};
 
 pub struct ContainerWidget {
     pub key: Option<Key>,
     pub children: Vec<Element>,
-    pub size: Option<Size>,
-    pub padding: EdgeInsets,
-    pub background: Color,
+    pub style: Style,
     pub event_handlers: EventHandlers,
 }
 
@@ -23,9 +20,7 @@ impl std::fmt::Debug for ContainerWidget {
         f.debug_struct("ContainerWidget")
             .field("key", &self.key)
             .field("children", &self.children.len())
-            .field("size", &self.size)
-            .field("padding", &self.padding)
-            .field("background", &self.background)
+            .field("style", &self.style)
             .finish()
     }
 }
@@ -35,9 +30,7 @@ impl ContainerWidget {
         Self {
             key: None,
             children: Vec::new(),
-            size: None,
-            padding: EdgeInsets::ZERO,
-            background: Color::TRANSPARENT,
+            style: Style::new(),
             event_handlers: EventHandlers::default(),
         }
     }
@@ -47,18 +40,8 @@ impl ContainerWidget {
         self
     }
 
-    pub fn size(mut self, size: Size) -> Self {
-        self.size = Some(size);
-        self
-    }
-
-    pub fn padding(mut self, padding: EdgeInsets) -> Self {
-        self.padding = padding;
-        self
-    }
-
-    pub fn background(mut self, background: Color) -> Self {
-        self.background = background;
+    pub fn style(mut self, style: Style) -> Self {
+        self.style = style;
         self
     }
 
@@ -90,16 +73,7 @@ impl Widget for ContainerWidget {
     }
 
     fn props_hash(&self) -> u64 {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        std::hash::Hash::hash(
-            &self
-                .size
-                .map(|size| (size.width.to_bits(), size.height.to_bits())),
-            &mut hasher,
-        );
-        hash_edge_insets(self.padding, &mut hasher);
-        hash_color(self.background, &mut hasher);
-        std::hash::Hasher::finish(&hasher)
+        props_hash(&self.style)
     }
 
     fn event_handlers_mut(&mut self) -> &mut EventHandlers {
@@ -112,17 +86,9 @@ impl Widget for ContainerWidget {
         };
 
         let mut flags = DirtyFlags::empty();
-        if self.size != next.size {
-            self.size = next.size;
+        if self.style != next.style {
+            self.style = next.style.clone();
             flags |= DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
-        }
-        if self.padding != next.padding {
-            self.padding = next.padding;
-            flags |= DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
-        }
-        if self.background != next.background {
-            self.background = next.background;
-            flags |= DirtyFlags::PAINT;
         }
 
         if flags.is_empty() {
@@ -132,16 +98,64 @@ impl Widget for ContainerWidget {
         }
     }
 
-    fn paint(&self, rect: Rect, commands: &mut Vec<PaintCommand>) {
-        if self.background.a > 0.0 {
-            commands.push(PaintCommand::FillRect {
-                rect,
-                color: self.background,
-            });
-        }
+    fn default_style(&self) -> Style {
+        Style::new()
+    }
+
+    fn style(&self) -> &Style {
+        &self.style
+    }
+
+    fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
+        paint_box(rect, style, commands);
     }
 
     fn handle_event(&mut self, _event: &Event, _cx: &mut EventContext<'_>) -> EventResult {
         EventResult::Ignored
+    }
+}
+
+impl LayoutStyledWidget for ContainerWidget {
+    fn layout_style(
+        &self,
+        computed: &ComputedStyle,
+        _measurer: &mut dyn TextMeasurer,
+    ) -> tf::Style {
+        computed_layout_style(computed)
+    }
+}
+
+pub(super) fn paint_box(rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
+    let paint = style.paint;
+    if paint.background.a > 0.0 {
+        if paint.border_radius > 0.0 {
+            commands.push(PaintCommand::FillRoundedRect {
+                rect,
+                radius: paint.border_radius,
+                color: paint.background,
+            });
+        } else {
+            commands.push(PaintCommand::FillRect {
+                rect,
+                color: paint.background,
+            });
+        }
+    }
+
+    if paint.border_width > 0.0 && paint.border_color.a > 0.0 {
+        if paint.border_radius > 0.0 {
+            commands.push(PaintCommand::StrokeRoundedRect {
+                rect,
+                radius: paint.border_radius,
+                color: paint.border_color,
+                width: paint.border_width,
+            });
+        } else {
+            commands.push(PaintCommand::StrokeRect {
+                rect,
+                color: paint.border_color,
+                width: paint.border_width,
+            });
+        }
     }
 }

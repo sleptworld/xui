@@ -1,20 +1,18 @@
 use std::any::Any;
 
+use taffy::prelude as tf;
 use xui_interface::{
-    DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, PaintCommand, Rect, Size,
-    TextMeasurer, TextPaintCommand, TextProps, Widget, WidgetType,
+    ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, PaintCommand,
+    Rect, Size, Style, TextMeasurer, TextPaintCommand, TextProps, Widget, WidgetType,
 };
 
-use crate::core::Color;
-
-use super::props_hash;
+use super::{LayoutStyledWidget, fixed_size_style, props_hash};
 
 #[derive(Debug)]
 pub struct LabelWidget {
     pub key: Option<Key>,
     pub text: String,
-    pub color: Color,
-    pub font_size: f32,
+    pub style: Style,
     pub event_handlers: EventHandlers,
 }
 
@@ -23,19 +21,13 @@ impl LabelWidget {
         Self {
             key: None,
             text: text.into(),
-            color: Color::BLACK,
-            font_size: 14.0,
+            style: Style::new(),
             event_handlers: EventHandlers::default(),
         }
     }
 
-    pub fn color(mut self, color: Color) -> Self {
-        self.color = color;
-        self
-    }
-
-    pub fn font_size(mut self, font_size: f32) -> Self {
-        self.font_size = font_size;
+    pub fn style(mut self, style: Style) -> Self {
+        self.style = style;
         self
     }
 
@@ -45,6 +37,14 @@ impl LabelWidget {
     }
 
     event_handler_methods!();
+}
+
+impl LayoutStyledWidget for LabelWidget {
+    fn layout_style(&self, computed: &ComputedStyle, measurer: &mut dyn TextMeasurer) -> tf::Style {
+        self.measure(computed, measurer)
+            .map(fixed_size_style)
+            .unwrap_or_default()
+    }
 }
 
 impl Widget for LabelWidget {
@@ -61,15 +61,7 @@ impl Widget for LabelWidget {
     }
 
     fn props_hash(&self) -> u64 {
-        let color = self.color;
-        props_hash(&(
-            &self.text,
-            color.r.to_bits(),
-            color.g.to_bits(),
-            color.b.to_bits(),
-            color.a.to_bits(),
-            self.font_size.to_bits(),
-        ))
+        props_hash(&(&self.text, &self.style))
     }
 
     fn event_handlers_mut(&mut self) -> &mut EventHandlers {
@@ -86,25 +78,24 @@ impl Widget for LabelWidget {
             self.text = next.text.clone();
             flags |= DirtyFlags::LAYOUT | DirtyFlags::PAINT;
         }
-        if self.font_size != next.font_size {
-            self.font_size = next.font_size;
+        if self.style != next.style {
+            self.style = next.style.clone();
             flags |= DirtyFlags::LAYOUT | DirtyFlags::PAINT;
-        }
-        if self.color != next.color {
-            self.color = next.color;
-            flags |= DirtyFlags::PAINT;
         }
         flags
     }
 
-    fn measure(&self, measurer: &mut dyn TextMeasurer) -> Option<Size> {
-        Some(measurer.measure(&self.text, self.font_size))
+    fn style(&self) -> &Style {
+        &self.style
     }
 
-    fn paint(&self, rect: Rect, commands: &mut Vec<PaintCommand>) {
+    fn measure(&self, style: &ComputedStyle, measurer: &mut dyn TextMeasurer) -> Option<Size> {
+        Some(measurer.measure_text(&self.text, &style.text))
+    }
+
+    fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
         let mut text_props = TextProps::new(self.text.clone());
-        text_props.style.color = self.color;
-        text_props.style.font_size = self.font_size;
+        apply_text_style(&mut text_props, style);
         commands.push(PaintCommand::Text(TextPaintCommand {
             rect,
             props: text_props,
@@ -114,4 +105,15 @@ impl Widget for LabelWidget {
     fn handle_event(&mut self, _event: &Event, _cx: &mut EventContext<'_>) -> EventResult {
         EventResult::Ignored
     }
+}
+
+pub(crate) fn apply_text_style(text_props: &mut TextProps, style: &ComputedStyle) {
+    text_props.style.color = style.text.color;
+    text_props.style.font_family = style.text.font_family.clone();
+    text_props.style.font_size = style.text.font_size;
+    text_props.style.font_weight = style.text.font_weight;
+    text_props.style.font_style = style.text.font_style;
+    text_props.style.line_height = style.text.line_height;
+    text_props.style.letter_spacing = style.text.letter_spacing;
+    text_props.style.decoration = style.text.decoration;
 }

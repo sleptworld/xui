@@ -4,9 +4,8 @@ use std::sync::Arc;
 use swash::shape::ShapeContext;
 use swash::{Style, Weight};
 use xui_interface::{
-    Color, FontFamily, FontStyle as XuiFontStyle, FontWeight as XuiFontWeight, LineHeight,
-    ParagraphStyle, Size, TextBoxStyle, TextContent, TextDecoration, TextLayoutConstraints,
-    TextMeasurer, TextProps, TextStyle,
+    Color, ComputedTextStyle, FontFamily, FontStyle as XuiFontStyle, FontWeight as XuiFontWeight,
+    LineHeight, Size, TextDecoration, TextLayoutConstraints, TextMeasurer,
 };
 
 use crate::{
@@ -19,7 +18,12 @@ use crate::{
 };
 
 pub trait TextLayouter: TextMeasurer {
-    fn layout_text(&mut self, props: &TextProps, constraints: TextLayoutConstraints) -> Arc<Par>;
+    fn layout_text(
+        &mut self,
+        text: &str,
+        style: &ComputedTextStyle,
+        constraints: TextLayoutConstraints,
+    ) -> Arc<Par>;
 }
 
 pub struct Engine {
@@ -70,25 +74,27 @@ impl Engine {
         }
     }
 
-    pub fn measure_props(&mut self, props: &TextProps) -> Size {
-        self.measure_props_with_constraints(props, TextLayoutConstraints::UNBOUNDED)
+    pub fn measure_text_style(&mut self, text: &str, style: &ComputedTextStyle) -> Size {
+        self.measure_text_style_with_constraints(text, style, TextLayoutConstraints::UNBOUNDED)
     }
 
-    pub fn measure_props_with_constraints(
+    pub fn measure_text_style_with_constraints(
         &mut self,
-        props: &TextProps,
+        text: &str,
+        style: &ComputedTextStyle,
         constraints: TextLayoutConstraints,
     ) -> Size {
-        size_for_par(&self.layout_text(props, constraints))
+        size_for_par(&self.layout_text(text, style, constraints))
     }
 
-    fn layout_props_uncached(
+    fn layout_text_uncached(
         &mut self,
-        props: &TextProps,
+        text: &str,
+        style: &ComputedTextStyle,
         constraints: TextLayoutConstraints,
     ) -> Par {
-        let styles = span_styles_for_props(props);
-        let doc = Doc::simple(styles.iter(), props.text.as_str());
+        let styles = span_styles_for_style(style);
+        let doc = Doc::simple(styles.iter(), text);
         self.layout_doc_with_constraints(&doc, constraints)
     }
 
@@ -116,29 +122,35 @@ impl Engine {
 }
 
 impl TextLayouter for Engine {
-    fn layout_text(&mut self, props: &TextProps, constraints: TextLayoutConstraints) -> Arc<Par> {
-        let key = TextLayoutKey::new(props, constraints);
+    fn layout_text(
+        &mut self,
+        text: &str,
+        style: &ComputedTextStyle,
+        constraints: TextLayoutConstraints,
+    ) -> Arc<Par> {
+        let key = TextLayoutKey::new(text, style, constraints);
         if let Some(par) = self.layout_cache.get(&key) {
             return Arc::clone(par);
         }
 
-        let par = Arc::new(self.layout_props_uncached(props, constraints));
+        let par = Arc::new(self.layout_text_uncached(text, style, constraints));
         self.layout_cache.insert(key, Arc::clone(&par));
         par
     }
 }
 
 impl TextMeasurer for Engine {
-    fn measure_text(&mut self, props: &TextProps) -> Size {
-        self.measure_props(props)
+    fn measure_text(&mut self, text: &str, style: &ComputedTextStyle) -> Size {
+        self.measure_text_style(text, style)
     }
 
     fn measure_text_with_constraints(
         &mut self,
-        props: &TextProps,
+        text: &str,
+        style: &ComputedTextStyle,
         constraints: TextLayoutConstraints,
     ) -> Size {
-        self.measure_props_with_constraints(props, constraints)
+        self.measure_text_style_with_constraints(text, style, constraints)
     }
 }
 
@@ -163,20 +175,16 @@ fn size_for_par(par: &Par) -> Size {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct TextLayoutKey {
-    text: TextContent,
+    text: Arc<str>,
     style: TextStyleKey,
-    paragraph: ParagraphStyle,
-    text_box: TextBoxStyle,
     constraints: TextLayoutConstraintsKey,
 }
 
 impl TextLayoutKey {
-    fn new(props: &TextProps, constraints: TextLayoutConstraints) -> Self {
+    fn new(text: &str, style: &ComputedTextStyle, constraints: TextLayoutConstraints) -> Self {
         Self {
-            text: props.text.clone(),
-            style: TextStyleKey::from(&props.style),
-            paragraph: props.paragraph.clone(),
-            text_box: props.text_box.clone(),
+            text: Arc::from(text),
+            style: TextStyleKey::from(style),
             constraints: TextLayoutConstraintsKey::from(constraints),
         }
     }
@@ -207,8 +215,8 @@ struct TextStyleKey {
     decoration: TextDecoration,
 }
 
-impl From<&TextStyle> for TextStyleKey {
-    fn from(style: &TextStyle) -> Self {
+impl From<&ComputedTextStyle> for TextStyleKey {
+    fn from(style: &ComputedTextStyle) -> Self {
         Self {
             color: ColorKey::from(style.color),
             font_family: style.font_family.clone(),
@@ -261,18 +269,18 @@ impl From<LineHeight> for LineHeightKey {
     }
 }
 
-fn span_styles_for_props(props: &TextProps) -> Vec<SpanStyle<'static>> {
+fn span_styles_for_style(style: &ComputedTextStyle) -> Vec<SpanStyle<'static>> {
     let mut styles = Vec::with_capacity(7);
-    styles.push(SpanStyle::FamilyList(family_list(&props.style.font_family)));
-    styles.push(SpanStyle::Size(props.style.font_size));
-    styles.push(SpanStyle::Weight(font_weight(props.style.font_weight)));
-    styles.push(SpanStyle::Style(font_style(props.style.font_style)));
+    styles.push(SpanStyle::FamilyList(family_list(&style.font_family)));
+    styles.push(SpanStyle::Size(style.font_size));
+    styles.push(SpanStyle::Weight(font_weight(style.font_weight)));
+    styles.push(SpanStyle::Style(font_style(style.font_style)));
     styles.push(SpanStyle::LineSpacing(line_spacing(
-        props.style.line_height,
-        props.style.font_size,
+        style.line_height,
+        style.font_size,
     )));
-    styles.push(SpanStyle::LetterSpacing(props.style.letter_spacing));
-    styles.push(SpanStyle::Underline(props.style.decoration.underline));
+    styles.push(SpanStyle::LetterSpacing(style.letter_spacing));
+    styles.push(SpanStyle::Underline(style.decoration.underline));
     styles
 }
 
@@ -352,13 +360,17 @@ impl<'a> Session<'a> {
 mod test {
     use std::sync::Arc;
 
-    use xui_interface::{TextLayoutConstraints, TextMeasurer, TextProps};
+    use xui_interface::{ComputedTextStyle, TextLayoutConstraints, TextMeasurer, TextStyle};
 
     use crate::{
         doc::{Doc, SpanStyle},
         engine::{Engine, TextLayouter},
         library::FamilyList,
     };
+
+    fn text_style() -> ComputedTextStyle {
+        TextStyle::default().into()
+    }
 
     #[test]
     fn test() {
@@ -373,10 +385,10 @@ mod test {
     #[test]
     fn layout_text_reuses_cached_par_for_same_props() {
         let mut engine = Engine::new();
-        let props = TextProps::new("Hello, cache");
+        let style = text_style();
 
-        let first = engine.layout_text(&props, TextLayoutConstraints::UNBOUNDED);
-        let second = engine.layout_text(&props, TextLayoutConstraints::UNBOUNDED);
+        let first = engine.layout_text("Hello, cache", &style, TextLayoutConstraints::UNBOUNDED);
+        let second = engine.layout_text("Hello, cache", &style, TextLayoutConstraints::UNBOUNDED);
 
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(engine.layout_cache.len(), 1);
@@ -385,15 +397,15 @@ mod test {
     #[test]
     fn layout_text_uses_style_in_cache_key() {
         let mut engine = Engine::new();
-        let props = TextProps::new("Hello, cache");
-        let mut larger = props.clone();
-        larger.style.font_size += 1.0;
-        let mut spaced = props.clone();
-        spaced.style.letter_spacing = 1.0;
+        let style = text_style();
+        let mut larger = style.clone();
+        larger.font_size += 1.0;
+        let mut spaced = style.clone();
+        spaced.letter_spacing = 1.0;
 
-        let first = engine.layout_text(&props, TextLayoutConstraints::UNBOUNDED);
-        let larger = engine.layout_text(&larger, TextLayoutConstraints::UNBOUNDED);
-        let spaced = engine.layout_text(&spaced, TextLayoutConstraints::UNBOUNDED);
+        let first = engine.layout_text("Hello, cache", &style, TextLayoutConstraints::UNBOUNDED);
+        let larger = engine.layout_text("Hello, cache", &larger, TextLayoutConstraints::UNBOUNDED);
+        let spaced = engine.layout_text("Hello, cache", &spaced, TextLayoutConstraints::UNBOUNDED);
 
         assert!(!Arc::ptr_eq(&first, &larger));
         assert!(!Arc::ptr_eq(&first, &spaced));
@@ -403,11 +415,23 @@ mod test {
     #[test]
     fn layout_text_uses_constraints_in_cache_key() {
         let mut engine = Engine::new();
-        let props = TextProps::new("Hello, cache constraints");
+        let style = text_style();
 
-        let wide = engine.layout_text(&props, TextLayoutConstraints::max_width(500.0));
-        let narrow = engine.layout_text(&props, TextLayoutConstraints::max_width(50.0));
-        let wide_again = engine.layout_text(&props, TextLayoutConstraints::max_width(500.0));
+        let wide = engine.layout_text(
+            "Hello, cache constraints",
+            &style,
+            TextLayoutConstraints::max_width(500.0),
+        );
+        let narrow = engine.layout_text(
+            "Hello, cache constraints",
+            &style,
+            TextLayoutConstraints::max_width(50.0),
+        );
+        let wide_again = engine.layout_text(
+            "Hello, cache constraints",
+            &style,
+            TextLayoutConstraints::max_width(500.0),
+        );
 
         assert!(Arc::ptr_eq(&wide, &wide_again));
         assert!(!Arc::ptr_eq(&wide, &narrow));
@@ -417,11 +441,11 @@ mod test {
     #[test]
     fn measure_text_populates_layout_cache() {
         let mut engine = Engine::new();
-        let props = TextProps::new("Measured once");
+        let style = text_style();
 
-        let _ = engine.measure_text(&props);
-        let first = engine.layout_text(&props, TextLayoutConstraints::UNBOUNDED);
-        let second = engine.layout_text(&props, TextLayoutConstraints::UNBOUNDED);
+        let _ = engine.measure_text("Measured once", &style);
+        let first = engine.layout_text("Measured once", &style, TextLayoutConstraints::UNBOUNDED);
+        let second = engine.layout_text("Measured once", &style, TextLayoutConstraints::UNBOUNDED);
 
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(engine.layout_cache.len(), 1);
