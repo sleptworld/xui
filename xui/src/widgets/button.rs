@@ -2,8 +2,8 @@ use std::any::Any;
 use std::fmt::Debug;
 
 use xui_interface::{
-    Color, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, PaintCommand, Point,
-    PointerButton, Rect, Size, TextMeasurer, Widget, WidgetType,
+    Color, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, PaintCommand,
+    PointerButton, Rect, Size, TextMeasurer, TextPaintCommand, TextProps, Widget, WidgetType,
 };
 
 use super::props_hash;
@@ -107,12 +107,18 @@ impl Widget for ButtonWidget {
             color: Color::GRAY_300,
             width: 1.0,
         });
-        commands.push(PaintCommand::Text {
-            position: Point::new(rect.x + 8.0, rect.y + 18.0),
-            text: self.text.clone(),
-            color: text_color,
-            size: 14.0,
-        });
+        let mut text_props = TextProps::new(self.text.clone());
+        text_props.style.color = text_color;
+        text_props.style.font_size = 14.0;
+        commands.push(PaintCommand::Text(TextPaintCommand {
+            rect: Rect::new(
+                rect.x + 8.0,
+                rect.y + 4.0,
+                (rect.width - 16.0).max(0.0),
+                (rect.height - 8.0).max(0.0),
+            ),
+            props: text_props,
+        }));
     }
 
     fn handle_event(&mut self, event: &Event, cx: &mut EventContext<'_>) -> EventResult {

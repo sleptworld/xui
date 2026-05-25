@@ -9,7 +9,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 use xui::App;
 use xui::{runtime::ControlFlow as XuiControlFlow, runtime::GuiRuntime, runtime::RuntimeEvent};
-use xui_interface::{Point, RenderBackend, Size};
+use xui_interface::{Point, RenderBackend, Size, TextMeasurer};
 
 use crate::translate::translate_window_event;
 
@@ -75,12 +75,12 @@ impl<E> From<EventLoopError> for WinitRunError<E> {
     }
 }
 
-pub struct WinitRunner<B: RenderBackend, F>
+pub struct WinitRunner<B: RenderBackend<T>, T: TextMeasurer, F>
 where
-    F: FnOnce(Arc<Window>) -> (App, B),
+    F: FnOnce(Arc<Window>) -> (App, T, B),
 {
     f_init: Option<F>,
-    runtime: Option<GuiRuntime<B>>,
+    runtime: Option<GuiRuntime<B, T>>,
     options: WinitRunnerOptions,
     window: Option<Arc<Window>>,
     window_id: Option<WindowId>,
@@ -89,9 +89,9 @@ where
     render_error: Option<B::Error>,
 }
 
-impl<B: RenderBackend, F> WinitRunner<B, F>
+impl<B: RenderBackend<T>, T: TextMeasurer, F> WinitRunner<B, T, F>
 where
-    F: FnOnce(Arc<Window>) -> (App, B),
+    F: FnOnce(Arc<Window>) -> (App, T, B),
 {
     pub fn with_backend_factory(factory: F, option: Option<WinitRunnerOptions>) -> Self {
         Self::with_options(factory, option.unwrap_or_default())
@@ -110,11 +110,11 @@ where
         }
     }
 
-    pub fn runtime(&self) -> &GuiRuntime<B> {
+    pub fn runtime(&self) -> &GuiRuntime<B, T> {
         self.runtime.as_ref().unwrap()
     }
 
-    pub fn runtime_mut(&mut self) -> &mut GuiRuntime<B> {
+    pub fn runtime_mut(&mut self) -> &mut GuiRuntime<B, T> {
         self.runtime.as_mut().unwrap()
     }
 
@@ -164,9 +164,9 @@ where
     }
 }
 
-impl<B: RenderBackend, F> ApplicationHandler for WinitRunner<B, F>
+impl<B: RenderBackend<T>, T: TextMeasurer, F> ApplicationHandler for WinitRunner<B, T, F>
 where
-    F: FnOnce(Arc<Window>) -> (App, B),
+    F: FnOnce(Arc<Window>) -> (App, T, B),
 {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -177,8 +177,8 @@ where
             Ok(window) => {
                 self.window_id = Some(window.id());
                 let window = Arc::new(window);
-                let (app, backend) = (self.f_init.take().unwrap())(window.clone());
-                self.runtime = Some(GuiRuntime::new(app, backend));
+                let (app, text, backend) = (self.f_init.take().unwrap())(window.clone());
+                self.runtime = Some(GuiRuntime::new(app, backend, text));
                 let size = window.inner_size();
                 self.runtime_mut()
                     .handle_event(RuntimeEvent::Resize(Size::new(

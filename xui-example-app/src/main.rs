@@ -1,6 +1,7 @@
 mod components;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
+use xui::font::TextI;
 use xui::prelude::*;
 use xui_winit::{WGPUBackend, WinitRunner, WinitRunnerOptions};
 
@@ -61,9 +62,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
-    WinitRunner::with_backend_factory(|window| (app, WGPUBackend::new(window)), Some(options))
-        .run()
-        .unwrap();
+    WinitRunner::with_backend_factory(
+        |window| (app, TextI::new(), WGPUBackend::new(window)),
+        Some(options),
+    )
+    .run()
+    .unwrap();
 
     Ok(())
 }

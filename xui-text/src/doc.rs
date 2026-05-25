@@ -146,7 +146,6 @@ impl<'a> Doc<'a> {
                 Some(val) => write!(f, "underline-size: {}px", val)?,
                 None => write!(f, "underline-size: auto")?,
             },
-            SpanStyle::Color(c) => write!(f, "color: {:?}", c)?,
         }
         Ok(())
     }
@@ -169,8 +168,6 @@ pub enum SpanStyle<'a> {
     Underline(bool),
     UnderlineOffset(Option<f32>),
     UnderlineSize(Option<f32>),
-    // Inner
-    Color([f32; 4]),
 }
 
 impl SpanStyle<'_> {

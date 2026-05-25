@@ -107,30 +107,30 @@ fn update_hover(arena: &mut UiArena, event: &Event) {
         let new_path = hovered.map(|id| arena.event_path(id)).unwrap_or_default();
         let old_path = arena.event_state().hovered_path.clone();
 
-        #[cfg(debug_assertions)]
-        {
-            println!("==== OLD PATH ====");
+        // #[cfg(debug_assertions)]
+        // {
+        //     println!("==== OLD PATH ====");
 
-            for o in old_path.iter() {
-                if let Some(w) = arena.node(*o) {
-                    println!(
-                        "Node ID: {:?}, layout: {:?}, type: {:?}",
-                        w.id, w.layout, w.node_type
-                    );
-                }
-            }
+        //     for o in old_path.iter() {
+        //         if let Some(w) = arena.node(*o) {
+        //             println!(
+        //                 "Node ID: {:?}, layout: {:?}, type: {:?}",
+        //                 w.id, w.layout, w.node_type
+        //             );
+        //         }
+        //     }
 
-            println!("==== NEW PATH ====");
+        //     println!("==== NEW PATH ====");
 
-            for n in new_path.iter() {
-                if let Some(w) = arena.node(*n) {
-                    println!(
-                        "Node ID: {:?}, layout: {:?}, type: {:?}",
-                        w.id, w.layout, w.node_type
-                    );
-                }
-            }
-        }
+        //     for n in new_path.iter() {
+        //         if let Some(w) = arena.node(*n) {
+        //             println!(
+        //                 "Node ID: {:?}, layout: {:?}, type: {:?}",
+        //                 w.id, w.layout, w.node_type
+        //             );
+        //         }
+        //     }
+        // }
 
         let common = old_path
             .iter()

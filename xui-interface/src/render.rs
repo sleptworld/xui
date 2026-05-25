@@ -1,4 +1,4 @@
-use crate::{Color, Point, Rect, Size};
+use crate::{Color, Point, Rect, Size, TextProps};
 
 pub trait Painter {
     fn push(&mut self, command: PaintCommand);
@@ -38,12 +38,7 @@ pub enum PaintCommand {
         color: Color,
         width: f32,
     },
-    Text {
-        position: Point,
-        text: String,
-        color: Color,
-        size: f32,
-    },
+    Text(TextPaintCommand),
     // Clip
     PushClip(Rect),
     PopClip,
@@ -55,6 +50,12 @@ pub enum PaintCommand {
     PopTransform,
 
     Clear(Color),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextPaintCommand {
+    pub rect: Rect,
+    pub props: TextProps,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -96,7 +97,7 @@ impl DamageRegion {
     }
 }
 
-pub trait RenderBackend {
+pub trait RenderBackend<T> {
     type Error;
 
     fn begin_frame(&mut self, size: Size) -> Result<(), Self::Error>;
@@ -104,6 +105,7 @@ pub trait RenderBackend {
         &mut self,
         commands: &[PaintCommand],
         damage: &DamageRegion,
+        text: &mut T,
     ) -> Result<(), Self::Error>;
     fn end_frame(&mut self) -> Result<(), Self::Error>;
 
@@ -116,9 +118,9 @@ pub trait RenderBackend {
     }
 }
 
-pub trait DrawBackend: RenderBackend {}
+pub trait DrawBackend<T>: RenderBackend<T> {}
 
-impl<T: RenderBackend> DrawBackend for T {}
+impl<T, B: RenderBackend<T>> DrawBackend<T> for B {}
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct MockRenderBackend {
@@ -128,7 +130,7 @@ pub struct MockRenderBackend {
     pub last_commands: Vec<PaintCommand>,
 }
 
-impl RenderBackend for MockRenderBackend {
+impl<T> RenderBackend<T> for MockRenderBackend {
     type Error = core::convert::Infallible;
 
     fn begin_frame(&mut self, size: Size) -> Result<(), Self::Error> {
@@ -140,6 +142,7 @@ impl RenderBackend for MockRenderBackend {
         &mut self,
         commands: &[PaintCommand],
         damage: &DamageRegion,
+        _text: &mut T,
     ) -> Result<(), Self::Error> {
         self.last_commands = commands.to_vec();
         self.last_damage = damage.clone();

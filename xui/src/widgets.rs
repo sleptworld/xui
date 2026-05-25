@@ -5,6 +5,7 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use taffy::prelude as tf;
+use xui_interface::TextMeasurer;
 pub use xui_interface::{EventHandlers, Widget, WidgetType};
 
 use crate::core::{Color, EdgeInsets, Size};
@@ -190,7 +191,7 @@ impl HostElement {
         self.widget.with(|widget| widget.props_hash())
     }
 
-    pub fn style(&self, measurer: &mut TextI) -> tf::Style {
+    pub fn style<T: TextMeasurer>(&self, measurer: &mut T) -> tf::Style {
         self.widget
             .with(|widget| style_for_widget(widget, measurer))
     }
@@ -240,7 +241,7 @@ impl Element {
         }
     }
 
-    pub fn style(&self, measurer: &mut TextI) -> tf::Style {
+    pub fn style<T: TextMeasurer>(&self, measurer: &mut T) -> tf::Style {
         match self {
             Self::Host(host) => host.style(measurer),
             Self::Component(_) => panic!("component elements do not have layout style"),
@@ -386,7 +387,7 @@ pub fn root_widget() -> Box<dyn Widget> {
     Box::new(root::RootWidget::default())
 }
 
-pub fn style_for_widget(widget: &dyn Widget, measurer: &mut TextI) -> tf::Style {
+pub fn style_for_widget<T: TextMeasurer>(widget: &dyn Widget, measurer: &mut T) -> tf::Style {
     if let Some(label) = widget.as_any().downcast_ref::<LabelWidget>() {
         return label
             .measure(measurer)
@@ -394,11 +395,8 @@ pub fn style_for_widget(widget: &dyn Widget, measurer: &mut TextI) -> tf::Style 
             .unwrap_or_default();
     }
 
-    if let Some(text) = widget.as_any().downcast_ref::<TextWidget>() {
-        return text
-            .measure(measurer)
-            .map(fixed_size_style)
-            .unwrap_or_default();
+    if widget.as_any().downcast_ref::<TextWidget>().is_some() {
+        return tf::Style::default();
     }
 
     if let Some(button) = widget.as_any().downcast_ref::<ButtonWidget>() {

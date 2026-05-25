@@ -1,8 +1,8 @@
 use std::any::Any;
 
 use xui_interface::{
-    DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, PaintCommand, Point, Rect,
-    Size, TextMeasurer, Widget, WidgetType,
+    DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, PaintCommand, Rect, Size,
+    TextMeasurer, TextPaintCommand, TextProps, Widget, WidgetType,
 };
 
 use crate::core::Color;
@@ -102,12 +102,13 @@ impl Widget for LabelWidget {
     }
 
     fn paint(&self, rect: Rect, commands: &mut Vec<PaintCommand>) {
-        commands.push(PaintCommand::Text {
-            position: Point::new(rect.x, rect.y + self.font_size),
-            text: self.text.clone(),
-            color: self.color,
-            size: self.font_size,
-        });
+        let mut text_props = TextProps::new(self.text.clone());
+        text_props.style.color = self.color;
+        text_props.style.font_size = self.font_size;
+        commands.push(PaintCommand::Text(TextPaintCommand {
+            rect,
+            props: text_props,
+        }));
     }
 
     fn handle_event(&mut self, _event: &Event, _cx: &mut EventContext<'_>) -> EventResult {

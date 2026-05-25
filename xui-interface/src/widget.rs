@@ -4,7 +4,7 @@ use slotmap::new_key_type;
 
 use crate::{
     DirtyFlags, Event, EventContext, EventHandlers, EventResult, PaintCommand, Rect, Size,
-    TextProps,
+    TextContent, TextLayoutConstraints, TextProps,
 };
 
 new_key_type! {
@@ -37,10 +37,20 @@ impl From<String> for Key {
 }
 
 pub trait TextMeasurer {
-    fn measure(&mut self, text: &str, font_size: f32) -> Size;
+    fn measure_text(&mut self, props: &TextProps) -> Size;
 
-    fn measure_text(&mut self, props: &TextProps) -> Size {
-        self.measure(props.text.as_str(), props.style.font_size)
+    fn measure_text_with_constraints(
+        &mut self,
+        props: &TextProps,
+        _constraints: TextLayoutConstraints,
+    ) -> Size {
+        self.measure_text(props)
+    }
+
+    fn measure(&mut self, text: &str, font_size: f32) -> Size {
+        let mut props = TextProps::new(TextContent::copy_from(text));
+        props.style.font_size = font_size;
+        self.measure_text(&props)
     }
 }
 

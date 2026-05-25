@@ -15,12 +15,12 @@ pub use event::{
 };
 pub use render::{
     DamageRegion, DrawBackend, FontRenderBackend, MockRenderBackend, PaintCommand, Painter,
-    RenderBackend,
+    RenderBackend, TextPaintCommand,
 };
 pub use runtime::EventSource;
 pub use text::{
     FontFamily, FontStyle, FontWeight, LineHeight, OverflowWrap, ParagraphStyle, TextAlign,
-    TextBoxStyle, TextContent, TextDecoration, TextOverflow, TextProps, TextStyle,
-    TextVerticalAlign, WhiteSpace,
+    TextBoxStyle, TextContent, TextDecoration, TextLayoutConstraints, TextOverflow, TextProps,
+    TextStyle, TextVerticalAlign, WhiteSpace,
 };
 pub use widget::{Component, Key, NodeId, TextMeasurer, Widget, WidgetType};

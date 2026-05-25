@@ -4,9 +4,13 @@ use etagere::{Allocation, AllocatorOptions};
 use etagere::{BucketedAtlasAllocator, Size};
 use glam::{Vec2, Vec3};
 use wgpu::util::DeviceExt;
-use xui_interface::{Color, DamageRegion, PaintCommand, Point, Rect, RenderBackend};
-use xui_text::atlas::FontRenderBackend;
-use xui_text::atlas::RendedGlyphBitmap;
+use xui_interface::{
+    Color, DamageRegion, PaintCommand, Point, Rect, RenderBackend, TextLayoutConstraints,
+    TextPaintCommand,
+};
+use xui_text::atlas::{FontRenderBackend, GlyphAtlas, RendedGlyphBitmap};
+use xui_text::engine::TextLayouter;
+use xui_text::typ::TextRunStyle;
 
 use crate::sdf::UI_SHADER_WGSL;
 
@@ -23,6 +27,8 @@ pub struct WGPUBackend {
     ui_uniform_buffer: wgpu::Buffer,
     ui_bind_group: wgpu::BindGroup,
     atlas: Atlas,
+    glyph_atlas: GlyphAtlas<AllocInfo>,
+    last_text_glyph_records: Vec<TextGlyphRecord>,
     scene: SceneTexture,
     scene_needs_clear: bool,
     presented_frame: bool,
@@ -67,6 +73,17 @@ struct UiInstance {
     extra: [f32; 4],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextGlyphRecord {
+    pub screen_rect: Rect,
+    pub clip: Rect,
+    pub color: Color,
+    pub atlas_origin: Vec2,
+    pub atlas_layer: u32,
+    pub atlas_size: Vec3,
+    pub atlas_rect: Rect,
+}
+
 impl UiInstance {
     fn layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
@@ -80,6 +97,10 @@ impl UiInstance {
 impl WGPUBackend {
     pub fn new(window: Arc<winit::window::Window>) -> Self {
         pollster::block_on(Self::new_(window))
+    }
+
+    pub fn last_text_glyph_records(&self) -> &[TextGlyphRecord] {
+        &self.last_text_glyph_records
     }
 
     async fn new_(window: Arc<winit::window::Window>) -> Self {
@@ -196,6 +217,7 @@ impl WGPUBackend {
         });
 
         let atlas = Atlas::new(&device);
+        let glyph_atlas = GlyphAtlas::new();
         let scene = SceneTexture::new(&device, &config);
 
         Self {
@@ -209,6 +231,8 @@ impl WGPUBackend {
             ui_uniform_buffer,
             ui_bind_group,
             atlas,
+            glyph_atlas,
+            last_text_glyph_records: Vec::new(),
             scene,
             scene_needs_clear: true,
             presented_frame: false,
@@ -382,7 +406,7 @@ impl Atlas {
     }
 }
 
-impl RenderBackend for WGPUBackend {
+impl<T: TextLayouter> RenderBackend<T> for WGPUBackend {
     type Error = WgpuBackendError;
 
     fn begin_frame(&mut self, size: xui_interface::Size) -> Result<(), Self::Error> {
@@ -417,6 +441,7 @@ impl RenderBackend for WGPUBackend {
         &mut self,
         commands: &[PaintCommand],
         damage: &DamageRegion,
+        text: &mut T,
     ) -> Result<(), Self::Error> {
         let _ = (&self.instance, &self.adapter);
         self.presented_frame = false;
@@ -426,7 +451,9 @@ impl RenderBackend for WGPUBackend {
             self.config.width as f32,
             self.config.height as f32,
         ));
-        let instances = build_ui_instances(commands, scene_clip);
+        let (instances, text_glyph_records) =
+            self.build_ui_instances(commands, scene_clip, text)?;
+        self.last_text_glyph_records = text_glyph_records;
 
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
@@ -543,122 +570,226 @@ impl RenderBackend for WGPUBackend {
     }
 }
 
-fn build_ui_instances(commands: &[PaintCommand], viewport_clip: Rect) -> Vec<UiInstance> {
-    let mut instances = Vec::new();
-    let mut transform_stack = vec![Point::new(0.0, 0.0)];
-    let mut clip_stack = vec![viewport_clip];
+impl WGPUBackend {
+    fn build_ui_instances<T: TextLayouter>(
+        &mut self,
+        commands: &[PaintCommand],
+        viewport_clip: Rect,
+        text: &mut T,
+    ) -> Result<(Vec<UiInstance>, Vec<TextGlyphRecord>), WgpuBackendError> {
+        let mut instances = Vec::new();
+        let mut text_glyph_records = Vec::new();
+        let mut transform_stack = vec![Point::new(0.0, 0.0)];
+        let mut clip_stack = vec![viewport_clip];
 
-    for command in commands {
-        match command {
-            PaintCommand::FillRect { rect, color } => {
-                let rect = translate_rect(*rect, current_transform(&transform_stack));
-                push_rect_instance(
-                    &mut instances,
-                    rect,
-                    0.0,
-                    *color,
-                    Color::TRANSPARENT,
-                    0.0,
-                    current_clip(&clip_stack),
-                );
-            }
-            PaintCommand::StrokeRect { rect, color, width } => {
-                let rect = translate_rect(*rect, current_transform(&transform_stack));
-                push_rect_instance(
-                    &mut instances,
-                    rect,
-                    0.0,
-                    Color::TRANSPARENT,
-                    *color,
-                    *width,
-                    current_clip(&clip_stack),
-                );
-            }
-            PaintCommand::FillRoundedRect {
-                rect,
-                radius,
-                color,
-            } => {
-                let rect = translate_rect(*rect, current_transform(&transform_stack));
-                push_rect_instance(
-                    &mut instances,
-                    rect,
-                    *radius,
-                    *color,
-                    Color::TRANSPARENT,
-                    0.0,
-                    current_clip(&clip_stack),
-                );
-            }
-            PaintCommand::StrokeRoundedRect {
-                rect,
-                radius,
-                color,
-                width,
-            } => {
-                let rect = translate_rect(*rect, current_transform(&transform_stack));
-                push_rect_instance(
-                    &mut instances,
-                    rect,
-                    *radius,
-                    Color::TRANSPARENT,
-                    *color,
-                    *width,
-                    current_clip(&clip_stack),
-                );
-            }
-            PaintCommand::Line {
-                from,
-                to,
-                color,
-                width,
-            } => {
-                let offset = current_transform(&transform_stack);
-                push_line_instance(
-                    &mut instances,
-                    translate_point(*from, offset),
-                    translate_point(*to, offset),
-                    *color,
-                    *width,
-                    current_clip(&clip_stack),
-                );
-            }
-            PaintCommand::Text { .. } => {}
-            PaintCommand::PushClip(rect) => {
-                let rect = translate_rect(*rect, current_transform(&transform_stack));
-                let clip = intersect_rect(current_clip(&clip_stack), rect).unwrap_or(Rect::ZERO);
-                clip_stack.push(clip);
-            }
-            PaintCommand::PopClip => {
-                if clip_stack.len() > 1 {
-                    clip_stack.pop();
+        for command in commands {
+            match command {
+                PaintCommand::FillRect { rect, color } => {
+                    let rect = translate_rect(*rect, current_transform(&transform_stack));
+                    push_rect_instance(
+                        &mut instances,
+                        rect,
+                        0.0,
+                        *color,
+                        Color::TRANSPARENT,
+                        0.0,
+                        current_clip(&clip_stack),
+                    );
                 }
-            }
-            PaintCommand::PushTransform { translate } => {
-                let current = current_transform(&transform_stack);
-                transform_stack.push(Point::new(current.x + translate.x, current.y + translate.y));
-            }
-            PaintCommand::PopTransform => {
-                if transform_stack.len() > 1 {
-                    transform_stack.pop();
+                PaintCommand::StrokeRect { rect, color, width } => {
+                    let rect = translate_rect(*rect, current_transform(&transform_stack));
+                    push_rect_instance(
+                        &mut instances,
+                        rect,
+                        0.0,
+                        Color::TRANSPARENT,
+                        *color,
+                        *width,
+                        current_clip(&clip_stack),
+                    );
                 }
-            }
+                PaintCommand::FillRoundedRect {
+                    rect,
+                    radius,
+                    color,
+                } => {
+                    let rect = translate_rect(*rect, current_transform(&transform_stack));
+                    push_rect_instance(
+                        &mut instances,
+                        rect,
+                        *radius,
+                        *color,
+                        Color::TRANSPARENT,
+                        0.0,
+                        current_clip(&clip_stack),
+                    );
+                }
+                PaintCommand::StrokeRoundedRect {
+                    rect,
+                    radius,
+                    color,
+                    width,
+                } => {
+                    let rect = translate_rect(*rect, current_transform(&transform_stack));
+                    push_rect_instance(
+                        &mut instances,
+                        rect,
+                        *radius,
+                        Color::TRANSPARENT,
+                        *color,
+                        *width,
+                        current_clip(&clip_stack),
+                    );
+                }
+                PaintCommand::Line {
+                    from,
+                    to,
+                    color,
+                    width,
+                } => {
+                    let offset = current_transform(&transform_stack);
+                    push_line_instance(
+                        &mut instances,
+                        translate_point(*from, offset),
+                        translate_point(*to, offset),
+                        *color,
+                        *width,
+                        current_clip(&clip_stack),
+                    );
+                }
+                PaintCommand::Text(command) => {
+                    let rect = translate_rect(command.rect, current_transform(&transform_stack));
+                    let Some(clip) = intersect_rect(current_clip(&clip_stack), rect) else {
+                        continue;
+                    };
+                    self.push_text_glyph_records(
+                        command,
+                        rect,
+                        clip,
+                        text,
+                        &mut text_glyph_records,
+                    )?;
+                }
+                PaintCommand::PushClip(rect) => {
+                    let rect = translate_rect(*rect, current_transform(&transform_stack));
+                    let clip =
+                        intersect_rect(current_clip(&clip_stack), rect).unwrap_or(Rect::ZERO);
+                    clip_stack.push(clip);
+                }
+                PaintCommand::PopClip => {
+                    if clip_stack.len() > 1 {
+                        clip_stack.pop();
+                    }
+                }
+                PaintCommand::PushTransform { translate } => {
+                    let current = current_transform(&transform_stack);
+                    transform_stack
+                        .push(Point::new(current.x + translate.x, current.y + translate.y));
+                }
+                PaintCommand::PopTransform => {
+                    if transform_stack.len() > 1 {
+                        transform_stack.pop();
+                    }
+                }
 
-            PaintCommand::Clear(color) => {
-                push_rect_instance(
-                    &mut instances,
-                    viewport_clip,
-                    0.0,
-                    *color,
-                    Color::TRANSPARENT,
-                    0.0,
-                    viewport_clip,
-                );
+                PaintCommand::Clear(color) => {
+                    push_rect_instance(
+                        &mut instances,
+                        viewport_clip,
+                        0.0,
+                        *color,
+                        Color::TRANSPARENT,
+                        0.0,
+                        viewport_clip,
+                    );
+                }
             }
         }
+
+        Ok((instances, text_glyph_records))
     }
 
-    instances
+    fn push_text_glyph_records<T: TextLayouter>(
+        &mut self,
+        command: &TextPaintCommand,
+        rect: Rect,
+        clip: Rect,
+        text: &mut T,
+        records: &mut Vec<TextGlyphRecord>,
+    ) -> Result<(), WgpuBackendError> {
+        if rect.width <= 0.0
+            || rect.height <= 0.0
+            || clip.width <= 0.0
+            || clip.height <= 0.0
+            || command.props.style.color.a <= 0.0
+            || command.props.text.as_str().is_empty()
+        {
+            return Ok(());
+        }
+
+        let par = text.layout_text(&command.props, TextLayoutConstraints::max_width(rect.width));
+        for line in par.lines() {
+            let baseline_y = rect.y + line.baseline();
+            let mut pen_x = rect.x + line.offset();
+
+            for run in line.runs() {
+                let style = TextRunStyle {
+                    font: run.font().as_ref(),
+                    font_coords: run.normalized_coords(),
+                    font_size: run.font_size(),
+                    baseline: baseline_y,
+                    advance: run.advance(),
+                };
+                let mut writer = WgpuGlyphWriter {
+                    queue: &self.queue,
+                    atlas: &mut self.atlas,
+                };
+                let mut session = self.glyph_atlas.session(&style, &mut writer);
+
+                for cluster in run.visual_clusters() {
+                    for glyph in cluster.glyphs() {
+                        let origin_x = pen_x + glyph.x;
+                        let origin_y = baseline_y + glyph.y;
+                        let Some((alloc, placement)) = session.get(glyph.id, origin_x, origin_y)
+                        else {
+                            continue;
+                        };
+                        if placement.width == 0 || placement.height == 0 {
+                            continue;
+                        }
+
+                        let screen_rect = Rect::new(
+                            origin_x + placement.left as f32,
+                            origin_y + placement.top as f32,
+                            placement.width as f32,
+                            placement.height as f32,
+                        );
+                        if intersect_rect(clip, screen_rect).is_none() {
+                            continue;
+                        }
+
+                        records.push(TextGlyphRecord {
+                            screen_rect,
+                            clip,
+                            color: command.props.style.color,
+                            atlas_origin: alloc.origin,
+                            atlas_layer: alloc.layer,
+                            atlas_size: alloc.total_size,
+                            atlas_rect: Rect::new(
+                                alloc.origin.x,
+                                alloc.origin.y,
+                                placement.width as f32,
+                                placement.height as f32,
+                            ),
+                        });
+                    }
+                    pen_x += cluster.advance();
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 fn push_rect_instance(
@@ -824,13 +955,19 @@ fn color_to_array(color: Color) -> [f32; 4] {
     [color.r, color.g, color.b, color.a]
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AllocInfo {
     pub total_size: Vec3,
     pub layer: u32,
     pub origin: Vec2,
 }
 
-impl FontRenderBackend for WGPUBackend {
+struct WgpuGlyphWriter<'a> {
+    queue: &'a wgpu::Queue,
+    atlas: &'a mut Atlas,
+}
+
+impl FontRenderBackend for WgpuGlyphWriter<'_> {
     type Error = crate::error::Error;
     type Allocation = AllocInfo;
 
@@ -838,7 +975,7 @@ impl FontRenderBackend for WGPUBackend {
         &mut self,
         bitmap: &xui_text::atlas::RendedGlyphBitmap,
     ) -> Result<Self::Allocation, Self::Error> {
-        self.atlas.handle_allocation(&self.queue, bitmap)
+        self.atlas.handle_allocation(self.queue, bitmap)
     }
 }
 

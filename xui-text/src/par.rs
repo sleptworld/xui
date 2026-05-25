@@ -128,7 +128,6 @@ impl Par {
                         strikeout_offset: metrics.strikeout_offset,
                         strikeout_size: metrics.stroke_size,
                         advance,
-                        color: span_data.color,
                     });
                     clusters_start = clusters_end;
                     advance = 0.;
@@ -224,7 +223,6 @@ impl Par {
             strikeout_offset: metrics.strikeout_offset,
             strikeout_size: metrics.stroke_size,
             advance,
-            color: span_data.color,
         });
     }
 
@@ -430,10 +428,6 @@ impl<'a> Run<'a> {
             iter: self.layout.clusters[make_range(self.run.clusters)].iter(),
             rev,
         }
-    }
-
-    pub fn color(&self) -> glam::Vec4 {
-        Vec4::from_array(self.run.color)
     }
 }
 
@@ -1076,8 +1070,6 @@ pub struct SpanData {
     pub underline_offset: Option<f32>,
     /// Thickness of an underline.
     pub underline_size: Option<f32>,
-    /// Color
-    pub color: [f32; 4],
 }
 
 /// Build State
@@ -1156,7 +1148,6 @@ impl BuilderState {
             underline: false,
             underline_offset: None,
             underline_size: None,
-            color: [1.0; 4],
         });
         self.span_stack.push(SpanId(0));
     }
@@ -1261,7 +1252,6 @@ impl BuilderState {
                     span.underline_offset = (*offset).map(|o| o * scale);
                 }
                 S::UnderlineSize(size) => span.underline_size = (*size).map(|s| s * scale),
-                S::Color(c) => span.color = *c,
             }
         }
         if font_changed {
@@ -1418,7 +1408,6 @@ struct ShapeState<'a> {
     font_id: FontGroupId,
     font: Option<Font>,
     size: f32,
-    color: [f32; 4],
 }
 
 fn shape_item(
@@ -1452,7 +1441,6 @@ fn shape_item(
         font_id: span.font,
         font: None,
         size: span.font_size,
-        color: span.color,
     };
     fcx.select_group(shape_state.font_id);
     fcx.select_fallbacks(item.script, shape_state.span.lang.as_ref());
@@ -1573,9 +1561,8 @@ where
             }
         }
         let next_font = fcx.map_cluster(cluster, &mut synth);
-        let next_color = state.span.color;
 
-        if next_font != state.font || synth != state.synth || next_color != state.color {
+        if next_font != state.font || synth != state.synth {
             layout.push_run(
                 &state.state.spans,
                 state.font.clone().unwrap(),
@@ -1585,7 +1572,6 @@ where
             );
             state.font = next_font;
             state.synth = synth;
-            state.color = next_color;
             return true;
         }
     }

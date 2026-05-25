@@ -1,18 +1,33 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use swash::shape::ShapeContext;
+use swash::{Style, Weight};
+use xui_interface::{
+    Color, FontFamily, FontStyle as XuiFontStyle, FontWeight as XuiFontWeight, LineHeight,
+    ParagraphStyle, Size, TextBoxStyle, TextContent, TextDecoration, TextLayoutConstraints,
+    TextMeasurer, TextProps, TextStyle,
+};
 
 use crate::{
     bidi::BidiResolver,
-    doc::{Direction, Doc},
+    doc::{Direction, Doc, SpanStyle},
     library::{FamilyList, FontContext},
-    par::{BuilderState, Session},
+    line_breaker::Alignment,
+    par::{BuilderState, Par, Session},
     span::{Span, SpanElement},
 };
+
+pub trait TextLayouter: TextMeasurer {
+    fn layout_text(&mut self, props: &TextProps, constraints: TextLayoutConstraints) -> Arc<Par>;
+}
 
 pub struct Engine {
     pub(crate) font_ctx: FontContext,
     pub(crate) bidi: BidiResolver,
     pub(crate) scx: ShapeContext,
     pub(crate) state: BuilderState,
+    layout_cache: HashMap<TextLayoutKey, Arc<Par>>,
 }
 
 impl Engine {
@@ -22,6 +37,7 @@ impl Engine {
             bidi: BidiResolver::new(),
             font_ctx: FontContext::default(),
             state: BuilderState::default(),
+            layout_cache: HashMap::new(),
         }
     }
 
@@ -53,6 +69,256 @@ impl Engine {
             dir: dir,
         }
     }
+
+    pub fn measure_props(&mut self, props: &TextProps) -> Size {
+        self.measure_props_with_constraints(props, TextLayoutConstraints::UNBOUNDED)
+    }
+
+    pub fn measure_props_with_constraints(
+        &mut self,
+        props: &TextProps,
+        constraints: TextLayoutConstraints,
+    ) -> Size {
+        size_for_par(&self.layout_text(props, constraints))
+    }
+
+    fn layout_props_uncached(
+        &mut self,
+        props: &TextProps,
+        constraints: TextLayoutConstraints,
+    ) -> Par {
+        let styles = span_styles_for_props(props);
+        let doc = Doc::simple(styles.iter(), props.text.as_str());
+        self.layout_doc_with_constraints(&doc, constraints)
+    }
+
+    pub fn layout_doc(&mut self, doc: &Doc<'_>) -> Par {
+        self.layout_doc_with_constraints(doc, TextLayoutConstraints::UNBOUNDED)
+    }
+
+    pub fn layout_doc_with_constraints(
+        &mut self,
+        doc: &Doc<'_>,
+        constraints: TextLayoutConstraints,
+    ) -> Par {
+        let mut session = self.start(Direction::Auto, 1.0, 0);
+        session.process(doc);
+        let mut par = session.finish(None);
+        par.break_lines()
+            .break_remaining(max_advance(constraints), Alignment::Start);
+        par
+    }
+
+    pub fn measure_doc(&mut self, doc: &Doc<'_>) -> Size {
+        let par = self.layout_doc(doc);
+        size_for_par(&par)
+    }
+}
+
+impl TextLayouter for Engine {
+    fn layout_text(&mut self, props: &TextProps, constraints: TextLayoutConstraints) -> Arc<Par> {
+        let key = TextLayoutKey::new(props, constraints);
+        if let Some(par) = self.layout_cache.get(&key) {
+            return Arc::clone(par);
+        }
+
+        let par = Arc::new(self.layout_props_uncached(props, constraints));
+        self.layout_cache.insert(key, Arc::clone(&par));
+        par
+    }
+}
+
+impl TextMeasurer for Engine {
+    fn measure_text(&mut self, props: &TextProps) -> Size {
+        self.measure_props(props)
+    }
+
+    fn measure_text_with_constraints(
+        &mut self,
+        props: &TextProps,
+        constraints: TextLayoutConstraints,
+    ) -> Size {
+        self.measure_props_with_constraints(props, constraints)
+    }
+}
+
+fn max_advance(constraints: TextLayoutConstraints) -> f32 {
+    constraints
+        .max_width
+        .filter(|width| width.is_finite())
+        .map(|width| width.max(0.0))
+        .unwrap_or(f32::MAX)
+}
+
+fn size_for_par(par: &Par) -> Size {
+    let mut width: f32 = 0.0;
+    let mut height = 0.0;
+    for line in par.lines() {
+        width = width.max(line.advance_without_trailing_whitespace());
+        height += line.size();
+    }
+
+    Size::new(width, height)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct TextLayoutKey {
+    text: TextContent,
+    style: TextStyleKey,
+    paragraph: ParagraphStyle,
+    text_box: TextBoxStyle,
+    constraints: TextLayoutConstraintsKey,
+}
+
+impl TextLayoutKey {
+    fn new(props: &TextProps, constraints: TextLayoutConstraints) -> Self {
+        Self {
+            text: props.text.clone(),
+            style: TextStyleKey::from(&props.style),
+            paragraph: props.paragraph.clone(),
+            text_box: props.text_box.clone(),
+            constraints: TextLayoutConstraintsKey::from(constraints),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct TextLayoutConstraintsKey {
+    max_width: Option<F32Key>,
+}
+
+impl From<TextLayoutConstraints> for TextLayoutConstraintsKey {
+    fn from(constraints: TextLayoutConstraints) -> Self {
+        Self {
+            max_width: constraints.max_width.map(|width| F32Key(width.to_bits())),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct TextStyleKey {
+    color: ColorKey,
+    font_family: FontFamily,
+    font_size: F32Key,
+    font_weight: XuiFontWeight,
+    font_style: XuiFontStyle,
+    line_height: LineHeightKey,
+    letter_spacing: F32Key,
+    decoration: TextDecoration,
+}
+
+impl From<&TextStyle> for TextStyleKey {
+    fn from(style: &TextStyle) -> Self {
+        Self {
+            color: ColorKey::from(style.color),
+            font_family: style.font_family.clone(),
+            font_size: F32Key(style.font_size.to_bits()),
+            font_weight: style.font_weight,
+            font_style: style.font_style,
+            line_height: LineHeightKey::from(style.line_height),
+            letter_spacing: F32Key(style.letter_spacing.to_bits()),
+            decoration: style.decoration,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct ColorKey {
+    r: F32Key,
+    g: F32Key,
+    b: F32Key,
+    a: F32Key,
+}
+
+impl From<Color> for ColorKey {
+    fn from(color: Color) -> Self {
+        Self {
+            r: F32Key(color.r.to_bits()),
+            g: F32Key(color.g.to_bits()),
+            b: F32Key(color.b.to_bits()),
+            a: F32Key(color.a.to_bits()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct F32Key(u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum LineHeightKey {
+    Normal,
+    Px(F32Key),
+    Em(F32Key),
+}
+
+impl From<LineHeight> for LineHeightKey {
+    fn from(line_height: LineHeight) -> Self {
+        match line_height {
+            LineHeight::Normal => Self::Normal,
+            LineHeight::Px(value) => Self::Px(F32Key(value.to_bits())),
+            LineHeight::Em(value) => Self::Em(F32Key(value.to_bits())),
+        }
+    }
+}
+
+fn span_styles_for_props(props: &TextProps) -> Vec<SpanStyle<'static>> {
+    let mut styles = Vec::with_capacity(7);
+    styles.push(SpanStyle::FamilyList(family_list(&props.style.font_family)));
+    styles.push(SpanStyle::Size(props.style.font_size));
+    styles.push(SpanStyle::Weight(font_weight(props.style.font_weight)));
+    styles.push(SpanStyle::Style(font_style(props.style.font_style)));
+    styles.push(SpanStyle::LineSpacing(line_spacing(
+        props.style.line_height,
+        props.style.font_size,
+    )));
+    styles.push(SpanStyle::LetterSpacing(props.style.letter_spacing));
+    styles.push(SpanStyle::Underline(props.style.decoration.underline));
+    styles
+}
+
+fn family_list(family: &FontFamily) -> FamilyList {
+    match family {
+        FontFamily::System => FamilyList::new("system-ui, sans-serif"),
+        FontFamily::Named(name) => FamilyList::new(name),
+        FontFamily::Stack(names) => FamilyList::new(&names.join(", ")),
+    }
+}
+
+fn font_weight(weight: XuiFontWeight) -> Weight {
+    match weight {
+        XuiFontWeight::Thin => Weight::THIN,
+        XuiFontWeight::ExtraLight => Weight::EXTRA_LIGHT,
+        XuiFontWeight::Light => Weight::LIGHT,
+        XuiFontWeight::Normal => Weight::NORMAL,
+        XuiFontWeight::Medium => Weight::MEDIUM,
+        XuiFontWeight::SemiBold => Weight::SEMI_BOLD,
+        XuiFontWeight::Bold => Weight::BOLD,
+        XuiFontWeight::ExtraBold => Weight::EXTRA_BOLD,
+        XuiFontWeight::Black => Weight::BLACK,
+        XuiFontWeight::Number(value) => Weight(value.clamp(1, 1000)),
+    }
+}
+
+fn font_style(style: XuiFontStyle) -> Style {
+    match style {
+        XuiFontStyle::Normal => Style::Normal,
+        XuiFontStyle::Italic => Style::Italic,
+        XuiFontStyle::Oblique => Style::from_degrees(14.0),
+    }
+}
+
+fn line_spacing(line_height: LineHeight, font_size: f32) -> f32 {
+    match line_height {
+        LineHeight::Normal => 1.0,
+        LineHeight::Px(px) => {
+            if font_size > 0.0 {
+                px / font_size
+            } else {
+                1.0
+            }
+        }
+        LineHeight::Em(em) => em,
+    }
 }
 
 impl<'a> Session<'a> {
@@ -82,10 +348,15 @@ impl<'a> Session<'a> {
     }
 }
 
+#[cfg(test)]
 mod test {
+    use std::sync::Arc;
+
+    use xui_interface::{TextLayoutConstraints, TextMeasurer, TextProps};
+
     use crate::{
         doc::{Doc, SpanStyle},
-        engine::Engine,
+        engine::{Engine, TextLayouter},
         library::FamilyList,
     };
 
@@ -96,6 +367,63 @@ mod test {
         let properties = &[SpanStyle::FamilyList(FamilyList::new("pingfang sc"))];
         let doc = Doc::simple(properties, "Hello, World");
         session.process(&doc);
-        let par = session.finish(None);
+        let _par = session.finish(None);
+    }
+
+    #[test]
+    fn layout_text_reuses_cached_par_for_same_props() {
+        let mut engine = Engine::new();
+        let props = TextProps::new("Hello, cache");
+
+        let first = engine.layout_text(&props, TextLayoutConstraints::UNBOUNDED);
+        let second = engine.layout_text(&props, TextLayoutConstraints::UNBOUNDED);
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(engine.layout_cache.len(), 1);
+    }
+
+    #[test]
+    fn layout_text_uses_style_in_cache_key() {
+        let mut engine = Engine::new();
+        let props = TextProps::new("Hello, cache");
+        let mut larger = props.clone();
+        larger.style.font_size += 1.0;
+        let mut spaced = props.clone();
+        spaced.style.letter_spacing = 1.0;
+
+        let first = engine.layout_text(&props, TextLayoutConstraints::UNBOUNDED);
+        let larger = engine.layout_text(&larger, TextLayoutConstraints::UNBOUNDED);
+        let spaced = engine.layout_text(&spaced, TextLayoutConstraints::UNBOUNDED);
+
+        assert!(!Arc::ptr_eq(&first, &larger));
+        assert!(!Arc::ptr_eq(&first, &spaced));
+        assert_eq!(engine.layout_cache.len(), 3);
+    }
+
+    #[test]
+    fn layout_text_uses_constraints_in_cache_key() {
+        let mut engine = Engine::new();
+        let props = TextProps::new("Hello, cache constraints");
+
+        let wide = engine.layout_text(&props, TextLayoutConstraints::max_width(500.0));
+        let narrow = engine.layout_text(&props, TextLayoutConstraints::max_width(50.0));
+        let wide_again = engine.layout_text(&props, TextLayoutConstraints::max_width(500.0));
+
+        assert!(Arc::ptr_eq(&wide, &wide_again));
+        assert!(!Arc::ptr_eq(&wide, &narrow));
+        assert_eq!(engine.layout_cache.len(), 2);
+    }
+
+    #[test]
+    fn measure_text_populates_layout_cache() {
+        let mut engine = Engine::new();
+        let props = TextProps::new("Measured once");
+
+        let _ = engine.measure_text(&props);
+        let first = engine.layout_text(&props, TextLayoutConstraints::UNBOUNDED);
+        let second = engine.layout_text(&props, TextLayoutConstraints::UNBOUNDED);
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(engine.layout_cache.len(), 1);
     }
 }

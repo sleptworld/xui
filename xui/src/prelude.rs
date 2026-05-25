@@ -10,6 +10,7 @@ pub use crate::event_system::EventState;
 pub use crate::fiber::{ComponentRegistry, ComponentType};
 pub use crate::render::{
     DamageRegion, DrawBackend, MockRenderBackend, PaintCommand, Painter, RenderBackend,
+    TextPaintCommand,
 };
 pub use crate::runtime::{
     ControlFlow, EventSource, FrameReport, GuiRuntime, QueueEventSource, RuntimeEvent,

@@ -269,40 +269,6 @@ impl<'a> BreakLines<'a> {
                 reorder_runs(&mut self.lines.runs[make_range(line.runs)]);
             }
             let mut total_advance = 0.;
-            // for run in self.lines.runs[make_range(line.runs)].iter() {
-            //     let r = Run::new(self.layout, &run);
-            //     let rtl = run.level & 1 != 0;
-            //     let mut clusters = r.visual_clusters();
-            //     let mut pos = 0;
-            //     let mut ligature_step = 0.;
-            //     let mut ligature_count = 0;
-            //     while let Some(cluster) = clusters.next() {
-            //         let index = if rtl {
-            //             run.clusters.1.wrapping_sub(pos).wrapping_sub(1)
-            //         } else {
-            //             run.clusters.0 + pos
-            //         };
-            //         pos += 1;
-            //         if ligature_count > 0 {
-            //             ligature_count -= 1;
-            //             self.lines.clusters.push((index, total_advance));
-            //             total_advance += ligature_step;
-            //         } else {
-            //             let mut advance = cluster.advance();
-            //             if cluster.is_ligature() {
-            //                 let count = clusters
-            //                     .clone()
-            //                     .take_while(|c| c.is_continuation())
-            //                     .count();
-            //                 ligature_step = advance / (count + 1) as f32;
-            //                 ligature_count = count;
-            //                 advance = ligature_step;
-            //             }
-            //             self.lines.clusters.push((index, total_advance));
-            //             total_advance += advance;
-            //         }
-            //     }
-            // }
             for run in self.lines.runs[make_range(line.runs)].iter() {
                 let r = Run::new(self.layout, &run);
                 let rtl = run.level & 1 != 0;

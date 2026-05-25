@@ -1,6 +1,8 @@
 use slotmap::SlotMap;
 use taffy::prelude as tf;
-use xui_interface::{DirtyFlags, EventHandlers, NodeId};
+use xui_interface::{
+    DirtyFlags, EventHandlers, NodeId, TextLayoutConstraints, TextMeasurer, TextProps,
+};
 
 use crate::core::{Rect, Size};
 use crate::event::{Event, EventResult};
@@ -8,7 +10,12 @@ use crate::event_system::{self, EventState};
 use crate::fiber::Key;
 use crate::font::TextI;
 use crate::render::{DamageRegion, PaintCommand};
-use crate::widgets::{Element, Widget, WidgetRef, WidgetType};
+use crate::widgets::{Element, TextWidget, Widget, WidgetRef, WidgetType};
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum LayoutContext {
+    Text(TextProps),
+}
 
 pub struct Node {
     pub id: NodeId,
@@ -66,7 +73,7 @@ impl Node {
 
 pub struct UiArena {
     nodes: SlotMap<NodeId, Node>,
-    taffy: tf::TaffyTree,
+    taffy: tf::TaffyTree<LayoutContext>,
     root: NodeId,
     damage: DamageRegion,
     event_state: EventState,
@@ -135,11 +142,11 @@ impl UiArena {
         &self.nodes[id].children
     }
 
-    pub fn taffy(&self) -> &tf::TaffyTree {
+    pub(crate) fn taffy(&self) -> &tf::TaffyTree<LayoutContext> {
         &self.taffy
     }
 
-    pub fn taffy_mut(&mut self) -> &mut tf::TaffyTree {
+    pub(crate) fn taffy_mut(&mut self) -> &mut tf::TaffyTree<LayoutContext> {
         &mut self.taffy
     }
 
@@ -188,10 +195,16 @@ impl UiArena {
         widget: WidgetRef,
         event_handlers: EventHandlers,
     ) -> NodeId {
-        let taffy_node = self
-            .taffy
-            .new_leaf(style.clone())
-            .expect("failed to create taffy node");
+        let layout_context = layout_context_for_widget(&widget);
+        let taffy_node = if let Some(context) = layout_context {
+            self.taffy
+                .new_leaf_with_context(style.clone(), context)
+                .expect("failed to create taffy node")
+        } else {
+            self.taffy
+                .new_leaf(style.clone())
+                .expect("failed to create taffy node")
+        };
         let position = self.nodes[parent].children.len();
         let id = self.nodes.insert_with_key(|id| {
             Node::new(
@@ -347,11 +360,11 @@ impl UiArena {
         event_system::dispatch_event(self, event)
     }
 
-    pub fn update_tree(&mut self, root: NodeId, size: Size) {
-        self.update_node(root, size);
+    pub fn update_tree<T: TextMeasurer>(&mut self, root: NodeId, size: Size, measurer: &mut T) {
+        self.update_node(root, size, measurer);
     }
 
-    fn update_node(&mut self, id: NodeId, size: Size) {
+    fn update_node<T: TextMeasurer>(&mut self, id: NodeId, size: Size, measurer: &mut T) {
         if !self.nodes.contains_key(id) {
             return;
         }
@@ -366,7 +379,7 @@ impl UiArena {
         self.update_visits += 1;
 
         if dirty.intersects(DirtyFlags::LAYOUT | DirtyFlags::STYLE | DirtyFlags::TREE) {
-            self.compute_layout_if_needed(size);
+            self.compute_layout_if_needed(size, measurer);
         }
 
         let dirty = self.nodes[id].dirty;
@@ -376,20 +389,20 @@ impl UiArena {
 
         let children = self.nodes[id].children.clone();
         for child in children {
-            self.update_node(child, size);
+            self.update_node(child, size, measurer);
         }
 
         self.clear_dirty(id);
     }
 
-    pub fn compute_layout_if_needed(&mut self, size: Size) {
+    pub fn compute_layout_if_needed<T: TextMeasurer>(&mut self, size: Size, measurer: &mut T) {
         if !self.nodes.values().any(|node| {
             node.dirty
                 .intersects(DirtyFlags::LAYOUT | DirtyFlags::STYLE | DirtyFlags::TREE)
         }) {
             return;
         }
-        self.compute_layout(size);
+        self.compute_layout(size, measurer);
     }
 
     pub fn repaint_if_needed(&mut self, id: NodeId) {
@@ -411,15 +424,23 @@ impl UiArena {
         self.damage.add(rect);
     }
 
-    pub fn compute_layout(&mut self, size: Size) {
+    pub fn compute_layout<T: TextMeasurer>(&mut self, size: Size, measurer: &mut T) {
         self.layout_passes += 1;
         let root_taffy = self.nodes[self.root].taffy_node;
         self.taffy
-            .compute_layout(
+            .compute_layout_with_measure(
                 root_taffy,
                 tf::Size {
                     width: tf::AvailableSpace::Definite(size.width),
                     height: tf::AvailableSpace::Definite(size.height),
+                },
+                |known_dimensions, available_space, _node_id, node_context, _style| {
+                    measure_layout_context(
+                        known_dimensions,
+                        available_space,
+                        node_context,
+                        measurer,
+                    )
                 },
             )
             .expect("failed to compute layout");
@@ -682,6 +703,7 @@ impl UiArena {
             current_widget = node.widget.clone();
         }
 
+        self.update_taffy_context(id, &widget);
         self.mark_dirty(id, flags);
         current_widget
     }
@@ -733,8 +755,21 @@ impl UiArena {
             node.event_handlers = parts.event_handlers;
         }
 
+        self.update_taffy_context(id, &parts.widget);
         self.mark_dirty(id, flags);
         parts.children
+    }
+
+    fn update_taffy_context(&mut self, id: NodeId, widget: &WidgetRef) {
+        let taffy_node = self.nodes[id].taffy_node;
+        let next_context = layout_context_for_widget(widget);
+        if self.taffy.get_node_context(taffy_node) == next_context.as_ref() {
+            return;
+        }
+        self.taffy
+            .set_node_context(taffy_node, next_context)
+            .expect("failed to update taffy node context");
+        self.mark_dirty(id, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
     }
 
     fn remove_subtree_detached(&mut self, id: NodeId) {
@@ -806,7 +841,8 @@ pub fn clear_dirty(tree: &mut UiArena, node: NodeId) {
 }
 
 pub fn update_tree(tree: &mut UiArena, root: NodeId) {
-    tree.update_tree(root, Size::ZERO);
+    let mut measurer = crate::layout::MockTextMeasurer::default();
+    tree.update_tree(root, Size::ZERO, &mut measurer);
 }
 
 pub fn diff_children(
@@ -825,7 +861,110 @@ pub fn should_reuse(old: &Node, new: &Element, position: usize) -> bool {
 }
 
 pub fn compute_layout_if_needed(tree: &mut UiArena, _node: NodeId) {
-    tree.compute_layout_if_needed(Size::ZERO);
+    let mut measurer = crate::layout::MockTextMeasurer::default();
+    tree.compute_layout_if_needed(Size::ZERO, &mut measurer);
+}
+
+fn layout_context_for_widget(widget: &WidgetRef) -> Option<LayoutContext> {
+    widget.with(|widget| {
+        widget
+            .as_any()
+            .downcast_ref::<TextWidget>()
+            .map(|text| LayoutContext::Text(text.props.clone()))
+    })
+}
+
+fn measure_layout_context<T: TextMeasurer>(
+    known_dimensions: tf::Size<Option<f32>>,
+    available_space: tf::Size<tf::AvailableSpace>,
+    node_context: Option<&mut LayoutContext>,
+    measurer: &mut T,
+) -> tf::Size<f32> {
+    if let tf::Size {
+        width: Some(width),
+        height: Some(height),
+    } = known_dimensions
+    {
+        return tf::Size { width, height };
+    }
+
+    let measured = match node_context {
+        Some(LayoutContext::Text(props)) => {
+            let constraints = text_constraints(known_dimensions.width, available_space.width);
+            measurer.measure_text_with_constraints(props, constraints)
+        }
+        None => Size::ZERO,
+    };
+
+    tf::Size {
+        width: known_dimensions.width.unwrap_or(measured.width),
+        height: known_dimensions.height.unwrap_or(measured.height),
+    }
+}
+
+fn text_constraints(
+    known_width: Option<f32>,
+    available_width: tf::AvailableSpace,
+) -> TextLayoutConstraints {
+    known_width
+        .or_else(|| match available_width {
+            tf::AvailableSpace::Definite(width) => Some(width),
+            tf::AvailableSpace::MinContent | tf::AvailableSpace::MaxContent => None,
+        })
+        .map(TextLayoutConstraints::max_width)
+        .unwrap_or(TextLayoutConstraints::UNBOUNDED)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widgets::TextWidget;
+
+    #[derive(Default)]
+    struct RecordingMeasurer {
+        constraints: Vec<TextLayoutConstraints>,
+    }
+
+    impl TextMeasurer for RecordingMeasurer {
+        fn measure_text(&mut self, props: &TextProps) -> Size {
+            self.measure_text_with_constraints(props, TextLayoutConstraints::UNBOUNDED)
+        }
+
+        fn measure_text_with_constraints(
+            &mut self,
+            _props: &TextProps,
+            constraints: TextLayoutConstraints,
+        ) -> Size {
+            self.constraints.push(constraints);
+            match constraints.max_width {
+                Some(width) => Size::new(width, 20.0),
+                None => Size::new(100.0, 10.0),
+            }
+        }
+    }
+
+    #[test]
+    fn text_layout_uses_available_width_as_measure_constraint() {
+        let mut arena = UiArena::new();
+        let root = arena.root();
+        let text = arena.insert(
+            root,
+            TextWidget::new("width constrained"),
+            tf::Style::default(),
+        );
+        let mut measurer = RecordingMeasurer::default();
+
+        arena.update_tree(root, Size::new(50.0, 100.0), &mut measurer);
+
+        assert!(
+            measurer
+                .constraints
+                .iter()
+                .any(|constraints| constraints.max_width == Some(50.0))
+        );
+        assert_eq!(arena.node(text).unwrap().layout.width, 50.0);
+        assert_eq!(arena.node(text).unwrap().layout.height, 20.0);
+    }
 }
 
 pub fn repaint_if_needed(tree: &mut UiArena, node: NodeId) {

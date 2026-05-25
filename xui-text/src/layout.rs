@@ -186,7 +186,6 @@ pub struct RunData {
     pub strikeout_offset: f32,
     pub strikeout_size: f32,
     pub advance: f32,
-    pub color: [f32; 4],
 }
 
 #[derive(Clone, Default)]

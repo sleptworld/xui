@@ -11,6 +11,27 @@ pub struct TextProps {
     pub text_box: TextBoxStyle,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TextLayoutConstraints {
+    pub max_width: Option<f32>,
+}
+
+impl TextLayoutConstraints {
+    pub const UNBOUNDED: Self = Self { max_width: None };
+
+    pub fn max_width(max_width: f32) -> Self {
+        Self {
+            max_width: Some(max_width),
+        }
+    }
+}
+
+impl Hash for TextLayoutConstraints {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.max_width.map(f32::to_bits).hash(state);
+    }
+}
+
 impl TextProps {
     pub fn new(text: impl Into<TextContent>) -> Self {
         Self {

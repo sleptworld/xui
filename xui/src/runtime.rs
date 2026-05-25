@@ -5,6 +5,7 @@ use crate::core::Size;
 use crate::event::{Event, EventResult};
 use crate::render::RenderBackend;
 pub use xui_interface::EventSource;
+use xui_interface::{TextMeasurer, text};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlFlow {
@@ -56,18 +57,20 @@ impl EventSource for QueueEventSource {
     }
 }
 
-pub struct GuiRuntime<B: RenderBackend> {
+pub struct GuiRuntime<B: RenderBackend<T>, T: TextMeasurer> {
     app: App,
     backend: B,
     control_flow: ControlFlow,
+    text_measure: T,
 }
 
-impl<B: RenderBackend> GuiRuntime<B> {
-    pub fn new(app: App, backend: B) -> Self {
+impl<B: RenderBackend<T>, T: TextMeasurer> GuiRuntime<B, T> {
+    pub fn new(app: App, backend: B, text_measure: T) -> Self {
         Self {
             app,
             backend,
             control_flow: ControlFlow::Poll,
+            text_measure,
         }
     }
 
@@ -101,7 +104,9 @@ impl<B: RenderBackend> GuiRuntime<B> {
                 self.app.resize(size);
                 Vec::new()
             }
-            RuntimeEvent::Input(event) => vec![self.app.dispatch_event(event)],
+            RuntimeEvent::Input(event) => {
+                vec![self.app.dispatch_event(event, &mut self.text_measure)]
+            }
             RuntimeEvent::RedrawRequested => Vec::new(),
             RuntimeEvent::Exit => {
                 self.control_flow = ControlFlow::Exit;
@@ -113,7 +118,7 @@ impl<B: RenderBackend> GuiRuntime<B> {
     pub fn frame(&mut self) -> Result<FrameReport, B::Error> {
         let should_render = self.app.is_dirty();
         if should_render {
-            self.app.render(&mut self.backend)?;
+            self.app.render(&mut self.backend, &mut self.text_measure)?;
         }
         Ok(FrameReport {
             rendered: should_render,

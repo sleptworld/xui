@@ -2,8 +2,9 @@ use std::any::Any;
 
 use xui_interface::{
     DirtyFlags, Event, EventContext, EventHandlers, EventResult, FontFamily, FontStyle, FontWeight,
-    Key, LineHeight, OverflowWrap, PaintCommand, ParagraphStyle, Point, Rect, Size, TextBoxStyle,
-    TextContent, TextMeasurer, TextOverflow, TextProps, TextStyle, Widget, WidgetType,
+    Key, LineHeight, OverflowWrap, PaintCommand, ParagraphStyle, Rect, Size, TextBoxStyle,
+    TextContent, TextMeasurer, TextOverflow, TextPaintCommand, TextProps, TextStyle, Widget,
+    WidgetType,
 };
 
 use super::props_hash;
@@ -153,12 +154,10 @@ impl Widget for TextWidget {
     }
 
     fn paint(&self, rect: Rect, commands: &mut Vec<PaintCommand>) {
-        commands.push(PaintCommand::Text {
-            position: Point::new(rect.x, rect.y + self.props.style.font_size),
-            text: self.props.text.as_str().to_owned(),
-            color: self.props.style.color,
-            size: self.props.style.font_size,
-        });
+        commands.push(PaintCommand::Text(TextPaintCommand {
+            rect,
+            props: self.props.clone(),
+        }));
     }
 
     fn handle_event(&mut self, _event: &Event, _cx: &mut EventContext<'_>) -> EventResult {

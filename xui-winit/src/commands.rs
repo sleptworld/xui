@@ -1,5 +1,6 @@
 use log::info;
 use xui::PaintCommand;
+use xui_interface::TextPaintCommand;
 use xui_interface::core::*;
 
 pub struct CmdHandler {
@@ -39,13 +40,8 @@ impl CmdHandler {
             } => {
                 self.line(from, to, color, *width);
             }
-            PaintCommand::Text {
-                position,
-                text,
-                color,
-                size,
-            } => {
-                self.text(position, text, color, *size);
+            PaintCommand::Text(command) => {
+                self.text(command);
             }
             PaintCommand::PushClip(rect) => {
                 self.push_clip(rect);
@@ -96,10 +92,13 @@ impl CmdHandler {
         );
     }
 
-    fn text(&mut self, position: &Point, text: &str, color: &Color, size: f32) {
+    fn text(&mut self, command: &TextPaintCommand) {
         info!(
-            "Text: position={:?}, text=\"{}\", color={:?}, size={}",
-            position, text, color, size
+            "Text: rect={:?}, text=\"{}\", color={:?}, size={}",
+            command.rect,
+            command.props.text.as_str(),
+            command.props.style.color,
+            command.props.style.font_size
         );
     }
 

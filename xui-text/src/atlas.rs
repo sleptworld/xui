@@ -23,24 +23,29 @@ const SOURCES: &'static [Source] = &[
     Source::Outline,
 ];
 
-pub struct GlyphAtlas<R: FontRenderBackend> {
-    glyph_map: HashMap<GlyphKey, Option<(R::Allocation, Placement)>>,
-    atlas: TextureAtlas<R>,
+pub struct GlyphAtlas<A> {
+    glyph_map: HashMap<GlyphKey, Option<(A, Placement)>>,
     scx: ScaleContext,
     scaled_image: GlyphImage,
 }
 
-impl<R: FontRenderBackend> GlyphAtlas<R> {
-    pub fn new(backend: R) -> Self {
+impl<A> GlyphAtlas<A> {
+    pub fn new() -> Self {
         Self {
             glyph_map: HashMap::new(),
-            atlas: TextureAtlas::new(backend),
             scaled_image: GlyphImage::new(),
             scx: ScaleContext::new(),
         }
     }
 
-    pub fn session<'a>(&'a mut self, text_run_style: &'a TextRunStyle) -> GlyphAtlasSession<'a, R> {
+    pub fn session<'a, R>(
+        &'a mut self,
+        text_run_style: &'a TextRunStyle,
+        writer: &'a mut R,
+    ) -> GlyphAtlasSession<'a, R, A>
+    where
+        R: FontRenderBackend<Allocation = A>,
+    {
         let font = text_run_style.font;
         let quant_size = (text_run_style.font_size * 32.) as u16;
         let hint = cfg!(not(target_os = "macos"));
@@ -54,13 +59,19 @@ impl<R: FontRenderBackend> GlyphAtlas<R> {
             .build();
 
         GlyphAtlasSession {
-            atlas: &mut self.atlas,
             glyph_map: &mut self.glyph_map,
+            writer,
             font,
             quant_size,
             scaler,
             scaled_image: &mut self.scaled_image,
         }
+    }
+}
+
+impl<A> Default for GlyphAtlas<A> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -119,27 +130,20 @@ pub struct RendedGlyphBitmap {
     pub placement: Placement,
 }
 
-pub struct TextureAtlas<R: FontRenderBackend> {
-    backend: R,
-}
-
-impl<R: FontRenderBackend> TextureAtlas<R> {
-    fn new(backend: R) -> Self {
-        Self { backend }
-    }
-}
-
-pub struct GlyphAtlasSession<'a, R: FontRenderBackend> {
-    atlas: &'a mut TextureAtlas<R>,
-    glyph_map: &'a mut HashMap<GlyphKey, Option<(R::Allocation, Placement)>>,
+pub struct GlyphAtlasSession<'a, R: FontRenderBackend<Allocation = A>, A> {
+    glyph_map: &'a mut HashMap<GlyphKey, Option<(A, Placement)>>,
+    writer: &'a mut R,
     font: FontRef<'a>,
     quant_size: u16,
     scaled_image: &'a mut GlyphImage,
     scaler: Scaler<'a>,
 }
 
-impl<'a, R: FontRenderBackend> GlyphAtlasSession<'a, R> {
-    pub fn get(&mut self, id: GlyphId, x: f32, y: f32) -> &Option<(R::Allocation, Placement)> {
+impl<'a, R, A> GlyphAtlasSession<'a, R, A>
+where
+    R: FontRenderBackend<Allocation = A>,
+{
+    pub fn get(&mut self, id: GlyphId, x: f32, y: f32) -> &Option<(A, Placement)> {
         let subpx = [SubpixelOffset::quantize(x), SubpixelOffset::quantize(y)];
 
         let key = GlyphKey {
@@ -179,7 +183,7 @@ impl<'a, R: FontRenderBackend> GlyphAtlasSession<'a, R> {
                     placement: p,
                 };
 
-                let alloc = self.atlas.backend.write_bitmap(&bitmap).ok()?;
+                let alloc = self.writer.write_bitmap(&bitmap).ok()?;
 
                 Some((alloc, p))
             } else {

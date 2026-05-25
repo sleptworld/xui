@@ -1,6 +1,7 @@
-use xui_interface::Size;
-use xui_interface::TextMeasurer;
-use xui_text::engine::Engine;
+use std::sync::Arc;
+use xui_interface::{Size, TextLayoutConstraints, TextMeasurer, TextProps};
+use xui_text::engine::{Engine, TextLayouter};
+use xui_text::par::Par;
 
 pub struct TextI {
     engine: Engine,
@@ -13,28 +14,28 @@ impl TextI {
         }
     }
 
-    pub fn measure(&mut self, text: &str, max_width: f32) -> Size {
-        let mut session =
-            self.engine
-                .start(xui_text::doc::Direction::Auto, 1.0, max_width as usize);
-
-        session.add_text(text);
-        let par = session.finish(None);
-
-        let width = 0.0;
-        let mut height = 0.0;
-
-        for line in par.lines() {
-            let size = line.size();
-            height += size;
-        }
-
-        Size::new(width, height)
+    pub fn measure(&mut self, text: &str, font_size: f32) -> Size {
+        self.engine.measure(text, font_size)
     }
 }
 
 impl TextMeasurer for TextI {
-    fn measure(&mut self, text: &str, font_size: f32) -> Size {
-        TextI::measure(self, text, font_size)
+    fn measure_text(&mut self, props: &TextProps) -> Size {
+        self.engine.measure_text(props)
+    }
+
+    fn measure_text_with_constraints(
+        &mut self,
+        props: &TextProps,
+        constraints: TextLayoutConstraints,
+    ) -> Size {
+        self.engine
+            .measure_text_with_constraints(props, constraints)
+    }
+}
+
+impl TextLayouter for TextI {
+    fn layout_text(&mut self, props: &TextProps, constraints: TextLayoutConstraints) -> Arc<Par> {
+        self.engine.layout_text(props, constraints)
     }
 }
