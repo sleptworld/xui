@@ -9,12 +9,14 @@ use xui_interface::{
 };
 
 use super::{
-    LayoutStyledWidget, container::paint_box, fixed_size_style, label::apply_text_style, props_hash,
+    Element, LayoutStyledWidget, computed_layout_style, container::paint_box, fixed_size_style,
+    label::apply_text_style, props_hash,
 };
 
 pub struct ButtonWidget {
     pub key: Option<Key>,
     pub text: TextContent,
+    pub children: Vec<Element>,
     pub style: Style,
     pub hover_style: Style,
     pub pressed_style: Style,
@@ -30,6 +32,7 @@ impl ButtonWidget {
         Self {
             key: None,
             text: text.into(),
+            children: Vec::new(),
             style: Style::new(),
             hover_style: Style::new(),
             pressed_style: Style::new(),
@@ -71,14 +74,23 @@ impl ButtonWidget {
         self
     }
 
+    pub fn child(mut self, child: impl Into<Element>) -> Self {
+        self.children.push(child.into());
+        self
+    }
+
     event_handler_methods!();
 }
 
 impl LayoutStyledWidget for ButtonWidget {
     fn layout_style(&self, computed: &ComputedStyle, measurer: &mut dyn TextMeasurer) -> tf::Style {
-        self.measure(computed, measurer)
-            .map(fixed_size_style)
-            .unwrap_or_default()
+        if self.children.is_empty() {
+            self.measure(computed, measurer)
+                .map(fixed_size_style)
+                .unwrap_or_default()
+        } else {
+            computed_layout_style(computed)
+        }
     }
 }
 
@@ -203,6 +215,10 @@ impl Widget for ButtonWidget {
 
     fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
         paint_box(rect, style, commands);
+        if !self.children.is_empty() {
+            return;
+        }
+
         let mut text_props = TextProps::new(self.text.clone());
         apply_text_style(&mut text_props, style);
         let padding = style.layout.padding;

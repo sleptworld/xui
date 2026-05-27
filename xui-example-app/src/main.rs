@@ -41,6 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = App::with_component_registry(|registry| {
         register_counter_component(registry);
         components::register_components(registry);
+        xui_components::register_components(registry);
 
         |_| {
             xui! {
@@ -49,8 +50,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     <column gap={12.0}>
                         <label color={Color::BLUE_500}>{"XUI winit example"}</label>
                         <counter key="counter" />
-                        // <component key="summary" render={components::summary_component} />
-                        <pbutton props={ButtonProps{text: "test".into()}}/>
                     </column>
                 </container>
             }

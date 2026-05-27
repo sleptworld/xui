@@ -984,8 +984,7 @@ fn measure_layout_context<T: TextMeasurer>(
                 tf::AvailableSpace::MaxContent => TextLayoutConstraints::UNBOUNDED,
                 _ => TextLayoutConstraints::UNBOUNDED,
             };
-            measurer.measure_text_with_constraints(str, _props, constraints);
-            Size::ZERO
+            measurer.measure_text_with_constraints(str, _props, constraints)
         }
 
         _ => Size::ZERO,

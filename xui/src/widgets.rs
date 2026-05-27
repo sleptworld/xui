@@ -163,11 +163,13 @@ impl From<Box<dyn LayoutStyledWidget>> for WidgetRef {
     }
 }
 
+#[derive(Clone)]
 pub struct HostElement {
     widget: WidgetRef,
     children: Vec<Element>,
 }
 
+#[derive(Clone)]
 pub enum Element {
     Host(HostElement),
     Component(ComponentElement),
@@ -276,11 +278,16 @@ impl Element {
     }
 }
 
+#[derive(Clone)]
 pub struct ComponentElement {
     pub key: Option<Key>,
     pub render: ComponentType,
     pub props: ErasedProps,
     pub props_hash: u64,
+}
+
+pub trait WithChildren {
+    fn with_children(self, children: Vec<Element>) -> Self;
 }
 
 impl ComponentElement {
@@ -362,8 +369,9 @@ impl From<TextWidget> for Element {
 }
 
 impl From<ButtonWidget> for Element {
-    fn from(value: ButtonWidget) -> Self {
-        Self::Host(HostElement::new(value, Vec::new()))
+    fn from(mut value: ButtonWidget) -> Self {
+        let children = std::mem::take(&mut value.children);
+        Self::Host(HostElement::new(value, children))
     }
 }
 

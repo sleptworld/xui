@@ -24,8 +24,8 @@ pub use crate::style::{
 pub use crate::tree::UiArena;
 pub use crate::widgets::{
     ButtonWidget, ColumnWidget, ComponentElement, ContainerWidget, Element, LabelWidget,
-    LayoutStyledWidget, RowWidget, StyleScopeWidget, TextWidget, Widget, button, column, component,
-    container, label, row, style_scope, text,
+    LayoutStyledWidget, RowWidget, StyleScopeWidget, TextWidget, Widget, WithChildren, button,
+    column, component, container, label, row, style_scope, text,
 };
 pub use xui_interface::{
     DirtyFlags, FontFamily, FontStyle, FontWeight, LineHeight, NodeId, OverflowWrap,

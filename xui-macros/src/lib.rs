@@ -398,7 +398,13 @@ fn expand_style_scope(node: &ElementNode) -> Result<TokenStream2> {
             "font_size" => style_stmts.push(quote! {
                 __xui_scope_style.merge(&::xui::Style::new().font_size(#value));
             }),
-            other => return unsupported_attr(attr, "style_scope", other),
+            other => {
+                if let Some(stmt) = event_attr_stmt(attr) {
+                    element_stmts.push(stmt);
+                } else {
+                    return unsupported_attr(attr, "style_scope", other);
+                }
+            }
         }
     }
     let children = node
@@ -435,7 +441,13 @@ fn expand_label(node: &ElementNode) -> Result<TokenStream2> {
             }
             "font_size" => attr_stmts
                 .push(quote! { __xui_style.merge(&::xui::Style::new().font_size(#value)); }),
-            other => return unsupported_attr(attr, "label", other),
+            other => {
+                if let Some(stmt) = event_attr_stmt(attr) {
+                    attr_stmts.push(stmt);
+                } else {
+                    return unsupported_attr(attr, "label", other);
+                }
+            }
         }
     }
     no_children_except_text(node, "label")?;
@@ -490,7 +502,13 @@ fn expand_text(node: &ElementNode) -> Result<TokenStream2> {
                 .push(quote! { __xui_style.merge(&::xui::Style::new().letter_spacing(#value)); }),
             "decoration" => attr_stmts
                 .push(quote! { __xui_style.merge(&::xui::Style::new().decoration(#value)); }),
-            other => return unsupported_attr(attr, "text", other),
+            other => {
+                if let Some(stmt) = event_attr_stmt(attr) {
+                    attr_stmts.push(stmt);
+                } else {
+                    return unsupported_attr(attr, "text", other);
+                }
+            }
         }
     }
     no_children_except_text(node, "text")?;
@@ -514,6 +532,9 @@ fn expand_button(node: &ElementNode) -> Result<TokenStream2> {
             "on_click" => {
                 attr_stmts.push(quote! { __xui_element = __xui_element.on_click(#value); });
             }
+            "disabled" => {
+                attr_stmts.push(quote! { __xui_element = __xui_element.disabled(#value); });
+            }
             "style" => attr_stmts.push(quote! { __xui_style.merge(&#value); }),
             "hover_style" => {
                 attr_stmts.push(quote! { __xui_element = __xui_element.hover_style(#value); })
@@ -531,7 +552,13 @@ fn expand_button(node: &ElementNode) -> Result<TokenStream2> {
             }
             "font_size" => attr_stmts
                 .push(quote! { __xui_style.merge(&::xui::Style::new().font_size(#value)); }),
-            other => return unsupported_attr(attr, "button", other),
+            other => {
+                if let Some(stmt) = event_attr_stmt(attr) {
+                    attr_stmts.push(stmt);
+                } else {
+                    return unsupported_attr(attr, "button", other);
+                }
+            }
         }
     }
     no_children_except_text(node, "button")?;
@@ -559,7 +586,13 @@ fn expand_stack(node: &ElementNode, tag: &str, constructor: TokenStream2) -> Res
             }
             "background" => attr_stmts
                 .push(quote! { __xui_style.merge(&::xui::Style::new().background(#value)); }),
-            other => return unsupported_attr(attr, tag, other),
+            other => {
+                if let Some(stmt) = event_attr_stmt(attr) {
+                    attr_stmts.push(stmt);
+                } else {
+                    return unsupported_attr(attr, tag, other);
+                }
+            }
         }
     }
 
@@ -612,7 +645,13 @@ fn expand_container(node: &ElementNode) -> Result<TokenStream2> {
             "border_radius" => attr_stmts.push(quote! {
                 __xui_style.merge(&::xui::Style::new().border_radius(#value));
             }),
-            other => return unsupported_attr(attr, "container", other),
+            other => {
+                if let Some(stmt) = event_attr_stmt(attr) {
+                    attr_stmts.push(stmt);
+                } else {
+                    return unsupported_attr(attr, "container", other);
+                }
+            }
         }
     }
 
@@ -673,19 +712,47 @@ fn expand_function_component(node: &ElementNode) -> Result<TokenStream2> {
     let component_type_name =
         TokenIdent::new(&format!("{}_component_type", node.name), Span::call_site());
     let has_children = !node.children.is_empty();
-    let expr = if props.is_empty() && !has_children {
-        let mut expr = quote!(::xui::component(#component_type_name()));
-        if let Some(key) = key {
-            expr = quote!(#expr.key(#key));
+    let expr = if props.is_empty() {
+        if has_children {
+            let props_value = props_value.ok_or_else(|| {
+                Error::new(
+                    node.name.span(),
+                    "registered function components with children require a `props` attribute",
+                )
+            })?;
+            let children = node
+                .children
+                .iter()
+                .map(expand_child)
+                .collect::<Result<Vec<_>>>()?;
+            let mut element_expr = quote! {{
+                let __xui_props = ::xui::WithChildren::with_children(
+                    #props_value,
+                    ::std::vec![#(#children),*],
+                );
+                ::xui::component(#component_type_name()).props(__xui_props)
+            }};
+            if let Some(key) = key {
+                element_expr = quote! {{
+                    let __xui_element = #element_expr;
+                    __xui_element.key(#key)
+                }};
+            }
+            element_expr
+        } else {
+            let mut expr = quote!(::xui::component(#component_type_name()));
+            if let Some(key) = key {
+                expr = quote!(#expr.key(#key));
+            }
+            if let Some(props_value) = props_value {
+                expr = quote!(#expr.props(#props_value));
+            }
+            expr
         }
-        if let Some(props_value) = props_value {
-            expr = quote!(#expr.props(#props_value));
-        }
-        expr
     } else {
         return Err(Error::new(
             node.name.span(),
-            "registered function components support only `key` and `props` attributes, and do not support children yet",
+            "registered function components support only `key` and `props` attributes",
         ));
     };
 
@@ -751,4 +818,25 @@ fn unsupported_attr<T>(attr: &XuiAttribute, tag: &str, attr_name: &str) -> Resul
         attr.name.span(),
         format!("unsupported attribute `{attr_name}` on <{tag}>"),
     ))
+}
+
+fn event_attr_stmt(attr: &XuiAttribute) -> Option<TokenStream2> {
+    let value = &attr.value;
+    match attr.name.to_string().as_str() {
+        "on_event" => Some(quote! { __xui_element = __xui_element.on_event(#value); }),
+        "on_click" => Some(quote! { __xui_element = __xui_element.on_click(#value); }),
+        "on_hover_change" => {
+            Some(quote! { __xui_element = __xui_element.on_hover_change(#value); })
+        }
+        "on_pointer_down" => {
+            Some(quote! { __xui_element = __xui_element.on_pointer_down(#value); })
+        }
+        "on_pointer_up" => Some(quote! { __xui_element = __xui_element.on_pointer_up(#value); }),
+        "on_pointer_move" => {
+            Some(quote! { __xui_element = __xui_element.on_pointer_move(#value); })
+        }
+        "on_key_down" => Some(quote! { __xui_element = __xui_element.on_key_down(#value); }),
+        "on_key_up" => Some(quote! { __xui_element = __xui_element.on_key_up(#value); }),
+        _ => None,
+    }
 }
