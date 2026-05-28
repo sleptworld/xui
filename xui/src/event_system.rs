@@ -107,31 +107,6 @@ fn update_hover(arena: &mut UiArena, event: &Event) {
         let new_path = hovered.map(|id| arena.event_path(id)).unwrap_or_default();
         let old_path = arena.event_state().hovered_path.clone();
 
-        // #[cfg(debug_assertions)]
-        // {
-        //     println!("==== OLD PATH ====");
-
-        //     for o in old_path.iter() {
-        //         if let Some(w) = arena.node(*o) {
-        //             println!(
-        //                 "Node ID: {:?}, layout: {:?}, type: {:?}",
-        //                 w.id, w.layout, w.node_type
-        //             );
-        //         }
-        //     }
-
-        //     println!("==== NEW PATH ====");
-
-        //     for n in new_path.iter() {
-        //         if let Some(w) = arena.node(*n) {
-        //             println!(
-        //                 "Node ID: {:?}, layout: {:?}, type: {:?}",
-        //                 w.id, w.layout, w.node_type
-        //             );
-        //         }
-        //     }
-        // }
-
         let common = old_path
             .iter()
             .zip(new_path.iter())
@@ -235,6 +210,21 @@ fn dispatch_to_node(
         };
         let mut cx = EventContext::new(id, phase, &mut request_dirty, &mut requests);
 
+        macro_rules! dispatch_event {
+            ($event:ident,$node:ident, $($event_name: ident => $handler: ident),+) => {
+
+                {
+                    let specialized = match $event {
+                        $(
+                            Event::$event_name {..} => $node.event_handlers.$handler.as_mut().map(|handler| handler(&mut cx)).unwrap_or(EventResult::Ignored),
+                        )+
+                        _ => EventResult::Ignored
+                    };
+                    specialized
+                }
+            };
+        }
+
         match dispatch {
             NodeDispatch::Raw(event) => {
                 let handler_result = node
@@ -249,40 +239,12 @@ fn dispatch_to_node(
                 } else if phase == EventPhase::Capture {
                     EventResult::Ignored
                 } else {
-                    let specialized = match event {
-                        Event::PointerDown { .. } => node
-                            .event_handlers
-                            .on_pointer_down
-                            .as_mut()
-                            .map(|handler| handler(&mut cx))
-                            .unwrap_or(EventResult::Ignored),
-                        Event::PointerUp { .. } => node
-                            .event_handlers
-                            .on_pointer_up
-                            .as_mut()
-                            .map(|handler| handler(&mut cx))
-                            .unwrap_or(EventResult::Ignored),
-                        Event::PointerMove { .. } => node
-                            .event_handlers
-                            .on_pointer_move
-                            .as_mut()
-                            .map(|handler| handler(&mut cx))
-                            .unwrap_or(EventResult::Ignored),
-                        Event::KeyDown { key } => node
-                            .event_handlers
-                            .on_key_down
-                            .as_mut()
-                            .map(|handler| handler(key, &mut cx))
-                            .unwrap_or(EventResult::Ignored),
-                        Event::KeyUp { key } => node
-                            .event_handlers
-                            .on_key_up
-                            .as_mut()
-                            .map(|handler| handler(key, &mut cx))
-                            .unwrap_or(EventResult::Ignored),
-                        _ => EventResult::Ignored,
+                    let specialized = dispatch_event! {
+                        event, node,
+                        PointerDown => on_pointer_down,
+                        PointerUp => on_pointer_up,
+                        PointerMove => on_pointer_move
                     };
-
                     if specialized.is_consumed() {
                         specialized
                     } else if phase == EventPhase::Target {

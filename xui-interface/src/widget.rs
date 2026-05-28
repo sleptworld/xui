@@ -1,6 +1,7 @@
 use std::{any::Any, fmt::Debug, hash::Hash};
 
 use slotmap::new_key_type;
+use smallstr::SmallString;
 
 use crate::{
     ComputedStyle, ComputedTextStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult,
@@ -23,17 +24,17 @@ pub enum WidgetType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Key(pub String);
+pub struct Key(pub SmallString<[u8; 64]>);
 
 impl From<&str> for Key {
     fn from(value: &str) -> Self {
-        Self(value.to_owned())
+        Self(value.into())
     }
 }
 
 impl From<String> for Key {
     fn from(value: String) -> Self {
-        Self(value)
+        Self(value.into())
     }
 }
 

@@ -1,4 +1,5 @@
 use slotmap::SlotMap;
+use std::cell::Cell;
 use taffy::prelude as tf;
 use xui_interface::{
     ComputedStyle, ComputedTextStyle, DirtyFlags, EventHandlers, NodeId, TextContent,
@@ -39,6 +40,19 @@ pub struct Node {
     pub paint_cache: Vec<PaintCommand>,
     pub widget: WidgetRef,
     pub event_handlers: EventHandlers,
+}
+
+struct PaintTraceNode {
+    id: NodeId,
+    node_type: WidgetType,
+    key: Option<Key>,
+    rect: Rect,
+    dirty: DirtyFlags,
+    subtree_dirty: DirtyFlags,
+    command_start: usize,
+    own_command_end: usize,
+    close_command_index: Option<usize>,
+    subtree_command_end: usize,
 }
 
 impl Node {
@@ -85,6 +99,7 @@ pub struct UiArena {
     damage: DamageRegion,
     event_state: EventState,
     theme: Theme,
+    paint_frames: Cell<usize>,
     pub update_visits: usize,
     pub layout_passes: usize,
     pub repaint_passes: usize,
@@ -123,6 +138,7 @@ impl UiArena {
             damage: DamageRegion::new(),
             event_state: EventState::default(),
             theme,
+            paint_frames: Cell::new(0),
             update_visits: 0,
             layout_passes: 0,
             repaint_passes: 0,
@@ -181,6 +197,40 @@ impl UiArena {
 
     pub(crate) fn event_state_mut(&mut self) -> &mut EventState {
         &mut self.event_state
+    }
+
+    pub fn create_node(
+        &mut self,
+        key: Option<Key>,
+        props_hash: u64,
+        widget: WidgetRef,
+        event_handlers: EventHandlers,
+        style: tf::Style,
+        computed_style: ComputedStyle,
+    ) -> NodeId {
+        let node_type = widget.with(|w| w.node_type());
+        let taffy_node = match node_type {
+            WidgetType::Text => self.taffy.new_leaf_with_context(
+                style,
+                WidgetContext::Text(computed_style.text.clone(), widget.with(|w| w.text())),
+            ),
+            _ => self.taffy.new_leaf(style),
+        }
+        .expect("failed to create taffy node");
+        let id = self.nodes.insert_with_key(|id| {
+            Node::new(
+                id,
+                key,
+                0,
+                props_hash,
+                computed_style,
+                widget,
+                event_handlers,
+                taffy_node,
+            )
+        });
+
+        id
     }
 
     pub fn insert(
@@ -615,6 +665,65 @@ impl UiArena {
         }
     }
 
+    fn trace_paint_frame(
+        &self,
+        damage: &DamageRegion,
+        commands: &[PaintCommand],
+        trace_nodes: &[PaintTraceNode],
+    ) {
+        let frame = self.paint_frames.get() + 1;
+        self.paint_frames.set(frame);
+        eprintln!(
+            "[xui::paint] frame #{frame} damage={} bounds={:?} commands={} nodes={}",
+            Self::format_damage_rects(damage),
+            damage.bounds(),
+            commands.len(),
+            trace_nodes.len(),
+        );
+
+        for node in trace_nodes {
+            eprintln!(
+                "[xui::paint]   node {:?} {:?} rect={:?} key={:?} dirty={:?} subtree_dirty={:?} own_commands={} subtree_commands={}",
+                node.id,
+                node.node_type,
+                node.rect,
+                node.key,
+                node.dirty,
+                node.subtree_dirty,
+                node.own_command_end.saturating_sub(node.command_start),
+                node.subtree_command_end.saturating_sub(node.command_start),
+            );
+            for (index, command) in commands[node.command_start..node.own_command_end]
+                .iter()
+                .enumerate()
+            {
+                eprintln!(
+                    "[xui::paint]     command #{} {:?}",
+                    node.command_start + index,
+                    command
+                );
+            }
+            if let Some(command_index) = node.close_command_index {
+                if let Some(command) = commands.get(command_index) {
+                    eprintln!("[xui::paint]     command #{} {:?}", command_index, command);
+                }
+            }
+        }
+    }
+
+    fn format_damage_rects(damage: &DamageRegion) -> String {
+        let rects = damage
+            .rects()
+            .iter()
+            .map(|rect| format!("{rect:?}"))
+            .collect::<Vec<_>>();
+        if rects.is_empty() {
+            "<none>".to_owned()
+        } else {
+            rects.join(", ")
+        }
+    }
+
     pub fn is_dirty(&self) -> bool {
         !self.damage.is_empty()
             || self
@@ -786,6 +895,11 @@ impl UiArena {
         let current_widget;
 
         {
+            let text = widget.with(|w| w.text());
+            eprintln!("Updated str: {:?}", text);
+        }
+
+        {
             let node = self.nodes.get_mut(id).expect("reused node missing");
             node.key = key;
             node.new_props_hash = props_hash;
@@ -814,10 +928,13 @@ impl UiArena {
             let widget_flags = node
                 .widget
                 .with_mut(|current| widget.with(|next| current.update_from(next)));
+
             flags |= widget_flags;
             node.event_handlers = event_handlers;
             current_widget = node.widget.clone();
         }
+
+        self.refresh_taffy_context(id);
 
         self.mark_dirty(id, flags);
         current_widget
@@ -887,6 +1004,7 @@ impl UiArena {
             node.event_handlers = parts.event_handlers;
         }
 
+        self.refresh_taffy_context(id);
         self.mark_dirty(id, flags);
         parts.children
     }
@@ -942,6 +1060,22 @@ impl UiArena {
         for (position, child) in children.into_iter().enumerate() {
             self.nodes[child].position = position;
         }
+    }
+
+    fn refresh_taffy_context(&mut self, id: NodeId) {
+        let node = &self.nodes[id];
+
+        let context = match node.node_type {
+            WidgetType::Text | WidgetType::Label => Some(WidgetContext::Text(
+                node.computed_style.text.clone(),
+                node.widget.with(|w| w.text()),
+            )),
+            _ => None,
+        };
+
+        self.taffy
+            .set_node_context(node.taffy_node, context)
+            .expect("failed to update taffy context");
     }
 }
 

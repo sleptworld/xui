@@ -324,7 +324,7 @@ impl ComponentElement {
     }
 }
 
-pub fn label(text: impl Into<String>) -> LabelWidget {
+pub fn label(text: impl Into<TextContent>) -> LabelWidget {
     LabelWidget::new(text)
 }
 

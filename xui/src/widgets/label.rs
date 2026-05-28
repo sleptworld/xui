@@ -3,7 +3,7 @@ use std::any::Any;
 use taffy::prelude as tf;
 use xui_interface::{
     ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, PaintCommand,
-    Rect, Size, Style, TextMeasurer, TextPaintCommand, TextProps, Widget, WidgetType,
+    Rect, Size, Style, TextContent, TextMeasurer, TextPaintCommand, TextProps, Widget, WidgetType,
 };
 
 use super::{LayoutStyledWidget, fixed_size_style, props_hash};
@@ -11,13 +11,13 @@ use super::{LayoutStyledWidget, fixed_size_style, props_hash};
 #[derive(Debug)]
 pub struct LabelWidget {
     pub key: Option<Key>,
-    pub text: String,
+    pub text: TextContent,
     pub style: Style,
     pub event_handlers: EventHandlers,
 }
 
 impl LabelWidget {
-    pub fn new(text: impl Into<String>) -> Self {
+    pub fn new(text: impl Into<TextContent>) -> Self {
         Self {
             key: None,
             text: text.into(),
@@ -90,7 +90,7 @@ impl Widget for LabelWidget {
     }
 
     fn measure(&self, style: &ComputedStyle, measurer: &mut dyn TextMeasurer) -> Option<Size> {
-        Some(measurer.measure_text(&self.text, &style.text))
+        Some(measurer.measure_text(self.text.as_str(), &style.text))
     }
 
     fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
@@ -104,6 +104,10 @@ impl Widget for LabelWidget {
 
     fn handle_event(&mut self, _event: &Event, _cx: &mut EventContext<'_>) -> EventResult {
         EventResult::Ignored
+    }
+
+    fn text(&self) -> Option<xui_interface::TextContent> {
+        Some(self.text.clone())
     }
 }
 

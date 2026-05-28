@@ -3,8 +3,11 @@ use winit::dpi::PhysicalSize;
 use winit::window::Window;
 use xui::font::TextI;
 use xui::prelude::*;
-use xui_components::button::*;
 use xui_winit::{WGPUBackend, WinitRunner, WinitRunnerOptions};
+
+pub struct MainProp {
+    pub info: String,
+}
 
 component_fn! {
     fn counter() {
@@ -33,6 +36,14 @@ component_fn! {
             }}>
                 {"Decrement"}
             </button>
+        </column>
+    }
+
+    fn main_page(MainProp{info}: &MainProp) {
+
+        <column gap={12.0}>
+            <label color={Color::BLUE_500}>{info}</label>
+            <counter />
         </column>
     }
 }

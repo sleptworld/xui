@@ -8,6 +8,7 @@ use crate::state::{HookContext, Scheduler};
 use crate::style::Theme;
 use crate::tree::UiArena;
 use crate::widgets::Element;
+use std::time::Duration;
 use xui_interface::{DirtyFlags, TextMeasurer};
 
 pub struct App {
@@ -56,6 +57,10 @@ impl App {
         self.arena.set_theme(theme);
     }
 
+    pub fn set_rebuild_budget(&mut self, budget: Duration) {
+        self.components.set_budget(budget);
+    }
+
     pub fn resize(&mut self, size: Size) {
         if self.size != size {
             self.size = size;
@@ -70,7 +75,7 @@ impl App {
     }
 
     pub fn dispatch_event<T: TextMeasurer>(&mut self, event: Event, m: &mut T) -> EventResult {
-        self.rebuild_if_needed(m);
+        self.rebuild_sync_if_needed(m);
         self.arena.update_tree(self.arena.root(), self.size, m);
         let lane = event_lane(&event);
         let result = with_update_lane(lane, || self.arena.dispatch_event(&event));
@@ -85,7 +90,9 @@ impl App {
         backend: &mut B,
         m: &mut T,
     ) -> Result<(), B::Error> {
-        self.rebuild_if_needed(m);
+        if !self.rebuild_slice_if_needed(m) {
+            return Ok(());
+        }
         self.arena.update_tree(self.arena.root(), self.size, m);
 
         let (damage, commands) = self.arena.prepare_paint_commands();
@@ -111,8 +118,12 @@ impl App {
         self.arena.mark_dirty(self.arena.root(), DirtyFlags::STATE);
     }
 
-    fn rebuild_if_needed<T: TextMeasurer>(&mut self, m: &mut T) {
-        self.components.rebuild_if_needed(&mut self.arena, m);
+    fn rebuild_sync_if_needed<T: TextMeasurer>(&mut self, m: &mut T) {
+        self.components.rebuild_sync_if_needed(&mut self.arena, m);
+    }
+
+    fn rebuild_slice_if_needed<T: TextMeasurer>(&mut self, m: &mut T) -> bool {
+        self.components.rebuild_slice_if_needed(&mut self.arena, m)
     }
 }
 

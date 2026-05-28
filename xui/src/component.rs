@@ -14,7 +14,7 @@ use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use taffy as tf;
 use xui_interface::{DirtyFlags, EventHandlers, NodeId, TextMeasurer};
 
@@ -34,7 +34,7 @@ pub struct WorkNode {
     began: bool,
     host_work: Option<HostWork>,
     host_node: Option<NodeId>,
-    component: Option<ComponentWork>,
+    component_state: Option<ComponentWork>,
 }
 
 struct HostWork {
@@ -80,7 +80,7 @@ impl WorkNode {
             began: false,
             host_node: current.host.as_ref().and_then(|host| host.node_id),
             host_work: None,
-            component: current.component.as_ref().map(ComponentWork::from_state),
+            component_state: current.component.as_ref().map(ComponentWork::from_state),
         }
     }
 
@@ -100,7 +100,7 @@ impl WorkNode {
             .and_then(|node| node.host.as_ref())
             .and_then(|host| host.node_id);
 
-        let (host_work, pending_children, component) = match prepared.pending {
+        let (host_work, pending_children, component_state) = match prepared.pending {
             PreparedPending::Host {
                 widget,
                 event_handlers,
@@ -152,7 +152,7 @@ impl WorkNode {
             began: false,
             host_work,
             host_node,
-            component,
+            component_state,
         }
     }
 
@@ -160,7 +160,6 @@ impl WorkNode {
         self.effect != EffectTag::None
             || self.current.is_none()
             || self.pending_children.is_some()
-            || self.component.is_some()
             || includes_some_lane(self.lanes | self.child_lanes, render_lanes)
     }
 }
@@ -364,7 +363,7 @@ impl WorkInProgress {
         }
         writeln!(f)?;
 
-        if let Some(component) = &node.component {
+        if let Some(component) = &node.component_state {
             writeln!(
                 f,
                 "{prefix}component: render={} props_hash={:#x}",
@@ -394,7 +393,7 @@ impl fmt::Display for WorkNodeTitle<'_> {
             FiberTag::Root => write!(f, "Root"),
             FiberTag::Host(widget) => write!(f, "Host({widget:?})"),
             FiberTag::Component => {
-                if let Some(component) = &self.0.component {
+                if let Some(component) = &self.0.component_state {
                     write!(f, "Component({})", component.render.name())
                 } else {
                     write!(f, "Component")
@@ -486,20 +485,48 @@ impl ComponentRuntime {
         self.scheduler.mark_root_dirty(current_update_lane());
     }
 
-    pub fn rebuild_if_needed<T: TextMeasurer>(&mut self, arena: &mut UiArena, measurer: &mut T) {
+    pub fn rebuild_sync_if_needed<T: TextMeasurer>(
+        &mut self,
+        arena: &mut UiArena,
+        measurer: &mut T,
+    ) {
         if self.is_dirty() {
             self.flush_sync(arena, measurer);
         }
     }
 
+    pub fn rebuild_slice_if_needed<T: TextMeasurer>(
+        &mut self,
+        arena: &mut UiArena,
+        measurer: &mut T,
+    ) -> bool {
+        if !self.is_dirty() {
+            return true;
+        }
+
+        self.work_loop(arena, measurer, Some(Instant::now() + self.budget))
+    }
+
     pub fn flush_sync<T: TextMeasurer>(&mut self, arena: &mut UiArena, measurer: &mut T) {
+        self.work_loop(arena, measurer, None);
+    }
+
+    fn work_loop<T: TextMeasurer>(
+        &mut self,
+        arena: &mut UiArena,
+        measurer: &mut T,
+        deadline: Option<Instant>,
+    ) -> bool {
         self.scheduler.mark_starved_lanes_as_expired(now_ms());
         loop {
             if self.scheduler.pending_lanes() == NO_LANES && self.work_in_progress.is_none() {
-                break;
+                return true;
             }
 
             self.ensure_work();
+            if self.work_in_progress.is_none() {
+                return false;
+            }
             let theme = arena.theme();
             while self
                 .work_in_progress
@@ -507,8 +534,18 @@ impl ComponentRuntime {
                 .is_some_and(|work| work.next_work.is_some())
             {
                 self.perform_unit_of_work(measurer, theme);
+                let more_work = self
+                    .work_in_progress
+                    .as_ref()
+                    .is_some_and(|work| work.next_work.is_some());
+                if more_work && deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                    return false;
+                }
             }
             self.commit_finished_work(arena);
+            if deadline.is_some() {
+                return true;
+            }
         }
     }
 
@@ -521,13 +558,10 @@ impl ComponentRuntime {
             return;
         };
 
-        self.trace_work_in_progress(format_args!("begin unit {id:?}"));
-
         if let Some(child) = self.begin_work(id, measurer, theme) {
             if let Some(work) = self.work_in_progress.as_mut() {
                 work.next_work = Some(child);
             }
-            self.trace_work_in_progress(format_args!("descend from {id:?} to {child:?}"));
             return;
         }
 
@@ -538,9 +572,6 @@ impl ComponentRuntime {
                 if let Some(work) = self.work_in_progress.as_mut() {
                     work.next_work = Some(sibling);
                 }
-                self.trace_work_in_progress(format_args!(
-                    "complete {current:?}; advance to sibling {sibling:?}"
-                ));
                 return;
             }
 
@@ -556,16 +587,9 @@ impl ComponentRuntime {
                     if let Some(work) = self.work_in_progress.as_mut() {
                         work.next_work = None;
                     }
-                    self.trace_work_in_progress(format_args!("complete tree from {id:?}"));
                     return;
                 }
             }
-        }
-    }
-
-    fn trace_work_in_progress(&self, event: fmt::Arguments<'_>) {
-        if let Some(work) = &self.work_in_progress {
-            eprintln!("[xui::work] {event}\n{work:#?}");
         }
     }
 
@@ -591,8 +615,7 @@ impl ComponentRuntime {
                 node.tag,
                 node.effect != EffectTag::None
                     || includes_some_lane(node.lanes, work.render_lanes)
-                    || node.current.is_none()
-                    || node.component.is_some(),
+                    || node.current.is_none(),
                 node.pending_children.is_some(),
                 work.render_lanes,
             )
@@ -623,7 +646,7 @@ impl ComponentRuntime {
                         .work_in_progress
                         .as_ref()
                         .and_then(|work| work.node(id))
-                        .and_then(|node| node.component.as_ref())
+                        .and_then(|node| node.component_state.as_ref())
                         .map(|component| component.render.clone())
                         .or_else(|| {
                             self.nodes
@@ -637,7 +660,7 @@ impl ComponentRuntime {
                         .work_in_progress
                         .as_ref()
                         .and_then(|work| work.node(id))
-                        .and_then(|node| node.component.as_ref())
+                        .and_then(|node| node.component_state.as_ref())
                         .map(|component| component.props.clone())
                         .or_else(|| {
                             self.nodes
@@ -873,114 +896,11 @@ impl ComponentRuntime {
             self.commit_deletion(deletion, arena, true);
         }
 
-        self.commit_work_node(work.root, self.root_widget, arena, &mut work, 0);
-        let next_current = Self::freeze_work_tree(&mut self.nodes, work.root, &mut work);
+        let next_current =
+            self.commit_and_freeze_work_tree(work.root, self.root_widget, arena, &mut work, 0);
         self.current = next_current;
         self.sync_host_children(arena);
         self.scheduler.mark_render_finished(work.render_lanes);
-    }
-
-    fn freeze_work_tree(nodes: &mut FiberArena, id: FiberId, work: &mut WorkInProgress) -> FiberId {
-        let node = work.nodes.remove(&id).expect("freeze missing work node");
-
-        if node.effect == EffectTag::None
-            && node.lanes == NO_LANES
-            && node.child_lanes == NO_LANES
-            && node.current.is_some()
-            && !node.children_resolved
-        {
-            return node.current.unwrap();
-        }
-
-        let children: Vec<_> = if !node.children_resolved {
-            let current_node = node.current.and_then(|n| nodes.node(n));
-            current_node
-                .map(|c| c.children(&nodes))
-                .map(|n| n.into_iter().map(|n| n.id).collect())
-                .unwrap_or_default()
-        } else {
-            node.children
-                .iter()
-                .map(|child| Self::freeze_work_tree(nodes, *child, work))
-                .collect()
-        };
-
-        let current_node = node.current.and_then(|n| nodes.node(n));
-
-        let host = if matches!(node.tag, FiberTag::Host(_)) {
-            let current_host = current_node.and_then(|c| c.host.as_ref());
-            let node_host_work = node.host_work;
-
-            node_host_work
-                .map(|host| HostState {
-                    node_id: node.host_node,
-                    widget: host.widget,
-                    taffy_node: current_host.and_then(|host| host.taffy_node),
-                    style: host.style,
-                    computed_style: host.computed_style,
-                    layout: current_host.map(|host| host.layout).unwrap_or_default(),
-                    previous_layout: current_host
-                        .map(|host| host.previous_layout)
-                        .unwrap_or_default(),
-                    paint_cache: Vec::new(),
-                    props_hash: host.props_hash,
-                })
-                .or_else(|| {
-                    let host_node = current_host.unwrap();
-                    Some(HostState {
-                        node_id: node.host_node,
-                        widget: host_node.widget.clone(),
-                        taffy_node: current_host.and_then(|host| host.taffy_node),
-                        style: host_node.style.clone(),
-                        computed_style: host_node.computed_style.clone(),
-                        layout: current_host.map(|host| host.layout).unwrap_or_default(),
-                        previous_layout: current_host
-                            .map(|host| host.previous_layout)
-                            .unwrap_or_default(),
-                        paint_cache: Vec::new(),
-                        props_hash: host_node.props_hash,
-                    })
-                })
-        } else {
-            None
-        };
-
-        let component = node.component.as_ref().map(|component| ComponentState {
-            key: component.key.clone(),
-            render: component.render,
-            props_hash: component.props_hash,
-            props: component.props.clone(),
-        });
-
-        let frozen = Node {
-            id: node.id,
-            parent: node.parent,
-            child: None,
-            sibling: None,
-            key: node.key.clone(),
-            position: node.position,
-            tag: node.tag,
-            effect: EffectTag::None,
-            dirty: DirtyFlags::empty(),
-            subtree_dirty: DirtyFlags::empty(),
-            pending_props: None,
-            pending_children: None,
-            memoized_props_hash: match (&host, &component) {
-                (Some(host), _) => host.props_hash,
-                (_, Some(component)) => component.props_hash,
-                _ => 0,
-            },
-            host,
-            component,
-        };
-
-        if let Some(existing) = nodes.node_mut(node.id) {
-            *existing = frozen;
-        } else {
-            nodes.insert_node(node.id, frozen);
-        }
-        nodes.set_children(node.id, children);
-        node.id
     }
 
     fn commit_deletion(&mut self, id: FiberId, arena: &mut UiArena, remove_host: bool) {
@@ -1010,48 +930,37 @@ impl ComponentRuntime {
         self.nodes.remove_node(id);
     }
 
-    fn commit_work_node(
+    fn commit_and_freeze_work_tree(
         &mut self,
         id: FiberId,
         parent_host: NodeId,
         arena: &mut UiArena,
         work: &mut WorkInProgress,
         depth: usize,
-    ) {
-        let tag = work.nodes.get(&id).map(|node| node.tag);
+    ) -> FiberId {
+        let mut node = work.nodes.remove(&id).expect("commit missing work node");
         let mut child_parent_host = parent_host;
-        self.trace_commit_work_node(
-            depth,
-            format_args!(
-                "enter {id:?} {} parent_host={parent_host:?}",
-                work.nodes
-                    .get(&id)
-                    .map(WorkNodeTitle)
-                    .map(|title| title.to_string())
-                    .unwrap_or_else(|| "<missing>".to_owned())
-            ),
-        );
 
-        if matches!(tag, Some(FiberTag::Host(_))) {
-            let effect = work.nodes[&id].effect;
-            match effect {
+        if node.effect == EffectTag::None
+            && node.lanes == NO_LANES
+            && node.child_lanes == NO_LANES
+            && node.current.is_some()
+            && !node.children_resolved
+        {
+            self.scheduler.mark_mounted(id);
+            return node.current.unwrap();
+        }
+
+        if matches!(node.tag, FiberTag::Host(_)) {
+            match node.effect {
                 EffectTag::Placement => {
-                    let key = work.nodes[&id].key.clone();
-                    self.trace_commit_work_node(
-                        depth,
-                        format_args!("place host {id:?} under {parent_host:?}"),
-                    );
-                    let host = work
-                        .nodes
-                        .get_mut(&id)
-                        .and_then(|node| node.host_work.as_mut())
+                    let host = node
+                        .host_work
+                        .as_mut()
                         .expect("host placement missing host work");
-                    let node_id = arena.insert_node(
-                        parent_host,
-                        key,
+                    let node_id = arena.create_node(
+                        node.key.clone(),
                         host.props_hash,
-                        host.style.clone(),
-                        host.computed_style.clone(),
                         host.widget
                             .as_ref()
                             .expect("host widget already committed")
@@ -1059,32 +968,23 @@ impl ComponentRuntime {
                         host.event_handlers
                             .take()
                             .expect("host event handlers already committed"),
+                        host.style.clone(),
+                        host.computed_style.clone(),
                     );
-                    self.trace_commit_work_node(
-                        depth,
-                        format_args!("placed host {id:?} as {node_id:?}"),
-                    );
-                    work.nodes.get_mut(&id).unwrap().host_node = Some(node_id);
+                    eprintln!("NEW NODE {node_id:?} {:?};", node.tag);
+                    node.host_node = Some(node_id);
                     child_parent_host = node_id;
                 }
                 EffectTag::Update => {
-                    let node_id = work.nodes[&id]
-                        .host_node
-                        .expect("host update missing node id");
-                    let key = work.nodes[&id].key.clone();
-                    self.trace_commit_work_node(
-                        depth,
-                        format_args!("update host {id:?} at {node_id:?}"),
-                    );
-                    let host = work
-                        .nodes
-                        .get_mut(&id)
-                        .and_then(|node| node.host_work.as_mut())
+                    let node_id = node.host_node.expect("host update missing node id");
+                    let host = node
+                        .host_work
+                        .as_mut()
                         .expect("host update missing host work");
                     host.widget = Some(
                         arena.update_widget_node_from_parts(
                             node_id,
-                            key,
+                            node.key.clone(),
                             host.props_hash,
                             host.style.clone(),
                             host.computed_style.clone(),
@@ -1097,47 +997,129 @@ impl ComponentRuntime {
                                 .expect("host event handlers already committed"),
                         ),
                     );
-                    self.trace_commit_work_node(
-                        depth,
-                        format_args!("updated host {id:?} at {node_id:?}"),
-                    );
+
+                    eprintln!("UPDATE {node_id:?} {:?};", node.tag);
+
                     child_parent_host = node_id;
                 }
                 EffectTag::None => {
-                    let node_id = work.nodes[&id]
-                        .host_node
-                        .expect("clean host missing node id");
-                    self.trace_commit_work_node(
-                        depth,
-                        format_args!("reuse clean host {id:?} at {node_id:?}"),
-                    );
+                    let node_id = node.host_node.expect("clean host missing node id");
+                    eprintln!("NOT UPDATE {node_id:?} {:?};", node.tag);
                     child_parent_host = node_id;
                 }
             }
-        } else {
-            self.trace_commit_work_node(
-                depth,
-                format_args!("no host work; children inherit {child_parent_host:?}"),
-            );
         }
 
-        let children = work
-            .nodes
-            .get(&id)
-            .map(|node| node.children.clone())
-            .unwrap_or_default();
-        self.trace_commit_work_node(
-            depth,
-            format_args!(
-                "mark mounted {id:?}; commit {} children with parent_host={child_parent_host:?}",
-                children.len()
-            ),
-        );
+        let children: Vec<_> = if !node.children_resolved {
+            node.current
+                .and_then(|current| self.nodes.node(current))
+                .map(|current| {
+                    current
+                        .children(&self.nodes)
+                        .map(|child| child.id)
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            std::mem::take(&mut node.children)
+                .into_iter()
+                .map(|child| {
+                    self.commit_and_freeze_work_tree(
+                        child,
+                        child_parent_host,
+                        arena,
+                        work,
+                        depth + 1,
+                    )
+                })
+                .collect()
+        };
+        // self.trace_commit_work_node(
+        //     depth,
+        //     format_args!(
+        //         "mark mounted {id:?}; commit {} children with parent_host={child_parent_host:?}",
+        //         children.len()
+        //     ),
+        // );
         self.scheduler.mark_mounted(id);
-        for child in children {
-            self.commit_work_node(child, child_parent_host, arena, work, depth + 1);
+
+        let current_host = if matches!(node.tag, FiberTag::Host(_)) {
+            node.current
+                .filter(|current| *current == node.id)
+                .and_then(|current| self.nodes.node_mut(current))
+                .and_then(|current| current.host.take())
+        } else {
+            None
+        };
+
+        let host = if matches!(node.tag, FiberTag::Host(_)) {
+            node.host_work
+                .map(|host| HostState {
+                    node_id: node.host_node,
+                    widget: host.widget,
+                    taffy_node: current_host.as_ref().and_then(|host| host.taffy_node),
+                    style: host.style,
+                    computed_style: host.computed_style,
+                    layout: current_host
+                        .as_ref()
+                        .map(|host| host.layout)
+                        .unwrap_or_default(),
+                    previous_layout: current_host
+                        .as_ref()
+                        .map(|host| host.previous_layout)
+                        .unwrap_or_default(),
+                    paint_cache: Vec::new(),
+                    props_hash: host.props_hash,
+                })
+                .or_else(|| {
+                    let mut host = current_host.expect("clean host missing host state");
+                    host.node_id = node.host_node;
+                    host.paint_cache.clear();
+                    Some(host)
+                })
+        } else {
+            None
+        };
+
+        let component = node.component_state.map(|component| ComponentState {
+            key: component.key,
+            render: component.render,
+            props_hash: component.props_hash,
+            props: component.props,
+        });
+
+        let memoized_props_hash = match (&host, &component) {
+            (Some(host), _) => host.props_hash,
+            (_, Some(component)) => component.props_hash,
+            _ => 0,
+        };
+
+        let frozen = Node {
+            id: node.id,
+            parent: node.parent,
+            child: None,
+            sibling: None,
+            key: node.key,
+            position: node.position,
+            tag: node.tag,
+            effect: EffectTag::None,
+            dirty: DirtyFlags::empty(),
+            subtree_dirty: DirtyFlags::empty(),
+            pending_props: None,
+            pending_children: None,
+            memoized_props_hash,
+            host,
+            component,
+        };
+
+        if let Some(existing) = self.nodes.node_mut(node.id) {
+            *existing = frozen;
+        } else {
+            self.nodes.insert_node(node.id, frozen);
         }
-        self.trace_commit_work_node(depth, format_args!("leave {id:?}"));
+        self.nodes.set_children(node.id, children);
+        // self.trace_commit_work_node(depth, format_args!("leave {id:?}"));
+        node.id
     }
 
     fn trace_commit_work_node(&self, depth: usize, event: fmt::Arguments<'_>) {
@@ -1229,10 +1211,12 @@ impl ComponentRuntime {
     }
 
     fn create_work_in_progress(&self, render_lanes: Lanes) -> WorkInProgress {
+        println!("REBUILD WORK IN PROGRESS, lanes: {}", render_lanes);
         let mut marks = FxHashMap::default();
-        self.collect_lane_marks(self.root_node(), render_lanes, &mut marks);
+        let (lanes, child_lanes) =
+            self.collect_lane_marks(self.root_node(), render_lanes, &mut marks);
         let mut nodes = FxHashMap::default();
-        let (lanes, child_lanes) = marks.get(&self.root()).copied().unwrap_or_default();
+        // let (lanes, child_lanes) = marks.get(&self.root()).copied().unwrap_or_default();
         let current_node = self.nodes.node(self.current).unwrap();
 
         nodes.insert(
@@ -1275,15 +1259,15 @@ impl ComponentRuntime {
         node: &Node,
         render_lanes: Lanes,
         marks: &mut FxHashMap<FiberId, (Lanes, Lanes)>,
-    ) -> Lanes {
+    ) -> (Lanes, Lanes) {
         let own = self.scheduler.component_lanes(node.id) & render_lanes;
         let mut child_lanes = NO_LANES;
 
         for child in node.children(&self.nodes) {
-            child_lanes |= self.collect_lane_marks(child, render_lanes, marks);
+            child_lanes |= self.collect_lane_marks(child, render_lanes, marks).1;
         }
         marks.insert(node.id, (own, child_lanes));
-        own | child_lanes
+        (own, child_lanes)
     }
 
     fn next_sibling_needing_work(&self, id: FiberId) -> Option<FiberId> {
@@ -1345,6 +1329,13 @@ impl ComponentRuntime {
             self.flatten_host_child(child.id, output);
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum Diff {
+    ReuseClean,
+    Update,
+    Replace,
 }
 
 fn now_ms() -> u64 {
@@ -1409,7 +1400,9 @@ fn prepared_needs_update(current: &Node, prepared: &PreparedElement) -> bool {
     }
 
     match (&current.host, &current.component, &prepared.pending) {
-        (Some(_), _, PreparedPending::Host { .. }) => true,
+        (Some(host_state), _, PreparedPending::Host { props_hash, .. }) => {
+            host_state.props_hash != *props_hash
+        }
         (
             _,
             Some(component),
@@ -1441,681 +1434,3 @@ fn child_tree_lanes(
     }
     lanes
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use std::cell::{Cell, RefCell};
-//     use std::convert::Infallible;
-//     use std::rc::Rc;
-
-//     use crate::prelude::*;
-//     use crate::widgets::{ButtonWidget, LabelWidget, TextWidget};
-
-//     fn click(app: &mut App, node: NodeId) {
-//         let rect = app.arena().node(node).unwrap().layout;
-//         let point = Point::new(rect.x + 2.0, rect.y + 2.0);
-//         app.dispatch_event(Event::PointerDown {
-//             position: point,
-//             button: PointerButton::Primary,
-//         });
-//         app.dispatch_event(Event::PointerUp {
-//             position: point,
-//             button: PointerButton::Primary,
-//         });
-//     }
-
-//     fn fill_color_for_node(app: &App, backend: &MockRenderBackend, node: NodeId) -> Option<Color> {
-//         let node_rect = app.arena().node(node).unwrap().layout;
-//         backend
-//             .last_commands
-//             .iter()
-//             .find_map(|command| match command {
-//                 PaintCommand::FillRect { rect, color } if *rect == node_rect => Some(*color),
-//                 _ => None,
-//             })
-//     }
-
-//     fn label_text(app: &App, node: NodeId) -> String {
-//         app.arena().node(node).unwrap().widget.with(|widget| {
-//             widget
-//                 .as_any()
-//                 .downcast_ref::<LabelWidget>()
-//                 .expect("node is not a label")
-//                 .text
-//                 .clone()
-//         })
-//     }
-
-//     fn button_text(app: &App, node: NodeId) -> String {
-//         app.arena().node(node).unwrap().widget.with(|widget| {
-//             widget
-//                 .as_any()
-//                 .downcast_ref::<ButtonWidget>()
-//                 .expect("node is not a button")
-//                 .text
-//                 .clone()
-//         })
-//     }
-
-//     fn text_props(app: &App, node: NodeId) -> TextProps {
-//         app.arena().node(node).unwrap().widget.with(|widget| {
-//             widget
-//                 .as_any()
-//                 .downcast_ref::<TextWidget>()
-//                 .expect("node is not text")
-//                 .props
-//                 .clone()
-//         })
-//     }
-
-//     #[derive(Default)]
-//     struct NonPresentingBackend {
-//         paints: usize,
-//     }
-
-//     impl RenderBackend for NonPresentingBackend {
-//         type Error = Infallible;
-
-//         fn begin_frame(&mut self, _: Size) -> Result<(), Self::Error> {
-//             Ok(())
-//         }
-
-//         fn paint(&mut self, _: &[PaintCommand], _: &DamageRegion) -> Result<(), Self::Error> {
-//             self.paints += 1;
-//             Ok(())
-//         }
-
-//         fn end_frame(&mut self) -> Result<(), Self::Error> {
-//             Ok(())
-//         }
-
-//         fn did_present(&self) -> bool {
-//             false
-//         }
-//     }
-
-//     #[test]
-//     fn initial_root_render_builds_host_tree() {
-//         let mut app = app(|_| column().child(label("hello")).into());
-//         let mut backend = MockRenderBackend::default();
-
-//         app.resize(Size::new(200.0, 100.0));
-//         app.render(&mut backend).unwrap();
-
-//         let root = app.arena().root();
-//         let column_id = app.arena().children(root)[0];
-//         let label_id = app.arena().children(column_id)[0];
-//         assert_eq!(label_text(&app, label_id), "hello");
-//     }
-
-//     #[test]
-//     fn all_host_builders_register_click_handlers() {
-//         let seen = Rc::new(Cell::new(0u8));
-//         let mut arena = UiArena::new();
-//         let root = arena.root();
-//         arena.node_mut(root).unwrap().layout = Rect::new(0.0, 0.0, 100.0, 140.0);
-
-//         let mark = |bit| -> ClickEventHandler {
-//             let seen = seen.clone();
-//             Box::new(move |_| {
-//                 seen.set(seen.get() | bit);
-//                 EventResult::Consumed
-//             })
-//         };
-//         let elements: Vec<Element> = vec![
-//             label("label").on_click(mark(1)).into(),
-//             button("button").on_click(mark(2)).into(),
-//             container()
-//                 .size(Size::new(24.0, 24.0))
-//                 .on_click(mark(4))
-//                 .into(),
-//             row().on_click(mark(8)).into(),
-//             column().on_click(mark(16)).into(),
-//         ];
-
-//         let mut hosts = Vec::new();
-//         for (index, element) in elements.into_iter().enumerate() {
-//             let parts = element.into_parts();
-//             let host = arena.insert_node(
-//                 root,
-//                 None,
-//                 0,
-//                 taffy::prelude::Style::default(),
-//                 parts.widget,
-//                 parts.event_handlers,
-//             );
-//             arena.node_mut(host).unwrap().layout = Rect::new(0.0, index as f32 * 28.0, 24.0, 24.0);
-//             hosts.push(host);
-//         }
-
-//         for host in hosts {
-//             let rect = arena.node(host).unwrap().layout;
-//             let point = Point::new(rect.x + 2.0, rect.y + 2.0);
-//             arena.dispatch_event(&Event::PointerDown {
-//                 position: point,
-//                 button: PointerButton::Primary,
-//             });
-//             arena.dispatch_event(&Event::PointerUp {
-//                 position: point,
-//                 button: PointerButton::Primary,
-//             });
-//         }
-
-//         assert_eq!(seen.get(), 0b1_1111);
-//     }
-
-//     #[test]
-//     fn button_keeps_visual_pressed_state_while_click_uses_event_props() {
-//         let clicks = Rc::new(Cell::new(0));
-//         let clicks_for_app = clicks.clone();
-//         let mut app = app(move |_| {
-//             let clicks_for_handler = clicks_for_app.clone();
-//             button("press")
-//                 .on_click(move |_| {
-//                     clicks_for_handler.set(clicks_for_handler.get() + 1);
-//                     EventResult::Consumed
-//                 })
-//                 .into()
-//         });
-//         let mut backend = MockRenderBackend::default();
-
-//         app.resize(Size::new(200.0, 120.0));
-//         app.render(&mut backend).unwrap();
-//         let root = app.arena().root();
-//         let button_id = app.arena().children(root)[0];
-//         let rect = app.arena().node(button_id).unwrap().layout;
-//         let point = Point::new(rect.x + 2.0, rect.y + 2.0);
-
-//         app.dispatch_event(Event::PointerDown {
-//             position: point,
-//             button: PointerButton::Primary,
-//         });
-//         app.render(&mut backend).unwrap();
-//         assert_eq!(
-//             fill_color_for_node(&app, &backend, button_id),
-//             Some(Color::BLUE_500)
-//         );
-
-//         app.dispatch_event(Event::PointerUp {
-//             position: point,
-//             button: PointerButton::Primary,
-//         });
-//         app.render(&mut backend).unwrap();
-//         assert_eq!(clicks.get(), 1);
-//         assert_eq!(
-//             fill_color_for_node(&app, &backend, button_id),
-//             Some(Color::GRAY_300)
-//         );
-//     }
-
-//     #[test]
-//     fn text_widget_builds_single_style_text_props() {
-//         let mut app = app(|_| {
-//             text("hello")
-//                 .color(Color::BLUE_500)
-//                 .font_size(20.0)
-//                 .font_weight(FontWeight::Bold)
-//                 .into()
-//         });
-
-//         app.resize(Size::new(200.0, 120.0));
-//         let root = app.arena().root();
-//         app.arena_mut().update_tree(root, Size::new(200.0, 120.0));
-
-//         let text_id = app.arena().children(root)[0];
-//         let props = text_props(&app, text_id);
-//         assert_eq!(props.text.as_str(), "hello");
-//         assert_eq!(props.style.color, Color::BLUE_500);
-//         assert_eq!(props.style.font_size, 20.0);
-//         assert_eq!(props.style.font_weight, FontWeight::Bold);
-//     }
-
-//     #[test]
-//     fn render_without_present_keeps_damage_for_retry() {
-//         let mut app = app(|_| container().child(label("hello")).into());
-//         let mut blocked = NonPresentingBackend::default();
-
-//         app.resize(Size::new(200.0, 100.0));
-//         app.render(&mut blocked).unwrap();
-
-//         assert_eq!(blocked.paints, 1);
-//         assert!(app.is_dirty());
-
-//         let mut backend = MockRenderBackend::default();
-//         app.render(&mut backend).unwrap();
-
-//         assert_eq!(backend.frames, 1);
-//         assert!(!backend.last_damage.is_empty());
-//         assert!(!app.is_dirty());
-//     }
-
-//     #[test]
-//     fn component_state_rerenders_only_owner_component() {
-//         const CHILD: ComponentType = ComponentType::new("xui::tests::owner_child");
-
-//         let root_renders = Rc::new(Cell::new(0));
-//         let child_renders = Rc::new(Cell::new(0));
-//         let root_renders_for_app = root_renders.clone();
-//         let child_renders_for_registry = child_renders.clone();
-
-//         let mut app = App::with_component_registry(move |registry| {
-//             let child_renders_for_component = child_renders_for_registry.clone();
-//             registry.register(CHILD, move |cx| {
-//                 child_renders_for_component.set(child_renders_for_component.get() + 1);
-//                 let count = cx.use_state(|| 0);
-//                 let count_for_click = count.clone();
-//                 button(format!("count: {}", count.get()))
-//                     .on_click(move |_| {
-//                         count_for_click.set(count_for_click.get() + 1);
-//                         EventResult::Consumed
-//                     })
-//                     .into()
-//             });
-
-//             move |_| {
-//                 root_renders_for_app.set(root_renders_for_app.get() + 1);
-//                 column().child(component(CHILD)).into()
-//             }
-//         });
-
-//         let mut backend = MockRenderBackend::default();
-//         app.resize(Size::new(240.0, 120.0));
-//         app.render(&mut backend).unwrap();
-
-//         assert_eq!(root_renders.get(), 1);
-//         assert_eq!(child_renders.get(), 1);
-
-//         let root = app.arena().root();
-//         let column_id = app.arena().children(root)[0];
-//         let button_id = app.arena().children(column_id)[0];
-//         click(&mut app, button_id);
-//         app.render(&mut backend).unwrap();
-
-//         assert_eq!(root_renders.get(), 1);
-//         assert_eq!(child_renders.get(), 2);
-//         assert_eq!(button_text(&app, button_id), "count: 1");
-//     }
-
-//     #[test]
-//     fn component_update_reports_local_damage_to_backend() {
-//         let blue = Rc::new(Cell::new(false));
-//         let blue_for_app = blue.clone();
-//         let mut app = app(move |_| {
-//             let changing = if blue_for_app.get() {
-//                 container()
-//                     .size(Size::new(48.0, 24.0))
-//                     .background(Color::BLUE_500)
-//             } else {
-//                 container()
-//                     .size(Size::new(48.0, 24.0))
-//                     .background(Color::GRAY_100)
-//             };
-//             row()
-//                 .child(changing)
-//                 .child(
-//                     container()
-//                         .size(Size::new(20.0, 24.0))
-//                         .background(Color::GRAY_300),
-//                 )
-//                 .into()
-//         });
-
-//         let mut backend = MockRenderBackend::default();
-//         app.resize(Size::new(240.0, 120.0));
-//         app.render(&mut backend).unwrap();
-
-//         let root = app.arena().root();
-//         let root_rect = app.arena().node(root).unwrap().layout;
-//         let row_id = app.arena().children(root)[0];
-//         let container_id = app.arena().children(row_id)[0];
-//         let container_rect = app.arena().node(container_id).unwrap().layout;
-
-//         app.arena_mut().repaint_passes = 0;
-//         blue.set(true);
-//         app.mark_needs_rebuild();
-//         app.render(&mut backend).unwrap();
-
-//         assert_eq!(app.arena().repaint_passes, 1);
-//         assert_eq!(backend.last_damage.bounds(), Some(container_rect));
-//         assert_ne!(backend.last_damage.bounds(), Some(root_rect));
-//     }
-
-//     #[test]
-//     fn keyed_component_reorder_preserves_hook_state() {
-//         const FIRST: ComponentType = ComponentType::new("xui::tests::keyed_first");
-//         const SECOND: ComponentType = ComponentType::new("xui::tests::keyed_second");
-
-//         let reversed = Rc::new(Cell::new(false));
-//         let reversed_for_app = reversed.clone();
-
-//         let mut app = App::with_component_registry(move |registry| {
-//             registry.register(FIRST, |cx| {
-//                 let value = cx.use_state(|| "A".to_owned());
-//                 label(value.get()).into()
-//             });
-//             registry.register(SECOND, |cx| {
-//                 let value = cx.use_state(|| "B".to_owned());
-//                 label(value.get()).into()
-//             });
-
-//             move |_| {
-//                 let first = component(FIRST).key("a");
-//                 let second = component(SECOND).key("b");
-
-//                 if reversed_for_app.get() {
-//                     row().child(second).child(first).into()
-//                 } else {
-//                     row().child(first).child(second).into()
-//                 }
-//             }
-//         });
-
-//         let mut backend = MockRenderBackend::default();
-//         app.resize(Size::new(240.0, 120.0));
-//         app.render(&mut backend).unwrap();
-
-//         let root = app.arena().root();
-//         let row_id = app.arena().children(root)[0];
-//         let first_before = app.arena().children(row_id)[0];
-//         let second_before = app.arena().children(row_id)[1];
-
-//         reversed.set(true);
-//         app.mark_needs_rebuild();
-//         app.render(&mut backend).unwrap();
-
-//         let first_after = app.arena().children(row_id)[0];
-//         let second_after = app.arena().children(row_id)[1];
-//         assert_eq!(first_after, second_before);
-//         assert_eq!(second_after, first_before);
-//         assert_eq!(label_text(&app, first_after), "B");
-//         assert_eq!(label_text(&app, second_after), "A");
-//     }
-
-//     #[test]
-//     fn component_child_participates_in_layout() {
-//         const CHILD: ComponentType = ComponentType::new("xui::tests::layout_child");
-
-//         let mut app = App::with_component_registry(|registry| {
-//             registry.register(CHILD, |_| container().size(Size::new(50.0, 20.0)).into());
-
-//             |_| {
-//                 column()
-//                     .child(component(CHILD))
-//                     .child(container().size(Size::new(30.0, 10.0)))
-//                     .into()
-//             }
-//         });
-//         let mut backend = MockRenderBackend::default();
-
-//         app.resize(Size::new(200.0, 200.0));
-//         app.render(&mut backend).unwrap();
-
-//         let root = app.arena().root();
-//         let column_id = app.arena().children(root)[0];
-//         let first = app.arena().children(column_id)[0];
-//         let second = app.arena().children(column_id)[1];
-
-//         assert_eq!(app.arena().node(first).unwrap().layout.width, 50.0);
-//         assert_eq!(app.arena().node(first).unwrap().layout.height, 20.0);
-//         assert_eq!(app.arena().node(second).unwrap().layout.y, 20.0);
-//     }
-
-//     #[test]
-//     fn component_render_update_refreshes_event_handler() {
-//         const CAPTURE: ComponentType = ComponentType::new("xui::tests::capture_button");
-
-//         let value = Rc::new(Cell::new(1));
-//         let seen = Rc::new(Cell::new(0));
-//         let value_for_registry = value.clone();
-//         let seen_for_registry = seen.clone();
-
-//         let mut app = App::with_component_registry(move |registry| {
-//             let value_for_component = value_for_registry.clone();
-//             let seen_for_component = seen_for_registry.clone();
-//             registry.register(CAPTURE, move |_| {
-//                 let captured = value_for_component.get();
-//                 let seen_for_click = seen_for_component.clone();
-//                 button("capture")
-//                     .on_click(move |_| {
-//                         seen_for_click.set(captured);
-//                         EventResult::Consumed
-//                     })
-//                     .into()
-//             });
-
-//             |_| component(CAPTURE).into()
-//         });
-//         let mut backend = MockRenderBackend::default();
-
-//         app.resize(Size::new(200.0, 120.0));
-//         app.render(&mut backend).unwrap();
-
-//         value.set(2);
-//         app.mark_needs_rebuild();
-//         app.render(&mut backend).unwrap();
-
-//         let root = app.arena().root();
-//         let button_id = app.arena().children(root)[0];
-//         click(&mut app, button_id);
-
-//         assert_eq!(seen.get(), 2);
-//     }
-
-//     #[derive(Hash)]
-//     struct TitleProps {
-//         title: String,
-//     }
-
-//     #[test]
-//     fn component_props_drive_registered_component_render() {
-//         const TITLE: ComponentType = ComponentType::new("xui::tests::title_props");
-
-//         let title = Rc::new(std::cell::RefCell::new("first".to_owned()));
-//         let title_for_app = title.clone();
-//         let mut app = App::with_component_registry(move |registry| {
-//             registry.register_with_props::<TitleProps, _>(TITLE, |_, props| {
-//                 label(props.title.clone()).into()
-//             });
-
-//             move |_| {
-//                 component(TITLE)
-//                     .props(TitleProps {
-//                         title: title_for_app.borrow().clone(),
-//                     })
-//                     .into()
-//             }
-//         });
-//         let mut backend = MockRenderBackend::default();
-
-//         app.resize(Size::new(200.0, 120.0));
-//         app.render(&mut backend).unwrap();
-
-//         let root = app.arena().root();
-//         let label_id = app.arena().children(root)[0];
-//         assert_eq!(label_text(&app, label_id), "first");
-
-//         *title.borrow_mut() = "second".to_owned();
-//         app.mark_needs_rebuild();
-//         app.render(&mut backend).unwrap();
-
-//         assert_eq!(label_text(&app, label_id), "second");
-//     }
-
-//     #[derive(Hash)]
-//     struct CounterProps {
-//         prefix: String,
-//     }
-
-//     #[test]
-//     fn component_state_update_rerenders_with_current_props() {
-//         const COUNTER: ComponentType = ComponentType::new("xui::tests::counter_props");
-
-//         let mut app = App::with_component_registry(|registry| {
-//             registry.register_with_props::<CounterProps, _>(COUNTER, |cx, props| {
-//                 let count = cx.use_state(|| 0);
-//                 let count_for_click = count.clone();
-//                 button(format!("{}: {}", props.prefix, count.get()))
-//                     .on_click(move |_| {
-//                         count_for_click.set(count_for_click.get() + 1);
-//                         EventResult::Consumed
-//                     })
-//                     .into()
-//             });
-
-//             |_| {
-//                 component(COUNTER)
-//                     .props(CounterProps {
-//                         prefix: "count".to_owned(),
-//                     })
-//                     .into()
-//             }
-//         });
-//         let mut backend = MockRenderBackend::default();
-
-//         app.resize(Size::new(200.0, 120.0));
-//         app.render(&mut backend).unwrap();
-
-//         let root = app.arena().root();
-//         let button_id = app.arena().children(root)[0];
-//         click(&mut app, button_id);
-//         app.render(&mut backend).unwrap();
-
-//         assert_eq!(button_text(&app, button_id), "count: 1");
-//     }
-
-//     struct ClickProps {
-//         count: i32,
-//         on_click: Rc<RefCell<ClickEventHandler>>,
-//     }
-
-//     #[test]
-//     fn component_props_can_explicitly_forward_event_handler_to_host() {
-//         const CHILD: ComponentType = ComponentType::new("xui::tests::event_props_child");
-
-//         let mut app = App::with_component_registry(|registry| {
-//             registry.register_with_props::<ClickProps, _>(CHILD, |_, props| {
-//                 let on_click = props.on_click.clone();
-//                 button(format!("count: {}", props.count))
-//                     .on_click(move |cx| on_click.borrow_mut()(cx))
-//                     .into()
-//             });
-
-//             move |cx| {
-//                 let count = cx.use_state(|| 0);
-//                 let count_for_click = count.clone();
-//                 let current = count.get();
-//                 let on_click: ClickEventHandler = Box::new(move |_| {
-//                     count_for_click.set(count_for_click.get() + 1);
-//                     EventResult::Consumed
-//                 });
-
-//                 component(CHILD)
-//                     .props_with_hash(
-//                         ClickProps {
-//                             count: current,
-//                             on_click: Rc::new(RefCell::new(on_click)),
-//                         },
-//                         current as u64,
-//                     )
-//                     .into()
-//             }
-//         });
-//         let mut backend = MockRenderBackend::default();
-
-//         app.resize(Size::new(200.0, 120.0));
-//         app.render(&mut backend).unwrap();
-
-//         let root = app.arena().root();
-//         let button_id = app.arena().children(root)[0];
-//         click(&mut app, button_id);
-//         app.render(&mut backend).unwrap();
-
-//         assert_eq!(button_text(&app, button_id), "count: 1");
-//     }
-
-//     #[test]
-//     fn same_key_different_component_type_replaces_subtree() {
-//         const FIRST: ComponentType = ComponentType::new("xui::tests::same_key_first");
-//         const SECOND: ComponentType = ComponentType::new("xui::tests::same_key_second");
-
-//         fn first(_: &mut HookContext<'_>) -> Element {
-//             label("first").into()
-//         }
-
-//         fn second(_: &mut HookContext<'_>) -> Element {
-//             label("second").into()
-//         }
-
-//         let use_second = Rc::new(Cell::new(false));
-//         let use_second_for_app = use_second.clone();
-//         let mut app = App::with_component_registry(move |registry| {
-//             registry.register(FIRST, first);
-//             registry.register(SECOND, second);
-
-//             move |_| {
-//                 if use_second_for_app.get() {
-//                     component(SECOND).key("same").into()
-//                 } else {
-//                     component(FIRST).key("same").into()
-//                 }
-//             }
-//         });
-//         let mut backend = MockRenderBackend::default();
-
-//         app.resize(Size::new(200.0, 120.0));
-//         app.render(&mut backend).unwrap();
-
-//         let root = app.arena().root();
-//         let first_node = app.arena().children(root)[0];
-
-//         use_second.set(true);
-//         app.mark_needs_rebuild();
-//         app.render(&mut backend).unwrap();
-
-//         let second_node = app.arena().children(root)[0];
-//         assert_ne!(first_node, second_node);
-//         assert!(!app.arena().contains(first_node));
-//         assert_eq!(label_text(&app, second_node), "second");
-//     }
-
-//     #[test]
-//     fn deleting_component_removes_rendered_widget_subtree() {
-//         const CHILD: ComponentType = ComponentType::new("xui::tests::delete_child");
-
-//         let show = Rc::new(Cell::new(true));
-//         let show_for_app = show.clone();
-//         let mut app = App::with_component_registry(move |registry| {
-//             registry.register(CHILD, |_| {
-//                 container()
-//                     .key("box")
-//                     .child(label("child").key("child"))
-//                     .into()
-//             });
-
-//             move |_| {
-//                 let mut root = column();
-//                 if show_for_app.get() {
-//                     root = root.child(component(CHILD));
-//                 }
-//                 root.into()
-//             }
-//         });
-//         let mut backend = MockRenderBackend::default();
-
-//         app.resize(Size::new(200.0, 120.0));
-//         app.render(&mut backend).unwrap();
-
-//         let root = app.arena().root();
-//         let column_id = app.arena().children(root)[0];
-//         let box_id = app.arena().children(column_id)[0];
-//         let child_id = app.arena().children(box_id)[0];
-
-//         show.set(false);
-//         app.mark_needs_rebuild();
-//         app.render(&mut backend).unwrap();
-
-//         assert!(app.arena().children(column_id).is_empty());
-//         assert!(!app.arena().contains(box_id));
-//         assert!(!app.arena().contains(child_id));
-//     }
-// }
