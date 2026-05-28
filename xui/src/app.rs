@@ -13,7 +13,6 @@ use xui_interface::{DirtyFlags, TextMeasurer};
 pub struct App {
     arena: UiArena,
     components: ComponentRuntime,
-    scheduler: Scheduler,
     size: Size,
 }
 
@@ -31,11 +30,10 @@ impl App {
     {
         let arena = UiArena::new();
         let scheduler = Scheduler::default();
-        let components = ComponentRuntime::new(arena.root(), scheduler.clone(), init_components);
+        let components = ComponentRuntime::new(arena.root(), scheduler, init_components);
         let app = Self {
             arena,
             components,
-            scheduler,
             size: Size::ZERO,
         };
         // app.rebuild_if_needed(measure);
@@ -67,12 +65,16 @@ impl App {
         }
     }
 
+    fn scheduler(&self) -> &Scheduler {
+        self.components.scheduler()
+    }
+
     pub fn dispatch_event<T: TextMeasurer>(&mut self, event: Event, m: &mut T) -> EventResult {
         self.rebuild_if_needed(m);
         self.arena.update_tree(self.arena.root(), self.size, m);
         let lane = event_lane(&event);
         let result = with_update_lane(lane, || self.arena.dispatch_event(&event));
-        if self.scheduler.is_dirty() {
+        if self.scheduler().is_dirty() {
             self.arena.mark_dirty(self.arena.root(), DirtyFlags::STATE);
         }
         result

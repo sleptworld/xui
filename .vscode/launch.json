@@ -1,0 +1,90 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+
+        {
+            "name": "Debug unit tests in library 'xui_interface'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=xui-interface"
+                ]
+            }
+        },
+        {
+            "name": "Debug unit tests in library 'xui'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=xui"
+                ]
+            }
+        },
+        {
+            "name": "Debug unit tests in library 'xui_text'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=xui-text"
+                ]
+            }
+        },
+        {
+            "name": "Debug unit tests in library 'xui_winit'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=xui-winit"
+                ]
+            }
+        },
+        {
+            "name": "Debug executable 'xui-example-app'",
+            "type": "lldb",
+            "request": "launch",
+            "terminal": "integrated",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=xui-example-app",
+                    "--package=xui-example-app"
+                ]
+            },
+            "args": []
+        },
+        {
+            "name": "Debug unit tests in executable 'xui-example-app'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--bin=xui-example-app",
+                    "--package=xui-example-app"
+                ]
+            }
+        },
+        {
+            "name": "Debug unit tests in library 'xui_components'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=xui-components"
+                ]
+            }
+        }
+    ]
+}
