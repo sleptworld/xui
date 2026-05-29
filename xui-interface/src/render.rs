@@ -1,4 +1,8 @@
-use crate::{Color, Point, Rect, Size, TextProps};
+use crate::{
+    Color, ColorStyle, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, Point, Rect,
+    Size, TextProps,
+    style::{Shadow, Stroke},
+};
 
 pub trait Painter {
     fn push(&mut self, command: PaintCommand);
@@ -12,25 +16,18 @@ impl Painter for Vec<PaintCommand> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaintCommand {
-    FillRect {
+    Rect {
         rect: Rect,
-        color: Color,
+        color: ComputedColorStyle,
+        stroke: Option<ComputedStrokeStyle>,
+        shadow: Option<ComputedShadowStyle>,
     },
-    StrokeRect {
-        rect: Rect,
-        color: Color,
-        width: f32,
-    },
-    FillRoundedRect {
+    RoundedRect {
         rect: Rect,
         radius: f32,
-        color: Color,
-    },
-    StrokeRoundedRect {
-        rect: Rect,
-        radius: f32,
-        color: Color,
-        width: f32,
+        color: ComputedColorStyle,
+        stroke: Option<ComputedStrokeStyle>,
+        shadow: Option<ComputedShadowStyle>,
     },
     Line {
         from: Point,

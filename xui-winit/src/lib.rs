@@ -1,4 +1,3 @@
-mod commands;
 pub mod error;
 mod runner;
 pub mod sdf;

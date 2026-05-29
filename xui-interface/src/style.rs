@@ -1,8 +1,8 @@
 use std::hash::{Hash, Hasher};
 
 use crate::{
-    Color, EdgeInsets, FontFamily, FontStyle, FontWeight, LineHeight, Size, TextContent,
-    TextDecoration, text::TextStyle,
+    Color, EdgeInsets, FontFamily, FontStyle, FontWeight, LineHeight, Point, Size, TextDecoration,
+    text::TextStyle,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -51,6 +51,163 @@ impl From<Color> for ColorValue {
 impl From<ColorToken> for ColorValue {
     fn from(value: ColorToken) -> Self {
         Self::Token(value)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ColorStyle {
+    Solid(ColorValue),
+    LinearGradient(LinearGradientStyle),
+    RadialGradient(RadialGradientStyle),
+}
+
+impl Default for ColorStyle {
+    fn default() -> Self {
+        Self::Solid(Color::TRANSPARENT.into())
+    }
+}
+
+impl From<ColorValue> for ColorStyle {
+    fn from(value: ColorValue) -> Self {
+        Self::Solid(value)
+    }
+}
+
+impl From<Color> for ColorStyle {
+    fn from(value: Color) -> Self {
+        Self::Solid(value.into())
+    }
+}
+
+impl From<ColorToken> for ColorStyle {
+    fn from(value: ColorToken) -> Self {
+        Self::Solid(value.into())
+    }
+}
+
+impl ColorStyle {
+    pub fn solid(color: impl Into<ColorValue>) -> Self {
+        Self::Solid(color.into())
+    }
+
+    pub fn linear_gradient(
+        start: Point,
+        end: Point,
+        from: impl Into<ColorValue>,
+        to: impl Into<ColorValue>,
+    ) -> Self {
+        Self::LinearGradient(LinearGradientStyle::new(start, end, from, to))
+    }
+
+    pub fn radial_gradient(
+        center: Point,
+        radius: impl Into<LengthValue>,
+        from: impl Into<ColorValue>,
+        to: impl Into<ColorValue>,
+    ) -> Self {
+        Self::RadialGradient(RadialGradientStyle::new(center, radius, from, to))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Stroke {
+    pub edge: EdgeInsets,
+    pub color: ComputedColorStyle,
+    pub line_style: StrokeLineStyle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shadow {
+    pub color: Color,
+    pub offset: Point,
+    pub blur: f32,
+    pub spread: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StrokeLineStyle {
+    Solid,
+    Dashed,
+    Dotted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StrokeStyle {
+    pub color: ColorStyle,
+    pub width: LengthValue,
+    pub line_style: StrokeLineStyle,
+}
+
+impl StrokeStyle {
+    pub fn new(color: impl Into<ColorStyle>, width: impl Into<LengthValue>) -> Self {
+        Self {
+            color: color.into(),
+            width: width.into(),
+            line_style: StrokeLineStyle::Solid,
+        }
+    }
+
+    pub fn line_style(mut self, line_style: StrokeLineStyle) -> Self {
+        self.line_style = line_style;
+        self
+    }
+
+    pub fn dashed(mut self) -> Self {
+        self.line_style = StrokeLineStyle::Dashed;
+        self
+    }
+
+    pub fn dotted(mut self) -> Self {
+        self.line_style = StrokeLineStyle::Dotted;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LinearGradientStyle {
+    pub start: Point,
+    pub end: Point,
+    pub from: ColorValue,
+    pub to: ColorValue,
+}
+
+impl LinearGradientStyle {
+    pub fn new(
+        start: Point,
+        end: Point,
+        from: impl Into<ColorValue>,
+        to: impl Into<ColorValue>,
+    ) -> Self {
+        Self {
+            start,
+            end,
+            from: from.into(),
+            to: to.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RadialGradientStyle {
+    pub center: Point,
+    pub radius: LengthValue,
+    pub from: ColorValue,
+    pub to: ColorValue,
+}
+
+impl RadialGradientStyle {
+    pub fn new(
+        center: Point,
+        radius: impl Into<LengthValue>,
+        from: impl Into<ColorValue>,
+        to: impl Into<ColorValue>,
+    ) -> Self {
+        Self {
+            center,
+            radius: radius.into(),
+            from: from.into(),
+            to: to.into(),
+        }
     }
 }
 
@@ -122,6 +279,51 @@ pub enum FlexDirectionStyle {
     Column,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShadowStyle {
+    pub color: ColorValue,
+    pub offset: Point,
+    pub blur: LengthValue,
+    pub spread: LengthValue,
+}
+
+impl Default for ShadowStyle {
+    fn default() -> Self {
+        Self {
+            color: Color::TRANSPARENT.into(),
+            offset: Point::new(0.0, 0.0),
+            blur: LengthValue::Px(0.0),
+            spread: LengthValue::Px(0.0),
+        }
+    }
+}
+
+impl ShadowStyle {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn color(mut self, color: impl Into<ColorValue>) -> Self {
+        self.color = color.into();
+        self
+    }
+
+    pub fn offset(mut self, offset: Point) -> Self {
+        self.offset = offset;
+        self
+    }
+
+    pub fn blur(mut self, blur: impl Into<LengthValue>) -> Self {
+        self.blur = blur.into();
+        self
+    }
+
+    pub fn spread(mut self, spread: impl Into<LengthValue>) -> Self {
+        self.spread = spread.into();
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TextStylePatch {
     pub color: StyleValue<ColorValue>,
@@ -148,10 +350,12 @@ pub struct LayoutStylePatch {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PaintStylePatch {
-    pub background: StyleValue<ColorValue>,
-    pub border_color: StyleValue<ColorValue>,
+    pub background: StyleValue<ColorStyle>,
+    pub border_color: StyleValue<ColorStyle>,
     pub border_width: StyleValue<LengthValue>,
     pub border_radius: StyleValue<LengthValue>,
+    pub stroke: StyleValue<StrokeStyle>,
+    pub shadow: StyleValue<ShadowStyle>,
     pub clip: StyleValue<bool>,
 }
 
@@ -247,12 +451,12 @@ impl Style {
         self
     }
 
-    pub fn background(mut self, color: impl Into<ColorValue>) -> Self {
+    pub fn background(mut self, color: impl Into<ColorStyle>) -> Self {
         self.paint.background = StyleValue::Value(color.into());
         self
     }
 
-    pub fn border_color(mut self, color: impl Into<ColorValue>) -> Self {
+    pub fn border_color(mut self, color: impl Into<ColorStyle>) -> Self {
         self.paint.border_color = StyleValue::Value(color.into());
         self
     }
@@ -264,6 +468,54 @@ impl Style {
 
     pub fn border_radius(mut self, radius: impl Into<LengthValue>) -> Self {
         self.paint.border_radius = StyleValue::Value(radius.into());
+        self
+    }
+
+    pub fn stroke(mut self, stroke: StrokeStyle) -> Self {
+        self.paint.stroke = StyleValue::Value(stroke);
+        self
+    }
+
+    pub fn stroke_style(
+        mut self,
+        color: impl Into<ColorStyle>,
+        width: impl Into<LengthValue>,
+        line_style: StrokeLineStyle,
+    ) -> Self {
+        self.paint.stroke =
+            StyleValue::Value(StrokeStyle::new(color, width).line_style(line_style));
+        self
+    }
+
+    pub fn no_stroke(mut self) -> Self {
+        self.paint.stroke = StyleValue::Initial;
+        self
+    }
+
+    pub fn shadow(mut self, shadow: ShadowStyle) -> Self {
+        self.paint.shadow = StyleValue::Value(shadow);
+        self
+    }
+
+    pub fn box_shadow(
+        mut self,
+        color: impl Into<ColorValue>,
+        offset: Point,
+        blur: impl Into<LengthValue>,
+        spread: impl Into<LengthValue>,
+    ) -> Self {
+        self.paint.shadow = StyleValue::Value(
+            ShadowStyle::new()
+                .color(color)
+                .offset(offset)
+                .blur(blur)
+                .spread(spread),
+        );
+        self
+    }
+
+    pub fn no_shadow(mut self) -> Self {
+        self.paint.shadow = StyleValue::Initial;
         self
     }
 
@@ -342,11 +594,74 @@ pub struct ComputedLayoutStyle {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ComputedPaintStyle {
-    pub background: Color,
-    pub border_color: Color,
+    pub background: ComputedColorStyle,
+    pub border_color: ComputedColorStyle,
     pub border_width: f32,
     pub border_radius: f32,
+    pub stroke: Option<ComputedStrokeStyle>,
+    pub shadow: Option<ComputedShadowStyle>,
     pub clip: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ComputedColorStyle {
+    Solid(Color),
+    LinearGradient(ComputedLinearGradientStyle),
+    RadialGradient(ComputedRadialGradientStyle),
+}
+
+impl Default for ComputedColorStyle {
+    fn default() -> Self {
+        Self::Solid(Color::TRANSPARENT)
+    }
+}
+
+impl ComputedColorStyle {
+    pub fn is_visible(self) -> bool {
+        match self {
+            Self::Solid(color) => color.a > 0.0,
+            Self::LinearGradient(gradient) => gradient.from.a > 0.0 || gradient.to.a > 0.0,
+            Self::RadialGradient(gradient) => gradient.from.a > 0.0 || gradient.to.a > 0.0,
+        }
+    }
+
+    pub fn solid_color(self) -> Option<Color> {
+        match self {
+            Self::Solid(color) => Some(color),
+            Self::LinearGradient(_) | Self::RadialGradient(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ComputedLinearGradientStyle {
+    pub start: Point,
+    pub end: Point,
+    pub from: Color,
+    pub to: Color,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ComputedRadialGradientStyle {
+    pub center: Point,
+    pub radius: f32,
+    pub from: Color,
+    pub to: Color,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ComputedStrokeStyle {
+    pub color: ComputedColorStyle,
+    pub width: f32,
+    pub line_style: StrokeLineStyle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ComputedShadowStyle {
+    pub color: Color,
+    pub offset: Point,
+    pub blur: f32,
+    pub spread: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -380,10 +695,12 @@ impl ComputedStyle {
                 padding: EdgeInsets::ZERO,
             },
             paint: ComputedPaintStyle {
-                background: Color::TRANSPARENT,
-                border_color: Color::TRANSPARENT,
+                background: ComputedColorStyle::Solid(Color::TRANSPARENT),
+                border_color: ComputedColorStyle::Solid(Color::TRANSPARENT),
                 border_width: 0.0,
                 border_radius: 0.0,
+                stroke: None,
+                shadow: None,
                 clip: false,
             },
         }
@@ -519,6 +836,8 @@ fn merge_paint(target: &mut PaintStylePatch, other: &PaintStylePatch) {
     merge_value(&mut target.border_color, &other.border_color);
     merge_value(&mut target.border_width, &other.border_width);
     merge_value(&mut target.border_radius, &other.border_radius);
+    merge_value(&mut target.stroke, &other.stroke);
+    merge_value(&mut target.shadow, &other.shadow);
     merge_value(&mut target.clip, &other.clip);
 }
 
@@ -607,13 +926,13 @@ fn apply_layout(target: &mut ComputedLayoutStyle, patch: &LayoutStylePatch, them
 
 fn apply_paint(target: &mut ComputedPaintStyle, patch: &PaintStylePatch, theme: &Theme) {
     let initial = ComputedStyle::initial(theme).paint;
-    target.background = resolve_color_no_inherit(
+    target.background = resolve_color_style_no_inherit(
         patch.background,
         target.background,
         initial.background,
         theme,
     );
-    target.border_color = resolve_color_no_inherit(
+    target.border_color = resolve_color_style_no_inherit(
         patch.border_color,
         target.border_color,
         initial.border_color,
@@ -631,7 +950,68 @@ fn apply_paint(target: &mut ComputedPaintStyle, patch: &PaintStylePatch, theme: 
         initial.border_radius,
         theme,
     );
+    target.stroke = resolve_stroke_no_inherit(
+        patch.stroke,
+        target.stroke,
+        initial.stroke,
+        target.border_color,
+        target.border_width,
+        theme,
+    );
+    target.shadow = resolve_shadow_no_inherit(patch.shadow, target.shadow, initial.shadow, theme);
     target.clip = resolve_copy_no_inherit(patch.clip, target.clip, initial.clip);
+}
+
+fn resolve_stroke_no_inherit(
+    value: StyleValue<StrokeStyle>,
+    current: Option<ComputedStrokeStyle>,
+    initial: Option<ComputedStrokeStyle>,
+    border_color: ComputedColorStyle,
+    border_width: f32,
+    theme: &Theme,
+) -> Option<ComputedStrokeStyle> {
+    match value {
+        StyleValue::Unset | StyleValue::Inherit => {
+            if border_width > 0.0 && border_color.is_visible() {
+                Some(ComputedStrokeStyle {
+                    color: border_color,
+                    width: border_width,
+                    line_style: StrokeLineStyle::Solid,
+                })
+            } else {
+                current
+            }
+        }
+        StyleValue::Initial => initial,
+        StyleValue::Value(value) => {
+            let color = color_style(value.color, theme);
+            (length_value(value.width, theme) > 0.0 && color.is_visible()).then_some(
+                ComputedStrokeStyle {
+                    color,
+                    width: length_value(value.width, theme),
+                    line_style: value.line_style,
+                },
+            )
+        }
+    }
+}
+
+fn resolve_shadow_no_inherit(
+    value: StyleValue<ShadowStyle>,
+    current: Option<ComputedShadowStyle>,
+    initial: Option<ComputedShadowStyle>,
+    theme: &Theme,
+) -> Option<ComputedShadowStyle> {
+    match value {
+        StyleValue::Unset | StyleValue::Inherit => current,
+        StyleValue::Initial => initial,
+        StyleValue::Value(value) => Some(ComputedShadowStyle {
+            color: color_value(value.color, theme),
+            offset: value.offset,
+            blur: length_value(value.blur, theme),
+            spread: length_value(value.spread, theme),
+        }),
+    }
 }
 
 fn resolve_color(
@@ -649,16 +1029,16 @@ fn resolve_color(
     }
 }
 
-fn resolve_color_no_inherit(
-    value: StyleValue<ColorValue>,
-    current: Color,
-    initial: Color,
+fn resolve_color_style_no_inherit(
+    value: StyleValue<ColorStyle>,
+    current: ComputedColorStyle,
+    initial: ComputedColorStyle,
     theme: &Theme,
-) -> Color {
+) -> ComputedColorStyle {
     match value {
         StyleValue::Unset | StyleValue::Inherit => current,
         StyleValue::Initial => initial,
-        StyleValue::Value(value) => color_value(value, theme),
+        StyleValue::Value(value) => color_style(value, theme),
     }
 }
 
@@ -666,6 +1046,28 @@ fn color_value(value: ColorValue, theme: &Theme) -> Color {
     match value {
         ColorValue::Color(color) => color,
         ColorValue::Token(token) => theme.color(token),
+    }
+}
+
+fn color_style(value: ColorStyle, theme: &Theme) -> ComputedColorStyle {
+    match value {
+        ColorStyle::Solid(color) => ComputedColorStyle::Solid(color_value(color, theme)),
+        ColorStyle::LinearGradient(gradient) => {
+            ComputedColorStyle::LinearGradient(ComputedLinearGradientStyle {
+                start: gradient.start,
+                end: gradient.end,
+                from: color_value(gradient.from, theme),
+                to: color_value(gradient.to, theme),
+            })
+        }
+        ColorStyle::RadialGradient(gradient) => {
+            ComputedColorStyle::RadialGradient(ComputedRadialGradientStyle {
+                center: gradient.center,
+                radius: length_value(gradient.radius, theme),
+                from: color_value(gradient.from, theme),
+                to: color_value(gradient.to, theme),
+            })
+        }
     }
 }
 
@@ -763,6 +1165,11 @@ fn hash_size<H: Hasher>(value: Size, state: &mut H) {
     value.height.to_bits().hash(state);
 }
 
+fn hash_point<H: Hasher>(value: Point, state: &mut H) {
+    value.x.to_bits().hash(state);
+    value.y.to_bits().hash(state);
+}
+
 impl Hash for ColorValue {
     fn hash<H: Hasher>(&self, state: &mut H) {
         core::mem::discriminant(self).hash(state);
@@ -770,6 +1177,35 @@ impl Hash for ColorValue {
             Self::Color(color) => hash_color(*color, state),
             Self::Token(token) => token.hash(state),
         }
+    }
+}
+
+impl Hash for ColorStyle {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        core::mem::discriminant(self).hash(state);
+        match self {
+            Self::Solid(color) => color.hash(state),
+            Self::LinearGradient(gradient) => gradient.hash(state),
+            Self::RadialGradient(gradient) => gradient.hash(state),
+        }
+    }
+}
+
+impl Hash for LinearGradientStyle {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        hash_point(self.start, state);
+        hash_point(self.end, state);
+        self.from.hash(state);
+        self.to.hash(state);
+    }
+}
+
+impl Hash for RadialGradientStyle {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        hash_point(self.center, state);
+        self.radius.hash(state);
+        self.from.hash(state);
+        self.to.hash(state);
     }
 }
 
@@ -825,6 +1261,8 @@ impl Hash for PaintStylePatch {
         self.border_color.hash(state);
         self.border_width.hash(state);
         self.border_radius.hash(state);
+        hash_style_value_stroke(&self.stroke, state);
+        hash_style_value_shadow(&self.shadow, state);
         self.clip.hash(state);
     }
 }
@@ -840,6 +1278,25 @@ fn hash_style_value_edge_insets<H: Hasher>(value: &StyleValue<EdgeInsets>, state
     core::mem::discriminant(value).hash(state);
     if let StyleValue::Value(value) = value {
         hash_edge_insets(*value, state);
+    }
+}
+
+fn hash_style_value_stroke<H: Hasher>(value: &StyleValue<StrokeStyle>, state: &mut H) {
+    core::mem::discriminant(value).hash(state);
+    if let StyleValue::Value(value) = value {
+        value.color.hash(state);
+        value.width.hash(state);
+        value.line_style.hash(state);
+    }
+}
+
+fn hash_style_value_shadow<H: Hasher>(value: &StyleValue<ShadowStyle>, state: &mut H) {
+    core::mem::discriminant(value).hash(state);
+    if let StyleValue::Value(value) = value {
+        value.color.hash(state);
+        hash_point(value.offset, state);
+        value.blur.hash(state);
+        value.spread.hash(state);
     }
 }
 
@@ -862,7 +1319,10 @@ mod tests {
 
         assert_eq!(child.text.color, Color::BLUE_500);
         assert_eq!(child.text.font_size, 20.0);
-        assert_eq!(child.paint.background, Color::TRANSPARENT);
+        assert_eq!(
+            child.paint.background,
+            ComputedColorStyle::Solid(Color::TRANSPARENT)
+        );
         assert_eq!(child.layout.padding, EdgeInsets::ZERO);
     }
 
@@ -900,7 +1360,70 @@ mod tests {
             &theme,
         );
 
-        assert_eq!(computed.paint.background, Color::rgb(0.2, 0.3, 0.4));
+        assert_eq!(
+            computed.paint.background,
+            ComputedColorStyle::Solid(Color::rgb(0.2, 0.3, 0.4))
+        );
         assert_eq!(computed.layout.gap, 18.0);
+    }
+
+    #[test]
+    fn gradient_color_styles_resolve_tokens() {
+        let mut theme = Theme::default();
+        theme.primary = Color::rgb(0.2, 0.3, 0.4);
+        theme.background = Color::WHITE;
+
+        let initial = ComputedStyle::initial(&theme);
+        let mut computed = initial.inherited_from(&theme);
+        computed.apply(
+            &initial,
+            &Style::new().background(ColorStyle::linear_gradient(
+                Point::new(0.0, 0.0),
+                Point::new(1.0, 1.0),
+                ColorToken::Primary,
+                ColorToken::Background,
+            )),
+            &theme,
+        );
+
+        assert_eq!(
+            computed.paint.background,
+            ComputedColorStyle::LinearGradient(ComputedLinearGradientStyle {
+                start: Point::new(0.0, 0.0),
+                end: Point::new(1.0, 1.0),
+                from: Color::rgb(0.2, 0.3, 0.4),
+                to: Color::WHITE,
+            })
+        );
+    }
+
+    #[test]
+    fn shadow_style_resolves_from_theme_and_can_reset() {
+        let mut theme = Theme::default();
+        theme.primary = Color::rgba(0.1, 0.2, 0.3, 0.4);
+        theme.spacing_sm = 10.0;
+
+        let initial = ComputedStyle::initial(&theme);
+        let mut computed = initial.inherited_from(&theme);
+        computed.apply(
+            &initial,
+            &Style::new().box_shadow(
+                ColorToken::Primary,
+                Point::new(2.0, 4.0),
+                SpacingToken::Sm,
+                3.0,
+            ),
+            &theme,
+        );
+
+        let shadow = computed.paint.shadow.unwrap();
+        assert_eq!(shadow.color, Color::rgba(0.1, 0.2, 0.3, 0.4));
+        assert_eq!(shadow.offset, Point::new(2.0, 4.0));
+        assert_eq!(shadow.blur, 10.0);
+        assert_eq!(shadow.spread, 3.0);
+
+        computed.apply(&initial, &Style::new().no_shadow(), &theme);
+
+        assert_eq!(computed.paint.shadow, None);
     }
 }

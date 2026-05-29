@@ -5,8 +5,8 @@ use etagere::{BucketedAtlasAllocator, Size};
 use glam::{Vec2, Vec3};
 use wgpu::util::DeviceExt;
 use xui_interface::{
-    Color, DamageRegion, PaintCommand, Point, Rect, RenderBackend, TextLayoutConstraints,
-    TextPaintCommand,
+    Color, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, DamageRegion,
+    PaintCommand, Point, Rect, RenderBackend, TextLayoutConstraints, TextPaintCommand,
 };
 use xui_text::atlas::{FontRenderBackend, GlyphAtlas, RendedGlyphBitmap};
 use xui_text::engine::TextLayouter;
@@ -39,6 +39,9 @@ pub struct WGPUBackend {
 const SHAPE_RECT: f32 = 0.0;
 const SHAPE_ROUNDED_RECT: f32 = 1.0;
 const SHAPE_LINE: f32 = 2.0;
+const COLOR_SOLID: f32 = 0.0;
+const COLOR_LINEAR_GRADIENT: f32 = 1.0;
+const COLOR_RADIAL_GRADIENT: f32 = 2.0;
 const STROKE_CENTER: f32 = 0.0;
 
 const UI_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 10] = wgpu::vertex_attr_array![
@@ -717,60 +720,38 @@ impl WGPUBackend {
 
         for command in commands {
             match command {
-                PaintCommand::FillRect { rect, color } => {
+                PaintCommand::Rect {
+                    rect,
+                    color,
+                    stroke,
+                    shadow,
+                } => {
                     let rect = translate_rect(*rect, current_transform(&transform_stack));
-                    push_rect_instance(
+                    push_paint_rect_instance(
                         &mut instances,
                         rect,
                         0.0,
                         *color,
-                        Color::TRANSPARENT,
-                        0.0,
+                        *stroke,
+                        *shadow,
                         current_clip(&clip_stack),
                     );
                 }
-                PaintCommand::StrokeRect { rect, color, width } => {
-                    let rect = translate_rect(*rect, current_transform(&transform_stack));
-                    push_rect_instance(
-                        &mut instances,
-                        rect,
-                        0.0,
-                        Color::TRANSPARENT,
-                        *color,
-                        *width,
-                        current_clip(&clip_stack),
-                    );
-                }
-                PaintCommand::FillRoundedRect {
+                PaintCommand::RoundedRect {
                     rect,
                     radius,
                     color,
+                    stroke,
+                    shadow,
                 } => {
                     let rect = translate_rect(*rect, current_transform(&transform_stack));
-                    push_rect_instance(
+                    push_paint_rect_instance(
                         &mut instances,
                         rect,
                         *radius,
                         *color,
-                        Color::TRANSPARENT,
-                        0.0,
-                        current_clip(&clip_stack),
-                    );
-                }
-                PaintCommand::StrokeRoundedRect {
-                    rect,
-                    radius,
-                    color,
-                    width,
-                } => {
-                    let rect = translate_rect(*rect, current_transform(&transform_stack));
-                    push_rect_instance(
-                        &mut instances,
-                        rect,
-                        *radius,
-                        Color::TRANSPARENT,
-                        *color,
-                        *width,
+                        *stroke,
+                        *shadow,
                         current_clip(&clip_stack),
                     );
                 }
@@ -867,7 +848,7 @@ impl WGPUBackend {
             command.props.text.as_str(),
             &style,
             TextLayoutConstraints::max_width(rect.width),
-            None
+            None,
         );
         for line in par.lines() {
             let baseline_y = rect.y + line.baseline();
@@ -996,28 +977,192 @@ fn push_rect_instance(
     stroke_width: f32,
     clip: Rect,
 ) {
+    push_projected_rect_instance(
+        instances,
+        rect,
+        radius,
+        fill_color,
+        stroke_color,
+        stroke_width,
+        Color::TRANSPARENT,
+        Point::new(0.0, 0.0),
+        0.0,
+        0.0,
+        COLOR_SOLID,
+        [0.0; 4],
+        false,
+        clip,
+    );
+}
+
+fn push_paint_rect_instance(
+    instances: &mut Vec<UiInstance>,
+    rect: Rect,
+    radius: f32,
+    fill: ComputedColorStyle,
+    stroke: Option<ComputedStrokeStyle>,
+    shadow: Option<ComputedShadowStyle>,
+    clip: Rect,
+) {
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        return;
+    }
+
+    let visible_shadow = shadow.filter(|shadow| shadow.color.a > 0.0);
+
+    if let Some(shadow) = visible_shadow {
+        push_shadow_instance(
+            instances,
+            rect,
+            radius,
+            shadow.color,
+            shadow.offset,
+            shadow.blur,
+            shadow.spread,
+            clip,
+        );
+    }
+
+    if fill.is_visible() {
+        push_fill_style_instance(instances, rect, radius, fill, clip);
+    }
+
+    if let Some(stroke) = stroke.filter(|stroke| stroke.width > 0.0 && stroke.color.is_visible()) {
+        push_stroke_style_instance(instances, rect, radius, stroke.color, stroke.width, clip);
+    }
+}
+
+fn push_fill_style_instance(
+    instances: &mut Vec<UiInstance>,
+    rect: Rect,
+    radius: f32,
+    style: ComputedColorStyle,
+    clip: Rect,
+) {
+    let style = InstanceColorStyle::new(style, rect);
+    push_projected_rect_instance(
+        instances,
+        rect,
+        radius,
+        style.from,
+        Color::TRANSPARENT,
+        0.0,
+        style.to,
+        Point::new(0.0, 0.0),
+        0.0,
+        0.0,
+        style.kind,
+        style.geometry,
+        false,
+        clip,
+    );
+}
+
+fn push_stroke_style_instance(
+    instances: &mut Vec<UiInstance>,
+    rect: Rect,
+    radius: f32,
+    style: ComputedColorStyle,
+    stroke_width: f32,
+    clip: Rect,
+) {
+    let style = InstanceColorStyle::new(style, rect);
+    push_projected_rect_instance(
+        instances,
+        rect,
+        radius,
+        Color::TRANSPARENT,
+        style.from,
+        stroke_width,
+        style.to,
+        Point::new(0.0, 0.0),
+        0.0,
+        0.0,
+        style.kind,
+        style.geometry,
+        false,
+        clip,
+    );
+}
+
+fn push_shadow_instance(
+    instances: &mut Vec<UiInstance>,
+    shape: Rect,
+    radius: f32,
+    color: Color,
+    offset: Point,
+    blur: f32,
+    spread: f32,
+    clip: Rect,
+) {
+    let bounds = shadow_bounds(shape, offset, blur, spread);
+    if shape.width <= 0.0
+        || shape.height <= 0.0
+        || bounds.width <= 0.0
+        || bounds.height <= 0.0
+        || clip.width <= 0.0
+        || clip.height <= 0.0
+        || color.a <= 0.0
+    {
+        return;
+    }
+
+    let kind = if radius > 0.0 {
+        SHAPE_ROUNDED_RECT
+    } else {
+        SHAPE_RECT
+    };
+
+    instances.push(UiInstance {
+        bounds: rect_to_array(bounds),
+        shape: rect_to_array(shape),
+        clip: rect_to_array(clip),
+        fill_color: [0.0; 4],
+        stroke_color: [0.0; 4],
+        params: [kind, radius.max(0.0), COLOR_SOLID, 1.0],
+        stroke_params: [0.0, STROKE_CENTER, 0.0, 0.0],
+        projection_color: color_to_array(color),
+        projection_params: [offset.x, offset.y, blur.max(0.0), spread],
+        extra: [0.0; 4],
+    });
+}
+
+fn push_projected_rect_instance(
+    instances: &mut Vec<UiInstance>,
+    rect: Rect,
+    radius: f32,
+    fill_color: Color,
+    stroke_color: Color,
+    stroke_width: f32,
+    projection_color: Color,
+    projection_offset: Point,
+    projection_blur: f32,
+    projection_spread: f32,
+    color_kind: f32,
+    color_geometry: [f32; 4],
+    projection_enabled: bool,
+    clip: Rect,
+) {
     if rect.width <= 0.0
         || rect.height <= 0.0
         || clip.width <= 0.0
         || clip.height <= 0.0
-        || (fill_color.a <= 0.0 && stroke_color.a <= 0.0)
+        || (fill_color.a <= 0.0 && stroke_color.a <= 0.0 && projection_color.a <= 0.0)
     {
         return;
     }
 
     let stroke_direction = STROKE_CENTER;
-    let projection_color = Color::TRANSPARENT;
-    let projection_offset = Point::new(0.0, 0.0);
-    let projection_blur: f32 = 0.0;
-    let projection_spread: f32 = 0.0;
-
     let stroke_outset = stroke_outset(stroke_width.max(0.0), stroke_direction) + 1.0;
     let projection_outset = projection_blur.max(0.0) + projection_spread.max(0.0);
     let projection_bounds = inflate_rect(
         translate_rect(rect, projection_offset),
         projection_outset + 1.0,
     );
-    let bounds = inflate_rect(rect, stroke_outset).union(projection_bounds);
+    let mut bounds = inflate_rect(rect, stroke_outset);
+    if projection_enabled {
+        bounds = bounds.union(projection_bounds);
+    }
     let kind = if radius > 0.0 {
         SHAPE_ROUNDED_RECT
     } else {
@@ -1030,7 +1175,12 @@ fn push_rect_instance(
         clip: rect_to_array(clip),
         fill_color: color_to_array(fill_color),
         stroke_color: color_to_array(stroke_color),
-        params: [kind, radius.max(0.0), 0.0, 0.0],
+        params: [
+            kind,
+            radius.max(0.0),
+            color_kind,
+            if projection_enabled { 1.0 } else { 0.0 },
+        ],
         stroke_params: [stroke_width.max(0.0), stroke_direction, 0.0, 0.0],
         projection_color: color_to_array(projection_color),
         projection_params: [
@@ -1039,8 +1189,47 @@ fn push_rect_instance(
             projection_blur.max(0.0),
             projection_spread,
         ],
-        extra: [0.0; 4],
+        extra: color_geometry,
     });
+}
+
+struct InstanceColorStyle {
+    kind: f32,
+    from: Color,
+    to: Color,
+    geometry: [f32; 4],
+}
+
+impl InstanceColorStyle {
+    fn new(style: ComputedColorStyle, rect: Rect) -> Self {
+        match style {
+            ComputedColorStyle::Solid(color) => Self {
+                kind: COLOR_SOLID,
+                from: color,
+                to: Color::TRANSPARENT,
+                geometry: [0.0; 4],
+            },
+            ComputedColorStyle::LinearGradient(gradient) => {
+                let start = relative_point_in_rect(rect, gradient.start);
+                let end = relative_point_in_rect(rect, gradient.end);
+                Self {
+                    kind: COLOR_LINEAR_GRADIENT,
+                    from: gradient.from,
+                    to: gradient.to,
+                    geometry: [start.x, start.y, end.x, end.y],
+                }
+            }
+            ComputedColorStyle::RadialGradient(gradient) => {
+                let center = relative_point_in_rect(rect, gradient.center);
+                Self {
+                    kind: COLOR_RADIAL_GRADIENT,
+                    from: gradient.from,
+                    to: gradient.to,
+                    geometry: [center.x, center.y, gradient.radius.max(0.0), 0.0],
+                }
+            }
+        }
+    }
 }
 
 fn push_line_instance(
@@ -1131,6 +1320,28 @@ fn translate_rect(rect: Rect, offset: Point) -> Rect {
     )
 }
 
+fn shadow_bounds(shape: Rect, offset: Point, blur: f32, spread: f32) -> Rect {
+    let center = Point::new(
+        shape.x + shape.width * 0.5 + offset.x,
+        shape.y + shape.height * 0.5 + offset.y,
+    );
+    let half_width = (shape.width * 0.5 + spread).max(0.0) + blur.max(0.0) * 3.0;
+    let half_height = (shape.height * 0.5 + spread).max(0.0) + blur.max(0.0) * 3.0;
+    Rect::new(
+        center.x - half_width,
+        center.y - half_height,
+        half_width * 2.0,
+        half_height * 2.0,
+    )
+}
+
+fn relative_point_in_rect(rect: Rect, point: Point) -> Point {
+    Point::new(
+        rect.x + rect.width * point.x,
+        rect.y + rect.height * point.y,
+    )
+}
+
 fn inflate_rect(rect: Rect, amount: f32) -> Rect {
     Rect::new(
         rect.x - amount,
@@ -1205,6 +1416,15 @@ impl FontRenderBackend for WgpuGlyphWriter<'_> {
 mod tests {
     use super::*;
 
+    fn assert_array_near(actual: [f32; 4], expected: [f32; 4]) {
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() < 0.001,
+                "expected {actual} to be near {expected}"
+            );
+        }
+    }
+
     #[test]
     fn ui_shader_is_valid_wgsl() {
         let module =
@@ -1227,5 +1447,101 @@ mod tests {
         )
         .validate(&module)
         .expect("glyph.wgsl should validate");
+    }
+
+    #[test]
+    fn rect_with_fill_stroke_and_shadow_generates_ordered_instances() {
+        let mut instances = Vec::new();
+        let rect = Rect::new(0.0, 0.0, 100.0, 80.0);
+        let shadow = ComputedShadowStyle {
+            color: Color::rgba(0.0, 0.0, 0.0, 0.4),
+            offset: Point::new(1.0, -1.0),
+            blur: 2.0,
+            spread: 2.0,
+        };
+        let stroke = ComputedStrokeStyle {
+            color: ComputedColorStyle::Solid(Color::WHITE),
+            width: 2.0,
+            line_style: xui_interface::StrokeLineStyle::Solid,
+        };
+
+        push_paint_rect_instance(
+            &mut instances,
+            rect,
+            0.0,
+            ComputedColorStyle::Solid(Color::BLACK),
+            Some(stroke),
+            Some(shadow),
+            Rect::new(-20.0, -20.0, 140.0, 120.0),
+        );
+
+        assert_eq!(instances.len(), 3);
+        assert_eq!(instances[0].params[3], 1.0);
+        assert_array_near(instances[0].bounds, [-7.0, -9.0, 116.0, 96.0]);
+        assert_array_near(instances[0].shape, [0.0, 0.0, 100.0, 80.0]);
+        assert_eq!(instances[1].params[3], 0.0);
+        assert_array_near(instances[1].shape, [0.0, 0.0, 100.0, 80.0]);
+        assert_eq!(instances[2].stroke_params[0], 2.0);
+    }
+
+    #[test]
+    fn rounded_rect_shadow_expands_bounds_without_moving_shape() {
+        let mut instances = Vec::new();
+        let rect = Rect::new(10.0, 20.0, 90.0, 70.0);
+        let shadow = ComputedShadowStyle {
+            color: Color::rgba(0.0, 0.0, 0.0, 0.5),
+            offset: Point::new(-2.0, 3.0),
+            blur: 4.0,
+            spread: 1.0,
+        };
+
+        push_paint_rect_instance(
+            &mut instances,
+            rect,
+            8.0,
+            ComputedColorStyle::Solid(Color::TRANSPARENT),
+            None,
+            Some(shadow),
+            Rect::new(-10.0, 0.0, 130.0, 120.0),
+        );
+
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].params[0], SHAPE_ROUNDED_RECT);
+        assert_eq!(instances[0].params[1], 8.0);
+        assert_array_near(instances[0].bounds, [-5.0, 10.0, 116.0, 96.0]);
+        assert_array_near(instances[0].shape, [10.0, 20.0, 90.0, 70.0]);
+    }
+
+    #[test]
+    fn shadow_bounds_tracks_large_shadow_offset_separately_from_layout_rect() {
+        let rect = Rect::new(10.0, 0.0, 100.0, 50.0);
+
+        let bounds = shadow_bounds(rect, Point::new(30.0, -25.0), 2.0, 4.0);
+
+        assert_eq!(bounds, Rect::new(30.0, -35.0, 120.0, 70.0));
+    }
+
+    #[test]
+    fn transparent_shadow_and_invisible_shape_emit_no_instances() {
+        let mut instances = Vec::new();
+        let rect = Rect::new(0.0, 0.0, 100.0, 80.0);
+        let shadow = ComputedShadowStyle {
+            color: Color::TRANSPARENT,
+            offset: Point::new(0.0, 0.0),
+            blur: 8.0,
+            spread: 2.0,
+        };
+
+        push_paint_rect_instance(
+            &mut instances,
+            rect,
+            0.0,
+            ComputedColorStyle::Solid(Color::TRANSPARENT),
+            None,
+            Some(shadow),
+            rect,
+        );
+
+        assert!(instances.is_empty());
     }
 }

@@ -1,11 +1,11 @@
 use proc_macro::TokenStream;
 use proc_macro2::{Ident as TokenIdent, Span, TokenStream as TokenStream2, TokenTree};
-use quote::{ToTokens, quote};
+use quote::{quote, ToTokens};
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::{
-    Attribute as SynAttribute, Error, Expr, FnArg, Ident, LitStr, Pat, Result, ReturnType,
-    Signature, Token, Type, TypeReference, Visibility, braced, parse_macro_input, parse_quote,
+    braced, parse_macro_input, parse_quote, Attribute as SynAttribute, Error, Expr, FnArg, Ident,
+    LitStr, Pat, Result, ReturnType, Signature, Token, Type, TypeReference, Visibility,
 };
 
 #[proc_macro]
@@ -625,16 +625,58 @@ fn expand_container(node: &ElementNode) -> Result<TokenStream2> {
             "style" => attr_stmts.push(quote! {
                 __xui_style.merge(&#value);
             }),
+            "color" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().color(#value));
+            }),
+            "font_family" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().font_family(#value));
+            }),
+            "font_size" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().font_size(#value));
+            }),
+            "font_weight" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().font_weight(#value));
+            }),
+            "font_style" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().font_style(#value));
+            }),
+            "line_height" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().line_height(#value));
+            }),
+            "letter_spacing" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().letter_spacing(#value));
+            }),
+            "decoration" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().decoration(#value));
+            }),
+            "display" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().display(#value));
+            }),
+            "flex_direction" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().flex_direction(#value));
+            }),
+            "gap" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().gap(#value));
+            }),
             "padding" => attr_stmts.push(quote! {
                 __xui_style.merge(&::xui::Style::new().padding(#value));
-            }),
-            "background" => attr_stmts.push(quote! {
-                __xui_style.merge(&::xui::Style::new().background(#value));
             }),
             "size" => attr_stmts.push(quote! {
                 if let Some(__xui_size) = #value {
                     __xui_style.merge(&::xui::Style::new().size(__xui_size));
                 }
+            }),
+            "min_size" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().min_size(#value));
+            }),
+            "max_size" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().max_size(#value));
+            }),
+            "margin" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().margin(#value));
+            }),
+            "background" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().background(#value));
             }),
             "border_color" => attr_stmts.push(quote! {
                 __xui_style.merge(&::xui::Style::new().border_color(#value));
@@ -644,6 +686,42 @@ fn expand_container(node: &ElementNode) -> Result<TokenStream2> {
             }),
             "border_radius" => attr_stmts.push(quote! {
                 __xui_style.merge(&::xui::Style::new().border_radius(#value));
+            }),
+            "stroke" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().stroke(#value));
+            }),
+            "stroke_style" => attr_stmts.push(quote! {
+                let (__xui_stroke_color, __xui_stroke_width, __xui_stroke_line_style) = #value;
+                __xui_style.merge(&::xui::Style::new().stroke_style(
+                    __xui_stroke_color,
+                    __xui_stroke_width,
+                    __xui_stroke_line_style,
+                ));
+            }),
+            "no_stroke" => attr_stmts.push(quote! {
+                if #value {
+                    __xui_style.merge(&::xui::Style::new().no_stroke());
+                }
+            }),
+            "shadow" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().shadow(#value));
+            }),
+            "box_shadow" => attr_stmts.push(quote! {
+                let (__xui_shadow_color, __xui_shadow_offset, __xui_shadow_blur, __xui_shadow_spread) = #value;
+                __xui_style.merge(&::xui::Style::new().box_shadow(
+                    __xui_shadow_color,
+                    __xui_shadow_offset,
+                    __xui_shadow_blur,
+                    __xui_shadow_spread,
+                ));
+            }),
+            "no_shadow" => attr_stmts.push(quote! {
+                if #value {
+                    __xui_style.merge(&::xui::Style::new().no_shadow());
+                }
+            }),
+            "clip" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().clip(#value));
             }),
             other => {
                 if let Some(stmt) = event_attr_stmt(attr) {

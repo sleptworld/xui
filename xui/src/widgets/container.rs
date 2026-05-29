@@ -127,35 +127,23 @@ impl LayoutStyledWidget for ContainerWidget {
 
 pub(super) fn paint_box(rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
     let paint = style.paint;
-    if paint.background.a > 0.0 {
-        if paint.border_radius > 0.0 {
-            commands.push(PaintCommand::FillRoundedRect {
-                rect,
-                radius: paint.border_radius,
-                color: paint.background,
-            });
-        } else {
-            commands.push(PaintCommand::FillRect {
-                rect,
-                color: paint.background,
-            });
-        }
-    }
 
-    if paint.border_width > 0.0 && paint.border_color.a > 0.0 {
-        if paint.border_radius > 0.0 {
-            commands.push(PaintCommand::StrokeRoundedRect {
-                rect,
-                radius: paint.border_radius,
-                color: paint.border_color,
-                width: paint.border_width,
-            });
-        } else {
-            commands.push(PaintCommand::StrokeRect {
-                rect,
-                color: paint.border_color,
-                width: paint.border_width,
-            });
+    let cmd = if paint.border_radius > 0.0 {
+        PaintCommand::RoundedRect {
+            rect,
+            radius: paint.border_radius,
+            color: paint.background,
+            stroke: paint.stroke,
+            shadow: paint.shadow,
         }
-    }
+    } else {
+        PaintCommand::Rect {
+            rect,
+            color: paint.background,
+            stroke: paint.stroke,
+            shadow: paint.shadow,
+        }
+    };
+
+    commands.push(cmd);
 }

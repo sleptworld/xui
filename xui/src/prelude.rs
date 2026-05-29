@@ -17,9 +17,12 @@ pub use crate::runtime::{
 };
 pub use crate::state::HookContext;
 pub use crate::style::{
-    ColorToken, ColorValue, ComputedLayoutStyle, ComputedPaintStyle, ComputedStyle,
-    ComputedTextStyle, DisplayStyle, FlexDirectionStyle, FontSizeToken, LengthValue, RadiusToken,
-    SpacingToken, Style, StyleValue, Theme, WidgetState,
+    ColorStyle, ColorToken, ColorValue, ComputedColorStyle, ComputedLayoutStyle,
+    ComputedLinearGradientStyle, ComputedPaintStyle, ComputedRadialGradientStyle,
+    ComputedShadowStyle, ComputedStrokeStyle, ComputedStyle, ComputedTextStyle, DisplayStyle,
+    FlexDirectionStyle, FontSizeToken, LengthValue, LinearGradientStyle, RadialGradientStyle,
+    RadiusToken, ShadowStyle, SpacingToken, Stroke, StrokeLineStyle, StrokeStyle, Style,
+    StyleValue, Theme, WidgetState,
 };
 pub use crate::tree::UiArena;
 pub use crate::widgets::{
