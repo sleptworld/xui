@@ -200,7 +200,8 @@ impl Widget for ButtonWidget {
     }
 
     fn measure(&self, style: &ComputedStyle, measurer: &mut dyn TextMeasurer) -> Option<Size> {
-        let text = measurer.measure_text(self.text.as_str(), &style.text);
+        println!("Measure : {}", self.text.as_str());
+        let text = measurer.measure_text(self.text.as_str(), &style.text, None);
         let padding = style.layout.padding;
         Some(Size::new(
             (text.width + padding.left + padding.right).max(text.width + 16.0),

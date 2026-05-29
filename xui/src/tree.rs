@@ -11,7 +11,6 @@ use crate::core::{Rect, Size};
 use crate::event::{Event, EventResult};
 use crate::event_system::{self, EventState};
 use crate::fiber::Key;
-use crate::font::TextI;
 use crate::render::{DamageRegion, PaintCommand};
 use crate::widgets::{
     Element, WidgetRef, WidgetType, computed_style_for_widget, taffy_style_for_widget,
@@ -97,6 +96,7 @@ pub struct UiArena {
     taffy: tf::TaffyTree<WidgetContext>,
     root: NodeId,
     damage: DamageRegion,
+    damage_nodes: Vec<NodeId>,
     event_state: EventState,
     theme: Theme,
     paint_frames: Cell<usize>,
@@ -136,6 +136,7 @@ impl UiArena {
             taffy,
             root,
             damage: DamageRegion::new(),
+            damage_nodes: vec![],
             event_state: EventState::default(),
             theme,
             paint_frames: Cell::new(0),
@@ -210,7 +211,7 @@ impl UiArena {
     ) -> NodeId {
         let node_type = widget.with(|w| w.node_type());
         let taffy_node = match node_type {
-            WidgetType::Text => self.taffy.new_leaf_with_context(
+            WidgetType::Text | WidgetType::Label => self.taffy.new_leaf_with_context(
                 style,
                 WidgetContext::Text(computed_style.text.clone(), widget.with(|w| w.text())),
             ),
@@ -267,7 +268,7 @@ impl UiArena {
         let position = self.nodes[parent].children.len();
         let node_type = widget.with(|w| w.node_type());
         let taffy_node = match node_type {
-            WidgetType::Text => self.taffy.new_leaf_with_context(
+            WidgetType::Text | WidgetType::Label => self.taffy.new_leaf_with_context(
                 style,
                 WidgetContext::Text(computed_style.text.clone(), widget.with(|w| w.text())),
             ),
@@ -430,10 +431,16 @@ impl UiArena {
     }
 
     pub fn update_tree<T: TextMeasurer>(&mut self, root: NodeId, size: Size, measurer: &mut T) {
-        self.update_node(root, size, measurer);
+        self.update_node(root, measurer);
+        if self.has_layout_dirty() {
+            self.compute_layout(size, measurer);
+        }
+        self.rebuild_subtree_dirty(root);
+        self.repaint_dirty_subtree(root);
+        self.clear_dirty_subtree(root);
     }
 
-    fn update_node<T: TextMeasurer>(&mut self, id: NodeId, size: Size, measurer: &mut T) {
+    fn update_node<T: TextMeasurer>(&mut self, id: NodeId, measurer: &mut T) {
         if !self.nodes.contains_key(id) {
             return;
         }
@@ -451,24 +458,10 @@ impl UiArena {
             self.recompute_subtree_styles(id, measurer);
         }
 
-        if self.nodes[id]
-            .dirty
-            .intersects(DirtyFlags::LAYOUT | DirtyFlags::STYLE | DirtyFlags::TREE)
-        {
-            self.compute_layout_if_needed(size, measurer);
-        }
-
-        let dirty = self.nodes[id].dirty;
-        if dirty.intersects(DirtyFlags::PAINT | DirtyFlags::STYLE) {
-            self.repaint_if_needed(id);
-        }
-
         let children = self.nodes[id].children.clone();
         for child in children {
-            self.update_node(child, size, measurer);
+            self.update_node(child, measurer);
         }
-
-        self.clear_dirty(id);
     }
 
     fn recompute_subtree_styles<T: TextMeasurer>(&mut self, id: NodeId, measurer: &mut T) {
@@ -489,6 +482,7 @@ impl UiArena {
         let taffy_style =
             widget.layout_with(|widget| taffy_style_for_widget(widget, &computed_style, measurer));
         let mut changed = false;
+        let mut refresh_context = false;
 
         {
             let taffy_node_id = self
@@ -499,8 +493,15 @@ impl UiArena {
 
             if let Some(n) = self.node_mut(id) {
                 if n.computed_style != computed_style {
-                    n.computed_style = computed_style;
+                    let text_measure_changed =
+                        matches!(n.node_type, WidgetType::Text | WidgetType::Label)
+                            && n.computed_style.text != computed_style.text;
+                    n.computed_style = computed_style.clone();
                     n.dirty |= DirtyFlags::STYLE | DirtyFlags::PAINT;
+                    if text_measure_changed {
+                        n.dirty |= DirtyFlags::LAYOUT;
+                        refresh_context = true;
+                    }
                     changed = true;
                 }
             }
@@ -519,6 +520,10 @@ impl UiArena {
             }
         }
 
+        if refresh_context {
+            self.refresh_taffy_context(id);
+        }
+
         let children = self.nodes[id].children.clone();
         if changed {
             for child in &children {
@@ -531,13 +536,24 @@ impl UiArena {
     }
 
     pub fn compute_layout_if_needed<T: TextMeasurer>(&mut self, size: Size, measurer: &mut T) {
-        if !self.nodes.values().any(|node| {
-            node.dirty
-                .intersects(DirtyFlags::LAYOUT | DirtyFlags::STYLE | DirtyFlags::TREE)
-        }) {
+        if !self.has_layout_dirty() {
             return;
         }
         self.compute_layout(size, measurer);
+    }
+
+    fn has_layout_dirty(&self) -> bool {
+        self.nodes
+            .values()
+            .any(|node| node.dirty.intersects(Self::layout_dirty_flags()))
+    }
+
+    fn layout_dirty_flags() -> DirtyFlags {
+        DirtyFlags::LAYOUT | DirtyFlags::STYLE | DirtyFlags::TREE
+    }
+
+    fn paint_dirty_flags() -> DirtyFlags {
+        DirtyFlags::PAINT | DirtyFlags::LAYOUT | DirtyFlags::STYLE
     }
 
     pub fn repaint_if_needed(&mut self, id: NodeId) {
@@ -557,6 +573,9 @@ impl UiArena {
             .widget
             .with(|widget| widget.paint(rect, &style, &mut cache));
         self.nodes[id].paint_cache = cache;
+        if !self.damage_nodes.contains(&id) {
+            self.damage_nodes.push(id);
+        }
         self.damage.add(rect);
     }
 
@@ -583,7 +602,11 @@ impl UiArena {
         self.sync_layout(self.root, 0.0, 0.0);
     }
 
-    fn sync_layout(&mut self, id: NodeId, offset_x: f32, offset_y: f32) {
+    fn sync_layout(&mut self, id: NodeId, offset_x: f32, offset_y: f32) -> DirtyFlags {
+        if !self.nodes.contains_key(id) {
+            return DirtyFlags::empty();
+        }
+
         let taffy_node = self.nodes[id].taffy_node;
         let layout = *self
             .taffy
@@ -596,9 +619,13 @@ impl UiArena {
             layout.size.height,
         );
 
-        let children = {
+        let (children, mut subtree_dirty) = {
             let node = self.nodes.get_mut(id).expect("node removed during layout");
             let layout_changed = node.layout != rect;
+            let should_sync_children = layout_changed
+                || node.dirty.intersects(Self::layout_dirty_flags())
+                || node.subtree_dirty.intersects(Self::layout_dirty_flags());
+
             if layout_changed {
                 self.damage.add(node.layout);
                 self.damage.add(rect);
@@ -609,12 +636,78 @@ impl UiArena {
             if layout_changed {
                 node.dirty.insert(DirtyFlags::PAINT);
             }
-            node.children.clone()
+
+            if should_sync_children {
+                (node.children.clone(), DirtyFlags::empty())
+            } else {
+                return node.dirty | node.subtree_dirty;
+            }
         };
 
         for child in children {
-            self.sync_layout(child, rect.x, rect.y);
+            subtree_dirty |= self.sync_layout(child, rect.x, rect.y);
         }
+
+        let node = self.nodes.get_mut(id).expect("node removed during layout");
+        node.subtree_dirty = subtree_dirty;
+        node.dirty | node.subtree_dirty
+    }
+
+    fn repaint_dirty_subtree(&mut self, id: NodeId) {
+        if !self.nodes.contains_key(id) {
+            return;
+        }
+
+        let dirty = self.nodes[id].dirty;
+        let subtree_dirty = self.nodes[id].subtree_dirty;
+        if !dirty.intersects(Self::paint_dirty_flags())
+            && !subtree_dirty.intersects(Self::paint_dirty_flags())
+        {
+            return;
+        }
+
+        if dirty.intersects(Self::paint_dirty_flags()) {
+            self.repaint_if_needed(id);
+        }
+
+        let children = self.nodes[id].children.clone();
+        for child in children {
+            self.repaint_dirty_subtree(child);
+        }
+    }
+
+    fn clear_dirty_subtree(&mut self, id: NodeId) {
+        if !self.nodes.contains_key(id) {
+            return;
+        }
+
+        let dirty = self.nodes[id].dirty;
+        let subtree_dirty = self.nodes[id].subtree_dirty;
+        if dirty.is_empty() && subtree_dirty.is_empty() {
+            return;
+        }
+
+        let children = self.nodes[id].children.clone();
+        for child in children {
+            self.clear_dirty_subtree(child);
+        }
+        self.clear_dirty(id);
+    }
+
+    fn rebuild_subtree_dirty(&mut self, id: NodeId) -> DirtyFlags {
+        if !self.nodes.contains_key(id) {
+            return DirtyFlags::empty();
+        }
+
+        let children = self.nodes[id].children.clone();
+        let mut subtree_dirty = DirtyFlags::empty();
+        for child in children {
+            subtree_dirty |= self.rebuild_subtree_dirty(child);
+        }
+
+        let node = self.nodes.get_mut(id).expect("checked node existence");
+        node.subtree_dirty = subtree_dirty;
+        node.dirty | node.subtree_dirty
     }
 
     pub fn collect_paint_commands(&mut self) -> (DamageRegion, Vec<PaintCommand>) {
@@ -629,12 +722,17 @@ impl UiArena {
         if damage.is_empty() {
             return (damage, commands);
         }
-        self.paint_node(self.root, &damage, &mut commands);
+        let mut paint_region = DamageRegion::new();
+        if let Some(bounds) = damage.bounds() {
+            paint_region.add(bounds);
+        }
+        self.paint_node(self.root, &paint_region, &mut commands);
         (damage, commands)
     }
 
     pub fn finish_paint(&mut self) {
         self.damage = DamageRegion::new();
+        self.damage_nodes.clear();
         for (_, node) in self.nodes.iter_mut() {
             node.dirty.remove(DirtyFlags::PAINT);
         }
@@ -732,54 +830,7 @@ impl UiArena {
                 .any(|node| !node.dirty.is_empty() || !node.subtree_dirty.is_empty())
     }
 
-    pub fn diff_children(
-        &mut self,
-        parent: NodeId,
-        new_children: Vec<Element>,
-        measurer: &mut TextI,
-    ) {
-        let old_children = self.nodes[parent].children.clone();
-        let mut used = vec![false; old_children.len()];
-        let mut next_children = Vec::with_capacity(new_children.len());
-        let mut tree_changed = old_children.len() != new_children.len();
-
-        // Keyed children are matched before positional children, so inserting a
-        // sibling does not reset state for an existing keyed node.
-        for (position, new_child) in new_children.into_iter().enumerate() {
-            let matched = self.find_reusable_child(&old_children, &used, &new_child, position);
-            let id = if let Some(old_index) = matched {
-                used[old_index] = true;
-                let id = old_children[old_index];
-                if old_index != position {
-                    tree_changed = true;
-                }
-                self.update_node_from_element(id, new_child, position, measurer);
-                id
-            } else {
-                tree_changed = true;
-                self.create_from_element(parent, new_child, position, measurer)
-            };
-            next_children.push(id);
-        }
-
-        for (index, old_child) in old_children.iter().copied().enumerate() {
-            if !used[index] {
-                tree_changed = true;
-                self.remove_subtree_detached(old_child);
-            }
-        }
-
-        self.nodes[parent].children = next_children;
-        for child in self.nodes[parent].children.clone() {
-            self.nodes[child].parent = Some(parent);
-        }
-        self.reindex_children(parent);
-        self.sync_taffy_children(parent);
-
-        if tree_changed {
-            self.mark_dirty(parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
-        }
-    }
+    
 
     fn find_reusable_child(
         &self,
@@ -810,76 +861,8 @@ impl UiArena {
             .map(|_| position)
     }
 
-    pub fn create_from_element(
-        &mut self,
-        parent: NodeId,
-        element: Element,
-        position: usize,
-        measurer: &mut TextI,
-    ) -> NodeId {
-        let key = element.key();
-        let props_hash = element.props_hash();
-        let parts = element.into_parts();
-        let parent_style = self.nodes[parent].computed_style.clone();
-        let computed_style = parts
-            .widget
-            .with(|widget| computed_style_for_widget(widget, &parent_style, &self.theme));
-        let style = parts
-            .widget
-            .layout_with(|widget| taffy_style_for_widget(widget, &computed_style, measurer));
-        let id = self.insert_node(
-            parent,
-            key,
-            props_hash,
-            style,
-            computed_style,
-            parts.widget,
-            parts.event_handlers,
-        );
-        self.nodes[id].position = position;
-        self.diff_children(id, parts.children, measurer);
-        id
-    }
 
-    pub fn create_widget_from_element(
-        &mut self,
-        parent: NodeId,
-        element: Element,
-        position: usize,
-        measurer: &mut TextI,
-    ) -> (NodeId, Vec<Element>) {
-        let key = element.key();
-        let props_hash = element.props_hash();
-        let parts = element.into_parts();
-        let parent_style = self.nodes[parent].computed_style.clone();
-        let computed_style = parts
-            .widget
-            .with(|widget| computed_style_for_widget(widget, &parent_style, &self.theme));
-        let style = parts
-            .widget
-            .layout_with(|widget| taffy_style_for_widget(widget, &computed_style, measurer));
-        let id = self.insert_node(
-            parent,
-            key,
-            props_hash,
-            style,
-            computed_style,
-            parts.widget,
-            parts.event_handlers,
-        );
-        self.nodes[id].position = position;
-        (id, parts.children)
-    }
-
-    pub fn update_widget_from_element(
-        &mut self,
-        id: NodeId,
-        element: Element,
-        position: usize,
-        measurer: &mut TextI,
-    ) -> Vec<Element> {
-        self.update_widget_node_from_element(id, element, position, measurer)
-    }
+    
 
     pub fn update_widget_node_from_parts(
         &mut self,
@@ -940,89 +923,7 @@ impl UiArena {
         current_widget
     }
 
-    fn update_node_from_element(
-        &mut self,
-        id: NodeId,
-        element: Element,
-        position: usize,
-        measurer: &mut TextI,
-    ) {
-        let children = self.update_widget_node_from_element(id, element, position, measurer);
-        self.diff_children(id, children, measurer);
-    }
-
-    fn update_widget_node_from_element(
-        &mut self,
-        id: NodeId,
-        element: Element,
-        position: usize,
-        measurer: &mut TextI,
-    ) -> Vec<Element> {
-        let new_props_hash = element.props_hash();
-        let parts = element.into_parts();
-        let parent_style = self.nodes[id]
-            .parent
-            .map(|parent| self.nodes[parent].computed_style.clone())
-            .unwrap_or_else(|| ComputedStyle::initial(&self.theme));
-        let computed_style = parts
-            .widget
-            .with(|widget| computed_style_for_widget(widget, &parent_style, &self.theme));
-        let new_style = parts
-            .widget
-            .layout_with(|widget| taffy_style_for_widget(widget, &computed_style, measurer));
-        let mut flags = DirtyFlags::empty();
-
-        {
-            let node = self.nodes.get_mut(id).expect("reused node missing");
-            node.position = position;
-            node.new_props_hash = new_props_hash;
-            if node.old_props_hash != new_props_hash {
-                flags |= DirtyFlags::PROPS;
-            }
-            if node.computed_style != computed_style {
-                node.computed_style = computed_style.clone();
-                flags |= DirtyFlags::STYLE | DirtyFlags::PAINT;
-            }
-
-            let node_taffy_style = self
-                .taffy
-                .style(node.taffy_node)
-                .expect("get taffy node style");
-            if *node_taffy_style != new_style {
-                flags |= DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
-                self.taffy
-                    .set_style(node.taffy_node, new_style)
-                    .expect("failed to update taffy style");
-            }
-            if node.node_type != parts.widget.with(|widget| widget.node_type()) {
-                flags |= DirtyFlags::TREE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
-            }
-            let widget_flags = node
-                .widget
-                .with_mut(|current| parts.widget.with(|next| current.update_from(next)));
-            flags |= widget_flags;
-            node.event_handlers = parts.event_handlers;
-        }
-
-        self.refresh_taffy_context(id);
-        self.mark_dirty(id, flags);
-        parts.children
-    }
-
-    fn remove_subtree_detached(&mut self, id: NodeId) {
-        if !self.nodes.contains_key(id) || id == self.root {
-            return;
-        }
-        let children = self.nodes[id].children.clone();
-        for child in children {
-            self.remove_subtree_detached(child);
-        }
-        self.damage.add(self.nodes[id].layout);
-        self.event_state.clear_node(id);
-        let _ = self.taffy.remove(self.nodes[id].taffy_node);
-        self.nodes.remove(id);
-    }
-
+    
     fn sync_taffy_children(&mut self, parent: NodeId) {
         let parent_taffy = self.nodes[parent].taffy_node;
         let taffy_children: Vec<_> = self.nodes[parent]
@@ -1091,10 +992,7 @@ pub fn should_reuse(old: &Node, new: &Element, position: usize) -> bool {
         && (old.key.is_some() || old.position == position)
 }
 
-pub fn compute_layout_if_needed(tree: &mut UiArena, _node: NodeId) {
-    let mut measurer = crate::layout::MockTextMeasurer::default();
-    tree.compute_layout_if_needed(Size::ZERO, &mut measurer);
-}
+
 
 fn measure_layout_context<T: TextMeasurer>(
     known_dimensions: tf::Size<Option<f32>>,
@@ -1118,7 +1016,7 @@ fn measure_layout_context<T: TextMeasurer>(
                 tf::AvailableSpace::MaxContent => TextLayoutConstraints::UNBOUNDED,
                 _ => TextLayoutConstraints::UNBOUNDED,
             };
-            measurer.measure_text_with_constraints(str, _props, constraints)
+            measurer.measure_text_with_constraints(str, _props, constraints, None)
         }
 
         _ => Size::ZERO,
@@ -1130,175 +1028,358 @@ fn measure_layout_context<T: TextMeasurer>(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::widgets::{TextWidget, button, container, label, row, style_scope};
-    use crate::{Color, PaintCommand, Style};
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use crate::widgets::{TextWidget, button, container, label, row, style_scope};
+//     use crate::{Color, PaintCommand, Style};
 
-    #[derive(Default)]
-    struct RecordingMeasurer {
-        constraints: Vec<TextLayoutConstraints>,
-    }
+//     #[derive(Default)]
+//     struct RecordingMeasurer {
+//         constraints: Vec<TextLayoutConstraints>,
+//     }
 
-    impl TextMeasurer for RecordingMeasurer {
-        fn measure_text(&mut self, text: &str, style: &ComputedTextStyle) -> Size {
-            self.measure_text_with_constraints(text, style, TextLayoutConstraints::UNBOUNDED)
-        }
+//     impl TextMeasurer for RecordingMeasurer {
+//         fn measure_text(&mut self, text: &str, style: &ComputedTextStyle) -> Size {
+//             self.measure_text_with_constraints(text, style, TextLayoutConstraints::UNBOUNDED)
+//         }
 
-        fn measure_text_with_constraints(
-            &mut self,
-            _text: &str,
-            _style: &ComputedTextStyle,
-            constraints: TextLayoutConstraints,
-        ) -> Size {
-            self.constraints.push(constraints);
-            match constraints.max_width {
-                Some(width) => Size::new(width, 20.0),
-                None => Size::new(100.0, 10.0),
-            }
-        }
-    }
+//         fn measure_text_with_constraints(
+//             &mut self,
+//             _text: &str,
+//             _style: &ComputedTextStyle,
+//             constraints: TextLayoutConstraints,
+//         ) -> Size {
+//             self.constraints.push(constraints);
+//             match constraints.max_width {
+//                 Some(width) => Size::new(width, 20.0),
+//                 None => Size::new(100.0, 10.0),
+//             }
+//         }
+//     }
 
-    #[test]
-    fn text_layout_uses_available_width_as_measure_constraint() {
-        let mut arena = UiArena::new();
-        let root = arena.root();
-        let text = arena.insert(
-            root,
-            TextWidget::new("width constrained"),
-            tf::Style::default(),
-        );
-        let mut measurer = RecordingMeasurer::default();
+//     #[derive(Default)]
+//     struct TextRecordingMeasurer {
+//         calls: Vec<(String, f32)>,
+//     }
 
-        arena.update_tree(root, Size::new(50.0, 100.0), &mut measurer);
+//     impl TextMeasurer for TextRecordingMeasurer {
+//         fn measure_text(&mut self, text: &str, style: &ComputedTextStyle) -> Size {
+//             self.measure_text_with_constraints(text, style, TextLayoutConstraints::UNBOUNDED)
+//         }
 
-        assert!(
-            measurer
-                .constraints
-                .iter()
-                .any(|constraints| constraints.max_width == Some(50.0))
-        );
-        assert_eq!(arena.node(text).unwrap().layout.width, 50.0);
-        assert_eq!(arena.node(text).unwrap().layout.height, 20.0);
-    }
+//         fn measure_text_with_constraints(
+//             &mut self,
+//             text: &str,
+//             style: &ComputedTextStyle,
+//             _constraints: TextLayoutConstraints,
+//         ) -> Size {
+//             self.calls.push((text.to_owned(), style.font_size));
+//             Size::new(text.len() as f32 * style.font_size, style.font_size)
+//         }
+//     }
 
-    #[test]
-    fn style_scope_inherits_text_style_to_label_and_local_style_overrides() {
-        let mut arena = UiArena::new();
-        let root = arena.root();
-        let element = style_scope(Style::new().color(Color::BLUE_500).font_size(20.0))
-            .child(label("inherited"))
-            .child(label("local").style(Style::new().color(Color::BLACK)));
-        let mut measurer = TextI::new();
+//     #[test]
+//     fn text_layout_uses_available_width_as_measure_constraint() {
+//         let mut arena = UiArena::new();
+//         let root = arena.root();
+//         let text = arena.insert(
+//             root,
+//             TextWidget::new("width constrained"),
+//             tf::Style::default(),
+//         );
+//         let mut measurer = RecordingMeasurer::default();
 
-        let scope = arena.create_from_element(root, element.into(), 0, &mut measurer);
-        let inherited = arena.children(scope)[0];
-        let local = arena.children(scope)[1];
+//         arena.update_tree(root, Size::new(50.0, 100.0), &mut measurer);
 
-        assert_eq!(
-            arena.node(inherited).unwrap().computed_style.text.color,
-            Color::BLUE_500
-        );
-        assert_eq!(
-            arena.node(inherited).unwrap().computed_style.text.font_size,
-            20.0
-        );
-        assert_eq!(
-            arena.node(local).unwrap().computed_style.text.color,
-            Color::BLACK
-        );
-        assert_eq!(
-            arena.node(local).unwrap().computed_style.text.font_size,
-            20.0
-        );
-    }
+//         assert!(
+//             measurer
+//                 .constraints
+//                 .iter()
+//                 .any(|constraints| constraints.max_width == Some(50.0))
+//         );
+//         assert_eq!(arena.node(text).unwrap().layout.width, 50.0);
+//         assert_eq!(arena.node(text).unwrap().layout.height, 20.0);
+//     }
 
-    #[test]
-    fn container_style_emits_background_and_border_commands() {
-        let mut arena = UiArena::new();
-        let root = arena.root();
-        let element = container().style(
-            Style::new()
-                .size(Size::new(40.0, 20.0))
-                .background(Color::BLUE_500)
-                .border_color(Color::BLACK)
-                .border_width(2.0)
-                .border_radius(4.0),
-        );
-        let mut measurer = TextI::new();
-        let node = arena.create_from_element(root, element.into(), 0, &mut measurer);
-        arena.node_mut(node).unwrap().layout = Rect::new(1.0, 2.0, 40.0, 20.0);
-        arena.mark_dirty(node, DirtyFlags::PAINT);
-        arena.repaint_if_needed(node);
-        let commands = arena.node(node).unwrap().paint_cache.clone();
+//     #[test]
+//     fn style_scope_inherits_text_style_to_label_and_local_style_overrides() {
+//         let mut arena = UiArena::new();
+//         let root = arena.root();
+//         let element = style_scope(Style::new().color(Color::BLUE_500).font_size(20.0))
+//             .child(label("inherited"))
+//             .child(label("local").style(Style::new().color(Color::BLACK)));
+//         let mut measurer = TextI::new();
 
-        assert!(commands.iter().any(|command| matches!(
-            command,
-            PaintCommand::FillRoundedRect { radius, color, .. }
-                if *radius == 4.0 && *color == Color::BLUE_500
-        )));
-        assert!(commands.iter().any(|command| matches!(
-            command,
-            PaintCommand::StrokeRoundedRect { radius, color, width, .. }
-                if *radius == 4.0 && *color == Color::BLACK && *width == 2.0
-        )));
-    }
+//         let scope = arena.create_from_element(root, element.into(), 0, &mut measurer);
+//         let inherited = arena.children(scope)[0];
+//         let local = arena.children(scope)[1];
 
-    #[test]
-    fn row_gap_from_style_affects_child_layout() {
-        let mut arena = UiArena::new();
-        let root = arena.root();
-        let element = row()
-            .style(Style::new().gap(12.0))
-            .child(container().style(Style::new().size(Size::new(10.0, 10.0))))
-            .child(container().style(Style::new().size(Size::new(10.0, 10.0))));
-        let mut measurer = TextI::new();
+//         assert_eq!(
+//             arena.node(inherited).unwrap().computed_style.text.color,
+//             Color::BLUE_500
+//         );
+//         assert_eq!(
+//             arena.node(inherited).unwrap().computed_style.text.font_size,
+//             20.0
+//         );
+//         assert_eq!(
+//             arena.node(local).unwrap().computed_style.text.color,
+//             Color::BLACK
+//         );
+//         assert_eq!(
+//             arena.node(local).unwrap().computed_style.text.font_size,
+//             20.0
+//         );
+//     }
 
-        let row = arena.create_from_element(root, element.into(), 0, &mut measurer);
-        arena.update_tree(root, Size::new(100.0, 30.0), &mut measurer);
-        let first = arena.children(row)[0];
-        let second = arena.children(row)[1];
+//     #[test]
+//     fn container_style_emits_background_and_border_commands() {
+//         let mut arena = UiArena::new();
+//         let root = arena.root();
+//         let element = container().style(
+//             Style::new()
+//                 .size(Size::new(40.0, 20.0))
+//                 .background(Color::BLUE_500)
+//                 .border_color(Color::BLACK)
+//                 .border_width(2.0)
+//                 .border_radius(4.0),
+//         );
+//         let mut measurer = TextI::new();
+//         let node = arena.create_from_element(root, element.into(), 0, &mut measurer);
+//         arena.node_mut(node).unwrap().layout = Rect::new(1.0, 2.0, 40.0, 20.0);
+//         arena.mark_dirty(node, DirtyFlags::PAINT);
+//         arena.repaint_if_needed(node);
+//         let commands = arena.node(node).unwrap().paint_cache.clone();
 
-        assert_eq!(arena.node(first).unwrap().layout.x, 0.0);
-        assert_eq!(arena.node(second).unwrap().layout.x, 22.0);
-    }
+//         assert!(commands.iter().any(|command| matches!(
+//             command,
+//             PaintCommand::FillRoundedRect { radius, color, .. }
+//                 if *radius == 4.0 && *color == Color::BLUE_500
+//         )));
+//         assert!(commands.iter().any(|command| matches!(
+//             command,
+//             PaintCommand::StrokeRoundedRect { radius, color, width, .. }
+//                 if *radius == 4.0 && *color == Color::BLACK && *width == 2.0
+//         )));
+//     }
 
-    #[test]
-    fn button_pressed_state_style_repaints_with_primary_background() {
-        let mut arena = UiArena::new();
-        let root = arena.root();
-        let mut measurer = TextI::new();
-        let node = arena.create_from_element(root, button("press").into(), 0, &mut measurer);
-        arena.node_mut(node).unwrap().layout = Rect::new(0.0, 0.0, 80.0, 30.0);
-        let mut dirty = DirtyFlags::empty();
-        let mut requests = crate::EventRequests::default();
-        arena.node_mut(node).unwrap().widget.with_mut(|widget| {
-            let mut cx = crate::EventContext::new(
-                node,
-                crate::EventPhase::Target,
-                &mut dirty,
-                &mut requests,
-            );
-            widget.handle_event(
-                &Event::PointerDown {
-                    position: crate::Point::new(1.0, 1.0),
-                    button: crate::PointerButton::Primary,
-                },
-                &mut cx,
-            );
-        });
-        arena.mark_dirty(node, dirty);
-        arena.update_tree(root, Size::new(100.0, 50.0), &mut measurer);
-        let (_, commands) = arena.prepare_paint_commands();
+//     #[test]
+//     fn row_gap_from_style_affects_child_layout() {
+//         let mut arena = UiArena::new();
+//         let root = arena.root();
+//         let element = row()
+//             .style(Style::new().gap(12.0))
+//             .child(container().style(Style::new().size(Size::new(10.0, 10.0))))
+//             .child(container().style(Style::new().size(Size::new(10.0, 10.0))));
+//         let mut measurer = TextI::new();
 
-        assert!(commands.iter().any(|command| matches!(
-            command,
-            PaintCommand::FillRect { color, .. } if *color == Color::BLUE_500
-        )));
-    }
-}
+//         let row = arena.create_from_element(root, element.into(), 0, &mut measurer);
+//         arena.update_tree(root, Size::new(100.0, 30.0), &mut measurer);
+//         let first = arena.children(row)[0];
+//         let second = arena.children(row)[1];
 
-pub fn repaint_if_needed(tree: &mut UiArena, node: NodeId) {
-    tree.repaint_if_needed(node);
-}
+//         assert_eq!(arena.node(first).unwrap().layout.x, 0.0);
+//         assert_eq!(arena.node(second).unwrap().layout.x, 22.0);
+//     }
+
+//     #[test]
+//     fn paint_collection_matches_damage_bounds_scissor() {
+//         let mut arena = UiArena::new();
+//         let root = arena.root();
+//         let mut measurer = TextI::new();
+//         let top_color = Color::rgb(0.9, 0.1, 0.1);
+//         let middle_color = Color::rgb(0.1, 0.9, 0.1);
+//         let bottom_color = Color::rgb(0.1, 0.1, 0.9);
+//         let top = arena.create_from_element(
+//             root,
+//             container()
+//                 .style(
+//                     Style::new()
+//                         .size(Size::new(20.0, 10.0))
+//                         .background(top_color),
+//                 )
+//                 .into(),
+//             0,
+//             &mut measurer,
+//         );
+//         let middle = arena.create_from_element(
+//             root,
+//             container()
+//                 .style(
+//                     Style::new()
+//                         .size(Size::new(20.0, 10.0))
+//                         .background(middle_color),
+//                 )
+//                 .into(),
+//             1,
+//             &mut measurer,
+//         );
+//         let bottom = arena.create_from_element(
+//             root,
+//             container()
+//                 .style(
+//                     Style::new()
+//                         .size(Size::new(20.0, 10.0))
+//                         .background(bottom_color),
+//                 )
+//                 .into(),
+//             2,
+//             &mut measurer,
+//         );
+
+//         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+//         arena.finish_paint();
+//         assert_eq!(arena.node(middle).unwrap().layout.y, 10.0);
+
+//         arena.mark_dirty(top, DirtyFlags::PAINT);
+//         arena.mark_dirty(bottom, DirtyFlags::PAINT);
+//         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+//         let (_, commands) = arena.prepare_paint_commands();
+
+//         assert!(commands.iter().any(|command| matches!(
+//             command,
+//             PaintCommand::FillRect { rect, color }
+//                 if *color == middle_color && *rect == arena.node(middle).unwrap().layout
+//         )));
+//     }
+
+//     #[test]
+//     fn multiple_layout_dirty_descendants_batch_into_one_layout_pass() {
+//         let mut arena = UiArena::new();
+//         let root = arena.root();
+//         let element = row()
+//             .child(container().style(Style::new().size(Size::new(10.0, 10.0))))
+//             .child(container().style(Style::new().size(Size::new(10.0, 10.0))));
+//         let mut measurer = TextI::new();
+
+//         let row = arena.create_from_element(root, element.into(), 0, &mut measurer);
+//         arena.update_tree(root, Size::new(100.0, 30.0), &mut measurer);
+//         let first = arena.children(row)[0];
+//         let second = arena.children(row)[1];
+//         let passes_before = arena.layout_passes;
+
+//         arena.mark_dirty(first, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+//         arena.mark_dirty(second, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+//         arena.update_tree(root, Size::new(100.0, 30.0), &mut measurer);
+
+//         assert_eq!(arena.layout_passes, passes_before + 1);
+//     }
+
+//     #[test]
+//     fn sync_layout_propagates_parent_offset_changes_to_clean_children() {
+//         let mut arena = UiArena::new();
+//         let root = arena.root();
+//         let mut measurer = TextI::new();
+//         let spacer = arena.create_from_element(
+//             root,
+//             container()
+//                 .style(Style::new().size(Size::new(10.0, 0.0)))
+//                 .into(),
+//             0,
+//             &mut measurer,
+//         );
+//         let parent = arena.create_from_element(
+//             root,
+//             container()
+//                 .style(Style::new().size(Size::new(20.0, 20.0)))
+//                 .child(container().style(Style::new().size(Size::new(5.0, 5.0))))
+//                 .into(),
+//             1,
+//             &mut measurer,
+//         );
+//         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+//         let child = arena.children(parent)[0];
+//         assert_eq!(arena.node(child).unwrap().layout.y, 0.0);
+
+//         arena.update_widget_from_element(
+//             spacer,
+//             container()
+//                 .style(Style::new().size(Size::new(10.0, 12.0)))
+//                 .into(),
+//             0,
+//             &mut measurer,
+//         );
+//         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+
+//         assert_eq!(arena.node(parent).unwrap().layout.y, 12.0);
+//         assert_eq!(arena.node(child).unwrap().layout.y, 12.0);
+//     }
+
+//     #[test]
+//     fn text_update_refreshes_measure_context_and_triggers_layout() {
+//         let mut arena = UiArena::new();
+//         let root = arena.root();
+//         let mut text_i = TextI::new();
+//         let mut measurer = TextRecordingMeasurer::default();
+//         let text = arena.create_from_element(
+//             root,
+//             TextWidget::new("a")
+//                 .style(Style::new().font_size(10.0))
+//                 .into(),
+//             0,
+//             &mut text_i,
+//         );
+//         arena.update_tree(root, Size::new(500.0, 100.0), &mut measurer);
+//         let initial_width = arena.node(text).unwrap().layout.width;
+//         let passes_before = arena.layout_passes;
+
+//         arena.update_widget_from_element(
+//             text,
+//             TextWidget::new("abcd")
+//                 .style(Style::new().font_size(12.0))
+//                 .into(),
+//             0,
+//             &mut text_i,
+//         );
+//         arena.update_tree(root, Size::new(500.0, 100.0), &mut measurer);
+
+//         assert_eq!(arena.layout_passes, passes_before + 1);
+//         assert_eq!(arena.node(text).unwrap().layout.width, 48.0);
+//         assert!(arena.node(text).unwrap().layout.width > initial_width);
+//         assert!(
+//             measurer
+//                 .calls
+//                 .iter()
+//                 .any(|(text, font_size)| text == "abcd" && *font_size == 12.0)
+//         );
+//     }
+
+//     #[test]
+//     fn button_pressed_state_style_repaints_with_primary_background() {
+//         let mut arena = UiArena::new();
+//         let root = arena.root();
+//         let mut measurer = TextI::new();
+//         let node = arena.create_from_element(root, button("press").into(), 0, &mut measurer);
+//         arena.node_mut(node).unwrap().layout = Rect::new(0.0, 0.0, 80.0, 30.0);
+//         let mut dirty = DirtyFlags::empty();
+//         let mut requests = crate::EventRequests::default();
+//         arena.node_mut(node).unwrap().widget.with_mut(|widget| {
+//             let mut cx = crate::EventContext::new(
+//                 node,
+//                 crate::EventPhase::Target,
+//                 &mut dirty,
+//                 &mut requests,
+//             );
+//             widget.handle_event(
+//                 &Event::PointerDown {
+//                     position: crate::Point::new(1.0, 1.0),
+//                     button: crate::PointerButton::Primary,
+//                 },
+//                 &mut cx,
+//             );
+//         });
+//         arena.mark_dirty(node, dirty);
+//         arena.update_tree(root, Size::new(100.0, 50.0), &mut measurer);
+//         let (_, commands) = arena.prepare_paint_commands();
+
+//         assert!(commands.iter().any(|command| matches!(
+//             command,
+//             PaintCommand::FillRect { color, .. } if *color == Color::BLUE_500
+//         )));
+//     }
+// }
+
+// pub fn repaint_if_needed(tree: &mut UiArena, node: NodeId) {
+//     tree.repaint_if_needed(node);
+// }

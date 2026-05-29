@@ -33,3 +33,4 @@ pub use xui_interface::{
     TextStyle, TextVerticalAlign, WhiteSpace,
 };
 pub use xui_macros::{component, component_fn, xui};
+pub use xui_text::engine::Engine;

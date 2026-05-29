@@ -126,6 +126,16 @@ impl<B: RenderBackend<T>, T: TextMeasurer> GuiRuntime<B, T> {
         })
     }
 
+    pub fn text_measure(&self) -> &T {
+        &self.text_measure
+    }
+
+    pub fn text_measure_mut(&mut self) -> &mut T {
+        &mut self.text_measure
+    }
+
+
+
     pub fn tick(
         &mut self,
         event_source: &mut impl EventSource<Event = RuntimeEvent>,

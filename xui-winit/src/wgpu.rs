@@ -24,8 +24,10 @@ pub struct WGPUBackend {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
+    glyph_pipelines: [wgpu::RenderPipeline; 3],
     ui_uniform_buffer: wgpu::Buffer,
     ui_bind_group: wgpu::BindGroup,
+    glyph_bind_group: wgpu::BindGroup,
     atlas: Atlas,
     glyph_atlas: GlyphAtlas<AllocInfo>,
     last_text_glyph_records: Vec<TextGlyphRecord>,
@@ -52,6 +54,14 @@ const UI_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 10] = wgpu::vertex_attr_ar
     9 => Float32x4,
 ];
 
+const GLYPH_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+    0 => Float32x4,
+    1 => Float32,
+    2 => Float32x3,
+    3 => Float32x4,
+    4 => Float32x4,
+];
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct UiUniforms {
@@ -73,6 +83,16 @@ struct UiInstance {
     extra: [f32; 4],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GlyphInstance {
+    bounds: [f32; 4],
+    layer: f32,
+    padding: [f32; 3],
+    uv: [f32; 4],
+    color: [f32; 4],
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextGlyphRecord {
     pub screen_rect: Rect,
@@ -90,6 +110,16 @@ impl UiInstance {
             array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &UI_INSTANCE_ATTRIBUTES,
+        }
+    }
+}
+
+impl GlyphInstance {
+    fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &GLYPH_INSTANCE_ATTRIBUTES,
         }
     }
 }
@@ -144,6 +174,10 @@ impl WGPUBackend {
             label: Some("xui sdf shader"),
             source: wgpu::ShaderSource::Wgsl(UI_SHADER_WGSL.into()),
         });
+        let glyph_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("xui glyph shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/glyph.wgsl").into()),
+        });
 
         let ui_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -177,11 +211,57 @@ impl WGPUBackend {
             }],
         });
 
+        let atlas = Atlas::new(&device);
+
+        let glyph_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("xui glyph atlas bind group layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D3,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                        count: None,
+                    },
+                ],
+            });
+
+        let glyph_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("xui glyph atlas bind group"),
+            layout: &glyph_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&atlas.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&atlas.sampler),
+                },
+            ],
+        });
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("xui sdf pipeline layout"),
             bind_group_layouts: &[Some(&ui_bind_group_layout)],
             immediate_size: 0,
         });
+        let glyph_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("xui glyph pipeline layout"),
+                bind_group_layouts: &[Some(&ui_bind_group_layout), Some(&glyph_bind_group_layout)],
+                immediate_size: 0,
+            });
 
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("xui sdf render pipeline"),
@@ -216,7 +296,36 @@ impl WGPUBackend {
             cache: None,
         });
 
-        let atlas = Atlas::new(&device);
+        let glyph_pipelines = [
+            create_glyph_pipeline(
+                &device,
+                &glyph_pipeline_layout,
+                &glyph_shader,
+                config.format,
+                "xui glyph red render pipeline",
+                "fs_main_red",
+                wgpu::ColorWrites::RED,
+            ),
+            create_glyph_pipeline(
+                &device,
+                &glyph_pipeline_layout,
+                &glyph_shader,
+                config.format,
+                "xui glyph green render pipeline",
+                "fs_main_green",
+                wgpu::ColorWrites::GREEN,
+            ),
+            create_glyph_pipeline(
+                &device,
+                &glyph_pipeline_layout,
+                &glyph_shader,
+                config.format,
+                "xui glyph blue render pipeline",
+                "fs_main_blue",
+                wgpu::ColorWrites::BLUE,
+            ),
+        ];
+
         let glyph_atlas = GlyphAtlas::new();
         let scene = SceneTexture::new(&device, &config);
 
@@ -228,8 +337,10 @@ impl WGPUBackend {
             queue,
             config,
             render_pipeline,
+            glyph_pipelines,
             ui_uniform_buffer,
             ui_bind_group,
+            glyph_bind_group,
             atlas,
             glyph_atlas,
             last_text_glyph_records: Vec::new(),
@@ -451,7 +562,7 @@ impl<T: TextLayouter> RenderBackend<T> for WGPUBackend {
             self.config.width as f32,
             self.config.height as f32,
         ));
-        let (instances, text_glyph_records) =
+        let (instances, glyph_instances, text_glyph_records) =
             self.build_ui_instances(commands, scene_clip, text)?;
         self.last_text_glyph_records = text_glyph_records;
 
@@ -501,6 +612,14 @@ impl<T: TextLayouter> RenderBackend<T> for WGPUBackend {
                     usage: wgpu::BufferUsages::VERTEX,
                 })
         });
+        let glyph_instance_buffer = (!glyph_instances.is_empty()).then(|| {
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("xui glyph instances"),
+                    contents: bytemuck::cast_slice(&glyph_instances),
+                    usage: wgpu::BufferUsages::VERTEX,
+                })
+        });
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -528,17 +647,30 @@ impl<T: TextLayouter> RenderBackend<T> for WGPUBackend {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.render_pipeline);
-            pass.set_bind_group(0, &self.ui_bind_group, &[]);
-
-            if let Some(instance_buffer) = &instance_buffer {
+            let has_draws = instance_buffer.is_some() || glyph_instance_buffer.is_some();
+            if has_draws {
                 if let Some(scissor) =
                     scissor_rect(scene_clip, self.config.width, self.config.height)
                 {
                     pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
                 }
+            }
+
+            if let Some(instance_buffer) = &instance_buffer {
+                pass.set_pipeline(&self.render_pipeline);
+                pass.set_bind_group(0, &self.ui_bind_group, &[]);
                 pass.set_vertex_buffer(0, instance_buffer.slice(..));
                 pass.draw(0..6, 0..instances.len() as u32);
+            }
+
+            if let Some(glyph_instance_buffer) = &glyph_instance_buffer {
+                for pipeline in &self.glyph_pipelines {
+                    pass.set_pipeline(pipeline);
+                    pass.set_bind_group(0, &self.ui_bind_group, &[]);
+                    pass.set_bind_group(1, &self.glyph_bind_group, &[]);
+                    pass.set_vertex_buffer(0, glyph_instance_buffer.slice(..));
+                    pass.draw(0..4, 0..glyph_instances.len() as u32);
+                }
             }
         }
         self.scene_needs_clear = false;
@@ -576,8 +708,9 @@ impl WGPUBackend {
         commands: &[PaintCommand],
         viewport_clip: Rect,
         text: &mut T,
-    ) -> Result<(Vec<UiInstance>, Vec<TextGlyphRecord>), WgpuBackendError> {
+    ) -> Result<(Vec<UiInstance>, Vec<GlyphInstance>, Vec<TextGlyphRecord>), WgpuBackendError> {
         let mut instances = Vec::new();
+        let mut glyph_instances = Vec::new();
         let mut text_glyph_records = Vec::new();
         let mut transform_stack = vec![Point::new(0.0, 0.0)];
         let mut clip_stack = vec![viewport_clip];
@@ -668,6 +801,7 @@ impl WGPUBackend {
                         clip,
                         text,
                         &mut text_glyph_records,
+                        &mut glyph_instances,
                     )?;
                 }
                 PaintCommand::PushClip(rect) => {
@@ -706,7 +840,7 @@ impl WGPUBackend {
             }
         }
 
-        Ok((instances, text_glyph_records))
+        Ok((instances, glyph_instances, text_glyph_records))
     }
 
     fn push_text_glyph_records<T: TextLayouter>(
@@ -716,6 +850,7 @@ impl WGPUBackend {
         clip: Rect,
         text: &mut T,
         records: &mut Vec<TextGlyphRecord>,
+        glyph_instances: &mut Vec<GlyphInstance>,
     ) -> Result<(), WgpuBackendError> {
         if rect.width <= 0.0
             || rect.height <= 0.0
@@ -732,6 +867,7 @@ impl WGPUBackend {
             command.props.text.as_str(),
             &style,
             TextLayoutConstraints::max_width(rect.width),
+            None
         );
         for line in par.lines() {
             let baseline_y = rect.y + line.baseline();
@@ -750,11 +886,14 @@ impl WGPUBackend {
                     atlas: &mut self.atlas,
                 };
                 let mut session = self.glyph_atlas.session(&style, &mut writer);
+                let subpx_bias = Point::new(0.125, 0.0);
 
                 for cluster in run.visual_clusters() {
                     for glyph in cluster.glyphs() {
                         let origin_x = pen_x + glyph.x;
-                        let origin_y = baseline_y + glyph.y;
+                        let origin_y = baseline_y - glyph.y;
+                        pen_x += glyph.advance;
+
                         let Some((alloc, placement)) = session.get(glyph.id, origin_x, origin_y)
                         else {
                             continue;
@@ -764,8 +903,8 @@ impl WGPUBackend {
                         }
 
                         let screen_rect = Rect::new(
-                            origin_x + placement.left as f32,
-                            origin_y + placement.top as f32,
+                            (origin_x + subpx_bias.x).floor() + placement.left as f32,
+                            (origin_y + subpx_bias.y).floor() - placement.top as f32,
                             placement.width as f32,
                             placement.height as f32,
                         );
@@ -773,7 +912,7 @@ impl WGPUBackend {
                             continue;
                         }
 
-                        records.push(TextGlyphRecord {
+                        let record = TextGlyphRecord {
                             screen_rect,
                             clip,
                             color: command.props.style.color,
@@ -786,15 +925,66 @@ impl WGPUBackend {
                                 placement.width as f32,
                                 placement.height as f32,
                             ),
-                        });
+                        };
+                        push_glyph_instance(glyph_instances, &record);
+                        records.push(record);
                     }
-                    pen_x += cluster.advance();
                 }
             }
         }
 
         Ok(())
     }
+}
+
+fn create_glyph_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    format: wgpu::TextureFormat,
+    label: &'static str,
+    fragment_entry: &'static str,
+    write_mask: wgpu::ColorWrites,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(layout),
+
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[GlyphInstance::layout()],
+        },
+
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some(fragment_entry),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::SrcAlpha,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent::REPLACE,
+                }),
+                write_mask,
+            })],
+        }),
+
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleStrip,
+            ..Default::default()
+        },
+
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 fn push_rect_instance(
@@ -890,6 +1080,33 @@ fn push_line_instance(
         projection_color: [0.0; 4],
         projection_params: [0.0; 4],
         extra: [from.x, from.y, to.x, to.y],
+    });
+}
+
+fn push_glyph_instance(instances: &mut Vec<GlyphInstance>, record: &TextGlyphRecord) {
+    if record.screen_rect.width <= 0.0
+        || record.screen_rect.height <= 0.0
+        || record.clip.width <= 0.0
+        || record.clip.height <= 0.0
+        || record.color.a <= 0.0
+        || record.atlas_size.x <= 0.0
+        || record.atlas_size.y <= 0.0
+        || record.atlas_size.z <= 0.0
+    {
+        return;
+    }
+
+    instances.push(GlyphInstance {
+        bounds: rect_to_array(record.screen_rect),
+        layer: record.atlas_layer as f32 / record.atlas_size.z,
+        padding: [0.0; 3],
+        uv: [
+            record.atlas_rect.x / record.atlas_size.x,
+            record.atlas_rect.y / record.atlas_size.y,
+            record.atlas_rect.width / record.atlas_size.x,
+            record.atlas_rect.height / record.atlas_size.y,
+        ],
+        color: color_to_array(record.color),
     });
 }
 
@@ -998,5 +1215,17 @@ mod tests {
         )
         .validate(&module)
         .expect("ui.wgsl should validate");
+    }
+
+    #[test]
+    fn glyph_shader_is_valid_wgsl() {
+        let module = wgpu::naga::front::wgsl::parse_str(include_str!("shaders/glyph.wgsl"))
+            .expect("glyph.wgsl should parse");
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .expect("glyph.wgsl should validate");
     }
 }

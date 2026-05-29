@@ -1,7 +1,6 @@
 mod components;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
-use xui::font::TextI;
 use xui::prelude::*;
 use xui_winit::{WGPUBackend, WinitRunner, WinitRunnerOptions};
 
@@ -16,7 +15,8 @@ component_fn! {
         let count_for_decrement = count.clone();
 
         <column gap={8.0}>
-            <label color={Color::BLUE_500}>{format!("Current count: {}", count.get())}</label>
+            <text font_size={16.0} font_weight={FontWeight::Bold}> {"HI!! NEW WORLD"} </text>
+            <text> {format!("Current count: {}", count.get())} </text>
             <button on_click={{
                 let count_for_increment = count_for_increment.clone();
                 move |_| {
@@ -39,6 +39,16 @@ component_fn! {
         </column>
     }
 
+    fn test_page() {
+        <row gap={0.0}>
+            <container background={Color::BLUE_500}> 
+                <text> {"HELLO<WORLF"}</text>
+            </container>
+        <container />
+        </row>
+
+    }
+
     fn main_page(MainProp{info}: &MainProp) {
 
         <column gap={12.0}>
@@ -51,6 +61,7 @@ component_fn! {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = App::with_component_registry(|registry| {
         register_counter_component(registry);
+        register_test_page_component(registry);
         components::register_components(registry);
         xui_components::register_components(registry);
 
@@ -75,7 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     WinitRunner::with_backend_factory(
-        |window| (app, TextI::new(), WGPUBackend::new(window)),
+        |window| (app, Engine::new(), WGPUBackend::new(window)),
         Some(options),
     )
     .run()

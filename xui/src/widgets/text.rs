@@ -135,7 +135,7 @@ impl Widget for TextWidget {
     }
 
     fn measure(&self, style: &ComputedStyle, measurer: &mut dyn TextMeasurer) -> Option<Size> {
-        Some(measurer.measure_text(self.props.text.as_str(), &style.text))
+        Some(measurer.measure_text(self.props.text.as_str(), &style.text, None))
     }
 
     fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {

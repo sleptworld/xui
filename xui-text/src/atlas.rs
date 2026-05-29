@@ -167,7 +167,7 @@ where
             self.scaled_image.data.clear();
 
             if Render::new(SOURCES)
-                .format(Format::Subpixel)
+                .format(Format::CustomSubpixel([0.3, 0.0, -0.3]))
                 .offset(Vector::new(subpx[0].to_f32(), subpx[1].to_f32()))
                 .embolden(embolden)
                 .render_into(&mut self.scaler, id, self.scaled_image)

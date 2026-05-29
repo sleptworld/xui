@@ -11,3 +11,4 @@ glam = { workspace = true }
 etagere = "0.3.0"
 
 xui-interface = { path = "../xui-interface" }
+ordered-float = "5.3.0"

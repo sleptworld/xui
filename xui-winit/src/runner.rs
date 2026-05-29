@@ -180,6 +180,8 @@ where
                 let (app, text, backend) = (self.f_init.take().unwrap())(window.clone());
                 self.runtime = Some(GuiRuntime::new(app, backend, text));
                 let size = window.inner_size();
+                let init_scale_factor = window.scale_factor();
+                self.runtime_mut().text_measure_mut().set_scale_factor(init_scale_factor as f32);
                 self.runtime_mut()
                     .handle_event(RuntimeEvent::Resize(Size::new(
                         size.width as f32,
@@ -212,6 +214,11 @@ where
         for event in translate_window_event(&event, self.last_cursor_position) {
             self.handle_runtime_event(event_loop, event);
         }
+
+        if let WindowEvent::ScaleFactorChanged { scale_factor,..} = &event {
+            self.runtime_mut().text_measure_mut().set_scale_factor(*scale_factor as f32);
+        }
+
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
