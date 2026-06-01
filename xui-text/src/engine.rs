@@ -1,6 +1,6 @@
+use ordered_float::NotNan;
 use std::collections::HashMap;
 use std::sync::Arc;
-use ordered_float::NotNan;
 
 use swash::shape::ShapeContext;
 use swash::{Style, Weight, scale};
@@ -24,7 +24,7 @@ pub trait TextLayouter: TextMeasurer {
         text: &str,
         style: &ComputedTextStyle,
         constraints: TextLayoutConstraints,
-        scale_factor: Option<f32>
+        scale_factor: Option<f32>,
     ) -> Arc<Par>;
 }
 
@@ -45,7 +45,7 @@ impl Engine {
             font_ctx: FontContext::default(),
             state: BuilderState::default(),
             layout_cache: HashMap::new(),
-            scale_factor: 1.0
+            scale_factor: 1.0,
         }
     }
 
@@ -78,8 +78,18 @@ impl Engine {
         }
     }
 
-    pub fn measure_text_style(&mut self, text: &str, style: &ComputedTextStyle, scale_factor: Option<f32>) -> Size {
-        self.measure_text_style_with_constraints(text, style, TextLayoutConstraints::UNBOUNDED, scale_factor)
+    pub fn measure_text_style(
+        &mut self,
+        text: &str,
+        style: &ComputedTextStyle,
+        scale_factor: Option<f32>,
+    ) -> Size<f32> {
+        self.measure_text_style_with_constraints(
+            text,
+            style,
+            TextLayoutConstraints::UNBOUNDED,
+            scale_factor,
+        )
     }
 
     pub fn measure_text_style_with_constraints(
@@ -87,8 +97,8 @@ impl Engine {
         text: &str,
         style: &ComputedTextStyle,
         constraints: TextLayoutConstraints,
-        scale_factor: Option<f32>
-    ) -> Size {
+        scale_factor: Option<f32>,
+    ) -> Size<f32> {
         size_for_par(&self.layout_text(text, style, constraints, scale_factor))
     }
 
@@ -97,11 +107,11 @@ impl Engine {
         text: &str,
         style: &ComputedTextStyle,
         constraints: TextLayoutConstraints,
-        scale_factor: Option<f32>   
+        scale_factor: Option<f32>,
     ) -> Par {
         let styles = span_styles_for_style(style);
         let doc = Doc::simple(styles.iter(), text);
-        self.layout_doc_with_constraints(&doc, constraints,scale_factor)
+        self.layout_doc_with_constraints(&doc, constraints, scale_factor)
     }
 
     pub fn layout_doc(&mut self, doc: &Doc<'_>, scale_factor: Option<f32>) -> Par {
@@ -112,7 +122,7 @@ impl Engine {
         &mut self,
         doc: &Doc<'_>,
         constraints: TextLayoutConstraints,
-        scale: Option<f32>
+        scale: Option<f32>,
     ) -> Par {
         let mut session = self.start(Direction::Auto, scale.unwrap_or(self.scale_factor), 0);
         session.process(doc);
@@ -122,8 +132,8 @@ impl Engine {
         par
     }
 
-    pub fn measure_doc(&mut self, doc: &Doc<'_>, scale: Option<f32>) -> Size {
-        let par = self.layout_doc(doc,scale);
+    pub fn measure_doc(&mut self, doc: &Doc<'_>, scale: Option<f32>) -> Size<f32> {
+        let par = self.layout_doc(doc, scale);
         size_for_par(&par)
     }
 }
@@ -134,9 +144,14 @@ impl TextLayouter for Engine {
         text: &str,
         style: &ComputedTextStyle,
         constraints: TextLayoutConstraints,
-        scale_factor: Option<f32>
+        scale_factor: Option<f32>,
     ) -> Arc<Par> {
-        let key = TextLayoutKey::new(text, style, constraints, scale_factor.unwrap_or(self.scale_factor));
+        let key = TextLayoutKey::new(
+            text,
+            style,
+            constraints,
+            scale_factor.unwrap_or(self.scale_factor),
+        );
         if let Some(par) = self.layout_cache.get(&key) {
             return Arc::clone(par);
         }
@@ -150,10 +165,14 @@ impl TextLayouter for Engine {
 impl TextMeasurer for Engine {
     fn set_scale_factor(&mut self, scale_factor: f32) {
         self.scale_factor = scale_factor;
-        
     }
 
-    fn measure_text(&mut self, text: &str, style: &ComputedTextStyle, scale_factor: Option<f32>) -> Size {
+    fn measure_text(
+        &mut self,
+        text: &str,
+        style: &ComputedTextStyle,
+        scale_factor: Option<f32>,
+    ) -> Size<f32> {
         self.measure_text_style(text, style, scale_factor)
     }
 
@@ -162,8 +181,8 @@ impl TextMeasurer for Engine {
         text: &str,
         style: &ComputedTextStyle,
         constraints: TextLayoutConstraints,
-        scale_factor: Option<f32>
-    ) -> Size {
+        scale_factor: Option<f32>,
+    ) -> Size<f32> {
         self.measure_text_style_with_constraints(text, style, constraints, scale_factor)
     }
 }
@@ -176,7 +195,7 @@ fn max_advance(constraints: TextLayoutConstraints) -> f32 {
         .unwrap_or(f32::MAX)
 }
 
-fn size_for_par(par: &Par) -> Size {
+fn size_for_par(par: &Par) -> Size<f32> {
     let mut width: f32 = 0.0;
     let mut height = 0.0;
     for line in par.lines() {
@@ -184,7 +203,7 @@ fn size_for_par(par: &Par) -> Size {
         height += line.size();
     }
 
-    Size::new(width, height)
+    Size::<f32>::new(width, height)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -196,7 +215,12 @@ struct TextLayoutKey {
 }
 
 impl TextLayoutKey {
-    fn new(text: &str, style: &ComputedTextStyle, constraints: TextLayoutConstraints, scale: f32) -> Self {
+    fn new(
+        text: &str,
+        style: &ComputedTextStyle,
+        constraints: TextLayoutConstraints,
+        scale: f32,
+    ) -> Self {
         Self {
             text: Arc::from(text),
             style: TextStyleKey::from(style),

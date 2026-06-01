@@ -3,12 +3,12 @@ use crate::fiber::{
     FiberTag, HostState, Key, Node,
 };
 use crate::lanes::{Lanes, NO_LANES, current_update_lane, includes_some_lane, should_interrupt};
+use crate::layout::{computed_style_for_widget, taffy_style_for_widget};
 use crate::state::{HookContext, HookStorage, Scheduler};
 use crate::style::{ComputedStyle, Theme};
 use crate::tree::UiArena;
-use crate::widgets::{
-    ComponentRender, Element, WidgetRef, computed_style_for_widget, taffy_style_for_widget,
-};
+use crate::widgets::{ComponentRender, WidgetI};
+use crate::{ComponentDesc, ElementDesc};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use std::cell::RefCell;
@@ -18,17 +18,20 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use taffy as tf;
 use xui_interface::{DirtyFlags, EventHandlers, NodeId, TextMeasurer};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct WipId(usize);
+
 pub struct WorkNode {
-    id: FiberId,
-    parent: Option<FiberId>,
+    fiber_id: FiberId,
+    parent: Option<WipId>,
     key: Option<Key>,
     tag: FiberTag,
     position: usize,
     current: Option<FiberId>,
     effect: EffectTag,
     children_resolved: bool,
-    children: SmallVec<[FiberId; 20]>,
-    pending_children: Option<Vec<Element>>,
+    children: SmallVec<[WipId; 20]>,
+    pending_children: Option<Vec<ElementDesc>>,
     lanes: Lanes,
     child_lanes: Lanes,
     began: bool,
@@ -38,7 +41,7 @@ pub struct WorkNode {
 }
 
 struct HostWork {
-    widget: Option<WidgetRef>,
+    widget: Option<WidgetI>,
     event_handlers: Option<EventHandlers>,
     style: tf::Style,
     computed_style: ComputedStyle,
@@ -56,21 +59,18 @@ struct ComponentWork {
 impl WorkNode {
     fn from_current(
         current: &Node,
-        parent: Option<FiberId>,
-        children: impl IntoIterator<Item = FiberId>,
+        parent: Option<WipId>,
         position: usize,
         lanes: Lanes,
         child_lanes: Lanes,
     ) -> Self {
-        let children: SmallVec<[FiberId; 20]> = children.into_iter().collect();
-
         Self {
-            id: current.id,
+            fiber_id: current.id,
             parent,
             key: current.key.clone(),
             position,
             tag: current.tag,
-            children,
+            children: SmallVec::new(),
             current: Some(current.id),
             children_resolved: false,
             effect: EffectTag::None,
@@ -86,8 +86,8 @@ impl WorkNode {
 
     fn from_prepared(
         nodes: &FiberArena,
-        id: FiberId,
-        parent: FiberId,
+        fiber_id: FiberId,
+        parent: WipId,
         position: usize,
         prepared: PreparedElement,
         current: Option<FiberId>,
@@ -137,7 +137,7 @@ impl WorkNode {
         };
 
         Self {
-            id,
+            fiber_id,
             parent: Some(parent),
             key: prepared.key,
             position,
@@ -183,12 +183,12 @@ struct PreparedElement {
 
 enum PreparedPending {
     Host {
-        widget: WidgetRef,
+        widget: WidgetI,
         event_handlers: EventHandlers,
         style: tf::Style,
         computed_style: ComputedStyle,
         props_hash: u64,
-        children: Vec<Element>,
+        children: Vec<ElementDesc>,
     },
     Component {
         key: Option<Key>,
@@ -199,101 +199,127 @@ enum PreparedPending {
 }
 
 pub struct WorkInProgress {
-    nodes: FxHashMap<FiberId, WorkNode>,
-    root: FiberId,
-    next_work: Option<FiberId>,
+    root: WipId,
+    next_work: Option<WipId>,
     render_lanes: Lanes,
     deletions: Vec<FiberId>,
 }
 
 impl WorkInProgress {
-    fn node(&self, id: FiberId) -> Option<&WorkNode> {
-        self.nodes.get(&id)
+    fn live<'a>(&'a self, nodes: &'a mut Vec<Option<WorkNode>>) -> WorkInProgressLive<'a> {
+        WorkInProgressLive { nodes }
     }
 }
 
-impl fmt::Debug for WorkInProgress {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "WorkInProgress")?;
-        writeln!(
-            f,
-            "  render_lanes: {:#018b} ({:#x})",
-            self.render_lanes, self.render_lanes
-        )?;
-        writeln!(f, "  root: {:?}", self.root)?;
-        writeln!(f, "  next: {:?}", self.next_work)?;
-        if !self.deletions.is_empty() {
-            writeln!(f, "  deletions: {:?}", self.deletions)?;
-        }
-        writeln!(f, "  tree:")?;
+struct WorkInProgressLive<'a> {
+    nodes: &'a mut Vec<Option<WorkNode>>,
+}
 
-        let mut visited = Vec::new();
-        self.fmt_node(f, self.root, "    ", true, &mut visited)?;
+impl<'a> WorkInProgressLive<'a> {
+    fn alloc_node(&mut self, node: WorkNode) -> WipId {
+        let id = WipId(self.nodes.len());
+        self.nodes.push(Some(node));
+        id
+    }
 
-        if self.nodes.len() > visited.len() {
-            writeln!(f, "  detached:")?;
-            let mut detached: Vec<_> = self
-                .nodes
-                .keys()
-                .copied()
-                .filter(|id| !visited.contains(id))
-                .collect();
-            detached.sort_by_key(|id| format!("{id:?}"));
-            for id in detached {
-                self.fmt_node(f, id, "    ", true, &mut visited)?;
-            }
-        }
-
-        Ok(())
+    fn take_node(&mut self, id: WipId) -> Option<WorkNode> {
+        self.nodes.get_mut(id.0).and_then(Option::take)
     }
 }
+
+// impl fmt::Debug for WorkInProgress {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         writeln!(f, "WorkInProgress")?;
+//         writeln!(
+//             f,
+//             "  render_lanes: {:#018b} ({:#x})",
+//             self.render_lanes, self.render_lanes
+//         )?;
+//         writeln!(f, "  root: {:?}", self.root)?;
+//         writeln!(f, "  next: {:?}", self.next_work)?;
+//         if !self.deletions.is_empty() {
+//             writeln!(f, "  deletions: {:?}", self.deletions)?;
+//         }
+//         writeln!(f, "  tree:")?;
+
+//         let mut visited = Vec::new();
+//         self.fmt_node(f, self.root, "    ", true, &mut visited)?;
+
+//         if self.live_len() > visited.len() {
+//             writeln!(f, "  detached:")?;
+//             let detached: Vec<_> = self
+//                 .nodes
+//                 .iter()
+//                 .enumerate()
+//                 .filter_map(|(index, node)| node.as_ref().map(|_| WipId(index)))
+//                 .filter(|id| !visited.contains(id))
+//                 .collect();
+//             for id in detached {
+//                 self.fmt_node(f, id, "    ", true, &mut visited)?;
+//             }
+//         }
+
+//         Ok(())
+//     }
+// }
 
 impl WorkInProgress {
-    fn fmt_node(
+    // fn fmt_node(
+    //     &self,
+    //     f: &mut fmt::Formatter<'_>,
+    //     id: WipId,
+    //     prefix: &str,
+    //     is_last: bool,
+    //     visited: &mut Vec<WipId>,
+    // ) -> fmt::Result {
+    //     let branch = if is_last { "`-" } else { "+-" };
+    //     let child_prefix = if is_last { "  " } else { "| " };
+
+    //     let Some(node) = self.node(id) else {
+    //         writeln!(f, "{prefix}{branch} {:?} <missing work node>", id)?;
+    //         return Ok(());
+    //     };
+
+    //     let details_prefix = format!("{prefix}{child_prefix}  ");
+
+    //     write!(
+    //         f,
+    //         "{prefix}{branch} {:?} {:?} {}",
+    //         id,
+    //         node.fiber_id,
+    //         WorkNodeTitle(node),
+    //     )?;
+    //     self.fmt_node_badges(f, id, node)?;
+    //     writeln!(f)?;
+
+    //     self.fmt_node_details(f, node, &details_prefix)?;
+
+    //     if visited.contains(&id) {
+    //         writeln!(f, "{prefix}{child_prefix}`- <cycle>")?;
+    //         return Ok(());
+    //     }
+    //     visited.push(id);
+
+    //     let next_prefix = format!("{prefix}{child_prefix}");
+    //     for (index, child) in node.children.iter().enumerate() {
+    //         self.fmt_node(
+    //             f,
+    //             *child,
+    //             &next_prefix,
+    //             index + 1 == node.children.len(),
+    //             visited,
+    //         )?;
+    //     }
+
+    //     Ok(())
+    // }
+
+    fn fmt_node_badges(
         &self,
         f: &mut fmt::Formatter<'_>,
-        id: FiberId,
-        prefix: &str,
-        is_last: bool,
-        visited: &mut Vec<FiberId>,
+        id: WipId,
+        node: &WorkNode,
     ) -> fmt::Result {
-        let branch = if is_last { "`-" } else { "+-" };
-        let child_prefix = if is_last { "  " } else { "| " };
-
-        let Some(node) = self.nodes.get(&id) else {
-            writeln!(f, "{prefix}{branch} {:?} <missing work node>", id)?;
-            return Ok(());
-        };
-
-        let details_prefix = format!("{prefix}{child_prefix}  ");
-
-        write!(f, "{prefix}{branch} {:?} {}", node.id, WorkNodeTitle(node),)?;
-        self.fmt_node_badges(f, node)?;
-        writeln!(f)?;
-
-        self.fmt_node_details(f, node, &details_prefix)?;
-
-        if visited.contains(&id) {
-            writeln!(f, "{prefix}{child_prefix}`- <cycle>")?;
-            return Ok(());
-        }
-        visited.push(id);
-
-        let next_prefix = format!("{prefix}{child_prefix}");
-        for (index, child) in node.children.iter().enumerate() {
-            self.fmt_node(
-                f,
-                *child,
-                &next_prefix,
-                index + 1 == node.children.len(),
-                visited,
-            )?;
-        }
-
-        Ok(())
-    }
-
-    fn fmt_node_badges(&self, f: &mut fmt::Formatter<'_>, node: &WorkNode) -> fmt::Result {
         let mut wrote = false;
         let mut write_badge = |f: &mut fmt::Formatter<'_>, label: &str| {
             if !wrote {
@@ -305,7 +331,7 @@ impl WorkInProgress {
             write!(f, "{label}")
         };
 
-        if self.next_work == Some(node.id) {
+        if self.next_work == Some(id) {
             write_badge(f, "next")?;
         }
         match node.effect {
@@ -383,7 +409,7 @@ impl WorkInProgress {
     }
 }
 
-struct PendingElementDebug<'a>(&'a Element);
+struct PendingElementDebug<'a>(&'a ElementDesc);
 
 struct WorkNodeTitle<'a>(&'a WorkNode);
 
@@ -406,15 +432,18 @@ impl fmt::Display for WorkNodeTitle<'_> {
 impl fmt::Debug for PendingElementDebug<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
-            Element::Host(_) => f
+            ElementDesc::Host(widget) => f
                 .debug_struct("Host")
-                .field("tag", &self.0.node_type())
-                .field("key", &self.0.key())
-                .field("props_hash", &format_args!("{:#x}", self.0.props_hash()))
+                .field("tag", &widget.widget.node_type())
+                .field("key", &widget.widget.key())
+                .field(
+                    "props_hash",
+                    &format_args!("{:#x}", widget.widget.props_hash()),
+                )
                 .finish(),
-            Element::Component(component) => f
+            ElementDesc::Component(component) => f
                 .debug_struct("Component")
-                .field("render", &component.render.name())
+                .field("render", &component.component_type.name())
                 .field("key", &component.key)
                 .field("props_hash", &format_args!("{:#x}", component.props_hash))
                 .finish(),
@@ -431,6 +460,7 @@ pub struct ComponentRuntime {
     hooks: FxHashMap<FiberId, HookStorage>,
     root_widget: NodeId,
     budget: Duration,
+    wip_nodes: Vec<Option<WorkNode>>,
 
     component_registry: ComponentRegistry,
 }
@@ -439,7 +469,7 @@ impl ComponentRuntime {
     pub fn new<I, F>(root_widget: NodeId, scheduler: Scheduler, init_components: I) -> Self
     where
         I: FnOnce(&mut ComponentRegistry) -> F,
-        F: for<'a> FnMut(&mut HookContext<'a>) -> Element + 'static,
+        F: for<'a> FnMut(&mut HookContext<'a>) -> ElementDesc + 'static,
     {
         let arena = FiberArena::new();
         let current = arena.root();
@@ -457,6 +487,7 @@ impl ComponentRuntime {
             scheduler,
             hooks: FxHashMap::default(),
             budget: Duration::from_millis(4),
+            wip_nodes: Vec::with_capacity(200),
             component_registry,
         }
     }
@@ -473,6 +504,22 @@ impl ComponentRuntime {
         self.nodes.node(self.root()).unwrap()
     }
 
+    fn alloc_wip_node(&mut self, node: WorkNode) -> WipId {
+        self.work_in_progress
+            .as_ref()
+            .expect("work missing")
+            .live(&mut self.wip_nodes)
+            .alloc_node(node)
+    }
+
+    fn wip_node(&self, id: WipId) -> Option<&WorkNode> {
+        self.wip_nodes.get(id.0).and_then(Option::as_ref)
+    }
+
+    fn wip_node_mut(&mut self, id: WipId) -> Option<&mut WorkNode> {
+        self.wip_nodes.get_mut(id.0).and_then(Option::as_mut)
+    }
+
     pub fn set_budget(&mut self, budget: Duration) {
         self.budget = budget;
     }
@@ -485,38 +532,25 @@ impl ComponentRuntime {
         self.scheduler.mark_root_dirty(current_update_lane());
     }
 
-    pub fn rebuild_sync_if_needed<T: TextMeasurer>(
-        &mut self,
-        arena: &mut UiArena,
-        measurer: &mut T,
-    ) {
+    pub fn rebuild_sync_if_needed(&mut self, arena: &mut UiArena) {
         if self.is_dirty() {
-            self.flush_sync(arena, measurer);
+            self.flush_sync(arena);
         }
     }
 
-    pub fn rebuild_slice_if_needed<T: TextMeasurer>(
-        &mut self,
-        arena: &mut UiArena,
-        measurer: &mut T,
-    ) -> bool {
+    pub fn rebuild_slice_if_needed(&mut self, arena: &mut UiArena) -> bool {
         if !self.is_dirty() {
             return true;
         }
 
-        self.work_loop(arena, measurer, Some(Instant::now() + self.budget))
+        self.work_loop(arena, Some(Instant::now() + self.budget))
     }
 
-    pub fn flush_sync<T: TextMeasurer>(&mut self, arena: &mut UiArena, measurer: &mut T) {
-        self.work_loop(arena, measurer, None);
+    pub fn flush_sync(&mut self, arena: &mut UiArena) {
+        self.work_loop(arena, None);
     }
 
-    fn work_loop<T: TextMeasurer>(
-        &mut self,
-        arena: &mut UiArena,
-        measurer: &mut T,
-        deadline: Option<Instant>,
-    ) -> bool {
+    fn work_loop(&mut self, arena: &mut UiArena, deadline: Option<Instant>) -> bool {
         self.scheduler.mark_starved_lanes_as_expired(now_ms());
         loop {
             if self.scheduler.pending_lanes() == NO_LANES && self.work_in_progress.is_none() {
@@ -533,7 +567,7 @@ impl ComponentRuntime {
                 .as_ref()
                 .is_some_and(|work| work.next_work.is_some())
             {
-                self.perform_unit_of_work(measurer, theme);
+                self.perform_unit_of_work(theme);
                 let more_work = self
                     .work_in_progress
                     .as_ref()
@@ -549,7 +583,7 @@ impl ComponentRuntime {
         }
     }
 
-    fn perform_unit_of_work<T: TextMeasurer>(&mut self, measurer: &mut T, theme: &Theme) {
+    fn perform_unit_of_work(&mut self, theme: &Theme) {
         let Some(id) = self
             .work_in_progress
             .as_ref()
@@ -558,7 +592,7 @@ impl ComponentRuntime {
             return;
         };
 
-        if let Some(child) = self.begin_work(id, measurer, theme) {
+        if let Some(child) = self.begin_work(id, theme) {
             if let Some(work) = self.work_in_progress.as_mut() {
                 work.next_work = Some(child);
             }
@@ -575,11 +609,7 @@ impl ComponentRuntime {
                 return;
             }
 
-            let parent = self
-                .work_in_progress
-                .as_ref()
-                .and_then(|work| work.nodes.get(&current))
-                .and_then(|node| node.parent);
+            let parent = self.wip_node(current).and_then(|node| node.parent);
 
             match parent {
                 Some(parent) => current = parent,
@@ -593,25 +623,16 @@ impl ComponentRuntime {
         }
     }
 
-    fn begin_work<T: TextMeasurer>(
-        &mut self,
-        id: FiberId,
-        measurer: &mut T,
-        theme: &Theme,
-    ) -> Option<FiberId> {
-        if self
-            .work_in_progress
-            .as_ref()
-            .and_then(|work| work.node(id))
-            .is_some_and(|node| node.began)
-        {
+    fn begin_work(&mut self, id: WipId, theme: &Theme) -> Option<WipId> {
+        if self.wip_node(id).is_some_and(|node| node.began) {
             return self.first_child_needing_work(id);
         }
 
-        let (tag, should_render, should_reconcile_pending, render_lanes) = {
+        let (fiber_id, tag, should_render, should_reconcile_pending, render_lanes) = {
             let work = self.work_in_progress.as_ref().expect("work missing");
-            let node = work.node(id).expect("work node missing");
+            let node = self.wip_node(id).expect("work node missing");
             (
+                node.fiber_id,
                 node.tag,
                 node.effect != EffectTag::None
                     || includes_some_lane(node.lanes, work.render_lanes)
@@ -633,9 +654,9 @@ impl ComponentRuntime {
             FiberTag::Root => {
                 if should_render {
                     let render = self.root_render.clone();
-                    let mut cx = cx!(id);
+                    let mut cx = cx!(fiber_id);
                     let element = (render.borrow_mut())(&mut cx);
-                    self.reconcile_children(id, [element], measurer, theme);
+                    self.reconcile_children(id, [element], theme);
                 } else {
                     self.clone_current_children(id);
                 }
@@ -645,33 +666,33 @@ impl ComponentRuntime {
                     let render = self
                         .work_in_progress
                         .as_ref()
-                        .and_then(|work| work.node(id))
+                        .and_then(|_| self.wip_node(id))
                         .and_then(|node| node.component_state.as_ref())
                         .map(|component| component.render.clone())
                         .or_else(|| {
                             self.nodes
-                                .node(id)
+                                .node(fiber_id)
                                 .and_then(|node| node.component.as_ref())
                                 .map(|component| component.render.clone())
                         })
                         .expect("component fiber missing render function");
-                    let mut cx = cx!(id);
                     let props = self
                         .work_in_progress
                         .as_ref()
-                        .and_then(|work| work.node(id))
+                        .and_then(|_| self.wip_node(id))
                         .and_then(|node| node.component_state.as_ref())
                         .map(|component| component.props.clone())
                         .or_else(|| {
                             self.nodes
-                                .node(id)
+                                .node(fiber_id)
                                 .and_then(|node| node.component.as_ref())
                                 .map(|component| component.props.clone())
                         })
                         .expect("component fiber missing props");
                     let render = self.component_registry.get(render);
+                    let mut cx = cx!(fiber_id);
                     let element = render.call(&mut cx, props.as_ref());
-                    self.reconcile_children(id, [element], measurer, theme);
+                    self.reconcile_children(id, [element], theme);
                 } else {
                     self.clone_current_children(id);
                 }
@@ -679,40 +700,29 @@ impl ComponentRuntime {
             FiberTag::Host(_) => {
                 if should_reconcile_pending {
                     let children = self
-                        .work_in_progress
-                        .as_mut()
-                        .and_then(|w| w.nodes.get_mut(&id))
+                        .wip_node_mut(id)
                         .and_then(|node| node.pending_children.take())
                         .unwrap_or_default();
-                    self.reconcile_children(id, children, measurer, theme);
+                    self.reconcile_children(id, children, theme);
                 } else {
                     self.clone_current_children(id);
                 }
             }
         }
 
-        if let Some(work) = self.work_in_progress.as_mut() {
-            if let Some(node) = work.nodes.get_mut(&id) {
-                node.began = true;
-            }
+        if let Some(node) = self.wip_node_mut(id) {
+            node.began = true;
         }
 
         self.first_child_needing_work(id)
     }
 
-    fn reconcile_children<I, T: TextMeasurer>(
-        &mut self,
-        parent: FiberId,
-        new_children: I,
-        measurer: &mut T,
-        theme: &Theme,
-    ) where
-        I: IntoIterator<Item = Element>,
+    fn reconcile_children<I>(&mut self, parent: WipId, new_children: I, theme: &Theme)
+    where
+        I: IntoIterator<Item = ElementDesc>,
     {
         let old_children = self
-            .work_in_progress
-            .as_ref()
-            .and_then(|work| work.node(parent))
+            .wip_node(parent)
             .and_then(|node| node.current)
             .and_then(|id| self.nodes.node(id))
             .map(|node| {
@@ -732,7 +742,7 @@ impl ComponentRuntime {
         let mut next_children = SmallVec::with_capacity(20);
 
         for (position, element) in new_children.into_iter().enumerate() {
-            let prepared = self.prepare_element(parent, element, measurer, theme);
+            let prepared = self.prepare_element(parent, element, theme);
             let matched =
                 find_reusable_child(&self.nodes, &old_children, &used, &prepared, position);
             let (id, current, effect) = if let Some(old_index) = matched {
@@ -759,7 +769,7 @@ impl ComponentRuntime {
                 })
                 .unwrap_or((NO_LANES, NO_LANES));
 
-            let node = WorkNode::from_prepared(
+            let child = self.alloc_wip_node(WorkNode::from_prepared(
                 &self.nodes,
                 id,
                 parent,
@@ -769,13 +779,8 @@ impl ComponentRuntime {
                 effect,
                 lanes,
                 child_lanes,
-            );
-            self.work_in_progress
-                .as_mut()
-                .expect("work missing")
-                .nodes
-                .insert(id, node);
-            next_children.push(id);
+            ));
+            next_children.push(child);
         }
 
         for (index, old_child) in old_children.into_iter().enumerate() {
@@ -788,86 +793,81 @@ impl ComponentRuntime {
             }
         }
 
-        if let Some(work) = self.work_in_progress.as_mut() {
-            if let Some(node) = work.nodes.get_mut(&parent) {
-                node.children = next_children;
-                node.children_resolved = true;
-            }
+        if let Some(node) = self.wip_node_mut(parent) {
+            node.children = next_children;
+            node.children_resolved = true;
         }
     }
 
-    fn prepare_element<T: TextMeasurer>(
+    fn prepare_element(
         &self,
-        parent: FiberId,
-        element: Element,
-        measurer: &mut T,
+        parent: WipId,
+        element: ElementDesc,
         theme: &Theme,
     ) -> PreparedElement {
         let key = element.key();
         match element {
-            Element::Component(component) => self.prepare_component_element(component, key),
-            element => {
-                let props_hash = element.props_hash();
-                let tag = FiberTag::Host(element.node_type().expect("host element missing type"));
-                let parts = element.into_parts();
-                let computed_style = if let Some(parent_style) = self.parent_style_for_work(parent)
+            ElementDesc::Component(component) => self.prepare_component_element(component, key),
+            ElementDesc::Host(host) => {
+                let widget = host.widget;
+                let props_hash = widget.props_hash();
+                let tag = FiberTag::Host(widget.node_type());
+                let (computed_style, style) = if let Some(parent_style) =
+                    self.parent_style_for_work(parent)
                 {
-                    parts
-                        .widget
-                        .with(|widget| computed_style_for_widget(widget, &parent_style, theme))
+                    let computed_style = computed_style_for_widget(&widget, parent_style, theme);
+
+                    let style = taffy_style_for_widget(&parent_style, &computed_style);
+                    (computed_style, style)
                 } else {
                     let parent_style = ComputedStyle::initial(theme);
-                    parts
-                        .widget
-                        .with(|widget| computed_style_for_widget(widget, &parent_style, theme))
+                    let computed_style = computed_style_for_widget(&widget, &parent_style, theme);
+                    let style = taffy_style_for_widget(&parent_style, &computed_style);
+                    (computed_style, style)
                 };
 
-                let style = parts.widget.layout_with(|widget| {
-                    taffy_style_for_widget(widget, &computed_style, measurer)
-                });
+                let event_handlers = widget.take_event_handlers();
                 PreparedElement {
                     key,
                     tag,
                     pending: PreparedPending::Host {
-                        widget: parts.widget,
-                        event_handlers: parts.event_handlers,
+                        widget,
+                        event_handlers,
                         style,
                         computed_style,
                         props_hash,
-                        children: parts.children,
+                        children: host.children,
                     },
                 }
             }
         }
     }
 
-    fn parent_style_for_work(&self, parent: FiberId) -> Option<&ComputedStyle> {
+    fn parent_style_for_work(&self, parent: WipId) -> Option<&ComputedStyle> {
         let mut cursor = Some(parent);
         while let Some(id) = cursor {
-            if let Some(host) = self
-                .work_in_progress
-                .as_ref()
-                .and_then(|work| work.nodes.get(&id))
-                .and_then(|node| node.host_work.as_ref())
+            let Some(node) = self.wip_node(id) else {
+                return None;
+            };
+            if let Some(host) = node.host_work.as_ref() {
+                return Some(&host.computed_style);
+            }
+            if let Some(host) = node
+                .current
+                .or(Some(node.fiber_id))
+                .and_then(|fiber_id| self.nodes.node(fiber_id))
+                .and_then(|node| node.host.as_ref())
             {
                 return Some(&host.computed_style);
             }
-            if let Some(host) = self.nodes.node(id).and_then(|node| node.host.as_ref()) {
-                return Some(&host.computed_style);
-            }
-            cursor = self
-                .work_in_progress
-                .as_ref()
-                .and_then(|work| work.nodes.get(&id))
-                .and_then(|node| node.parent)
-                .or_else(|| self.nodes.node(id).and_then(|node| node.parent));
+            cursor = node.parent;
         }
         None
     }
 
     fn prepare_component_element(
         &self,
-        component: crate::widgets::ComponentElement,
+        component: ComponentDesc,
         key: Option<Key>,
     ) -> PreparedElement {
         PreparedElement {
@@ -875,7 +875,7 @@ impl ComponentRuntime {
             tag: FiberTag::Component,
             pending: PreparedPending::Component {
                 key,
-                render: component.render,
+                render: component.component_type,
                 props_hash: component.props_hash,
                 props: component.props,
             },
@@ -896,8 +896,14 @@ impl ComponentRuntime {
             self.commit_deletion(deletion, arena, true);
         }
 
-        let next_current =
-            self.commit_and_freeze_work_tree(work.root, self.root_widget, arena, &mut work, 0);
+        let next_current = self.commit_and_freeze_work_tree(
+            work.root,
+            None,
+            self.root_widget,
+            arena,
+            &mut work,
+            0,
+        );
         self.current = next_current;
         self.sync_host_children(arena);
         self.scheduler.mark_render_finished(work.render_lanes);
@@ -932,13 +938,17 @@ impl ComponentRuntime {
 
     fn commit_and_freeze_work_tree(
         &mut self,
-        id: FiberId,
+        id: WipId,
+        parent_fiber: Option<FiberId>,
         parent_host: NodeId,
         arena: &mut UiArena,
         work: &mut WorkInProgress,
         depth: usize,
     ) -> FiberId {
-        let mut node = work.nodes.remove(&id).expect("commit missing work node");
+        let mut node = work
+            .live(&mut self.wip_nodes)
+            .take_node(id)
+            .expect("commit missing work node");
         let mut child_parent_host = parent_host;
 
         if node.effect == EffectTag::None
@@ -947,7 +957,7 @@ impl ComponentRuntime {
             && node.current.is_some()
             && !node.children_resolved
         {
-            self.scheduler.mark_mounted(id);
+            self.scheduler.mark_mounted(node.fiber_id);
             return node.current.unwrap();
         }
 
@@ -1026,6 +1036,7 @@ impl ComponentRuntime {
                 .map(|child| {
                     self.commit_and_freeze_work_tree(
                         child,
+                        Some(node.fiber_id),
                         child_parent_host,
                         arena,
                         work,
@@ -1041,11 +1052,11 @@ impl ComponentRuntime {
         //         children.len()
         //     ),
         // );
-        self.scheduler.mark_mounted(id);
+        self.scheduler.mark_mounted(node.fiber_id);
 
         let current_host = if matches!(node.tag, FiberTag::Host(_)) {
             node.current
-                .filter(|current| *current == node.id)
+                .filter(|current| *current == node.fiber_id)
                 .and_then(|current| self.nodes.node_mut(current))
                 .and_then(|current| current.host.take())
         } else {
@@ -1095,8 +1106,8 @@ impl ComponentRuntime {
         };
 
         let frozen = Node {
-            id: node.id,
-            parent: node.parent,
+            id: node.fiber_id,
+            parent: parent_fiber,
             child: None,
             sibling: None,
             key: node.key,
@@ -1112,14 +1123,14 @@ impl ComponentRuntime {
             component,
         };
 
-        if let Some(existing) = self.nodes.node_mut(node.id) {
+        if let Some(existing) = self.nodes.node_mut(node.fiber_id) {
             *existing = frozen;
         } else {
-            self.nodes.insert_node(node.id, frozen);
+            self.nodes.insert_node(node.fiber_id, frozen);
         }
-        self.nodes.set_children(node.id, children);
+        self.nodes.set_children(node.fiber_id, children);
         // self.trace_commit_work_node(depth, format_args!("leave {id:?}"));
-        node.id
+        node.fiber_id
     }
 
     fn trace_commit_work_node(&self, depth: usize, event: fmt::Arguments<'_>) {
@@ -1127,11 +1138,9 @@ impl ComponentRuntime {
         eprintln!("[xui::commit] {indent}{event}");
     }
 
-    fn clone_current_children(&mut self, parent: FiberId) {
+    fn clone_current_children(&mut self, parent: WipId) {
         let Some(current_children) = self
-            .work_in_progress
-            .as_ref()
-            .and_then(|work| work.nodes.get(&parent))
+            .wip_node(parent)
             .and_then(|node| node.current)
             .and_then(|id| self.nodes.node(id))
             .map(|node| {
@@ -1155,41 +1164,35 @@ impl ComponentRuntime {
             let lanes = self.scheduler.component_lanes(current) & render_lanes;
             let child_lanes =
                 child_tree_lanes(&self.nodes, current_node, &self.scheduler, render_lanes);
-            self.work_in_progress
-                .as_mut()
-                .expect("work missing")
-                .nodes
-                .insert(
-                    current,
-                    WorkNode::from_current(
-                        current_node,
-                        Some(parent),
-                        current_node.children(&self.nodes).map(|child| child.id),
-                        position,
-                        lanes,
-                        child_lanes,
-                    ),
-                );
-            children.push(current);
+            let child = self.alloc_wip_node(WorkNode::from_current(
+                current_node,
+                Some(parent),
+                position,
+                lanes,
+                child_lanes,
+            ));
+            children.push(child);
         }
 
-        if let Some(work) = self.work_in_progress.as_mut() {
-            if let Some(node) = work.nodes.get_mut(&parent) {
-                node.children = children;
-                node.children_resolved = true;
-            }
+        if let Some(node) = self.wip_node_mut(parent) {
+            node.children = children;
+            node.children_resolved = true;
         }
     }
 
-    fn first_child_needing_work(&self, parent: FiberId) -> Option<FiberId> {
+    fn first_child_needing_work(&self, parent: WipId) -> Option<WipId> {
         let work = self.work_in_progress.as_ref()?;
-        work.node(parent)?.children.iter().copied().find(|child| {
-            work.node(*child)
-                .is_some_and(|node| node.needs_work(work.render_lanes))
-        })
+        self.wip_node(parent)?
+            .children
+            .iter()
+            .copied()
+            .find(|child| {
+                self.wip_node(*child)
+                    .is_some_and(|node| node.needs_work(work.render_lanes))
+            })
     }
 
-    fn complete_work(&mut self, _id: FiberId) {}
+    fn complete_work(&mut self, _id: WipId) {}
 
     fn ensure_work(&mut self) {
         let wip_lanes = self
@@ -1210,75 +1213,60 @@ impl ComponentRuntime {
         }
     }
 
-    fn create_work_in_progress(&self, render_lanes: Lanes) -> WorkInProgress {
+    fn create_work_in_progress(&mut self, render_lanes: Lanes) -> WorkInProgress {
         println!("REBUILD WORK IN PROGRESS, lanes: {}", render_lanes);
-        let mut marks = FxHashMap::default();
-        let (lanes, child_lanes) =
-            self.collect_lane_marks(self.root_node(), render_lanes, &mut marks);
-        let mut nodes = FxHashMap::default();
-        // let (lanes, child_lanes) = marks.get(&self.root()).copied().unwrap_or_default();
-        let current_node = self.nodes.node(self.current).unwrap();
+        let (lanes, child_lanes) = self.collect_lane_marks(self.root_node(), render_lanes);
+        self.wip_nodes.clear();
+        let root_node = {
+            let current_node = self.nodes.node(self.current).unwrap();
+            WorkNode::from_current(current_node, None, 0, lanes, child_lanes)
+        };
 
-        nodes.insert(
-            self.root(),
-            WorkNode::from_current(
-                current_node,
-                None,
-                current_node.children(&self.nodes).map(|child| child.id),
-                0,
-                lanes,
-                child_lanes,
-            ),
-        );
-
-        WorkInProgress {
-            nodes,
-            root: self.root(),
-            next_work: Some(self.root()),
+        let mut work = WorkInProgress {
+            root: WipId(0),
+            next_work: None,
             render_lanes,
             deletions: Vec::new(),
-        }
+        };
+        let root = work.live(&mut self.wip_nodes).alloc_node(root_node);
+        work.root = root;
+        work.next_work = Some(root);
+        work
     }
 
     fn discard_uncommitted_work(&mut self) {
-        let Some(work) = self.work_in_progress.take() else {
+        let Some(_work) = self.work_in_progress.take() else {
             return;
         };
 
-        for (id, node) in work.nodes {
+        for node in self.wip_nodes.drain(..).flatten() {
             if node.current.is_none() {
-                self.hooks.remove(&id);
-                self.nodes.remove_id(id);
-                self.scheduler.mark_unmounted(id);
+                self.hooks.remove(&node.fiber_id);
+                self.nodes.remove_id(node.fiber_id);
+                self.scheduler.mark_unmounted(node.fiber_id);
             }
         }
     }
 
-    fn collect_lane_marks(
-        &self,
-        node: &Node,
-        render_lanes: Lanes,
-        marks: &mut FxHashMap<FiberId, (Lanes, Lanes)>,
-    ) -> (Lanes, Lanes) {
+    fn collect_lane_marks(&self, node: &Node, render_lanes: Lanes) -> (Lanes, Lanes) {
         let own = self.scheduler.component_lanes(node.id) & render_lanes;
         let mut child_lanes = NO_LANES;
 
         for child in node.children(&self.nodes) {
-            child_lanes |= self.collect_lane_marks(child, render_lanes, marks).1;
+            let (child_own, child_subtree) = self.collect_lane_marks(child, render_lanes);
+            child_lanes |= child_own | child_subtree;
         }
-        marks.insert(node.id, (own, child_lanes));
         (own, child_lanes)
     }
 
-    fn next_sibling_needing_work(&self, id: FiberId) -> Option<FiberId> {
+    fn next_sibling_needing_work(&self, id: WipId) -> Option<WipId> {
         let work = self.work_in_progress.as_ref()?;
-        let node = work.nodes.get(&id)?;
+        let node = self.wip_node(id)?;
         let parent = node.parent?;
-        let siblings = &work.nodes.get(&parent)?.children;
+        let siblings = &self.wip_node(parent)?.children;
         let index = siblings.iter().position(|child| *child == id)?;
         siblings.iter().copied().skip(index + 1).find(|sibling| {
-            work.nodes
-                .get(sibling)
+            self.wip_node(*sibling)
                 .is_some_and(|node| node.needs_work(work.render_lanes))
         })
     }

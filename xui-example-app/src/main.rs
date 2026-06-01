@@ -14,29 +14,37 @@ component_fn! {
         let count_for_increment = count.clone();
         let count_for_decrement = count.clone();
 
-        <column gap={8.0}>
-            <text font_size={16.0} font_weight={FontWeight::Bold}> {"HI!! NEW WORLD"} </text>
-            <text> {format!("Current count: {}", count.get())} </text>
-            <button on_click={{
-                let count_for_increment = count_for_increment.clone();
-                move |_| {
-                    count_for_increment.set(count_for_increment.get() + 1);
-                    EventResult::Consumed
-                }
-            }}>
-                {"Increment"}
-            </button>
-            <button on_click={{
-                let count_for_decrement = count_for_decrement.clone();
-                move |_| {
-                    count_for_decrement.set(count_for_decrement.get() - 1);
-                    println!("{}", count_for_decrement.get());
-                    EventResult::Consumed
-                }
-            }}>
-                {"Decrement"}
-            </button>
-        </column>
+        // <column gap={8.0}>
+        //     <text font_size={16.0} font_weight={FontWeight::Bold}> {"HI!! NEW WORLD"} </text>
+        //     <column gap={2.0}>
+        //         <text> {format!("Current count: {}", count.get())} </text>
+        //         <text> {"What the Fuck!!"} </text>
+        //     </column>
+
+        //     <button on_click={{
+        //         let count_for_increment = count_for_increment.clone();
+        //         move |_| {
+        //             count_for_increment.set(count_for_increment.get() + 1);
+        //             EventResult::Consumed
+        //         }
+        //     }}>
+        //         {"Increment"}
+        //     </button>
+        //     <button on_click={{
+        //         let count_for_decrement = count_for_decrement.clone();
+        //         move |_| {
+        //             count_for_decrement.set(count_for_decrement.get() - 1);
+        //             println!("{}", count_for_decrement.get());
+        //             EventResult::Consumed
+        //         }
+        //     }}>
+        //         {"Decrement"}
+        //     </button>
+        // </column>
+        <row>
+            <container size={Some(Size::fix(500., 1000.0))} background={Color::BLACK}/>
+            <container size={Some(Size::fix(500., 1000.0))} background={Color::BLUE_500}/>
+        </row>
     }
 
     fn test_page() {
@@ -70,14 +78,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 <container padding={EdgeInsets::all(16.0)}>
                 <column gap={12.0}>
 
-                <container size={Some(Size::new(200.0,200.0))}
+                <container size={Some(Size::fix(200.0,200.0))}
                     background={Color::BLACK} border_radius={15.0}
                     shadow={ShadowStyle::default()
                         .color(Color::BLACK)
                         .offset(Point::new(0., 1.)).blur(5.)}
                 />
 
-                <container size={Some(Size::new(200.0,200.0))}
+                <container size={Some(Size::fix(200.0,200.0))}
                     background={Color::BLUE_500} border_radius={15.0}
                     shadow={ShadowStyle::default()
                         .color(Color::BLACK)
@@ -86,6 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 </column>
                     <column gap={12.0}>
                         <label color={Color::BLUE_500}>{"XUI winit example"}</label>
+                        <text>{"Increment"}</text>
                         <counter key="counter" />
                     </column>
                 </container>

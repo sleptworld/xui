@@ -1,16 +1,11 @@
-use std::any::Any;
-
-use taffy::prelude as tf;
 use xui_interface::{
     Color, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult,
-    FlexDirectionStyle, PaintCommand, Rect, Style, TextMeasurer, Widget, WidgetType,
+    FlexDirectionStyle, PaintCommand, Rect, Style, Widget, WidgetType,
 };
-
-use super::{LayoutStyledWidget, computed_layout_style};
 
 #[derive(Debug)]
 pub struct RootWidget {
-    event_handlers: EventHandlers,
+    pub event_handlers: EventHandlers,
 }
 
 impl Default for RootWidget {
@@ -22,10 +17,6 @@ impl Default for RootWidget {
 }
 
 impl Widget for RootWidget {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn node_type(&self) -> WidgetType {
         WidgetType::Container
     }
@@ -34,11 +25,7 @@ impl Widget for RootWidget {
         0
     }
 
-    fn event_handlers_mut(&mut self) -> &mut EventHandlers {
-        &mut self.event_handlers
-    }
-
-    fn update_from(&mut self, _next: &dyn Widget) -> DirtyFlags {
+    fn update_from(&mut self, _next: &Self) -> DirtyFlags {
         DirtyFlags::empty()
     }
 
@@ -52,15 +39,5 @@ impl Widget for RootWidget {
 
     fn handle_event(&mut self, _event: &Event, _cx: &mut EventContext<'_>) -> EventResult {
         EventResult::Ignored
-    }
-}
-
-impl LayoutStyledWidget for RootWidget {
-    fn layout_style(
-        &self,
-        computed: &ComputedStyle,
-        _measurer: &mut dyn TextMeasurer,
-    ) -> tf::Style {
-        computed_layout_style(computed)
     }
 }

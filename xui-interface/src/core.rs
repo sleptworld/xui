@@ -1,3 +1,5 @@
+use ordered_float::NotNan;
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Point {
     pub x: f32,
@@ -10,17 +12,73 @@ impl Point {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Size {
-    pub width: f32,
-    pub height: f32,
+#[derive(Debug, Clone, Copy, PartialEq, Default, Hash)]
+pub enum Sizing {
+    Fix(NotNan<f32>),
+    Percent(NotNan<f32>),
+    #[default]
+    Hug,
+    Fill,
 }
 
-impl Size {
-    pub const ZERO: Self = Self::new(0.0, 0.0);
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Size<P> {
+    pub width: P,
+    pub height: P,
+}
+
+impl Size<f32> {
+    pub const ZERO: Self = Self::new((0.0), (0.0));
 
     pub const fn new(width: f32, height: f32) -> Self {
         Self { width, height }
+    }
+}
+
+impl Size<Sizing> {
+    pub const ZERO: Self = Self::new(Sizing::Hug, Sizing::Hug);
+
+    pub const fn new(width: Sizing, height: Sizing) -> Self {
+        Self { width, height }
+    }
+
+    pub fn fix(width: f32, height: f32) -> Self {
+        Self {
+            width: Sizing::Fix(NotNan::new(width).unwrap()),
+            height: Sizing::Fix(NotNan::new(height).unwrap()),
+        }
+    }
+
+    pub const fn hug() -> Self {
+        Self {
+            width: Sizing::Hug,
+            height: Sizing::Hug,
+        }
+    }
+
+    pub const fn fill() -> Self {
+        Self {
+            width: Sizing::Fill,
+            height: Sizing::Fill,
+        }
+    }
+}
+
+impl<P: Copy> Size<P> {
+    pub fn width(&self) -> P {
+        self.width
+    }
+
+    pub fn height(&self) -> P {
+        self.height
+    }
+
+    pub fn set_width(&mut self, width: P) {
+        self.width = width;
+    }
+
+    pub fn set_height(&mut self, height: P) {
+        self.height = height;
     }
 }
 
@@ -44,7 +102,7 @@ impl Rect {
         }
     }
 
-    pub fn from_origin_size(origin: Point, size: Size) -> Self {
+    pub fn from_origin_size(origin: Point, size: Size<f32>) -> Self {
         Self::new(origin.x, origin.y, size.width, size.height)
     }
 
@@ -127,5 +185,29 @@ impl EdgeInsets {
             top: value,
             bottom: value,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Translation {
+    pub x: f32,
+    pub y: f32,
+}
+
+impl Translation {
+    pub fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+
+    pub fn zero() -> Self {
+        Self::new(0.0, 0.0)
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.x == 0.0 && self.y == 0.0
+    }
+
+    pub fn translate(&self, point: Point) -> Point {
+        Point::new(point.x + self.x, point.y + self.y)
     }
 }

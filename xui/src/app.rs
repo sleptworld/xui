@@ -1,3 +1,4 @@
+use crate::ElementDesc;
 use crate::component::ComponentRuntime;
 use crate::core::{Rect, Size};
 use crate::event::{Event, EventResult};
@@ -7,19 +8,18 @@ use crate::render::RenderBackend;
 use crate::state::{HookContext, Scheduler};
 use crate::style::Theme;
 use crate::tree::UiArena;
-use crate::widgets::Element;
 use std::time::Duration;
 use xui_interface::{DirtyFlags, TextMeasurer};
 
 pub struct App {
     arena: UiArena,
     components: ComponentRuntime,
-    size: Size,
+    size: Size<f32>,
 }
 
 impl App {
     pub fn new(
-        root_component: impl for<'a> FnMut(&mut HookContext<'a>) -> Element + 'static,
+        root_component: impl for<'a> FnMut(&mut HookContext<'a>) -> ElementDesc + 'static,
     ) -> Self {
         Self::with_component_registry(|_| root_component)
     }
@@ -27,7 +27,7 @@ impl App {
     pub fn with_component_registry<I, F>(init_components: I) -> Self
     where
         I: FnOnce(&mut ComponentRegistry) -> F,
-        F: for<'a> FnMut(&mut HookContext<'a>) -> Element + 'static,
+        F: for<'a> FnMut(&mut HookContext<'a>) -> ElementDesc + 'static,
     {
         let arena = UiArena::new();
         let scheduler = Scheduler::default();
@@ -35,7 +35,7 @@ impl App {
         let app = Self {
             arena,
             components,
-            size: Size::ZERO,
+            size: Size::<f32>::ZERO,
         };
         // app.rebuild_if_needed(measure);
         app
@@ -61,7 +61,7 @@ impl App {
         self.components.set_budget(budget);
     }
 
-    pub fn resize(&mut self, size: Size) {
+    pub fn resize(&mut self, size: Size<f32>) {
         if self.size != size {
             self.size = size;
             self.arena.mark_subtree_layout_dirty(self.arena.root());
@@ -75,7 +75,7 @@ impl App {
     }
 
     pub fn dispatch_event<T: TextMeasurer>(&mut self, event: Event, m: &mut T) -> EventResult {
-        self.rebuild_sync_if_needed(m);
+        self.rebuild_sync_if_needed();
         self.arena.update_tree(self.arena.root(), self.size, m);
         let lane = event_lane(&event);
         let result = with_update_lane(lane, || self.arena.dispatch_event(&event));
@@ -90,7 +90,7 @@ impl App {
         backend: &mut B,
         m: &mut T,
     ) -> Result<(), B::Error> {
-        if !self.rebuild_slice_if_needed(m) {
+        if !self.rebuild_slice_if_needed() {
             return Ok(());
         }
         self.arena.update_tree(self.arena.root(), self.size, m);
@@ -113,21 +113,26 @@ impl App {
         self.components.is_dirty() || self.arena.is_dirty()
     }
 
+    #[inline]
     pub fn mark_needs_rebuild(&mut self) {
         self.components.mark_root_dirty();
         self.arena.mark_dirty(self.arena.root(), DirtyFlags::STATE);
     }
 
-    fn rebuild_sync_if_needed<T: TextMeasurer>(&mut self, m: &mut T) {
-        self.components.rebuild_sync_if_needed(&mut self.arena, m);
+    #[inline]
+    fn rebuild_sync_if_needed(&mut self) {
+        self.components.rebuild_sync_if_needed(&mut self.arena);
     }
 
-    fn rebuild_slice_if_needed<T: TextMeasurer>(&mut self, m: &mut T) -> bool {
-        self.components.rebuild_slice_if_needed(&mut self.arena, m)
+    #[inline]
+    fn rebuild_slice_if_needed(&mut self) -> bool {
+        self.components.rebuild_slice_if_needed(&mut self.arena)
     }
 }
 
-pub fn app(root_component: impl for<'a> FnMut(&mut HookContext<'a>) -> Element + 'static) -> App {
+pub fn app(
+    root_component: impl for<'a> FnMut(&mut HookContext<'a>) -> ElementDesc + 'static,
+) -> App {
     App::new(root_component)
 }
 

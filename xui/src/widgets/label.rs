@@ -1,12 +1,10 @@
-use std::any::Any;
+use crate::element::ElementDesc;
 
-use taffy::prelude as tf;
+use super::{props_hash, widget_element_desc};
 use xui_interface::{
     ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, PaintCommand,
-    Rect, Size, Style, TextContent, TextMeasurer, TextPaintCommand, TextProps, Widget, WidgetType,
+    Rect, Style, TextContent, TextPaintCommand, TextProps, Widget, WidgetType,
 };
-
-use super::{LayoutStyledWidget, fixed_size_style, props_hash};
 
 #[derive(Debug)]
 pub struct LabelWidget {
@@ -36,22 +34,14 @@ impl LabelWidget {
         self
     }
 
+    pub fn into_element_desc(self) -> ElementDesc {
+        widget_element_desc(self, Vec::new())
+    }
+
     event_handler_methods!();
 }
 
-impl LayoutStyledWidget for LabelWidget {
-    fn layout_style(&self, computed: &ComputedStyle, measurer: &mut dyn TextMeasurer) -> tf::Style {
-        self.measure(computed, measurer)
-            .map(fixed_size_style)
-            .unwrap_or_default()
-    }
-}
-
 impl Widget for LabelWidget {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn node_type(&self) -> WidgetType {
         WidgetType::Label
     }
@@ -64,15 +54,7 @@ impl Widget for LabelWidget {
         props_hash(&(&self.text, &self.style))
     }
 
-    fn event_handlers_mut(&mut self) -> &mut EventHandlers {
-        &mut self.event_handlers
-    }
-
-    fn update_from(&mut self, next: &dyn Widget) -> DirtyFlags {
-        let Some(next) = next.as_any().downcast_ref::<LabelWidget>() else {
-            return DirtyFlags::TREE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
-        };
-
+    fn update_from(&mut self, next: &Self) -> DirtyFlags {
         let mut flags = DirtyFlags::empty();
         if self.text != next.text {
             self.text = next.text.clone();
@@ -87,10 +69,6 @@ impl Widget for LabelWidget {
 
     fn style(&self) -> &Style {
         &self.style
-    }
-
-    fn measure(&self, style: &ComputedStyle, measurer: &mut dyn TextMeasurer) -> Option<Size> {
-        Some(measurer.measure_text(self.text.as_str(), &style.text, None))
     }
 
     fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {

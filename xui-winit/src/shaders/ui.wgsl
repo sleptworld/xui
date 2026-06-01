@@ -1,5 +1,6 @@
 struct UiUniforms {
     viewport_size: vec4f,
+    scale_factor: vec4f,
 }
 
 @group(0) @binding(0)
@@ -49,7 +50,7 @@ var<private> positions: array<vec2f, 6> = array<vec2f, 6>(
 fn vs_main(@builtin(vertex_index) vertex_index: u32, instance: UiInstance) -> QuadVertex {
     let corner = positions[vertex_index];
     let pixel_position = instance.bounds.xy + corner * instance.bounds.zw;
-    let ndc = pixel_position / ui.viewport_size.xy * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0);
+    let ndc = pixel_position * ui.scale_factor.xy / ui.viewport_size.xy * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0);
 
     var output: QuadVertex;
     output.position = vec4f(ndc, 0.0, 1.0);

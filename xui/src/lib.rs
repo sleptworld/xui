@@ -1,6 +1,7 @@
 pub mod app;
 pub mod component;
 pub mod core;
+pub mod element;
 pub mod event;
 pub mod event_system;
 pub mod fiber;

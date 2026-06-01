@@ -2,7 +2,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::{
     Color, EdgeInsets, FontFamily, FontStyle, FontWeight, LineHeight, Point, Size, TextDecoration,
-    text::TextStyle,
+    core::Sizing, text::TextStyle,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -268,15 +268,92 @@ impl From<FontSizeToken> for LengthValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DisplayStyle {
-    Flex,
-    None,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FlexDirectionStyle {
     Row,
     Column,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ScrollDirectionStyle {
+    #[default]
+    None,
+    Horizontal,
+    Vertical,
+    Both,
+}
+
+impl ScrollDirectionStyle {
+    pub fn allows_horizontal(self) -> bool {
+        matches!(self, Self::Horizontal | Self::Both)
+    }
+
+    pub fn allows_vertical(self) -> bool {
+        matches!(self, Self::Vertical | Self::Both)
+    }
+
+    pub fn is_scrollable(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ScrollbarVisibilityStyle {
+    #[default]
+    Auto,
+    Always,
+    Hidden,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollbarStyle {
+    pub width: LengthValue,
+    pub track_color: ColorStyle,
+    pub thumb_color: ColorStyle,
+    pub radius: LengthValue,
+    pub visibility: ScrollbarVisibilityStyle,
+}
+
+impl Default for ScrollbarStyle {
+    fn default() -> Self {
+        Self {
+            width: LengthValue::Px(8.0),
+            track_color: ColorStyle::Solid(Color::TRANSPARENT.into()),
+            thumb_color: ColorStyle::Solid(Color::rgba(0.0, 0.0, 0.0, 0.35).into()),
+            radius: LengthValue::Px(4.0),
+            visibility: ScrollbarVisibilityStyle::Auto,
+        }
+    }
+}
+
+impl ScrollbarStyle {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn width(mut self, width: impl Into<LengthValue>) -> Self {
+        self.width = width.into();
+        self
+    }
+
+    pub fn track_color(mut self, color: impl Into<ColorStyle>) -> Self {
+        self.track_color = color.into();
+        self
+    }
+
+    pub fn thumb_color(mut self, color: impl Into<ColorStyle>) -> Self {
+        self.thumb_color = color.into();
+        self
+    }
+
+    pub fn radius(mut self, radius: impl Into<LengthValue>) -> Self {
+        self.radius = radius.into();
+        self
+    }
+
+    pub fn visibility(mut self, visibility: ScrollbarVisibilityStyle) -> Self {
+        self.visibility = visibility;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -324,6 +401,23 @@ impl ShadowStyle {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AlignStyle {
+    Start,
+    Center,
+    End,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum JustifyStyle {
+    Start,
+    Center,
+    End,
+    SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TextStylePatch {
     pub color: StyleValue<ColorValue>,
@@ -338,14 +432,15 @@ pub struct TextStylePatch {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct LayoutStylePatch {
-    pub display: StyleValue<DisplayStyle>,
     pub flex_direction: StyleValue<FlexDirectionStyle>,
     pub gap: StyleValue<LengthValue>,
-    pub size: StyleValue<Size>,
-    pub min_size: StyleValue<Size>,
-    pub max_size: StyleValue<Size>,
+    pub size: StyleValue<Size<Sizing>>,
+    pub min_size: StyleValue<Size<Sizing>>,
+    pub max_size: StyleValue<Size<Sizing>>,
     pub margin: StyleValue<EdgeInsets>,
     pub padding: StyleValue<EdgeInsets>,
+    pub align: StyleValue<AlignStyle>,
+    pub justify: StyleValue<JustifyStyle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -360,10 +455,17 @@ pub struct PaintStylePatch {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
+pub struct ScrollStylePatch {
+    pub direction: StyleValue<ScrollDirectionStyle>,
+    pub scrollbar: StyleValue<ScrollbarStyle>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Style {
     pub text: TextStylePatch,
     pub layout: LayoutStylePatch,
     pub paint: PaintStylePatch,
+    pub scroll: ScrollStylePatch,
 }
 
 impl Style {
@@ -411,11 +513,6 @@ impl Style {
         self
     }
 
-    pub fn display(mut self, display: DisplayStyle) -> Self {
-        self.layout.display = StyleValue::Value(display);
-        self
-    }
-
     pub fn flex_direction(mut self, flex_direction: FlexDirectionStyle) -> Self {
         self.layout.flex_direction = StyleValue::Value(flex_direction);
         self
@@ -426,17 +523,35 @@ impl Style {
         self
     }
 
-    pub fn size(mut self, size: Size) -> Self {
+    pub fn size(mut self, size: Size<Sizing>) -> Self {
         self.layout.size = StyleValue::Value(size);
         self
     }
 
-    pub fn min_size(mut self, size: Size) -> Self {
+    pub fn width(mut self, width: Sizing) -> Self {
+        let mut old_size = self.layout.size;
+        if let StyleValue::Value(size) = &mut old_size {
+            size.width = width;
+        }
+        self.layout.size = old_size;
+        self
+    }
+
+    pub fn height(mut self, height: Sizing) -> Self {
+        let mut old_size = self.layout.size;
+        if let StyleValue::Value(size) = &mut old_size {
+            size.height = height;
+        }
+        self.layout.size = old_size;
+        self
+    }
+
+    pub fn min_size(mut self, size: Size<Sizing>) -> Self {
         self.layout.min_size = StyleValue::Value(size);
         self
     }
 
-    pub fn max_size(mut self, size: Size) -> Self {
+    pub fn max_size(mut self, size: Size<Sizing>) -> Self {
         self.layout.max_size = StyleValue::Value(size);
         self
     }
@@ -448,6 +563,16 @@ impl Style {
 
     pub fn padding(mut self, padding: EdgeInsets) -> Self {
         self.layout.padding = StyleValue::Value(padding);
+        self
+    }
+
+    pub fn align(mut self, align: AlignStyle) -> Self {
+        self.layout.align = StyleValue::Value(align);
+        self
+    }
+
+    pub fn justify(mut self, justify: JustifyStyle) -> Self {
+        self.layout.justify = StyleValue::Value(justify);
         self
     }
 
@@ -524,10 +649,82 @@ impl Style {
         self
     }
 
+    pub fn scroll_direction(mut self, direction: ScrollDirectionStyle) -> Self {
+        self.scroll.direction = StyleValue::Value(direction);
+        self
+    }
+
+    pub fn scroll_vertical(self) -> Self {
+        self.scroll_direction(ScrollDirectionStyle::Vertical)
+    }
+
+    pub fn scroll_horizontal(self) -> Self {
+        self.scroll_direction(ScrollDirectionStyle::Horizontal)
+    }
+
+    pub fn scroll_both(self) -> Self {
+        self.scroll_direction(ScrollDirectionStyle::Both)
+    }
+
+    pub fn no_scroll(self) -> Self {
+        self.scroll_direction(ScrollDirectionStyle::None)
+    }
+
+    pub fn scrollbar(mut self, scrollbar: ScrollbarStyle) -> Self {
+        self.scroll.scrollbar = StyleValue::Value(scrollbar);
+        self
+    }
+
+    pub fn scrollbar_width(mut self, width: impl Into<LengthValue>) -> Self {
+        let scrollbar = match self.scroll.scrollbar {
+            StyleValue::Value(scrollbar) => scrollbar.width(width),
+            _ => ScrollbarStyle::new().width(width),
+        };
+        self.scroll.scrollbar = StyleValue::Value(scrollbar);
+        self
+    }
+
+    pub fn scrollbar_track_color(mut self, color: impl Into<ColorStyle>) -> Self {
+        let scrollbar = match self.scroll.scrollbar {
+            StyleValue::Value(scrollbar) => scrollbar.track_color(color),
+            _ => ScrollbarStyle::new().track_color(color),
+        };
+        self.scroll.scrollbar = StyleValue::Value(scrollbar);
+        self
+    }
+
+    pub fn scrollbar_thumb_color(mut self, color: impl Into<ColorStyle>) -> Self {
+        let scrollbar = match self.scroll.scrollbar {
+            StyleValue::Value(scrollbar) => scrollbar.thumb_color(color),
+            _ => ScrollbarStyle::new().thumb_color(color),
+        };
+        self.scroll.scrollbar = StyleValue::Value(scrollbar);
+        self
+    }
+
+    pub fn scrollbar_radius(mut self, radius: impl Into<LengthValue>) -> Self {
+        let scrollbar = match self.scroll.scrollbar {
+            StyleValue::Value(scrollbar) => scrollbar.radius(radius),
+            _ => ScrollbarStyle::new().radius(radius),
+        };
+        self.scroll.scrollbar = StyleValue::Value(scrollbar);
+        self
+    }
+
+    pub fn scrollbar_visibility(mut self, visibility: ScrollbarVisibilityStyle) -> Self {
+        let scrollbar = match self.scroll.scrollbar {
+            StyleValue::Value(scrollbar) => scrollbar.visibility(visibility),
+            _ => ScrollbarStyle::new().visibility(visibility),
+        };
+        self.scroll.scrollbar = StyleValue::Value(scrollbar);
+        self
+    }
+
     pub fn merge(&mut self, other: &Style) {
         merge_text(&mut self.text, &other.text);
         merge_layout(&mut self.layout, &other.layout);
         merge_paint(&mut self.paint, &other.paint);
+        merge_scroll(&mut self.scroll, &other.scroll);
     }
 }
 
@@ -582,14 +779,15 @@ impl From<&TextStyle> for ComputedTextStyle {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ComputedLayoutStyle {
-    pub display: DisplayStyle,
     pub flex_direction: FlexDirectionStyle,
     pub gap: f32,
-    pub size: Option<Size>,
-    pub min_size: Option<Size>,
-    pub max_size: Option<Size>,
+    pub size: Option<Size<Sizing>>,
+    pub min_size: Option<Size<Sizing>>,
+    pub max_size: Option<Size<Sizing>>,
     pub margin: EdgeInsets,
     pub padding: EdgeInsets,
+    pub align: AlignStyle,
+    pub justify: JustifyStyle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -601,6 +799,21 @@ pub struct ComputedPaintStyle {
     pub stroke: Option<ComputedStrokeStyle>,
     pub shadow: Option<ComputedShadowStyle>,
     pub clip: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ComputedScrollStyle {
+    pub direction: ScrollDirectionStyle,
+    pub scrollbar: ComputedScrollbarStyle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ComputedScrollbarStyle {
+    pub width: f32,
+    pub track_color: ComputedColorStyle,
+    pub thumb_color: ComputedColorStyle,
+    pub radius: f32,
+    pub visibility: ScrollbarVisibilityStyle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -669,6 +882,7 @@ pub struct ComputedStyle {
     pub text: ComputedTextStyle,
     pub layout: ComputedLayoutStyle,
     pub paint: ComputedPaintStyle,
+    pub scroll: ComputedScrollStyle,
 }
 
 impl ComputedStyle {
@@ -685,7 +899,6 @@ impl ComputedStyle {
                 decoration: TextDecoration::default(),
             },
             layout: ComputedLayoutStyle {
-                display: DisplayStyle::Flex,
                 flex_direction: FlexDirectionStyle::Column,
                 gap: 0.0,
                 size: None,
@@ -693,6 +906,8 @@ impl ComputedStyle {
                 max_size: None,
                 margin: EdgeInsets::ZERO,
                 padding: EdgeInsets::ZERO,
+                align: AlignStyle::Start,
+                justify: JustifyStyle::Start,
             },
             paint: ComputedPaintStyle {
                 background: ComputedColorStyle::Solid(Color::TRANSPARENT),
@@ -703,6 +918,16 @@ impl ComputedStyle {
                 shadow: None,
                 clip: false,
             },
+            scroll: ComputedScrollStyle {
+                direction: ScrollDirectionStyle::None,
+                scrollbar: ComputedScrollbarStyle {
+                    width: 8.0,
+                    track_color: ComputedColorStyle::Solid(Color::TRANSPARENT),
+                    thumb_color: ComputedColorStyle::Solid(Color::rgba(0.0, 0.0, 0.0, 0.35)),
+                    radius: 4.0,
+                    visibility: ScrollbarVisibilityStyle::Auto,
+                },
+            },
         }
     }
 
@@ -710,6 +935,7 @@ impl ComputedStyle {
         apply_text(&mut self.text, &parent.text, &patch.text, theme);
         apply_layout(&mut self.layout, &patch.layout, theme);
         apply_paint(&mut self.paint, &patch.paint, theme);
+        apply_scroll(&mut self.scroll, &patch.scroll, theme);
     }
 
     pub fn inherited_from(&self, theme: &Theme) -> Self {
@@ -821,7 +1047,6 @@ fn merge_text(target: &mut TextStylePatch, other: &TextStylePatch) {
 }
 
 fn merge_layout(target: &mut LayoutStylePatch, other: &LayoutStylePatch) {
-    merge_value(&mut target.display, &other.display);
     merge_value(&mut target.flex_direction, &other.flex_direction);
     merge_value(&mut target.gap, &other.gap);
     merge_value(&mut target.size, &other.size);
@@ -829,6 +1054,8 @@ fn merge_layout(target: &mut LayoutStylePatch, other: &LayoutStylePatch) {
     merge_value(&mut target.max_size, &other.max_size);
     merge_value(&mut target.margin, &other.margin);
     merge_value(&mut target.padding, &other.padding);
+    merge_value(&mut target.align, &other.align);
+    merge_value(&mut target.justify, &other.justify);
 }
 
 fn merge_paint(target: &mut PaintStylePatch, other: &PaintStylePatch) {
@@ -839,6 +1066,11 @@ fn merge_paint(target: &mut PaintStylePatch, other: &PaintStylePatch) {
     merge_value(&mut target.stroke, &other.stroke);
     merge_value(&mut target.shadow, &other.shadow);
     merge_value(&mut target.clip, &other.clip);
+}
+
+fn merge_scroll(target: &mut ScrollStylePatch, other: &ScrollStylePatch) {
+    merge_value(&mut target.direction, &other.direction);
+    merge_value(&mut target.scrollbar, &other.scrollbar);
 }
 
 fn merge_value<T: Clone>(target: &mut StyleValue<T>, other: &StyleValue<T>) {
@@ -908,7 +1140,6 @@ fn apply_text(
 
 fn apply_layout(target: &mut ComputedLayoutStyle, patch: &LayoutStylePatch, theme: &Theme) {
     let initial = ComputedStyle::initial(theme).layout;
-    target.display = resolve_copy_no_inherit(patch.display, target.display, initial.display);
     target.flex_direction = resolve_copy_no_inherit(
         patch.flex_direction,
         target.flex_direction,
@@ -922,6 +1153,8 @@ fn apply_layout(target: &mut ComputedLayoutStyle, patch: &LayoutStylePatch, them
         resolve_optional_size_no_inherit(patch.max_size, target.max_size, initial.max_size);
     target.margin = resolve_copy_no_inherit(patch.margin, target.margin, initial.margin);
     target.padding = resolve_copy_no_inherit(patch.padding, target.padding, initial.padding);
+    target.align = resolve_copy_no_inherit(patch.align, target.align, initial.align);
+    target.justify = resolve_copy_no_inherit(patch.justify, target.justify, initial.justify);
 }
 
 fn apply_paint(target: &mut ComputedPaintStyle, patch: &PaintStylePatch, theme: &Theme) {
@@ -960,6 +1193,33 @@ fn apply_paint(target: &mut ComputedPaintStyle, patch: &PaintStylePatch, theme: 
     );
     target.shadow = resolve_shadow_no_inherit(patch.shadow, target.shadow, initial.shadow, theme);
     target.clip = resolve_copy_no_inherit(patch.clip, target.clip, initial.clip);
+}
+
+fn apply_scroll(target: &mut ComputedScrollStyle, patch: &ScrollStylePatch, theme: &Theme) {
+    let initial = ComputedStyle::initial(theme).scroll;
+    target.direction =
+        resolve_copy_no_inherit(patch.direction, target.direction, initial.direction);
+    target.scrollbar =
+        resolve_scrollbar_no_inherit(patch.scrollbar, target.scrollbar, initial.scrollbar, theme);
+}
+
+fn resolve_scrollbar_no_inherit(
+    value: StyleValue<ScrollbarStyle>,
+    current: ComputedScrollbarStyle,
+    initial: ComputedScrollbarStyle,
+    theme: &Theme,
+) -> ComputedScrollbarStyle {
+    match value {
+        StyleValue::Unset | StyleValue::Inherit => current,
+        StyleValue::Initial => initial,
+        StyleValue::Value(value) => ComputedScrollbarStyle {
+            width: length_value(value.width, theme),
+            track_color: color_style(value.track_color, theme),
+            thumb_color: color_style(value.thumb_color, theme),
+            radius: length_value(value.radius, theme),
+            visibility: value.visibility,
+        },
+    }
 }
 
 fn resolve_stroke_no_inherit(
@@ -1135,10 +1395,10 @@ fn resolve_copy_no_inherit<T: Copy>(value: StyleValue<T>, current: T, initial: T
 }
 
 fn resolve_optional_size_no_inherit(
-    value: StyleValue<Size>,
-    current: Option<Size>,
-    initial: Option<Size>,
-) -> Option<Size> {
+    value: StyleValue<Size<Sizing>>,
+    current: Option<Size<Sizing>>,
+    initial: Option<Size<Sizing>>,
+) -> Option<Size<Sizing>> {
     match value {
         StyleValue::Unset | StyleValue::Inherit => current,
         StyleValue::Initial => initial,
@@ -1160,9 +1420,9 @@ fn hash_edge_insets<H: Hasher>(value: EdgeInsets, state: &mut H) {
     value.bottom.to_bits().hash(state);
 }
 
-fn hash_size<H: Hasher>(value: Size, state: &mut H) {
-    value.width.to_bits().hash(state);
-    value.height.to_bits().hash(state);
+fn hash_size<H: Hasher>(value: Size<Sizing>, state: &mut H) {
+    value.width.hash(state);
+    value.height.hash(state);
 }
 
 fn hash_point<H: Hasher>(value: Point, state: &mut H) {
@@ -1226,6 +1486,7 @@ impl Hash for Style {
         self.text.hash(state);
         self.layout.hash(state);
         self.paint.hash(state);
+        self.scroll.hash(state);
     }
 }
 
@@ -1244,7 +1505,6 @@ impl Hash for TextStylePatch {
 
 impl Hash for LayoutStylePatch {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.display.hash(state);
         self.flex_direction.hash(state);
         self.gap.hash(state);
         hash_style_value_size(&self.size, state);
@@ -1267,7 +1527,14 @@ impl Hash for PaintStylePatch {
     }
 }
 
-fn hash_style_value_size<H: Hasher>(value: &StyleValue<Size>, state: &mut H) {
+impl Hash for ScrollStylePatch {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.direction.hash(state);
+        hash_style_value_scrollbar(&self.scrollbar, state);
+    }
+}
+
+fn hash_style_value_size<H: Hasher>(value: &StyleValue<Size<Sizing>>, state: &mut H) {
     core::mem::discriminant(value).hash(state);
     if let StyleValue::Value(value) = value {
         hash_size(*value, state);
@@ -1297,6 +1564,17 @@ fn hash_style_value_shadow<H: Hasher>(value: &StyleValue<ShadowStyle>, state: &m
         hash_point(value.offset, state);
         value.blur.hash(state);
         value.spread.hash(state);
+    }
+}
+
+fn hash_style_value_scrollbar<H: Hasher>(value: &StyleValue<ScrollbarStyle>, state: &mut H) {
+    core::mem::discriminant(value).hash(state);
+    if let StyleValue::Value(value) = value {
+        value.width.hash(state);
+        value.track_color.hash(state);
+        value.thumb_color.hash(state);
+        value.radius.hash(state);
+        value.visibility.hash(state);
     }
 }
 

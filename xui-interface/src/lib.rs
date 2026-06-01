@@ -7,7 +7,7 @@ pub mod style;
 pub mod text;
 pub mod widget;
 
-pub use core::{Color, EdgeInsets, Point, Rect, Size};
+pub use core::{Color, EdgeInsets, Point, Rect, Size, Translation};
 pub use dirty::DirtyFlags;
 pub use event::{
     ClickEventHandler, Event, EventContext, EventHandler, EventHandlers, EventPhase, EventRequest,
@@ -22,10 +22,11 @@ pub use runtime::EventSource;
 pub use style::{
     ColorStyle, ColorToken, ColorValue, ComputedColorStyle, ComputedLayoutStyle,
     ComputedLinearGradientStyle, ComputedPaintStyle, ComputedRadialGradientStyle,
-    ComputedShadowStyle, ComputedStrokeStyle, ComputedStyle, ComputedTextStyle, DisplayStyle,
-    FlexDirectionStyle, FontSizeToken, LengthValue, LinearGradientStyle, RadialGradientStyle,
-    RadiusToken, ShadowStyle, SpacingToken, Stroke, StrokeLineStyle, StrokeStyle, Style,
-    StyleValue, Theme, WidgetState,
+    ComputedScrollStyle, ComputedScrollbarStyle, ComputedShadowStyle, ComputedStrokeStyle,
+    ComputedStyle, ComputedTextStyle, FlexDirectionStyle, FontSizeToken, LengthValue,
+    LinearGradientStyle, RadialGradientStyle, RadiusToken, ScrollDirectionStyle, ScrollbarStyle,
+    ScrollbarVisibilityStyle, ShadowStyle, SpacingToken, Stroke, StrokeLineStyle, StrokeStyle,
+    Style, StyleValue, Theme, WidgetState,
 };
 pub use text::{
     FontFamily, FontStyle, FontWeight, LineHeight, OverflowWrap, ParagraphStyle, TextAlign,

@@ -1,16 +1,13 @@
-use std::any::Any;
-
-use taffy::prelude as tf;
+use crate::element::ElementDesc;
 use xui_interface::{
     ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, FlexDirectionStyle,
-    Key, PaintCommand, Rect, Style, TextMeasurer, Widget, WidgetType,
+    Key, PaintCommand, Rect, Style, Widget, WidgetType,
 };
 
-use super::{Element, LayoutStyledWidget, computed_layout_style, props_hash};
+use super::{props_hash, widget_element_desc};
 
 pub struct ColumnWidget {
     pub key: Option<Key>,
-    pub children: Vec<Element>,
     pub style: Style,
     pub event_handlers: EventHandlers,
 }
@@ -19,7 +16,6 @@ impl std::fmt::Debug for ColumnWidget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ColumnWidget")
             .field("key", &self.key)
-            .field("children", &self.children.len())
             .field("style", &self.style)
             .finish()
     }
@@ -29,15 +25,9 @@ impl ColumnWidget {
     pub fn new() -> Self {
         Self {
             key: None,
-            children: Vec::new(),
             style: Style::new(),
             event_handlers: EventHandlers::default(),
         }
-    }
-
-    pub fn child(mut self, child: impl Into<Element>) -> Self {
-        self.children.push(child.into());
-        self
     }
 
     pub fn style(mut self, style: Style) -> Self {
@@ -50,6 +40,10 @@ impl ColumnWidget {
         self
     }
 
+    pub fn into_element_desc(self, children: Vec<ElementDesc>) -> ElementDesc {
+        widget_element_desc(self, children)
+    }
+
     event_handler_methods!();
 }
 
@@ -60,10 +54,6 @@ impl Default for ColumnWidget {
 }
 
 impl Widget for ColumnWidget {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn node_type(&self) -> WidgetType {
         WidgetType::Column
     }
@@ -76,14 +66,7 @@ impl Widget for ColumnWidget {
         props_hash(&self.style)
     }
 
-    fn event_handlers_mut(&mut self) -> &mut EventHandlers {
-        &mut self.event_handlers
-    }
-
-    fn update_from(&mut self, next: &dyn Widget) -> DirtyFlags {
-        let Some(next) = next.as_any().downcast_ref::<ColumnWidget>() else {
-            return DirtyFlags::TREE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
-        };
+    fn update_from(&mut self, next: &Self) -> DirtyFlags {
         if self.style != next.style {
             self.style = next.style.clone();
             DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT
@@ -104,15 +87,5 @@ impl Widget for ColumnWidget {
 
     fn handle_event(&mut self, _event: &Event, _cx: &mut EventContext<'_>) -> EventResult {
         EventResult::Ignored
-    }
-}
-
-impl LayoutStyledWidget for ColumnWidget {
-    fn layout_style(
-        &self,
-        computed: &ComputedStyle,
-        _measurer: &mut dyn TextMeasurer,
-    ) -> tf::Style {
-        computed_layout_style(computed)
     }
 }

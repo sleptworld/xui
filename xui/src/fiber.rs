@@ -1,20 +1,20 @@
-use rustc_hash::{FxHashMap, FxHasher};
+use rustc_hash::FxHashMap;
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
 use smallvec::SmallVec;
 use std::any::Any;
-use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::rc::Rc;
 use taffy::prelude as tf;
 pub use xui_interface::Key;
 use xui_interface::widget::WidgetType;
-use xui_interface::{ComputedStyle, DirtyFlags, NodeId, Theme};
+use xui_interface::{ComputedStyle, DirtyFlags, NodeId};
 
 use crate::HookContext;
 use crate::core::Rect;
+use crate::element::{ComponentDesc, ElementDesc};
 use crate::lanes::{Lanes, NO_LANES};
 use crate::render::PaintCommand;
-use crate::widgets::{Element, WidgetRef};
+use crate::widgets::WidgetI;
 
 new_key_type! {
     pub struct FiberId;
@@ -59,14 +59,14 @@ impl<'a> FiberContext<'a> {
 }
 
 pub trait ComponentFn {
-    fn call(&self, cx: &mut HookContext<'_>, props: ErasedPropsRef<'_>) -> Element;
+    fn call(&self, cx: &mut HookContext<'_>, props: ErasedPropsRef<'_>) -> ElementDesc;
 }
 
 impl<F> ComponentFn for F
 where
-    F: for<'a> Fn(&mut HookContext<'a>) -> Element,
+    F: for<'a> Fn(&mut HookContext<'a>) -> ElementDesc,
 {
-    fn call(&self, cx: &mut HookContext<'_>, _props: ErasedPropsRef<'_>) -> Element {
+    fn call(&self, cx: &mut HookContext<'_>, _props: ErasedPropsRef<'_>) -> ElementDesc {
         (self)(cx)
     }
 }
@@ -88,9 +88,9 @@ impl<P, F> PropsComponentFn<P, F> {
 impl<P, F> ComponentFn for PropsComponentFn<P, F>
 where
     P: 'static,
-    F: for<'a> Fn(&mut HookContext<'a>, &P) -> Element,
+    F: for<'a> Fn(&mut HookContext<'a>, &P) -> ElementDesc,
 {
-    fn call(&self, cx: &mut HookContext<'_>, props: ErasedPropsRef<'_>) -> Element {
+    fn call(&self, cx: &mut HookContext<'_>, props: ErasedPropsRef<'_>) -> ElementDesc {
         let props = props
             .downcast_ref::<P>()
             .unwrap_or_else(|| panic!("component props type mismatch"));
@@ -104,7 +104,7 @@ pub struct ComponentDef {
 }
 
 impl ComponentDef {
-    pub fn call(&self, cx: &mut HookContext<'_>, props: ErasedPropsRef<'_>) -> Element {
+    pub fn call(&self, cx: &mut HookContext<'_>, props: ErasedPropsRef<'_>) -> ElementDesc {
         self.create.call(cx, props)
     }
 }
@@ -121,7 +121,7 @@ impl ComponentRegistry {
 
     pub fn register<F>(&mut self, component_type: ComponentType, create: F) -> ComponentType
     where
-        F: for<'a> Fn(&mut HookContext<'a>) -> Element + 'static,
+        F: for<'a> Fn(&mut HookContext<'a>) -> ElementDesc + 'static,
     {
         let previous = self.components.insert(
             component_type,
@@ -146,7 +146,7 @@ impl ComponentRegistry {
     ) -> ComponentType
     where
         P: 'static,
-        F: for<'a> Fn(&mut HookContext<'a>, &P) -> Element + 'static,
+        F: for<'a> Fn(&mut HookContext<'a>, &P) -> ElementDesc + 'static,
     {
         let previous = self.components.insert(
             component_type,
@@ -176,87 +176,6 @@ impl ComponentRegistry {
     }
 }
 
-pub enum FiberElement {
-    Host(HostElement),
-    Component(ComponentElement),
-}
-
-impl FiberElement {
-    pub fn host(
-        widget: WidgetRef,
-        style: tf::Style,
-        props_hash: u64,
-        children: SmallVec<[Rc<FiberElement>; 20]>,
-    ) -> Self {
-        Self::Host(HostElement {
-            key: None,
-            widget,
-            style,
-            computed_style: ComputedStyle::initial(&Theme::default()),
-            props_hash,
-            children,
-        })
-    }
-
-    pub fn component(component_type: ComponentType, props_hash: u64) -> Self {
-        Self::component_with_hash(component_type, props_hash)
-    }
-
-    pub fn component_with_hash(component_type: ComponentType, props_hash: u64) -> Self {
-        Self::Component(ComponentElement {
-            key: None,
-            component_type,
-            props_hash,
-            props: Rc::new(()),
-        })
-    }
-
-    pub fn key(mut self, key: impl Into<Key>) -> Self {
-        match &mut self {
-            Self::Host(element) => element.key = Some(key.into()),
-            Self::Component(element) => element.key = Some(key.into()),
-        }
-        self
-    }
-
-    pub fn child(mut self, child: FiberElement) -> Self {
-        if let Self::Host(element) = &mut self {
-            element.children.push(Rc::new(child));
-        }
-        self
-    }
-
-    fn key_ref(&self) -> Option<&Key> {
-        match self {
-            Self::Host(element) => element.key.as_ref(),
-            Self::Component(element) => element.key.as_ref(),
-        }
-    }
-
-    fn tag(&self) -> FiberTag {
-        match self {
-            Self::Host(element) => FiberTag::Host(element.widget.with(|widget| widget.node_type())),
-            Self::Component(_) => FiberTag::Component,
-        }
-    }
-}
-
-pub struct HostElement {
-    pub key: Option<Key>,
-    pub widget: WidgetRef,
-    pub style: tf::Style,
-    pub computed_style: ComputedStyle,
-    pub props_hash: u64,
-    pub children: SmallVec<[Rc<FiberElement>; 20]>,
-}
-
-pub struct ComponentElement {
-    pub key: Option<Key>,
-    pub component_type: ComponentType,
-    pub props_hash: u64,
-    pub props: ErasedProps,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FiberTag {
     Root,
@@ -273,7 +192,7 @@ pub enum EffectTag {
 
 pub struct HostState {
     pub node_id: Option<NodeId>,
-    pub widget: Option<WidgetRef>,
+    pub widget: Option<WidgetI>,
     pub taffy_node: Option<tf::NodeId>,
     pub style: tf::Style,
     pub computed_style: ComputedStyle,
@@ -297,7 +216,7 @@ pub enum PendingProps {
 }
 
 pub struct HostUpdate {
-    pub widget: WidgetRef,
+    pub widget: WidgetI,
     pub style: tf::Style,
     pub computed_style: ComputedStyle,
     pub props_hash: u64,
@@ -321,7 +240,7 @@ pub struct Node {
     pub dirty: DirtyFlags,
     pub subtree_dirty: DirtyFlags,
     pub pending_props: Option<PendingProps>,
-    pub pending_children: Option<SmallVec<[FiberElement; 20]>>,
+    pub pending_children: Option<SmallVec<[ElementDesc; 20]>>,
     pub memoized_props_hash: u64,
     pub host: Option<HostState>,
     pub component: Option<ComponentState>,
@@ -348,38 +267,7 @@ impl Node {
         }
     }
 
-    fn host(id: FiberId, element: HostElement, taffy_node: tf::NodeId) -> Self {
-        let tag = FiberTag::Host(element.widget.with(|widget| widget.node_type()));
-        Self {
-            id,
-            parent: None,
-            child: None,
-            sibling: None,
-            key: element.key.clone(),
-            position: 0,
-            tag,
-            effect: EffectTag::Placement,
-            dirty: DirtyFlags::default(),
-            subtree_dirty: DirtyFlags::empty(),
-            pending_props: None,
-            pending_children: None,
-            memoized_props_hash: element.props_hash,
-            host: Some(HostState {
-                node_id: None,
-                widget: Some(element.widget),
-                taffy_node: Some(taffy_node),
-                style: element.style,
-                computed_style: element.computed_style,
-                layout: Rect::ZERO,
-                previous_layout: Rect::ZERO,
-                paint_cache: Vec::new(),
-                props_hash: element.props_hash,
-            }),
-            component: None,
-        }
-    }
-
-    fn component(id: FiberId, element: ComponentElement) -> Self {
+    fn component(id: FiberId, element: ComponentDesc) -> Self {
         Self {
             id,
             parent: None,
@@ -541,161 +429,6 @@ impl FiberArena {
         }
     }
 
-    fn find_reusable_child(
-        &self,
-        old_children: &[FiberId],
-        used: &[bool],
-        element: &FiberElement,
-        position: usize,
-    ) -> Option<usize> {
-        let tag = element.tag();
-        if let Some(key) = element.key_ref() {
-            return old_children
-                .iter()
-                .copied()
-                .enumerate()
-                .find(|(index, old_id)| {
-                    !used[*index]
-                        && self.nodes[*old_id].key.as_ref() == Some(key)
-                        && self.nodes[*old_id].tag == tag
-                })
-                .map(|(index, _)| index);
-        }
-
-        old_children
-            .get(position)
-            .copied()
-            .filter(|old_id| {
-                !used[position]
-                    && self.nodes[*old_id].key.is_none()
-                    && self.nodes[*old_id].tag == tag
-                    && self.nodes[*old_id].position == position
-            })
-            .map(|_| position)
-    }
-
-    fn prepare_reused_node(&mut self, id: FiberId, element: FiberElement, position: usize) {
-        let mut effect = EffectTag::None;
-        match element {
-            FiberElement::Host(element) => {
-                let host = self.nodes[id]
-                    .host
-                    .as_ref()
-                    .expect("host fiber missing host state");
-                if self.nodes[id].memoized_props_hash != element.props_hash
-                    || host.style != element.style
-                    || host.computed_style != element.computed_style
-                {
-                    effect = EffectTag::Update;
-                }
-                self.nodes[id].key = element.key;
-                // self.nodes[id].pending_children = Some(element.children);
-                self.nodes[id].pending_props = Some(PendingProps::Host(HostUpdate {
-                    widget: element.widget,
-                    style: element.style,
-                    computed_style: element.computed_style,
-                    props_hash: element.props_hash,
-                }));
-            }
-            FiberElement::Component(element) => {
-                if self.nodes[id].memoized_props_hash != element.props_hash {
-                    effect = EffectTag::Update;
-                }
-                self.nodes[id].key = element.key;
-                // self.nodes[id].pending_props = Some(PendingProps::Component(ComponentProps {
-                //     component_type: element.component_type,
-                //     props_hash: element.props_hash,
-                //     props: element.props,
-                // }));
-            }
-        }
-
-        self.nodes[id].position = position;
-        self.nodes[id].sibling = None;
-        self.nodes[id].effect = effect;
-        if effect == EffectTag::Update {
-            self.mark_subtree_dirty(id, DirtyFlags::PROPS);
-        }
-    }
-
-    fn commit_node(&mut self, id: FiberId) {
-        let pending = self.nodes[id].pending_props.take();
-        match pending {
-            Some(PendingProps::Host(update)) => {
-                if let Some(host) = self.nodes[id].host.as_mut() {
-                    if host.style != update.style {
-                        if let Some(taffy_node) = host.taffy_node {
-                            self.taffy
-                                .set_style(taffy_node, update.style.clone())
-                                .expect("failed to update fiber taffy style");
-                        }
-                    }
-                    host.widget = Some(update.widget);
-                    host.style = update.style;
-                    host.computed_style = update.computed_style;
-                    self.nodes[id].memoized_props_hash = update.props_hash;
-                }
-            }
-            Some(PendingProps::Component(props)) => {
-                self.nodes[id].memoized_props_hash = props.props_hash;
-            }
-            None => {}
-        }
-
-        self.nodes[id].effect = EffectTag::None;
-        self.nodes[id].dirty = DirtyFlags::empty();
-        self.nodes[id].subtree_dirty = DirtyFlags::empty();
-    }
-
-    fn sync_host_children(&mut self, id: FiberId) {
-        let Some(parent_taffy) = self.host_taffy_node(id) else {
-            return;
-        };
-        let taffy_children = self.flatten_host_children(id);
-        self.taffy
-            .set_children(parent_taffy, &taffy_children)
-            .expect("failed to sync fiber taffy children");
-    }
-
-    fn host_taffy_node(&self, id: FiberId) -> Option<tf::NodeId> {
-        if id == self.root {
-            return Some(self.root_taffy);
-        }
-        self.nodes
-            .get(id)
-            .and_then(|node| node.host.as_ref())
-            .and_then(|host| host.taffy_node)
-    }
-
-    fn flatten_host_children(&self, parent: FiberId) -> Vec<tf::NodeId> {
-        let mut output = Vec::new();
-        let mut child = self.nodes.get(parent).and_then(|node| node.child);
-        while let Some(id) = child {
-            self.flatten_host_child(id, &mut output);
-            child = self.nodes.get(id).and_then(|node| node.sibling);
-        }
-        output
-    }
-
-    fn flatten_host_child(&self, id: FiberId, output: &mut Vec<tf::NodeId>) {
-        let Some(node) = self.nodes.get(id) else {
-            return;
-        };
-
-        if let Some(host) = node.host.as_ref() {
-            if let Some(taffy_node) = host.taffy_node {
-                output.push(taffy_node);
-            }
-            return;
-        }
-
-        let mut child = node.child;
-        while let Some(child_id) = child {
-            self.flatten_host_child(child_id, output);
-            child = self.nodes.get(child_id).and_then(|node| node.sibling);
-        }
-    }
-
     fn remove_subtree_detached(&mut self, id: FiberId) {
         if id == self.root || !self.nodes.contains_key(id) {
             return;
@@ -776,10 +509,4 @@ impl Cursor<'_> {
             cursor = self.arena.nodes.get(cursor).and_then(|node| node.parent)?;
         }
     }
-}
-
-fn fx_hash<T: Hash>(value: &T) -> u64 {
-    let mut hasher = FxHasher::default();
-    value.hash(&mut hasher);
-    hasher.finish()
 }

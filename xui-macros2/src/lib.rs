@@ -1,4 +1,3 @@
-mod tools;
 use proc_macro::TokenStream;
 use proc_macro2::{Ident as TokenIdent, Span, TokenStream as TokenStream2, TokenTree};
 use quote::{ToTokens, quote};
@@ -7,11 +6,6 @@ use syn::spanned::Spanned;
 use syn::{
     Attribute as SynAttribute, Error, Expr, FnArg, Ident, LitStr, Pat, Result, ReturnType,
     Signature, Token, Type, TypeReference, Visibility, braced, parse_macro_input, parse_quote,
-};
-
-use crate::tools::{
-    event_attr_stmt, parse_attrs_helper, parse_base_attr, parse_layout_style_attr,
-    parse_paint_style_attr, parse_scroll_style_attr, parse_text_style_attr, unsupported_attr,
 };
 
 #[proc_macro]
@@ -621,16 +615,122 @@ fn expand_stack(node: &ElementNode, tag: &str, constructor: TokenStream2) -> Res
 
 fn expand_container(node: &ElementNode) -> Result<TokenStream2> {
     let mut attr_stmts = Vec::new();
-    parse_attrs_helper(
-        node,
-        |name, value| {
-            parse_base_attr(name, value).or(parse_text_style_attr(name, value)
-                .or(parse_layout_style_attr(name, value))
-                .or(parse_paint_style_attr(name, value))
-                .or(parse_scroll_style_attr(name, value)))
-        },
-        &mut attr_stmts,
-    );
+    for attr in &node.attrs {
+        let value = &attr.value;
+        match attr.name.to_string().as_str() {
+            "key" => attr_stmts.push(quote! {
+                __xui_element = __xui_element.key(#value);
+            }),
+            "style" => attr_stmts.push(quote! {
+                __xui_style.merge(&#value);
+            }),
+            "color" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().color(#value));
+            }),
+            "font_family" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().font_family(#value));
+            }),
+            "font_size" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().font_size(#value));
+            }),
+            "font_weight" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().font_weight(#value));
+            }),
+            "font_style" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().font_style(#value));
+            }),
+            "line_height" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().line_height(#value));
+            }),
+            "letter_spacing" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().letter_spacing(#value));
+            }),
+            "decoration" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().decoration(#value));
+            }),
+            "display" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().display(#value));
+            }),
+            "flex_direction" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().flex_direction(#value));
+            }),
+            "gap" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().gap(#value));
+            }),
+            "padding" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().padding(#value));
+            }),
+            "size" => attr_stmts.push(quote! {
+                if let Some(__xui_size) = #value {
+                    __xui_style.merge(&::xui::Style::new().size(__xui_size));
+                }
+            }),
+            "min_size" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().min_size(#value));
+            }),
+            "max_size" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().max_size(#value));
+            }),
+            "margin" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().margin(#value));
+            }),
+            "background" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().background(#value));
+            }),
+            "border_color" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().border_color(#value));
+            }),
+            "border_width" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().border_width(#value));
+            }),
+            "border_radius" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().border_radius(#value));
+            }),
+            "stroke" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().stroke(#value));
+            }),
+            "stroke_style" => attr_stmts.push(quote! {
+                let (__xui_stroke_color, __xui_stroke_width, __xui_stroke_line_style) = #value;
+                __xui_style.merge(&::xui::Style::new().stroke_style(
+                    __xui_stroke_color,
+                    __xui_stroke_width,
+                    __xui_stroke_line_style,
+                ));
+            }),
+            "no_stroke" => attr_stmts.push(quote! {
+                if #value {
+                    __xui_style.merge(&::xui::Style::new().no_stroke());
+                }
+            }),
+            "shadow" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().shadow(#value));
+            }),
+            "box_shadow" => attr_stmts.push(quote! {
+                let (__xui_shadow_color, __xui_shadow_offset, __xui_shadow_blur, __xui_shadow_spread) = #value;
+                __xui_style.merge(&::xui::Style::new().box_shadow(
+                    __xui_shadow_color,
+                    __xui_shadow_offset,
+                    __xui_shadow_blur,
+                    __xui_shadow_spread,
+                ));
+            }),
+            "no_shadow" => attr_stmts.push(quote! {
+                if #value {
+                    __xui_style.merge(&::xui::Style::new().no_shadow());
+                }
+            }),
+            "clip" => attr_stmts.push(quote! {
+                __xui_style.merge(&::xui::Style::new().clip(#value));
+            }),
+            other => {
+                if let Some(stmt) = event_attr_stmt(attr) {
+                    attr_stmts.push(stmt);
+                } else {
+                    return unsupported_attr(attr, "container", other);
+                }
+            }
+        }
+    }
 
     let children = node
         .children
@@ -785,4 +885,32 @@ fn no_children_except_text(node: &ElementNode, tag: &str) -> Result<()> {
         node.name.span(),
         format!("{tag} does not support element children"),
     ))
+}
+
+fn unsupported_attr<T>(attr: &XuiAttribute, tag: &str, attr_name: &str) -> Result<T> {
+    Err(Error::new(
+        attr.name.span(),
+        format!("unsupported attribute `{attr_name}` on <{tag}>"),
+    ))
+}
+
+fn event_attr_stmt(attr: &XuiAttribute) -> Option<TokenStream2> {
+    let value = &attr.value;
+    match attr.name.to_string().as_str() {
+        "on_event" => Some(quote! { __xui_element = __xui_element.on_event(#value); }),
+        "on_click" => Some(quote! { __xui_element = __xui_element.on_click(#value); }),
+        "on_hover_change" => {
+            Some(quote! { __xui_element = __xui_element.on_hover_change(#value); })
+        }
+        "on_pointer_down" => {
+            Some(quote! { __xui_element = __xui_element.on_pointer_down(#value); })
+        }
+        "on_pointer_up" => Some(quote! { __xui_element = __xui_element.on_pointer_up(#value); }),
+        "on_pointer_move" => {
+            Some(quote! { __xui_element = __xui_element.on_pointer_move(#value); })
+        }
+        "on_key_down" => Some(quote! { __xui_element = __xui_element.on_key_down(#value); }),
+        "on_key_up" => Some(quote! { __xui_element = __xui_element.on_key_up(#value); }),
+        _ => None,
+    }
 }

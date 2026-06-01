@@ -34,6 +34,7 @@ pub struct WGPUBackend {
     scene: SceneTexture,
     scene_needs_clear: bool,
     presented_frame: bool,
+    scale_factor: f32,
 }
 
 const SHAPE_RECT: f32 = 0.0;
@@ -69,6 +70,7 @@ const GLYPH_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct UiUniforms {
     viewport_size: [f32; 4],
+    scale_factor: [f32; 4],
 }
 
 #[repr(C)]
@@ -138,6 +140,7 @@ impl WGPUBackend {
 
     async fn new_(window: Arc<winit::window::Window>) -> Self {
         let size = window.inner_size();
+        let scale_factor = window.scale_factor();
         let instance = wgpu::Instance::default();
         let surface = instance
             .create_surface(Arc::clone(&window))
@@ -201,6 +204,7 @@ impl WGPUBackend {
             label: Some("xui sdf uniforms"),
             contents: bytemuck::bytes_of(&UiUniforms {
                 viewport_size: [size.width as f32, size.height as f32, 0.0, 0.0],
+                scale_factor: [scale_factor as f32; 4],
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -350,6 +354,7 @@ impl WGPUBackend {
             scene,
             scene_needs_clear: true,
             presented_frame: false,
+            scale_factor: scale_factor as f32,
         }
     }
 }
@@ -523,7 +528,7 @@ impl Atlas {
 impl<T: TextLayouter> RenderBackend<T> for WGPUBackend {
     type Error = WgpuBackendError;
 
-    fn begin_frame(&mut self, size: xui_interface::Size) -> Result<(), Self::Error> {
+    fn begin_frame(&mut self, size: xui_interface::Size<f32>) -> Result<(), Self::Error> {
         let width = size.width.max(1.0) as u32;
         let height = size.height.max(1.0) as u32;
         if self.config.width != width || self.config.height != height {
@@ -538,6 +543,7 @@ impl<T: TextLayouter> RenderBackend<T> for WGPUBackend {
             0,
             bytemuck::bytes_of(&UiUniforms {
                 viewport_size: [width as f32, height as f32, 0.0, 0.0],
+                scale_factor: [self.scale_factor; 4],
             }),
         );
         Ok(())
@@ -701,6 +707,11 @@ impl<T: TextLayouter> RenderBackend<T> for WGPUBackend {
         self.queue.submit(Some(encoder.finish()));
         frame.present();
         self.presented_frame = true;
+        Ok(())
+    }
+
+    fn set_factor(&mut self, factor: f32) -> Result<(), Self::Error> {
+        self.scale_factor = factor;
         Ok(())
     }
 }

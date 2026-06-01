@@ -80,6 +80,13 @@ pub fn dispatch_event(arena: &mut UiArena, event: &Event) -> EventResult {
     }
 
     let result = dispatch_event_path(arena, target, event);
+    if !result.is_consumed() {
+        if let Event::Wheel { delta, .. } = event {
+            if arena.scroll_node_by(target, *delta) {
+                return EventResult::Consumed;
+            }
+        }
+    }
 
     if matches!(
         event,
@@ -247,18 +254,40 @@ fn dispatch_to_node(
                     };
                     if specialized.is_consumed() {
                         specialized
+                    } else if matches!(event, Event::KeyDown { .. } | Event::KeyUp { .. })
+                        && phase != EventPhase::Capture
+                    {
+                        let key_result = match event {
+                            Event::KeyDown { key } => node
+                                .event_handlers
+                                .on_key_down
+                                .as_mut()
+                                .map(|handler| handler(key, &mut cx))
+                                .unwrap_or(EventResult::Ignored),
+                            Event::KeyUp { key } => node
+                                .event_handlers
+                                .on_key_up
+                                .as_mut()
+                                .map(|handler| handler(key, &mut cx))
+                                .unwrap_or(EventResult::Ignored),
+                            _ => EventResult::Ignored,
+                        };
+                        if key_result.is_consumed() {
+                            key_result
+                        } else if phase == EventPhase::Target {
+                            node.widget.handle_event(event, &mut cx)
+                        } else {
+                            EventResult::Ignored
+                        }
                     } else if phase == EventPhase::Target {
-                        node.widget
-                            .with_mut(|widget| widget.handle_event(event, &mut cx))
+                        node.widget.handle_event(event, &mut cx)
                     } else {
                         EventResult::Ignored
                     }
                 }
             }
             NodeDispatch::HoverChange(hovered) => {
-                let hover_dirty = node
-                    .widget
-                    .with_mut(|widget| widget.on_hovered_change(hovered));
+                let hover_dirty = node.widget.on_hovered_change(hovered);
                 cx.mark_dirty(hover_dirty);
 
                 node.event_handlers
@@ -660,12 +689,11 @@ mod tests {
             position: Point::new(2.0, 2.0),
         });
 
-        let hovered = arena.node(button).unwrap().widget.with(|widget| {
-            widget
-                .as_any()
-                .downcast_ref::<crate::widgets::ButtonWidget>()
-                .unwrap()
-                .hovered
+        let hovered = arena.node(button).unwrap().widget.with_widgets(|widget| {
+            let crate::widgets::Widgets::Button(button) = widget else {
+                unreachable!("expected button widget");
+            };
+            button.hovered
         });
         assert!(hovered);
         assert!(
@@ -680,12 +708,11 @@ mod tests {
             position: Point::new(80.0, 80.0),
         });
 
-        let hovered = arena.node(button).unwrap().widget.with(|widget| {
-            widget
-                .as_any()
-                .downcast_ref::<crate::widgets::ButtonWidget>()
-                .unwrap()
-                .hovered
+        let hovered = arena.node(button).unwrap().widget.with_widgets(|widget| {
+            let crate::widgets::Widgets::Button(button) = widget else {
+                unreachable!("expected button widget");
+            };
+            button.hovered
         });
         assert!(!hovered);
     }

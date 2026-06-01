@@ -16,7 +16,7 @@ pub enum ControlFlow {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeEvent {
-    Resize(Size),
+    Resize(Size<f32>),
     Input(Event),
     RedrawRequested,
     Exit,
@@ -133,8 +133,6 @@ impl<B: RenderBackend<T>, T: TextMeasurer> GuiRuntime<B, T> {
     pub fn text_measure_mut(&mut self) -> &mut T {
         &mut self.text_measure
     }
-
-
 
     pub fn tick(
         &mut self,

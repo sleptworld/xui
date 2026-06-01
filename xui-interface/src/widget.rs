@@ -21,6 +21,7 @@ pub enum WidgetType {
     Row,
     Container,
     StyleScope,
+    ScrollScope,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -41,46 +42,56 @@ impl From<String> for Key {
 pub trait TextMeasurer {
     fn set_scale_factor(&mut self, _scale_factor: f32) {}
 
-    fn measure_text(&mut self, text: &str, props: &ComputedTextStyle, scale_factor: Option<f32>) -> Size;
+    fn measure_text(
+        &mut self,
+        text: &str,
+        props: &ComputedTextStyle,
+        scale_factor: Option<f32>,
+    ) -> Size<f32>;
 
     fn measure_text_with_constraints(
         &mut self,
         text: &str,
         props: &ComputedTextStyle,
         _constraints: TextLayoutConstraints,
-        scale_factor: Option<f32>
-    ) -> Size;
+        scale_factor: Option<f32>,
+    ) -> Size<f32>;
 }
 
 pub trait Widget: Debug {
-    fn as_any(&self) -> &dyn Any;
     fn node_type(&self) -> WidgetType;
+
     fn key(&self) -> Option<&Key> {
         None
     }
+
     fn props_hash(&self) -> u64;
-    fn event_handlers_mut(&mut self) -> &mut EventHandlers;
-    fn update_from(&mut self, next: &dyn Widget) -> DirtyFlags;
+
+    fn update_from(&mut self, next: &Self) -> DirtyFlags;
+
     fn default_style(&self) -> Style {
         Style::new()
     }
+
     fn style(&self) -> &Style {
         static STYLE: std::sync::LazyLock<Style> = std::sync::LazyLock::new(Style::new);
         &STYLE
     }
+
     fn state_style(&self, _state: WidgetState) -> Style {
         Style::new()
     }
+
     fn state(&self) -> WidgetState {
         WidgetState::default()
     }
+
     fn style_scope(&self) -> Option<&Style> {
         None
     }
-    fn measure(&self, _style: &ComputedStyle, _measurer: &mut dyn TextMeasurer) -> Option<Size> {
-        None
-    }
+
     fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>);
+
     fn handle_event(&mut self, event: &Event, cx: &mut EventContext<'_>) -> EventResult;
 
     fn on_hovered_change(&mut self, _hovered: bool) -> DirtyFlags {

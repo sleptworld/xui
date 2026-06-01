@@ -53,7 +53,7 @@ pub enum ButtonSize {
 
 pub struct ButtonProps {
     pub text: TextContent,
-    pub children: Vec<Element>,
+    pub children: Vec<ElementDesc>,
     pub variant: ButtonVariant,
     pub size: ButtonSize,
     pub disabled: bool,
@@ -95,7 +95,7 @@ impl ButtonProps {
         self
     }
 
-    pub fn child(mut self, child: impl Into<Element>) -> Self {
+    pub fn child(mut self, child: impl Into<ElementDesc>) -> Self {
         self.children.push(child.into());
         self
     }
@@ -158,7 +158,7 @@ impl Default for ButtonProps {
 }
 
 impl WithChildren for ButtonProps {
-    fn with_children(mut self, children: Vec<Element>) -> Self {
+    fn with_children(mut self, children: Vec<ElementDesc>) -> Self {
         self.children = children;
         self
     }
@@ -195,21 +195,17 @@ component_fn! {
             .pressed_style(merged_style(pressed_style(props.variant), &props.pressed_style))
             .disabled_style(merged_style(disabled_style(), &props.disabled_style));
 
-        for child in props.children.iter().cloned() {
-            button = button.child(child);
-        }
-
         if !props.disabled {
             if let Some(handler) = props.on_click.clone() {
                 button = button.on_click(move |cx| handler.call(cx));
             }
         }
 
-        Element::from(button)
+        button.into_element_desc(props.children.clone())
     }
 }
 
-pub fn pbutton(props: ButtonProps) -> ComponentElement {
+pub fn pbutton(props: ButtonProps) -> ComponentDesc {
     component(pbutton_component_type()).props(props)
 }
 

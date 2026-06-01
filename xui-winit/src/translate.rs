@@ -40,7 +40,7 @@ pub fn translate_window_event(
     last_cursor_position: Option<Point>,
 ) -> Vec<RuntimeEvent> {
     match event {
-        WindowEvent::Resized(size) => vec![RuntimeEvent::Resize(Size::new(
+        WindowEvent::Resized(size) => vec![RuntimeEvent::Resize(Size::<f32>::new(
             size.width as f32,
             size.height as f32,
         ))],

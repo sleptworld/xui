@@ -1,7 +1,6 @@
 use crate::{
-    Color, ColorStyle, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, Point, Rect,
-    Size, TextProps,
-    style::{Shadow, Stroke},
+    Color, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, Point, Rect, Size,
+    TextProps, Translation,
 };
 
 pub trait Painter {
@@ -42,7 +41,7 @@ pub enum PaintCommand {
 
     // Transform
     PushTransform {
-        translate: Point,
+        translate: Translation,
     },
     PopTransform,
 
@@ -65,7 +64,7 @@ impl DamageRegion {
         Self::default()
     }
 
-    pub fn full(size: Size) -> Self {
+    pub fn full(size: Size<f32>) -> Self {
         let mut region = Self::new();
         region.add(Rect::new(0.0, 0.0, size.width, size.height));
         region
@@ -97,7 +96,7 @@ impl DamageRegion {
 pub trait RenderBackend<T> {
     type Error;
 
-    fn begin_frame(&mut self, size: Size) -> Result<(), Self::Error>;
+    fn begin_frame(&mut self, size: Size<f32>) -> Result<(), Self::Error>;
     fn paint(
         &mut self,
         commands: &[PaintCommand],
@@ -110,7 +109,11 @@ pub trait RenderBackend<T> {
         true
     }
 
-    fn resize(&mut self, _size: Size) -> Result<(), Self::Error> {
+    fn resize(&mut self, _size: Size<f32>) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn set_factor(&mut self, _factor: f32) -> Result<(), Self::Error> {
         Ok(())
     }
 }
@@ -121,7 +124,7 @@ impl<T, B: RenderBackend<T>> DrawBackend<T> for B {}
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct MockRenderBackend {
-    pub frame_size: Option<Size>,
+    pub frame_size: Option<Size<f32>>,
     pub frames: usize,
     pub last_damage: DamageRegion,
     pub last_commands: Vec<PaintCommand>,
@@ -130,7 +133,7 @@ pub struct MockRenderBackend {
 impl<T> RenderBackend<T> for MockRenderBackend {
     type Error = core::convert::Infallible;
 
-    fn begin_frame(&mut self, size: Size) -> Result<(), Self::Error> {
+    fn begin_frame(&mut self, size: Size<f32>) -> Result<(), Self::Error> {
         self.frame_size = Some(size);
         Ok(())
     }

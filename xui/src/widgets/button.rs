@@ -1,22 +1,17 @@
-use std::any::Any;
 use std::fmt::Debug;
 
-use taffy::prelude as tf;
+use crate::element::ElementDesc;
 use xui_interface::{
     ColorToken, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key,
-    PaintCommand, PointerButton, Rect, Size, Style, TextContent, TextMeasurer, TextPaintCommand,
-    TextProps, Widget, WidgetState, WidgetType,
+    PaintCommand, PointerButton, Rect, Style, TextContent, TextPaintCommand, TextProps, Widget,
+    WidgetState, WidgetType,
 };
 
-use super::{
-    Element, LayoutStyledWidget, computed_layout_style, container::paint_box, fixed_size_style,
-    label::apply_text_style, props_hash,
-};
+use super::{container::paint_box, label::apply_text_style, props_hash, widget_element_desc};
 
 pub struct ButtonWidget {
     pub key: Option<Key>,
     pub text: TextContent,
-    pub children: Vec<Element>,
     pub style: Style,
     pub hover_style: Style,
     pub pressed_style: Style,
@@ -32,7 +27,6 @@ impl ButtonWidget {
         Self {
             key: None,
             text: text.into(),
-            children: Vec::new(),
             style: Style::new(),
             hover_style: Style::new(),
             pressed_style: Style::new(),
@@ -74,24 +68,11 @@ impl ButtonWidget {
         self
     }
 
-    pub fn child(mut self, child: impl Into<Element>) -> Self {
-        self.children.push(child.into());
-        self
+    pub fn into_element_desc(self, children: Vec<ElementDesc>) -> ElementDesc {
+        widget_element_desc(self, children)
     }
 
     event_handler_methods!();
-}
-
-impl LayoutStyledWidget for ButtonWidget {
-    fn layout_style(&self, computed: &ComputedStyle, measurer: &mut dyn TextMeasurer) -> tf::Style {
-        if self.children.is_empty() {
-            self.measure(computed, measurer)
-                .map(fixed_size_style)
-                .unwrap_or_default()
-        } else {
-            computed_layout_style(computed)
-        }
-    }
 }
 
 impl Debug for ButtonWidget {
@@ -101,10 +82,6 @@ impl Debug for ButtonWidget {
 }
 
 impl Widget for ButtonWidget {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn node_type(&self) -> WidgetType {
         WidgetType::Button
     }
@@ -124,15 +101,7 @@ impl Widget for ButtonWidget {
         ))
     }
 
-    fn event_handlers_mut(&mut self) -> &mut EventHandlers {
-        &mut self.event_handlers
-    }
-
-    fn update_from(&mut self, next: &dyn Widget) -> DirtyFlags {
-        let Some(next) = next.as_any().downcast_ref::<ButtonWidget>() else {
-            return DirtyFlags::TREE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
-        };
-
+    fn update_from(&mut self, next: &Self) -> DirtyFlags {
         if self.text != next.text
             || self.style != next.style
             || self.hover_style != next.hover_style
@@ -199,16 +168,6 @@ impl Widget for ButtonWidget {
         }
     }
 
-    fn measure(&self, style: &ComputedStyle, measurer: &mut dyn TextMeasurer) -> Option<Size> {
-        println!("Measure : {}", self.text.as_str());
-        let text = measurer.measure_text(self.text.as_str(), &style.text, None);
-        let padding = style.layout.padding;
-        Some(Size::new(
-            (text.width + padding.left + padding.right).max(text.width + 16.0),
-            (text.height + padding.top + padding.bottom).max(text.height.max(20.0) + 10.0),
-        ))
-    }
-
     fn on_hovered_change(&mut self, hovered: bool) -> DirtyFlags {
         self.hovered = hovered;
         DirtyFlags::STYLE | DirtyFlags::PAINT
@@ -216,7 +175,7 @@ impl Widget for ButtonWidget {
 
     fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
         paint_box(rect, style, commands);
-        if !self.children.is_empty() {
+        if self.text.as_str().is_empty() {
             return;
         }
 
@@ -257,6 +216,7 @@ impl Widget for ButtonWidget {
                 cx.mark_dirty(DirtyFlags::STYLE | DirtyFlags::PAINT);
                 EventResult::Consumed
             }
+            Event::Wheel { .. } => EventResult::Ignored,
             _ => EventResult::Consumed,
         }
     }

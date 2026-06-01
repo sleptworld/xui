@@ -1,43 +1,47 @@
 use slotmap::SlotMap;
 use std::cell::Cell;
 use taffy::prelude as tf;
+use xui_interface::core::Sizing;
 use xui_interface::{
-    ComputedStyle, ComputedTextStyle, DirtyFlags, EventHandlers, NodeId, TextContent,
-    TextLayoutConstraints, TextMeasurer, Theme,
+    ComputedColorStyle, ComputedScrollbarStyle, ComputedStyle, ComputedTextStyle, DirtyFlags,
+    EventHandlers, NodeId, ScrollbarVisibilityStyle, TextContent, TextLayoutConstraints,
+    TextMeasurer, Theme, Translation,
 };
 
-use crate::LayoutStyledWidget;
-use crate::core::{Rect, Size};
+use crate::core::{Point, Rect, Size};
 use crate::event::{Event, EventResult};
 use crate::event_system::{self, EventState};
 use crate::fiber::Key;
+use crate::layout::{computed_style_for_widget, taffy_style_for_widget};
 use crate::render::{DamageRegion, PaintCommand};
-use crate::widgets::{
-    Element, WidgetRef, WidgetType, computed_style_for_widget, taffy_style_for_widget,
-};
+use crate::widgets::{WidgetI, WidgetType, Widgets};
 
 pub enum WidgetContext {
     Text(ComputedTextStyle, Option<TextContent>),
+    Button(ComputedTextStyle, Option<TextContent>),
 }
 
 pub struct Node {
     pub id: NodeId,
-    pub parent: Option<NodeId>,
-    pub children: Vec<NodeId>,
-    pub taffy_node: tf::NodeId,
     pub node_type: WidgetType,
     pub key: Option<Key>,
+    // Link
+    pub parent: Option<NodeId>,
+    pub children: Vec<NodeId>,
+    // Layout
+    pub taffy_node: tf::NodeId,
     pub position: usize,
     pub layout: Rect,
     pub previous_layout: Rect,
+    pub content_size: Size<f32>,
+    pub scroll_offset: Point,
     pub dirty: DirtyFlags,
     pub subtree_dirty: DirtyFlags,
     pub old_props_hash: u64,
     pub new_props_hash: u64,
-    // pub style: tf::Style,
     pub computed_style: ComputedStyle,
     pub paint_cache: Vec<PaintCommand>,
-    pub widget: WidgetRef,
+    pub widget: WidgetI,
     pub event_handlers: EventHandlers,
 }
 
@@ -60,13 +64,12 @@ impl Node {
         key: Option<Key>,
         position: usize,
         props_hash: u64,
-        // style: tf::Style,
         computed_style: ComputedStyle,
-        widget: WidgetRef,
+        widget: WidgetI,
         event_handlers: EventHandlers,
         taffy_node: tf::NodeId,
     ) -> Self {
-        let node_type = widget.with(|widget| widget.node_type());
+        let node_type = widget.node_type();
 
         Self {
             id,
@@ -78,6 +81,8 @@ impl Node {
             position,
             layout: Rect::ZERO,
             previous_layout: Rect::ZERO,
+            content_size: Size::<f32>::ZERO,
+            scroll_offset: Point::new(0.0, 0.0),
             dirty: DirtyFlags::default(),
             subtree_dirty: DirtyFlags::empty(),
             old_props_hash: 0,
@@ -126,7 +131,7 @@ impl UiArena {
                 0,
                 // root_style,
                 root_computed_style,
-                crate::widgets::root_widget().into(),
+                crate::widgets::root_widget(),
                 EventHandlers::default(),
                 taffy_root,
             )
@@ -204,16 +209,20 @@ impl UiArena {
         &mut self,
         key: Option<Key>,
         props_hash: u64,
-        widget: WidgetRef,
+        widget: WidgetI,
         event_handlers: EventHandlers,
         style: tf::Style,
         computed_style: ComputedStyle,
     ) -> NodeId {
-        let node_type = widget.with(|w| w.node_type());
+        let node_type = widget.node_type();
         let taffy_node = match node_type {
             WidgetType::Text | WidgetType::Label => self.taffy.new_leaf_with_context(
                 style,
-                WidgetContext::Text(computed_style.text.clone(), widget.with(|w| w.text())),
+                WidgetContext::Text(computed_style.text.clone(), widget.text()),
+            ),
+            WidgetType::Button => self.taffy.new_leaf_with_context(
+                style,
+                WidgetContext::Button(computed_style.text.clone(), widget.text()),
             ),
             _ => self.taffy.new_leaf(style),
         }
@@ -237,13 +246,12 @@ impl UiArena {
     pub fn insert(
         &mut self,
         parent: NodeId,
-        widget: impl LayoutStyledWidget + 'static,
+        widget: impl Into<Widgets>,
         style: tf::Style,
     ) -> NodeId {
         let parent_style = &self.nodes[parent].computed_style;
-        let widget_ref = WidgetRef::new(widget);
-        let computed_style =
-            widget_ref.with(|widget| computed_style_for_widget(widget, parent_style, &self.theme));
+        let widget_ref = WidgetI::new(widget);
+        let computed_style = computed_style_for_widget(&widget_ref, parent_style, &self.theme);
         self.insert_node(
             parent,
             None,
@@ -262,15 +270,19 @@ impl UiArena {
         props_hash: u64,
         style: tf::Style,
         computed_style: ComputedStyle,
-        widget: WidgetRef,
+        widget: WidgetI,
         event_handlers: EventHandlers,
     ) -> NodeId {
         let position = self.nodes[parent].children.len();
-        let node_type = widget.with(|w| w.node_type());
+        let node_type = widget.node_type();
         let taffy_node = match node_type {
             WidgetType::Text | WidgetType::Label => self.taffy.new_leaf_with_context(
                 style,
-                WidgetContext::Text(computed_style.text.clone(), widget.with(|w| w.text())),
+                WidgetContext::Text(computed_style.text.clone(), widget.text()),
+            ),
+            WidgetType::Button => self.taffy.new_leaf_with_context(
+                style,
+                WidgetContext::Button(computed_style.text.clone(), widget.text()),
             ),
             _ => self.taffy.new_leaf(style),
         }
@@ -406,13 +418,72 @@ impl UiArena {
             return None;
         }
 
+        let child_point = if node.computed_style.scroll.direction.is_scrollable() {
+            Point::new(
+                point.x + node.scroll_offset.x,
+                point.y + node.scroll_offset.y,
+            )
+        } else {
+            point
+        };
+
         for child in node.children.iter().rev() {
-            if let Some(hit) = self.hit_test_from(*child, point) {
+            if let Some(hit) = self.hit_test_from(*child, child_point) {
                 return Some(hit);
             }
         }
 
         Some(id)
+    }
+
+    pub(crate) fn scroll_node_by(&mut self, start: NodeId, delta: Point) -> bool {
+        let mut cursor = Some(start);
+        while let Some(id) = cursor {
+            if self.scroll_single_node_by(id, delta) {
+                return true;
+            }
+            cursor = self.nodes.get(id).and_then(|node| node.parent);
+        }
+        false
+    }
+
+    fn scroll_single_node_by(&mut self, id: NodeId, delta: Point) -> bool {
+        let Some(node) = self.nodes.get(id) else {
+            return false;
+        };
+        let direction = node.computed_style.scroll.direction;
+        if !direction.is_scrollable() {
+            return false;
+        }
+
+        let max_x = if direction.allows_horizontal() {
+            (node.content_size.width - node.layout.width).max(0.0)
+        } else {
+            0.0
+        };
+        let max_y = if direction.allows_vertical() {
+            (node.content_size.height - node.layout.height).max(0.0)
+        } else {
+            0.0
+        };
+        if max_x <= 0.0 && max_y <= 0.0 {
+            return false;
+        }
+
+        let next = Point::new(
+            (node.scroll_offset.x - delta.x).clamp(0.0, max_x),
+            (node.scroll_offset.y - delta.y).clamp(0.0, max_y),
+        );
+        if next == node.scroll_offset {
+            return false;
+        }
+
+        let old_layout = node.layout;
+        let node = self.nodes.get_mut(id).expect("checked node existence");
+        node.scroll_offset = next;
+        self.damage.add(old_layout);
+        self.mark_dirty(id, DirtyFlags::PAINT);
+        true
     }
 
     pub fn event_path(&self, target: NodeId) -> Vec<NodeId> {
@@ -430,7 +501,12 @@ impl UiArena {
         event_system::dispatch_event(self, event)
     }
 
-    pub fn update_tree<T: TextMeasurer>(&mut self, root: NodeId, size: Size, measurer: &mut T) {
+    pub fn update_tree<T: TextMeasurer>(
+        &mut self,
+        root: NodeId,
+        size: Size<f32>,
+        measurer: &mut T,
+    ) {
         self.update_node(root, measurer);
         if self.has_layout_dirty() {
             self.compute_layout(size, measurer);
@@ -470,17 +546,19 @@ impl UiArena {
         }
 
         let widget = self.nodes[id].widget.clone();
-        let computed_style = if let Some(p) = self.nodes[id].parent.and_then(|p| self.node(p)) {
-            let parent_style = &p.computed_style;
-            widget.with(|widget| computed_style_for_widget(widget, parent_style, &self.theme))
-        } else {
-            widget.with(|widget| {
-                computed_style_for_widget(widget, &ComputedStyle::initial(&self.theme), &self.theme)
-            })
-        };
+        let (computed_style, taffy_style) =
+            if let Some(p) = self.nodes[id].parent.and_then(|p| self.node(p)) {
+                let parent_style = &p.computed_style;
+                let computed_style = computed_style_for_widget(&widget, parent_style, &self.theme);
+                let style = taffy_style_for_widget(&parent_style, &computed_style);
+                (computed_style, style)
+            } else {
+                let parent_style = ComputedStyle::initial(&self.theme);
+                let computed_style = computed_style_for_widget(&widget, &parent_style, &self.theme);
+                let style = taffy_style_for_widget(&parent_style, &computed_style);
+                (computed_style, style)
+            };
 
-        let taffy_style =
-            widget.layout_with(|widget| taffy_style_for_widget(widget, &computed_style, measurer));
         let mut changed = false;
         let mut refresh_context = false;
 
@@ -535,7 +613,7 @@ impl UiArena {
         }
     }
 
-    pub fn compute_layout_if_needed<T: TextMeasurer>(&mut self, size: Size, measurer: &mut T) {
+    pub fn compute_layout_if_needed<T: TextMeasurer>(&mut self, size: Size<f32>, measurer: &mut T) {
         if !self.has_layout_dirty() {
             return;
         }
@@ -569,9 +647,7 @@ impl UiArena {
         let rect = self.nodes[id].layout;
         let style = self.nodes[id].computed_style.clone();
         let mut cache = Vec::new();
-        self.nodes[id]
-            .widget
-            .with(|widget| widget.paint(rect, &style, &mut cache));
+        self.nodes[id].widget.paint(rect, &style, &mut cache);
         self.nodes[id].paint_cache = cache;
         if !self.damage_nodes.contains(&id) {
             self.damage_nodes.push(id);
@@ -579,7 +655,7 @@ impl UiArena {
         self.damage.add(rect);
     }
 
-    pub fn compute_layout<T: TextMeasurer>(&mut self, size: Size, measurer: &mut T) {
+    pub fn compute_layout<T: TextMeasurer>(&mut self, size: Size<f32>, measurer: &mut T) {
         self.layout_passes += 1;
         let root_taffy = self.nodes[self.root].taffy_node;
         self.taffy
@@ -612,6 +688,7 @@ impl UiArena {
             .taffy
             .layout(taffy_node)
             .expect("missing taffy layout result");
+        let content_size = Size::<f32>::new(layout.content_size.width, layout.content_size.height);
         let rect = Rect::new(
             offset_x + layout.location.x,
             offset_y + layout.location.y,
@@ -632,6 +709,8 @@ impl UiArena {
             }
             node.previous_layout = node.layout;
             node.layout = rect;
+            node.content_size = content_size;
+            clamp_scroll_offset(node);
             node.dirty.remove(DirtyFlags::LAYOUT);
             if layout_changed {
                 node.dirty.insert(DirtyFlags::PAINT);
@@ -739,25 +818,45 @@ impl UiArena {
     }
 
     fn paint_node(&self, id: NodeId, damage: &DamageRegion, commands: &mut Vec<PaintCommand>) {
+        self.paint_node_inner(id, damage, commands, false);
+    }
+
+    fn paint_node_inner(
+        &self,
+        id: NodeId,
+        damage: &DamageRegion,
+        commands: &mut Vec<PaintCommand>,
+        force: bool,
+    ) {
         let node = match self.nodes.get(id) {
             Some(node) => node,
             None => return,
         };
 
-        if damage.intersects(node.layout) {
-            if node.computed_style.paint.clip {
+        if force || damage.intersects(node.layout) {
+            let scrollable = node.computed_style.scroll.direction.is_scrollable();
+            if node.computed_style.paint.clip || scrollable {
                 commands.push(PaintCommand::PushClip(node.layout));
             }
             if node.paint_cache.is_empty() {
                 node.widget
-                    .with(|widget| widget.paint(node.layout, &node.computed_style, commands));
+                    .paint(node.layout, &node.computed_style, commands);
             } else {
                 commands.extend_from_slice(&node.paint_cache);
             }
-            for child in &node.children {
-                self.paint_node(*child, damage, commands);
+            if scrollable {
+                commands.push(PaintCommand::PushTransform {
+                    translate: Translation::new(-node.scroll_offset.x, -node.scroll_offset.y),
+                });
             }
-            if node.computed_style.paint.clip {
+            for child in &node.children {
+                self.paint_node_inner(*child, damage, commands, force || scrollable);
+            }
+            if scrollable {
+                commands.push(PaintCommand::PopTransform);
+                paint_scrollbars(node, commands);
+            }
+            if node.computed_style.paint.clip || scrollable {
                 commands.push(PaintCommand::PopClip);
             }
         }
@@ -830,40 +929,6 @@ impl UiArena {
                 .any(|node| !node.dirty.is_empty() || !node.subtree_dirty.is_empty())
     }
 
-    
-
-    fn find_reusable_child(
-        &self,
-        old_children: &[NodeId],
-        used: &[bool],
-        new_child: &Element,
-        position: usize,
-    ) -> Option<usize> {
-        if let Some(key) = new_child.key() {
-            return old_children
-                .iter()
-                .copied()
-                .enumerate()
-                .find(|(index, old_id)| {
-                    !used[*index]
-                        && self.nodes[*old_id].key.as_ref() == Some(&key)
-                        && Some(self.nodes[*old_id].node_type) == new_child.node_type()
-                })
-                .map(|(index, _)| index);
-        }
-
-        old_children
-            .get(position)
-            .copied()
-            .filter(|old_id| {
-                !used[position] && should_reuse(&self.nodes[*old_id], new_child, position)
-            })
-            .map(|_| position)
-    }
-
-
-    
-
     pub fn update_widget_node_from_parts(
         &mut self,
         id: NodeId,
@@ -871,14 +936,14 @@ impl UiArena {
         props_hash: u64,
         style: tf::Style,
         computed_style: ComputedStyle,
-        widget: WidgetRef,
+        widget: WidgetI,
         event_handlers: EventHandlers,
-    ) -> WidgetRef {
+    ) -> WidgetI {
         let mut flags = DirtyFlags::empty();
         let current_widget;
 
         {
-            let text = widget.with(|w| w.text());
+            let text = widget.text();
             eprintln!("Updated str: {:?}", text);
         }
 
@@ -905,12 +970,10 @@ impl UiArena {
                     .set_style(node.taffy_node, style)
                     .expect("failed to update taffy style");
             }
-            if node.node_type != widget.with(|widget| widget.node_type()) {
+            if node.node_type != widget.node_type() {
                 flags |= DirtyFlags::TREE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
             }
-            let widget_flags = node
-                .widget
-                .with_mut(|current| widget.with(|next| current.update_from(next)));
+            let widget_flags = node.widget.update_from(&widget);
 
             flags |= widget_flags;
             node.event_handlers = event_handlers;
@@ -923,7 +986,6 @@ impl UiArena {
         current_widget
     }
 
-    
     fn sync_taffy_children(&mut self, parent: NodeId) {
         let parent_taffy = self.nodes[parent].taffy_node;
         let taffy_children: Vec<_> = self.nodes[parent]
@@ -969,7 +1031,11 @@ impl UiArena {
         let context = match node.node_type {
             WidgetType::Text | WidgetType::Label => Some(WidgetContext::Text(
                 node.computed_style.text.clone(),
-                node.widget.with(|w| w.text()),
+                node.widget.text(),
+            )),
+            WidgetType::Button => Some(WidgetContext::Button(
+                node.computed_style.text.clone(),
+                node.widget.text(),
             )),
             _ => None,
         };
@@ -986,14 +1052,6 @@ impl Default for UiArena {
     }
 }
 
-pub fn should_reuse(old: &Node, new: &Element, position: usize) -> bool {
-    Some(old.node_type) == new.node_type()
-        && old.key == new.key()
-        && (old.key.is_some() || old.position == position)
-}
-
-
-
 fn measure_layout_context<T: TextMeasurer>(
     known_dimensions: tf::Size<Option<f32>>,
     available_space: tf::Size<tf::AvailableSpace>,
@@ -1009,7 +1067,7 @@ fn measure_layout_context<T: TextMeasurer>(
     }
 
     let measured = match node_context {
-        Some(WidgetContext::Text(_props, t)) => {
+        Some(WidgetContext::Text(_props, t)) | Some(WidgetContext::Button(_props, t)) => {
             let str = t.as_ref().map(|t| t.as_str()).unwrap_or_default();
             let constraints = match available_space.width {
                 tf::AvailableSpace::Definite(width) => TextLayoutConstraints::max_width(width),
@@ -1019,12 +1077,139 @@ fn measure_layout_context<T: TextMeasurer>(
             measurer.measure_text_with_constraints(str, _props, constraints, None)
         }
 
-        _ => Size::ZERO,
+        _ => Size::<f32>::ZERO,
     };
 
     tf::Size {
         width: known_dimensions.width.unwrap_or(measured.width),
         height: known_dimensions.height.unwrap_or(measured.height),
+    }
+}
+
+fn clamp_scroll_offset(node: &mut Node) {
+    let direction = node.computed_style.scroll.direction;
+    let max_x = if direction.allows_horizontal() {
+        (node.content_size.width - node.layout.width).max(0.0)
+    } else {
+        0.0
+    };
+    let max_y = if direction.allows_vertical() {
+        (node.content_size.height - node.layout.height).max(0.0)
+    } else {
+        0.0
+    };
+    node.scroll_offset.x = node.scroll_offset.x.clamp(0.0, max_x);
+    node.scroll_offset.y = node.scroll_offset.y.clamp(0.0, max_y);
+}
+
+fn paint_scrollbars(node: &Node, commands: &mut Vec<PaintCommand>) {
+    let direction = node.computed_style.scroll.direction;
+    let scrollbar = node.computed_style.scroll.scrollbar;
+    if scrollbar.visibility == ScrollbarVisibilityStyle::Hidden || scrollbar.width <= 0.0 {
+        return;
+    }
+
+    let max_x = (node.content_size.width - node.layout.width).max(0.0);
+    let max_y = (node.content_size.height - node.layout.height).max(0.0);
+
+    if direction.allows_vertical()
+        && should_paint_scrollbar(scrollbar, max_y)
+        && scrollbar.thumb_color.is_visible()
+    {
+        let track = vertical_scrollbar_track(node.layout, scrollbar.width);
+        paint_scrollbar_part(track, scrollbar.track_color, scrollbar.radius, commands);
+
+        if max_y > 0.0 {
+            let ratio = (node.layout.height / node.content_size.height).clamp(0.0, 1.0);
+            let thumb_height = (track.height * ratio)
+                .max(scrollbar.width * 2.0)
+                .min(track.height);
+            let travel = (track.height - thumb_height).max(0.0);
+            let top = track.y + travel * (node.scroll_offset.y / max_y);
+            paint_scrollbar_part(
+                Rect::new(track.x, top, track.width, thumb_height),
+                scrollbar.thumb_color,
+                scrollbar.radius,
+                commands,
+            );
+        }
+    }
+
+    if direction.allows_horizontal()
+        && should_paint_scrollbar(scrollbar, max_x)
+        && scrollbar.thumb_color.is_visible()
+    {
+        let track = horizontal_scrollbar_track(node.layout, scrollbar.width);
+        paint_scrollbar_part(track, scrollbar.track_color, scrollbar.radius, commands);
+
+        if max_x > 0.0 {
+            let ratio = (node.layout.width / node.content_size.width).clamp(0.0, 1.0);
+            let thumb_width = (track.width * ratio)
+                .max(scrollbar.width * 2.0)
+                .min(track.width);
+            let travel = (track.width - thumb_width).max(0.0);
+            let left = track.x + travel * (node.scroll_offset.x / max_x);
+            paint_scrollbar_part(
+                Rect::new(left, track.y, thumb_width, track.height),
+                scrollbar.thumb_color,
+                scrollbar.radius,
+                commands,
+            );
+        }
+    }
+}
+
+fn should_paint_scrollbar(scrollbar: ComputedScrollbarStyle, max_offset: f32) -> bool {
+    match scrollbar.visibility {
+        ScrollbarVisibilityStyle::Auto => max_offset > 0.0,
+        ScrollbarVisibilityStyle::Always => true,
+        ScrollbarVisibilityStyle::Hidden => false,
+    }
+}
+
+fn vertical_scrollbar_track(rect: Rect, width: f32) -> Rect {
+    Rect::new(
+        rect.x + (rect.width - width).max(0.0),
+        rect.y,
+        width.min(rect.width),
+        rect.height,
+    )
+}
+
+fn horizontal_scrollbar_track(rect: Rect, width: f32) -> Rect {
+    Rect::new(
+        rect.x,
+        rect.y + (rect.height - width).max(0.0),
+        rect.width,
+        width.min(rect.height),
+    )
+}
+
+fn paint_scrollbar_part(
+    rect: Rect,
+    color: ComputedColorStyle,
+    radius: f32,
+    commands: &mut Vec<PaintCommand>,
+) {
+    if rect.width <= 0.0 || rect.height <= 0.0 || !color.is_visible() {
+        return;
+    }
+
+    if radius > 0.0 {
+        commands.push(PaintCommand::RoundedRect {
+            rect,
+            radius,
+            color,
+            stroke: None,
+            shadow: None,
+        });
+    } else {
+        commands.push(PaintCommand::Rect {
+            rect,
+            color,
+            stroke: None,
+            shadow: None,
+        });
     }
 }
 

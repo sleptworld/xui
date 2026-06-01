@@ -2597,12 +2597,22 @@ name = "xui-interface"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.11.1",
+ "ordered-float",
  "slotmap",
  "smallstr",
 ]
 
 [[package]]
 name = "xui-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "xui-macros2"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",

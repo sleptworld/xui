@@ -181,9 +181,11 @@ where
                 self.runtime = Some(GuiRuntime::new(app, backend, text));
                 let size = window.inner_size();
                 let init_scale_factor = window.scale_factor();
-                self.runtime_mut().text_measure_mut().set_scale_factor(init_scale_factor as f32);
                 self.runtime_mut()
-                    .handle_event(RuntimeEvent::Resize(Size::new(
+                    .text_measure_mut()
+                    .set_scale_factor(init_scale_factor as f32);
+                self.runtime_mut()
+                    .handle_event(RuntimeEvent::Resize(Size::<f32>::new(
                         size.width as f32,
                         size.height as f32,
                     )));
@@ -215,10 +217,15 @@ where
             self.handle_runtime_event(event_loop, event);
         }
 
-        if let WindowEvent::ScaleFactorChanged { scale_factor,..} = &event {
-            self.runtime_mut().text_measure_mut().set_scale_factor(*scale_factor as f32);
-        }
+        if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = &event {
+            self.runtime_mut()
+                .text_measure_mut()
+                .set_scale_factor(*scale_factor as f32);
 
+            self.runtime_mut()
+                .backend_mut()
+                .set_factor(*scale_factor as f32);
+        }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
