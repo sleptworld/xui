@@ -697,7 +697,7 @@ impl UiArena {
         );
 
         let (children, mut subtree_dirty) = {
-            let node = self.nodes.get_mut(id).expect("node removed during layout");
+            let node = &mut self.nodes[id];
             let layout_changed = node.layout != rect;
             let should_sync_children = layout_changed
                 || node.dirty.intersects(Self::layout_dirty_flags())
@@ -840,6 +840,7 @@ impl UiArena {
         }
     }
 
+    #[inline(always)]
     fn paint_node(&self, id: NodeId, damage: &DamageRegion, commands: &mut Vec<PaintCommand>) {
         self.paint_node_inner(id, damage, commands, false);
     }

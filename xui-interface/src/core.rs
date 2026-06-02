@@ -134,6 +134,24 @@ impl Rect {
         let max_y = (self.y + self.height).max(other.y + other.height);
         Self::new(min_x, min_y, max_x - min_x, max_y - min_y)
     }
+
+    pub fn shrink(self, amount: f32) -> Self {
+        Self::new(
+            self.x + amount,
+            self.y + amount,
+            (self.width - 2.0 * amount).max(0.0),
+            (self.height - 2.0 * amount).max(0.0),
+        )
+    }
+
+    pub fn scale(self, factor: f32) -> Self {
+        Self::new(
+            self.x * factor,
+            self.y * factor,
+            self.width * factor,
+            self.height * factor,
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

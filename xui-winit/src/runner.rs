@@ -222,7 +222,8 @@ where
                 .text_measure_mut()
                 .set_scale_factor(*scale_factor as f32);
 
-            self.runtime_mut()
+            let _ = self
+                .runtime_mut()
                 .backend_mut()
                 .set_factor(*scale_factor as f32);
         }
