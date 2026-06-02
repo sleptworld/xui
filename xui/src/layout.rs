@@ -62,10 +62,16 @@ pub fn computed_layout_style(
                 if matches!(size.height(), Sizing::Fill) {
                     style.flex_grow = 1.0;
                 }
+                if matches!(size.height(), Sizing::Fix(_)) {
+                    style.flex_shrink = 0.0;
+                }
             }
             FlexDirectionStyle::Row => {
                 if matches!(size.width(), Sizing::Fill) {
                     style.flex_grow = 1.0;
+                }
+                if matches!(size.width(), Sizing::Fix(_)) {
+                    style.flex_shrink = 0.0;
                 }
             }
         }

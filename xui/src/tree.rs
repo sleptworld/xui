@@ -1,7 +1,6 @@
 use slotmap::SlotMap;
 use std::cell::Cell;
 use taffy::prelude as tf;
-use xui_interface::core::Sizing;
 use xui_interface::{
     ComputedColorStyle, ComputedScrollbarStyle, ComputedStyle, ComputedTextStyle, DirtyFlags,
     EventHandlers, NodeId, ScrollbarVisibilityStyle, TextContent, TextLayoutConstraints,
@@ -688,7 +687,8 @@ impl UiArena {
             .taffy
             .layout(taffy_node)
             .expect("missing taffy layout result");
-        let content_size = Size::<f32>::new(layout.content_size.width, layout.content_size.height);
+        let taffy_content_size =
+            Size::<f32>::new(layout.content_size.width, layout.content_size.height);
         let rect = Rect::new(
             offset_x + layout.location.x,
             offset_y + layout.location.y,
@@ -709,8 +709,6 @@ impl UiArena {
             }
             node.previous_layout = node.layout;
             node.layout = rect;
-            node.content_size = content_size;
-            clamp_scroll_offset(node);
             node.dirty.remove(DirtyFlags::LAYOUT);
             if layout_changed {
                 node.dirty.insert(DirtyFlags::PAINT);
@@ -727,9 +725,34 @@ impl UiArena {
             subtree_dirty |= self.sync_layout(child, rect.x, rect.y);
         }
 
+        let content_size = self.content_size_from_children(id, taffy_content_size);
         let node = self.nodes.get_mut(id).expect("node removed during layout");
+        let content_size_changed = node.content_size != content_size;
+        let scroll_offset_before_clamp = node.scroll_offset;
+        node.content_size = content_size;
+        clamp_scroll_offset(node);
+        if node.computed_style.scroll.direction.is_scrollable()
+            && (content_size_changed || node.scroll_offset != scroll_offset_before_clamp)
+        {
+            self.damage.add(node.layout);
+            node.dirty.insert(DirtyFlags::PAINT);
+        }
         node.subtree_dirty = subtree_dirty;
         node.dirty | node.subtree_dirty
+    }
+
+    fn content_size_from_children(&self, id: NodeId, taffy_content_size: Size<f32>) -> Size<f32> {
+        let node = &self.nodes[id];
+        let mut width = taffy_content_size.width.max(node.layout.width);
+        let mut height = taffy_content_size.height.max(node.layout.height);
+
+        for child in &node.children {
+            let child = &self.nodes[*child];
+            width = width.max(child.layout.x + child.layout.width - node.layout.x);
+            height = height.max(child.layout.y + child.layout.height - node.layout.y);
+        }
+
+        Size::<f32>::new(width, height)
     }
 
     fn repaint_dirty_subtree(&mut self, id: NodeId) {
@@ -1568,3 +1591,220 @@ fn paint_scrollbar_part(
 // pub fn repaint_if_needed(tree: &mut UiArena, node: NodeId) {
 //     tree.repaint_if_needed(node);
 // }
+
+#[cfg(test)]
+mod scroll_tests {
+    use xui_interface::{
+        Color, ComputedColorStyle, ComputedTextStyle, EventHandlers, ScrollbarVisibilityStyle,
+        Style,
+    };
+
+    use super::*;
+    use crate::widgets::{ContainerWidget, WidgetI};
+
+    #[derive(Default)]
+    struct TestMeasurer;
+
+    impl TextMeasurer for TestMeasurer {
+        fn measure_text(
+            &mut self,
+            text: &str,
+            props: &ComputedTextStyle,
+            scale_factor: Option<f32>,
+        ) -> Size<f32> {
+            self.measure_text_with_constraints(
+                text,
+                props,
+                TextLayoutConstraints::UNBOUNDED,
+                scale_factor,
+            )
+        }
+
+        fn measure_text_with_constraints(
+            &mut self,
+            text: &str,
+            props: &ComputedTextStyle,
+            constraints: TextLayoutConstraints,
+            _scale_factor: Option<f32>,
+        ) -> Size<f32> {
+            let width = constraints
+                .max_width
+                .unwrap_or_else(|| text.len() as f32 * props.font_size);
+            Size::<f32>::new(width, props.font_size)
+        }
+    }
+
+    fn insert_container(arena: &mut UiArena, parent: NodeId, widget: ContainerWidget) -> NodeId {
+        let parent_style = arena.node(parent).unwrap().computed_style.clone();
+        let widget = WidgetI::new(widget);
+        let computed_style = widget.computed_style(&parent_style, arena.theme());
+        let taffy_style = taffy_style_for_widget(&parent_style, &computed_style);
+        let props_hash = widget.props_hash();
+
+        arena.insert_node(
+            parent,
+            None,
+            props_hash,
+            taffy_style,
+            computed_style,
+            widget,
+            EventHandlers::default(),
+        )
+    }
+
+    fn scroll_fixture() -> (UiArena, NodeId, NodeId, TestMeasurer) {
+        let mut arena = UiArena::new();
+        let root = arena.root();
+        let scroller = insert_container(
+            &mut arena,
+            root,
+            ContainerWidget::new().style(
+                Style::new()
+                    .size(Size::fix(100.0, 40.0))
+                    .scroll_vertical()
+                    .scrollbar_width(10.0)
+                    .scrollbar_track_color(Color::GRAY_100)
+                    .scrollbar_thumb_color(Color::BLUE_500)
+                    .scrollbar_radius(0.0),
+            ),
+        );
+        let child = insert_container(
+            &mut arena,
+            scroller,
+            ContainerWidget::new().style(
+                Style::new()
+                    .size(Size::fix(100.0, 120.0))
+                    .background(Color::BLACK),
+            ),
+        );
+        let mut measurer = TestMeasurer::default();
+
+        arena.update_tree(root, Size::<f32>::new(200.0, 200.0), &mut measurer);
+
+        (arena, scroller, child, measurer)
+    }
+
+    #[test]
+    fn scrollable_container_records_content_extent_from_layout() {
+        let (arena, scroller, _child, _measurer) = scroll_fixture();
+        let node = arena.node(scroller).unwrap();
+
+        assert_eq!(node.layout, Rect::new(0.0, 0.0, 100.0, 40.0));
+        assert_eq!(node.content_size.height, 120.0);
+        assert_eq!(node.scroll_offset, Point::new(0.0, 0.0));
+    }
+
+    #[test]
+    fn wheel_event_scrolls_nearest_scrollable_container() {
+        let (mut arena, scroller, child, _measurer) = scroll_fixture();
+
+        let result = arena.dispatch_event(&Event::Wheel {
+            position: Point::new(5.0, 5.0),
+            delta: Point::new(0.0, -25.0),
+        });
+
+        assert_eq!(result, EventResult::Consumed);
+        assert_eq!(
+            arena.node(scroller).unwrap().scroll_offset,
+            Point::new(0.0, 25.0)
+        );
+        assert_eq!(arena.hit_test(Point::new(5.0, 5.0)), Some(child));
+        assert!(
+            arena
+                .node(scroller)
+                .unwrap()
+                .dirty
+                .contains(DirtyFlags::PAINT)
+        );
+    }
+
+    #[test]
+    fn scroll_offset_is_clamped_to_content_bounds() {
+        let (mut arena, scroller, _child, _measurer) = scroll_fixture();
+
+        assert!(arena.scroll_node_by(scroller, Point::new(0.0, -500.0)));
+        assert_eq!(
+            arena.node(scroller).unwrap().scroll_offset,
+            Point::new(0.0, 80.0)
+        );
+
+        assert!(arena.scroll_node_by(scroller, Point::new(0.0, 500.0)));
+        assert_eq!(
+            arena.node(scroller).unwrap().scroll_offset,
+            Point::new(0.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn scrollable_container_paints_clip_transform_and_scrollbar() {
+        let (mut arena, scroller, _child, mut measurer) = scroll_fixture();
+        arena.finish_paint();
+
+        arena.dispatch_event(&Event::Wheel {
+            position: Point::new(5.0, 5.0),
+            delta: Point::new(0.0, -20.0),
+        });
+        arena.update_tree(arena.root(), Size::<f32>::new(200.0, 200.0), &mut measurer);
+
+        let (_damage, commands) = arena.prepare_paint_commands();
+        let scroll_rect = arena.node(scroller).unwrap().layout;
+
+        assert!(commands.contains(&PaintCommand::PushClip(scroll_rect)));
+        assert!(commands.contains(&PaintCommand::PushTransform {
+            translate: Translation::new(0.0, -20.0),
+        }));
+        assert!(commands.contains(&PaintCommand::PopTransform));
+
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            PaintCommand::Rect {
+                rect,
+                color: ComputedColorStyle::Solid(Color::GRAY_100),
+                ..
+            } if *rect == Rect::new(90.0, 0.0, 10.0, 40.0)
+        )));
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            PaintCommand::Rect {
+                rect,
+                color: ComputedColorStyle::Solid(Color::BLUE_500),
+                ..
+            } if *rect == Rect::new(90.0, 5.0, 10.0, 20.0)
+        )));
+    }
+
+    #[test]
+    fn hidden_scrollbar_does_not_emit_scrollbar_paint() {
+        let mut arena = UiArena::new();
+        let root = arena.root();
+        let scroller = insert_container(
+            &mut arena,
+            root,
+            ContainerWidget::new().style(
+                Style::new()
+                    .size(Size::fix(100.0, 40.0))
+                    .scroll_vertical()
+                    .scrollbar_visibility(ScrollbarVisibilityStyle::Hidden)
+                    .scrollbar_track_color(Color::GRAY_100)
+                    .scrollbar_thumb_color(Color::BLUE_500),
+            ),
+        );
+        insert_container(
+            &mut arena,
+            scroller,
+            ContainerWidget::new().style(Style::new().size(Size::fix(100.0, 120.0))),
+        );
+        let mut measurer = TestMeasurer::default();
+        arena.update_tree(root, Size::<f32>::new(200.0, 200.0), &mut measurer);
+
+        let (_damage, commands) = arena.prepare_paint_commands();
+
+        assert!(!commands.iter().any(|command| matches!(
+            command,
+            PaintCommand::Rect {
+                color: ComputedColorStyle::Solid(color),
+                ..
+            } if *color == Color::GRAY_100 || *color == Color::BLUE_500
+        )));
+    }
+}

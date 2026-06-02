@@ -1,7 +1,8 @@
 use crate::element::ElementDesc;
 use xui_interface::{
-    ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, PaintCommand,
-    Rect, ScrollDirectionStyle, Style, Widget, WidgetType,
+    ColorStyle, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key,
+    LengthValue, PaintCommand, Rect, ScrollDirectionStyle, ScrollbarStyle,
+    ScrollbarVisibilityStyle, Style, Widget, WidgetType,
 };
 
 use super::{props_hash, widget_element_desc};
@@ -42,6 +43,36 @@ impl ContainerWidget {
 
     pub fn scroll_direction(mut self, direction: ScrollDirectionStyle) -> Self {
         self.style = self.style.clone().scroll_direction(direction);
+        self
+    }
+
+    pub fn scrollbar(mut self, scrollbar: ScrollbarStyle) -> Self {
+        self.style = self.style.clone().scrollbar(scrollbar);
+        self
+    }
+
+    pub fn scrollbar_width(mut self, width: impl Into<LengthValue>) -> Self {
+        self.style = self.style.clone().scrollbar_width(width);
+        self
+    }
+
+    pub fn scrollbar_track_color(mut self, color: impl Into<ColorStyle>) -> Self {
+        self.style = self.style.clone().scrollbar_track_color(color);
+        self
+    }
+
+    pub fn scrollbar_thumb_color(mut self, color: impl Into<ColorStyle>) -> Self {
+        self.style = self.style.clone().scrollbar_thumb_color(color);
+        self
+    }
+
+    pub fn scrollbar_radius(mut self, radius: impl Into<LengthValue>) -> Self {
+        self.style = self.style.clone().scrollbar_radius(radius);
+        self
+    }
+
+    pub fn scrollbar_visibility(mut self, visibility: ScrollbarVisibilityStyle) -> Self {
+        self.style = self.style.clone().scrollbar_visibility(visibility);
         self
     }
 

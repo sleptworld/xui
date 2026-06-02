@@ -62,7 +62,7 @@ impl Widget for ScrollScope {
         cx: &mut xui_interface::EventContext<'_>,
     ) -> xui_interface::EventResult {
         match event {
-            Event::Wheel { position, delta } => {
+            Event::Wheel { delta, .. } => {
                 self.translation.translate(*delta);
                 xui_interface::EventResult::Consumed
             }
