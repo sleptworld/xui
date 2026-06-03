@@ -33,8 +33,8 @@ pub use crate::widgets::{
 };
 pub use xui_interface::{
     DirtyFlags, FontFamily, FontStyle, FontWeight, LineHeight, NodeId, OverflowWrap,
-    ParagraphStyle, TextAlign, TextBoxStyle, TextContent, TextDecoration, TextOverflow, TextProps,
-    TextStyle, TextVerticalAlign, WhiteSpace,
+    ParagraphStyle, Sizing, TextAlign, TextBoxStyle, TextContent, TextDecoration, TextOverflow,
+    TextProps, TextStyle, TextVerticalAlign, WhiteSpace,
 };
 pub use xui_macros::{component, component_fn, xui};
 pub use xui_text::engine::Engine;

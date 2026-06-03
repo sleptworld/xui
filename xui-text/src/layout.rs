@@ -168,7 +168,7 @@ impl GlyphData {
 
 #[derive(Clone)]
 pub struct RunData {
-    pub span: SpanId,
+    pub(super) span: SpanId,
     pub line: u32,
     pub font: Font,
     pub coords: (u32, u32),

@@ -529,8 +529,8 @@ impl<T: TextLayouter> RenderBackend<T> for WGPUBackend {
     type Error = WgpuBackendError;
 
     fn begin_frame(&mut self, size: xui_interface::Size<f32>) -> Result<(), Self::Error> {
-        let width = size.width.max(1.0) as u32;
-        let height = size.height.max(1.0) as u32;
+        let width = (size.width * self.scale_factor).max(1.0).ceil() as u32;
+        let height = (size.height * self.scale_factor).max(1.0).ceil() as u32;
         if self.config.width != width || self.config.height != height {
             self.config.width = width;
             self.config.height = height;
@@ -565,12 +565,17 @@ impl<T: TextLayouter> RenderBackend<T> for WGPUBackend {
     ) -> Result<(), Self::Error> {
         let _ = (&self.instance, &self.adapter);
         self.presented_frame = false;
+        let logical_scene_size = xui_interface::Size::<f32>::new(
+            self.config.width as f32 / self.scale_factor,
+            self.config.height as f32 / self.scale_factor,
+        );
         let scene_clip = damage.bounds().unwrap_or(Rect::new(
             0.0,
             0.0,
-            self.config.width as f32,
-            self.config.height as f32,
+            logical_scene_size.width,
+            logical_scene_size.height,
         ));
+        let physical_scene_clip = scene_clip.scale(self.scale_factor);
         let (instances, glyph_instances, text_glyph_records) =
             self.build_ui_instances(commands, scene_clip, text)?;
         self.last_text_glyph_records = text_glyph_records;
@@ -659,7 +664,7 @@ impl<T: TextLayouter> RenderBackend<T> for WGPUBackend {
             let has_draws = instance_buffer.is_some() || glyph_instance_buffer.is_some();
             if has_draws {
                 if let Some(scissor) =
-                    scissor_rect(scene_clip, self.config.width, self.config.height)
+                    scissor_rect(physical_scene_clip, self.config.width, self.config.height)
                 {
                     pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
                 }
@@ -859,8 +864,9 @@ impl WGPUBackend {
             command.props.text.as_str(),
             &style,
             TextLayoutConstraints::max_width(rect.width),
-            None,
         );
+
+        let scale = 1. / self.scale_factor;
         for line in par.lines() {
             let baseline_y = rect.y + line.baseline();
             let mut pen_x = rect.x + line.offset();
@@ -869,7 +875,7 @@ impl WGPUBackend {
                 let style = TextRunStyle {
                     font: run.font().as_ref(),
                     font_coords: run.normalized_coords(),
-                    font_size: run.font_size(),
+                    font_size: run.font_size() * self.scale_factor,
                     baseline: baseline_y,
                     advance: run.advance(),
                 };
@@ -895,10 +901,10 @@ impl WGPUBackend {
                         }
 
                         let screen_rect = Rect::new(
-                            (origin_x + subpx_bias.x).floor() + placement.left as f32,
-                            (origin_y + subpx_bias.y).floor() - placement.top as f32,
-                            placement.width as f32,
-                            placement.height as f32,
+                            (origin_x + subpx_bias.x).floor() + (placement.left as f32 * scale),
+                            (origin_y + subpx_bias.y).floor() - (placement.top as f32 * scale),
+                            placement.width as f32 * scale,
+                            placement.height as f32 * scale,
                         );
                         if intersect_rect(clip, screen_rect).is_none() {
                             continue;

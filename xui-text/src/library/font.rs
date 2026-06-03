@@ -19,23 +19,23 @@ impl Font {
         self.as_ref().attributes()
     }
 
-    pub fn localized_strings(&self) -> swash::iter::LocalizedStrings {
+    pub fn localized_strings<'a>(&'a self) -> swash::iter::LocalizedStrings<'a> {
         self.as_ref().localized_strings()
     }
 
-    pub fn variations(&self) -> swash::iter::Variations {
+    pub fn variations<'a>(&'a self) -> swash::iter::Variations<'a> {
         self.as_ref().variations()
     }
 
-    pub fn instances(&self) -> swash::iter::Instances {
+    pub fn instances<'a>(&'a self) -> swash::iter::Instances<'a> {
         self.as_ref().instances()
     }
 
-    pub fn writing_systems(&self) -> swash::iter::WritingSystems {
+    pub fn writing_systems<'a>(&'a self) -> swash::iter::WritingSystems<'a> {
         self.as_ref().writing_systems()
     }
 
-    pub fn features(&self) -> swash::iter::Features {
+    pub fn features<'a>(&'a self) -> swash::iter::Features<'a> {
         self.as_ref().features()
     }
 

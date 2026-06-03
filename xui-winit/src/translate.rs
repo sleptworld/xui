@@ -36,6 +36,7 @@ pub fn translate_mouse_wheel(delta: &MouseScrollDelta) -> Point {
 }
 
 pub fn translate_window_event(
+    scale: f32,
     event: &WindowEvent,
     last_cursor_position: Option<Point>,
 ) -> Vec<RuntimeEvent> {
@@ -49,7 +50,7 @@ pub fn translate_window_event(
         WindowEvent::Focused(false) => vec![RuntimeEvent::Input(Event::FocusLost)],
         WindowEvent::CursorMoved { position, .. } => {
             vec![RuntimeEvent::Input(Event::PointerMove {
-                position: Point::new(position.x as f32, position.y as f32),
+                position: Point::new(position.x as f32, position.y as f32).scale(1. / scale),
             })]
         }
         WindowEvent::MouseInput { state, button, .. } => {
@@ -78,7 +79,7 @@ pub fn translate_window_event(
     }
 }
 
-fn translate_key_event(event: &KeyEvent) -> Vec<RuntimeEvent> {
+pub fn translate_key_event(event: &KeyEvent) -> Vec<RuntimeEvent> {
     let key = translate_key(&event.logical_key);
     let mut events = vec![RuntimeEvent::Input(match event.state {
         ElementState::Pressed => Event::KeyDown { key },

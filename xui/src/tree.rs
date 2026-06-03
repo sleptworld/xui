@@ -549,12 +549,12 @@ impl UiArena {
             if let Some(p) = self.nodes[id].parent.and_then(|p| self.node(p)) {
                 let parent_style = &p.computed_style;
                 let computed_style = computed_style_for_widget(&widget, parent_style, &self.theme);
-                let style = taffy_style_for_widget(&parent_style, &computed_style);
+                let style = taffy_style_for_widget(&widget, &parent_style, &computed_style);
                 (computed_style, style)
             } else {
                 let parent_style = ComputedStyle::initial(&self.theme);
                 let computed_style = computed_style_for_widget(&widget, &parent_style, &self.theme);
-                let style = taffy_style_for_widget(&parent_style, &computed_style);
+                let style = taffy_style_for_widget(&widget, &parent_style, &computed_style);
                 (computed_style, style)
             };
 
@@ -1098,7 +1098,7 @@ fn measure_layout_context<T: TextMeasurer>(
                 tf::AvailableSpace::MaxContent => TextLayoutConstraints::UNBOUNDED,
                 _ => TextLayoutConstraints::UNBOUNDED,
             };
-            measurer.measure_text_with_constraints(str, _props, constraints, None)
+            measurer.measure_text_with_constraints(str, _props, constraints)
         }
 
         _ => Size::<f32>::ZERO,
@@ -1607,18 +1607,8 @@ mod scroll_tests {
     struct TestMeasurer;
 
     impl TextMeasurer for TestMeasurer {
-        fn measure_text(
-            &mut self,
-            text: &str,
-            props: &ComputedTextStyle,
-            scale_factor: Option<f32>,
-        ) -> Size<f32> {
-            self.measure_text_with_constraints(
-                text,
-                props,
-                TextLayoutConstraints::UNBOUNDED,
-                scale_factor,
-            )
+        fn measure_text(&mut self, text: &str, props: &ComputedTextStyle) -> Size<f32> {
+            self.measure_text_with_constraints(text, props, TextLayoutConstraints::UNBOUNDED)
         }
 
         fn measure_text_with_constraints(
@@ -1626,7 +1616,6 @@ mod scroll_tests {
             text: &str,
             props: &ComputedTextStyle,
             constraints: TextLayoutConstraints,
-            _scale_factor: Option<f32>,
         ) -> Size<f32> {
             let width = constraints
                 .max_width
@@ -1639,7 +1628,7 @@ mod scroll_tests {
         let parent_style = arena.node(parent).unwrap().computed_style.clone();
         let widget = WidgetI::new(widget);
         let computed_style = widget.computed_style(&parent_style, arena.theme());
-        let taffy_style = taffy_style_for_widget(&parent_style, &computed_style);
+        let taffy_style = taffy_style_for_widget(&widget, &parent_style, &computed_style);
         let props_hash = widget.props_hash();
 
         arena.insert_node(

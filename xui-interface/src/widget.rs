@@ -40,21 +40,15 @@ impl From<String> for Key {
 }
 
 pub trait TextMeasurer {
-    fn set_scale_factor(&mut self, _scale_factor: f32) {}
+    // fn set_scale_factor(&mut self, _scale_factor: f32) {}
 
-    fn measure_text(
-        &mut self,
-        text: &str,
-        props: &ComputedTextStyle,
-        scale_factor: Option<f32>,
-    ) -> Size<f32>;
+    fn measure_text(&mut self, text: &str, props: &ComputedTextStyle) -> Size<f32>;
 
     fn measure_text_with_constraints(
         &mut self,
         text: &str,
         props: &ComputedTextStyle,
         _constraints: TextLayoutConstraints,
-        scale_factor: Option<f32>,
     ) -> Size<f32>;
 }
 

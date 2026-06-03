@@ -117,6 +117,8 @@ impl App {
     pub fn mark_needs_rebuild(&mut self) {
         self.components.mark_root_dirty();
         self.arena.mark_dirty(self.arena.root(), DirtyFlags::STATE);
+        self.arena
+            .add_damage(Rect::new(0.0, 0.0, self.size.width, self.size.height));
     }
 
     #[inline]

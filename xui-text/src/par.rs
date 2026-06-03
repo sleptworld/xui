@@ -8,7 +8,6 @@ use crate::layout::{
 };
 use crate::library::{FamilyList, Font, FontContext, FontGroupId};
 use crate::line_breaker::BreakLines;
-use glam::Vec4;
 use std::borrow::Borrow;
 use std::ops::{Deref, Range};
 use std::u32;
@@ -755,7 +754,6 @@ pub fn make_range(r: (u32, u32)) -> Range<usize> {
 
 pub struct Session<'a> {
     pub(crate) engine: &'a mut Engine,
-    pub(crate) scale: f32,
     pub(crate) dir_depth: u32,
     pub(crate) needs_bidi: bool,
     pub(crate) last_offset: usize,
@@ -772,13 +770,13 @@ impl<'a> Session<'a> {
         s.text_offsets.push(0);
     }
 
-    pub fn push_span<'p, I>(&mut self, styles: I) -> Option<SpanId>
+    pub(super) fn push_span<'p, I>(&mut self, styles: I) -> Option<SpanId>
     where
         I: IntoIterator,
         I::Item: Borrow<SpanStyle<'p>>,
     {
         let s = &mut self.engine.state;
-        let (id, dir) = s.push(&mut self.engine.font_ctx, self.scale, styles)?;
+        let (id, dir) = s.push(&mut self.engine.font_ctx, styles)?;
         if let Some(dir) = dir {
             const LRI: char = '\u{2066}';
             const RLI: char = '\u{2067}';
@@ -1031,15 +1029,15 @@ impl<'a> Session<'a> {
 #[derive(Clone)]
 pub struct SpanData {
     /// Identifier of the span.
-    pub id: SpanId,
+    pub(super) id: SpanId,
     /// Identifier of the parent span.
-    pub parent: Option<SpanId>,
+    pub(super) parent: Option<SpanId>,
     /// Identifier of first child of the span.
-    pub first_child: Option<SpanId>,
+    pub(super) first_child: Option<SpanId>,
     /// Identifier of last child of the span.
-    pub last_child: Option<SpanId>,
+    pub(super) last_child: Option<SpanId>,
     /// Identifier of next sibling of the span.
-    pub next: Option<SpanId>,
+    pub(super) next: Option<SpanId>,
     /// Text direction.
     pub dir: Direction,
     /// Is the direction different from the parent?
@@ -1097,8 +1095,8 @@ pub struct BuilderState {
     pub fragments: Vec<FragmentData>,
     /// Collection of items.
     pub items: Vec<ItemData>,
-    /// User specified scale.
-    pub scale: f32,
+    // /// User specified scale.
+    // pub scale: f32,
 }
 
 impl BuilderState {
@@ -1124,7 +1122,7 @@ impl BuilderState {
         &mut self,
         dir: Direction,
         lang: Option<Language>,
-        scale: f32,
+        // scale: f32,
         _base_offset: usize,
     ) {
         self.spans.push(SpanData {
@@ -1139,7 +1137,7 @@ impl BuilderState {
             font: FontGroupId(!0),
             font_family: FamilyList::new(""),
             font_attrs: (Stretch::NORMAL, Weight::NORMAL, Style::Normal),
-            font_size: 16. * scale,
+            font_size: 16.,
             font_features: EMPTY_FONT_SETTINGS,
             font_vars: EMPTY_FONT_SETTINGS,
             letter_spacing: 0.,
@@ -1154,10 +1152,10 @@ impl BuilderState {
 
     /// Pushes a new span with the specified properties. Returns the new
     /// span identifier and a value indicating a new direction, if any.
-    pub fn push<'a, I>(
+    pub(super) fn push<'a, I>(
         &mut self,
         fcx: &mut FontContext,
-        scale: f32,
+        // scale: f32,
         styles: I,
     ) -> Option<(SpanId, Option<Direction>)>
     where
@@ -1228,7 +1226,7 @@ impl BuilderState {
                     }
                 }
                 S::Size(size) => {
-                    span.font_size = *size * scale;
+                    span.font_size = *size;
                 }
                 S::Features(features) => {
                     span.font_features = self.features.add(features.iter().copied());
@@ -1237,10 +1235,10 @@ impl BuilderState {
                     span.font_vars = self.vars.add(vars.iter().copied());
                 }
                 S::LetterSpacing(spacing) => {
-                    span.letter_spacing = *spacing * scale;
+                    span.letter_spacing = *spacing;
                 }
                 S::WordSpacing(spacing) => {
-                    span.word_spacing = *spacing * scale;
+                    span.word_spacing = *spacing;
                 }
                 S::LineSpacing(spacing) => {
                     span.line_spacing = *spacing;
@@ -1249,9 +1247,9 @@ impl BuilderState {
                     span.underline = *enable;
                 }
                 S::UnderlineOffset(offset) => {
-                    span.underline_offset = (*offset).map(|o| o * scale);
+                    span.underline_offset = *offset;
                 }
-                S::UnderlineSize(size) => span.underline_size = (*size).map(|s| s * scale),
+                S::UnderlineSize(size) => span.underline_size = *size,
             }
         }
         if font_changed {
@@ -1588,7 +1586,7 @@ mod tests {
 
     fn layout_doc(doc: &Doc<'_>) -> Par {
         let mut engine = Engine::new();
-        let mut session = engine.start(Direction::Ltr, 1.0, 0);
+        let mut session = engine.start(Direction::Ltr, None, 0);
         session.process(doc);
         session.finish(None)
     }

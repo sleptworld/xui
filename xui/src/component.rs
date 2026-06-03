@@ -817,12 +817,12 @@ impl ComponentRuntime {
                 {
                     let computed_style = computed_style_for_widget(&widget, parent_style, theme);
 
-                    let style = taffy_style_for_widget(&parent_style, &computed_style);
+                    let style = taffy_style_for_widget(&widget, &parent_style, &computed_style);
                     (computed_style, style)
                 } else {
                     let parent_style = ComputedStyle::initial(theme);
                     let computed_style = computed_style_for_widget(&widget, &parent_style, theme);
-                    let style = taffy_style_for_widget(&parent_style, &computed_style);
+                    let style = taffy_style_for_widget(&widget, &parent_style, &computed_style);
                     (computed_style, style)
                 };
 

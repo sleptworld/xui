@@ -1,17 +1,16 @@
 use std::fmt;
 use std::sync::Arc;
 
+use crate::translate::{translate_key_event, translate_mouse_button, translate_mouse_wheel};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::error::{EventLoopError, OsError};
-use winit::event::WindowEvent;
+use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
-use xui::App;
+use xui::{App, Event};
 use xui::{runtime::ControlFlow as XuiControlFlow, runtime::GuiRuntime, runtime::RuntimeEvent};
 use xui_interface::{Point, RenderBackend, Size, TextMeasurer};
-
-use crate::translate::translate_window_event;
 
 #[derive(Debug, Clone)]
 pub struct WinitRunnerOptions {
@@ -162,6 +161,81 @@ where
             }
         }
     }
+
+    #[inline(always)]
+    fn translate_pointer_position(&self, position: &winit::dpi::PhysicalPosition<f64>) -> Point {
+        let scale = self
+            .window
+            .as_ref()
+            .map(|w| w.scale_factor() as f32)
+            .unwrap_or(1.0);
+        Point::new(position.x as f32, position.y as f32).scale(1. / scale)
+    }
+
+    fn translate_window_event(
+        &self,
+        event: &WindowEvent,
+        last_cursor_position: Option<Point>,
+    ) -> (Vec<RuntimeEvent>, Option<Point>) {
+        match event {
+            WindowEvent::Resized(size) => {
+                (vec![RuntimeEvent::Resize(self.logical_size(*size))], None)
+            }
+            WindowEvent::CloseRequested | WindowEvent::Destroyed => {
+                (vec![RuntimeEvent::Exit], None)
+            }
+            WindowEvent::Focused(true) => (vec![RuntimeEvent::Input(Event::FocusGained)], None),
+            WindowEvent::Focused(false) => (vec![RuntimeEvent::Input(Event::FocusLost)], None),
+            WindowEvent::CursorMoved { position, .. } => {
+                let pointer = self.translate_pointer_position(position);
+                (
+                    vec![RuntimeEvent::Input(Event::PointerMove {
+                        position: pointer,
+                    })],
+                    Some(pointer),
+                )
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let Some(button) = translate_mouse_button(*button) else {
+                    return (Vec::new(), None);
+                };
+                let position = last_cursor_position.unwrap_or(Point::new(0.0, 0.0));
+                let event = match state {
+                    ElementState::Pressed => Event::PointerDown { position, button },
+                    ElementState::Released => Event::PointerUp { position, button },
+                };
+                (vec![RuntimeEvent::Input(event)], None)
+            }
+            WindowEvent::MouseWheel { delta, .. } => (
+                vec![RuntimeEvent::Input(Event::Wheel {
+                    position: last_cursor_position.unwrap_or(Point::new(0.0, 0.0)),
+                    delta: translate_mouse_wheel(delta),
+                })],
+                None,
+            ),
+            WindowEvent::KeyboardInput { event, .. } => (translate_key_event(event), None),
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) => (
+                vec![RuntimeEvent::Input(Event::TextInput { text: text.clone() })],
+                None,
+            ),
+            WindowEvent::RedrawRequested => (vec![RuntimeEvent::RedrawRequested], None),
+            _ => (Vec::new(), None),
+        }
+    }
+
+    fn logical_size(&self, size: PhysicalSize<u32>) -> Size<f32> {
+        let scale = self
+            .window
+            .as_ref()
+            .map(|w| w.scale_factor() as f32)
+            .unwrap_or(1.0);
+        Self::logical_size_at_scale(size, scale)
+    }
+
+    fn logical_size_at_scale(size: PhysicalSize<u32>, scale: f32) -> Size<f32> {
+        let scale = scale.max(f32::EPSILON);
+        Size::<f32>::new(size.width as f32 / scale, size.height as f32 / scale)
+    }
 }
 
 impl<B: RenderBackend<T>, T: TextMeasurer, F> ApplicationHandler for WinitRunner<B, T, F>
@@ -181,15 +255,10 @@ where
                 self.runtime = Some(GuiRuntime::new(app, backend, text));
                 let size = window.inner_size();
                 let init_scale_factor = window.scale_factor();
-                self.runtime_mut()
-                    .text_measure_mut()
-                    .set_scale_factor(init_scale_factor as f32);
-                self.runtime_mut()
-                    .handle_event(RuntimeEvent::Resize(Size::<f32>::new(
-                        size.width as f32,
-                        size.height as f32,
-                    )));
                 self.window = Some(window);
+                let logical_size = Self::logical_size_at_scale(size, init_scale_factor as f32);
+                self.runtime_mut()
+                    .handle_event(RuntimeEvent::Resize(logical_size));
                 self.request_redraw_if_dirty();
             }
             Err(error) => {
@@ -209,23 +278,29 @@ where
             return;
         }
 
-        if let WindowEvent::CursorMoved { position, .. } = &event {
-            self.last_cursor_position = Some(Point::new(position.x as f32, position.y as f32));
+        let (events, cursor_position) =
+            self.translate_window_event(&event, self.last_cursor_position);
+
+        if let Some(position) = cursor_position {
+            self.last_cursor_position = Some(position);
         }
 
-        for event in translate_window_event(&event, self.last_cursor_position) {
+        for event in events {
             self.handle_runtime_event(event_loop, event);
         }
 
         if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = &event {
-            self.runtime_mut()
-                .text_measure_mut()
-                .set_scale_factor(*scale_factor as f32);
-
             let _ = self
                 .runtime_mut()
                 .backend_mut()
                 .set_factor(*scale_factor as f32);
+            if let Some(window) = self.window.as_ref() {
+                let size = Self::logical_size_at_scale(window.inner_size(), *scale_factor as f32);
+                self.runtime_mut().handle_event(RuntimeEvent::Resize(size));
+            }
+
+            self.runtime_mut().app_mut().mark_needs_rebuild();
+            self.request_redraw_if_dirty();
         }
     }
 

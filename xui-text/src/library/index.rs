@@ -28,6 +28,18 @@ pub struct StaticIndex {
     pub generic: [Option<FamilyId>; 13],
 }
 
+#[cfg(target_os = "macos")]
+const MACOS_SYSTEM_UI_FAMILIES: &[&str] = &[
+    "sf pro",
+    "sf ns",
+    ".sf ns",
+    "system font",
+    ".apple system ui font",
+    ".applesystemuifont",
+    "helvetica neue",
+    "helvetica",
+];
+
 impl Default for StaticIndex {
     fn default() -> Self {
         let fallbacks = Fallbacks::new();
@@ -190,12 +202,12 @@ impl StaticIndex {
 
         #[cfg(target_os = "macos")]
         {
-            self.generic[SansSerif as usize] = self.find_family(&["helvetica"]);
+            self.generic[SansSerif as usize] = self.find_family(&["helvetica neue", "helvetica"]);
             self.generic[Serif as usize] = self.find_family(&["times"]);
             self.generic[Monospace as usize] = self.find_family(&["courier"]);
             self.generic[Fantasy as usize] = self.find_family(&["papyrus"]);
             self.generic[Cursive as usize] = self.find_family(&["apple chancery"]);
-            self.generic[SystemUI as usize] = self.find_family(&["system font", "helvetica"]);
+            self.generic[SystemUI as usize] = self.find_family(MACOS_SYSTEM_UI_FAMILIES);
             self.generic[Emoji as usize] = self.find_family(&["apple color emoji"]);
         }
 
@@ -224,7 +236,30 @@ impl StaticIndex {
     }
 
     pub fn fallbacks(&self, script: Script, cjk: Cjk) -> &[FamilyId] {
-        self.script_map.get(&script).map(|f| f.get()).unwrap_or(&[])
+        if let Some(fallbacks) = self.script_map.get(&script) {
+            let fallbacks = fallbacks.get();
+            if !fallbacks.is_empty() {
+                return fallbacks;
+            }
+        }
+
+        let cjk = match script {
+            Script::Han => Some(cjk),
+            Script::Hiragana | Script::Katakana => Some(Cjk::Japanese),
+            Script::Hangul => Some(Cjk::Korean),
+            _ => None,
+        };
+
+        match cjk {
+            Some(cjk) => {
+                let preferred = self.cjk[cjk as usize].get();
+                if !preferred.is_empty() {
+                    return preferred;
+                }
+                self.cjk[Cjk::None as usize].get()
+            }
+            None => &[],
+        }
     }
 
     fn map_script(&mut self, script: Script, families: &[&str]) {
@@ -720,7 +755,6 @@ impl<'a> FontEntry<'a> {
     /// Returns the font source.
     pub fn source(&self) -> SourceEntry<'a> {
         SourceEntry {
-            index: self.index,
             data: &self.index.sources[self.data.source.to_usize()],
         }
     }
@@ -799,7 +833,6 @@ impl<'a> FamilyEntry<'a> {
 /// Source entry in a library.
 #[derive(Copy, Clone)]
 pub struct SourceEntry<'a> {
-    index: &'a BaseIndex,
     data: &'a SourceData,
 }
 
@@ -811,6 +844,57 @@ impl<'a> SourceEntry<'a> {
 
     /// Returns the path of the source, if it is represented by a file.
     pub fn path(&self) -> Option<&Path> {
-        None
+        match &self.data.kind {
+            SourceKind::File(file) => Some(file.path.as_path()),
+            SourceKind::Memory(_) => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cjk_fallbacks_are_used_for_han_script() {
+        let mut index = StaticIndex::default();
+        index.cjk[Cjk::Simplified as usize].push(FamilyId(7));
+
+        assert_eq!(
+            index.fallbacks(Script::Han, Cjk::Simplified),
+            &[FamilyId(7)]
+        );
+    }
+
+    #[test]
+    fn script_fallbacks_take_precedence_over_cjk_fallbacks() {
+        let mut index = StaticIndex::default();
+        index.cjk[Cjk::Simplified as usize].push(FamilyId(7));
+        let mut script_fallbacks = Fallbacks::new();
+        script_fallbacks.push(FamilyId(3));
+        index.script_map.insert(Script::Han, script_fallbacks);
+
+        assert_eq!(
+            index.fallbacks(Script::Han, Cjk::Simplified),
+            &[FamilyId(3)]
+        );
+    }
+
+    #[test]
+    fn file_source_entry_exposes_path() {
+        let path = PathBuf::from("/tmp/example-font.ttf");
+        let source = SourceData {
+            id: SourceId(0),
+            kind: SourceKind::File(FileData {
+                path: path.clone(),
+                timestamp: SystemTime::UNIX_EPOCH,
+                mmap: false,
+                status: RwLock::new(FileDataStatus::Empty),
+            }),
+        };
+
+        let entry = SourceEntry { data: &source };
+
+        assert_eq!(entry.path(), Some(path.as_path()));
     }
 }

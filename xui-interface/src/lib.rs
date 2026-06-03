@@ -7,7 +7,7 @@ pub mod style;
 pub mod text;
 pub mod widget;
 
-pub use core::{Color, EdgeInsets, Point, Rect, Size, Translation};
+pub use core::{Color, EdgeInsets, Point, Rect, Size, Sizing, Translation};
 pub use dirty::DirtyFlags;
 pub use event::{
     ClickEventHandler, Event, EventContext, EventHandler, EventHandlers, EventPhase, EventRequest,

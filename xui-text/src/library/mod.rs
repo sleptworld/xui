@@ -746,11 +746,20 @@ impl LibraryBuilder {
         self.scanner.scan_dir(path, true, &mut self.inner);
     }
 
+    fn add_dirs(&mut self, paths: &[&str]) {
+        for path in paths {
+            self.add_dir(path);
+        }
+    }
+
     pub fn add_system_fonts(&mut self) -> &mut Self {
         #[cfg(target_os = "macos")]
         {
-            self.add_dir("/System/Library/Fonts/");
-            self.add_dir("/Library/Fonts/");
+            self.add_dirs(&[
+                "/System/Library/Fonts/",
+                "/Library/Fonts/",
+                "/Network/Library/Fonts/",
+            ]);
         }
 
         #[cfg(target_os = "windows")]
@@ -765,8 +774,7 @@ impl LibraryBuilder {
 
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            self.add_dir("/usr/share/fonts/");
-            self.add_dir("/usr/local/share/fonts/");
+            self.add_dirs(&["/usr/share/fonts/", "/usr/local/share/fonts/"]);
         }
 
         self
@@ -776,17 +784,27 @@ impl LibraryBuilder {
     pub fn add_user_fonts(&mut self) -> &mut Self {
         #[cfg(target_os = "macos")]
         {
-            if let Some(mut homedir) = std::env::var_os("HOME") {
-                homedir.push("/Library/Fonts/");
-                self.add_dir(&homedir);
+            if let Some(home) = std::env::var_os("HOME") {
+                self.add_dir(PathBuf::from(home).join("Library/Fonts"));
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+                self.add_dir(PathBuf::from(local_app_data).join("Microsoft/Windows/Fonts"));
             }
         }
 
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            if let Some(mut homedir) = std::env::var_os("HOME") {
-                homedir.push("/.local/share/fonts/");
-                self.add_dir(&homedir);
+            if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
+                self.add_dir(PathBuf::from(data_home).join("fonts"));
+            } else if let Some(home) = std::env::var_os("HOME") {
+                self.add_dir(PathBuf::from(home).join(".local/share/fonts"));
+            }
+            if let Some(home) = std::env::var_os("HOME") {
+                self.add_dir(PathBuf::from(home).join(".fonts"));
             }
         }
         self
@@ -979,6 +997,7 @@ impl Scanner {
         f: &mut impl FnMut(&FontInfo),
     ) -> Option<()> {
         self.font.name_count = 0;
+        self.name.clear();
         let strings = font.localized_strings();
         let vars = font.variations();
         let var_count = vars.len();
@@ -990,32 +1009,26 @@ impl Scanner {
         } else {
             StringId::Family
         };
-        if let Some(name) = strings.find_by_id(nid, Some("en")) {
+        let alt_nid = if nid == StringId::Family {
+            StringId::TypographicFamily
+        } else {
+            StringId::Family
+        };
+        if let Some(name) = strings.clone().find_by_id(nid, Some("en")) {
             self.font.name.extend(name.chars());
-        } else if let Some(name) = strings.find_by_id(nid, None) {
+        } else if let Some(name) = strings.clone().find_by_id(nid, None) {
             self.font.name.extend(name.chars());
         }
-        if self.font.name.is_empty() {
-            nid = if nid == StringId::Family {
-                StringId::TypographicFamily
-            } else {
-                StringId::Family
-            };
-            if let Some(name) = strings.find_by_id(nid, Some("en")) {
-                self.name.extend(name.chars());
-            } else if let Some(name) = strings.find_by_id(nid, None) {
-                self.name.extend(name.chars());
-            }
+        if let Some(name) = strings.clone().find_by_id(alt_nid, Some("en")) {
+            self.name.extend(name.chars());
+        } else if let Some(name) = strings.clone().find_by_id(alt_nid, None) {
+            self.name.extend(name.chars());
         }
-        if !self.name.is_empty() && self.name.len() < self.font.name.len() {
+        if self.font.name.is_empty()
+            || (!self.name.is_empty() && self.name.len() < self.font.name.len())
+        {
             core::mem::swap(&mut self.name, &mut self.font.name);
-        }
-        if self.font.name.is_empty() {
-            if let Some(name) = strings.find_by_id(nid, Some("en")) {
-                self.font.name.extend(name.chars());
-            } else if let Some(name) = strings.find_by_id(nid, None) {
-                self.font.name.extend(name.chars());
-            }
+            nid = alt_nid;
         }
         if self.font.name.is_empty() {
             return None;
@@ -1049,6 +1062,7 @@ impl Scanner {
     }
 }
 
+#[cfg(test)]
 mod test {
     use swash::Attributes;
 
@@ -1063,6 +1077,6 @@ mod test {
 
         let mut font_ctx = FontContext::new(library);
 
-        let group_id = font_ctx.register_group("pingfang sc", 0, Attributes::default());
+        let _group_id = font_ctx.register_group("pingfang sc", 0, Attributes::default());
     }
 }

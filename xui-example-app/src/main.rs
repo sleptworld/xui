@@ -18,6 +18,7 @@ component_fn! {
             <text font_size={16.0} font_weight={FontWeight::Bold}> {"HI!! NEW WORLD"} </text>
             <column gap={2.0}>
                 <text> {format!("Current count: {}", count.get())} </text>
+                <text> {"你好吗, FUCK THE WORLD"} </text>
                 <text> {"What the Fuck!!"} </text>
             </column>
 
@@ -40,6 +41,10 @@ component_fn! {
             }}>
                 {"Decrement"}
             </button>
+
+            <container width={Sizing::Hug} background={Color::BLACK} >
+                <text color={Color::WHITE}>{"WHTA"} </text>
+            </container>
         </column>
 
     }

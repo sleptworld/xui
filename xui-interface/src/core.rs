@@ -10,6 +10,22 @@ impl Point {
     pub const fn new(x: f32, y: f32) -> Self {
         Self { x, y }
     }
+
+    pub fn zero() -> Self {
+        Self::new(0.0, 0.0)
+    }
+
+    pub fn distance_to(&self, other: Point) -> f32 {
+        ((self.x - other.x).powi(2) + (self.y - other.y).powi(2)).sqrt()
+    }
+
+    pub fn translate(&self, translation: Translation) -> Self {
+        Self::new(self.x + translation.x, self.y + translation.y)
+    }
+
+    pub fn scale(&self, factor: f32) -> Self {
+        Self::new(self.x * factor, self.y * factor)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default, Hash)]
