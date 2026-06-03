@@ -3,7 +3,7 @@ use std::cell::Cell;
 use taffy::prelude as tf;
 use xui_interface::{
     ComputedColorStyle, ComputedScrollbarStyle, ComputedStyle, ComputedTextStyle, DirtyFlags,
-    EventHandlers, NodeId, ScrollbarVisibilityStyle, TextContent, TextLayoutConstraints,
+    EventHandlers, NodeId, ScrollbarVisibilityStyle, Sizing, TextContent, TextLayoutConstraints,
     TextMeasurer, Theme, Translation,
 };
 
@@ -683,10 +683,14 @@ impl UiArena {
         }
 
         let taffy_node = self.nodes[id].taffy_node;
-        let layout = *self
-            .taffy
-            .layout(taffy_node)
-            .expect("missing taffy layout result");
+        let layout = if self.node_uses_unrounded_layout(id) {
+            *self.taffy.unrounded_layout(taffy_node)
+        } else {
+            *self
+                .taffy
+                .layout(taffy_node)
+                .expect("missing taffy layout result")
+        };
         let taffy_content_size =
             Size::<f32>::new(layout.content_size.width, layout.content_size.height);
         let rect = Rect::new(
@@ -753,6 +757,13 @@ impl UiArena {
         }
 
         Size::<f32>::new(width, height)
+    }
+
+    fn node_uses_unrounded_layout(&self, id: NodeId) -> bool {
+        self.nodes
+            .get(id)
+            .map(|node| matches!(node.widget.node_type(), WidgetType::Text))
+            .unwrap_or(false)
     }
 
     fn repaint_dirty_subtree(&mut self, id: NodeId) {
@@ -1078,7 +1089,7 @@ impl Default for UiArena {
 
 fn measure_layout_context<T: TextMeasurer>(
     known_dimensions: tf::Size<Option<f32>>,
-    available_space: tf::Size<tf::AvailableSpace>,
+    _available_space: tf::Size<tf::AvailableSpace>,
     node_context: Option<&mut WidgetContext>,
     measurer: &mut T,
 ) -> tf::Size<f32> {
@@ -1093,20 +1104,23 @@ fn measure_layout_context<T: TextMeasurer>(
     let measured = match node_context {
         Some(WidgetContext::Text(_props, t)) | Some(WidgetContext::Button(_props, t)) => {
             let str = t.as_ref().map(|t| t.as_str()).unwrap_or_default();
-            let constraints = match available_space.width {
-                tf::AvailableSpace::Definite(width) => TextLayoutConstraints::max_width(width),
-                tf::AvailableSpace::MaxContent => TextLayoutConstraints::UNBOUNDED,
-                _ => TextLayoutConstraints::UNBOUNDED,
+            let constraints = match known_dimensions.width {
+                Some(width) => TextLayoutConstraints::max_width(width),
+                None => TextLayoutConstraints::UNBOUNDED,
             };
-            measurer.measure_text_with_constraints(str, _props, constraints)
+            let s = measurer.measure_text_with_constraints(str, _props, constraints);
+            println!(
+                "Measured text '{str}' with constraints and the size: {s:?} {constraints:?}: {s:?}"
+            );
+            s
         }
 
         _ => Size::<f32>::ZERO,
     };
 
     tf::Size {
-        width: known_dimensions.width.unwrap_or(measured.width),
-        height: known_dimensions.height.unwrap_or(measured.height),
+        width: measured.width,
+        height: measured.height,
     }
 }
 
@@ -1597,11 +1611,11 @@ fn paint_scrollbar_part(
 mod scroll_tests {
     use xui_interface::{
         Color, ComputedColorStyle, ComputedTextStyle, EventHandlers, ScrollbarVisibilityStyle,
-        Style,
+        Style, TextStyle,
     };
 
     use super::*;
-    use crate::widgets::{ContainerWidget, WidgetI};
+    use crate::widgets::{ContainerWidget, TextWidget, WidgetI};
 
     #[derive(Default)]
     struct TestMeasurer;
@@ -1624,6 +1638,85 @@ mod scroll_tests {
         }
     }
 
+    #[derive(Default)]
+    struct RecordingMeasurer {
+        constraints: Vec<TextLayoutConstraints>,
+    }
+
+    impl TextMeasurer for RecordingMeasurer {
+        fn measure_text(&mut self, text: &str, props: &ComputedTextStyle) -> Size<f32> {
+            self.measure_text_with_constraints(text, props, TextLayoutConstraints::UNBOUNDED)
+        }
+
+        fn measure_text_with_constraints(
+            &mut self,
+            _text: &str,
+            _props: &ComputedTextStyle,
+            constraints: TextLayoutConstraints,
+        ) -> Size<f32> {
+            self.constraints.push(constraints);
+            let width = constraints.max_width.unwrap_or(400.0);
+            let height = if constraints.max_width == Some(80.0) {
+                30.0
+            } else {
+                10.0
+            };
+            Size::<f32>::new(width, height)
+        }
+    }
+
+    #[test]
+    fn text_measure_prefers_known_width_over_available_width() {
+        let mut measurer = RecordingMeasurer::default();
+        let mut context = WidgetContext::Text(
+            TextStyle::default().into(),
+            Some(TextContent::from_static("wrap me")),
+        );
+
+        let size = measure_layout_context(
+            tf::Size {
+                width: Some(80.0),
+                height: None,
+            },
+            tf::Size {
+                width: tf::AvailableSpace::Definite(391.0),
+                height: tf::AvailableSpace::MinContent,
+            },
+            Some(&mut context),
+            &mut measurer,
+        );
+
+        assert_eq!(measurer.constraints[0].max_width, Some(80.0));
+        assert_eq!(size.width, 80.0);
+        assert_eq!(size.height, 30.0);
+    }
+
+    #[test]
+    fn text_measure_uses_unbounded_width_until_width_is_known() {
+        let mut measurer = RecordingMeasurer::default();
+        let mut context = WidgetContext::Text(
+            TextStyle::default().into(),
+            Some(TextContent::from_static("hug me")),
+        );
+
+        let size = measure_layout_context(
+            tf::Size {
+                width: None,
+                height: None,
+            },
+            tf::Size {
+                width: tf::AvailableSpace::Definite(391.0),
+                height: tf::AvailableSpace::MinContent,
+            },
+            Some(&mut context),
+            &mut measurer,
+        );
+
+        assert_eq!(measurer.constraints[0].max_width, None);
+        assert_eq!(size.width, 400.0);
+        assert_eq!(size.height, 10.0);
+    }
+
     fn insert_container(arena: &mut UiArena, parent: NodeId, widget: ContainerWidget) -> NodeId {
         let parent_style = arena.node(parent).unwrap().computed_style.clone();
         let widget = WidgetI::new(widget);
@@ -1640,6 +1733,42 @@ mod scroll_tests {
             widget,
             EventHandlers::default(),
         )
+    }
+
+    fn insert_text(arena: &mut UiArena, parent: NodeId, widget: TextWidget) -> NodeId {
+        let parent_style = arena.node(parent).unwrap().computed_style.clone();
+        let widget = WidgetI::new(widget);
+        let computed_style = widget.computed_style(&parent_style, arena.theme());
+        let taffy_style = taffy_style_for_widget(&widget, &parent_style, &computed_style);
+        let props_hash = widget.props_hash();
+
+        arena.insert_node(
+            parent,
+            None,
+            props_hash,
+            taffy_style,
+            computed_style,
+            widget,
+            EventHandlers::default(),
+        )
+    }
+
+    #[test]
+    fn fixed_size_nodes_keep_unrounded_layout_values() {
+        let mut arena = UiArena::new();
+        let root = arena.root();
+        let text = insert_text(
+            &mut arena,
+            root,
+            TextWidget::new("fixed").style(Style::new().size(Size::fix(38.5, 17.25))),
+        );
+        let mut measurer = TestMeasurer;
+
+        arena.update_tree(root, Size::<f32>::new(200.0, 200.0), &mut measurer);
+
+        let layout = arena.node(text).unwrap().layout;
+        assert_eq!(layout.width, 38.5);
+        assert_eq!(layout.height, 17.25);
     }
 
     fn scroll_fixture() -> (UiArena, NodeId, NodeId, TestMeasurer) {

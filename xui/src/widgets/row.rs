@@ -1,7 +1,7 @@
 use crate::element::ElementDesc;
 use xui_interface::{
     ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, FlexDirectionStyle,
-    Key, PaintCommand, Rect, Style, Widget, WidgetType,
+    Key, PaintCommand, Rect, Size, Style, Widget, WidgetType,
 };
 
 use super::{props_hash, widget_element_desc};
@@ -76,7 +76,7 @@ impl Widget for RowWidget {
     }
 
     fn default_style(&self) -> Style {
-        Style::new().flex_direction(FlexDirectionStyle::Row)
+        Style::new().size(Size::hug())
     }
 
     fn style(&self) -> &Style {

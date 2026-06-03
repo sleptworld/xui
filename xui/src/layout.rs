@@ -1,8 +1,9 @@
-use taffy::prelude as tf;
+use taffy::{LengthPercentage, prelude as tf};
 use taffy::{Overflow, Point as TaffyPoint};
 pub use xui_interface::TextMeasurer;
-use xui_interface::Widget;
 use xui_interface::core::Sizing;
+use xui_interface::style::{AlignStyle, JustifyStyle};
+use xui_interface::{Size, Widget};
 
 use crate::core::EdgeInsets;
 use crate::style::{ComputedStyle, FlexDirectionStyle, ScrollDirectionStyle, Theme};
@@ -39,63 +40,40 @@ pub fn computed_layout_style(
     parent_dire: FlexDirectionStyle,
     computed: &ComputedStyle,
 ) -> tf::Style {
-    // let layout = computed.layout;
-    // let mut style = widget.with_widgets(|w| match w {
-    //     Widgets::Column(_) => tf::Style {
-    //         display: tf::Display::Flex,
-    //         flex_direction: tf::FlexDirection::Column,
-    //         gap: tf::Size {
-    //             height: length_percentage(layout.gap),
-    //             width: length_percentage(layout.gap),
-    //         },
-    //         ..Default::default()
-    //     },
-    //     Widgets::Row(_) => tf::Style {
-    //         display: tf::Display::Flex,
-    //         flex_direction: tf::FlexDirection::Row,
-    //         gap: tf::Size {
-    //             height: length_percentage(layout.gap),
-    //             width: length_percentage(layout.gap),
-    //         },
-    //         ..Default::default()
-    //     },
-    //     Widgets::Container(_) => tf::Style {
-    //         display: tf::Display::None,
-    //         ..Default::default()
-    //     },
-    //     _ => tf::Style {
-    //         display: tf::Display::Flex,
-    //         flex_direction: tf::FlexDirection::Column,
-    //         gap: tf::Size {
-    //             height: length_percentage(layout.gap),
-    //             width: length_percentage(layout.gap),
-    //         },
-    //         ..Default::default()
-    //     },
-    // });
+    let layout = computed.layout;
+    let mut style = widget.with_widgets(|w| match w {
+        Widgets::Column(_) => tf::Style {
+            display: tf::Display::Flex,
+            flex_direction: tf::FlexDirection::Column,
+            align_items: Some(align_items(layout.align)),
+            justify_content: Some(justify_content(layout.justify)),
+            gap: tf::Size {
+                height: length_percentage(layout.gap),
+                width: LengthPercentage::length(0.0),
+            },
+            ..Default::default()
+        },
+        Widgets::Row(_) => tf::Style {
+            display: tf::Display::Flex,
+            flex_direction: tf::FlexDirection::Row,
+            align_items: Some(align_items(layout.align)),
+            justify_content: Some(justify_content(layout.justify)),
+            gap: tf::Size {
+                height: LengthPercentage::length(0.0),
+                width: length_percentage(layout.gap),
+            },
+            ..Default::default()
+        },
+        _ => tf::Style {
+            display: tf::Display::Block,
+            ..Default::default()
+        },
+    });
 
-    // style.margin = edge_insets_auto(layout.margin);
-    // style.padding = edge_insets(layout.padding);
-    // style.overflow = scroll_overflow(computed.scroll.direction);
-    // style.scrollbar_width = computed.scroll.scrollbar.width.max(0.0);
-
-    // let layout = computed.layout;
-    // let mut style = tf::Style {
-    //     display: tf::Display::Flex,
-    //     flex_direction: match layout.flex_direction {
-    //         FlexDirectionStyle::Row => tf::FlexDirection::Row,
-    //         FlexDirectionStyle::Column => tf::FlexDirection::Column,
-    //     },
-    //     gap: tf::Size {
-    //         width: length_percentage(layout.gap),
-    //         height: length_percentage(layout.gap),
-    //     },
-    //     margin: edge_insets_auto(layout.margin),
-    //     padding: edge_insets(layout.padding),
-    //     overflow: scroll_overflow(computed.scroll.direction),
-    //     scrollbar_width: computed.scroll.scrollbar.width.max(0.0),
-    //     ..Default::default()
-    // };
+    style.margin = edge_insets_auto(layout.margin);
+    style.padding = edge_insets(layout.padding);
+    style.overflow = scroll_overflow(computed.scroll.direction);
+    style.scrollbar_width = computed.scroll.scrollbar.width.max(0.0);
 
     if let Some(size) = layout.size {
         style.size = tf::Size {
@@ -121,6 +99,11 @@ pub fn computed_layout_style(
                 }
             }
         }
+    } else {
+        style.size = tf::Size {
+            width: tf::Dimension::auto(),
+            height: tf::Dimension::auto(),
+        };
     }
     if let Some(size) = layout.min_size {
         style.min_size = tf::Size {
@@ -136,6 +119,28 @@ pub fn computed_layout_style(
     }
 
     style
+}
+
+#[inline]
+fn align_items(value: AlignStyle) -> tf::AlignItems {
+    match value {
+        AlignStyle::Start => tf::AlignItems::Start,
+        AlignStyle::Center => tf::AlignItems::Center,
+        AlignStyle::End => tf::AlignItems::End,
+        AlignStyle::Stretch => tf::AlignItems::Stretch,
+    }
+}
+
+#[inline]
+fn justify_content(value: JustifyStyle) -> tf::JustifyContent {
+    match value {
+        JustifyStyle::Start => tf::JustifyContent::Start,
+        JustifyStyle::Center => tf::JustifyContent::Center,
+        JustifyStyle::End => tf::JustifyContent::End,
+        JustifyStyle::SpaceBetween => tf::JustifyContent::SpaceBetween,
+        JustifyStyle::SpaceAround => tf::JustifyContent::SpaceAround,
+        JustifyStyle::SpaceEvenly => tf::JustifyContent::SpaceEvenly,
+    }
 }
 
 fn edge_insets(value: EdgeInsets) -> tf::Rect<tf::LengthPercentage> {

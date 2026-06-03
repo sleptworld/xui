@@ -859,6 +859,8 @@ impl WGPUBackend {
             return Ok(());
         }
 
+        println!("Layouting text with style: {:?}", rect);
+
         let style: xui_interface::ComputedTextStyle = (&command.props.style).into();
         let par = text.layout_text(
             command.props.text.as_str(),
@@ -930,6 +932,11 @@ impl WGPUBackend {
                 }
             }
         }
+        println!(
+            "{} glyphs in text '{}'",
+            records.len(),
+            command.props.text.as_str()
+        );
 
         Ok(())
     }

@@ -406,6 +406,7 @@ pub enum AlignStyle {
     Start,
     Center,
     End,
+    Stretch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -432,7 +433,7 @@ pub struct TextStylePatch {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct LayoutStylePatch {
-    pub flex_direction: StyleValue<FlexDirectionStyle>,
+    // pub flex_direction: StyleValue<FlexDirectionStyle>,
     pub gap: StyleValue<LengthValue>,
     pub size: StyleValue<Size<Sizing>>,
     pub min_size: StyleValue<Size<Sizing>>,
@@ -513,10 +514,10 @@ impl Style {
         self
     }
 
-    pub fn flex_direction(mut self, flex_direction: FlexDirectionStyle) -> Self {
-        self.layout.flex_direction = StyleValue::Value(flex_direction);
-        self
-    }
+    // pub fn flex_direction(mut self, flex_direction: FlexDirectionStyle) -> Self {
+    //     self.layout.flex_direction = StyleValue::Value(flex_direction);
+    //     self
+    // }
 
     pub fn gap(mut self, gap: impl Into<LengthValue>) -> Self {
         self.layout.gap = StyleValue::Value(gap.into());
@@ -1047,7 +1048,7 @@ fn merge_text(target: &mut TextStylePatch, other: &TextStylePatch) {
 }
 
 fn merge_layout(target: &mut LayoutStylePatch, other: &LayoutStylePatch) {
-    merge_value(&mut target.flex_direction, &other.flex_direction);
+    // merge_value(&mut target.flex_direction, &other.flex_direction);
     merge_value(&mut target.gap, &other.gap);
     merge_value(&mut target.size, &other.size);
     merge_value(&mut target.min_size, &other.min_size);
@@ -1140,11 +1141,11 @@ fn apply_text(
 
 fn apply_layout(target: &mut ComputedLayoutStyle, patch: &LayoutStylePatch, theme: &Theme) {
     let initial = ComputedStyle::initial(theme).layout;
-    target.flex_direction = resolve_copy_no_inherit(
-        patch.flex_direction,
-        target.flex_direction,
-        initial.flex_direction,
-    );
+    // target.flex_direction = resolve_copy_no_inherit(
+    //     patch.flex_direction,
+    //     target.flex_direction,
+    //     initial.flex_direction,
+    // );
     target.gap = resolve_length_no_inherit(patch.gap, target.gap, initial.gap, theme);
     target.size = resolve_optional_size_no_inherit(patch.size, target.size, initial.size);
     target.min_size =
@@ -1505,7 +1506,7 @@ impl Hash for TextStylePatch {
 
 impl Hash for LayoutStylePatch {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.flex_direction.hash(state);
+        // self.flex_direction.hash(state);
         self.gap.hash(state);
         hash_style_value_size(&self.size, state);
         hash_style_value_size(&self.min_size, state);

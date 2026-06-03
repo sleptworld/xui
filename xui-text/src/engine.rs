@@ -130,13 +130,13 @@ impl TextLayouter for Engine {
         style: &ComputedTextStyle,
         constraints: TextLayoutConstraints,
     ) -> Arc<Par> {
-        let key = TextLayoutKey::new(text, style, constraints);
-        if let Some(par) = self.layout_cache.get(&key) {
-            return Arc::clone(par);
-        }
+        // let key = TextLayoutKey::new(text, style, constraints);
+        // if let Some(par) = self.layout_cache.get(&key) {
+        //     return Arc::clone(par);
+        // }
 
         let par = Arc::new(self.layout_text_uncached(text, style, constraints));
-        self.layout_cache.insert(key, Arc::clone(&par));
+        // self.layout_cache.insert(key, Arc::clone(&par));
         par
     }
 }
@@ -392,6 +392,34 @@ mod test {
         }
 
         assert_eq!(par.lines().count(), 1);
+    }
+
+    #[test]
+    fn constrained_layout_keeps_all_source_text_across_lines() {
+        let mut engine = Engine::new();
+        let style = text_style();
+        let text = "你好吗, FUCK THE WORLD";
+        let par = engine.layout_text(text, &style, TextLayoutConstraints::max_width(80.0));
+
+        let mut covered = vec![false; text.len()];
+        for line in par.lines() {
+            for run in line.runs() {
+                for cluster in run.visual_clusters() {
+                    for index in cluster.range() {
+                        if let Some(slot) = covered.get_mut(index) {
+                            *slot = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        for (index, ch) in text.char_indices() {
+            assert!(
+                covered[index],
+                "missing source text from layout at byte {index}: {ch:?}"
+            );
+        }
     }
 }
 

@@ -30,7 +30,7 @@ impl Widget for RootWidget {
     }
 
     fn default_style(&self) -> Style {
-        Style::new().flex_direction(FlexDirectionStyle::Column)
+        Style::new()
     }
 
     fn paint(&self, _rect: Rect, _style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
