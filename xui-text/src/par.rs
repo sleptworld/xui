@@ -1,12 +1,12 @@
 use crate::bidi::BidiDirection;
 use crate::doc::{Direction, SpanStyle};
 use crate::engine::Engine;
+use crate::fontique_library::{FamilyList, Font, FontContext, FontGroupId};
 use crate::layout::{
     CLUSTER_CONTINUATION, CLUSTER_DETAILED, CLUSTER_EMPTY, CLUSTER_LAST_CONTINUATION,
     CLUSTER_LIGATURE, CLUSTER_NEWLINE, ClusterData, DetailedClusterData, GLYPH_DETAILED, GlyphData,
     LayoutData, LineData, LineLayoutData, RunData,
 };
-use crate::library::{FamilyList, Font, FontContext, FontGroupId};
 use crate::line_breaker::BreakLines;
 use std::borrow::Borrow;
 use std::ops::{Deref, Range};

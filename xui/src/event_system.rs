@@ -212,96 +212,80 @@ fn dispatch_to_node(
     let mut requests = EventRequests::default();
 
     let result = {
-        let Some(node) = arena.node_mut(id) else {
+        let Some((handlers, widget)) = arena
+            .node(id)
+            .map(|node| (node.event_handlers, node.widget.clone()))
+        else {
             return EventResult::Ignored;
         };
         let mut cx = EventContext::new(id, phase, &mut request_dirty, &mut requests);
 
-        macro_rules! dispatch_event {
-            ($event:ident,$node:ident, $($event_name: ident => $handler: ident),+) => {
-
-                {
-                    let specialized = match $event {
-                        $(
-                            Event::$event_name {..} => $node.event_handlers.$handler.as_mut().map(|handler| handler(&mut cx)).unwrap_or(EventResult::Ignored),
-                        )+
-                        _ => EventResult::Ignored
-                    };
-                    specialized
-                }
-            };
-        }
-
         match dispatch {
             NodeDispatch::Raw(event) => {
-                let handler_result = node
-                    .event_handlers
-                    .on_event
-                    .as_mut()
-                    .map(|handler| handler(event, &mut cx))
-                    .unwrap_or(EventResult::Ignored);
+                let handler_result =
+                    arena
+                        .event_handlers_mut()
+                        .dispatch_on_event(handlers.on_event, event, &mut cx);
 
                 if handler_result.is_consumed() {
                     handler_result
                 } else if phase == EventPhase::Capture {
                     EventResult::Ignored
                 } else {
-                    let specialized = dispatch_event! {
-                        event, node,
-                        PointerDown => on_pointer_down,
-                        PointerUp => on_pointer_up,
-                        PointerMove => on_pointer_move
+                    let specialized = match event {
+                        Event::PointerDown { .. } => arena
+                            .event_handlers_mut()
+                            .dispatch_on_pointer_down(handlers.on_pointer_down, &mut cx),
+                        Event::PointerUp { .. } => arena
+                            .event_handlers_mut()
+                            .dispatch_on_pointer_up(handlers.on_pointer_up, &mut cx),
+                        Event::PointerMove { .. } => arena
+                            .event_handlers_mut()
+                            .dispatch_on_pointer_move(handlers.on_pointer_move, &mut cx),
+                        _ => EventResult::Ignored,
                     };
                     if specialized.is_consumed() {
                         specialized
                     } else if matches!(event, Event::KeyDown { .. } | Event::KeyUp { .. })
                         && phase != EventPhase::Capture
                     {
-                        let key_result = match event {
-                            Event::KeyDown { key } => node
-                                .event_handlers
-                                .on_key_down
-                                .as_mut()
-                                .map(|handler| handler(key, &mut cx))
-                                .unwrap_or(EventResult::Ignored),
-                            Event::KeyUp { key } => node
-                                .event_handlers
-                                .on_key_up
-                                .as_mut()
-                                .map(|handler| handler(key, &mut cx))
-                                .unwrap_or(EventResult::Ignored),
-                            _ => EventResult::Ignored,
-                        };
+                        let key_result =
+                            match event {
+                                Event::KeyDown { key } => arena
+                                    .event_handlers_mut()
+                                    .dispatch_on_key_down(handlers.on_key_down, key, &mut cx),
+                                Event::KeyUp { key } => arena
+                                    .event_handlers_mut()
+                                    .dispatch_on_key_up(handlers.on_key_up, key, &mut cx),
+                                _ => EventResult::Ignored,
+                            };
                         if key_result.is_consumed() {
                             key_result
                         } else if phase == EventPhase::Target {
-                            node.widget.handle_event(event, &mut cx)
+                            widget.handle_event(event, &mut cx)
                         } else {
                             EventResult::Ignored
                         }
                     } else if phase == EventPhase::Target {
-                        node.widget.handle_event(event, &mut cx)
+                        widget.handle_event(event, &mut cx)
                     } else {
                         EventResult::Ignored
                     }
                 }
             }
             NodeDispatch::HoverChange(hovered) => {
-                let hover_dirty = node.widget.on_hovered_change(hovered);
+                let hover_dirty = widget.on_hovered_change(hovered);
                 cx.mark_dirty(hover_dirty);
 
-                node.event_handlers
-                    .on_hover_change
-                    .as_mut()
-                    .map(|handler| handler(hovered, &mut cx))
-                    .unwrap_or(EventResult::Ignored)
+                arena.event_handlers_mut().dispatch_on_hover_change(
+                    handlers.on_hover_change,
+                    hovered,
+                    &mut cx,
+                )
             }
-            NodeDispatch::Click => node
-                .event_handlers
-                .on_click
-                .as_mut()
-                .map(|handler| handler(&mut cx))
-                .unwrap_or(EventResult::Ignored),
+            NodeDispatch::Click => arena
+                .event_handlers_mut()
+                .dispatch_on_click(handlers.on_click, &mut cx),
         }
     };
 
@@ -330,7 +314,7 @@ mod tests {
     use std::rc::Rc;
 
     use taffy::prelude as tf;
-    use xui_interface::{Color, DirtyFlags, NodeId, Point, Rect};
+    use xui_interface::{Color, DirtyFlags, EventHandlers, NodeId, Point, Rect};
 
     use super::*;
 
@@ -363,10 +347,12 @@ mod tests {
 
         for id in [arena.root(), parent, child] {
             let seen = seen.clone();
-            arena.node_mut(id).unwrap().event_handlers.on_event = Some(Box::new(move |_, cx| {
+            let mut handlers = EventHandlers::default();
+            handlers.on_event = Some(Box::new(move |_, cx| {
                 seen.borrow_mut().push((cx.node_id, cx.phase));
                 EventResult::Ignored
             }));
+            arena.set_event_handlers(id, handlers);
         }
 
         let result = arena.dispatch_event(&Event::PointerDown {
@@ -390,16 +376,21 @@ mod tests {
     #[test]
     fn consumed_handler_commits_dirty_before_stopping_propagation() {
         let (mut arena, parent, child) = test_tree();
-        arena.node_mut(child).unwrap().event_handlers.on_event = Some(Box::new(|_, cx| {
+        let mut child_handlers = EventHandlers::default();
+        child_handlers.on_event = Some(Box::new(|_, cx| {
             cx.mark_dirty(DirtyFlags::PAINT);
             EventResult::Consumed
         }));
-        arena.node_mut(parent).unwrap().event_handlers.on_event = Some(Box::new(|_, cx| {
+        arena.set_event_handlers(child, child_handlers);
+
+        let mut parent_handlers = EventHandlers::default();
+        parent_handlers.on_event = Some(Box::new(|_, cx| {
             if cx.phase == EventPhase::Bubble {
                 panic!("bubble should be stopped");
             }
             EventResult::Ignored
         }));
+        arena.set_event_handlers(parent, parent_handlers);
 
         let result = arena.dispatch_event(&Event::PointerDown {
             position: Point::new(2.0, 2.0),
@@ -416,18 +407,19 @@ mod tests {
         let key_events = Rc::new(RefCell::new(0));
         let key_events_for_child = key_events.clone();
 
-        arena.node_mut(child).unwrap().event_handlers.on_event =
-            Some(Box::new(move |event, cx| {
-                if matches!(event, Event::PointerDown { .. }) {
-                    cx.request_focus();
-                    return EventResult::Consumed;
-                }
-                if matches!(event, Event::KeyDown { .. }) && cx.phase == EventPhase::Target {
-                    *key_events_for_child.borrow_mut() += 1;
-                    return EventResult::Consumed;
-                }
-                EventResult::Ignored
-            }));
+        let mut child_handlers = EventHandlers::default();
+        child_handlers.on_event = Some(Box::new(move |event, cx| {
+            if matches!(event, Event::PointerDown { .. }) {
+                cx.request_focus();
+                return EventResult::Consumed;
+            }
+            if matches!(event, Event::KeyDown { .. }) && cx.phase == EventPhase::Target {
+                *key_events_for_child.borrow_mut() += 1;
+                return EventResult::Consumed;
+            }
+            EventResult::Ignored
+        }));
+        arena.set_event_handlers(child, child_handlers);
 
         arena.dispatch_event(&Event::PointerDown {
             position: Point::new(2.0, 2.0),
@@ -449,27 +441,30 @@ mod tests {
         let parent_hits = Rc::new(RefCell::new(0));
         let parent_hits_for_handler = parent_hits.clone();
 
-        arena.node_mut(child).unwrap().event_handlers.on_event =
-            Some(Box::new(move |event, cx| match event {
-                Event::PointerDown { .. } => {
-                    cx.capture_pointer();
-                    EventResult::Consumed
-                }
-                Event::PointerMove { .. } => {
-                    *child_hits_for_handler.borrow_mut() += 1;
-                    cx.release_pointer_capture();
-                    EventResult::Consumed
-                }
-                _ => EventResult::Ignored,
-            }));
-        arena.node_mut(parent).unwrap().event_handlers.on_event =
-            Some(Box::new(move |event, cx| {
-                if matches!(event, Event::PointerMove { .. }) && cx.phase == EventPhase::Target {
-                    *parent_hits_for_handler.borrow_mut() += 1;
-                    return EventResult::Consumed;
-                }
-                EventResult::Ignored
-            }));
+        let mut child_handlers = EventHandlers::default();
+        child_handlers.on_event = Some(Box::new(move |event, cx| match event {
+            Event::PointerDown { .. } => {
+                cx.capture_pointer();
+                EventResult::Consumed
+            }
+            Event::PointerMove { .. } => {
+                *child_hits_for_handler.borrow_mut() += 1;
+                cx.release_pointer_capture();
+                EventResult::Consumed
+            }
+            _ => EventResult::Ignored,
+        }));
+        arena.set_event_handlers(child, child_handlers);
+
+        let mut parent_handlers = EventHandlers::default();
+        parent_handlers.on_event = Some(Box::new(move |event, cx| {
+            if matches!(event, Event::PointerMove { .. }) && cx.phase == EventPhase::Target {
+                *parent_hits_for_handler.borrow_mut() += 1;
+                return EventResult::Consumed;
+            }
+            EventResult::Ignored
+        }));
+        arena.set_event_handlers(parent, parent_handlers);
 
         arena.dispatch_event(&Event::PointerDown {
             position: Point::new(2.0, 2.0),
@@ -494,7 +489,8 @@ mod tests {
         let child_reached = Rc::new(RefCell::new(false));
         let child_reached_for_handler = child_reached.clone();
 
-        arena.node_mut(parent).unwrap().event_handlers.on_event = Some(Box::new(|_, cx| {
+        let mut parent_handlers = EventHandlers::default();
+        parent_handlers.on_event = Some(Box::new(|_, cx| {
             if cx.phase == EventPhase::Capture {
                 cx.mark_dirty(DirtyFlags::PAINT);
                 cx.request_focus();
@@ -503,10 +499,14 @@ mod tests {
             }
             EventResult::Ignored
         }));
-        arena.node_mut(child).unwrap().event_handlers.on_event = Some(Box::new(move |_, _| {
+        arena.set_event_handlers(parent, parent_handlers);
+
+        let mut child_handlers = EventHandlers::default();
+        child_handlers.on_event = Some(Box::new(move |_, _| {
             *child_reached_for_handler.borrow_mut() = true;
             EventResult::Ignored
         }));
+        arena.set_event_handlers(child, child_handlers);
 
         let result = arena.dispatch_event(&Event::PointerDown {
             position: Point::new(2.0, 2.0),
@@ -533,15 +533,16 @@ mod tests {
 
         for id in [arena.root(), parent, child] {
             let seen = seen.clone();
-            arena.node_mut(id).unwrap().event_handlers.on_pointer_down =
-                Some(Box::new(move |cx| {
-                    seen.borrow_mut().push((cx.node_id, cx.phase));
-                    if cx.node_id == parent {
-                        EventResult::Consumed
-                    } else {
-                        EventResult::Ignored
-                    }
-                }));
+            let mut handlers = EventHandlers::default();
+            handlers.on_pointer_down = Some(Box::new(move |cx| {
+                seen.borrow_mut().push((cx.node_id, cx.phase));
+                if cx.node_id == parent {
+                    EventResult::Consumed
+                } else {
+                    EventResult::Ignored
+                }
+            }));
+            arena.set_event_handlers(id, handlers);
         }
 
         let result = arena.dispatch_event(&Event::PointerDown {
@@ -561,25 +562,28 @@ mod tests {
         let (mut arena, parent, child) = test_tree();
         let seen = Rc::new(RefCell::new(Vec::new()));
 
-        arena.node_mut(child).unwrap().event_handlers.on_event = Some(Box::new(|event, cx| {
-            if matches!(event, Event::PointerDown { .. }) && cx.phase == EventPhase::Target {
-                cx.request_focus();
-                return EventResult::Consumed;
-            }
-            EventResult::Ignored
-        }));
-
         for id in [arena.root(), parent, child] {
             let seen = seen.clone();
-            arena.node_mut(id).unwrap().event_handlers.on_key_down =
-                Some(Box::new(move |key, cx| {
-                    seen.borrow_mut().push((key.clone(), cx.node_id, cx.phase));
-                    if cx.node_id == parent {
-                        EventResult::Consumed
-                    } else {
-                        EventResult::Ignored
+            let mut handlers = EventHandlers::default();
+            if id == child {
+                handlers.on_event = Some(Box::new(|event, cx| {
+                    if matches!(event, Event::PointerDown { .. }) && cx.phase == EventPhase::Target
+                    {
+                        cx.request_focus();
+                        return EventResult::Consumed;
                     }
+                    EventResult::Ignored
                 }));
+            }
+            handlers.on_key_down = Some(Box::new(move |key, cx| {
+                seen.borrow_mut().push((key.clone(), cx.node_id, cx.phase));
+                if cx.node_id == parent {
+                    EventResult::Consumed
+                } else {
+                    EventResult::Ignored
+                }
+            }));
+            arena.set_event_handlers(id, handlers);
         }
 
         arena.dispatch_event(&Event::PointerDown {
@@ -606,19 +610,21 @@ mod tests {
         let seen = Rc::new(RefCell::new(Vec::new()));
         let seen_for_handler = seen.clone();
 
-        arena.node_mut(child).unwrap().event_handlers.on_event = Some(Box::new(|event, cx| {
+        let mut child_handlers = EventHandlers::default();
+        child_handlers.on_event = Some(Box::new(|event, cx| {
             if matches!(event, Event::PointerDown { .. }) {
                 cx.request_focus();
                 return EventResult::Consumed;
             }
             EventResult::Ignored
         }));
-        arena.node_mut(child).unwrap().event_handlers.on_key_up = Some(Box::new(move |key, cx| {
+        child_handlers.on_key_up = Some(Box::new(move |key, cx| {
             seen_for_handler
                 .borrow_mut()
                 .push((key.clone(), cx.node_id, cx.phase));
             EventResult::Consumed
         }));
+        arena.set_event_handlers(child, child_handlers);
 
         arena.dispatch_event(&Event::PointerDown {
             position: Point::new(2.0, 2.0),
@@ -642,11 +648,12 @@ mod tests {
 
         for id in [arena.root(), parent, child] {
             let seen = seen.clone();
-            arena.node_mut(id).unwrap().event_handlers.on_hover_change =
-                Some(Box::new(move |hovered, cx| {
-                    seen.borrow_mut().push((cx.node_id, hovered));
-                    EventResult::Ignored
-                }));
+            let mut handlers = EventHandlers::default();
+            handlers.on_hover_change = Some(Box::new(move |hovered, cx| {
+                seen.borrow_mut().push((cx.node_id, hovered));
+                EventResult::Ignored
+            }));
+            arena.set_event_handlers(id, handlers);
         }
 
         arena.dispatch_event(&Event::PointerMove {

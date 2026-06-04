@@ -1,11 +1,11 @@
-use std::{any::Any, fmt::Debug, hash::Hash};
+use std::{fmt::Debug, hash::Hash};
 
 use slotmap::new_key_type;
 use smallstr::SmallString;
 
 use crate::{
-    ComputedStyle, ComputedTextStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult,
-    PaintCommand, Rect, Size, Style, TextContent, TextLayoutConstraints, WidgetState,
+    ComputedStyle, ComputedTextStyle, DirtyFlags, Event, EventContext, EventResult, PaintCommand,
+    Rect, Size, Style, TextContent, TextLayoutConstraints, WidgetState,
 };
 
 new_key_type! {
@@ -50,6 +50,27 @@ pub trait TextMeasurer {
         props: &ComputedTextStyle,
         _constraints: TextLayoutConstraints,
     ) -> Size<f32>;
+
+    fn measure_node_text(
+        &mut self,
+        _node_id: NodeId,
+        text: &str,
+        props: &ComputedTextStyle,
+    ) -> Size<f32> {
+        self.measure_text(text, props)
+    }
+
+    fn measure_node_text_with_constraints(
+        &mut self,
+        _node_id: NodeId,
+        text: &str,
+        props: &ComputedTextStyle,
+        constraints: TextLayoutConstraints,
+    ) -> Size<f32> {
+        self.measure_text_with_constraints(text, props, constraints)
+    }
+
+    fn handle_node_lifecycle(&mut self, _event: &NodeLifecycleEvent) {}
 }
 
 pub trait Widget: Debug {
@@ -110,4 +131,17 @@ where
     fn render(&mut self, cx: &mut Context) -> Output {
         self(cx)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeLifecycleEvent {
+    Created(NodeId),
+    Moved {
+        id: NodeId,
+        old_parent: Option<NodeId>,
+        new_parent: Option<NodeId>,
+        old_position: usize,
+        new_position: usize,
+    },
+    Removed(NodeId),
 }

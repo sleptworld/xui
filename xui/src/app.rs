@@ -93,6 +93,7 @@ impl App {
         if !self.rebuild_slice_if_needed() {
             return Ok(());
         }
+        self.flush_node_lifecycle(backend, m);
         self.arena.update_tree(self.arena.root(), self.size, m);
 
         let (damage, commands) = self.arena.prepare_paint_commands();
@@ -129,6 +130,17 @@ impl App {
     #[inline]
     fn rebuild_slice_if_needed(&mut self) -> bool {
         self.components.rebuild_slice_if_needed(&mut self.arena)
+    }
+
+    fn flush_node_lifecycle<B: RenderBackend<T>, T: TextMeasurer>(
+        &mut self,
+        backend: &mut B,
+        m: &mut T,
+    ) {
+        for event in self.arena.drain_node_lifecycle_events() {
+            m.handle_node_lifecycle(&event);
+            backend.handle_node_lifecycle(&event);
+        }
     }
 }
 

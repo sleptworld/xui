@@ -1,5 +1,5 @@
 use crate::{
-    library::Font,
+    fontique_library::Font,
     line_breaker::Alignment,
     par::{Glyph, SpanId},
 };

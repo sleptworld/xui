@@ -3,12 +3,12 @@ use std::cell::Cell;
 use taffy::prelude as tf;
 use xui_interface::{
     ComputedColorStyle, ComputedScrollbarStyle, ComputedStyle, ComputedTextStyle, DirtyFlags,
-    EventHandlers, NodeId, ScrollbarVisibilityStyle, Sizing, TextContent, TextLayoutConstraints,
-    TextMeasurer, Theme, Translation,
+    EventHandlers, NodeId, NodeLifecycleEvent, ScrollbarVisibilityStyle, TextContent,
+    TextLayoutConstraints, TextMeasurer, Theme, Translation,
 };
 
 use crate::core::{Point, Rect, Size};
-use crate::event::{Event, EventResult};
+use crate::event::{Event, EventHandlerSet, EventHandlerStore, EventResult};
 use crate::event_system::{self, EventState};
 use crate::fiber::Key;
 use crate::layout::{computed_style_for_widget, taffy_style_for_widget};
@@ -16,8 +16,8 @@ use crate::render::{DamageRegion, PaintCommand};
 use crate::widgets::{WidgetI, WidgetType, Widgets};
 
 pub enum WidgetContext {
-    Text(ComputedTextStyle, Option<TextContent>),
-    Button(ComputedTextStyle, Option<TextContent>),
+    Text(NodeId, ComputedTextStyle, Option<TextContent>),
+    Button(NodeId, ComputedTextStyle, Option<TextContent>),
 }
 
 pub struct Node {
@@ -41,7 +41,7 @@ pub struct Node {
     pub computed_style: ComputedStyle,
     pub paint_cache: Vec<PaintCommand>,
     pub widget: WidgetI,
-    pub event_handlers: EventHandlers,
+    pub event_handlers: EventHandlerSet,
 }
 
 struct PaintTraceNode {
@@ -65,7 +65,7 @@ impl Node {
         props_hash: u64,
         computed_style: ComputedStyle,
         widget: WidgetI,
-        event_handlers: EventHandlers,
+        event_handlers: EventHandlerSet,
         taffy_node: tf::NodeId,
     ) -> Self {
         let node_type = widget.node_type();
@@ -101,7 +101,9 @@ pub struct UiArena {
     root: NodeId,
     damage: DamageRegion,
     damage_nodes: Vec<NodeId>,
+    node_lifecycle_events: Vec<NodeLifecycleEvent>,
     event_state: EventState,
+    event_handlers: EventHandlerStore,
     theme: Theme,
     paint_frames: Cell<usize>,
     pub update_visits: usize,
@@ -131,7 +133,7 @@ impl UiArena {
                 // root_style,
                 root_computed_style,
                 crate::widgets::root_widget(),
-                EventHandlers::default(),
+                EventHandlerSet::default(),
                 taffy_root,
             )
         });
@@ -141,7 +143,9 @@ impl UiArena {
             root,
             damage: DamageRegion::new(),
             damage_nodes: vec![],
+            node_lifecycle_events: Vec::new(),
             event_state: EventState::default(),
+            event_handlers: EventHandlerStore::default(),
             theme,
             paint_frames: Cell::new(0),
             update_visits: 0,
@@ -204,6 +208,21 @@ impl UiArena {
         &mut self.event_state
     }
 
+    pub(crate) fn event_handlers_mut(&mut self) -> &mut EventHandlerStore {
+        &mut self.event_handlers
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_event_handlers(&mut self, id: NodeId, event_handlers: EventHandlers) {
+        let Some(current) = self.nodes.get(id).map(|node| node.event_handlers) else {
+            return;
+        };
+        let event_handlers = self.event_handlers.update_set(current, event_handlers);
+        if let Some(node) = self.nodes.get_mut(id) {
+            node.event_handlers = event_handlers;
+        }
+    }
+
     pub fn create_node(
         &mut self,
         key: Option<Key>,
@@ -213,19 +232,13 @@ impl UiArena {
         style: tf::Style,
         computed_style: ComputedStyle,
     ) -> NodeId {
-        let node_type = widget.node_type();
-        let taffy_node = match node_type {
-            WidgetType::Text | WidgetType::Label => self.taffy.new_leaf_with_context(
-                style,
-                WidgetContext::Text(computed_style.text.clone(), widget.text()),
-            ),
-            WidgetType::Button => self.taffy.new_leaf_with_context(
-                style,
-                WidgetContext::Button(computed_style.text.clone(), widget.text()),
-            ),
-            _ => self.taffy.new_leaf(style),
-        }
-        .expect("failed to create taffy node");
+        let taffy_node = self
+            .taffy
+            .new_leaf(style)
+            .expect("failed to create taffy node");
+        let event_handlers = self
+            .event_handlers
+            .update_set(EventHandlerSet::default(), event_handlers);
         let id = self.nodes.insert_with_key(|id| {
             Node::new(
                 id,
@@ -238,6 +251,9 @@ impl UiArena {
                 taffy_node,
             )
         });
+        self.node_lifecycle_events
+            .push(NodeLifecycleEvent::Created(id));
+        self.refresh_taffy_context(id);
 
         id
     }
@@ -273,19 +289,13 @@ impl UiArena {
         event_handlers: EventHandlers,
     ) -> NodeId {
         let position = self.nodes[parent].children.len();
-        let node_type = widget.node_type();
-        let taffy_node = match node_type {
-            WidgetType::Text | WidgetType::Label => self.taffy.new_leaf_with_context(
-                style,
-                WidgetContext::Text(computed_style.text.clone(), widget.text()),
-            ),
-            WidgetType::Button => self.taffy.new_leaf_with_context(
-                style,
-                WidgetContext::Button(computed_style.text.clone(), widget.text()),
-            ),
-            _ => self.taffy.new_leaf(style),
-        }
-        .expect("failed to create taffy node");
+        let taffy_node = self
+            .taffy
+            .new_leaf(style)
+            .expect("failed to create taffy node");
+        let event_handlers = self
+            .event_handlers
+            .update_set(EventHandlerSet::default(), event_handlers);
         let id = self.nodes.insert_with_key(|id| {
             Node::new(
                 id,
@@ -299,15 +309,30 @@ impl UiArena {
                 taffy_node,
             )
         });
+        self.node_lifecycle_events
+            .push(NodeLifecycleEvent::Created(id));
+        self.refresh_taffy_context(id);
         self.attach(parent, id);
         id
     }
 
     pub fn attach(&mut self, parent: NodeId, child: NodeId) {
+        let old_parent = self.nodes[child].parent;
+        let old_position = self.nodes[child].position;
+        if let Some(old_parent) = old_parent.filter(|old_parent| *old_parent != parent) {
+            self.nodes[old_parent]
+                .children
+                .retain(|candidate| *candidate != child);
+            self.sync_taffy_children(old_parent);
+            self.reindex_children(old_parent);
+            self.mark_dirty(old_parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
+        }
         let parent_taffy = self.nodes[parent].taffy_node;
         let child_taffy = self.nodes[child].taffy_node;
         self.nodes[child].parent = Some(parent);
-        self.nodes[parent].children.push(child);
+        if !self.nodes[parent].children.contains(&child) {
+            self.nodes[parent].children.push(child);
+        }
         let taffy_children: Vec<_> = self.nodes[parent]
             .children
             .iter()
@@ -317,6 +342,8 @@ impl UiArena {
             .set_children(parent_taffy, &taffy_children)
             .expect("failed to attach taffy child");
         self.reindex_children(parent);
+        let new_position = self.nodes[child].position;
+        self.record_node_move(child, old_parent, Some(parent), old_position, new_position);
         self.mark_dirty(parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
         self.damage.add(self.nodes[child].layout);
         let _ = child_taffy;
@@ -362,9 +389,16 @@ impl UiArena {
         }
 
         self.event_state.clear_node(id);
+        self.event_handlers.clear_set(self.nodes[id].event_handlers);
 
         let _ = self.taffy.remove(self.nodes[id].taffy_node);
         self.nodes.remove(id);
+        self.node_lifecycle_events
+            .push(NodeLifecycleEvent::Removed(id));
+    }
+
+    pub fn drain_node_lifecycle_events(&mut self) -> Vec<NodeLifecycleEvent> {
+        std::mem::take(&mut self.node_lifecycle_events)
     }
 
     pub fn mark_dirty(&mut self, id: NodeId, flags: DirtyFlags) {
@@ -647,6 +681,11 @@ impl UiArena {
         let style = self.nodes[id].computed_style.clone();
         let mut cache = Vec::new();
         self.nodes[id].widget.paint(rect, &style, &mut cache);
+        for command in &mut cache {
+            if let PaintCommand::Text(command) = command {
+                command.node_id = id;
+            }
+        }
         self.nodes[id].paint_cache = cache;
         if !self.damage_nodes.contains(&id) {
             self.damage_nodes.push(id);
@@ -976,11 +1015,14 @@ impl UiArena {
     ) -> WidgetI {
         let mut flags = DirtyFlags::empty();
         let current_widget;
-
-        {
-            let text = widget.text();
-            eprintln!("Updated str: {:?}", text);
-        }
+        let event_handlers = {
+            let current = self
+                .nodes
+                .get(id)
+                .expect("reused node missing")
+                .event_handlers;
+            self.event_handlers.update_set(current, event_handlers)
+        };
 
         {
             let node = self.nodes.get_mut(id).expect("reused node missing");
@@ -1038,11 +1080,37 @@ impl UiArena {
             return;
         }
 
-        let tree_changed = self.nodes[parent].children != children;
+        let old_children = self.nodes[parent].children.clone();
+        let tree_changed = old_children != children;
+
+        for (old_position, child) in old_children.iter().copied().enumerate() {
+            if !children.contains(&child)
+                && self.nodes.contains_key(child)
+                && self.nodes[child].parent == Some(parent)
+            {
+                self.nodes[child].parent = None;
+                self.nodes[child].position = 0;
+                self.record_node_move(child, Some(parent), None, old_position, 0);
+            }
+        }
+
         self.nodes[parent].children = children;
-        for child in self.nodes[parent].children.clone() {
+        let new_children = self.nodes[parent].children.clone();
+        for (new_position, child) in new_children.iter().copied().enumerate() {
             if self.nodes.contains_key(child) {
+                let old_parent = self.nodes[child].parent;
+                let old_position = self.nodes[child].position;
+                if let Some(old_parent) = old_parent.filter(|old_parent| *old_parent != parent) {
+                    self.nodes[old_parent]
+                        .children
+                        .retain(|candidate| *candidate != child);
+                    self.sync_taffy_children(old_parent);
+                    self.reindex_children(old_parent);
+                    self.mark_dirty(old_parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
+                }
                 self.nodes[child].parent = Some(parent);
+                self.nodes[child].position = new_position;
+                self.record_node_move(child, old_parent, Some(parent), old_position, new_position);
             }
         }
         self.reindex_children(parent);
@@ -1060,15 +1128,40 @@ impl UiArena {
         }
     }
 
+    fn record_node_move(
+        &mut self,
+        id: NodeId,
+        old_parent: Option<NodeId>,
+        new_parent: Option<NodeId>,
+        old_position: usize,
+        new_position: usize,
+    ) {
+        if old_parent == new_parent && old_position == new_position {
+            return;
+        }
+        if old_parent.is_none() && new_parent.is_some() {
+            return;
+        }
+        self.node_lifecycle_events.push(NodeLifecycleEvent::Moved {
+            id,
+            old_parent,
+            new_parent,
+            old_position,
+            new_position,
+        });
+    }
+
     fn refresh_taffy_context(&mut self, id: NodeId) {
         let node = &self.nodes[id];
 
         let context = match node.node_type {
             WidgetType::Text | WidgetType::Label => Some(WidgetContext::Text(
+                id,
                 node.computed_style.text.clone(),
                 node.widget.text(),
             )),
             WidgetType::Button => Some(WidgetContext::Button(
+                id,
                 node.computed_style.text.clone(),
                 node.widget.text(),
             )),
@@ -1102,17 +1195,14 @@ fn measure_layout_context<T: TextMeasurer>(
     }
 
     let measured = match node_context {
-        Some(WidgetContext::Text(_props, t)) | Some(WidgetContext::Button(_props, t)) => {
+        Some(WidgetContext::Text(node_id, props, t))
+        | Some(WidgetContext::Button(node_id, props, t)) => {
             let str = t.as_ref().map(|t| t.as_str()).unwrap_or_default();
             let constraints = match known_dimensions.width {
                 Some(width) => TextLayoutConstraints::max_width(width),
                 None => TextLayoutConstraints::UNBOUNDED,
             };
-            let s = measurer.measure_text_with_constraints(str, _props, constraints);
-            println!(
-                "Measured text '{str}' with constraints and the size: {s:?} {constraints:?}: {s:?}"
-            );
-            s
+            measurer.measure_node_text_with_constraints(*node_id, str, props, constraints)
         }
 
         _ => Size::<f32>::ZERO,
@@ -1669,6 +1759,7 @@ mod scroll_tests {
     fn text_measure_prefers_known_width_over_available_width() {
         let mut measurer = RecordingMeasurer::default();
         let mut context = WidgetContext::Text(
+            Default::default(),
             TextStyle::default().into(),
             Some(TextContent::from_static("wrap me")),
         );
@@ -1695,6 +1786,7 @@ mod scroll_tests {
     fn text_measure_uses_unbounded_width_until_width_is_known() {
         let mut measurer = RecordingMeasurer::default();
         let mut context = WidgetContext::Text(
+            Default::default(),
             TextStyle::default().into(),
             Some(TextContent::from_static("hug me")),
         );

@@ -36,6 +36,27 @@ impl HookStorage {
     }
 }
 
+struct CallbackState<D, T> {
+    deps: D,
+    callback: Rc<RefCell<T>>,
+}
+
+#[derive(Clone)]
+pub struct Callback<T> {
+    callback: Rc<RefCell<T>>,
+}
+
+impl<T> Callback<T> {
+    pub fn call_mut<R>(&self, call: impl FnOnce(&mut T) -> R) -> R {
+        let mut callback = self.callback.borrow_mut();
+        call(&mut callback)
+    }
+
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.callback, &other.callback)
+    }
+}
+
 pub struct HookContext<'a> {
     storage: &'a mut HookStorage,
     owner: FiberId,
@@ -68,6 +89,42 @@ impl<'a> HookContext<'a> {
             owner: self.owner,
             hook_index,
             scheduler: self.scheduler.clone(),
+        }
+    }
+
+    pub fn use_callback<D, T>(&mut self, deps: D, init: impl FnOnce() -> T) -> Callback<T>
+    where
+        D: PartialEq + 'static,
+        T: 'static,
+    {
+        let mut next_deps = Some(deps);
+        let mut next_init = Some(init);
+        let (_, state) = self.storage.next_slot(|| {
+            let deps = next_deps
+                .take()
+                .expect("callback deps should be available for new hook slot");
+            let init = next_init
+                .take()
+                .expect("callback init should be available for new hook slot");
+            CallbackState {
+                deps,
+                callback: Rc::new(RefCell::new(init())),
+            }
+        });
+
+        if let Some(deps) = next_deps.take() {
+            let mut state = state.borrow_mut();
+            if state.deps != deps {
+                state.deps = deps;
+                let init = next_init
+                    .take()
+                    .expect("callback init should be available when deps change");
+                *state.callback.borrow_mut() = init();
+            }
+        }
+
+        Callback {
+            callback: state.borrow().callback.clone(),
         }
     }
 }
@@ -256,5 +313,99 @@ impl<T: Clone + 'static> State<T> {
     pub fn update(&self, update: impl FnOnce(&mut T) + 'static) {
         self.scheduler
             .enqueue_hook_update(self.owner, self.hook_index, update);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use crate::fiber::FiberArena;
+    use crate::lanes::SYNC_LANE;
+    use xui_interface::{DirtyFlags, EventPhase, EventRequests};
+
+    use super::*;
+
+    fn render_callback(
+        storage: &mut HookStorage,
+        owner: FiberId,
+        scheduler: Scheduler,
+        dep: usize,
+        builds: Rc<RefCell<usize>>,
+    ) -> Callback<Box<dyn FnMut() -> usize>> {
+        let mut cx = HookContext::new(storage, owner, scheduler, SYNC_LANE);
+        cx.use_callback(dep, move || {
+            *builds.borrow_mut() += 1;
+            Box::new(move || dep) as Box<dyn FnMut() -> usize>
+        })
+    }
+
+    #[test]
+    fn use_callback_reuses_handle_when_deps_are_equal() {
+        let mut storage = HookStorage::default();
+        let scheduler = Scheduler::default();
+        let owner = FiberArena::new().root();
+        scheduler.set_root(owner);
+        let builds = Rc::new(RefCell::new(0));
+
+        let first = render_callback(&mut storage, owner, scheduler.clone(), 7, builds.clone());
+        let second = render_callback(&mut storage, owner, scheduler, 7, builds.clone());
+
+        assert!(first.ptr_eq(&second));
+        assert_eq!(*builds.borrow(), 1);
+        assert_eq!(first.call_mut(|callback| callback()), 7);
+        assert_eq!(second.call_mut(|callback| callback()), 7);
+    }
+
+    #[test]
+    fn use_callback_updates_callback_when_deps_change() {
+        let mut storage = HookStorage::default();
+        let scheduler = Scheduler::default();
+        let owner = FiberArena::new().root();
+        scheduler.set_root(owner);
+        let builds = Rc::new(RefCell::new(0));
+
+        let first = render_callback(&mut storage, owner, scheduler.clone(), 7, builds.clone());
+        let second = render_callback(&mut storage, owner, scheduler, 9, builds.clone());
+
+        assert!(first.ptr_eq(&second));
+        assert_eq!(*builds.borrow(), 2);
+        assert_eq!(first.call_mut(|callback| callback()), 9);
+        assert_eq!(second.call_mut(|callback| callback()), 9);
+    }
+
+    #[test]
+    fn use_callback_can_store_event_handlers() {
+        let mut storage = HookStorage::default();
+        let scheduler = Scheduler::default();
+        let owner = FiberArena::new().root();
+        scheduler.set_root(owner);
+        let mut cx = HookContext::new(&mut storage, owner, scheduler, SYNC_LANE);
+
+        let callback = cx.use_callback((), || {
+            Box::new(|cx: &mut crate::event::EventContext<'_>| {
+                cx.mark_needs_paint();
+                crate::event::EventResult::Consumed
+            })
+                as Box<
+                    dyn for<'a> FnMut(
+                        &mut crate::event::EventContext<'a>,
+                    ) -> crate::event::EventResult,
+                >
+        });
+
+        let mut dirty = DirtyFlags::empty();
+        let mut requests = EventRequests::default();
+        let mut event_cx = crate::event::EventContext::new(
+            Default::default(),
+            EventPhase::Target,
+            &mut dirty,
+            &mut requests,
+        );
+        let result = callback.call_mut(|handler| handler(&mut event_cx));
+
+        assert_eq!(result, crate::event::EventResult::Consumed);
+        assert!(dirty.contains(DirtyFlags::PAINT));
     }
 }

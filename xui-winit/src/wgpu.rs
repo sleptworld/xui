@@ -6,7 +6,7 @@ use glam::{Vec2, Vec3};
 use wgpu::util::DeviceExt;
 use xui_interface::{
     Color, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, DamageRegion,
-    PaintCommand, Point, Rect, RenderBackend, TextLayoutConstraints, TextPaintCommand,
+    PaintCommand, Point, Rect, RenderBackend, TextPaintCommand,
 };
 use xui_text::atlas::{FontRenderBackend, GlyphAtlas, RendedGlyphBitmap};
 use xui_text::engine::TextLayouter;
@@ -861,12 +861,11 @@ impl WGPUBackend {
 
         println!("Layouting text with style: {:?}", rect);
 
-        let style: xui_interface::ComputedTextStyle = (&command.props.style).into();
-        let par = text.layout_text(
-            command.props.text.as_str(),
-            &style,
-            TextLayoutConstraints::max_width(rect.width),
-        );
+        let par = if let Some(par) = text.get_cached_layout(command.node_id) {
+            par
+        } else {
+            return Ok(());
+        };
 
         let scale = 1. / self.scale_factor;
         for line in par.lines() {

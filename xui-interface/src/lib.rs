@@ -33,4 +33,4 @@ pub use text::{
     TextBoxStyle, TextContent, TextDecoration, TextLayoutConstraints, TextOverflow, TextProps,
     TextStyle, TextVerticalAlign, WhiteSpace,
 };
-pub use widget::{Component, Key, NodeId, TextMeasurer, Widget, WidgetType};
+pub use widget::{Component, Key, NodeId, NodeLifecycleEvent, TextMeasurer, Widget, WidgetType};

@@ -1,5 +1,5 @@
 use crate::{
-    library::FamilyList,
+    fontique_library::FamilyList,
     span::{Span, SpanElement},
 };
 use std::borrow::{Borrow, Cow};
@@ -238,10 +238,11 @@ impl<'a> DocumentBuilder<'a> {
     }
 }
 
+#[cfg(test)]
 mod test {
     use crate::{
         doc::{Doc, SpanStyle},
-        library::FamilyList,
+        fontique_library::FamilyList,
     };
 
     #[test]

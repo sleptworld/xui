@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 arrayvec = "0.7.6"
+fontique = "0.10.0"
 memmap2 = "0.9.10"
 swash = "0.2.7"
 glam = { workspace = true }

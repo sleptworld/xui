@@ -1,17 +1,15 @@
-use ordered_float::NotNan;
-use std::collections::HashMap;
 use std::sync::Arc;
 use swash::shape::ShapeContext;
 use swash::{Style, Weight};
 use xui_interface::{
-    Color, ComputedTextStyle, FontFamily, FontStyle as XuiFontStyle, FontWeight as XuiFontWeight,
-    LineHeight, Size, TextDecoration, TextLayoutConstraints, TextMeasurer,
+    ComputedTextStyle, FontFamily, FontStyle as XuiFontStyle, FontWeight as XuiFontWeight,
+    LineHeight, NodeId, Size, TextLayoutConstraints, TextMeasurer,
 };
 
 use crate::{
     bidi::BidiResolver,
     doc::{Direction, Doc, SpanStyle},
-    library::{FamilyList, FontContext},
+    fontique_library::{FamilyList, FontContext},
     line_breaker::Alignment,
     par::{BuilderState, Par, Session},
     span::{Span, SpanElement},
@@ -24,6 +22,20 @@ pub trait TextLayouter: TextMeasurer {
         style: &ComputedTextStyle,
         constraints: TextLayoutConstraints,
     ) -> Arc<Par>;
+
+    fn layout_node_text(
+        &mut self,
+        _node_id: xui_interface::NodeId,
+        text: &str,
+        style: &ComputedTextStyle,
+        constraints: TextLayoutConstraints,
+    ) -> Arc<Par> {
+        self.layout_text(text, style, constraints)
+    }
+
+    fn get_cached_layout(&self, _node_id: NodeId) -> Option<Arc<Par>> {
+        None
+    }
 }
 
 pub struct Engine {
@@ -31,7 +43,6 @@ pub struct Engine {
     pub(crate) bidi: BidiResolver,
     pub(crate) scx: ShapeContext,
     pub(crate) state: BuilderState,
-    layout_cache: HashMap<TextLayoutKey, Arc<Par>>,
     scale_factor: f32,
 }
 
@@ -42,7 +53,6 @@ impl Engine {
             bidi: BidiResolver::new(),
             font_ctx: FontContext::default(),
             state: BuilderState::default(),
-            layout_cache: HashMap::new(),
             scale_factor: 1.0,
         }
     }
@@ -130,14 +140,7 @@ impl TextLayouter for Engine {
         style: &ComputedTextStyle,
         constraints: TextLayoutConstraints,
     ) -> Arc<Par> {
-        // let key = TextLayoutKey::new(text, style, constraints);
-        // if let Some(par) = self.layout_cache.get(&key) {
-        //     return Arc::clone(par);
-        // }
-
-        let par = Arc::new(self.layout_text_uncached(text, style, constraints));
-        // self.layout_cache.insert(key, Arc::clone(&par));
-        par
+        Arc::new(self.layout_text_uncached(text, style, constraints))
     }
 }
 
@@ -173,102 +176,6 @@ fn size_for_par(par: &Par) -> Size<f32> {
     }
 
     Size::<f32>::new(width, height)
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct TextLayoutKey {
-    text: Arc<str>,
-    style: TextStyleKey,
-    constraints: TextLayoutConstraintsKey,
-}
-
-impl TextLayoutKey {
-    fn new(text: &str, style: &ComputedTextStyle, constraints: TextLayoutConstraints) -> Self {
-        Self {
-            text: Arc::from(text),
-            style: TextStyleKey::from(style),
-            constraints: TextLayoutConstraintsKey::from(constraints),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct TextLayoutConstraintsKey {
-    max_width: Option<F32Key>,
-}
-
-impl From<TextLayoutConstraints> for TextLayoutConstraintsKey {
-    fn from(constraints: TextLayoutConstraints) -> Self {
-        Self {
-            max_width: constraints.max_width.map(|width| F32Key(width.to_bits())),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct TextStyleKey {
-    color: ColorKey,
-    font_family: FontFamily,
-    font_size: F32Key,
-    font_weight: XuiFontWeight,
-    font_style: XuiFontStyle,
-    line_height: LineHeightKey,
-    letter_spacing: F32Key,
-    decoration: TextDecoration,
-}
-
-impl From<&ComputedTextStyle> for TextStyleKey {
-    fn from(style: &ComputedTextStyle) -> Self {
-        Self {
-            color: ColorKey::from(style.color),
-            font_family: style.font_family.clone(),
-            font_size: F32Key(style.font_size.to_bits()),
-            font_weight: style.font_weight,
-            font_style: style.font_style,
-            line_height: LineHeightKey::from(style.line_height),
-            letter_spacing: F32Key(style.letter_spacing.to_bits()),
-            decoration: style.decoration,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct ColorKey {
-    r: F32Key,
-    g: F32Key,
-    b: F32Key,
-    a: F32Key,
-}
-
-impl From<Color> for ColorKey {
-    fn from(color: Color) -> Self {
-        Self {
-            r: F32Key(color.r.to_bits()),
-            g: F32Key(color.g.to_bits()),
-            b: F32Key(color.b.to_bits()),
-            a: F32Key(color.a.to_bits()),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct F32Key(u32);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum LineHeightKey {
-    Normal,
-    Px(F32Key),
-    Em(F32Key),
-}
-
-impl From<LineHeight> for LineHeightKey {
-    fn from(line_height: LineHeight) -> Self {
-        match line_height {
-            LineHeight::Normal => Self::Normal,
-            LineHeight::Px(value) => Self::Px(F32Key(value.to_bits())),
-            LineHeight::Em(value) => Self::Em(F32Key(value.to_bits())),
-        }
-    }
 }
 
 fn span_styles_for_style(style: &ComputedTextStyle) -> Vec<SpanStyle<'static>> {

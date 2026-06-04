@@ -183,6 +183,7 @@ impl Widget for ButtonWidget {
         apply_text_style(&mut text_props, style);
         let padding = style.layout.padding;
         commands.push(PaintCommand::Text(TextPaintCommand {
+            node_id: Default::default(),
             rect: Rect::new(
                 rect.x + padding.left,
                 rect.y + padding.top,

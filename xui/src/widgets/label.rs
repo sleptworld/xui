@@ -75,6 +75,7 @@ impl Widget for LabelWidget {
         let mut text_props = TextProps::new(self.text.clone());
         apply_text_style(&mut text_props, style);
         commands.push(PaintCommand::Text(TextPaintCommand {
+            node_id: Default::default(),
             rect,
             props: text_props,
         }));

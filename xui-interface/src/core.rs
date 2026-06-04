@@ -220,6 +220,15 @@ impl EdgeInsets {
             bottom: value,
         }
     }
+
+    pub const fn symmetric(horizontal: f32, vertical: f32) -> Self {
+        Self {
+            left: horizontal,
+            right: horizontal,
+            top: vertical,
+            bottom: vertical,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

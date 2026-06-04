@@ -117,7 +117,11 @@ impl Widget for TextWidget {
     fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
         let mut props = self.props.clone();
         apply_text_style(&mut props, style);
-        commands.push(PaintCommand::Text(TextPaintCommand { rect, props }));
+        commands.push(PaintCommand::Text(TextPaintCommand {
+            node_id: Default::default(),
+            rect,
+            props,
+        }));
     }
 
     fn handle_event(&mut self, _event: &Event, _cx: &mut EventContext<'_>) -> EventResult {

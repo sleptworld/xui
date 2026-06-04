@@ -16,7 +16,7 @@ pub use crate::render::{
 pub use crate::runtime::{
     ControlFlow, EventSource, FrameReport, GuiRuntime, QueueEventSource, RuntimeEvent,
 };
-pub use crate::state::HookContext;
+pub use crate::state::{Callback, HookContext};
 pub use crate::style::{
     ColorStyle, ColorToken, ColorValue, ComputedColorStyle, ComputedLayoutStyle,
     ComputedLinearGradientStyle, ComputedPaintStyle, ComputedRadialGradientStyle,

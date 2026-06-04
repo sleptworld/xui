@@ -1,6 +1,6 @@
 use crate::{
-    Color, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, Point, Rect, Size,
-    TextProps, Translation,
+    Color, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, NodeId,
+    NodeLifecycleEvent, Point, Rect, Size, TextProps, Translation,
 };
 
 pub trait Painter {
@@ -50,6 +50,7 @@ pub enum PaintCommand {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextPaintCommand {
+    pub node_id: NodeId,
     pub rect: Rect,
     pub props: TextProps,
 }
@@ -116,6 +117,8 @@ pub trait RenderBackend<T> {
     fn set_factor(&mut self, _factor: f32) -> Result<(), Self::Error> {
         Ok(())
     }
+
+    fn handle_node_lifecycle(&mut self, _event: &NodeLifecycleEvent) {}
 }
 
 pub trait DrawBackend<T>: RenderBackend<T> {}

@@ -2,13 +2,29 @@ mod components;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 use xui::prelude::*;
-use xui_winit::{WGPUBackend, WinitRunner, WinitRunnerOptions};
+use xui_winit::{WGPUBackend, WinitRunner, WinitRunnerOptions, WinitTextEngine};
 
 pub struct MainProp {
     pub info: String,
 }
 
 component_fn! {
+
+    fn btn(name: &String) {
+            <button
+                style={Style::new()
+                    .width(Sizing::Hug)
+                    .background(Color::BLACK)
+                    .color(Color::WHITE)
+                    .padding(EdgeInsets::symmetric(12.0, 4.0))
+                    .border_radius(5.0)}
+                hover_style={Style::new().background(Color::BLUE_500)}
+            >
+                {name}
+            </button>
+    }
+
+
     fn counter() {
         let count = cx.use_state(|| 0);
         let count_for_increment = count.clone();
@@ -42,9 +58,14 @@ component_fn! {
                 {"Decrement"}
             </button>
 
-            <container width={Sizing::Hug} background={Color::BLACK} >
-                <text color={Color::WHITE}>{"WHTA"} </text>
-            </container>
+            <row gap={2.0}>
+                <btn props= {"Hello\nWorld".to_string()}/>
+                <btn props= {"Hello".to_string()}/>
+                <btn props= {"Hello".to_string()}/>
+                <btn props= {"Hello".to_string()}/>
+                <btn props= {"Oh".to_string()}/>
+                <btn props= {"MY".to_string()}/>
+            </row>
         </column>
 
     }
@@ -70,8 +91,7 @@ component_fn! {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = App::with_component_registry(|registry| {
-        register_counter_component(registry);
-        register_test_page_component(registry);
+        register_components(registry);
         components::register_components(registry);
         xui_components::register_components(registry);
 
@@ -110,7 +130,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     WinitRunner::with_backend_factory(
-        |window| (app, Engine::new(), WGPUBackend::new(window)),
+        |window| (app, WinitTextEngine::new(), WGPUBackend::new(window)),
         Some(options),
     )
     .run()
