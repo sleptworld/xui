@@ -28,10 +28,18 @@ pub fn translate_key(key: &WinitKey) -> InputKey {
     }
 }
 
-pub fn translate_mouse_wheel(delta: &MouseScrollDelta) -> Point {
+const LINE_SCROLL_LOGICAL_PIXELS: f32 = 48.0;
+
+pub fn translate_mouse_wheel(scale: f32, delta: &MouseScrollDelta) -> Point {
+    let scale = scale.max(1.0);
     match delta {
-        MouseScrollDelta::LineDelta(x, y) => Point::new(*x, *y),
-        MouseScrollDelta::PixelDelta(position) => Point::new(position.x as f32, position.y as f32),
+        MouseScrollDelta::LineDelta(x, y) => Point::new(
+            *x * LINE_SCROLL_LOGICAL_PIXELS,
+            *y * LINE_SCROLL_LOGICAL_PIXELS,
+        ),
+        MouseScrollDelta::PixelDelta(position) => {
+            Point::new(position.x as f32, position.y as f32).scale(1.0 / scale)
+        }
     }
 }
 
@@ -67,7 +75,7 @@ pub fn translate_window_event(
         WindowEvent::MouseWheel { delta, .. } => {
             vec![RuntimeEvent::Input(Event::Wheel {
                 position: last_cursor_position.unwrap_or(Point::new(0.0, 0.0)),
-                delta: translate_mouse_wheel(delta),
+                delta: translate_mouse_wheel(scale, delta),
             })]
         }
         WindowEvent::KeyboardInput { event, .. } => translate_key_event(event),
@@ -138,8 +146,15 @@ mod tests {
     #[test]
     fn maps_scroll_delta() {
         assert_eq!(
-            translate_mouse_wheel(&MouseScrollDelta::LineDelta(1.0, -2.0)),
-            Point::new(1.0, -2.0)
+            translate_mouse_wheel(1.0, &MouseScrollDelta::LineDelta(1.0, -2.0)),
+            Point::new(48.0, -96.0)
+        );
+        assert_eq!(
+            translate_mouse_wheel(
+                2.0,
+                &MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(20.0, -10.0))
+            ),
+            Point::new(10.0, -5.0)
         );
     }
 }

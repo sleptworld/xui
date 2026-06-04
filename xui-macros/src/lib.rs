@@ -11,7 +11,8 @@ use syn::{
 
 use crate::tools::{
     event_attr_stmt, parse_attrs_helper, parse_base_attr, parse_layout_style_attr,
-    parse_paint_style_attr, parse_scroll_style_attr, parse_text_style_attr, unsupported_attr,
+    parse_paint_style_attr, parse_scroll_style_attr, parse_stack_attr, parse_text_style_attr,
+    unsupported_attr,
 };
 
 #[proc_macro]
@@ -581,28 +582,18 @@ fn expand_button(node: &ElementNode) -> Result<TokenStream2> {
 
 fn expand_stack(node: &ElementNode, tag: &str, constructor: TokenStream2) -> Result<TokenStream2> {
     let mut attr_stmts = Vec::new();
-    for attr in &node.attrs {
-        let value = &attr.value;
-        match attr.name.to_string().as_str() {
-            "key" => attr_stmts.push(quote! { __xui_element = __xui_element.key(#value); }),
-            "style" => attr_stmts.push(quote! { __xui_style.merge(&#value); }),
-            "gap" => {
-                attr_stmts.push(quote! { __xui_style.merge(&::xui::Style::new().gap(#value)); })
-            }
-            "padding" => {
-                attr_stmts.push(quote! { __xui_style.merge(&::xui::Style::new().padding(#value)); })
-            }
-            "background" => attr_stmts
-                .push(quote! { __xui_style.merge(&::xui::Style::new().background(#value)); }),
-            other => {
-                if let Some(stmt) = event_attr_stmt(attr) {
-                    attr_stmts.push(stmt);
-                } else {
-                    return unsupported_attr(attr, tag, other);
-                }
-            }
-        }
-    }
+
+    parse_attrs_helper(
+        node,
+        |name, value| {
+            parse_base_attr(name, value).or(parse_text_style_attr(name, value)
+                .or(parse_layout_style_attr(name, value))
+                .or(parse_paint_style_attr(name, value))
+                .or(parse_scroll_style_attr(name, value))
+                .or(parse_stack_attr(name, value)))
+        },
+        &mut attr_stmts,
+    )?;
 
     let children = node
         .children
@@ -630,7 +621,7 @@ fn expand_container(node: &ElementNode) -> Result<TokenStream2> {
                 .or(parse_scroll_style_attr(name, value)))
         },
         &mut attr_stmts,
-    );
+    )?;
 
     let children = node
         .children

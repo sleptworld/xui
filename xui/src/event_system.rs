@@ -314,7 +314,9 @@ mod tests {
     use std::rc::Rc;
 
     use taffy::prelude as tf;
-    use xui_interface::{Color, DirtyFlags, EventHandlers, NodeId, Point, Rect};
+    use xui_interface::{
+        Color, ComputedColorStyle, DirtyFlags, EventHandlers, NodeId, Point, Rect,
+    };
 
     use super::*;
 
@@ -399,6 +401,66 @@ mod tests {
 
         assert_eq!(result, EventResult::Consumed);
         assert!(arena.node(child).unwrap().dirty.contains(DirtyFlags::PAINT));
+    }
+
+    #[test]
+    fn hit_test_uses_scroll_offset_for_child_layout() {
+        let mut arena = UiArena::new();
+        let root = arena.root();
+        let parent = arena.insert(
+            root,
+            crate::widgets::ContainerWidget::new().style(crate::Style::new().scroll_vertical()),
+            tf::Style::default(),
+        );
+        let child = arena.insert(
+            parent,
+            crate::widgets::ContainerWidget::new(),
+            tf::Style::default(),
+        );
+
+        arena.node_mut(root).unwrap().layout = Rect::new(0.0, 0.0, 100.0, 100.0);
+        arena.node_mut(parent).unwrap().layout = Rect::new(0.0, 0.0, 80.0, 40.0);
+        arena.node_mut(parent).unwrap().scroll_offset = Point::new(0.0, 30.0);
+        arena.node_mut(child).unwrap().layout = Rect::new(0.0, 50.0, 40.0, 40.0);
+
+        assert_eq!(arena.hit_test(Point::new(5.0, 25.0)), Some(child));
+        assert_eq!(arena.hit_test(Point::new(5.0, 55.0)), Some(root));
+    }
+
+    #[test]
+    fn dirty_child_damage_uses_scrolled_visual_rect() {
+        let mut arena = UiArena::new();
+        let root = arena.root();
+        let parent = arena.insert(
+            root,
+            crate::widgets::ContainerWidget::new().style(crate::Style::new().scroll_vertical()),
+            tf::Style::default(),
+        );
+        let child = arena.insert(
+            parent,
+            crate::widgets::ContainerWidget::new()
+                .style(crate::Style::new().background(Color::BLUE_500)),
+            tf::Style::default(),
+        );
+
+        arena.node_mut(root).unwrap().layout = Rect::new(0.0, 0.0, 100.0, 100.0);
+        arena.node_mut(parent).unwrap().layout = Rect::new(0.0, 0.0, 80.0, 40.0);
+        arena.node_mut(parent).unwrap().scroll_offset = Point::new(0.0, 30.0);
+        arena.node_mut(child).unwrap().layout = Rect::new(0.0, 50.0, 40.0, 40.0);
+        arena.finish_paint();
+
+        arena.mark_dirty(child, DirtyFlags::PAINT);
+        let (damage, commands) = arena.prepare_paint_commands();
+
+        assert_eq!(damage.rects(), &[Rect::new(0.0, 20.0, 40.0, 20.0)]);
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            crate::PaintCommand::Rect {
+                rect,
+                color: ComputedColorStyle::Solid(color),
+                ..
+            } if *rect == Rect::new(0.0, 50.0, 40.0, 40.0) && *color == Color::BLUE_500
+        )));
     }
 
     #[test]

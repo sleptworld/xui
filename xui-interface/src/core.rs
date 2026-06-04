@@ -1,3 +1,5 @@
+use std::ops::{Add, Sub};
+
 use ordered_float::NotNan;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -28,6 +30,22 @@ impl Point {
     }
 }
 
+impl Sub<Point> for Point {
+    type Output = Point;
+
+    fn sub(self, rhs: Point) -> Self::Output {
+        Point::new(self.x - rhs.x, self.y - rhs.y)
+    }
+}
+
+impl Add<Point> for Point {
+    type Output = Point;
+
+    fn add(self, rhs: Point) -> Self::Output {
+        Point::new(self.x + rhs.x, self.y + rhs.y)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Default, Hash)]
 pub enum Sizing {
     Fix(NotNan<f32>),
@@ -35,6 +53,24 @@ pub enum Sizing {
     #[default]
     Hug,
     Fill,
+}
+
+impl Sizing {
+    pub fn fix(value: f32) -> Self {
+        Self::Fix(NotNan::new(value).unwrap())
+    }
+
+    pub fn percent(value: f32) -> Self {
+        Self::Percent(NotNan::new(value).unwrap())
+    }
+
+    pub const fn hug() -> Self {
+        Self::Hug
+    }
+
+    pub const fn fill() -> Self {
+        Self::Fill
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

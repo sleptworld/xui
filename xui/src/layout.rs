@@ -1,9 +1,9 @@
 use taffy::{LengthPercentage, prelude as tf};
 use taffy::{Overflow, Point as TaffyPoint};
 pub use xui_interface::TextMeasurer;
+use xui_interface::Widget;
 use xui_interface::core::Sizing;
 use xui_interface::style::{AlignStyle, JustifyStyle};
-use xui_interface::{Size, Widget};
 
 use crate::core::EdgeInsets;
 use crate::style::{ComputedStyle, FlexDirectionStyle, ScrollDirectionStyle, Theme};
@@ -41,6 +41,7 @@ pub fn computed_layout_style(
     computed: &ComputedStyle,
 ) -> tf::Style {
     let layout = computed.layout;
+    let is_root = widget.with_widgets(|w| matches!(w, Widgets::Root(_)));
     let mut style = widget.with_widgets(|w| match w {
         Widgets::Column(_) => tf::Style {
             display: tf::Display::Flex,
@@ -61,6 +62,14 @@ pub fn computed_layout_style(
             gap: tf::Size {
                 height: LengthPercentage::length(0.0),
                 width: length_percentage(layout.gap),
+            },
+            ..Default::default()
+        },
+        Widgets::Root(_) => tf::Style {
+            display: tf::Display::Block,
+            size: tf::Size {
+                width: tf::Dimension::percent(1.0),
+                height: tf::Dimension::percent(1.0),
             },
             ..Default::default()
         },
@@ -99,7 +108,7 @@ pub fn computed_layout_style(
                 }
             }
         }
-    } else {
+    } else if !is_root {
         style.size = tf::Size {
             width: tf::Dimension::auto(),
             height: tf::Dimension::auto(),
@@ -168,10 +177,6 @@ fn dimension(value: Sizing) -> tf::Dimension {
         Sizing::Percent(v) => tf::Dimension::percent(v.into_inner()),
     }
 }
-
-// fn dimension(value: f32) -> tf::Dimension {
-//     tf::Dimension::length(value)
-// }
 
 fn length_percentage(value: f32) -> tf::LengthPercentage {
     tf::LengthPercentage::length(value)

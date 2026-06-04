@@ -114,16 +114,17 @@ pub struct UiArena {
 impl UiArena {
     pub fn new() -> Self {
         let mut taffy = tf::TaffyTree::new();
+        let theme = Theme::default();
+        let root_widget = crate::widgets::root_widget();
+        let root_parent_style = ComputedStyle::initial(&theme);
+        let root_computed_style =
+            computed_style_for_widget(&root_widget, &root_parent_style, &theme);
+        let root_taffy_style =
+            taffy_style_for_widget(&root_widget, &root_parent_style, &root_computed_style);
         let taffy_root = taffy
-            .new_leaf(tf::Style {
-                display: tf::Display::Flex,
-                flex_direction: tf::FlexDirection::Column,
-                ..Default::default()
-            })
+            .new_leaf(root_taffy_style)
             .expect("failed to create taffy root");
         let mut nodes = SlotMap::with_key();
-        let theme = Theme::default();
-        let root_computed_style = ComputedStyle::initial(&theme);
         let root = nodes.insert_with_key(|id| {
             Node::new(
                 id,
@@ -132,7 +133,7 @@ impl UiArena {
                 0,
                 // root_style,
                 root_computed_style,
-                crate::widgets::root_widget(),
+                root_widget,
                 EventHandlerSet::default(),
                 taffy_root,
             )
@@ -345,7 +346,7 @@ impl UiArena {
         let new_position = self.nodes[child].position;
         self.record_node_move(child, old_parent, Some(parent), old_position, new_position);
         self.mark_dirty(parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
-        self.damage.add(self.nodes[child].layout);
+        self.add_node_damage(child, self.nodes[child].layout);
         let _ = child_taffy;
     }
 
@@ -373,7 +374,7 @@ impl UiArena {
         }
 
         let old_layout = self.nodes[id].layout;
-        self.damage.add(old_layout);
+        self.add_node_damage(id, old_layout);
 
         if let Some(parent) = self.nodes[id].parent {
             self.nodes[parent].children.retain(|child| *child != id);
@@ -406,10 +407,13 @@ impl UiArena {
             return;
         }
 
-        let node = self.nodes.get_mut(id).expect("checked node existence");
-        node.dirty |= flags;
+        let rect = {
+            let node = self.nodes.get_mut(id).expect("checked node existence");
+            node.dirty |= flags;
+            node.layout
+        };
         if flags.intersects(DirtyFlags::PAINT | DirtyFlags::STYLE) {
-            self.damage.add(node.layout);
+            self.add_node_damage(id, rect);
         }
 
         // A parent with no own work can still find the dirty branch below it
@@ -423,6 +427,52 @@ impl UiArena {
 
     pub fn add_damage(&mut self, rect: Rect) {
         self.damage.add(rect);
+    }
+
+    fn add_node_damage(&mut self, id: NodeId, rect: Rect) {
+        if let Some(rect) = self.visual_damage_rect_for_node(id, rect) {
+            self.damage.add(rect);
+        }
+    }
+
+    fn visual_damage_rect_for_node(&self, id: NodeId, mut rect: Rect) -> Option<Rect> {
+        if !self.nodes.contains_key(id) {
+            return None;
+        }
+
+        let mut ancestors = Vec::new();
+        let mut cursor = self.nodes[id].parent;
+        while let Some(parent) = cursor {
+            ancestors.push(parent);
+            cursor = self.nodes[parent].parent;
+        }
+
+        let mut scroll_offset = Point::zero();
+        for ancestor in ancestors.into_iter().rev() {
+            let node = &self.nodes[ancestor];
+            let scrollable = node.computed_style.scroll.direction.is_scrollable();
+            if scrollable {
+                rect.x -= node.scroll_offset.x;
+                rect.y -= node.scroll_offset.y;
+            }
+
+            if node.computed_style.paint.clip || scrollable {
+                let clip = Rect::new(
+                    node.layout.x - scroll_offset.x,
+                    node.layout.y - scroll_offset.y,
+                    node.layout.width,
+                    node.layout.height,
+                );
+                rect = intersect_rect(rect, clip)?;
+            }
+
+            if scrollable {
+                scroll_offset.x += node.scroll_offset.x;
+                scroll_offset.y += node.scroll_offset.y;
+            }
+        }
+
+        Some(rect)
     }
 
     pub fn clear_dirty(&mut self, id: NodeId) {
@@ -441,27 +491,39 @@ impl UiArena {
         }
     }
 
+    #[inline(always)]
     pub fn hit_test(&self, point: crate::core::Point) -> Option<NodeId> {
-        self.hit_test_from(self.root, point)
+        self.hit_test_from(self.root, point, Point::zero())
     }
 
-    fn hit_test_from(&self, id: NodeId, point: crate::core::Point) -> Option<NodeId> {
+    fn hit_test_from(
+        &self,
+        id: NodeId,
+        point: crate::core::Point,
+        scroll_offset: Point,
+    ) -> Option<NodeId> {
         let node = self.nodes.get(id)?;
-        if !node.layout.contains(point) {
+        let visual_layout = Rect::new(
+            node.layout.x - scroll_offset.x,
+            node.layout.y - scroll_offset.y,
+            node.layout.width,
+            node.layout.height,
+        );
+        if !visual_layout.contains(point) {
             return None;
         }
 
-        let child_point = if node.computed_style.scroll.direction.is_scrollable() {
+        let child_scroll_offset = if node.computed_style.scroll.direction.is_scrollable() {
             Point::new(
-                point.x + node.scroll_offset.x,
-                point.y + node.scroll_offset.y,
+                scroll_offset.x + node.scroll_offset.x,
+                scroll_offset.y + node.scroll_offset.y,
             )
         } else {
-            point
+            scroll_offset
         };
 
         for child in node.children.iter().rev() {
-            if let Some(hit) = self.hit_test_from(*child, child_point) {
+            if let Some(hit) = self.hit_test_from(*child, point, child_scroll_offset) {
                 return Some(hit);
             }
         }
@@ -503,9 +565,10 @@ impl UiArena {
             return false;
         }
 
+        let scroll_delta = ergonomic_scroll_delta(delta);
         let next = Point::new(
-            (node.scroll_offset.x - delta.x).clamp(0.0, max_x),
-            (node.scroll_offset.y - delta.y).clamp(0.0, max_y),
+            (node.scroll_offset.x - scroll_delta.x).clamp(0.0, max_x),
+            (node.scroll_offset.y - scroll_delta.y).clamp(0.0, max_y),
         );
         if next == node.scroll_offset {
             return false;
@@ -514,7 +577,7 @@ impl UiArena {
         let old_layout = node.layout;
         let node = self.nodes.get_mut(id).expect("checked node existence");
         node.scroll_offset = next;
-        self.damage.add(old_layout);
+        self.add_node_damage(id, old_layout);
         self.mark_dirty(id, DirtyFlags::PAINT);
         true
     }
@@ -690,7 +753,7 @@ impl UiArena {
         if !self.damage_nodes.contains(&id) {
             self.damage_nodes.push(id);
         }
-        self.damage.add(rect);
+        self.add_node_damage(id, rect);
     }
 
     pub fn compute_layout<T: TextMeasurer>(&mut self, size: Size<f32>, measurer: &mut T) {
@@ -739,17 +802,19 @@ impl UiArena {
             layout.size.height,
         );
 
+        let old_rect = self.nodes[id].layout;
+        let layout_changed = old_rect != rect;
+        if layout_changed {
+            self.add_node_damage(id, old_rect);
+            self.add_node_damage(id, rect);
+        }
+
         let (children, mut subtree_dirty) = {
             let node = &mut self.nodes[id];
-            let layout_changed = node.layout != rect;
             let should_sync_children = layout_changed
                 || node.dirty.intersects(Self::layout_dirty_flags())
                 || node.subtree_dirty.intersects(Self::layout_dirty_flags());
 
-            if layout_changed {
-                self.damage.add(node.layout);
-                self.damage.add(rect);
-            }
             node.previous_layout = node.layout;
             node.layout = rect;
             node.dirty.remove(DirtyFlags::LAYOUT);
@@ -769,17 +834,24 @@ impl UiArena {
         }
 
         let content_size = self.content_size_from_children(id, taffy_content_size);
-        let node = self.nodes.get_mut(id).expect("node removed during layout");
-        let content_size_changed = node.content_size != content_size;
-        let scroll_offset_before_clamp = node.scroll_offset;
-        node.content_size = content_size;
-        clamp_scroll_offset(node);
-        if node.computed_style.scroll.direction.is_scrollable()
-            && (content_size_changed || node.scroll_offset != scroll_offset_before_clamp)
-        {
-            self.damage.add(node.layout);
+        let (scroll_dirty, rect) = {
+            let node = self.nodes.get_mut(id).expect("node removed during layout");
+            let content_size_changed = node.content_size != content_size;
+            let scroll_offset_before_clamp = node.scroll_offset;
+            node.content_size = content_size;
+            clamp_scroll_offset(node);
+            (
+                node.computed_style.scroll.direction.is_scrollable()
+                    && (content_size_changed || node.scroll_offset != scroll_offset_before_clamp),
+                node.layout,
+            )
+        };
+        if scroll_dirty {
+            self.add_node_damage(id, rect);
+            let node = self.nodes.get_mut(id).expect("node removed during layout");
             node.dirty.insert(DirtyFlags::PAINT);
         }
+        let node = self.nodes.get_mut(id).expect("node removed during layout");
         node.subtree_dirty = subtree_dirty;
         node.dirty | node.subtree_dirty
     }
@@ -892,7 +964,7 @@ impl UiArena {
 
     #[inline(always)]
     fn paint_node(&self, id: NodeId, damage: &DamageRegion, commands: &mut Vec<PaintCommand>) {
-        self.paint_node_inner(id, damage, commands, false);
+        self.paint_node_inner(id, damage, commands, false, Point::zero());
     }
 
     fn paint_node_inner(
@@ -901,13 +973,21 @@ impl UiArena {
         damage: &DamageRegion,
         commands: &mut Vec<PaintCommand>,
         force: bool,
+        scroll_offset: Point,
     ) {
         let node = match self.nodes.get(id) {
             Some(node) => node,
             None => return,
         };
 
-        if force || damage.intersects(node.layout) {
+        let visual_layout = Rect::new(
+            node.layout.x - scroll_offset.x,
+            node.layout.y - scroll_offset.y,
+            node.layout.width,
+            node.layout.height,
+        );
+
+        if force || damage.intersects(visual_layout) {
             let scrollable = node.computed_style.scroll.direction.is_scrollable();
             if node.computed_style.paint.clip || scrollable {
                 commands.push(PaintCommand::PushClip(node.layout));
@@ -923,8 +1003,22 @@ impl UiArena {
                     translate: Translation::new(-node.scroll_offset.x, -node.scroll_offset.y),
                 });
             }
+            let child_scroll_offset = if scrollable {
+                Point::new(
+                    scroll_offset.x + node.scroll_offset.x,
+                    scroll_offset.y + node.scroll_offset.y,
+                )
+            } else {
+                scroll_offset
+            };
             for child in &node.children {
-                self.paint_node_inner(*child, damage, commands, force || scrollable);
+                self.paint_node_inner(
+                    *child,
+                    damage,
+                    commands,
+                    force || scrollable,
+                    child_scroll_offset,
+                );
             }
             if scrollable {
                 commands.push(PaintCommand::PopTransform);
@@ -1214,6 +1308,27 @@ fn measure_layout_context<T: TextMeasurer>(
     }
 }
 
+fn ergonomic_scroll_delta(delta: Point) -> Point {
+    let magnitude = (delta.x * delta.x + delta.y * delta.y).sqrt();
+    let factor = scroll_acceleration_factor(magnitude);
+    Point::new(delta.x * factor, delta.y * factor)
+}
+
+fn scroll_acceleration_factor(magnitude: f32) -> f32 {
+    const MIN_ACCELERATION_MAGNITUDE: f32 = 80.0;
+    const FULL_ACCELERATION_MAGNITUDE: f32 = 160.0;
+    const MAX_ACCELERATION: f32 = 2.75;
+
+    if magnitude <= MIN_ACCELERATION_MAGNITUDE {
+        return 1.0;
+    }
+
+    let progress =
+        ((magnitude - MIN_ACCELERATION_MAGNITUDE) / FULL_ACCELERATION_MAGNITUDE).clamp(0.0, 1.0);
+    let eased = 1.0 - (1.0 - progress).powi(2);
+    1.0 + eased * (MAX_ACCELERATION - 1.0)
+}
+
 fn clamp_scroll_offset(node: &mut Node) {
     let direction = node.computed_style.scroll.direction;
     let max_x = if direction.allows_horizontal() {
@@ -1313,6 +1428,15 @@ fn horizontal_scrollbar_track(rect: Rect, width: f32) -> Rect {
     )
 }
 
+fn intersect_rect(a: Rect, b: Rect) -> Option<Rect> {
+    let x0 = a.x.max(b.x);
+    let y0 = a.y.max(b.y);
+    let x1 = (a.x + a.width).min(b.x + b.width);
+    let y1 = (a.y + a.height).min(b.y + b.height);
+
+    (x1 > x0 && y1 > y0).then(|| Rect::new(x0, y0, x1 - x0, y1 - y0))
+}
+
 fn paint_scrollbar_part(
     rect: Rect,
     color: ComputedColorStyle,
@@ -1341,681 +1465,39 @@ fn paint_scrollbar_part(
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use crate::widgets::{TextWidget, button, container, label, row, style_scope};
-//     use crate::{Color, PaintCommand, Style};
-
-//     #[derive(Default)]
-//     struct RecordingMeasurer {
-//         constraints: Vec<TextLayoutConstraints>,
-//     }
-
-//     impl TextMeasurer for RecordingMeasurer {
-//         fn measure_text(&mut self, text: &str, style: &ComputedTextStyle) -> Size {
-//             self.measure_text_with_constraints(text, style, TextLayoutConstraints::UNBOUNDED)
-//         }
-
-//         fn measure_text_with_constraints(
-//             &mut self,
-//             _text: &str,
-//             _style: &ComputedTextStyle,
-//             constraints: TextLayoutConstraints,
-//         ) -> Size {
-//             self.constraints.push(constraints);
-//             match constraints.max_width {
-//                 Some(width) => Size::new(width, 20.0),
-//                 None => Size::new(100.0, 10.0),
-//             }
-//         }
-//     }
-
-//     #[derive(Default)]
-//     struct TextRecordingMeasurer {
-//         calls: Vec<(String, f32)>,
-//     }
-
-//     impl TextMeasurer for TextRecordingMeasurer {
-//         fn measure_text(&mut self, text: &str, style: &ComputedTextStyle) -> Size {
-//             self.measure_text_with_constraints(text, style, TextLayoutConstraints::UNBOUNDED)
-//         }
-
-//         fn measure_text_with_constraints(
-//             &mut self,
-//             text: &str,
-//             style: &ComputedTextStyle,
-//             _constraints: TextLayoutConstraints,
-//         ) -> Size {
-//             self.calls.push((text.to_owned(), style.font_size));
-//             Size::new(text.len() as f32 * style.font_size, style.font_size)
-//         }
-//     }
-
-//     #[test]
-//     fn text_layout_uses_available_width_as_measure_constraint() {
-//         let mut arena = UiArena::new();
-//         let root = arena.root();
-//         let text = arena.insert(
-//             root,
-//             TextWidget::new("width constrained"),
-//             tf::Style::default(),
-//         );
-//         let mut measurer = RecordingMeasurer::default();
-
-//         arena.update_tree(root, Size::new(50.0, 100.0), &mut measurer);
-
-//         assert!(
-//             measurer
-//                 .constraints
-//                 .iter()
-//                 .any(|constraints| constraints.max_width == Some(50.0))
-//         );
-//         assert_eq!(arena.node(text).unwrap().layout.width, 50.0);
-//         assert_eq!(arena.node(text).unwrap().layout.height, 20.0);
-//     }
-
-//     #[test]
-//     fn style_scope_inherits_text_style_to_label_and_local_style_overrides() {
-//         let mut arena = UiArena::new();
-//         let root = arena.root();
-//         let element = style_scope(Style::new().color(Color::BLUE_500).font_size(20.0))
-//             .child(label("inherited"))
-//             .child(label("local").style(Style::new().color(Color::BLACK)));
-//         let mut measurer = TextI::new();
-
-//         let scope = arena.create_from_element(root, element.into(), 0, &mut measurer);
-//         let inherited = arena.children(scope)[0];
-//         let local = arena.children(scope)[1];
-
-//         assert_eq!(
-//             arena.node(inherited).unwrap().computed_style.text.color,
-//             Color::BLUE_500
-//         );
-//         assert_eq!(
-//             arena.node(inherited).unwrap().computed_style.text.font_size,
-//             20.0
-//         );
-//         assert_eq!(
-//             arena.node(local).unwrap().computed_style.text.color,
-//             Color::BLACK
-//         );
-//         assert_eq!(
-//             arena.node(local).unwrap().computed_style.text.font_size,
-//             20.0
-//         );
-//     }
-
-//     #[test]
-//     fn container_style_emits_background_and_border_commands() {
-//         let mut arena = UiArena::new();
-//         let root = arena.root();
-//         let element = container().style(
-//             Style::new()
-//                 .size(Size::new(40.0, 20.0))
-//                 .background(Color::BLUE_500)
-//                 .border_color(Color::BLACK)
-//                 .border_width(2.0)
-//                 .border_radius(4.0),
-//         );
-//         let mut measurer = TextI::new();
-//         let node = arena.create_from_element(root, element.into(), 0, &mut measurer);
-//         arena.node_mut(node).unwrap().layout = Rect::new(1.0, 2.0, 40.0, 20.0);
-//         arena.mark_dirty(node, DirtyFlags::PAINT);
-//         arena.repaint_if_needed(node);
-//         let commands = arena.node(node).unwrap().paint_cache.clone();
-
-//         assert!(commands.iter().any(|command| matches!(
-//             command,
-//             PaintCommand::FillRoundedRect { radius, color, .. }
-//                 if *radius == 4.0 && *color == Color::BLUE_500
-//         )));
-//         assert!(commands.iter().any(|command| matches!(
-//             command,
-//             PaintCommand::StrokeRoundedRect { radius, color, width, .. }
-//                 if *radius == 4.0 && *color == Color::BLACK && *width == 2.0
-//         )));
-//     }
-
-//     #[test]
-//     fn row_gap_from_style_affects_child_layout() {
-//         let mut arena = UiArena::new();
-//         let root = arena.root();
-//         let element = row()
-//             .style(Style::new().gap(12.0))
-//             .child(container().style(Style::new().size(Size::new(10.0, 10.0))))
-//             .child(container().style(Style::new().size(Size::new(10.0, 10.0))));
-//         let mut measurer = TextI::new();
-
-//         let row = arena.create_from_element(root, element.into(), 0, &mut measurer);
-//         arena.update_tree(root, Size::new(100.0, 30.0), &mut measurer);
-//         let first = arena.children(row)[0];
-//         let second = arena.children(row)[1];
-
-//         assert_eq!(arena.node(first).unwrap().layout.x, 0.0);
-//         assert_eq!(arena.node(second).unwrap().layout.x, 22.0);
-//     }
-
-//     #[test]
-//     fn paint_collection_matches_damage_bounds_scissor() {
-//         let mut arena = UiArena::new();
-//         let root = arena.root();
-//         let mut measurer = TextI::new();
-//         let top_color = Color::rgb(0.9, 0.1, 0.1);
-//         let middle_color = Color::rgb(0.1, 0.9, 0.1);
-//         let bottom_color = Color::rgb(0.1, 0.1, 0.9);
-//         let top = arena.create_from_element(
-//             root,
-//             container()
-//                 .style(
-//                     Style::new()
-//                         .size(Size::new(20.0, 10.0))
-//                         .background(top_color),
-//                 )
-//                 .into(),
-//             0,
-//             &mut measurer,
-//         );
-//         let middle = arena.create_from_element(
-//             root,
-//             container()
-//                 .style(
-//                     Style::new()
-//                         .size(Size::new(20.0, 10.0))
-//                         .background(middle_color),
-//                 )
-//                 .into(),
-//             1,
-//             &mut measurer,
-//         );
-//         let bottom = arena.create_from_element(
-//             root,
-//             container()
-//                 .style(
-//                     Style::new()
-//                         .size(Size::new(20.0, 10.0))
-//                         .background(bottom_color),
-//                 )
-//                 .into(),
-//             2,
-//             &mut measurer,
-//         );
-
-//         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
-//         arena.finish_paint();
-//         assert_eq!(arena.node(middle).unwrap().layout.y, 10.0);
-
-//         arena.mark_dirty(top, DirtyFlags::PAINT);
-//         arena.mark_dirty(bottom, DirtyFlags::PAINT);
-//         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
-//         let (_, commands) = arena.prepare_paint_commands();
-
-//         assert!(commands.iter().any(|command| matches!(
-//             command,
-//             PaintCommand::FillRect { rect, color }
-//                 if *color == middle_color && *rect == arena.node(middle).unwrap().layout
-//         )));
-//     }
-
-//     #[test]
-//     fn multiple_layout_dirty_descendants_batch_into_one_layout_pass() {
-//         let mut arena = UiArena::new();
-//         let root = arena.root();
-//         let element = row()
-//             .child(container().style(Style::new().size(Size::new(10.0, 10.0))))
-//             .child(container().style(Style::new().size(Size::new(10.0, 10.0))));
-//         let mut measurer = TextI::new();
-
-//         let row = arena.create_from_element(root, element.into(), 0, &mut measurer);
-//         arena.update_tree(root, Size::new(100.0, 30.0), &mut measurer);
-//         let first = arena.children(row)[0];
-//         let second = arena.children(row)[1];
-//         let passes_before = arena.layout_passes;
-
-//         arena.mark_dirty(first, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
-//         arena.mark_dirty(second, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
-//         arena.update_tree(root, Size::new(100.0, 30.0), &mut measurer);
-
-//         assert_eq!(arena.layout_passes, passes_before + 1);
-//     }
-
-//     #[test]
-//     fn sync_layout_propagates_parent_offset_changes_to_clean_children() {
-//         let mut arena = UiArena::new();
-//         let root = arena.root();
-//         let mut measurer = TextI::new();
-//         let spacer = arena.create_from_element(
-//             root,
-//             container()
-//                 .style(Style::new().size(Size::new(10.0, 0.0)))
-//                 .into(),
-//             0,
-//             &mut measurer,
-//         );
-//         let parent = arena.create_from_element(
-//             root,
-//             container()
-//                 .style(Style::new().size(Size::new(20.0, 20.0)))
-//                 .child(container().style(Style::new().size(Size::new(5.0, 5.0))))
-//                 .into(),
-//             1,
-//             &mut measurer,
-//         );
-//         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
-//         let child = arena.children(parent)[0];
-//         assert_eq!(arena.node(child).unwrap().layout.y, 0.0);
-
-//         arena.update_widget_from_element(
-//             spacer,
-//             container()
-//                 .style(Style::new().size(Size::new(10.0, 12.0)))
-//                 .into(),
-//             0,
-//             &mut measurer,
-//         );
-//         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
-
-//         assert_eq!(arena.node(parent).unwrap().layout.y, 12.0);
-//         assert_eq!(arena.node(child).unwrap().layout.y, 12.0);
-//     }
-
-//     #[test]
-//     fn text_update_refreshes_measure_context_and_triggers_layout() {
-//         let mut arena = UiArena::new();
-//         let root = arena.root();
-//         let mut text_i = TextI::new();
-//         let mut measurer = TextRecordingMeasurer::default();
-//         let text = arena.create_from_element(
-//             root,
-//             TextWidget::new("a")
-//                 .style(Style::new().font_size(10.0))
-//                 .into(),
-//             0,
-//             &mut text_i,
-//         );
-//         arena.update_tree(root, Size::new(500.0, 100.0), &mut measurer);
-//         let initial_width = arena.node(text).unwrap().layout.width;
-//         let passes_before = arena.layout_passes;
-
-//         arena.update_widget_from_element(
-//             text,
-//             TextWidget::new("abcd")
-//                 .style(Style::new().font_size(12.0))
-//                 .into(),
-//             0,
-//             &mut text_i,
-//         );
-//         arena.update_tree(root, Size::new(500.0, 100.0), &mut measurer);
-
-//         assert_eq!(arena.layout_passes, passes_before + 1);
-//         assert_eq!(arena.node(text).unwrap().layout.width, 48.0);
-//         assert!(arena.node(text).unwrap().layout.width > initial_width);
-//         assert!(
-//             measurer
-//                 .calls
-//                 .iter()
-//                 .any(|(text, font_size)| text == "abcd" && *font_size == 12.0)
-//         );
-//     }
-
-//     #[test]
-//     fn button_pressed_state_style_repaints_with_primary_background() {
-//         let mut arena = UiArena::new();
-//         let root = arena.root();
-//         let mut measurer = TextI::new();
-//         let node = arena.create_from_element(root, button("press").into(), 0, &mut measurer);
-//         arena.node_mut(node).unwrap().layout = Rect::new(0.0, 0.0, 80.0, 30.0);
-//         let mut dirty = DirtyFlags::empty();
-//         let mut requests = crate::EventRequests::default();
-//         arena.node_mut(node).unwrap().widget.with_mut(|widget| {
-//             let mut cx = crate::EventContext::new(
-//                 node,
-//                 crate::EventPhase::Target,
-//                 &mut dirty,
-//                 &mut requests,
-//             );
-//             widget.handle_event(
-//                 &Event::PointerDown {
-//                     position: crate::Point::new(1.0, 1.0),
-//                     button: crate::PointerButton::Primary,
-//                 },
-//                 &mut cx,
-//             );
-//         });
-//         arena.mark_dirty(node, dirty);
-//         arena.update_tree(root, Size::new(100.0, 50.0), &mut measurer);
-//         let (_, commands) = arena.prepare_paint_commands();
-
-//         assert!(commands.iter().any(|command| matches!(
-//             command,
-//             PaintCommand::FillRect { color, .. } if *color == Color::BLUE_500
-//         )));
-//     }
-// }
-
-// pub fn repaint_if_needed(tree: &mut UiArena, node: NodeId) {
-//     tree.repaint_if_needed(node);
-// }
-
 #[cfg(test)]
-mod scroll_tests {
-    use xui_interface::{
-        Color, ComputedColorStyle, ComputedTextStyle, EventHandlers, ScrollbarVisibilityStyle,
-        Style, TextStyle,
-    };
+mod scroll_behavior_tests {
+    use taffy::prelude as tf;
 
     use super::*;
-    use crate::widgets::{ContainerWidget, TextWidget, WidgetI};
+    use crate::{Style, widgets::ContainerWidget};
 
-    #[derive(Default)]
-    struct TestMeasurer;
+    #[test]
+    fn scroll_acceleration_preserves_small_deltas_and_boosts_fast_deltas() {
+        assert_eq!(
+            ergonomic_scroll_delta(Point::new(0.0, -8.0)),
+            Point::new(0.0, -8.0)
+        );
 
-    impl TextMeasurer for TestMeasurer {
-        fn measure_text(&mut self, text: &str, props: &ComputedTextStyle) -> Size<f32> {
-            self.measure_text_with_constraints(text, props, TextLayoutConstraints::UNBOUNDED)
-        }
-
-        fn measure_text_with_constraints(
-            &mut self,
-            text: &str,
-            props: &ComputedTextStyle,
-            constraints: TextLayoutConstraints,
-        ) -> Size<f32> {
-            let width = constraints
-                .max_width
-                .unwrap_or_else(|| text.len() as f32 * props.font_size);
-            Size::<f32>::new(width, props.font_size)
-        }
-    }
-
-    #[derive(Default)]
-    struct RecordingMeasurer {
-        constraints: Vec<TextLayoutConstraints>,
-    }
-
-    impl TextMeasurer for RecordingMeasurer {
-        fn measure_text(&mut self, text: &str, props: &ComputedTextStyle) -> Size<f32> {
-            self.measure_text_with_constraints(text, props, TextLayoutConstraints::UNBOUNDED)
-        }
-
-        fn measure_text_with_constraints(
-            &mut self,
-            _text: &str,
-            _props: &ComputedTextStyle,
-            constraints: TextLayoutConstraints,
-        ) -> Size<f32> {
-            self.constraints.push(constraints);
-            let width = constraints.max_width.unwrap_or(400.0);
-            let height = if constraints.max_width == Some(80.0) {
-                30.0
-            } else {
-                10.0
-            };
-            Size::<f32>::new(width, height)
-        }
+        let accelerated = ergonomic_scroll_delta(Point::new(0.0, -96.0));
+        assert!(accelerated.y < -96.0);
+        assert!(accelerated.y > -264.0);
     }
 
     #[test]
-    fn text_measure_prefers_known_width_over_available_width() {
-        let mut measurer = RecordingMeasurer::default();
-        let mut context = WidgetContext::Text(
-            Default::default(),
-            TextStyle::default().into(),
-            Some(TextContent::from_static("wrap me")),
-        );
-
-        let size = measure_layout_context(
-            tf::Size {
-                width: Some(80.0),
-                height: None,
-            },
-            tf::Size {
-                width: tf::AvailableSpace::Definite(391.0),
-                height: tf::AvailableSpace::MinContent,
-            },
-            Some(&mut context),
-            &mut measurer,
-        );
-
-        assert_eq!(measurer.constraints[0].max_width, Some(80.0));
-        assert_eq!(size.width, 80.0);
-        assert_eq!(size.height, 30.0);
-    }
-
-    #[test]
-    fn text_measure_uses_unbounded_width_until_width_is_known() {
-        let mut measurer = RecordingMeasurer::default();
-        let mut context = WidgetContext::Text(
-            Default::default(),
-            TextStyle::default().into(),
-            Some(TextContent::from_static("hug me")),
-        );
-
-        let size = measure_layout_context(
-            tf::Size {
-                width: None,
-                height: None,
-            },
-            tf::Size {
-                width: tf::AvailableSpace::Definite(391.0),
-                height: tf::AvailableSpace::MinContent,
-            },
-            Some(&mut context),
-            &mut measurer,
-        );
-
-        assert_eq!(measurer.constraints[0].max_width, None);
-        assert_eq!(size.width, 400.0);
-        assert_eq!(size.height, 10.0);
-    }
-
-    fn insert_container(arena: &mut UiArena, parent: NodeId, widget: ContainerWidget) -> NodeId {
-        let parent_style = arena.node(parent).unwrap().computed_style.clone();
-        let widget = WidgetI::new(widget);
-        let computed_style = widget.computed_style(&parent_style, arena.theme());
-        let taffy_style = taffy_style_for_widget(&widget, &parent_style, &computed_style);
-        let props_hash = widget.props_hash();
-
-        arena.insert_node(
-            parent,
-            None,
-            props_hash,
-            taffy_style,
-            computed_style,
-            widget,
-            EventHandlers::default(),
-        )
-    }
-
-    fn insert_text(arena: &mut UiArena, parent: NodeId, widget: TextWidget) -> NodeId {
-        let parent_style = arena.node(parent).unwrap().computed_style.clone();
-        let widget = WidgetI::new(widget);
-        let computed_style = widget.computed_style(&parent_style, arena.theme());
-        let taffy_style = taffy_style_for_widget(&widget, &parent_style, &computed_style);
-        let props_hash = widget.props_hash();
-
-        arena.insert_node(
-            parent,
-            None,
-            props_hash,
-            taffy_style,
-            computed_style,
-            widget,
-            EventHandlers::default(),
-        )
-    }
-
-    #[test]
-    fn fixed_size_nodes_keep_unrounded_layout_values() {
+    fn scroll_node_by_applies_ergonomic_delta() {
         let mut arena = UiArena::new();
         let root = arena.root();
-        let text = insert_text(
-            &mut arena,
+        let scroller = arena.insert(
             root,
-            TextWidget::new("fixed").style(Style::new().size(Size::fix(38.5, 17.25))),
+            ContainerWidget::new().style(Style::new().scroll_vertical()),
+            tf::Style::default(),
         );
-        let mut measurer = TestMeasurer;
+        let node = arena.node_mut(scroller).unwrap();
+        node.layout = Rect::new(0.0, 0.0, 100.0, 100.0);
+        node.content_size = Size::<f32>::new(100.0, 1_000.0);
 
-        arena.update_tree(root, Size::<f32>::new(200.0, 200.0), &mut measurer);
-
-        let layout = arena.node(text).unwrap().layout;
-        assert_eq!(layout.width, 38.5);
-        assert_eq!(layout.height, 17.25);
-    }
-
-    fn scroll_fixture() -> (UiArena, NodeId, NodeId, TestMeasurer) {
-        let mut arena = UiArena::new();
-        let root = arena.root();
-        let scroller = insert_container(
-            &mut arena,
-            root,
-            ContainerWidget::new().style(
-                Style::new()
-                    .size(Size::fix(100.0, 40.0))
-                    .scroll_vertical()
-                    .scrollbar_width(10.0)
-                    .scrollbar_track_color(Color::GRAY_100)
-                    .scrollbar_thumb_color(Color::BLUE_500)
-                    .scrollbar_radius(0.0),
-            ),
-        );
-        let child = insert_container(
-            &mut arena,
-            scroller,
-            ContainerWidget::new().style(
-                Style::new()
-                    .size(Size::fix(100.0, 120.0))
-                    .background(Color::BLACK),
-            ),
-        );
-        let mut measurer = TestMeasurer::default();
-
-        arena.update_tree(root, Size::<f32>::new(200.0, 200.0), &mut measurer);
-
-        (arena, scroller, child, measurer)
-    }
-
-    #[test]
-    fn scrollable_container_records_content_extent_from_layout() {
-        let (arena, scroller, _child, _measurer) = scroll_fixture();
-        let node = arena.node(scroller).unwrap();
-
-        assert_eq!(node.layout, Rect::new(0.0, 0.0, 100.0, 40.0));
-        assert_eq!(node.content_size.height, 120.0);
-        assert_eq!(node.scroll_offset, Point::new(0.0, 0.0));
-    }
-
-    #[test]
-    fn wheel_event_scrolls_nearest_scrollable_container() {
-        let (mut arena, scroller, child, _measurer) = scroll_fixture();
-
-        let result = arena.dispatch_event(&Event::Wheel {
-            position: Point::new(5.0, 5.0),
-            delta: Point::new(0.0, -25.0),
-        });
-
-        assert_eq!(result, EventResult::Consumed);
-        assert_eq!(
-            arena.node(scroller).unwrap().scroll_offset,
-            Point::new(0.0, 25.0)
-        );
-        assert_eq!(arena.hit_test(Point::new(5.0, 5.0)), Some(child));
-        assert!(
-            arena
-                .node(scroller)
-                .unwrap()
-                .dirty
-                .contains(DirtyFlags::PAINT)
-        );
-    }
-
-    #[test]
-    fn scroll_offset_is_clamped_to_content_bounds() {
-        let (mut arena, scroller, _child, _measurer) = scroll_fixture();
-
-        assert!(arena.scroll_node_by(scroller, Point::new(0.0, -500.0)));
-        assert_eq!(
-            arena.node(scroller).unwrap().scroll_offset,
-            Point::new(0.0, 80.0)
-        );
-
-        assert!(arena.scroll_node_by(scroller, Point::new(0.0, 500.0)));
-        assert_eq!(
-            arena.node(scroller).unwrap().scroll_offset,
-            Point::new(0.0, 0.0)
-        );
-    }
-
-    #[test]
-    fn scrollable_container_paints_clip_transform_and_scrollbar() {
-        let (mut arena, scroller, _child, mut measurer) = scroll_fixture();
-        arena.finish_paint();
-
-        arena.dispatch_event(&Event::Wheel {
-            position: Point::new(5.0, 5.0),
-            delta: Point::new(0.0, -20.0),
-        });
-        arena.update_tree(arena.root(), Size::<f32>::new(200.0, 200.0), &mut measurer);
-
-        let (_damage, commands) = arena.prepare_paint_commands();
-        let scroll_rect = arena.node(scroller).unwrap().layout;
-
-        assert!(commands.contains(&PaintCommand::PushClip(scroll_rect)));
-        assert!(commands.contains(&PaintCommand::PushTransform {
-            translate: Translation::new(0.0, -20.0),
-        }));
-        assert!(commands.contains(&PaintCommand::PopTransform));
-
-        assert!(commands.iter().any(|command| matches!(
-            command,
-            PaintCommand::Rect {
-                rect,
-                color: ComputedColorStyle::Solid(Color::GRAY_100),
-                ..
-            } if *rect == Rect::new(90.0, 0.0, 10.0, 40.0)
-        )));
-        assert!(commands.iter().any(|command| matches!(
-            command,
-            PaintCommand::Rect {
-                rect,
-                color: ComputedColorStyle::Solid(Color::BLUE_500),
-                ..
-            } if *rect == Rect::new(90.0, 5.0, 10.0, 20.0)
-        )));
-    }
-
-    #[test]
-    fn hidden_scrollbar_does_not_emit_scrollbar_paint() {
-        let mut arena = UiArena::new();
-        let root = arena.root();
-        let scroller = insert_container(
-            &mut arena,
-            root,
-            ContainerWidget::new().style(
-                Style::new()
-                    .size(Size::fix(100.0, 40.0))
-                    .scroll_vertical()
-                    .scrollbar_visibility(ScrollbarVisibilityStyle::Hidden)
-                    .scrollbar_track_color(Color::GRAY_100)
-                    .scrollbar_thumb_color(Color::BLUE_500),
-            ),
-        );
-        insert_container(
-            &mut arena,
-            scroller,
-            ContainerWidget::new().style(Style::new().size(Size::fix(100.0, 120.0))),
-        );
-        let mut measurer = TestMeasurer::default();
-        arena.update_tree(root, Size::<f32>::new(200.0, 200.0), &mut measurer);
-
-        let (_damage, commands) = arena.prepare_paint_commands();
-
-        assert!(!commands.iter().any(|command| matches!(
-            command,
-            PaintCommand::Rect {
-                color: ComputedColorStyle::Solid(color),
-                ..
-            } if *color == Color::GRAY_100 || *color == Color::BLUE_500
-        )));
+        assert!(arena.scroll_node_by(scroller, Point::new(0.0, -48.0)));
+        assert!(arena.node(scroller).unwrap().scroll_offset.y > 48.0);
     }
 }

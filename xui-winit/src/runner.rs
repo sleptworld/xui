@@ -209,7 +209,7 @@ where
             WindowEvent::MouseWheel { delta, .. } => (
                 vec![RuntimeEvent::Input(Event::Wheel {
                     position: last_cursor_position.unwrap_or(Point::new(0.0, 0.0)),
-                    delta: translate_mouse_wheel(delta),
+                    delta: translate_mouse_wheel(self.scale_factor(), delta),
                 })],
                 None,
             ),
@@ -224,12 +224,14 @@ where
     }
 
     fn logical_size(&self, size: PhysicalSize<u32>) -> Size<f32> {
-        let scale = self
-            .window
+        Self::logical_size_at_scale(size, self.scale_factor())
+    }
+
+    fn scale_factor(&self) -> f32 {
+        self.window
             .as_ref()
             .map(|w| w.scale_factor() as f32)
-            .unwrap_or(1.0);
-        Self::logical_size_at_scale(size, scale)
+            .unwrap_or(1.0)
     }
 
     fn logical_size_at_scale(size: PhysicalSize<u32>, scale: f32) -> Size<f32> {

@@ -1,6 +1,6 @@
 use xui_interface::{
     Color, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult,
-    FlexDirectionStyle, PaintCommand, Rect, Style, Widget, WidgetType,
+    PaintCommand, Rect, ScrollDirectionStyle, Size, Style, Widget, WidgetType, core::Sizing,
 };
 
 #[derive(Debug)]
@@ -31,6 +31,11 @@ impl Widget for RootWidget {
 
     fn default_style(&self) -> Style {
         Style::new()
+            .size(Size::<Sizing>::new(
+                Sizing::Percent(1.0.try_into().unwrap()),
+                Sizing::Percent(1.0.try_into().unwrap()),
+            ))
+            .scroll_direction(ScrollDirectionStyle::Both)
     }
 
     fn paint(&self, _rect: Rect, _style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {

@@ -234,3 +234,15 @@ pub fn unsupported_attr<T>(attr: &XuiAttribute, tag: &str, attr_name: &str) -> R
         format!("unsupported attribute `{attr_name}` on <{tag}>"),
     ))
 }
+
+pub fn parse_stack_attr<T: quote::ToTokens + ?Sized>(
+    name: &str,
+    value: &T,
+) -> Option<TokenStream2> {
+    match name {
+        "gap" => Some(quote! {
+            __xui_style.merge(&::xui::Style::new().gap(#value));
+        }),
+        _ => None,
+    }
+}
