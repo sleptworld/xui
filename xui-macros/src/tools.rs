@@ -103,10 +103,20 @@ pub fn parse_layout_style_attr<T: quote::ToTokens + ?Sized>(
             __xui_style.merge(&::xui::Style::new().justify(#value));
         }),
         "width" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().width(#value));
+            let mut __xui_size = match __xui_style.layout.size {
+                ::xui::StyleValue::Value(size) => size,
+                _ => ::xui::Size::hug(),
+            };
+            __xui_size.width = #value;
+            __xui_style.layout.size = ::xui::StyleValue::Value(__xui_size);
         }),
         "height" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().height(#value));
+            let mut __xui_size = match __xui_style.layout.size {
+                ::xui::StyleValue::Value(size) => size,
+                _ => ::xui::Size::hug(),
+            };
+            __xui_size.height = #value;
+            __xui_style.layout.size = ::xui::StyleValue::Value(__xui_size);
         }),
 
         _ => None,

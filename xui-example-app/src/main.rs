@@ -89,10 +89,9 @@ component_fn! {
     }
 
     fn editor() {
-
         <row size={Some(Size::fill())}>
-            <container width={Sizing::fix(300.0)} height={Sizing::fill()} background ={ Color::BLACK} />
-            <container size={Some(Size::fill())} background ={ Color::BLUE_500} />
+            <container width={Sizing::percent(0.3)} height={Sizing::fill()} background ={Color::rgb(1.0,0.0,0.0)} />
+            <container size={Some(Size::fill())} background ={Color::BLUE_500} />
         </row>
     }
 }

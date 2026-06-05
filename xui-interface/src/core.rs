@@ -229,6 +229,24 @@ impl Color {
     pub const fn rgba(r: f32, g: f32, b: f32, a: f32) -> Self {
         Self { r, g, b, a }
     }
+
+    pub fn hex(hex: &str) -> Self {
+        let hex = hex.trim_start_matches('#');
+
+        if hex.len() == 3 {
+            let r = u8::from_str_radix(&hex[0..1], 16).unwrap();
+            let g = u8::from_str_radix(&hex[1..2], 16).unwrap();
+            let b = u8::from_str_radix(&hex[2..3], 16).unwrap();
+            Self::rgb(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
+        } else if hex.len() == 6 {
+            let r = u8::from_str_radix(&hex[0..2], 16).unwrap();
+            let g = u8::from_str_radix(&hex[2..4], 16).unwrap();
+            let b = u8::from_str_radix(&hex[4..6], 16).unwrap();
+            Self::rgb(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
+        } else {
+            panic!("Invalid hex color: {}", hex);
+        }
+    }
 }
 
 impl Default for Color {

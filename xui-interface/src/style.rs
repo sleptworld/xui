@@ -530,20 +530,26 @@ impl Style {
     }
 
     pub fn width(mut self, width: Sizing) -> Self {
-        let mut old_size = self.layout.size;
-        if let StyleValue::Value(size) = &mut old_size {
-            size.width = width;
-        }
-        self.layout.size = old_size;
+        let size = match self.layout.size {
+            StyleValue::Value(mut size) => {
+                size.width = width;
+                size
+            }
+            _ => Size::<Sizing>::new(width, Sizing::Hug),
+        };
+        self.layout.size = StyleValue::Value(size);
         self
     }
 
     pub fn height(mut self, height: Sizing) -> Self {
-        let mut old_size = self.layout.size;
-        if let StyleValue::Value(size) = &mut old_size {
-            size.height = height;
-        }
-        self.layout.size = old_size;
+        let size = match self.layout.size {
+            StyleValue::Value(mut size) => {
+                size.height = height;
+                size
+            }
+            _ => Size::<Sizing>::new(Sizing::Hug, height),
+        };
+        self.layout.size = StyleValue::Value(size);
         self
     }
 
@@ -1644,6 +1650,21 @@ mod tests {
             ComputedColorStyle::Solid(Color::rgb(0.2, 0.3, 0.4))
         );
         assert_eq!(computed.layout.gap, 18.0);
+    }
+
+    #[test]
+    fn width_and_height_create_size_patch_when_unset() {
+        let width_style = Style::new().width(Sizing::fix(300.0));
+        assert_eq!(
+            width_style.layout.size,
+            StyleValue::Value(Size::<Sizing>::new(Sizing::fix(300.0), Sizing::Hug))
+        );
+
+        let height_style = Style::new().height(Sizing::Fill);
+        assert_eq!(
+            height_style.layout.size,
+            StyleValue::Value(Size::<Sizing>::new(Sizing::Hug, Sizing::Fill))
+        );
     }
 
     #[test]

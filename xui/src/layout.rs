@@ -22,6 +22,13 @@ pub fn computed_style_for_widget(
         computed.apply(parent, &widget.default_style(), theme);
         computed.apply(parent, widget.style(), theme);
         computed.apply(parent, &widget.state_style(widget.state()), theme);
+        match widget {
+            Widgets::Row(_) => computed.layout.flex_direction = FlexDirectionStyle::Row,
+            Widgets::Column(_) | Widgets::Root(_) => {
+                computed.layout.flex_direction = FlexDirectionStyle::Column;
+            }
+            _ => {}
+        }
         computed
     })
 }
@@ -66,7 +73,8 @@ pub fn computed_layout_style(
             ..Default::default()
         },
         Widgets::Root(_) => tf::Style {
-            display: tf::Display::Block,
+            display: tf::Display::Flex,
+            flex_direction: tf::FlexDirection::Column,
             size: tf::Size {
                 width: tf::Dimension::percent(1.0),
                 height: tf::Dimension::percent(1.0),
@@ -86,8 +94,8 @@ pub fn computed_layout_style(
 
     if let Some(size) = layout.size {
         style.size = tf::Size {
-            width: dimension(size.width),
-            height: dimension(size.height),
+            width: dimension_for_axis(size.width, Axis::Horizontal, parent_dire),
+            height: dimension_for_axis(size.height, Axis::Vertical, parent_dire),
         };
 
         match parent_dire {
@@ -116,18 +124,31 @@ pub fn computed_layout_style(
     }
     if let Some(size) = layout.min_size {
         style.min_size = tf::Size {
-            width: dimension(size.width),
-            height: dimension(size.height),
+            width: dimension_for_axis(size.width, Axis::Horizontal, parent_dire),
+            height: dimension_for_axis(size.height, Axis::Vertical, parent_dire),
         };
     }
     if let Some(size) = layout.max_size {
         style.max_size = tf::Size {
-            width: dimension(size.width),
-            height: dimension(size.height),
+            width: dimension_for_axis(size.width, Axis::Horizontal, parent_dire),
+            height: dimension_for_axis(size.height, Axis::Vertical, parent_dire),
         };
     }
 
     style
+}
+
+#[derive(Clone, Copy)]
+enum Axis {
+    Horizontal,
+    Vertical,
+}
+
+fn is_main_axis(axis: Axis, parent_dire: FlexDirectionStyle) -> bool {
+    matches!(
+        (axis, parent_dire),
+        (Axis::Horizontal, FlexDirectionStyle::Row) | (Axis::Vertical, FlexDirectionStyle::Column)
+    )
 }
 
 #[inline]
@@ -170,8 +191,13 @@ fn edge_insets_auto(value: EdgeInsets) -> tf::Rect<tf::LengthPercentageAuto> {
     }
 }
 
-fn dimension(value: Sizing) -> tf::Dimension {
+fn dimension_for_axis(
+    value: Sizing,
+    axis: Axis,
+    parent_dire: FlexDirectionStyle,
+) -> tf::Dimension {
     match value {
+        Sizing::Fill if !is_main_axis(axis, parent_dire) => tf::Dimension::percent(1.0),
         Sizing::Fill | Sizing::Hug => tf::Dimension::auto(),
         Sizing::Fix(v) => tf::Dimension::length(v.into_inner()),
         Sizing::Percent(v) => tf::Dimension::percent(v.into_inner()),
@@ -198,4 +224,82 @@ fn scroll_overflow(direction: ScrollDirectionStyle) -> TaffyPoint<Overflow> {
         Overflow::Visible
     };
     TaffyPoint { x, y }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::prelude::*;
+    use xui_interface::TextLayoutConstraints;
+
+    struct ZeroTextMeasurer;
+
+    impl TextMeasurer for ZeroTextMeasurer {
+        fn measure_text(&mut self, _text: &str, _props: &ComputedTextStyle) -> Size<f32> {
+            Size::<f32>::ZERO
+        }
+
+        fn measure_text_with_constraints(
+            &mut self,
+            _text: &str,
+            _props: &ComputedTextStyle,
+            _constraints: TextLayoutConstraints,
+        ) -> Size<f32> {
+            Size::<f32>::ZERO
+        }
+    }
+
+    #[test]
+    fn fill_editor_shell_occupies_window() {
+        let mut app = App::new(|_| {
+            row()
+                .style(Style::new().size(Size::fill()))
+                .into_element_desc(vec![
+                    container()
+                        .style(
+                            Style::new()
+                                .width(Sizing::fix(300.0))
+                                .height(Sizing::Fill)
+                                .background(Color::BLACK),
+                        )
+                        .into_element_desc(Vec::new()),
+                    container()
+                        .style(Style::new().size(Size::fill()).background(Color::BLUE_500))
+                        .into_element_desc(Vec::new()),
+                ])
+        });
+        let mut backend = MockRenderBackend::default();
+        let mut measurer = ZeroTextMeasurer;
+
+        app.resize(Size::<f32>::new(800.0, 600.0));
+        app.render(&mut backend, &mut measurer).unwrap();
+
+        let root = app.arena().root();
+        let row_id = app.arena().children(root)[0];
+        let pane_ids = app.arena().children(row_id);
+        let row_layout = app.arena().node(row_id).unwrap().layout;
+        let left_layout = app.arena().node(pane_ids[0]).unwrap().layout;
+        let right_layout = app.arena().node(pane_ids[1]).unwrap().layout;
+
+        assert_eq!(row_layout, Rect::new(0.0, 0.0, 792.0, 592.0));
+        assert_eq!(left_layout, Rect::new(0.0, 0.0, 300.0, 592.0));
+        assert_eq!(right_layout, Rect::new(300.0, 0.0, 492.0, 592.0));
+
+        let painted_rects = backend
+            .last_commands
+            .iter()
+            .filter_map(|command| match command {
+                PaintCommand::Rect { rect, color, .. } => Some((*rect, *color)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(painted_rects.contains(&(
+            Rect::new(0.0, 0.0, 300.0, 592.0),
+            ComputedColorStyle::Solid(Color::BLACK),
+        )));
+        assert!(painted_rects.contains(&(
+            Rect::new(300.0, 0.0, 492.0, 592.0),
+            ComputedColorStyle::Solid(Color::BLUE_500),
+        )));
+    }
 }

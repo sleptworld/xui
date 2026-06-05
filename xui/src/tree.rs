@@ -1498,6 +1498,6 @@ mod scroll_behavior_tests {
         node.content_size = Size::<f32>::new(100.0, 1_000.0);
 
         assert!(arena.scroll_node_by(scroller, Point::new(0.0, -48.0)));
-        assert!(arena.node(scroller).unwrap().scroll_offset.y > 48.0);
+        assert_eq!(arena.node(scroller).unwrap().scroll_offset.y, 48.0);
     }
 }
