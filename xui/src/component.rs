@@ -16,7 +16,7 @@ use std::fmt;
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use taffy as tf;
-use xui_interface::{DirtyFlags, EventHandlers, NodeId, TextMeasurer};
+use xui_interface::{DirtyFlags, EventHandlers, NodeId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct WipId(usize);

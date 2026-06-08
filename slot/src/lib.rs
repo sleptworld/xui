@@ -1,441 +1,328 @@
-use parking_lot::Mutex;
 use std::{
-    fmt::Debug,
+    cell::Cell,
+    fmt,
+    hash::{Hash, Hasher},
     marker::PhantomData,
-    num::NonZeroU64,
     ops::{Deref, DerefMut},
-    sync::Arc,
+    ptr::NonNull,
 };
+pub mod error;
+pub mod unsync;
 
-pub use error::*;
-pub use references::*;
-pub use sync::SyncStorage;
-pub use unsync::UnsyncStorage;
+pub use crate::error::{Error, Result};
 
-/// The type erased id of a generational box.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct GenerationalBoxId {
-    data_ptr: *const (),
-    generation: NonZeroU64,
+thread_local! {
+    static CURRENT_RENDER_PHASE: Cell<Option<RenderPhase>> = const { Cell::new(None) };
 }
 
-// Safety: GenerationalBoxId is Send and Sync because there is no way to access the pointer.
-unsafe impl Send for GenerationalBoxId {}
-unsafe impl Sync for GenerationalBoxId {}
-
-impl Debug for GenerationalBoxId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("{:?}@{:?}", self.data_ptr, self.generation))?;
-        Ok(())
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RenderPhase {
+    Render,
+    Event,
+    Effect,
+    Commit,
+}
+pub struct Runtime {
+    render_phase: RenderPhase,
 }
 
-/// The core Copy state type. The generational box will be dropped when the [Owner] is dropped.
-pub struct GenerationalBox<T, S: 'static = UnsyncStorage> {
-    raw: GenerationalPointer<S>,
-    _marker: PhantomData<T>,
-}
-
-impl<T, S: AnyStorage> Debug for GenerationalBox<T, S> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.raw.fmt(f)
-    }
-}
-
-impl<T, S: Storage<T>> GenerationalBox<T, S> {
-    /// Create a new generational box by leaking a value into the storage. This is useful for creating
-    /// a box that needs to be manually dropped with no owners.
-    #[track_caller]
-    pub fn leak(value: T, location: &'static std::panic::Location<'static>) -> Self {
-        let location = S::new(value, location);
-        Self {
-            raw: location,
-            _marker: PhantomData,
-        }
+impl Runtime {
+    pub fn new(render_phase: RenderPhase) -> Self {
+        Self { render_phase }
     }
 
-    /// Create a new reference counted generational box by leaking a value into the storage. This is useful for creating
-    /// a box that needs to be manually dropped with no owners.
-    #[track_caller]
-    pub fn leak_rc(value: T, location: &'static std::panic::Location<'static>) -> Self {
-        let location = S::new_rc(value, location);
-        Self {
-            raw: location,
-            _marker: PhantomData,
-        }
+    pub fn render_phase(&self) -> RenderPhase {
+        self.render_phase
     }
 
-    /// Get the raw pointer to the value.
-    pub fn raw_ptr(&self) -> *const () {
-        self.raw.storage.data_ptr()
+    pub fn set_render_phase(&mut self, render_phase: RenderPhase) {
+        self.render_phase = render_phase;
     }
 
-    /// Get the id of the generational box.
-    pub fn id(&self) -> GenerationalBoxId {
-        self.raw.id()
+    pub fn current_render_phase() -> Option<RenderPhase> {
+        CURRENT_RENDER_PHASE.with(Cell::get)
     }
 
-    /// Try to read the value. Returns an error if the value is no longer valid.
-    #[track_caller]
-    pub fn try_read(&self) -> Result<S::Ref<'static, T>, BorrowError> {
-        self.raw.try_read()
+    pub fn enter<R>(&self, f: impl FnOnce() -> R) -> R {
+        Self::with_phase(self.render_phase, f)
     }
 
-    /// Read the value. Panics if the value is no longer valid.
-    #[track_caller]
-    pub fn read(&self) -> S::Ref<'static, T> {
-        self.try_read().unwrap()
-    }
+    pub fn with_phase<R>(render_phase: RenderPhase, f: impl FnOnce() -> R) -> R {
+        CURRENT_RENDER_PHASE.with(|current| {
+            struct PhaseGuard<'a> {
+                current: &'a Cell<Option<RenderPhase>>,
+                previous: Option<RenderPhase>,
+            }
 
-    /// Try to write the value. Returns None if the value is no longer valid.
-    #[track_caller]
-    pub fn try_write(&self) -> Result<S::Mut<'static, T>, BorrowMutError> {
-        self.raw.try_write()
-    }
+            impl Drop for PhaseGuard<'_> {
+                fn drop(&mut self) {
+                    self.current.set(self.previous);
+                }
+            }
 
-    /// Write the value. Panics if the value is no longer valid.
-    #[track_caller]
-    pub fn write(&self) -> S::Mut<'static, T> {
-        self.try_write().unwrap()
-    }
-
-    /// Set the value. Panics if the value is no longer valid.
-    #[track_caller]
-    pub fn set(&self, value: T)
-    where
-        T: 'static,
-    {
-        *self.write() = value;
-    }
-
-    /// Drop the value out of the generational box and invalidate the generational box.
-    pub fn manually_drop(&self)
-    where
-        T: 'static,
-    {
-        self.raw.recycle();
-    }
-
-    /// Get a reference to the value
-    #[track_caller]
-    pub fn leak_reference(&self) -> BorrowResult<GenerationalBox<T, S>> {
-        Ok(Self {
-            raw: S::new_reference(self.raw)?,
-            _marker: std::marker::PhantomData,
+            let previous = current.replace(Some(render_phase));
+            let _guard = PhaseGuard { current, previous };
+            f()
         })
     }
 
-    /// Change this box to point to another generational box
-    pub fn point_to(&self, other: GenerationalBox<T, S>) -> BorrowResult {
-        S::change_reference(self.raw, other.raw)
-    }
-}
-
-impl<T, S> GenerationalBox<T, S> {
-    /// Returns true if the pointer is equal to the other pointer.
-    pub fn ptr_eq(&self, other: &Self) -> bool
-    where
-        S: AnyStorage,
-    {
-        self.raw == other.raw
-    }
-
-    /// Try to get the location the generational box was created at. In release mode this will always return None.
-    pub fn created_at(&self) -> Option<&'static std::panic::Location<'static>> {
-        self.raw.location.created_at()
-    }
-}
-
-impl<T, S> Copy for GenerationalBox<T, S> {}
-
-impl<T, S> Clone for GenerationalBox<T, S> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-/// A trait for a storage backing type. (RefCell, RwLock, etc.)
-pub trait Storage<Data = ()>: AnyStorage {
-    /// Try to read the value. Returns None if the value is no longer valid.
-    fn try_read(pointer: GenerationalPointer<Self>) -> BorrowResult<Self::Ref<'static, Data>>;
-
-    /// Try to write the value. Returns None if the value is no longer valid.
-    fn try_write(pointer: GenerationalPointer<Self>) -> BorrowMutResult<Self::Mut<'static, Data>>;
-
-    /// Create a new memory location. This will either create a new memory location or recycle an old one.
-    fn new(
-        value: Data,
-        caller: &'static std::panic::Location<'static>,
-    ) -> GenerationalPointer<Self>;
-
-    /// Create a new reference counted memory location. This will either create a new memory location or recycle an old one.
-    fn new_rc(
-        value: Data,
-        caller: &'static std::panic::Location<'static>,
-    ) -> GenerationalPointer<Self>;
-
-    /// Reference another location if the location is valid
-    ///
-    /// This method may return an error if the other box is no longer valid or it is already borrowed mutably.
-    fn new_reference(inner: GenerationalPointer<Self>) -> BorrowResult<GenerationalPointer<Self>>;
-
-    /// Change the reference a signal is pointing to
-    ///
-    /// This method may return an error if the other box is no longer valid or it is already borrowed mutably.
-    fn change_reference(
-        pointer: GenerationalPointer<Self>,
-        rc_pointer: GenerationalPointer<Self>,
-    ) -> BorrowResult;
-}
-
-/// A trait for any storage backing type.
-pub trait AnyStorage: Default {
-    /// The reference this storage type returns.
-    type Ref<'a, T: ?Sized + 'a>: Deref<Target = T>;
-    /// The mutable reference this storage type returns.
-    type Mut<'a, T: ?Sized + 'a>: DerefMut<Target = T>;
-
-    /// Downcast a reference in a Ref to a more specific lifetime
-    ///
-    /// This function enforces the variance of the lifetime parameter `'a` in Ref. Rust will typically infer this cast with a concrete type, but it cannot with a generic type.
-    fn downcast_lifetime_ref<'a: 'b, 'b, T: ?Sized + 'a>(
-        ref_: Self::Ref<'a, T>,
-    ) -> Self::Ref<'b, T>;
-
-    /// Downcast a mutable reference in a RefMut to a more specific lifetime
-    ///
-    /// This function enforces the variance of the lifetime parameter `'a` in Mut.  Rust will typically infer this cast with a concrete type, but it cannot with a generic type.
-    fn downcast_lifetime_mut<'a: 'b, 'b, T: ?Sized + 'a>(
-        mut_: Self::Mut<'a, T>,
-    ) -> Self::Mut<'b, T>;
-
-    /// Try to map the mutable ref.
-    fn try_map_mut<T: ?Sized, U: ?Sized>(
-        mut_ref: Self::Mut<'_, T>,
-        f: impl FnOnce(&mut T) -> Option<&mut U>,
-    ) -> Option<Self::Mut<'_, U>>;
-
-    /// Map the mutable ref.
-    fn map_mut<T: ?Sized, U: ?Sized>(
-        mut_ref: Self::Mut<'_, T>,
-        f: impl FnOnce(&mut T) -> &mut U,
-    ) -> Self::Mut<'_, U> {
-        Self::try_map_mut(mut_ref, |v| Some(f(v))).unwrap()
-    }
-
-    /// Try to map the ref.
-    fn try_map<T: ?Sized, U: ?Sized>(
-        ref_: Self::Ref<'_, T>,
-        f: impl FnOnce(&T) -> Option<&U>,
-    ) -> Option<Self::Ref<'_, U>>;
-
-    /// Map the ref.
-    fn map<T: ?Sized, U: ?Sized>(
-        ref_: Self::Ref<'_, T>,
-        f: impl FnOnce(&T) -> &U,
-    ) -> Self::Ref<'_, U> {
-        Self::try_map(ref_, |v| Some(f(v))).unwrap()
-    }
-
-    /// Get the data pointer. No guarantees are made about the data pointer. It should only be used for debugging.
-    fn data_ptr(&self) -> *const ();
-
-    /// Recycle a memory location. This will drop the memory location and return it to the runtime.
-    fn recycle(location: GenerationalPointer<Self>);
-
-    /// Create a new owner. The owner will be responsible for dropping all of the generational boxes that it creates.
-    fn owner() -> Owner<Self>
-    where
-        Self: 'static,
-    {
-        Owner(Arc::new(Mutex::new(OwnerInner {
-            owned: Default::default(),
-        })))
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct GenerationalLocation {
-    /// The generation this location is associated with. Using the location after this generation is invalidated will return errors.
-    generation: NonZeroU64,
-    #[cfg(any(debug_assertions, feature = "debug_ownership"))]
-    created_at: &'static std::panic::Location<'static>,
-}
-
-impl GenerationalLocation {
-    pub(crate) fn created_at(&self) -> Option<&'static std::panic::Location<'static>> {
+    #[cfg(debug_assertions)]
+    #[allow(dead_code)]
+    #[inline]
+    pub(crate) fn debug_assert_slot_read() {
         #[cfg(debug_assertions)]
         {
-            Some(self.created_at)
+            match Self::current_render_phase() {
+                Some(phase) if phase.allows_slot_read() => {}
+                Some(phase) => panic!("slot read is not allowed during {phase:?} phase"),
+                None => panic!("slot read requires an active runtime phase"),
+            }
         }
-        #[cfg(not(debug_assertions))]
+    }
+
+    #[cfg(debug_assertions)]
+    #[allow(dead_code)]
+    #[inline]
+    pub(crate) fn debug_assert_slot_write() {
+        #[cfg(debug_assertions)]
         {
-            None
+            match Self::current_render_phase() {
+                Some(phase) if phase.allows_slot_write() => {}
+                Some(phase) => panic!("slot write is not allowed during {phase:?} phase"),
+                None => panic!("slot write requires an active runtime phase"),
+            }
         }
     }
 }
 
-/// A pointer to a specific generational box and generation in that box.
-pub struct GenerationalPointer<S: 'static = UnsyncStorage> {
-    /// The storage that is backing this location
-    storage: &'static S,
-    /// The location of the data
-    location: GenerationalLocation,
-}
+impl RenderPhase {
+    pub fn allows_slot_read(self) -> bool {
+        true
+    }
 
-impl<S: AnyStorage + 'static> PartialEq for GenerationalPointer<S> {
-    fn eq(&self, other: &Self) -> bool {
-        self.storage.data_ptr() == other.storage.data_ptr()
-            && self.location.generation == other.location.generation
+    pub fn allows_slot_write(self) -> bool {
+        matches!(self, Self::Event | Self::Effect)
     }
 }
 
-impl<S: AnyStorage + 'static> Debug for GenerationalPointer<S> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!(
-            "{:?}@{:?}",
-            self.storage.data_ptr(),
-            self.location.generation
-        ))
-    }
+pub trait SlotImp {
+    type Ref<'a, T: ?Sized + 'a>: Deref<Target = T>;
+    type Mut<'a, T: ?Sized + 'a>: DerefMut<Target = T>;
 }
 
-impl<S: 'static> Clone for GenerationalPointer<S> {
-    fn clone(&self) -> Self {
-        *self
-    }
+pub trait Storage<Data: 'static = ()>: SlotImp + Sized {
+    /// Try to read the value referenced by `p`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the scope that owns `p` is still alive and that
+    /// returning this reference does not violate Rust's aliasing rules. Debug
+    /// builds assert that a runtime phase allowing slot reads is active.
+    unsafe fn try_read(p: Pointer<Self, Data>) -> Result<Self::Ref<'static, Data>>;
+
+    /// Try to mutably read the value referenced by `p`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the scope that owns `p` is still alive and that
+    /// the returned mutable reference is unique for the duration of its use.
+    /// Debug builds assert that a runtime phase allowing slot writes is active.
+    unsafe fn try_write(p: Pointer<Self, Data>) -> Result<Self::Mut<'static, Data>>;
 }
 
-impl<S: 'static> Copy for GenerationalPointer<S> {}
+pub trait ScopeStorage: Sized {
+    fn allocate<T: 'static>(value: T) -> Pointer<Self, T>;
 
-impl<S> GenerationalPointer<S> {
-    #[track_caller]
-    fn try_read<T>(self) -> Result<S::Ref<'static, T>, BorrowError>
-    where
-        S: Storage<T>,
-    {
-        S::try_read(self)
+    fn recycle(slot: NonNull<Self>);
+
+    /// Remove and return the value currently stored in `slot`.
+    ///
+    /// # Safety
+    ///
+    /// `slot` must be a live slot allocated by this storage backend.
+    unsafe fn remove<T: 'static>(slot: NonNull<Self>, generation: u64) -> Result<T>;
+
+    /// Return whether `slot` currently contains a value of type `T` at `generation`.
+    ///
+    /// # Safety
+    ///
+    /// `slot` must be a live slot allocated by this storage backend.
+    unsafe fn contains<T: 'static>(slot: NonNull<Self>, generation: u64) -> bool;
+
+    /// Clear the current value in `slot` and invalidate existing handles.
+    ///
+    /// # Safety
+    ///
+    /// `slot` must be a live slot allocated by this storage backend.
+    unsafe fn clear(slot: NonNull<Self>);
+}
+
+/// Owns the lifetime of a set of allocated slots for a storage backend.
+pub struct Scope<S: ScopeStorage = unsync::Slot> {
+    slots: Vec<NonNull<S>>,
+}
+
+impl<S: ScopeStorage> Scope<S> {
+    pub fn insert<T: 'static>(&mut self, value: T) -> Pointer<S, T> {
+        let pointer = S::allocate(value);
+        self.slots.push(pointer.slot());
+        pointer
     }
 
-    #[track_caller]
-    fn try_write<T>(self) -> Result<S::Mut<'static, T>, BorrowMutError>
-    where
-        S: Storage<T>,
-    {
-        S::try_write(self)
+    pub fn remove<T: 'static>(&mut self, pointer: Pointer<S, T>) -> Result<T> {
+        let slot = pointer.slot();
+        let Some(index) = self.index_of(slot) else {
+            return Err(Error::Foreign);
+        };
+
+        // SAFETY: ownership was checked against this scope's active slots.
+        let value = unsafe { S::remove(slot, pointer.generation())? };
+        self.slots.swap_remove(index);
+        S::recycle(slot);
+
+        Ok(value)
     }
 
-    fn recycle(self)
-    where
-        S: AnyStorage,
-    {
-        S::recycle(self);
+    pub fn contains<T: 'static>(&self, pointer: Pointer<S, T>) -> bool {
+        let slot = pointer.slot();
+        if !self.owns(slot) {
+            return false;
+        }
+
+        // SAFETY: ownership was checked against this scope's active slots.
+        unsafe { S::contains::<T>(slot, pointer.generation()) }
     }
 
-    fn id(&self) -> GenerationalBoxId
-    where
-        S: AnyStorage,
-    {
-        GenerationalBoxId {
-            data_ptr: self.storage.data_ptr(),
-            generation: self.location.generation,
+    pub fn clear(&mut self) {
+        for slot in self.slots.drain(..) {
+            // SAFETY: every pointer in `self.slots` is currently allocated to
+            // this scope.
+            unsafe { S::clear(slot) };
+            S::recycle(slot);
         }
     }
-}
 
-struct OwnerInner<S: AnyStorage + 'static> {
-    owned: Vec<GenerationalPointer<S>>,
-}
+    fn owns(&self, slot: NonNull<S>) -> bool {
+        self.index_of(slot).is_some()
+    }
 
-impl<S: AnyStorage> Drop for OwnerInner<S> {
-    fn drop(&mut self) {
-        for location in self.owned.drain(..) {
-            location.recycle();
-        }
+    fn index_of(&self, slot: NonNull<S>) -> Option<usize> {
+        self.slots.iter().position(|candidate| *candidate == slot)
     }
 }
 
-/// Owner: Handles dropping generational boxes. The owner acts like a runtime lifetime guard. Any states that you create with an owner will be dropped when that owner is dropped.
-pub struct Owner<S: AnyStorage + 'static = UnsyncStorage>(Arc<Mutex<OwnerInner<S>>>);
+impl Scope<unsync::Slot> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
 
-impl<S: AnyStorage> Default for Owner<S> {
+impl<S: ScopeStorage> Default for Scope<S> {
     fn default() -> Self {
-        S::owner()
+        Self { slots: Vec::new() }
     }
 }
 
-impl<S: AnyStorage> Clone for Owner<S> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
+impl<S: ScopeStorage> Drop for Scope<S> {
+    fn drop(&mut self) {
+        self.clear();
     }
 }
 
-impl<S: AnyStorage> Owner<S> {
-    /// Insert a value into the store. The value will be dropped when the owner is dropped.
-    #[track_caller]
-    pub fn insert<T>(&self, value: T) -> GenerationalBox<T, S>
-    where
-        S: Storage<T>,
-    {
-        self.insert_with_caller(value, std::panic::Location::caller())
-    }
+pub struct Pointer<S: ?Sized, T> {
+    slot: NonNull<S>,
+    generation: u64,
+    _marker: PhantomData<fn() -> T>,
+}
 
-    /// Create a new reference counted box. The box will be dropped when all references are dropped.
-    #[track_caller]
-    pub fn insert_rc<T>(&self, value: T) -> GenerationalBox<T, S>
-    where
-        S: Storage<T>,
-    {
-        self.insert_rc_with_caller(value, std::panic::Location::caller())
-    }
-
-    /// Insert a value into the store with a specific location blamed for creating the value. The value will be dropped when the owner is dropped.
-    pub fn insert_rc_with_caller<T>(
-        &self,
-        value: T,
-        caller: &'static std::panic::Location<'static>,
-    ) -> GenerationalBox<T, S>
-    where
-        S: Storage<T>,
-    {
-        let location = S::new_rc(value, caller);
-        self.0.lock().owned.push(location);
-        GenerationalBox {
-            raw: location,
-            _marker: std::marker::PhantomData,
-        }
-    }
-
-    /// Insert a value into the store with a specific location blamed for creating the value. The value will be dropped when the owner is dropped.
-    pub fn insert_with_caller<T>(
-        &self,
-        value: T,
-        caller: &'static std::panic::Location<'static>,
-    ) -> GenerationalBox<T, S>
-    where
-        S: Storage<T>,
-    {
-        let location = S::new(value, caller);
-        self.0.lock().owned.push(location);
-        GenerationalBox {
-            raw: location,
+impl<S: ?Sized, T> Pointer<S, T> {
+    pub(crate) fn new(slot: NonNull<S>, generation: u64) -> Self {
+        Self {
+            slot,
+            generation,
             _marker: PhantomData,
         }
     }
 
-    /// Create a new reference to an existing box. The reference will be dropped when the owner is dropped.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn slot_ptr(&self) -> *const S {
+        self.slot.as_ptr()
+    }
+
+    pub(crate) fn slot(&self) -> NonNull<S> {
+        self.slot
+    }
+
+    /// Reinterpret this pointer as targeting another value type.
     ///
-    /// This method may return an error if the other box is no longer valid or it is already borrowed mutably.
-    #[track_caller]
-    pub fn insert_reference<T>(
-        &self,
-        other: GenerationalBox<T, S>,
-    ) -> BorrowResult<GenerationalBox<T, S>>
-    where
-        S: Storage<T>,
-    {
-        let location = other.leak_reference()?;
-        self.0.lock().owned.push(location.raw);
-        Ok(location)
+    /// # Safety
+    ///
+    /// The caller is responsible for using the returned pointer only with APIs
+    /// that can tolerate a runtime type mismatch.
+    pub unsafe fn cast<U>(self) -> Pointer<S, U> {
+        Pointer::new(self.slot, self.generation)
+    }
+}
+
+impl<S, T> Pointer<S, T>
+where
+    S: Storage<T>,
+    T: 'static,
+{
+    /// Try to read the value referenced by this pointer.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the scope that owns this pointer is still alive
+    /// and that returning this reference does not violate Rust's aliasing rules.
+    /// Debug builds assert that a runtime phase allowing slot reads is active.
+    pub unsafe fn try_read(self) -> Result<S::Ref<'static, T>> {
+        unsafe { S::try_read(self) }
+    }
+
+    /// Try to mutably read the value referenced by this pointer.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the scope that owns this pointer is still alive
+    /// and that the returned mutable reference is unique for the duration of
+    /// its use. Debug builds assert that a runtime phase allowing slot writes is active.
+    pub unsafe fn try_write(self) -> Result<S::Mut<'static, T>> {
+        unsafe { S::try_write(self) }
+    }
+}
+
+impl<S: ?Sized, T> Copy for Pointer<S, T> {}
+
+impl<S: ?Sized, T> Clone for Pointer<S, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S: ?Sized, T> PartialEq<Pointer<S, T>> for Pointer<S, T> {
+    fn eq(&self, other: &Pointer<S, T>) -> bool {
+        std::ptr::eq(self.slot.as_ptr(), other.slot.as_ptr()) && self.generation == other.generation
+    }
+}
+
+impl<S: ?Sized, T> Eq for Pointer<S, T> {}
+
+impl<S: ?Sized, T> Hash for Pointer<S, T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.slot.hash(state);
+        self.generation.hash(state);
+    }
+}
+
+impl<S: ?Sized, T> fmt::Debug for Pointer<S, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Pointer")
+            .field("slot", &self.slot)
+            .field("generation", &self.generation)
+            .finish()
     }
 }

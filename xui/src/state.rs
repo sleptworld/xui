@@ -1,18 +1,98 @@
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
+
+use slot::unsync::Slot;
+use slot::{Pointer, RenderPhase as SlotRenderPhase, Runtime as SlotRuntime, Scope};
 
 use crate::fiber::FiberId;
 use crate::lanes::{Lane, LaneRoot, Lanes, NO_LANES, current_update_lane, includes_some_lane};
 
 type HookKey = (FiberId, usize);
-type HookApply = Box<dyn FnOnce(&mut dyn Any)>;
+type HookApply = Box<dyn FnOnce(&dyn Any)>;
+type HookSlot = ();
 
 #[derive(Default)]
 pub struct HookStorage {
-    slots: Vec<Box<dyn Any>>,
+    scope: Scope,
+    slots: Vec<Pointer<Slot, HookSlot>>,
     cursor: usize,
+}
+
+struct StateSlot<T> {
+    value: T,
+    owner: FiberId,
+    hook_index: usize,
+    scheduler: Scheduler,
+}
+
+pub struct State<T: 'static> {
+    inner: Pointer<Slot, StateSlot<T>>,
+}
+
+impl<T: 'static> Copy for State<T> {}
+
+impl<T: 'static> Clone for State<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: 'static> fmt::Debug for State<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("State").field("inner", &self.inner).finish()
+    }
+}
+
+impl<T: 'static> PartialEq for State<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+
+impl<T: 'static> Eq for State<T> {}
+
+impl<T: 'static> Hash for State<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.inner.hash(state);
+    }
+}
+
+impl<T: 'static> State<T> {
+    pub fn set(&self, value: T) {
+        self.update(move |slot| {
+            *slot = value;
+        });
+    }
+
+    pub fn update(&self, update: impl FnOnce(&mut T) + 'static) {
+        let state = read_slot(self.inner);
+        state
+            .scheduler
+            .enqueue_hook_update(state.owner, state.hook_index, update);
+    }
+}
+
+impl<T: Clone + 'static> State<T> {
+    pub fn get(&self) -> &T {
+        &read_slot(self.inner).value
+    }
+}
+
+fn read_slot<T: 'static>(pointer: Pointer<Slot, T>) -> &'static T {
+    SlotRuntime::with_phase(SlotRenderPhase::Render, || unsafe {
+        pointer.try_read().unwrap()
+    })
+}
+
+fn write_slot<T: 'static>(pointer: Pointer<Slot, T>, value: impl for<'a> FnOnce(&'a mut T)) {
+    unsafe {
+        let p = pointer.try_write().unwrap();
+        value(p);
+    }
 }
 
 impl HookStorage {
@@ -20,19 +100,20 @@ impl HookStorage {
         self.cursor = 0;
     }
 
-    fn next_slot<T: 'static>(&mut self, init: impl FnOnce() -> T) -> (usize, Rc<RefCell<T>>) {
+    fn next_slot<T: 'static>(
+        &mut self,
+        init: impl FnOnce(usize) -> T,
+    ) -> (usize, Pointer<Slot, T>) {
         let index = self.cursor;
         self.cursor += 1;
 
         if index == self.slots.len() {
-            self.slots.push(Box::new(Rc::new(RefCell::new(init()))));
+            let pointer = self.scope.insert(init(index));
+            self.slots.push(unsafe { pointer.cast::<HookSlot>() });
+            return (index, pointer);
         }
 
-        let value = self.slots[index]
-            .downcast_ref::<Rc<RefCell<T>>>()
-            .expect("hook order changed between rebuilds")
-            .clone();
-        (index, value)
+        (index, unsafe { self.slots[index].cast::<T>() })
     }
 }
 
@@ -81,15 +162,18 @@ impl<'a> HookContext<'a> {
     }
 
     pub fn use_state<T: Clone + 'static>(&mut self, init: impl FnOnce() -> T) -> State<T> {
-        let (hook_index, value) = self.storage.next_slot(init);
-        self.scheduler
-            .apply_hook_updates(self.owner, hook_index, self.render_lanes, &value);
-        State {
-            value,
-            owner: self.owner,
+        let scheduler = self.scheduler.clone();
+        let owner = self.owner;
+        let (hook_index, state) = self.storage.next_slot(|hook_index| StateSlot {
+            value: init(),
+            owner,
             hook_index,
-            scheduler: self.scheduler.clone(),
-        }
+            scheduler,
+        });
+
+        self.scheduler
+            .apply_hook_updates(self.owner, hook_index, self.render_lanes, &state);
+        State { inner: state }
     }
 
     pub fn use_callback<D, T>(&mut self, deps: D, init: impl FnOnce() -> T) -> Callback<T>
@@ -99,18 +183,19 @@ impl<'a> HookContext<'a> {
     {
         let mut next_deps = Some(deps);
         let mut next_init = Some(init);
-        let (_, state) = self.storage.next_slot(|| {
+        let (_, state) = self.storage.next_slot(|_| {
             let deps = next_deps
                 .take()
                 .expect("callback deps should be available for new hook slot");
             let init = next_init
                 .take()
                 .expect("callback init should be available for new hook slot");
-            CallbackState {
+            RefCell::new(CallbackState {
                 deps,
                 callback: Rc::new(RefCell::new(init())),
-            }
+            })
         });
+        let state = read_slot(state);
 
         if let Some(deps) = next_deps.take() {
             let mut state = state.borrow_mut();
@@ -210,23 +295,25 @@ impl Scheduler {
             .push_back(HookUpdate {
                 lane,
                 apply: Box::new(move |value| {
-                    update(
-                        value
-                            .downcast_mut::<T>()
-                            .expect("hook state update type changed"),
-                    );
+                    let state = value
+                        .downcast_ref::<Pointer<Slot, StateSlot<T>>>()
+                        .expect("hook state update type changed");
+                    unsafe {
+                        let v = state.try_write().unwrap();
+                        update(&mut v.value);
+                    }
                 }),
             });
         *inner.dirty_components.entry(owner).or_insert(NO_LANES) |= lane;
         inner.lane_root.mark_root_updated(lane);
     }
 
-    pub fn apply_hook_updates<T: 'static>(
+    fn apply_hook_updates<T: 'static>(
         &self,
         owner: FiberId,
         hook_index: usize,
         render_lanes: Lanes,
-        value: &Rc<RefCell<T>>,
+        value: &Pointer<Slot, StateSlot<T>>,
     ) {
         let mut inner = self.inner.borrow_mut();
         let Some(updates) = inner.hook_updates.get_mut(&(owner, hook_index)) else {
@@ -236,7 +323,7 @@ impl Scheduler {
         let mut remaining = VecDeque::new();
         while let Some(update) = updates.pop_front() {
             if includes_some_lane(update.lane, render_lanes) {
-                (update.apply)(&mut *value.borrow_mut());
+                (update.apply)(value);
             } else {
                 remaining.push_back(update);
             }
@@ -290,39 +377,13 @@ impl Scheduler {
     }
 }
 
-#[derive(Clone)]
-pub struct State<T> {
-    value: Rc<RefCell<T>>,
-    owner: FiberId,
-    hook_index: usize,
-    scheduler: Scheduler,
-}
-
-impl<T: Clone + 'static> State<T> {
-    pub fn get(&self) -> T {
-        self.value.borrow().clone()
-    }
-
-    pub fn set(&self, value: T) {
-        self.scheduler
-            .enqueue_hook_update(self.owner, self.hook_index, move |slot: &mut T| {
-                *slot = value;
-            });
-    }
-
-    pub fn update(&self, update: impl FnOnce(&mut T) + 'static) {
-        self.scheduler
-            .enqueue_hook_update(self.owner, self.hook_index, update);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
     use crate::fiber::FiberArena;
-    use crate::lanes::SYNC_LANE;
+    use crate::lanes::{SYNC_LANE, with_update_lane};
     use xui_interface::{DirtyFlags, EventPhase, EventRequests};
 
     use super::*;
@@ -339,6 +400,78 @@ mod tests {
             *builds.borrow_mut() += 1;
             Box::new(move || dep) as Box<dyn FnMut() -> usize>
         })
+    }
+
+    fn render_state<T: Clone + 'static>(
+        storage: &mut HookStorage,
+        owner: FiberId,
+        scheduler: Scheduler,
+        init: impl FnOnce() -> T,
+    ) -> State<T> {
+        let mut cx = HookContext::new(storage, owner, scheduler, SYNC_LANE);
+        cx.use_state(init)
+    }
+
+    fn render_two_states(
+        storage: &mut HookStorage,
+        owner: FiberId,
+        scheduler: Scheduler,
+    ) -> (State<i32>, State<&'static str>) {
+        let mut cx = HookContext::new(storage, owner, scheduler, SYNC_LANE);
+        let count = cx.use_state(|| 1);
+        let label = cx.use_state(|| "first");
+        (count, label)
+    }
+
+    #[test]
+    fn use_state_handle_is_copy_and_reads_initial_value() {
+        let mut storage = HookStorage::default();
+        let scheduler = Scheduler::default();
+        let owner = FiberArena::new().root();
+        scheduler.set_root(owner);
+
+        let state = render_state(&mut storage, owner, scheduler, || 7);
+        let copied = state;
+
+        assert_eq!(state, copied);
+        assert_eq!(copied.get(), 7);
+    }
+
+    #[test]
+    fn use_state_applies_queued_update_on_next_render() {
+        let mut storage = HookStorage::default();
+        let scheduler = Scheduler::default();
+        let owner = FiberArena::new().root();
+        scheduler.set_root(owner);
+
+        let first = render_state(&mut storage, owner, scheduler.clone(), || 1);
+        with_update_lane(SYNC_LANE, || first.set(2));
+
+        assert_eq!(first.get(), 1);
+
+        let second = render_state(&mut storage, owner, scheduler, || 99);
+
+        assert_eq!(second.get(), 2);
+        assert_eq!(first.get(), 2);
+    }
+
+    #[test]
+    fn use_state_updates_are_keyed_by_hook_index() {
+        let mut storage = HookStorage::default();
+        let scheduler = Scheduler::default();
+        let owner = FiberArena::new().root();
+        scheduler.set_root(owner);
+
+        let (count, label) = render_two_states(&mut storage, owner, scheduler.clone());
+        with_update_lane(SYNC_LANE, || {
+            count.update(|value| *value += 4);
+            label.set("second");
+        });
+
+        let (next_count, next_label) = render_two_states(&mut storage, owner, scheduler);
+
+        assert_eq!(next_count.get(), 5);
+        assert_eq!(next_label.get(), "second");
     }
 
     #[test]

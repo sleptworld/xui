@@ -12,3 +12,4 @@ taffy = "0.10.1"
 xui-interface = { path = "../xui-interface" }
 xui-macros = { path = "../xui-macros" }
 xui-text = { path = "../xui-text" }
+slot = { path = "../slot" }

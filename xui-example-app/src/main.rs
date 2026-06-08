@@ -104,27 +104,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         |_| {
             xui! {
-                // <container scrollable={true}  scroll_direction={ScrollDirectionStyle::Vertical}>
-                //     <column gap={12.0} padding={EdgeInsets::all(12.0)}>
-                //        <container size={Some(Size::fix(200.0,200.0))}
-                //         background={Color::BLACK} border_radius={15.0}
-                //         shadow={ShadowStyle::default()
-                //             .color(Color::BLACK)
-                //             .offset(Point::new(0., 1.)).blur(5.)}
-                //         />
+                <container scrollable={true}  scroll_direction={ScrollDirectionStyle::Vertical}>
+                    <column gap={12.0} padding={EdgeInsets::all(12.0)}>
+                       <container size={Some(Size::fix(200.0,200.0))}
+                        background={Color::BLACK} border_radius={15.0}
+                        shadow={ShadowStyle::default()
+                            .color(Color::BLACK)
+                            .offset(Point::new(0., 1.)).blur(5.)}
+                        />
 
-                //         <container size={Some(Size::fix(200.0,200.0))}
-                //         background={Color::BLUE_500} border_radius={15.0}
-                //         shadow={ShadowStyle::default()
-                //             .color(Color::BLACK)
-                //             .offset(Point::new(0., 1.)).blur(5.)}
-                //         />
+                        <container size={Some(Size::fix(200.0,200.0))}
+                        background={Color::BLUE_500} border_radius={15.0}
+                        shadow={ShadowStyle::default()
+                            .color(Color::BLACK)
+                            .offset(Point::new(0., 1.)).blur(5.)}
+                        />
 
-                //         <counter />
-                //     </column>
-                // </container>
+                        <counter />
+                    </column>
+                </container>
 
-                <editor />
+                // <editor />
             }
         }
     });
