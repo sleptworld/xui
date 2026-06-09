@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use cosmic_text::{
-    Attrs, Buffer, CacheKey, Family, FontSystem, LayoutGlyph, Metrics, Shaping, Style as CosmicStyle, SwashCache, SwashContent, Weight
+    Attrs, Buffer, CacheKey, Family, FontSystem, LayoutGlyph, Metrics, Shaping,
+    Style as CosmicStyle, SwashCache, SwashContent, Weight,
 };
 use xui_interface::{
     ComputedTextStyle, FontFamily, FontStyle, FontWeight, GlyphBitmap, GlyphPlacement, LineHeight,
@@ -261,9 +262,11 @@ impl TextLayoutBackend for CosmicTextEngine {
             .get_image(&mut self.font_system, *key)
             .clone()?;
         let placement = image.placement;
+
+        let (data, ptype) = rgba_bitmap_data(image.content, &image.data);
         Some(GlyphBitmap {
-            is_rgba: matches!(image.content, SwashContent::Color),
-            data: rgba_bitmap_data(image.content, &image.data),
+            ptype,
+            data,
             width: placement.width as u32,
             height: placement.height as u32,
             placement: GlyphPlacement {

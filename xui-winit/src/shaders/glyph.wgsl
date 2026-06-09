@@ -46,6 +46,18 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32, instance: GlyphInstance) ->
     return output;
 }
 
+fn linear_to_srgb3(c: vec3f) -> vec3f {
+    let cp = clamp(c, vec3f(0.0), vec3f(1.0));
+    let lo = cp * 12.92;
+    let hi = 1.055 * pow(cp, vec3f(1.0 / 2.4)) - vec3f(0.055);
+    return select(hi, lo, cp <= vec3f(0.0031308));
+}
+
+fn luma_srgb(color_linear: vec4f) -> f32 {
+    let c = linear_to_srgb3(color_linear.rgb);
+    return c.x * 0.25 + c.y * 0.72 + c.z * 0.075;
+}
+
 fn luma(color: vec4f) -> f32 {
     return color.x * 0.25 + color.y * 0.72 + color.z * 0.075;
 }
@@ -60,30 +72,72 @@ fn gamma_correct(luma: f32, alpha: f32, gamma: f32, contrast: f32) -> f32 {
 }
 
 fn gamma_correct_subpx(color: vec4f, mask: vec4f) -> vec4f {
-    let l = luma(color);
+    let l = luma_srgb(color);
     let inverse_luma = 1.0 - l;
     let gamma = mix(1.0 / 1.2, 1.0 / 2.4, inverse_luma);
     let contrast = mix(0.1, 0.8, inverse_luma);
     return vec4f(gamma_correct(l, mask.x * color.a, gamma, contrast), gamma_correct(l, mask.y * color.a, gamma, contrast), gamma_correct(l, mask.z * color.a, gamma, contrast), 1.0);
 }
 
+fn gamma_correct_one(l: f32, alpha: f32, gamma: f32, contrast: f32) -> f32 {
+    let inverse_luma = 1.0 - l;
+    let denom = l - inverse_luma;
+
+    if abs(denom) < 0.001 {
+        return clamp(alpha, 0.0, 1.0);
+    }
+
+    let inverse_alpha = 1.0 - alpha;
+    let g = pow(l * alpha + inverse_luma * inverse_alpha, gamma);
+
+    var a = (g - inverse_luma) / denom;
+    a = a + ((1.0 - a) * contrast * a);
+
+    return clamp(a, 0.0, 1.0);
+}
+
+fn gamma_params(color: vec4f) -> vec3f {
+    let l = luma_srgb(color);
+    let inverse_luma = 1.0 - l;
+    let gamma = mix(1.0 / 1.2, 1.0 / 2.4, inverse_luma);
+    let contrast = mix(0.1, 0.8, inverse_luma);
+    return vec3f(l, gamma, contrast);
+}
+
+@fragment
+fn fs_main_mask(input: VertexOutput) -> @location(0) vec4f {
+    let mask = textureSample(atlas_texture, f_sampler, input.uv);
+    let a = mask.r * input.color.a;
+    return vec4f(input.color.rgb, a);
+}
+
+@fragment
+fn fs_rgb(input: VertexOutput) -> @location(0) vec4f {
+    let mask = textureSample(atlas_texture, f_sampler, input.uv);
+    return mask;
+}
+
 @fragment
 fn fs_main_red(input: VertexOutput) -> @location(0) vec4f {
     let mask = textureSample(atlas_texture, f_sampler, input.uv);
-    let coverage = gamma_correct_subpx(input.color, mask);
-    return vec4f(input.color.rgb, coverage.r);
+    let p = gamma_params(input.color);
+    let a = gamma_correct_one(p.x, mask.r * input.color.a, p.y, p.z);
+    return vec4f(input.color.rgb, a);
+
 }
 
 @fragment
 fn fs_main_green(input: VertexOutput) -> @location(0) vec4f {
     let mask = textureSample(atlas_texture, f_sampler, input.uv);
-    let coverage = gamma_correct_subpx(input.color, mask);
-    return vec4f(input.color.rgb, coverage.g);
+    let p = gamma_params(input.color);
+    let a = gamma_correct_one(p.x, mask.g * input.color.a, p.y, p.z);
+    return vec4f(input.color.rgb, a);
 }
 
 @fragment
 fn fs_main_blue(input: VertexOutput) -> @location(0) vec4f {
     let mask = textureSample(atlas_texture, f_sampler, input.uv);
-    let coverage = gamma_correct_subpx(input.color, mask);
-    return vec4f(input.color.rgb, coverage.b);
+    let p = gamma_params(input.color);
+    let a = gamma_correct_one(p.x, mask.b * input.color.a, p.y, p.z);
+    return vec4f(input.color.rgb, a);
 }

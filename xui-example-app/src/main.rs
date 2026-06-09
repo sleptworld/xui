@@ -61,7 +61,7 @@ component_fn! {
                 <btn props= {"Hello".to_string()}/>
                 <btn props= {"Hello".to_string()}/>
                 <btn props= {"Oh".to_string()}/>
-                <btn props= {"MY".to_string()}/>
+                <btn props= {"MY🤔".to_string()}/>
             </row>
         </column>
 
@@ -104,7 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 <container scrollable={true}  scroll_direction={ScrollDirectionStyle::Vertical}>
                     <column gap={12.0} padding={EdgeInsets::all(12.0)}>
                        <container size={Some(Size::fix(200.0,200.0))}
-                        background={Color::BLACK} border_radius={15.0}
+                        background={Color::hex("#4287f5")} border_radius={15.0}
                         shadow={ShadowStyle::default()
                             .color(Color::BLACK)
                             .offset(Point::new(0., 1.)).blur(5.)}

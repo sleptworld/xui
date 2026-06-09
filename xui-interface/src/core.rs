@@ -1,5 +1,4 @@
 use std::ops::{Add, Sub};
-
 use ordered_float::NotNan;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -204,6 +203,16 @@ impl Rect {
             self.height * factor,
         )
     }
+
+    pub fn translate(self, translation: impl Into<Translation>) -> Self {
+        let translation = translation.into();
+        Self::new(
+            self.x + translation.x,
+            self.y + translation.y,
+            self.width,
+            self.height,
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -306,5 +315,11 @@ impl Translation {
 
     pub fn translate(&self, point: Point) -> Point {
         Point::new(point.x + self.x, point.y + self.y)
+    }
+}
+
+impl From<Point> for Translation {
+    fn from(point: Point) -> Self {
+        Self::new(point.x, point.y)
     }
 }

@@ -120,7 +120,8 @@ pub struct PositionedGlyph<K> {
 
 #[derive(Clone, Debug)]
 pub struct GlyphBitmap {
-    pub is_rgba: bool,
+    /// 0: Mask 1: Subpixel Mask 2: Color
+    pub ptype: u32,
     pub data: Vec<u8>,
     pub width: u32,
     pub height: u32,

@@ -1,6 +1,5 @@
-use crate::ElementDesc;
 use crate::component::ComponentRuntime;
-use crate::core::{Rect, Size};
+use crate::core::Size;
 use crate::event::{Event, EventResult};
 use crate::fiber::ComponentRegistry;
 use crate::lanes::{event_lane, with_update_lane};
@@ -8,7 +7,9 @@ use crate::render::RenderBackend;
 use crate::state::{HookContext, Scheduler};
 use crate::style::Theme;
 use crate::tree::UiArena;
+use crate::ElementDesc;
 use std::time::Duration;
+use xui_interface::render::Damage;
 use xui_interface::{DirtyFlags, TextMeasurer};
 
 pub struct App {
@@ -65,8 +66,7 @@ impl App {
         if self.size != size {
             self.size = size;
             self.arena.mark_subtree_layout_dirty(self.arena.root());
-            self.arena
-                .add_damage(Rect::new(0.0, 0.0, size.width, size.height));
+            self.arena.add_damage(Damage::full(self.size));
         }
     }
 
@@ -118,8 +118,7 @@ impl App {
     pub fn mark_needs_rebuild(&mut self) {
         self.components.mark_root_dirty();
         self.arena.mark_dirty(self.arena.root(), DirtyFlags::STATE);
-        self.arena
-            .add_damage(Rect::new(0.0, 0.0, self.size.width, self.size.height));
+        self.arena.add_damage(Damage::full(self.size));
     }
 
     #[inline]

@@ -354,9 +354,12 @@ fn rasterize_swash_glyph(
     }
 
     let placement = image.placement;
+
+    let (data, ptype) = rgba_bitmap_data(image.content, &image.data);
+
     Some(GlyphBitmap {
-        is_rgba: matches!(image.content, SwashContent::Color),
-        data: rgba_bitmap_data(image.content, &image.data),
+        ptype,
+        data,
         width: placement.width as u32,
         height: placement.height as u32,
         placement: GlyphPlacement {
@@ -368,16 +371,17 @@ fn rasterize_swash_glyph(
     })
 }
 
-fn rgba_bitmap_data(content: SwashContent, data: &[u8]) -> Vec<u8> {
+fn rgba_bitmap_data(content: SwashContent, data: &[u8]) -> (Vec<u8>, u32) {
     match content {
         SwashContent::Mask => {
             let mut rgba = Vec::with_capacity(data.len() * 4);
             for alpha in data {
                 rgba.extend_from_slice(&[*alpha, *alpha, *alpha, *alpha]);
             }
-            rgba
+            (rgba, 0)
         }
-        SwashContent::Color | SwashContent::SubpixelMask => data.to_vec(),
+        SwashContent::SubpixelMask => (data.to_vec(), 1),
+        SwashContent::Color => (data.to_vec(), 2),
     }
 }
 

@@ -55,9 +55,36 @@ pub struct TextPaintCommand {
     pub props: TextProps,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Damage {
+    visual_rect: Rect,
+    rect: Rect,
+}
+
+impl Damage {
+    pub fn new(rect: Rect, visual_rect: Rect) -> Self {
+        Self { rect, visual_rect }
+    }
+
+    pub fn full(size: Size<f32>) -> Self {
+        Self {
+            visual_rect: Rect::new(0., 0., size.width, size.height),
+            rect: Rect::new(0., 0., size.width, size.height),
+        }
+    }
+
+    pub fn rect(self) -> Rect {
+        self.rect
+    }
+
+    pub fn visual_rect(self) -> Rect {
+        self.visual_rect
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct DamageRegion {
-    rects: Vec<Rect>,
+    rects: Vec<Damage>,
 }
 
 impl DamageRegion {
@@ -65,15 +92,9 @@ impl DamageRegion {
         Self::default()
     }
 
-    pub fn full(size: Size<f32>) -> Self {
-        let mut region = Self::new();
-        region.add(Rect::new(0.0, 0.0, size.width, size.height));
-        region
-    }
-
-    pub fn add(&mut self, rect: Rect) {
-        if rect.width > 0.0 && rect.height > 0.0 {
-            self.rects.push(rect);
+    pub fn add(&mut self, damage: Damage) {
+        if damage.visual_rect.width > 0.0 && damage.visual_rect.height > 0.0 {
+            self.rects.push(damage);
         }
     }
 
@@ -81,16 +102,34 @@ impl DamageRegion {
         self.rects.is_empty()
     }
 
-    pub fn rects(&self) -> &[Rect] {
+    pub fn clear(&mut self) {
+        self.rects.clear();
+    }
+
+    pub fn take(&mut self) -> Self {
+        Self {
+            rects: std::mem::take(&mut self.rects),
+        }
+    }
+
+    pub fn damages(&self) -> &[Damage] {
         &self.rects
     }
 
+    pub fn rects(&self) -> impl Iterator<Item = Rect> + '_ {
+        self.rects.iter().map(|damage| damage.rect)
+    }
+
+    pub fn visual_rects(&self) -> impl Iterator<Item = Rect> + '_ {
+        self.rects.iter().map(|damage| damage.visual_rect)
+    }
+
     pub fn bounds(&self) -> Option<Rect> {
-        self.rects.iter().copied().reduce(Rect::union)
+        self.rects.iter().map(|r| r.visual_rect).reduce(Rect::union)
     }
 
     pub fn intersects(&self, rect: Rect) -> bool {
-        self.rects.iter().any(|damage| damage.intersects(rect))
+        self.rects.iter().any(|d| d.visual_rect.intersects(rect))
     }
 }
 
@@ -125,7 +164,7 @@ pub trait DrawBackend<T>: RenderBackend<T> {}
 
 impl<T, B: RenderBackend<T>> DrawBackend<T> for B {}
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone)]
 pub struct MockRenderBackend {
     pub frame_size: Option<Size<f32>>,
     pub frames: usize,

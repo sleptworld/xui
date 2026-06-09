@@ -115,6 +115,17 @@ fn blend_over(src: vec4f, dst: vec4f) -> vec4f {
     return unpremultiply(vec4f(s.rgb + d.rgb * (1.0 - s.a), s.a + d.a * (1.0 - s.a)));
 }
 
+fn srgb_to_linear_rgb(rgb: vec3f) -> vec3f {
+    let c = clamp(rgb, vec3f(0.0), vec3f(1.0));
+    let lower = c / 12.92;
+    let higher = pow((c + vec3f(0.055)) / 1.055, vec3f(2.4));
+    return select(higher, lower, c <= vec3f(0.04045));
+}
+
+fn srgb_to_linear(color: vec4f) -> vec4f {
+    return vec4f(srgb_to_linear_rgb(color.rgb), color.a);
+}
+
 fn erf_approx(x: vec2f) -> vec2f {
     let s = sign(x);
     let a = abs(x);
@@ -213,8 +224,12 @@ fn fs_main(input: QuadVertex) -> FragmentOutput {
         distance = sdf_line_segment(input.pixel_position, input.extra.xy, input.extra.zw, stroke_width);
     }
 
+    let fill_color = srgb_to_linear(input.fill_color);
+    let stroke_color = srgb_to_linear(input.stroke_color);
+    let projection_color = srgb_to_linear(input.projection_color);
+
     var projection_alpha = 0.0;
-    if (projection_enabled > 0.5 && input.projection_color.a > 0.0 && kind < 1.5) {
+    if (projection_enabled > 0.5 && projection_color.a > 0.0 && kind < 1.5) {
         let projection_center = shape_center + projection_offset;
         let projection_half_size = max(shape_half_size + vec2f(projection_spread), vec2f(0.0));
         let projection_radius = min(max(radius + projection_spread, 0.0), min(projection_half_size.x, projection_half_size.y));
@@ -227,7 +242,7 @@ fn fs_main(input: QuadVertex) -> FragmentOutput {
         }
 
         if (projection_blur <= 0.0) {
-            projection_alpha = input.projection_color.a * sdf_fill_alpha(projection_distance);
+            projection_alpha = projection_color.a * sdf_fill_alpha(projection_distance);
         } else {
             let projection_lower = projection_center - projection_half_size;
             let projection_upper = projection_center + projection_half_size;
@@ -237,23 +252,23 @@ fn fs_main(input: QuadVertex) -> FragmentOutput {
             } else {
                 projection_coverage = rounded_box_shadow(projection_lower, projection_upper, input.pixel_position, projection_blur, projection_radius);
             }
-            projection_alpha = input.projection_color.a * clamp(projection_coverage, 0.0, 1.0);
+            projection_alpha = projection_color.a * clamp(projection_coverage, 0.0, 1.0);
         }
     }
 
     let styled_color = color_style_color(
         color_style_kind,
-        input.fill_color + input.stroke_color,
-        input.projection_color,
+        fill_color + stroke_color,
+        projection_color,
         input.extra,
         input.pixel_position,
     );
-    let gradient_fill_active = color_style_kind > 0.5 && input.stroke_color.a <= 0.0 && stroke_width <= 0.0 && projection_enabled <= 0.5;
+    let gradient_fill_active = color_style_kind > 0.5 && stroke_color.a <= 0.0 && stroke_width <= 0.0 && projection_enabled <= 0.5;
     let gradient_stroke_active = color_style_kind > 0.5 && stroke_width > 0.0;
-    let fill_alpha = select(0.0, styled_color.a, input.fill_color.a > 0.0 || gradient_fill_active) * sdf_fill_alpha(distance);
-    let stroke_alpha = select(0.0, styled_color.a, input.stroke_color.a > 0.0 || gradient_stroke_active) * sdf_stroke_alpha(distance, stroke_width, stroke_direction);
+    let fill_alpha = select(0.0, styled_color.a, fill_color.a > 0.0 || gradient_fill_active) * sdf_fill_alpha(distance);
+    let stroke_alpha = select(0.0, styled_color.a, stroke_color.a > 0.0 || gradient_stroke_active) * sdf_stroke_alpha(distance, stroke_width, stroke_direction);
 
-    let projection = vec4f(input.projection_color.rgb, projection_alpha);
+    let projection = vec4f(projection_color.rgb, projection_alpha);
     let fill = vec4f(styled_color.rgb, fill_alpha);
     let stroke = vec4f(styled_color.rgb, stroke_alpha);
 

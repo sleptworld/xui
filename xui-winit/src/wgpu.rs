@@ -15,6 +15,7 @@ use crate::text_cache::WinitTextEngine;
 pub type WgpuBackendError = Box<dyn std::error::Error + Send + Sync>;
 
 pub struct WGPUBackend<T: TextLayoutBackend = WinitTextEngine> {
+    // Instances
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     surface: wgpu::Surface<'static>,
@@ -23,6 +24,12 @@ pub struct WGPUBackend<T: TextLayoutBackend = WinitTextEngine> {
     config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
     glyph_pipelines: [wgpu::RenderPipeline; 3],
+    // Composite State
+    composite_pipeline: wgpu::RenderPipeline,
+    composite_bind_group_layout: wgpu::BindGroupLayout,
+    composite_sampler: wgpu::Sampler,
+    composite_bind_group: wgpu::BindGroup,
+    // Common Tools
     ui_uniform_buffer: wgpu::Buffer,
     ui_bind_group: wgpu::BindGroup,
     glyph_bind_group: wgpu::BindGroup,
@@ -43,6 +50,7 @@ const COLOR_SOLID: f32 = 0.0;
 const COLOR_LINEAR_GRADIENT: f32 = 1.0;
 const COLOR_RADIAL_GRADIENT: f32 = 2.0;
 const STROKE_CENTER: f32 = 0.0;
+pub const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 const UI_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 10] = wgpu::vertex_attr_array![
     0 => Float32x4,
@@ -55,14 +63,6 @@ const UI_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 10] = wgpu::vertex_attr_ar
     7 => Float32x4,
     8 => Float32x4,
     9 => Float32x4,
-];
-
-const GLYPH_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
-    0 => Float32x4,
-    1 => Float32,
-    2 => Float32x3,
-    3 => Float32x4,
-    4 => Float32x4,
 ];
 
 #[repr(C)]
@@ -90,6 +90,7 @@ struct UiInstance {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GlyphInstance {
+    ptype: u32,
     bounds: [f32; 4],
     layer: f32,
     padding: [f32; 3],
@@ -97,8 +98,16 @@ struct GlyphInstance {
     color: [f32; 4],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PType {
+    Mask,
+    SubPixelMask,
+    Color,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextGlyphRecord {
+    pub ptype: PType,
     pub screen_rect: Rect,
     pub clip: Rect,
     pub color: Color,
@@ -114,16 +123,6 @@ impl UiInstance {
             array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &UI_INSTANCE_ATTRIBUTES,
-        }
-    }
-}
-
-impl GlyphInstance {
-    fn layout() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &GLYPH_INSTANCE_ATTRIBUTES,
         }
     }
 }
@@ -145,7 +144,6 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
             .create_surface(Arc::clone(&window))
             .expect("failed to create surface");
 
-        // 3. 选择 Adapter，可以理解为选择一个合适的 GPU / 后端
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -169,9 +167,12 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
         let mut config = surface
             .get_default_config(&adapter, size.width, size.height)
             .expect("surface not supported by adapter");
+        let surface_capabilities = surface.get_capabilities(&adapter);
+        config.format = choose_srgb_surface_format(config.format, &surface_capabilities.formats)
+            .expect("surface does not support an sRGB format");
 
         config.present_mode = wgpu::PresentMode::AutoVsync;
-        config.usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST;
+        config.usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
 
         surface.configure(&device, &config);
 
@@ -179,9 +180,10 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
             label: Some("xui sdf shader"),
             source: wgpu::ShaderSource::Wgsl(UI_SHADER_WGSL.into()),
         });
-        let glyph_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("xui glyph shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/glyph.wgsl").into()),
+
+        let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("xui composite shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/composite.wgsl").into()),
         });
 
         let ui_bind_group_layout =
@@ -219,16 +221,16 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
 
         let atlas = Atlas::new(&device);
 
-        let glyph_bind_group_layout =
+        let composite_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("xui glyph atlas bind group layout"),
+                label: Some("xui composite bind group layout"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                            view_dimension: wgpu::TextureViewDimension::D3,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },
                         count: None,
@@ -236,25 +238,18 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
                 ],
             });
-
-        let glyph_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("xui glyph atlas bind group"),
-            layout: &glyph_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&atlas.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&atlas.sampler),
-                },
-            ],
+        let composite_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("xui composite sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -262,10 +257,11 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
             bind_group_layouts: &[Some(&ui_bind_group_layout)],
             immediate_size: 0,
         });
-        let glyph_pipeline_layout =
+
+        let composite_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("xui glyph pipeline layout"),
-                bind_group_layouts: &[Some(&ui_bind_group_layout), Some(&glyph_bind_group_layout)],
+                label: Some("xui composite pipeline layout"),
+                bind_group_layouts: &[Some(&composite_bind_group_layout)],
                 immediate_size: 0,
             });
 
@@ -285,7 +281,7 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
                 entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
+                    format: SCENE_FORMAT,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -301,39 +297,47 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
             multiview_mask: None,
             cache: None,
         });
+        let composite_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("xui composite render pipeline"),
+            layout: Some(&composite_pipeline_layout),
 
-        let glyph_pipelines = [
-            create_glyph_pipeline(
-                &device,
-                &glyph_pipeline_layout,
-                &glyph_shader,
-                config.format,
-                "xui glyph red render pipeline",
-                "fs_main_red",
-                wgpu::ColorWrites::RED,
-            ),
-            create_glyph_pipeline(
-                &device,
-                &glyph_pipeline_layout,
-                &glyph_shader,
-                config.format,
-                "xui glyph green render pipeline",
-                "fs_main_green",
-                wgpu::ColorWrites::GREEN,
-            ),
-            create_glyph_pipeline(
-                &device,
-                &glyph_pipeline_layout,
-                &glyph_shader,
-                config.format,
-                "xui glyph blue render pipeline",
-                "fs_main_blue",
-                wgpu::ColorWrites::BLUE,
-            ),
-        ];
+            vertex: wgpu::VertexState {
+                module: &composite_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+
+            fragment: Some(wgpu::FragmentState {
+                module: &composite_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
 
         let glyph_cache = GlyphTextureCache::new();
         let scene = SceneTexture::new(&device, &config);
+        let composite_bind_group = create_composite_bind_group(
+            &device,
+            &composite_bind_group_layout,
+            &composite_sampler,
+            &scene.view,
+        );
 
         Self {
             instance,
@@ -344,6 +348,10 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
             config,
             render_pipeline,
             glyph_pipelines,
+            composite_pipeline,
+            composite_bind_group_layout,
+            composite_sampler,
+            composite_bind_group,
             ui_uniform_buffer,
             ui_bind_group,
             glyph_bind_group,
@@ -360,10 +368,8 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
 }
 
 struct SceneTexture {
-    texture: wgpu::Texture,
+    _texture: wgpu::Texture,
     view: wgpu::TextureView,
-    width: u32,
-    height: u32,
 }
 
 impl SceneTexture {
@@ -380,148 +386,58 @@ impl SceneTexture {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: config.format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            format: SCENE_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         Self {
-            texture,
+            _texture: texture,
             view,
-            width,
-            height,
         }
     }
 }
 
-struct Atlas {
-    texture: wgpu::Texture,
-    view: wgpu::TextureView,
-    depth: u32,
-    current_layer: u32,
-    sampler: wgpu::Sampler,
-    allocator: BucketedAtlasAllocator,
-    size: Size,
-    total_size: Vec3,
+fn choose_srgb_surface_format(
+    default: wgpu::TextureFormat,
+    supported: &[wgpu::TextureFormat],
+) -> Option<wgpu::TextureFormat> {
+    let default_srgb = default.add_srgb_suffix();
+    if supported.contains(&default_srgb) {
+        return Some(default_srgb);
+    }
+
+    if default.is_srgb() {
+        return Some(default);
+    }
+
+    supported.iter().copied().find(wgpu::TextureFormat::is_srgb)
 }
 
-impl Atlas {
-    fn new(device: &wgpu::Device) -> Self {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("GlyphAtlas3D"),
-            size: wgpu::Extent3d {
-                width: 1024,
-                height: 1024,
-                depth_or_array_layers: 128,
+fn create_composite_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    scene_view: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("xui composite bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(scene_view),
             },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D3,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            ..Default::default()
-        });
-
-        let allocator = BucketedAtlasAllocator::with_options(
-            Size::new(1024, 1024),
-            &AllocatorOptions::default(),
-        );
-
-        Self {
-            texture,
-            current_layer: 0,
-            sampler,
-            view,
-            allocator,
-            depth: 128,
-            size: Size::new(1024, 1024),
-            total_size: Vec3::new(1024.0, 1024.0, 128.0),
-        }
-    }
-
-    fn handle_allocation(
-        &mut self,
-        queue: &wgpu::Queue,
-        bitmap: &GlyphBitmap,
-    ) -> Result<AllocInfo, crate::error::Error> {
-        if let Some(alloc) = self
-            .allocator
-            .allocate(Size::new(bitmap.width as i32, bitmap.height as i32))
-        {
-            let layer = self.current_layer;
-            self.write_glyph_to_texture(queue, &bitmap, alloc);
-            return Ok(AllocInfo {
-                total_size: self.total_size,
-                layer,
-                origin: Vec2::new(alloc.rectangle.min.x as f32, alloc.rectangle.min.y as f32),
-            });
-        }
-
-        if self.current_layer + 1 < self.depth {
-            self.current_layer += 1;
-            self.allocator =
-                BucketedAtlasAllocator::with_options(self.size, &AllocatorOptions::default());
-
-            if let Some(alloc) = self
-                .allocator
-                .allocate(Size::new(bitmap.width as i32, bitmap.height as i32))
-            {
-                let layer = self.current_layer;
-                self.write_glyph_to_texture(queue, &bitmap, alloc);
-
-                return Ok(AllocInfo {
-                    total_size: self.total_size,
-                    layer,
-                    origin: Vec2::new(alloc.rectangle.min.x as f32, alloc.rectangle.min.y as f32),
-                });
-            }
-        }
-
-        Err(crate::error::Error::Other(
-            "Failed to allocate glyph".into(),
-        ))
-    }
-
-    fn write_glyph_to_texture(&self, queue: &wgpu::Queue, bitmap: &GlyphBitmap, alloc: Allocation) {
-        let layer = self.current_layer;
-
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: alloc.rectangle.min.x as u32,
-                    y: alloc.rectangle.min.y as u32,
-                    z: layer,
-                },
-                aspect: wgpu::TextureAspect::All,
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
             },
-            bitmap.data.as_slice(),
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(bitmap.width * 4),
-                rows_per_image: Some(bitmap.height),
-            },
-            wgpu::Extent3d {
-                width: bitmap.width,
-                height: bitmap.height,
-                depth_or_array_layers: 1,
-            },
-        );
-    }
+        ],
+    })
 }
 
 struct GlyphTextureCache<K> {
-    glyphs: HashMap<K, Option<(AllocInfo, GlyphPlacement)>>,
+    glyphs: HashMap<K, Option<(AllocInfo, GlyphPlacement, u32)>>,
 }
 
 impl<K> GlyphTextureCache<K> {
@@ -533,11 +449,11 @@ impl<K> GlyphTextureCache<K> {
 }
 
 impl<K: Eq + std::hash::Hash> GlyphTextureCache<K> {
-    fn get(&self, key: &K) -> Option<&Option<(AllocInfo, GlyphPlacement)>> {
+    fn get(&self, key: &K) -> Option<&Option<(AllocInfo, GlyphPlacement, u32)>> {
         self.glyphs.get(key)
     }
 
-    fn insert(&mut self, key: K, value: Option<(AllocInfo, GlyphPlacement)>) {
+    fn insert(&mut self, key: K, value: Option<(AllocInfo, GlyphPlacement, u32)>) {
         self.glyphs.insert(key, value);
     }
 }
@@ -553,6 +469,12 @@ impl<T: TextLayoutBackend> RenderBackend<T> for WGPUBackend<T> {
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
             self.scene = SceneTexture::new(&self.device, &self.config);
+            self.composite_bind_group = create_composite_bind_group(
+                &self.device,
+                &self.composite_bind_group_layout,
+                &self.composite_sampler,
+                &self.scene.view,
+            );
             self.scene_needs_clear = true;
         }
         self.queue.write_buffer(
@@ -602,6 +524,12 @@ impl<T: TextLayoutBackend> RenderBackend<T> for WGPUBackend<T> {
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface.configure(&self.device, &self.config);
                 self.scene = SceneTexture::new(&self.device, &self.config);
+                self.composite_bind_group = create_composite_bind_group(
+                    &self.device,
+                    &self.composite_bind_group_layout,
+                    &self.composite_sampler,
+                    &self.scene.view,
+                );
                 self.scene_needs_clear = true;
                 match self.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(frame)
@@ -697,25 +625,30 @@ impl<T: TextLayoutBackend> RenderBackend<T> for WGPUBackend<T> {
         }
         self.scene_needs_clear = false;
 
-        encoder.copy_texture_to_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.scene.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyTextureInfo {
-                texture: &frame.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::Extent3d {
-                width: self.scene.width,
-                height: self.scene.height,
-                depth_or_array_layers: 1,
-            },
-        );
+        let frame_view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("xui composite render pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &frame_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.composite_pipeline);
+            pass.set_bind_group(0, &self.composite_bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
 
         self.queue.submit(Some(encoder.finish()));
         frame.present();
@@ -883,7 +816,7 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
         );
 
         for glyph in positioned_glyphs {
-            let Some((alloc, placement)) = self.glyph_allocation(text, &glyph.key)? else {
+            let Some((alloc, placement, ptype)) = self.glyph_allocation(text, &glyph.key)? else {
                 continue;
             };
             if placement.width == 0 || placement.height == 0 {
@@ -901,6 +834,7 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
             }
 
             let record = TextGlyphRecord {
+                ptype,
                 screen_rect,
                 clip,
                 color: command.props.style.color,
@@ -924,7 +858,7 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
         &mut self,
         text: &mut T,
         key: &T::GlyphKey,
-    ) -> Result<Option<(AllocInfo, GlyphPlacement)>, WgpuBackendError> {
+    ) -> Result<Option<(AllocInfo, GlyphPlacement, u32)>, WgpuBackendError> {
         if let Some(cached) = self.glyph_cache.get(key) {
             return Ok(*cached);
         }
@@ -936,6 +870,7 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
                 Some((
                     self.atlas.handle_allocation(&self.queue, &bitmap)?,
                     bitmap.placement,
+                    bitmap.ptype,
                 ))
             }
         } else {
@@ -944,56 +879,6 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
         self.glyph_cache.insert(key.clone(), value);
         Ok(value)
     }
-}
-
-fn create_glyph_pipeline(
-    device: &wgpu::Device,
-    layout: &wgpu::PipelineLayout,
-    shader: &wgpu::ShaderModule,
-    format: wgpu::TextureFormat,
-    label: &'static str,
-    fragment_entry: &'static str,
-    write_mask: wgpu::ColorWrites,
-) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(label),
-        layout: Some(layout),
-
-        vertex: wgpu::VertexState {
-            module: shader,
-            entry_point: Some("vs_main"),
-            compilation_options: Default::default(),
-            buffers: &[GlyphInstance::layout()],
-        },
-
-        fragment: Some(wgpu::FragmentState {
-            module: shader,
-            entry_point: Some(fragment_entry),
-            compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format,
-                blend: Some(wgpu::BlendState {
-                    color: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::SrcAlpha,
-                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                    alpha: wgpu::BlendComponent::REPLACE,
-                }),
-                write_mask,
-            })],
-        }),
-
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleStrip,
-            ..Default::default()
-        },
-
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        multiview_mask: None,
-        cache: None,
-    })
 }
 
 fn push_rect_instance(
@@ -1314,6 +1199,7 @@ fn push_glyph_instance(instances: &mut Vec<GlyphInstance>, record: &TextGlyphRec
     }
 
     instances.push(GlyphInstance {
+        ptype: record.ptype,
         bounds: rect_to_array(record.screen_rect),
         layer: record.atlas_layer as f32 / record.atlas_size.z,
         padding: [0.0; 3],
@@ -1451,6 +1337,18 @@ mod tests {
         )
         .validate(&module)
         .expect("glyph.wgsl should validate");
+    }
+
+    #[test]
+    fn composite_shader_is_valid_wgsl() {
+        let module = wgpu::naga::front::wgsl::parse_str(include_str!("shaders/composite.wgsl"))
+            .expect("composite.wgsl should parse");
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .expect("composite.wgsl should validate");
     }
 
     #[test]
