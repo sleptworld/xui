@@ -2,7 +2,7 @@ mod components;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 use xui::prelude::*;
-use xui_winit::{WGPUBackend, WinitRunner, WinitRunnerOptions, WinitTextEngine};
+use xui_winit::{CosmicTextEngine, WGPUBackend, WinitRunner, WinitRunnerOptions, WinitTextEngine};
 
 pub struct MainProp {
     pub info: String,
@@ -27,8 +27,6 @@ component_fn! {
 
     fn counter() {
         let count = cx.use_state(|| 0);
-        let count_for_increment = count.clone();
-        let count_for_decrement = count.clone();
 
         <column gap={8.0}>
             <text font_size={16.0} font_weight={FontWeight::Bold}> {"HI!! NEW WORLD"} </text>
@@ -36,22 +34,21 @@ component_fn! {
                 <text> {format!("Current count: {}", count.get())} </text>
                 <text> {"你好吗, FUCK THE WORLD"} </text>
                 <text> {"What the Fuck!!"} </text>
+                <text> {"Do you know me, 哈哈哈哈哈哈"} </text>
             </column>
 
             <button on_click={{
-                let count_for_increment = count_for_increment.clone();
                 move |_| {
-                    count_for_increment.set(count_for_increment.get() + 1);
+                    count.set(count.get() + 1);
                     EventResult::Consumed
                 }
             }}>
                 {"Increment"}
             </button>
             <button on_click={{
-                let count_for_decrement = count_for_decrement.clone();
                 move |_| {
-                    count_for_decrement.set(count_for_decrement.get() - 1);
-                    println!("{}", count_for_decrement.get());
+                    count.set(count.get() - 1);
+                    println!("{}", count.get());
                     EventResult::Consumed
                 }
             }}>
@@ -137,7 +134,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     WinitRunner::with_backend_factory(
-        |window| (app, WinitTextEngine::new(), WGPUBackend::new(window)),
+        |window| {
+            (
+                app,
+                WinitTextEngine::<CosmicTextEngine>::new(),
+                WGPUBackend::new(window),
+            )
+        },
         Some(options),
     )
     .run()

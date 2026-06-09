@@ -1,9 +1,15 @@
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use swash::shape::ShapeContext;
-use swash::{Style, Weight};
+use swash::{
+    FontRef, GlyphId, NormalizedCoord, Style, Weight,
+    scale::{Render, ScaleContext, Source, StrikeWith, image::Content as SwashContent},
+    zeno::{Format, Vector},
+};
 use xui_interface::{
     ComputedTextStyle, FontFamily, FontStyle as XuiFontStyle, FontWeight as XuiFontWeight,
-    LineHeight, NodeId, Size, TextLayoutConstraints, TextMeasurer,
+    GlyphBitmap, GlyphPlacement, LineHeight, NodeId, Point, PositionedGlyph, Size,
+    TextLayoutBackend, TextLayoutConstraints, TextMeasurer,
 };
 
 use crate::{
@@ -35,6 +41,76 @@ pub trait TextLayouter: TextMeasurer {
 
     fn get_cached_layout(&self, _node_id: NodeId) -> Option<Arc<Par>> {
         None
+    }
+}
+
+const RASTER_SOURCES: &[Source] = &[
+    Source::ColorBitmap(StrikeWith::BestFit),
+    Source::ColorOutline(0),
+    Source::Outline,
+];
+
+#[derive(Clone)]
+pub struct NativeGlyphKey {
+    font: crate::fontique_library::Font,
+    font_id: swash::CacheKey,
+    glyph_id: GlyphId,
+    subpx: [SubpixelOffset; 2],
+    font_size_bits: u32,
+    coords: Vec<NormalizedCoord>,
+}
+
+impl PartialEq for NativeGlyphKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.font_id == other.font_id
+            && self.glyph_id == other.glyph_id
+            && self.subpx == other.subpx
+            && self.font_size_bits == other.font_size_bits
+            && self.coords == other.coords
+    }
+}
+
+impl Eq for NativeGlyphKey {}
+
+impl Hash for NativeGlyphKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.font_id.hash(state);
+        self.glyph_id.hash(state);
+        self.subpx.hash(state);
+        self.font_size_bits.hash(state);
+        self.coords.hash(state);
+    }
+}
+
+#[derive(Hash, Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[repr(u8)]
+enum SubpixelOffset {
+    Zero = 0,
+    Quarter = 1,
+    Half = 2,
+    ThreeQuarters = 3,
+}
+
+impl SubpixelOffset {
+    fn quantize(pos: f32) -> (i32, Self) {
+        let base = pos.floor();
+        let subpx = ((pos - base) * 8.0) as i32;
+        let offset = match subpx {
+            1..=2 => Self::Quarter,
+            3..=4 => Self::Half,
+            5..=6 => Self::ThreeQuarters,
+            _ => Self::Zero,
+        };
+        (base as i32, offset)
+    }
+
+    fn to_f32(self) -> f32 {
+        match self {
+            Self::Zero => 0.0,
+            Self::Quarter => 0.25,
+            Self::Half => 0.5,
+            Self::ThreeQuarters => 0.75,
+        }
     }
 }
 
@@ -96,7 +172,7 @@ impl Engine {
         style: &ComputedTextStyle,
         constraints: TextLayoutConstraints,
     ) -> Size<f32> {
-        size_for_par(&self.layout_text(text, style, constraints))
+        size_for_par(&TextLayouter::layout_text(self, text, style, constraints))
     }
 
     fn layout_text_uncached(
@@ -144,6 +220,78 @@ impl TextLayouter for Engine {
     }
 }
 
+impl TextLayoutBackend for Engine {
+    type Layout = Arc<Par>;
+    type GlyphKey = NativeGlyphKey;
+
+    fn layout_text(
+        &mut self,
+        text: &str,
+        style: &ComputedTextStyle,
+        constraints: TextLayoutConstraints,
+    ) -> Self::Layout {
+        TextLayouter::layout_text(self, text, style, constraints)
+    }
+
+    fn layout_size(&self, layout: &Self::Layout) -> Size<f32> {
+        size_for_par(layout)
+    }
+
+    fn visit_layout_glyphs(
+        &self,
+        layout: &Self::Layout,
+        origin: Point,
+        scale_factor: f32,
+        visitor: &mut dyn FnMut(PositionedGlyph<Self::GlyphKey>),
+    ) {
+        for line in layout.lines() {
+            let baseline_y = origin.y + line.baseline();
+            let mut pen_x = origin.x + line.offset();
+
+            for run in line.runs() {
+                let font = run.font().clone();
+                let font_id = font.cache_key();
+                let font_size = run.font_size() * scale_factor;
+                let font_size_bits = font_size.to_bits();
+                let coords = run.normalized_coords().to_vec();
+
+                for cluster in run.visual_clusters() {
+                    for glyph in cluster.glyphs() {
+                        let x = (pen_x + glyph.x) * scale_factor;
+                        let y = (baseline_y - glyph.y) * scale_factor;
+                        pen_x += glyph.advance;
+
+                        let (physical_x, subpx_x) = SubpixelOffset::quantize(x);
+                        let (physical_y, subpx_y) = SubpixelOffset::quantize(y);
+                        visitor(PositionedGlyph {
+                            key: NativeGlyphKey {
+                                font: font.clone(),
+                                font_id,
+                                glyph_id: glyph.id,
+                                subpx: [subpx_x, subpx_y],
+                                font_size_bits,
+                                coords: coords.clone(),
+                            },
+                            physical_x,
+                            physical_y,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    fn rasterize_glyph(&mut self, key: &Self::GlyphKey) -> Option<GlyphBitmap> {
+        rasterize_swash_glyph(
+            key.font.as_ref(),
+            key.glyph_id,
+            f32::from_bits(key.font_size_bits),
+            &key.coords,
+            Vector::new(key.subpx[0].to_f32(), key.subpx[1].to_f32()),
+        )
+    }
+}
+
 impl TextMeasurer for Engine {
     fn measure_text(&mut self, text: &str, style: &ComputedTextStyle) -> Size<f32> {
         self.measure_text_style(text, style)
@@ -176,6 +324,61 @@ fn size_for_par(par: &Par) -> Size<f32> {
     }
 
     Size::<f32>::new(width, height)
+}
+
+fn rasterize_swash_glyph(
+    font: FontRef<'_>,
+    glyph_id: GlyphId,
+    font_size: f32,
+    coords: &[NormalizedCoord],
+    offset: Vector,
+) -> Option<GlyphBitmap> {
+    let mut context = ScaleContext::new();
+    let mut image = swash::scale::image::Image::new();
+    let mut scaler = context
+        .builder(font)
+        .hint(cfg!(not(target_os = "macos")))
+        .size(font_size)
+        .normalized_coords(coords)
+        .build();
+
+    let embolden = if cfg!(target_os = "macos") { 0.25 } else { 0.0 };
+
+    if !Render::new(RASTER_SOURCES)
+        .format(Format::CustomSubpixel([0.3, 0.0, -0.3]))
+        .offset(offset)
+        .embolden(embolden)
+        .render_into(&mut scaler, glyph_id, &mut image)
+    {
+        return None;
+    }
+
+    let placement = image.placement;
+    Some(GlyphBitmap {
+        is_rgba: matches!(image.content, SwashContent::Color),
+        data: rgba_bitmap_data(image.content, &image.data),
+        width: placement.width as u32,
+        height: placement.height as u32,
+        placement: GlyphPlacement {
+            left: placement.left,
+            top: placement.top,
+            width: placement.width as u32,
+            height: placement.height as u32,
+        },
+    })
+}
+
+fn rgba_bitmap_data(content: SwashContent, data: &[u8]) -> Vec<u8> {
+    match content {
+        SwashContent::Mask => {
+            let mut rgba = Vec::with_capacity(data.len() * 4);
+            for alpha in data {
+                rgba.extend_from_slice(&[*alpha, *alpha, *alpha, *alpha]);
+            }
+            rgba
+        }
+        SwashContent::Color | SwashContent::SubpixelMask => data.to_vec(),
+    }
 }
 
 fn span_styles_for_style(style: &ComputedTextStyle) -> Vec<SpanStyle<'static>> {

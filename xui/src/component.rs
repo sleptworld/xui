@@ -10,6 +10,7 @@ use crate::tree::UiArena;
 use crate::widgets::{ComponentRender, WidgetI};
 use crate::{ComponentDesc, ElementDesc};
 use rustc_hash::FxHashMap;
+use slot::Runtime;
 use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::fmt;
@@ -17,6 +18,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use taffy as tf;
 use xui_interface::{DirtyFlags, EventHandlers, NodeId};
+use xui_text::par::Run;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct WipId(usize);
@@ -567,7 +569,9 @@ impl ComponentRuntime {
                 .as_ref()
                 .is_some_and(|work| work.next_work.is_some())
             {
-                self.perform_unit_of_work(theme);
+                Runtime::with_phase(slot::RenderPhase::Effect, || {
+                    self.perform_unit_of_work(theme)
+                });
                 let more_work = self
                     .work_in_progress
                     .as_ref()

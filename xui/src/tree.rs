@@ -42,6 +42,7 @@ pub struct Node {
     pub paint_cache: Vec<PaintCommand>,
     pub widget: WidgetI,
     pub event_handlers: EventHandlerSet,
+    // Text
 }
 
 struct PaintTraceNode {
@@ -447,19 +448,26 @@ impl UiArena {
             cursor = self.nodes[parent].parent;
         }
 
-        let mut scroll_offset = Point::zero();
+        let mut total_scroll_offset = Point::zero();
+        for ancestor in &ancestors {
+            let node = &self.nodes[*ancestor];
+            if node.computed_style.scroll.direction.is_scrollable() {
+                total_scroll_offset.x += node.scroll_offset.x;
+                total_scroll_offset.y += node.scroll_offset.y;
+            }
+        }
+        rect.x -= total_scroll_offset.x;
+        rect.y -= total_scroll_offset.y;
+
+        let mut clip_scroll_offset = Point::zero();
         for ancestor in ancestors.into_iter().rev() {
             let node = &self.nodes[ancestor];
             let scrollable = node.computed_style.scroll.direction.is_scrollable();
-            if scrollable {
-                rect.x -= node.scroll_offset.x;
-                rect.y -= node.scroll_offset.y;
-            }
 
             if node.computed_style.paint.clip || scrollable {
                 let clip = Rect::new(
-                    node.layout.x - scroll_offset.x,
-                    node.layout.y - scroll_offset.y,
+                    node.layout.x - clip_scroll_offset.x,
+                    node.layout.y - clip_scroll_offset.y,
                     node.layout.width,
                     node.layout.height,
                 );
@@ -467,8 +475,8 @@ impl UiArena {
             }
 
             if scrollable {
-                scroll_offset.x += node.scroll_offset.x;
-                scroll_offset.y += node.scroll_offset.y;
+                clip_scroll_offset.x += node.scroll_offset.x;
+                clip_scroll_offset.y += node.scroll_offset.y;
             }
         }
 
@@ -577,9 +585,26 @@ impl UiArena {
         let old_layout = node.layout;
         let node = self.nodes.get_mut(id).expect("checked node existence");
         node.scroll_offset = next;
-        self.add_node_damage(id, old_layout);
+        self.add_scroll_damage(id, old_layout);
         self.mark_dirty(id, DirtyFlags::PAINT);
         true
+    }
+
+    fn add_scroll_damage(&mut self, id: NodeId, rect: Rect) {
+        self.add_node_damage(id, rect);
+
+        let mut cursor = self.nodes.get(id).and_then(|node| node.parent);
+        while let Some(parent) = cursor {
+            let node = &self.nodes[parent];
+            let layout = node.layout;
+            let next_parent = node.parent;
+            let needs_damage = node.computed_style.paint.clip
+                || node.computed_style.scroll.direction.is_scrollable();
+            if needs_damage {
+                self.add_node_damage(parent, layout);
+            }
+            cursor = next_parent;
+        }
     }
 
     pub fn event_path(&self, target: NodeId) -> Vec<NodeId> {
@@ -1499,5 +1524,114 @@ mod scroll_behavior_tests {
 
         assert!(arena.scroll_node_by(scroller, Point::new(0.0, -48.0)));
         assert_eq!(arena.node(scroller).unwrap().scroll_offset.y, 48.0);
+    }
+
+    #[test]
+    fn dirty_scroll_container_damage_uses_viewport_rect() {
+        let mut arena = UiArena::new();
+        let root = arena.root();
+        let scroller = arena.insert(
+            root,
+            ContainerWidget::new().style(Style::new().scroll_vertical()),
+            tf::Style::default(),
+        );
+
+        arena.node_mut(root).unwrap().layout = Rect::new(0.0, 0.0, 200.0, 200.0);
+        arena.node_mut(scroller).unwrap().layout = Rect::new(10.0, 20.0, 80.0, 40.0);
+        arena.node_mut(scroller).unwrap().scroll_offset = Point::new(0.0, 30.0);
+        arena.finish_paint();
+
+        arena.mark_dirty(scroller, DirtyFlags::PAINT);
+
+        assert_eq!(
+            arena.prepare_paint_commands().0.rects(),
+            &[Rect::new(10.0, 20.0, 80.0, 40.0)]
+        );
+    }
+
+    #[test]
+    fn dirty_nested_child_damage_uses_all_ancestor_scroll_offsets() {
+        let mut arena = UiArena::new();
+        let root = arena.root();
+        let outer = arena.insert(
+            root,
+            ContainerWidget::new().style(Style::new().scroll_vertical()),
+            tf::Style::default(),
+        );
+        let inner = arena.insert(
+            outer,
+            ContainerWidget::new().style(Style::new().scroll_vertical()),
+            tf::Style::default(),
+        );
+        let child = arena.insert(inner, ContainerWidget::new(), tf::Style::default());
+
+        arena.node_mut(root).unwrap().layout = Rect::new(0.0, 0.0, 200.0, 200.0);
+        arena.node_mut(outer).unwrap().layout = Rect::new(0.0, 20.0, 100.0, 100.0);
+        arena.node_mut(outer).unwrap().scroll_offset = Point::new(0.0, 30.0);
+        arena.node_mut(inner).unwrap().layout = Rect::new(0.0, 70.0, 80.0, 80.0);
+        arena.node_mut(inner).unwrap().scroll_offset = Point::new(0.0, 10.0);
+        arena.node_mut(child).unwrap().layout = Rect::new(0.0, 90.0, 40.0, 40.0);
+        arena.finish_paint();
+
+        arena.mark_dirty(child, DirtyFlags::PAINT);
+
+        assert_eq!(
+            arena.prepare_paint_commands().0.rects(),
+            &[Rect::new(0.0, 50.0, 40.0, 40.0)]
+        );
+    }
+
+    #[test]
+    fn dirty_child_visible_after_inner_scroll_is_not_clipped_by_root_layout_position() {
+        let mut arena = UiArena::new();
+        let root = arena.root();
+        let scroller = arena.insert(
+            root,
+            ContainerWidget::new().style(Style::new().scroll_vertical()),
+            tf::Style::default(),
+        );
+        let child = arena.insert(scroller, ContainerWidget::new(), tf::Style::default());
+
+        arena.node_mut(root).unwrap().layout = Rect::new(0.0, 0.0, 200.0, 100.0);
+        arena.node_mut(scroller).unwrap().layout = Rect::new(0.0, 0.0, 180.0, 90.0);
+        arena.node_mut(scroller).unwrap().scroll_offset = Point::new(0.0, 80.0);
+        arena.node_mut(child).unwrap().layout = Rect::new(0.0, 132.0, 80.0, 40.0);
+        arena.finish_paint();
+
+        arena.mark_dirty(child, DirtyFlags::PAINT);
+
+        assert_eq!(
+            arena.prepare_paint_commands().0.rects(),
+            &[Rect::new(0.0, 52.0, 80.0, 38.0)]
+        );
+    }
+
+    #[test]
+    fn nested_scroll_invalidates_scrollable_ancestor_gutters() {
+        let mut arena = UiArena::new();
+        let root = arena.root();
+        let scroller = arena.insert(
+            root,
+            ContainerWidget::new().style(Style::new().scroll_vertical()),
+            tf::Style::default(),
+        );
+        let child = arena.insert(scroller, ContainerWidget::new(), tf::Style::default());
+
+        arena.node_mut(root).unwrap().layout = Rect::new(0.0, 0.0, 200.0, 100.0);
+        arena
+            .node_mut(root)
+            .unwrap()
+            .computed_style
+            .scroll
+            .direction = xui_interface::ScrollDirectionStyle::Both;
+        arena.node_mut(scroller).unwrap().layout = Rect::new(0.0, 0.0, 192.0, 92.0);
+        arena.node_mut(scroller).unwrap().content_size = Size::<f32>::new(192.0, 200.0);
+        arena.node_mut(child).unwrap().layout = Rect::new(0.0, 0.0, 100.0, 200.0);
+        arena.finish_paint();
+
+        assert!(arena.scroll_node_by(child, Point::new(0.0, -48.0)));
+
+        let (damage, _commands) = arena.prepare_paint_commands();
+        assert!(damage.rects().contains(&Rect::new(0.0, 0.0, 200.0, 100.0)));
     }
 }

@@ -74,7 +74,7 @@ impl Sizing {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Size<P> {
+pub struct Size<P = f32> {
     pub width: P,
     pub height: P,
 }

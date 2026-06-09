@@ -67,7 +67,6 @@ enum NodeDispatch<'a> {
 
 pub fn dispatch_event(arena: &mut UiArena, event: &Event) -> EventResult {
     update_hover(arena, event);
-
     let target = resolve_target(arena, event);
     if matches!(
         event,
@@ -83,6 +82,7 @@ pub fn dispatch_event(arena: &mut UiArena, event: &Event) -> EventResult {
     if !result.is_consumed() {
         if let Event::Wheel { delta, .. } = event {
             if arena.scroll_node_by(target, *delta) {
+                update_hover(arena, event);
                 return EventResult::Consumed;
             }
         }
@@ -315,7 +315,7 @@ mod tests {
 
     use taffy::prelude as tf;
     use xui_interface::{
-        Color, ComputedColorStyle, DirtyFlags, EventHandlers, NodeId, Point, Rect,
+        Color, ComputedColorStyle, DirtyFlags, EventHandlers, NodeId, Point, Rect, Size,
     };
 
     use super::*;
@@ -579,13 +579,11 @@ mod tests {
         assert!(!*child_reached.borrow());
         assert_eq!(arena.focused_node(), Some(parent));
         assert_eq!(arena.pointer_capture_node(), Some(parent));
-        assert!(
-            arena
-                .node(parent)
-                .unwrap()
-                .dirty
-                .contains(DirtyFlags::PAINT)
-        );
+        assert!(arena
+            .node(parent)
+            .unwrap()
+            .dirty
+            .contains(DirtyFlags::PAINT));
     }
 
     #[test]
@@ -742,6 +740,41 @@ mod tests {
     }
 
     #[test]
+    fn wheel_scroll_recomputes_hover_at_pointer_position() {
+        let mut arena = UiArena::new();
+        let root = arena.root();
+        let parent = arena.insert(
+            root,
+            crate::widgets::ContainerWidget::new().style(crate::Style::new().scroll_vertical()),
+            tf::Style::default(),
+        );
+        let child = arena.insert(
+            parent,
+            crate::widgets::ContainerWidget::new(),
+            tf::Style::default(),
+        );
+
+        arena.node_mut(root).unwrap().layout = Rect::new(0.0, 0.0, 100.0, 100.0);
+        arena.node_mut(parent).unwrap().layout = Rect::new(0.0, 0.0, 80.0, 40.0);
+        arena.node_mut(parent).unwrap().content_size = Size::<f32>::new(80.0, 120.0);
+        arena.node_mut(child).unwrap().layout = Rect::new(0.0, 50.0, 40.0, 40.0);
+
+        arena.dispatch_event(&Event::PointerMove {
+            position: Point::new(5.0, 25.0),
+        });
+        assert_eq!(arena.hovered_node(), Some(parent));
+
+        let result = arena.dispatch_event(&Event::Wheel {
+            position: Point::new(5.0, 25.0),
+            delta: Point::new(0.0, -30.0),
+        });
+
+        assert_eq!(result, EventResult::Consumed);
+        assert_eq!(arena.node(parent).unwrap().scroll_offset.y, 30.0);
+        assert_eq!(arena.hovered_node(), Some(child));
+    }
+
+    #[test]
     fn hover_change_notifies_widget_without_registered_handler() {
         let mut arena = UiArena::new();
         let root = arena.root();
@@ -765,13 +798,11 @@ mod tests {
             button.hovered
         });
         assert!(hovered);
-        assert!(
-            arena
-                .node(button)
-                .unwrap()
-                .dirty
-                .contains(DirtyFlags::PAINT)
-        );
+        assert!(arena
+            .node(button)
+            .unwrap()
+            .dirty
+            .contains(DirtyFlags::PAINT));
 
         arena.dispatch_event(&Event::PointerMove {
             position: Point::new(80.0, 80.0),

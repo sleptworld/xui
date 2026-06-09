@@ -223,10 +223,12 @@ where
         }
     }
 
+    #[inline(always)]
     fn logical_size(&self, size: PhysicalSize<u32>) -> Size<f32> {
         Self::logical_size_at_scale(size, self.scale_factor())
     }
 
+    #[inline(always)]
     fn scale_factor(&self) -> f32 {
         self.window
             .as_ref()
@@ -234,6 +236,7 @@ where
             .unwrap_or(1.0)
     }
 
+    #[inline(always)]
     fn logical_size_at_scale(size: PhysicalSize<u32>, scale: f32) -> Size<f32> {
         let scale = scale.max(f32::EPSILON);
         Size::<f32>::new(size.width as f32 / scale, size.height as f32 / scale)

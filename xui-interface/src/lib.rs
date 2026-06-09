@@ -33,4 +33,7 @@ pub use text::{
     TextBoxStyle, TextContent, TextDecoration, TextLayoutConstraints, TextOverflow, TextProps,
     TextStyle, TextVerticalAlign, WhiteSpace,
 };
-pub use widget::{Component, Key, NodeId, NodeLifecycleEvent, TextMeasurer, Widget, WidgetType};
+pub use widget::{
+    Component, GlyphBitmap, GlyphPlacement, Key, NodeId, NodeLifecycleEvent, PositionedGlyph,
+    TextLayoutBackend, TextMeasurer, Widget, WidgetType,
+};

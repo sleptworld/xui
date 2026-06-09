@@ -1,22 +1,20 @@
-use std::sync::Arc;
+use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
 use etagere::{Allocation, AllocatorOptions};
 use etagere::{BucketedAtlasAllocator, Size};
 use glam::{Vec2, Vec3};
 use wgpu::util::DeviceExt;
 use xui_interface::{
-    Color, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, DamageRegion,
-    PaintCommand, Point, Rect, RenderBackend, TextPaintCommand,
+    Color, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, DamageRegion, GlyphBitmap,
+    GlyphPlacement, PaintCommand, Point, Rect, RenderBackend, TextLayoutBackend, TextPaintCommand,
 };
-use xui_text::atlas::{FontRenderBackend, GlyphAtlas, RendedGlyphBitmap};
-use xui_text::engine::TextLayouter;
-use xui_text::typ::TextRunStyle;
 
 use crate::sdf::UI_SHADER_WGSL;
+use crate::text_cache::WinitTextEngine;
 
 pub type WgpuBackendError = Box<dyn std::error::Error + Send + Sync>;
 
-pub struct WGPUBackend {
+pub struct WGPUBackend<T: TextLayoutBackend = WinitTextEngine> {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     surface: wgpu::Surface<'static>,
@@ -29,12 +27,13 @@ pub struct WGPUBackend {
     ui_bind_group: wgpu::BindGroup,
     glyph_bind_group: wgpu::BindGroup,
     atlas: Atlas,
-    glyph_atlas: GlyphAtlas<AllocInfo>,
+    glyph_cache: GlyphTextureCache<T::GlyphKey>,
     last_text_glyph_records: Vec<TextGlyphRecord>,
     scene: SceneTexture,
     scene_needs_clear: bool,
     presented_frame: bool,
     scale_factor: f32,
+    _text: PhantomData<fn() -> T>,
 }
 
 const SHAPE_RECT: f32 = 0.0;
@@ -129,7 +128,7 @@ impl GlyphInstance {
     }
 }
 
-impl WGPUBackend {
+impl<T: TextLayoutBackend> WGPUBackend<T> {
     pub fn new(window: Arc<winit::window::Window>) -> Self {
         pollster::block_on(Self::new_(window))
     }
@@ -333,7 +332,7 @@ impl WGPUBackend {
             ),
         ];
 
-        let glyph_atlas = GlyphAtlas::new();
+        let glyph_cache = GlyphTextureCache::new();
         let scene = SceneTexture::new(&device, &config);
 
         Self {
@@ -349,12 +348,13 @@ impl WGPUBackend {
             ui_bind_group,
             glyph_bind_group,
             atlas,
-            glyph_atlas,
+            glyph_cache,
             last_text_glyph_records: Vec::new(),
             scene,
             scene_needs_clear: true,
             presented_frame: false,
             scale_factor: scale_factor as f32,
+            _text: PhantomData,
         }
     }
 }
@@ -451,7 +451,7 @@ impl Atlas {
     fn handle_allocation(
         &mut self,
         queue: &wgpu::Queue,
-        bitmap: &RendedGlyphBitmap,
+        bitmap: &GlyphBitmap,
     ) -> Result<AllocInfo, crate::error::Error> {
         if let Some(alloc) = self
             .allocator
@@ -491,12 +491,7 @@ impl Atlas {
         ))
     }
 
-    fn write_glyph_to_texture(
-        &self,
-        queue: &wgpu::Queue,
-        bitmap: &RendedGlyphBitmap,
-        alloc: Allocation,
-    ) {
+    fn write_glyph_to_texture(&self, queue: &wgpu::Queue, bitmap: &GlyphBitmap, alloc: Allocation) {
         let layer = self.current_layer;
 
         queue.write_texture(
@@ -525,7 +520,29 @@ impl Atlas {
     }
 }
 
-impl<T: TextLayouter> RenderBackend<T> for WGPUBackend {
+struct GlyphTextureCache<K> {
+    glyphs: HashMap<K, Option<(AllocInfo, GlyphPlacement)>>,
+}
+
+impl<K> GlyphTextureCache<K> {
+    fn new() -> Self {
+        Self {
+            glyphs: HashMap::new(),
+        }
+    }
+}
+
+impl<K: Eq + std::hash::Hash> GlyphTextureCache<K> {
+    fn get(&self, key: &K) -> Option<&Option<(AllocInfo, GlyphPlacement)>> {
+        self.glyphs.get(key)
+    }
+
+    fn insert(&mut self, key: K, value: Option<(AllocInfo, GlyphPlacement)>) {
+        self.glyphs.insert(key, value);
+    }
+}
+
+impl<T: TextLayoutBackend> RenderBackend<T> for WGPUBackend<T> {
     type Error = WgpuBackendError;
 
     fn begin_frame(&mut self, size: xui_interface::Size<f32>) -> Result<(), Self::Error> {
@@ -575,7 +592,6 @@ impl<T: TextLayouter> RenderBackend<T> for WGPUBackend {
             logical_scene_size.width,
             logical_scene_size.height,
         ));
-        let physical_scene_clip = scene_clip.scale(self.scale_factor);
         let (instances, glyph_instances, text_glyph_records) =
             self.build_ui_instances(commands, scene_clip, text)?;
         self.last_text_glyph_records = text_glyph_records;
@@ -661,14 +677,6 @@ impl<T: TextLayouter> RenderBackend<T> for WGPUBackend {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            let has_draws = instance_buffer.is_some() || glyph_instance_buffer.is_some();
-            if has_draws {
-                if let Some(scissor) =
-                    scissor_rect(physical_scene_clip, self.config.width, self.config.height)
-                {
-                    pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
-                }
-            }
 
             if let Some(instance_buffer) = &instance_buffer {
                 pass.set_pipeline(&self.render_pipeline);
@@ -721,8 +729,8 @@ impl<T: TextLayouter> RenderBackend<T> for WGPUBackend {
     }
 }
 
-impl WGPUBackend {
-    fn build_ui_instances<T: TextLayouter>(
+impl<T: TextLayoutBackend> WGPUBackend<T> {
+    fn build_ui_instances(
         &mut self,
         commands: &[PaintCommand],
         viewport_clip: Rect,
@@ -840,7 +848,7 @@ impl WGPUBackend {
         Ok((instances, glyph_instances, text_glyph_records))
     }
 
-    fn push_text_glyph_records<T: TextLayouter>(
+    fn push_text_glyph_records(
         &mut self,
         command: &TextPaintCommand,
         rect: Rect,
@@ -859,85 +867,82 @@ impl WGPUBackend {
             return Ok(());
         }
 
-        println!("Layouting text with style: {:?}", rect);
-
-        let par = if let Some(par) = text.get_cached_layout(command.node_id) {
-            par
+        let layout = if let Some(layout) = text.get_cached_layout(command.node_id) {
+            layout
         } else {
             return Ok(());
         };
 
         let scale = 1. / self.scale_factor;
-        for line in par.lines() {
-            let baseline_y = rect.y + line.baseline();
-            let mut pen_x = rect.x + line.offset();
-
-            for run in line.runs() {
-                let style = TextRunStyle {
-                    font: run.font().as_ref(),
-                    font_coords: run.normalized_coords(),
-                    font_size: run.font_size() * self.scale_factor,
-                    baseline: baseline_y,
-                    advance: run.advance(),
-                };
-                let mut writer = WgpuGlyphWriter {
-                    queue: &self.queue,
-                    atlas: &mut self.atlas,
-                };
-                let mut session = self.glyph_atlas.session(&style, &mut writer);
-                let subpx_bias = Point::new(0.125, 0.0);
-
-                for cluster in run.visual_clusters() {
-                    for glyph in cluster.glyphs() {
-                        let origin_x = pen_x + glyph.x;
-                        let origin_y = baseline_y - glyph.y;
-                        pen_x += glyph.advance;
-
-                        let Some((alloc, placement)) = session.get(glyph.id, origin_x, origin_y)
-                        else {
-                            continue;
-                        };
-                        if placement.width == 0 || placement.height == 0 {
-                            continue;
-                        }
-
-                        let screen_rect = Rect::new(
-                            (origin_x + subpx_bias.x).floor() + (placement.left as f32 * scale),
-                            (origin_y + subpx_bias.y).floor() - (placement.top as f32 * scale),
-                            placement.width as f32 * scale,
-                            placement.height as f32 * scale,
-                        );
-                        if intersect_rect(clip, screen_rect).is_none() {
-                            continue;
-                        }
-
-                        let record = TextGlyphRecord {
-                            screen_rect,
-                            clip,
-                            color: command.props.style.color,
-                            atlas_origin: alloc.origin,
-                            atlas_layer: alloc.layer,
-                            atlas_size: alloc.total_size,
-                            atlas_rect: Rect::new(
-                                alloc.origin.x,
-                                alloc.origin.y,
-                                placement.width as f32,
-                                placement.height as f32,
-                            ),
-                        };
-                        push_glyph_instance(glyph_instances, &record);
-                        records.push(record);
-                    }
-                }
-            }
-        }
-        println!(
-            "{} glyphs in text '{}'",
-            records.len(),
-            command.props.text.as_str()
+        let mut positioned_glyphs = Vec::new();
+        text.visit_layout_glyphs(
+            &layout,
+            Point::new(rect.x, rect.y),
+            self.scale_factor,
+            &mut |glyph| positioned_glyphs.push(glyph),
         );
 
+        for glyph in positioned_glyphs {
+            let Some((alloc, placement)) = self.glyph_allocation(text, &glyph.key)? else {
+                continue;
+            };
+            if placement.width == 0 || placement.height == 0 {
+                continue;
+            }
+
+            let screen_rect = Rect::new(
+                (glyph.physical_x + placement.left) as f32 * scale,
+                (glyph.physical_y - placement.top) as f32 * scale,
+                placement.width as f32 * scale,
+                placement.height as f32 * scale,
+            );
+            if intersect_rect(clip, screen_rect).is_none() {
+                continue;
+            }
+
+            let record = TextGlyphRecord {
+                screen_rect,
+                clip,
+                color: command.props.style.color,
+                atlas_origin: alloc.origin,
+                atlas_layer: alloc.layer,
+                atlas_size: alloc.total_size,
+                atlas_rect: Rect::new(
+                    alloc.origin.x,
+                    alloc.origin.y,
+                    placement.width as f32,
+                    placement.height as f32,
+                ),
+            };
+            push_glyph_instance(glyph_instances, &record);
+            records.push(record);
+        }
         Ok(())
+    }
+
+    fn glyph_allocation(
+        &mut self,
+        text: &mut T,
+        key: &T::GlyphKey,
+    ) -> Result<Option<(AllocInfo, GlyphPlacement)>, WgpuBackendError> {
+        if let Some(cached) = self.glyph_cache.get(key) {
+            return Ok(*cached);
+        }
+
+        let value = if let Some(bitmap) = text.rasterize_glyph(key) {
+            if bitmap.width == 0 || bitmap.height == 0 {
+                None
+            } else {
+                Some((
+                    self.atlas.handle_allocation(&self.queue, &bitmap)?,
+                    bitmap.placement,
+                ))
+            }
+        } else {
+            None
+        };
+        self.glyph_cache.insert(key.clone(), value);
+        Ok(value)
     }
 }
 
@@ -1394,15 +1399,6 @@ fn intersect_rect(a: Rect, b: Rect) -> Option<Rect> {
     (x1 > x0 && y1 > y0).then(|| Rect::new(x0, y0, x1 - x0, y1 - y0))
 }
 
-fn scissor_rect(rect: Rect, width: u32, height: u32) -> Option<(u32, u32, u32, u32)> {
-    let x0 = rect.x.floor().max(0.0).min(width as f32) as u32;
-    let y0 = rect.y.floor().max(0.0).min(height as f32) as u32;
-    let x1 = (rect.x + rect.width).ceil().max(0.0).min(width as f32) as u32;
-    let y1 = (rect.y + rect.height).ceil().max(0.0).min(height as f32) as u32;
-
-    (x1 > x0 && y1 > y0).then_some((x0, y0, x1 - x0, y1 - y0))
-}
-
 fn rect_to_array(rect: Rect) -> [f32; 4] {
     [rect.x, rect.y, rect.width, rect.height]
 }
@@ -1418,26 +1414,11 @@ pub struct AllocInfo {
     pub origin: Vec2,
 }
 
-struct WgpuGlyphWriter<'a> {
-    queue: &'a wgpu::Queue,
-    atlas: &'a mut Atlas,
-}
-
-impl FontRenderBackend for WgpuGlyphWriter<'_> {
-    type Error = crate::error::Error;
-    type Allocation = AllocInfo;
-
-    fn write_bitmap(
-        &mut self,
-        bitmap: &xui_text::atlas::RendedGlyphBitmap,
-    ) -> Result<Self::Allocation, Self::Error> {
-        self.atlas.handle_allocation(self.queue, bitmap)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{CosmicTextEngine, WinitTextEngine};
+    use xui_interface::RenderBackend;
 
     fn assert_array_near(actual: [f32; 4], expected: [f32; 4]) {
         for (actual, expected) in actual.into_iter().zip(expected) {
@@ -1470,6 +1451,21 @@ mod tests {
         )
         .validate(&module)
         .expect("glyph.wgsl should validate");
+    }
+
+    #[test]
+    fn cosmic_text_engine_matches_wgpu_backend_bounds() {
+        fn assert_backend<T, B>()
+        where
+            T: TextLayoutBackend,
+            B: RenderBackend<T>,
+        {
+        }
+
+        assert_backend::<
+            WinitTextEngine<CosmicTextEngine>,
+            WGPUBackend<WinitTextEngine<CosmicTextEngine>>,
+        >();
     }
 
     #[test]

@@ -73,6 +73,68 @@ pub trait TextMeasurer {
     fn handle_node_lifecycle(&mut self, _event: &NodeLifecycleEvent) {}
 }
 
+pub trait TextLayoutBackend: TextMeasurer {
+    type Layout: Clone;
+    type GlyphKey: Clone + Eq + Hash;
+
+    fn layout_text(
+        &mut self,
+        text: &str,
+        style: &ComputedTextStyle,
+        constraints: TextLayoutConstraints,
+    ) -> Self::Layout;
+
+    fn layout_node_text(
+        &mut self,
+        _node_id: NodeId,
+        text: &str,
+        style: &ComputedTextStyle,
+        constraints: TextLayoutConstraints,
+    ) -> Self::Layout {
+        self.layout_text(text, style, constraints)
+    }
+
+    fn get_cached_layout(&self, _node_id: NodeId) -> Option<Self::Layout> {
+        None
+    }
+
+    fn layout_size(&self, layout: &Self::Layout) -> Size<f32>;
+
+    fn visit_layout_glyphs(
+        &self,
+        layout: &Self::Layout,
+        origin: crate::Point,
+        scale_factor: f32,
+        visitor: &mut dyn FnMut(PositionedGlyph<Self::GlyphKey>),
+    );
+
+    fn rasterize_glyph(&mut self, key: &Self::GlyphKey) -> Option<GlyphBitmap>;
+}
+
+#[derive(Clone, Debug)]
+pub struct PositionedGlyph<K> {
+    pub key: K,
+    pub physical_x: i32,
+    pub physical_y: i32,
+}
+
+#[derive(Clone, Debug)]
+pub struct GlyphBitmap {
+    pub is_rgba: bool,
+    pub data: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub placement: GlyphPlacement,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GlyphPlacement {
+    pub left: i32,
+    pub top: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
 pub trait Widget: Debug {
     fn node_type(&self) -> WidgetType;
 

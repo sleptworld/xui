@@ -3,14 +3,16 @@ use std::sync::Arc;
 
 use xui_interface::{
     Color, ComputedTextStyle, FontFamily, FontStyle, FontWeight, LineHeight, NodeId,
-    NodeLifecycleEvent, Size, TextDecoration, TextLayoutConstraints, TextMeasurer,
+    NodeLifecycleEvent, PositionedGlyph, Size, TextDecoration, TextLayoutBackend,
+    TextLayoutConstraints, TextMeasurer,
 };
-use xui_text::engine::{Engine, TextLayouter};
-use xui_text::par::Par;
+use xui_text::engine::Engine;
+use xui_interface::GlyphBitmap;
+use crate::CosmicTextEngine;
 
-pub struct WinitTextEngine<T = Engine> {
+pub struct WinitTextEngine<T: TextLayoutBackend = Engine> {
     inner: T,
-    layout_cache: HashMap<NodeId, CachedNodeLayout>,
+    layout_cache: HashMap<NodeId, CachedNodeLayout<T::Layout>>,
 }
 
 impl WinitTextEngine<Engine> {
@@ -19,7 +21,13 @@ impl WinitTextEngine<Engine> {
     }
 }
 
-impl<T> WinitTextEngine<T> {
+impl WinitTextEngine<CosmicTextEngine> {
+    pub fn new() -> Self {
+        Self::with_layouter(CosmicTextEngine::new())
+    }
+}
+
+impl<T: TextLayoutBackend> WinitTextEngine<T> {
     pub fn with_layouter(inner: T) -> Self {
         Self {
             inner,
@@ -58,7 +66,7 @@ impl Default for WinitTextEngine<Engine> {
     }
 }
 
-impl<T: TextLayouter> TextMeasurer for WinitTextEngine<T> {
+impl<T: TextLayoutBackend> TextMeasurer for WinitTextEngine<T> {
     fn measure_text(&mut self, text: &str, props: &ComputedTextStyle) -> Size<f32> {
         self.inner.measure_text(text, props)
     }
@@ -94,24 +102,28 @@ impl<T: TextLayouter> TextMeasurer for WinitTextEngine<T> {
         props: &ComputedTextStyle,
         constraints: TextLayoutConstraints,
     ) -> Size<f32> {
-        let par = self.layout_node_text(node_id, text, props, constraints);
-        size_for_par(&par)
+        let layout = self.layout_node_text(node_id, text, props, constraints);
+        self.inner.layout_size(&layout)
     }
 
     fn handle_node_lifecycle(&mut self, event: &NodeLifecycleEvent) {
         if let NodeLifecycleEvent::Removed(id) = event {
             self.layout_cache.remove(id);
         }
+        self.inner.handle_node_lifecycle(event);
     }
 }
 
-impl<T: TextLayouter> TextLayouter for WinitTextEngine<T> {
+impl<T: TextLayoutBackend> TextLayoutBackend for WinitTextEngine<T> {
+    type Layout = T::Layout;
+    type GlyphKey = T::GlyphKey;
+
     fn layout_text(
         &mut self,
         text: &str,
         style: &ComputedTextStyle,
         constraints: TextLayoutConstraints,
-    ) -> Arc<Par> {
+    ) -> Self::Layout {
         self.inner.layout_text(text, style, constraints)
     }
 
@@ -121,36 +133,57 @@ impl<T: TextLayouter> TextLayouter for WinitTextEngine<T> {
         text: &str,
         style: &ComputedTextStyle,
         constraints: TextLayoutConstraints,
-    ) -> Arc<Par> {
+    ) -> Self::Layout {
         let key = TextLayoutKey::new(text, style, constraints);
         if let Some(cached) = self.layout_cache.get(&node_id) {
             if cached.key == key {
-                return Arc::clone(&cached.par);
+                return cached.layout.clone();
             }
         }
 
-        let par = self.inner.layout_text(text, style, constraints);
+        let layout = self
+            .inner
+            .layout_node_text(node_id, text, style, constraints);
         self.layout_cache.insert(
             node_id,
             CachedNodeLayout {
                 key,
-                par: Arc::clone(&par),
+                layout: layout.clone(),
             },
         );
-        par
+        layout
     }
 
-    fn get_cached_layout(&self, node_id: NodeId) -> Option<Arc<Par>> {
+    fn get_cached_layout(&self, node_id: NodeId) -> Option<Self::Layout> {
         self.layout_cache
             .get(&node_id)
-            .map(|cached| Arc::clone(&cached.par))
+            .map(|cached| cached.layout.clone())
+    }
+
+    fn layout_size(&self, layout: &Self::Layout) -> Size<f32> {
+        self.inner.layout_size(layout)
+    }
+
+    fn visit_layout_glyphs(
+        &self,
+        layout: &Self::Layout,
+        origin: xui_interface::Point,
+        scale_factor: f32,
+        visitor: &mut dyn FnMut(PositionedGlyph<Self::GlyphKey>),
+    ) {
+        self.inner
+            .visit_layout_glyphs(layout, origin, scale_factor, visitor);
+    }
+
+    fn rasterize_glyph(&mut self, key: &Self::GlyphKey) -> Option<GlyphBitmap> {
+        self.inner.rasterize_glyph(key)
     }
 }
 
 #[derive(Clone)]
-struct CachedNodeLayout {
+struct CachedNodeLayout<L> {
     key: TextLayoutKey,
-    par: Arc<Par>,
+    layout: L,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -249,25 +282,15 @@ impl From<LineHeight> for LineHeightKey {
     }
 }
 
-fn size_for_par(par: &Par) -> Size<f32> {
-    let mut width: f32 = 0.0;
-    let mut height = 0.0;
-    for line in par.lines() {
-        width = width.max(line.advance_without_trailing_whitespace());
-        height += line.size();
-    }
-
-    Size::<f32>::new(width, height)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CosmicTextEngine;
     use xui_interface::TextStyle;
 
     #[test]
     fn node_layout_reuses_cached_par_for_same_key() {
-        let mut text = WinitTextEngine::new();
+        let mut text = WinitTextEngine::<Engine>::new();
         let node_id = NodeId::default();
         let style: ComputedTextStyle = TextStyle::default().into();
 
@@ -282,7 +305,7 @@ mod tests {
 
     #[test]
     fn removed_node_releases_cached_par() {
-        let mut text = WinitTextEngine::new();
+        let mut text = WinitTextEngine::<Engine>::new();
         let node_id = NodeId::default();
         let style: ComputedTextStyle = TextStyle::default().into();
 
@@ -290,5 +313,22 @@ mod tests {
         text.handle_node_lifecycle(&NodeLifecycleEvent::Removed(node_id));
 
         assert_eq!(text.cached_layout_count(), 0);
+    }
+
+    #[test]
+    fn forwards_node_cache_and_lifecycle_to_inner_backend() {
+        let mut text = WinitTextEngine::with_layouter(CosmicTextEngine::new());
+        let node_id = NodeId::default();
+        let style: ComputedTextStyle = TextStyle::default().into();
+
+        text.layout_node_text(node_id, "cached", &style, TextLayoutConstraints::UNBOUNDED);
+
+        assert_eq!(text.cached_layout_count(), 1);
+        assert_eq!(text.inner().cached_node_count(), 1);
+
+        text.handle_node_lifecycle(&NodeLifecycleEvent::Removed(node_id));
+
+        assert_eq!(text.cached_layout_count(), 0);
+        assert_eq!(text.inner().cached_node_count(), 0);
     }
 }
