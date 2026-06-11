@@ -66,7 +66,7 @@ impl Atlas {
         &self.view
     }
 
-    fn handle_allocation(
+    pub fn handle_allocation(
         &mut self,
         queue: &wgpu::Queue,
         bitmap: &GlyphBitmap,

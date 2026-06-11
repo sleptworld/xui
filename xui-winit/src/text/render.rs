@@ -1,17 +1,18 @@
-use wgpu::{BindGroupLayout, util::DeviceExt};
+use wgpu::{BindGroup, BindGroupLayout, util::DeviceExt, wgc::device};
+use xui::{Color, Rect};
+use xui_interface::widget::PType;
 
 use crate::{
     text::atlas::Atlas,
-    wgpu::{PType, SCENE_FORMAT, TextGlyphRecord},
+    wgpu::{ SCENE_FORMAT, TextGlyphRecord},
 };
 
-const GLYPH_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
-    0 => Uint32,
-    1 => Float32x4,
-    2 => Float32,
-    3 => Float32x3,
+const GLYPH_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+    0 => Float32x4,
+    1 => Float32,
+    2 => Float32x3,
+    3 => Float32x4,
     4 => Float32x4,
-    5 => Float32x4,
 ];
 
 #[repr(C)]
@@ -34,13 +35,57 @@ impl GlyphInstance {
     }
 }
 
-pub struct GlyphBuffer {
+struct GlyphBuffer {
     buffer: wgpu::Buffer,
     size: u64,
     len: usize,
 }
 
-impl GlyphBuffer {}
+impl GlyphBuffer {
+    fn new<S: Sized>(device: &wgpu::Device, size: u64) -> Self {
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("xui glyph instance buffer"),
+            size: size * std::mem::size_of::<S>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        Self {
+            buffer,
+            size,
+            len: 0,
+        }
+    }
+
+    fn copy_to_buffer(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        glyphs: Vec<GlyphInstance>,
+    ) {
+        if glyphs.is_empty() {
+            self.len = 0;
+            return;
+        }
+
+        if glyphs.len() as u64 > self.size {
+            let new_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("xui glyph instance buffer"),
+                contents: bytemuck::cast_slice(&glyphs),
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            });
+            self.buffer = new_buffer;
+            self.size = glyphs.len() as u64;
+            self.len = glyphs.len();
+        } else {
+            queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(&glyphs));
+            self.len = glyphs.len();
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+}
 
 pub struct GlyphRender {
     subpixel_pipelines: [wgpu::RenderPipeline; 3],
@@ -51,9 +96,9 @@ pub struct GlyphRender {
     glyph_bind_group: wgpu::BindGroup,
 
     // Instance Buffer
-    buffer: wgpu::Buffer,
-    buffer_size: u64,
-    buffer_len: usize,
+    subpixel_buffer: GlyphBuffer,
+    mask_buffer: GlyphBuffer,
+    color_buffer: GlyphBuffer,
 }
 
 impl GlyphRender {
@@ -143,7 +188,7 @@ impl GlyphRender {
             &glyph_pipeline_layout,
             &glyph_shader,
             "xui glyph mask render pipeline",
-            "fs_main_mask",
+            "fs_mask",
         );
 
         let color_pipeline = create_mask_glyph_pipeline(
@@ -151,15 +196,12 @@ impl GlyphRender {
             &glyph_pipeline_layout,
             &glyph_shader,
             "xui glyph color render pipeline",
-            "fs_main_color",
+            "fs_rgb",
         );
 
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("xui glyph instance buffer"),
-            size: (size_of::<GlyphInstance>() * 10000) as wgpu::BufferAddress,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let mask_buffer = GlyphBuffer::new::<GlyphInstance>(&device, 1000);
+        let color_buffer = GlyphBuffer::new::<GlyphInstance>(&device, 1000);
+        let subpixel_buffer = GlyphBuffer::new::<GlyphInstance>(&device, 1000);
 
         Self {
             subpixel_pipelines,
@@ -167,45 +209,91 @@ impl GlyphRender {
             color_pipeline,
             glyph_bind_group_layout,
             glyph_bind_group,
-            buffer,
-
-            buffer_size: 10000,
-            buffer_len: 0,
+            subpixel_buffer,
+            mask_buffer,
+            color_buffer,
         }
     }
 
-    pub fn deal_glyphs(&mut self, glyphs: Vec<TextGlyphRecord>) {
-        for glyph in glyphs {
-            match glyph.ptype {
-                PType::Mask => {}
-                PType::SubPixelMask => {}
-                PType::Color => {}
-            }
-        }
-    }
-
-    fn copy_to_buffer(
+    pub fn deal_glyphs(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        glyphs: Vec<GlyphInstance>,
+        glyphs: &Vec<TextGlyphRecord>,
     ) {
-        if glyphs.is_empty() {
-            return;
+        let mut subpixel_glyphs = Vec::new();
+        let mut mask_glyphs = Vec::new();
+        let mut color_glyphs = Vec::new();
+        for glyph in glyphs {
+            if glyph.screen_rect.width <= 0.0
+                || glyph.screen_rect.height <= 0.0
+                || glyph.clip.width <= 0.0
+                || glyph.clip.height <= 0.0
+                || glyph.color.a <= 0.0
+                || glyph.atlas_size.x <= 0.0
+                || glyph.atlas_size.y <= 0.0
+                || glyph.atlas_size.z <= 0.0
+            {
+                continue;
+            }
+
+            let glyph_instant = GlyphInstance {
+                bounds: rect_to_array(glyph.screen_rect),
+                layer: glyph.atlas_layer as f32 / glyph.atlas_size.z,
+                padding: [0.0; 3],
+                uv: [
+                    glyph.atlas_rect.x / glyph.atlas_size.x,
+                    glyph.atlas_rect.y / glyph.atlas_size.y,
+                    glyph.atlas_rect.width / glyph.atlas_size.x,
+                    glyph.atlas_rect.height / glyph.atlas_size.y,
+                ],
+                color: color_to_array(glyph.color),
+            };
+            match glyph.ptype {
+                PType::Mask => {
+                    mask_glyphs.push(glyph_instant);
+                }
+                PType::SubPixelMask => {
+                    subpixel_glyphs.push(glyph_instant);
+                }
+                PType::Color => {
+                    color_glyphs.push(glyph_instant);
+                }
+            }
         }
 
-        if glyphs.len() as u64 > self.buffer_size {
-            let new_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("xui glyph instance buffer"),
-                contents: bytemuck::cast_slice(&glyphs),
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            });
-            self.buffer = new_buffer;
-            self.buffer_size = glyphs.len() as u64;
-            self.buffer_len = glyphs.len();
-        } else {
-            queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(&glyphs));
-            self.buffer_len = glyphs.len();
+        self.mask_buffer.copy_to_buffer(device, queue, mask_glyphs);
+        self.color_buffer
+            .copy_to_buffer(device, queue, color_glyphs);
+        self.subpixel_buffer
+            .copy_to_buffer(device, queue, subpixel_glyphs);
+    }
+
+    pub fn render(&self, pass: &mut wgpu::RenderPass, tool_bind_group: &BindGroup) {
+        if self.mask_buffer.len() > 0 {
+            pass.set_pipeline(&self.mask_pipeline);
+            pass.set_bind_group(0, tool_bind_group, &[]);
+            pass.set_bind_group(1, &self.glyph_bind_group, &[]);
+            pass.set_vertex_buffer(0, self.mask_buffer.buffer.slice(..));
+            pass.draw(0..4, 0..self.mask_buffer.len() as u32);
+        }
+
+        if self.subpixel_buffer.len() > 0 {
+            for c in &self.subpixel_pipelines {
+                pass.set_pipeline(c);
+                pass.set_bind_group(0, tool_bind_group, &[]);
+                pass.set_bind_group(1, &self.glyph_bind_group, &[]);
+                pass.set_vertex_buffer(0, self.subpixel_buffer.buffer.slice(..));
+                pass.draw(0..4, 0..self.subpixel_buffer.len() as u32);
+            }
+        }
+
+        if self.color_buffer.len() > 0 {
+            pass.set_pipeline(&self.color_pipeline);
+            pass.set_bind_group(0, tool_bind_group, &[]);
+            pass.set_bind_group(1, &self.glyph_bind_group, &[]);
+            pass.set_vertex_buffer(0, self.color_buffer.buffer.slice(..));
+            pass.draw(0..4, 0..self.color_buffer.len() as u32);
         }
     }
 }
@@ -284,7 +372,7 @@ fn create_mask_glyph_pipeline(
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format: SCENE_FORMAT,
-                blend: None,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
@@ -299,4 +387,12 @@ fn create_mask_glyph_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+fn rect_to_array(rect: Rect) -> [f32; 4] {
+    [rect.x, rect.y, rect.width, rect.height]
+}
+
+fn color_to_array(color: Color) -> [f32; 4] {
+    [color.r, color.g, color.b, color.a]
 }

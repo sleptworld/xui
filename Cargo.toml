@@ -8,6 +8,7 @@ members = [
     "xui-example-app",
     "xui-text",
     "xui-components",
+    "xui-animation",
     "slot",
 ]
 

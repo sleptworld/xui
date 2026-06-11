@@ -1,15 +1,15 @@
 use std::{collections::HashMap, marker::PhantomData, sync::Arc};
-
-use etagere::{Allocation, AllocatorOptions};
-use etagere::{BucketedAtlasAllocator, Size};
 use glam::{Vec2, Vec3};
 use wgpu::util::DeviceExt;
+use xui_interface::widget::PType;
 use xui_interface::{
     Color, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, DamageRegion, GlyphBitmap,
     GlyphPlacement, PaintCommand, Point, Rect, RenderBackend, TextLayoutBackend, TextPaintCommand,
 };
 
 use crate::sdf::UI_SHADER_WGSL;
+use crate::text::atlas::Atlas;
+use crate::text::render::GlyphRender;
 use crate::text_cache::WinitTextEngine;
 
 pub type WgpuBackendError = Box<dyn std::error::Error + Send + Sync>;
@@ -23,7 +23,10 @@ pub struct WGPUBackend<T: TextLayoutBackend = WinitTextEngine> {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
-    glyph_pipelines: [wgpu::RenderPipeline; 3],
+    // Glyph
+    glyph_render: GlyphRender,
+    atlas: Atlas,
+    last_text_glyph_records: Vec<TextGlyphRecord>,
     // Composite State
     composite_pipeline: wgpu::RenderPipeline,
     composite_bind_group_layout: wgpu::BindGroupLayout,
@@ -32,10 +35,6 @@ pub struct WGPUBackend<T: TextLayoutBackend = WinitTextEngine> {
     // Common Tools
     ui_uniform_buffer: wgpu::Buffer,
     ui_bind_group: wgpu::BindGroup,
-    glyph_bind_group: wgpu::BindGroup,
-    atlas: Atlas,
-    glyph_cache: GlyphTextureCache<T::GlyphKey>,
-    last_text_glyph_records: Vec<TextGlyphRecord>,
     scene: SceneTexture,
     scene_needs_clear: bool,
     presented_frame: bool,
@@ -90,19 +89,11 @@ struct UiInstance {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GlyphInstance {
-    ptype: u32,
     bounds: [f32; 4],
     layer: f32,
     padding: [f32; 3],
     uv: [f32; 4],
     color: [f32; 4],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PType {
-    Mask,
-    SubPixelMask,
-    Color,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -220,6 +211,7 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
         });
 
         let atlas = Atlas::new(&device);
+        let glyph_render = GlyphRender::new(&device, &atlas, &ui_bind_group_layout);
 
         let composite_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -330,7 +322,6 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
             cache: None,
         });
 
-        let glyph_cache = GlyphTextureCache::new();
         let scene = SceneTexture::new(&device, &config);
         let composite_bind_group = create_composite_bind_group(
             &device,
@@ -347,16 +338,14 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
             queue,
             config,
             render_pipeline,
-            glyph_pipelines,
             composite_pipeline,
             composite_bind_group_layout,
             composite_sampler,
             composite_bind_group,
             ui_uniform_buffer,
             ui_bind_group,
-            glyph_bind_group,
+            glyph_render,
             atlas,
-            glyph_cache,
             last_text_glyph_records: Vec::new(),
             scene,
             scene_needs_clear: true,
@@ -514,7 +503,7 @@ impl<T: TextLayoutBackend> RenderBackend<T> for WGPUBackend<T> {
             logical_scene_size.width,
             logical_scene_size.height,
         ));
-        let (instances, glyph_instances, text_glyph_records) =
+        let (instances, text_glyph_records) =
             self.build_ui_instances(commands, scene_clip, text)?;
         self.last_text_glyph_records = text_glyph_records;
 
@@ -570,14 +559,8 @@ impl<T: TextLayoutBackend> RenderBackend<T> for WGPUBackend<T> {
                     usage: wgpu::BufferUsages::VERTEX,
                 })
         });
-        let glyph_instance_buffer = (!glyph_instances.is_empty()).then(|| {
-            self.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("xui glyph instances"),
-                    contents: bytemuck::cast_slice(&glyph_instances),
-                    usage: wgpu::BufferUsages::VERTEX,
-                })
-        });
+
+        self.glyph_render.deal_glyphs(&self.device, &self.queue, &self.last_text_glyph_records);
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -613,15 +596,7 @@ impl<T: TextLayoutBackend> RenderBackend<T> for WGPUBackend<T> {
                 pass.draw(0..6, 0..instances.len() as u32);
             }
 
-            if let Some(glyph_instance_buffer) = &glyph_instance_buffer {
-                for pipeline in &self.glyph_pipelines {
-                    pass.set_pipeline(pipeline);
-                    pass.set_bind_group(0, &self.ui_bind_group, &[]);
-                    pass.set_bind_group(1, &self.glyph_bind_group, &[]);
-                    pass.set_vertex_buffer(0, glyph_instance_buffer.slice(..));
-                    pass.draw(0..4, 0..glyph_instances.len() as u32);
-                }
-            }
+            self.glyph_render.render(&mut pass, &self.ui_bind_group);
         }
         self.scene_needs_clear = false;
 
@@ -668,9 +643,8 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
         commands: &[PaintCommand],
         viewport_clip: Rect,
         text: &mut T,
-    ) -> Result<(Vec<UiInstance>, Vec<GlyphInstance>, Vec<TextGlyphRecord>), WgpuBackendError> {
+    ) -> Result<(Vec<UiInstance>, Vec<TextGlyphRecord>), WgpuBackendError> {
         let mut instances = Vec::new();
-        let mut glyph_instances = Vec::new();
         let mut text_glyph_records = Vec::new();
         let mut transform_stack = vec![Point::new(0.0, 0.0)];
         let mut clip_stack = vec![viewport_clip];
@@ -739,7 +713,6 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
                         clip,
                         text,
                         &mut text_glyph_records,
-                        &mut glyph_instances,
                     )?;
                 }
                 PaintCommand::PushClip(rect) => {
@@ -778,7 +751,7 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
             }
         }
 
-        Ok((instances, glyph_instances, text_glyph_records))
+        Ok((instances, text_glyph_records))
     }
 
     fn push_text_glyph_records(
@@ -788,7 +761,6 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
         clip: Rect,
         text: &mut T,
         records: &mut Vec<TextGlyphRecord>,
-        glyph_instances: &mut Vec<GlyphInstance>,
     ) -> Result<(), WgpuBackendError> {
         if rect.width <= 0.0
             || rect.height <= 0.0
@@ -848,7 +820,6 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
                     placement.height as f32,
                 ),
             };
-            push_glyph_instance(glyph_instances, &record);
             records.push(record);
         }
         Ok(())
@@ -858,10 +829,7 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
         &mut self,
         text: &mut T,
         key: &T::GlyphKey,
-    ) -> Result<Option<(AllocInfo, GlyphPlacement, u32)>, WgpuBackendError> {
-        if let Some(cached) = self.glyph_cache.get(key) {
-            return Ok(*cached);
-        }
+    ) -> Result<Option<(AllocInfo, GlyphPlacement, PType)>, WgpuBackendError> {
 
         let value = if let Some(bitmap) = text.rasterize_glyph(key) {
             if bitmap.width == 0 || bitmap.height == 0 {
@@ -876,7 +844,6 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
         } else {
             None
         };
-        self.glyph_cache.insert(key.clone(), value);
         Ok(value)
     }
 }
@@ -1185,33 +1152,6 @@ fn push_line_instance(
     });
 }
 
-fn push_glyph_instance(instances: &mut Vec<GlyphInstance>, record: &TextGlyphRecord) {
-    if record.screen_rect.width <= 0.0
-        || record.screen_rect.height <= 0.0
-        || record.clip.width <= 0.0
-        || record.clip.height <= 0.0
-        || record.color.a <= 0.0
-        || record.atlas_size.x <= 0.0
-        || record.atlas_size.y <= 0.0
-        || record.atlas_size.z <= 0.0
-    {
-        return;
-    }
-
-    instances.push(GlyphInstance {
-        ptype: record.ptype,
-        bounds: rect_to_array(record.screen_rect),
-        layer: record.atlas_layer as f32 / record.atlas_size.z,
-        padding: [0.0; 3],
-        uv: [
-            record.atlas_rect.x / record.atlas_size.x,
-            record.atlas_rect.y / record.atlas_size.y,
-            record.atlas_rect.width / record.atlas_size.x,
-            record.atlas_rect.height / record.atlas_size.y,
-        ],
-        color: color_to_array(record.color),
-    });
-}
 
 fn current_transform(stack: &[Point]) -> Point {
     stack.last().copied().unwrap_or_default()

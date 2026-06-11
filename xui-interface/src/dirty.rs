@@ -7,6 +7,7 @@ bitflags::bitflags! {
         const LAYOUT = 1 << 3;
         const PAINT = 1 << 4;
         const TREE = 1 << 5;
+        const ANIMATE = 1 << 6;
     }
 }
 

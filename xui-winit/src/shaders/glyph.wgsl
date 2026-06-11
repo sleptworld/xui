@@ -105,16 +105,15 @@ fn gamma_params(color: vec4f) -> vec3f {
 }
 
 @fragment
-fn fs_main_mask(input: VertexOutput) -> @location(0) vec4f {
-    let mask = textureSample(atlas_texture, f_sampler, input.uv);
-    let a = mask.r * input.color.a;
-    return vec4f(input.color.rgb, a);
+fn fs_mask(input: VertexOutput) -> @location(0) vec4f {
+    let mask = textureSample(atlas_texture, f_sampler, input.uv).a * input.color.a;
+    return vec4f(input.color.rgb, mask);
 }
 
 @fragment
 fn fs_rgb(input: VertexOutput) -> @location(0) vec4f {
     let mask = textureSample(atlas_texture, f_sampler, input.uv);
-    return mask;
+    return vec4f(mask.rgb, input.color.a * mask.a);
 }
 
 @fragment

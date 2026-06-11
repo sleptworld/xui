@@ -1,7 +1,7 @@
 use crate::element::ElementDesc;
 use xui_interface::{
-    ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, FlexDirectionStyle,
-    Key, PaintCommand, Rect, Size, Style, Widget, WidgetType,
+    ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, PaintCommand,
+    Rect, Size, Style, Widget, WidgetType,
 };
 
 use super::{props_hash, widget_element_desc};

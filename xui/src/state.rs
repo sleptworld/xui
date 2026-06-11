@@ -9,7 +9,7 @@ use slot::unsync::Slot;
 use slot::{Pointer, RenderPhase as SlotRenderPhase, Runtime as SlotRuntime, Scope};
 
 use crate::fiber::FiberId;
-use crate::lanes::{Lane, LaneRoot, Lanes, NO_LANES, current_update_lane, includes_some_lane};
+use crate::lanes::{current_update_lane, includes_some_lane, Lane, LaneRoot, Lanes, NO_LANES};
 
 type HookKey = (FiberId, usize);
 type HookApply = Box<dyn FnOnce(&dyn Any)>;
@@ -383,7 +383,7 @@ mod tests {
     use std::rc::Rc;
 
     use crate::fiber::FiberArena;
-    use crate::lanes::{SYNC_LANE, with_update_lane};
+    use crate::lanes::{with_update_lane, SYNC_LANE};
     use xui_interface::{DirtyFlags, EventPhase, EventRequests};
 
     use super::*;
@@ -434,7 +434,7 @@ mod tests {
         let copied = state;
 
         assert_eq!(state, copied);
-        assert_eq!(copied.get(), 7);
+        assert_eq!(*copied.get(), 7);
     }
 
     #[test]
@@ -447,12 +447,12 @@ mod tests {
         let first = render_state(&mut storage, owner, scheduler.clone(), || 1);
         with_update_lane(SYNC_LANE, || first.set(2));
 
-        assert_eq!(first.get(), 1);
+        assert_eq!(*first.get(), 1);
 
         let second = render_state(&mut storage, owner, scheduler, || 99);
 
-        assert_eq!(second.get(), 2);
-        assert_eq!(first.get(), 2);
+        assert_eq!(*second.get(), 2);
+        assert_eq!(*first.get(), 2);
     }
 
     #[test]
@@ -470,8 +470,8 @@ mod tests {
 
         let (next_count, next_label) = render_two_states(&mut storage, owner, scheduler);
 
-        assert_eq!(next_count.get(), 5);
-        assert_eq!(next_label.get(), "second");
+        assert_eq!(*next_count.get(), 5);
+        assert_eq!(*next_label.get(), "second");
     }
 
     #[test]

@@ -6,6 +6,7 @@ use swash::{
     scale::{Render, ScaleContext, Source, StrikeWith, image::Content as SwashContent},
     zeno::{Format, Vector},
 };
+use xui_interface::widget::PType;
 use xui_interface::{
     ComputedTextStyle, FontFamily, FontStyle as XuiFontStyle, FontWeight as XuiFontWeight,
     GlyphBitmap, GlyphPlacement, LineHeight, NodeId, Point, PositionedGlyph, Size,
@@ -371,17 +372,17 @@ fn rasterize_swash_glyph(
     })
 }
 
-fn rgba_bitmap_data(content: SwashContent, data: &[u8]) -> (Vec<u8>, u32) {
+fn rgba_bitmap_data(content: SwashContent, data: &[u8]) -> (Vec<u8>, PType) {
     match content {
         SwashContent::Mask => {
             let mut rgba = Vec::with_capacity(data.len() * 4);
             for alpha in data {
                 rgba.extend_from_slice(&[*alpha, *alpha, *alpha, *alpha]);
             }
-            (rgba, 0)
+            (rgba, PType::Mask)
         }
-        SwashContent::SubpixelMask => (data.to_vec(), 1),
-        SwashContent::Color => (data.to_vec(), 2),
+        SwashContent::SubpixelMask => (data.to_vec(), PType::SubPixelMask),
+        SwashContent::Color => (data.to_vec(), PType::Color),
     }
 }
 

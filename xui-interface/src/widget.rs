@@ -118,10 +118,17 @@ pub struct PositionedGlyph<K> {
     pub physical_y: i32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PType {
+    Mask,
+    SubPixelMask,
+    Color,
+}
+
 #[derive(Clone, Debug)]
 pub struct GlyphBitmap {
     /// 0: Mask 1: Subpixel Mask 2: Color
-    pub ptype: u32,
+    pub ptype: PType,
     pub data: Vec<u8>,
     pub width: u32,
     pub height: u32,

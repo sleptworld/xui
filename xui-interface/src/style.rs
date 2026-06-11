@@ -1,8 +1,11 @@
-use std::hash::{Hash, Hasher};
+use std::{
+    hash::{Hash, Hasher},
+    time::Duration,
+};
 
 use crate::{
-    Color, EdgeInsets, FontFamily, FontStyle, FontWeight, LineHeight, Point, Size, TextDecoration,
-    core::Sizing, text::TextStyle,
+    core::Sizing, event::EventTrigger, text::TextStyle, Color, EdgeInsets, FontFamily, FontStyle,
+    FontWeight, LineHeight, Point, Size, TextDecoration,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -732,6 +735,132 @@ impl Style {
         merge_layout(&mut self.layout, &other.layout);
         merge_paint(&mut self.paint, &other.paint);
         merge_scroll(&mut self.scroll, &other.scroll);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AnimationEasing {
+    Linear,
+    QuadIn,
+    QuadOut,
+    QuadInOut,
+    CubicIn,
+    CubicOut,
+    CubicInOut,
+    QuartIn,
+    QuartOut,
+    QuartInOut,
+    QuintIn,
+    QuintOut,
+    QuintInOut,
+    SineIn,
+    SineOut,
+    SineInOut,
+}
+
+impl Default for AnimationEasing {
+    fn default() -> Self {
+        Self::Linear
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AnimationTransition {
+    pub duration: Duration,
+    pub delay: Duration,
+    pub easing: AnimationEasing,
+}
+
+impl AnimationTransition {
+    pub fn new(duration: Duration) -> Self {
+        Self {
+            duration,
+            delay: Duration::ZERO,
+            easing: AnimationEasing::default(),
+        }
+    }
+
+    pub fn delay(mut self, delay: Duration) -> Self {
+        self.delay = delay;
+        self
+    }
+
+    pub fn ease(mut self, easing: AnimationEasing) -> Self {
+        self.easing = easing;
+        self
+    }
+}
+
+impl Default for AnimationTransition {
+    fn default() -> Self {
+        Self::new(Duration::ZERO)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Hash)]
+pub struct StyleAnimation {
+    pub trigger: EventTrigger,
+    pub style: Style,
+    pub transition: AnimationTransition,
+}
+
+impl StyleAnimation {
+    pub fn new(trigger: EventTrigger, style: Style, transition: AnimationTransition) -> Self {
+        Self {
+            trigger,
+            style,
+            transition,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Hash)]
+pub struct AnimatedStyle {
+    pub base: Style,
+    pub animations: Vec<StyleAnimation>,
+}
+
+impl AnimatedStyle {
+    pub fn new(base: Style) -> Self {
+        Self {
+            base,
+            animations: Vec::new(),
+        }
+    }
+
+    pub fn animation(
+        mut self,
+        trigger: EventTrigger,
+        style: Style,
+        transition: AnimationTransition,
+    ) -> Self {
+        self.animations
+            .push(StyleAnimation::new(trigger, style, transition));
+        self
+    }
+
+    pub fn on_hover(self, style: Style, transition: AnimationTransition) -> Self {
+        self.animation(EventTrigger::OnHover, style, transition)
+    }
+
+    pub fn on_hover_start(self, style: Style, transition: AnimationTransition) -> Self {
+        self.animation(EventTrigger::OnHoverStart, style, transition)
+    }
+
+    pub fn on_hover_end(self, style: Style, transition: AnimationTransition) -> Self {
+        self.animation(EventTrigger::OnHoverEnd, style, transition)
+    }
+
+    pub fn on_press(self, style: Style, transition: AnimationTransition) -> Self {
+        self.animation(EventTrigger::OnPress, style, transition)
+    }
+
+    pub fn on_focus(self, style: Style, transition: AnimationTransition) -> Self {
+        self.animation(EventTrigger::OnFocus, style, transition)
+    }
+
+    pub fn on_click(self, style: Style, transition: AnimationTransition) -> Self {
+        self.animation(EventTrigger::OnClick, style, transition)
     }
 }
 
@@ -1725,5 +1854,26 @@ mod tests {
         computed.apply(&initial, &Style::new().no_shadow(), &theme);
 
         assert_eq!(computed.paint.shadow, None);
+    }
+
+    #[test]
+    fn animated_style_records_event_triggered_style_animation() {
+        let transition = AnimationTransition::new(Duration::from_millis(120))
+            .delay(Duration::from_millis(20))
+            .ease(AnimationEasing::CubicOut);
+        let animated = AnimatedStyle::new(Style::new().background(Color::BLACK))
+            .on_hover(Style::new().background(Color::WHITE), transition);
+
+        assert_eq!(
+            animated.base.paint.background,
+            StyleValue::Value(ColorStyle::Solid(ColorValue::Color(Color::BLACK)))
+        );
+        assert_eq!(animated.animations.len(), 1);
+        assert_eq!(animated.animations[0].trigger, EventTrigger::OnHover);
+        assert_eq!(animated.animations[0].transition, transition);
+        assert_eq!(
+            animated.animations[0].style.paint.background,
+            StyleValue::Value(ColorStyle::Solid(ColorValue::Color(Color::WHITE)))
+        );
     }
 }

@@ -1,13 +1,16 @@
 use slotmap::SlotMap;
 use std::cell::Cell;
+use std::time::Duration;
 use taffy::prelude as tf;
 use xui_interface::render::Damage;
 use xui_interface::{
-    ComputedColorStyle, ComputedScrollbarStyle, ComputedStyle, ComputedTextStyle, DirtyFlags,
-    EventHandlers, NodeId, NodeLifecycleEvent, ScrollbarVisibilityStyle, TextContent,
-    TextLayoutConstraints, TextMeasurer, Theme, Translation,
+    AnimationTransition, ComputedColorStyle, ComputedScrollbarStyle, ComputedStyle,
+    ComputedTextStyle, DirtyFlags, EventHandlers, EventTrigger, NodeId, NodeLifecycleEvent,
+    ScrollbarVisibilityStyle, Style, TextContent, TextLayoutConstraints, TextMeasurer, Theme,
+    Translation,
 };
 
+use crate::animation::ActiveStyleAnimation;
 use crate::core::{Point, Rect, Size};
 use crate::event::{Event, EventHandlerSet, EventHandlerStore, EventResult};
 use crate::event_system::{self, EventState};
@@ -40,6 +43,8 @@ pub struct Node {
     pub old_props_hash: u64,
     pub new_props_hash: u64,
     pub computed_style: ComputedStyle,
+    pub animation_style: Style,
+    pub active_animations: Vec<ActiveStyleAnimation>,
     pub paint_cache: Vec<PaintCommand>,
     pub widget: WidgetI,
     pub event_handlers: EventHandlerSet,
@@ -77,10 +82,52 @@ impl Node {
             new_props_hash: props_hash,
             // style,
             computed_style,
+            animation_style: Style::new(),
+            active_animations: Vec::new(),
             paint_cache: Vec::new(),
             widget,
             event_handlers,
         }
+    }
+
+    fn start_style_animation(
+        &mut self,
+        trigger: EventTrigger,
+        from_style: Style,
+        to_style: Style,
+        transition: AnimationTransition,
+    ) {
+        self.active_animations
+            .retain(|animation| animation.trigger != trigger);
+        self.active_animations.push(ActiveStyleAnimation::new(
+            trigger, from_style, to_style, transition,
+        ));
+        self.refresh_animation_style();
+    }
+
+    fn tick_style_animations(&mut self, delta: Duration) -> bool {
+        let mut changed = false;
+        for animation in &mut self.active_animations {
+            changed |= animation.tick(delta);
+        }
+        if changed {
+            self.refresh_animation_style();
+        }
+        changed
+    }
+
+    fn has_running_style_animations(&self) -> bool {
+        self.active_animations
+            .iter()
+            .any(ActiveStyleAnimation::is_running)
+    }
+
+    fn refresh_animation_style(&mut self) {
+        let mut style = Style::new();
+        for animation in &self.active_animations {
+            style.merge(&animation.sample());
+        }
+        self.animation_style = style;
     }
 }
 
@@ -158,6 +205,41 @@ impl UiArena {
 
     pub fn node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
         self.nodes.get_mut(id)
+    }
+
+    pub fn start_style_animation(
+        &mut self,
+        id: NodeId,
+        trigger: EventTrigger,
+        from_style: Style,
+        to_style: Style,
+        transition: AnimationTransition,
+    ) {
+        let Some(node) = self.nodes.get_mut(id) else {
+            return;
+        };
+
+        node.start_style_animation(trigger, from_style, to_style, transition);
+        self.mark_dirty(id, DirtyFlags::ANIMATE);
+    }
+
+    pub fn tick_style_animations(&mut self, delta: Duration) -> bool {
+        let mut changed = Vec::new();
+        for (id, node) in self.nodes.iter_mut() {
+            if node.tick_style_animations(delta) {
+                changed.push(id);
+            }
+        }
+
+        for id in &changed {
+            self.mark_dirty(*id, DirtyFlags::ANIMATE);
+        }
+
+        !changed.is_empty()
+    }
+
+    pub fn has_running_style_animations(&self) -> bool {
+        self.nodes.values().any(Node::has_running_style_animations)
     }
 
     pub fn children(&self, id: NodeId) -> &[NodeId] {
@@ -401,7 +483,7 @@ impl UiArena {
             node.dirty |= flags;
             node.layout
         };
-        if flags.intersects(DirtyFlags::PAINT | DirtyFlags::STYLE) {
+        if flags.intersects(DirtyFlags::PAINT | DirtyFlags::STYLE | DirtyFlags::ANIMATE) {
             self.add_node_damage(id, rect);
         }
 
@@ -738,14 +820,14 @@ impl UiArena {
     }
 
     fn paint_dirty_flags() -> DirtyFlags {
-        DirtyFlags::PAINT | DirtyFlags::LAYOUT | DirtyFlags::STYLE
+        DirtyFlags::PAINT | DirtyFlags::LAYOUT | DirtyFlags::STYLE | DirtyFlags::ANIMATE
     }
 
     pub fn repaint_if_needed(&mut self, id: NodeId) {
-        let should_repaint = self.nodes.get(id).is_some_and(|node| {
-            node.dirty
-                .intersects(DirtyFlags::PAINT | DirtyFlags::LAYOUT | DirtyFlags::STYLE)
-        });
+        let should_repaint = self
+            .nodes
+            .get(id)
+            .is_some_and(|node| node.dirty.intersects(Self::paint_dirty_flags()));
         if !should_repaint {
             return;
         }
@@ -953,12 +1035,6 @@ impl UiArena {
         if damage.is_empty() {
             return (damage, commands);
         }
-        // let mut paint_region = DamageRegion::new();
-        // if let Some(bounds) = damage.bounds() {
-        //     paint_region.add(Damage::new(bounds, bounds));
-        // }
-
-        // println!("COLLECTING ====");
 
         self.paint_node(self.root, &damage, &mut commands);
         (damage, commands)
@@ -969,7 +1045,7 @@ impl UiArena {
         self.damage.clear();
         self.damage_nodes.clear();
         for (_, node) in self.nodes.iter_mut() {
-            node.dirty.remove(DirtyFlags::PAINT);
+            node.dirty.remove(DirtyFlags::PAINT | DirtyFlags::ANIMATE);
         }
     }
 
@@ -1039,6 +1115,7 @@ impl UiArena {
 
     pub fn is_dirty(&self) -> bool {
         !self.damage.is_empty()
+            || self.has_running_style_animations()
             || self
                 .nodes
                 .values()

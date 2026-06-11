@@ -1,3 +1,4 @@
+pub mod animation;
 pub mod app;
 pub mod component;
 pub mod core;

@@ -1,3 +1,4 @@
+use crate::ElementDesc;
 use crate::component::ComponentRuntime;
 use crate::core::Size;
 use crate::event::{Event, EventResult};
@@ -7,7 +8,6 @@ use crate::render::RenderBackend;
 use crate::state::{HookContext, Scheduler};
 use crate::style::Theme;
 use crate::tree::UiArena;
-use crate::ElementDesc;
 use std::time::Duration;
 use xui_interface::render::Damage;
 use xui_interface::{DirtyFlags, TextMeasurer};
@@ -85,15 +85,19 @@ impl App {
         result
     }
 
+    pub fn tick_style_animations(&mut self, delta: Duration) -> bool {
+        self.arena.tick_style_animations(delta)
+    }
+
     pub fn render<B: RenderBackend<T>, T: TextMeasurer>(
         &mut self,
         backend: &mut B,
         m: &mut T,
     ) -> Result<(), B::Error> {
-        if !self.rebuild_slice_if_needed() {
-            return Ok(());
+        if self.rebuild_slice_if_needed() {
+            self.flush_node_lifecycle(backend, m);
         }
-        self.flush_node_lifecycle(backend, m);
+
         self.arena.update_tree(self.arena.root(), self.size, m);
 
         let (damage, commands) = self.arena.prepare_paint_commands();

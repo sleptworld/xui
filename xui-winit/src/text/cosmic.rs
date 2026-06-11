@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use cosmic_text::{
     Attrs, Buffer, CacheKey, Family, FontSystem, LayoutGlyph, Metrics, Shaping,
-    Style as CosmicStyle, SwashCache, SwashContent, Weight,
+    Style as CosmicStyle, SwashCache, Weight,
 };
 use xui_interface::{
     ComputedTextStyle, FontFamily, FontStyle, FontWeight, GlyphBitmap, GlyphPlacement, LineHeight,

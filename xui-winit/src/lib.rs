@@ -1,4 +1,5 @@
 pub mod error;
+mod renders;
 mod runner;
 pub mod sdf;
 pub mod text;

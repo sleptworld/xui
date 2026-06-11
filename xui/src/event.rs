@@ -1,9 +1,9 @@
-use slotmap::{Key as SlotMapKey, SlotMap, new_key_type};
+use slotmap::{new_key_type, Key as SlotMapKey, SlotMap};
 
 pub use xui_interface::{
     ClickEventHandler, Event, EventContext, EventHandler, EventHandlers, EventPhase, EventRequest,
-    EventRequests, EventResult, HoverChangeEventHandler, InputKey as Key, KeyEventHandler,
-    PointerButton, PointerEventHandler,
+    EventRequests, EventResult, EventTrigger, HoverChangeEventHandler, InputKey as Key,
+    KeyEventHandler, PointerButton, PointerEventHandler,
 };
 
 new_key_type! {
