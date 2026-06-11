@@ -16,6 +16,9 @@ use crate::lanes::{Lanes, NO_LANES};
 use crate::render::PaintCommand;
 use crate::widgets::WidgetI;
 
+pub type ErasedProps = Rc<dyn Any>;
+pub type ErasedPropsRef<'a> = &'a dyn Any;
+
 new_key_type! {
     pub struct FiberId;
 }
@@ -34,9 +37,6 @@ impl ComponentType {
         self.0
     }
 }
-
-pub type ErasedProps = Rc<dyn Any>;
-pub type ErasedPropsRef<'a> = &'a dyn Any;
 
 pub struct FiberContext<'a> {
     node_id: FiberId,

@@ -24,7 +24,7 @@ pub struct WidgetDesc {
 pub struct ComponentDesc {
     pub key: Option<Key>,
     pub component_type: ComponentType,
-    pub props: ErasedProps,
+    pub props: Option<ErasedProps>,
     pub props_hash: u64,
     pub children: Vec<ElementDesc>,
 }
@@ -52,7 +52,7 @@ impl WidgetDesc {
 impl ComponentDesc {
     pub fn new(
         component_type: ComponentType,
-        props: ErasedProps,
+        props: Option<ErasedProps>,
         props_hash: u64,
         children: Vec<ElementDesc>,
     ) -> Self {

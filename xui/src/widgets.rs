@@ -444,7 +444,7 @@ pub fn root_widget() -> WidgetI {
 }
 
 pub fn component(render: ComponentType) -> ComponentDesc {
-    ComponentDesc::new(render, Rc::new(()), props_hash(&()), Vec::new())
+    ComponentDesc::new(render, None, 0, Vec::new())
 }
 
 pub(super) fn props_hash<T: Hash>(props: &T) -> u64 {
