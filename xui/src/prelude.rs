@@ -1,5 +1,5 @@
-pub use crate::animation::ActiveStyleAnimation;
-pub use crate::app::{app, App};
+pub use crate::animation::ActiveAnimation;
+pub use crate::app::{App, app};
 pub use crate::component::ComponentRuntime;
 pub use crate::core::{Color, EdgeInsets, Point, Rect, Size};
 pub use crate::element::{ComponentDesc, ElementDesc, WidgetDesc};
@@ -29,9 +29,9 @@ pub use crate::style::{
 };
 pub use crate::tree::UiArena;
 pub use crate::widgets::{
-    button, column, component, container, label, row, style_scope, text, ButtonWidget,
-    ColumnWidget, ContainerWidget, LabelWidget, RowWidget, StyleScopeWidget, TextWidget, Widget,
-    WidgetI, WithChildren,
+    ButtonWidget, ColumnWidget, ContainerWidget, LabelWidget, RowWidget, StyleScopeWidget,
+    TextWidget, Widget, WidgetI, WithChildren, button, column, component, container, label, row,
+    style_scope, text,
 };
 pub use xui_interface::{
     DirtyFlags, FontFamily, FontStyle, FontWeight, LineHeight, NodeId, OverflowWrap,

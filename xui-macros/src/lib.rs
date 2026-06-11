@@ -1,12 +1,14 @@
 mod tools;
 use proc_macro::TokenStream;
+use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Ident as TokenIdent, Span, TokenStream as TokenStream2, TokenTree};
 use quote::{ToTokens, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::{
-    Attribute as SynAttribute, Error, Expr, FnArg, Ident, LitStr, Pat, Result, ReturnType,
-    Signature, Token, Type, TypeReference, Visibility, braced, parse_macro_input, parse_quote,
+    Attribute as SynAttribute, Data, DeriveInput, Error, Expr, Fields, FnArg, Ident, LitStr, Pat,
+    Result, ReturnType, Signature, Token, Type, TypeReference, Visibility, braced,
+    parse_macro_input, parse_quote,
 };
 
 use crate::tools::{
@@ -39,6 +41,124 @@ pub fn component_fn(input: TokenStream) -> TokenStream {
     match expand_component_functions(&mut functions) {
         Ok(tokens) => tokens.into(),
         Err(error) => error.to_compile_error().into(),
+    }
+}
+
+#[proc_macro_derive(Animatable)]
+pub fn derive_animatable(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match expand_derive_animatable(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+fn expand_derive_animatable(input: &DeriveInput) -> Result<TokenStream2> {
+    let Data::Struct(data) = &input.data else {
+        return Err(Error::new(
+            input.span(),
+            "Animatable can only be derived for structs",
+        ));
+    };
+
+    let animatable_path = animatable_crate_path()?;
+    let field_types = data
+        .fields
+        .iter()
+        .map(|field| field.ty.clone())
+        .collect::<Vec<_>>();
+
+    let mut generics = input.generics.clone();
+    if !field_types.is_empty() {
+        let where_clause = generics.make_where_clause();
+        for field_type in &field_types {
+            where_clause
+                .predicates
+                .push(parse_quote!(#field_type: #animatable_path::Animatable));
+        }
+    }
+
+    let ident = &input.ident;
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
+    let body = expand_animatable_struct_body(&data.fields, &animatable_path)?;
+
+    Ok(quote! {
+        impl #impl_generics #animatable_path::Animatable for #ident #type_generics #where_clause {
+            fn interpolate(from: &Self, to: &Self, progress: f32) -> Self {
+                #body
+            }
+        }
+    })
+}
+
+fn animatable_crate_path() -> Result<TokenStream2> {
+    match crate_name("xui-animation") {
+        Ok(FoundCrate::Itself) => Ok(quote!(crate)),
+        Ok(FoundCrate::Name(name)) => {
+            let ident = TokenIdent::new(&name, Span::call_site());
+            Ok(quote!(::#ident))
+        }
+        Err(error) => Err(Error::new(
+            Span::call_site(),
+            format!("failed to find xui-animation dependency: {error}"),
+        )),
+    }
+}
+
+fn expand_animatable_struct_body(
+    fields: &Fields,
+    animatable_path: &TokenStream2,
+) -> Result<TokenStream2> {
+    match fields {
+        Fields::Named(fields) => {
+            let field_values = fields
+                .named
+                .iter()
+                .map(|field| {
+                    let ident = field
+                        .ident
+                        .as_ref()
+                        .expect("named fields always have identifiers");
+                    let ty = &field.ty;
+                    quote! {
+                        #ident: <#ty as #animatable_path::Animatable>::interpolate(
+                            &from.#ident,
+                            &to.#ident,
+                            progress,
+                        )
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            Ok(quote! {
+                Self {
+                    #(#field_values),*
+                }
+            })
+        }
+        Fields::Unnamed(fields) => {
+            let field_values = fields
+                .unnamed
+                .iter()
+                .enumerate()
+                .map(|(index, field)| {
+                    let index = syn::Index::from(index);
+                    let ty = &field.ty;
+                    quote! {
+                        <#ty as #animatable_path::Animatable>::interpolate(
+                            &from.#index,
+                            &to.#index,
+                            progress,
+                        )
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            Ok(quote! {
+                Self(#(#field_values),*)
+            })
+        }
+        Fields::Unit => Ok(quote!(Self)),
     }
 }
 

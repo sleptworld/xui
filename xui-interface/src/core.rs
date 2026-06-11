@@ -1,5 +1,5 @@
-use std::ops::{Add, Sub};
 use ordered_float::NotNan;
+use std::ops::{Add, Sub};
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Point {
@@ -79,19 +79,17 @@ pub struct Size<P = f32> {
 }
 
 impl Size<f32> {
-    pub const ZERO: Self = Self::new((0.0), (0.0));
+    pub const ZERO: Self = Self::new(0.0, 0.0);
+}
 
-    pub const fn new(width: f32, height: f32) -> Self {
+impl<T> Size<T> {
+    pub const fn new(width: T, height: T) -> Self {
         Self { width, height }
     }
 }
 
 impl Size<Sizing> {
     pub const ZERO: Self = Self::new(Sizing::Hug, Sizing::Hug);
-
-    pub const fn new(width: Sizing, height: Sizing) -> Self {
-        Self { width, height }
-    }
 
     pub fn fix(width: f32, height: f32) -> Self {
         Self {

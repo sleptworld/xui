@@ -7,3 +7,4 @@ edition = "2024"
 easer = "0.3.0"
 palette = "0.7.6"
 xui-interface = { path = "../xui-interface" }
+xui-macros = { path = "../xui-macros" }

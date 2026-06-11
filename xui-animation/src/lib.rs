@@ -7,6 +7,7 @@ use xui_interface::{
     LinearGradientStyle, Point, RadialGradientStyle, ScrollbarStyle, ShadowStyle, Size, Sizing,
     StrokeStyle, Style, StyleValue,
 };
+pub use xui_macros::Animatable;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Easing {
@@ -267,30 +268,30 @@ impl<T: Animatable> Tween<T> {
 
 pub type PropertyAnimation<T> = Tween<T>;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct AnimatedStyle {
-    tween: Tween<Style>,
-}
+// #[derive(Debug, Clone, PartialEq)]
+// pub struct AnimatedStyle {
+//     tween: Tween<Style>,
+// }
 
-impl AnimatedStyle {
-    pub fn new(from: Style, to: Style, transition: Transition) -> Self {
-        Self {
-            tween: Tween::new(from, to, transition),
-        }
-    }
+// impl AnimatedStyle {
+//     pub fn new(from: Style, to: Style, transition: Transition) -> Self {
+//         Self {
+//             tween: Tween::new(from, to, transition),
+//         }
+//     }
 
-    pub fn sample(&self, elapsed: Duration) -> Style {
-        self.tween.sample(elapsed)
-    }
+//     pub fn sample(&self, elapsed: Duration) -> Style {
+//         self.tween.sample(elapsed)
+//     }
 
-    pub fn sample_progress(&self, progress: f32) -> Style {
-        self.tween.sample_progress(progress)
-    }
+//     pub fn sample_progress(&self, progress: f32) -> Style {
+//         self.tween.sample_progress(progress)
+//     }
 
-    pub fn transition(&self) -> Transition {
-        self.tween.transition
-    }
-}
+//     pub fn transition(&self) -> Transition {
+//         self.tween.transition
+//     }
+// }
 
 impl Animatable for f32 {
     fn interpolate(from: &Self, to: &Self, progress: f32) -> Self {
@@ -437,53 +438,55 @@ impl Animatable for ScrollbarStyle {
     }
 }
 
-impl Animatable for Style {
-    fn interpolate(from: &Self, to: &Self, progress: f32) -> Self {
-        let mut style = Style::new();
+// impl Animatable for Style {
+//     fn interpolate(from: &Self, to: &Self, progress: f32) -> Self {
+//         let mut style = Style::new();
 
-        style.text.color = animate_target_value(&from.text.color, &to.text.color, progress);
-        style.text.font_family = to.text.font_family.clone();
-        style.text.font_size =
-            animate_target_value(&from.text.font_size, &to.text.font_size, progress);
-        style.text.font_weight = to.text.font_weight;
-        style.text.font_style = to.text.font_style;
-        style.text.line_height = to.text.line_height;
-        style.text.letter_spacing =
-            animate_target_value(&from.text.letter_spacing, &to.text.letter_spacing, progress);
-        style.text.decoration = to.text.decoration;
+//         style.text.color = animate_target_value(&from.text.color, &to.text.color, progress);
+//         style.text.font_family = to.text.font_family.clone();
+//         style.text.font_size =
+//             animate_target_value(&from.text.font_size, &to.text.font_size, progress);
+//         style.text.font_weight = to.text.font_weight;
+//         style.text.font_style = to.text.font_style;
+//         style.text.line_height = to.text.line_height;
+//         style.text.letter_spacing =
+//             animate_target_value(&from.text.letter_spacing, &to.text.letter_spacing, progress);
+//         style.text.decoration = to.text.decoration;
 
-        style.layout.gap = animate_target_value(&from.layout.gap, &to.layout.gap, progress);
-        style.layout.size = animate_target_value(&from.layout.size, &to.layout.size, progress);
-        style.layout.min_size =
-            animate_target_value(&from.layout.min_size, &to.layout.min_size, progress);
-        style.layout.max_size =
-            animate_target_value(&from.layout.max_size, &to.layout.max_size, progress);
-        style.layout.margin =
-            animate_target_value(&from.layout.margin, &to.layout.margin, progress);
-        style.layout.padding =
-            animate_target_value(&from.layout.padding, &to.layout.padding, progress);
-        style.layout.align = to.layout.align;
-        style.layout.justify = to.layout.justify;
+//         style.layout.gap = animate_target_value(&from.layout.gap, &to.layout.gap, progress);
+//         // style.layout.size = animate_target_value(&from.layout.size, &to.layout.size, progress);
+//         // style.layout.width = animate_target_value(&from.layout.width, &to.layout.width, progress);
+//         // style.layout.height =
+//         //     animate_target_value(&from.layout.height, &to.layout.height, progress);
+//         // style.layout.min_width =
+//         //     animate_target_value(&from.layout.min_width, &to.layout.min_width, progress);
 
-        style.paint.background =
-            animate_target_value(&from.paint.background, &to.paint.background, progress);
-        style.paint.border_color =
-            animate_target_value(&from.paint.border_color, &to.paint.border_color, progress);
-        style.paint.border_width =
-            animate_target_value(&from.paint.border_width, &to.paint.border_width, progress);
-        style.paint.border_radius =
-            animate_target_value(&from.paint.border_radius, &to.paint.border_radius, progress);
-        style.paint.stroke = animate_target_value(&from.paint.stroke, &to.paint.stroke, progress);
-        style.paint.shadow = animate_target_value(&from.paint.shadow, &to.paint.shadow, progress);
-        style.paint.clip = to.paint.clip;
+//         style.layout.margin =
+//             animate_target_value(&from.layout.margin, &to.layout.margin, progress);
+//         style.layout.padding =
+//             animate_target_value(&from.layout.padding, &to.layout.padding, progress);
+//         style.layout.align = to.layout.align;
+//         style.layout.justify = to.layout.justify;
 
-        style.scroll.direction = to.scroll.direction;
-        style.scroll.scrollbar =
-            animate_target_value(&from.scroll.scrollbar, &to.scroll.scrollbar, progress);
+//         style.paint.background =
+//             animate_target_value(&from.paint.background, &to.paint.background, progress);
+//         style.paint.border_color =
+//             animate_target_value(&from.paint.border_color, &to.paint.border_color, progress);
+//         style.paint.border_width =
+//             animate_target_value(&from.paint.border_width, &to.paint.border_width, progress);
+//         style.paint.border_radius =
+//             animate_target_value(&from.paint.border_radius, &to.paint.border_radius, progress);
+//         style.paint.stroke = animate_target_value(&from.paint.stroke, &to.paint.stroke, progress);
+//         style.paint.shadow = animate_target_value(&from.paint.shadow, &to.paint.shadow, progress);
+//         style.paint.clip = to.paint.clip;
 
-        style
-    }
-}
+//         style.scroll.direction = to.scroll.direction;
+//         // style.scroll.scrollbar =
+//         //     animate_target_value(&from.scroll.scrollbar, &to.scroll.scrollbar, progress);
+
+//         style
+//     }
+// }
 
 fn animate_target_value<T>(from: &StyleValue<T>, to: &StyleValue<T>, progress: f32) -> StyleValue<T>
 where
@@ -590,6 +593,71 @@ mod tests {
     }
 
     #[test]
+    fn derive_animatable_interpolates_struct_fields() {
+        #[derive(Debug, PartialEq, Animatable)]
+        struct Motion {
+            position: Point,
+            opacity: f32,
+        }
+
+        let from = Motion {
+            position: Point::new(0.0, 10.0),
+            opacity: 0.2,
+        };
+        let to = Motion {
+            position: Point::new(10.0, 30.0),
+            opacity: 0.8,
+        };
+
+        assert_eq!(
+            Motion::interpolate(&from, &to, 0.5),
+            Motion {
+                position: Point::new(5.0, 20.0),
+                opacity: 0.5,
+            }
+        );
+    }
+
+    #[test]
+    fn derive_animatable_supports_tuple_and_generic_structs() {
+        #[derive(Debug, PartialEq, Animatable)]
+        struct Pair(f32, Point);
+
+        #[derive(Debug, PartialEq, Animatable)]
+        struct Wrapper<T> {
+            value: T,
+            alpha: f32,
+        }
+
+        assert_eq!(
+            Pair::interpolate(
+                &Pair(0.0, Point::new(2.0, 4.0)),
+                &Pair(10.0, Point::new(6.0, 8.0)),
+                0.25,
+            ),
+            Pair(2.5, Point::new(3.0, 5.0))
+        );
+
+        assert_eq!(
+            Wrapper::interpolate(
+                &Wrapper {
+                    value: Point::new(0.0, 0.0),
+                    alpha: 0.0,
+                },
+                &Wrapper {
+                    value: Point::new(10.0, 20.0),
+                    alpha: 1.0,
+                },
+                0.5,
+            ),
+            Wrapper {
+                value: Point::new(5.0, 10.0),
+                alpha: 0.5,
+            }
+        );
+    }
+
+    #[test]
     fn geometry_and_color_interpolate() {
         let point = Point::interpolate(&Point::new(0.0, 10.0), &Point::new(10.0, 30.0), 0.5);
         assert_eq!(point, Point::new(5.0, 20.0));
@@ -671,34 +739,34 @@ mod tests {
         assert_eq!(color_style, ColorStyle::solid(ColorToken::Primary));
     }
 
-    #[test]
-    fn animated_style_only_outputs_targeted_properties() {
-        let from = Style::new()
-            .background(Color::BLACK)
-            .border_radius(2.0)
-            .padding(EdgeInsets::all(4.0));
-        let to = Style::new()
-            .background(Color::WHITE)
-            .border_radius(10.0)
-            .font_size(20.0);
-        let animation = AnimatedStyle::new(
-            from,
-            to,
-            Transition::new(Duration::from_millis(100)).ease(Easing::Linear),
-        );
+    // #[test]
+    // fn animated_style_only_outputs_targeted_properties() {
+    //     let from = Style::new()
+    //         .background(Color::BLACK)
+    //         .border_radius(2.0)
+    //         .padding(EdgeInsets::all(4.0));
+    //     let to = Style::new()
+    //         .background(Color::WHITE)
+    //         .border_radius(10.0)
+    //         .font_size(20.0);
+    //     let animation = AnimatedStyle::new(
+    //         from,
+    //         to,
+    //         Transition::new(Duration::from_millis(100)).ease(Easing::Linear),
+    //     );
 
-        let sampled = animation.sample(Duration::from_millis(50));
-        assert_eq!(
-            sampled.paint.border_radius,
-            StyleValue::Value(LengthValue::Px(6.0))
-        );
-        assert_eq!(
-            sampled.text.font_size,
-            StyleValue::Value(LengthValue::Px(20.0))
-        );
-        assert_eq!(sampled.layout.padding, StyleValue::Unset);
-        assert_eq!(sampled.paint.border_width, StyleValue::Unset);
-    }
+    //     let sampled = animation.sample(Duration::from_millis(50));
+    //     assert_eq!(
+    //         sampled.paint.border_radius,
+    //         StyleValue::Value(LengthValue::Px(6.0))
+    //     );
+    //     assert_eq!(
+    //         sampled.text.font_size,
+    //         StyleValue::Value(LengthValue::Px(20.0))
+    //     );
+    //     assert_eq!(sampled.layout.padding, StyleValue::Unset);
+    //     assert_eq!(sampled.paint.border_width, StyleValue::Unset);
+    // }
 
     #[test]
     fn timeline_ticks_by_delta() {

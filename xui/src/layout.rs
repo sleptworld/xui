@@ -48,7 +48,7 @@ pub fn computed_layout_style(
     computed: &ComputedStyle,
 ) -> tf::Style {
     let layout = computed.layout;
-    let is_root = widget.with_widgets(|w| matches!(w, Widgets::Root(_)));
+    // let is_root = widget.with_widgets(|w| matches!(w, Widgets::Root(_)));
     let mut style = widget.with_widgets(|w| match w {
         Widgets::Column(_) => tf::Style {
             display: tf::Display::Flex,
@@ -92,48 +92,55 @@ pub fn computed_layout_style(
     style.overflow = scroll_overflow(computed.scroll.direction);
     style.scrollbar_width = computed.scroll.scrollbar.width.max(0.0);
 
-    if let Some(size) = layout.size {
-        style.size = tf::Size {
-            width: dimension_for_axis(size.width, Axis::Horizontal, parent_dire),
-            height: dimension_for_axis(size.height, Axis::Vertical, parent_dire),
-        };
+    let size = layout.size();
+    style.size = tf::Size {
+        width: dimension_for_axis(size.width, Axis::Horizontal, parent_dire),
+        height: dimension_for_axis(size.height, Axis::Vertical, parent_dire),
+    };
 
-        match parent_dire {
-            FlexDirectionStyle::Column => {
-                if matches!(size.height(), Sizing::Fill) {
-                    style.flex_grow = 1.0;
-                }
-                if matches!(size.height(), Sizing::Fix(_)) {
-                    style.flex_shrink = 0.0;
-                }
+    match parent_dire {
+        FlexDirectionStyle::Column => {
+            if matches!(size.height(), Sizing::Fill) {
+                style.flex_grow = 1.0;
             }
-            FlexDirectionStyle::Row => {
-                if matches!(size.width(), Sizing::Fill) {
-                    style.flex_grow = 1.0;
-                }
-                if matches!(size.width(), Sizing::Fix(_)) {
-                    style.flex_shrink = 0.0;
-                }
+            if matches!(size.height(), Sizing::Fix(_)) {
+                style.flex_shrink = 0.0;
             }
         }
-    } else if !is_root {
-        style.size = tf::Size {
-            width: tf::Dimension::auto(),
-            height: tf::Dimension::auto(),
-        };
+        FlexDirectionStyle::Row => {
+            if matches!(size.width(), Sizing::Fill) {
+                style.flex_grow = 1.0;
+            }
+            if matches!(size.width(), Sizing::Fix(_)) {
+                style.flex_shrink = 0.0;
+            }
+        }
     }
-    if let Some(size) = layout.min_size {
-        style.min_size = tf::Size {
-            width: dimension_for_axis(size.width, Axis::Horizontal, parent_dire),
-            height: dimension_for_axis(size.height, Axis::Vertical, parent_dire),
-        };
-    }
-    if let Some(size) = layout.max_size {
-        style.max_size = tf::Size {
-            width: dimension_for_axis(size.width, Axis::Horizontal, parent_dire),
-            height: dimension_for_axis(size.height, Axis::Vertical, parent_dire),
-        };
-    }
+
+    let min_size = layout.min_size();
+    style.min_size = tf::Size {
+        width: min_size
+            .width()
+            .map(|w| dimension_for_axis(w, Axis::Horizontal, parent_dire))
+            .unwrap_or(taffy::Dimension::auto()),
+        height: min_size
+            .height()
+            .map(|h| dimension_for_axis(h, Axis::Vertical, parent_dire))
+            .unwrap_or(taffy::Dimension::auto()),
+    };
+
+    let max_size = layout.max_size();
+
+    style.max_size = tf::Size {
+        width: max_size
+            .width()
+            .map(|w| dimension_for_axis(w, Axis::Horizontal, parent_dire))
+            .unwrap_or(taffy::Dimension::auto()),
+        height: max_size
+            .height()
+            .map(|h| dimension_for_axis(h, Axis::Vertical, parent_dire))
+            .unwrap_or(taffy::Dimension::auto()),
+    };
 
     style
 }

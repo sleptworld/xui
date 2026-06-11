@@ -10,7 +10,7 @@ use xui_interface::{
     Translation,
 };
 
-use crate::animation::ActiveStyleAnimation;
+use crate::animation::{ActiveAnimation, AnimableStyle};
 use crate::core::{Point, Rect, Size};
 use crate::event::{Event, EventHandlerSet, EventHandlerStore, EventResult};
 use crate::event_system::{self, EventState};
@@ -44,7 +44,7 @@ pub struct Node {
     pub new_props_hash: u64,
     pub computed_style: ComputedStyle,
     pub animation_style: Style,
-    pub active_animations: Vec<ActiveStyleAnimation>,
+    pub active_animations: Vec<ActiveAnimation<AnimableStyle>>,
     pub paint_cache: Vec<PaintCommand>,
     pub widget: WidgetI,
     pub event_handlers: EventHandlerSet,
@@ -93,13 +93,13 @@ impl Node {
     fn start_style_animation(
         &mut self,
         trigger: EventTrigger,
-        from_style: Style,
-        to_style: Style,
+        from_style: AnimableStyle,
+        to_style: AnimableStyle,
         transition: AnimationTransition,
     ) {
         self.active_animations
             .retain(|animation| animation.trigger != trigger);
-        self.active_animations.push(ActiveStyleAnimation::new(
+        self.active_animations.push(ActiveAnimation::new(
             trigger, from_style, to_style, transition,
         ));
         self.refresh_animation_style();
@@ -119,11 +119,12 @@ impl Node {
     fn has_running_style_animations(&self) -> bool {
         self.active_animations
             .iter()
-            .any(ActiveStyleAnimation::is_running)
+            .any(ActiveAnimation::is_running)
     }
 
     fn refresh_animation_style(&mut self) {
-        let mut style = Style::new();
+        // let mut style = Style::new();
+        let mut style = AnimableStyle::default();
         for animation in &self.active_animations {
             style.merge(&animation.sample());
         }
@@ -211,8 +212,8 @@ impl UiArena {
         &mut self,
         id: NodeId,
         trigger: EventTrigger,
-        from_style: Style,
-        to_style: Style,
+        from_style: AnimableStyle,
+        to_style: AnimableStyle,
         transition: AnimationTransition,
     ) {
         let Some(node) = self.nodes.get_mut(id) else {

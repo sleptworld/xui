@@ -2,7 +2,7 @@ use crate::element::ElementDesc;
 use xui_interface::{
     ColorStyle, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key,
     LengthValue, PaintCommand, Rect, ScrollDirectionStyle, ScrollbarStyle,
-    ScrollbarVisibilityStyle, Style, Widget, WidgetType,
+    ScrollbarVisibilityStyle, Style, Widget, WidgetType, style::ScrollbarStylePatch,
 };
 
 use super::{props_hash, widget_element_desc};
@@ -46,7 +46,7 @@ impl ContainerWidget {
         self
     }
 
-    pub fn scrollbar(mut self, scrollbar: ScrollbarStyle) -> Self {
+    pub fn scrollbar(mut self, scrollbar: ScrollbarStylePatch) -> Self {
         self.style = self.style.clone().scrollbar(scrollbar);
         self
     }

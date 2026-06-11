@@ -1,22 +1,24 @@
 use std::time::Duration;
-
 use xui_animation::{Animatable, Timeline};
-use xui_interface::{AnimationTransition, EventTrigger, Style};
+use xui_interface::{
+    AnimationTransition, Color, ColorStyle, ComputedPaintStyle, ComputedTextStyle, EventTrigger,
+    Point, TextStyle,
+};
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ActiveStyleAnimation {
+pub struct ActiveAnimation<A: Animatable> {
     pub trigger: EventTrigger,
-    pub from_style: Style,
-    pub to_style: Style,
+    pub from_style: A,
+    pub to_style: A,
     pub timeline: Timeline,
     completed: bool,
 }
 
-impl ActiveStyleAnimation {
+impl<A: Animatable> ActiveAnimation<A> {
     pub fn new(
         trigger: EventTrigger,
-        from_style: Style,
-        to_style: Style,
+        from_style: A,
+        to_style: A,
         transition: AnimationTransition,
     ) -> Self {
         Self {
@@ -28,9 +30,9 @@ impl ActiveStyleAnimation {
         }
     }
 
-    pub fn sample(&self) -> Style {
+    pub fn sample(&self) -> A {
         let progress = self.timeline.progress().eased;
-        Style::interpolate(&self.from_style, &self.to_style, progress)
+        A::interpolate(&self.from_style, &self.to_style, progress)
     }
 
     pub fn tick(&mut self, delta: Duration) -> bool {
@@ -50,4 +52,38 @@ impl ActiveStyleAnimation {
     pub fn is_running(&self) -> bool {
         !self.completed
     }
+}
+
+#[derive(Clone, Animatable, Default)]
+pub struct AnimableStyle {
+    pub text: AnimableTextStyle,
+    pub paint: AnimablePaintStyle,
+}
+
+#[derive(Animatable, Clone, Copy, Default)]
+pub struct AnimableTextStyle {
+    pub color: ColorStyle,
+    pub font_size: f32,
+}
+
+#[derive(Animatable, Clone, Copy, Default)]
+pub struct AnimablePaintStyle {
+    pub background: ColorStyle,
+    pub border_color: ColorStyle,
+    pub border_width: f32,
+    pub border_radius: f32,
+}
+
+#[derive(Animatable, Clone, Copy, Default)]
+pub struct AnimableShadowStyle {
+    pub color: Color,
+    pub offset: Point,
+    pub blur: f32,
+    pub spread: f32,
+}
+
+#[derive(Animatable, Clone, Copy, Default)]
+pub struct AnimableStrokeStyle {
+    pub color: ColorStyle,
+    pub width: f32,
 }

@@ -1,13 +1,53 @@
+use crate::{
+    Color, EdgeInsets, FontFamily, FontStyle, FontWeight, LineHeight, Point, Size, TextDecoration,
+    core::Sizing, event::EventTrigger, text::TextStyle,
+};
 use std::{
     hash::{Hash, Hasher},
     time::Duration,
 };
 
-use crate::{
-    core::Sizing, event::EventTrigger, text::TextStyle, Color, EdgeInsets, FontFamily, FontStyle,
-    FontWeight, LineHeight, Point, Size, TextDecoration,
-};
+thread_local! {
+    static BASIC_STYLE: ComputedStyle = ComputedStyle::initial(&Theme::default());
+}
 
+/// Tokens
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ColorToken {
+    Text,
+    InverseText,
+    Background,
+    Surface,
+    MutedSurface,
+    Border,
+    Primary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SpacingToken {
+    Xs,
+    Sm,
+    Md,
+    Lg,
+    Xl,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RadiusToken {
+    Sm,
+    Md,
+    Lg,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FontSizeToken {
+    Sm,
+    Md,
+    Lg,
+    Xl,
+}
+
+/// Styles
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StyleValue<T> {
     Unset,
@@ -26,17 +66,6 @@ impl<T> StyleValue<T> {
     pub fn value(value: T) -> Self {
         Self::Value(value)
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ColorToken {
-    Text,
-    InverseText,
-    Background,
-    Surface,
-    MutedSurface,
-    Border,
-    Primary,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -214,30 +243,6 @@ impl RadialGradientStyle {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SpacingToken {
-    Xs,
-    Sm,
-    Md,
-    Lg,
-    Xl,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RadiusToken {
-    Sm,
-    Md,
-    Lg,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FontSizeToken {
-    Sm,
-    Md,
-    Lg,
-    Xl,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LengthValue {
     Px(f32),
@@ -359,6 +364,15 @@ impl ScrollbarStyle {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Default)]
+pub struct ScrollbarStylePatch {
+    pub width: StyleValue<LengthValue>,
+    pub track_color: StyleValue<ColorStyle>,
+    pub thumb_color: StyleValue<ColorStyle>,
+    pub radius: StyleValue<LengthValue>,
+    pub visibility: StyleValue<ScrollbarVisibilityStyle>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShadowStyle {
     pub color: ColorValue,
@@ -422,6 +436,7 @@ pub enum JustifyStyle {
     SpaceEvenly,
 }
 
+/// Patches
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TextStylePatch {
     pub color: StyleValue<ColorValue>,
@@ -438,9 +453,12 @@ pub struct TextStylePatch {
 pub struct LayoutStylePatch {
     // pub flex_direction: StyleValue<FlexDirectionStyle>,
     pub gap: StyleValue<LengthValue>,
-    pub size: StyleValue<Size<Sizing>>,
-    pub min_size: StyleValue<Size<Sizing>>,
-    pub max_size: StyleValue<Size<Sizing>>,
+    pub width: StyleValue<Sizing>,
+    pub height: StyleValue<Sizing>,
+    pub min_height: StyleValue<Sizing>,
+    pub max_height: StyleValue<Sizing>,
+    pub min_width: StyleValue<Sizing>,
+    pub max_width: StyleValue<Sizing>,
     pub margin: StyleValue<EdgeInsets>,
     pub padding: StyleValue<EdgeInsets>,
     pub align: StyleValue<AlignStyle>,
@@ -461,9 +479,10 @@ pub struct PaintStylePatch {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ScrollStylePatch {
     pub direction: StyleValue<ScrollDirectionStyle>,
-    pub scrollbar: StyleValue<ScrollbarStyle>,
+    pub scrollbar: ScrollbarStylePatch,
 }
 
+/// Style Patches Info
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Style {
     pub text: TextStylePatch,
@@ -517,52 +536,57 @@ impl Style {
         self
     }
 
-    // pub fn flex_direction(mut self, flex_direction: FlexDirectionStyle) -> Self {
-    //     self.layout.flex_direction = StyleValue::Value(flex_direction);
-    //     self
-    // }
-
     pub fn gap(mut self, gap: impl Into<LengthValue>) -> Self {
         self.layout.gap = StyleValue::Value(gap.into());
         self
     }
 
     pub fn size(mut self, size: Size<Sizing>) -> Self {
-        self.layout.size = StyleValue::Value(size);
+        self.layout.width = StyleValue::Value(size.width);
+        self.layout.height = StyleValue::Value(size.height);
         self
     }
 
-    pub fn width(mut self, width: Sizing) -> Self {
-        let size = match self.layout.size {
-            StyleValue::Value(mut size) => {
-                size.width = width;
-                size
-            }
-            _ => Size::<Sizing>::new(width, Sizing::Hug),
-        };
-        self.layout.size = StyleValue::Value(size);
+    pub fn width(mut self, width: impl Into<Sizing>) -> Self {
+        self.layout.width = StyleValue::Value(width.into());
         self
     }
 
-    pub fn height(mut self, height: Sizing) -> Self {
-        let size = match self.layout.size {
-            StyleValue::Value(mut size) => {
-                size.height = height;
-                size
-            }
-            _ => Size::<Sizing>::new(Sizing::Hug, height),
-        };
-        self.layout.size = StyleValue::Value(size);
+    pub fn height(mut self, height: impl Into<Sizing>) -> Self {
+        self.layout.height = StyleValue::Value(height.into());
         self
     }
 
-    pub fn min_size(mut self, size: Size<Sizing>) -> Self {
-        self.layout.min_size = StyleValue::Value(size);
+    pub fn min_size(mut self, size: impl Into<Size<Sizing>>) -> Self {
+        let size = size.into();
+        self.layout.min_height = StyleValue::Value(size.height);
+        self.layout.min_width = StyleValue::Value(size.width);
+        self
+    }
+
+    pub fn min_width(mut self, width: impl Into<Sizing>) -> Self {
+        self.layout.min_width = StyleValue::Value(width.into());
+        self
+    }
+
+    pub fn min_height(mut self, height: impl Into<Sizing>) -> Self {
+        self.layout.min_height = StyleValue::Value(height.into());
         self
     }
 
     pub fn max_size(mut self, size: Size<Sizing>) -> Self {
-        self.layout.max_size = StyleValue::Value(size);
+        self.layout.max_height = StyleValue::Value(size.height);
+        self.layout.max_width = StyleValue::Value(size.width);
+        self
+    }
+
+    pub fn max_width(mut self, width: impl Into<Sizing>) -> Self {
+        self.layout.max_width = StyleValue::Value(width.into());
+        self
+    }
+
+    pub fn max_height(mut self, height: impl Into<Sizing>) -> Self {
+        self.layout.max_height = StyleValue::Value(height.into());
         self
     }
 
@@ -680,53 +704,42 @@ impl Style {
         self.scroll_direction(ScrollDirectionStyle::None)
     }
 
-    pub fn scrollbar(mut self, scrollbar: ScrollbarStyle) -> Self {
-        self.scroll.scrollbar = StyleValue::Value(scrollbar);
+    pub fn scrollbar_style(mut self, scrollbar: ScrollbarStyle) -> Self {
+        self.scroll.scrollbar.width = StyleValue::Value(scrollbar.width);
+        self.scroll.scrollbar.track_color = StyleValue::Value(scrollbar.track_color);
+        self.scroll.scrollbar.thumb_color = StyleValue::Value(scrollbar.thumb_color);
+        self.scroll.scrollbar.radius = StyleValue::Value(scrollbar.radius);
+        self.scroll.scrollbar.visibility = StyleValue::Value(scrollbar.visibility);
+        self
+    }
+
+    pub fn scrollbar(mut self, scrollbar: ScrollbarStylePatch) -> Self {
+        self.scroll.scrollbar = scrollbar;
         self
     }
 
     pub fn scrollbar_width(mut self, width: impl Into<LengthValue>) -> Self {
-        let scrollbar = match self.scroll.scrollbar {
-            StyleValue::Value(scrollbar) => scrollbar.width(width),
-            _ => ScrollbarStyle::new().width(width),
-        };
-        self.scroll.scrollbar = StyleValue::Value(scrollbar);
+        self.scroll.scrollbar.width = StyleValue::Value(width.into());
         self
     }
 
     pub fn scrollbar_track_color(mut self, color: impl Into<ColorStyle>) -> Self {
-        let scrollbar = match self.scroll.scrollbar {
-            StyleValue::Value(scrollbar) => scrollbar.track_color(color),
-            _ => ScrollbarStyle::new().track_color(color),
-        };
-        self.scroll.scrollbar = StyleValue::Value(scrollbar);
+        self.scroll.scrollbar.track_color = StyleValue::Value(color.into());
         self
     }
 
     pub fn scrollbar_thumb_color(mut self, color: impl Into<ColorStyle>) -> Self {
-        let scrollbar = match self.scroll.scrollbar {
-            StyleValue::Value(scrollbar) => scrollbar.thumb_color(color),
-            _ => ScrollbarStyle::new().thumb_color(color),
-        };
-        self.scroll.scrollbar = StyleValue::Value(scrollbar);
+        self.scroll.scrollbar.thumb_color = StyleValue::Value(color.into());
         self
     }
 
     pub fn scrollbar_radius(mut self, radius: impl Into<LengthValue>) -> Self {
-        let scrollbar = match self.scroll.scrollbar {
-            StyleValue::Value(scrollbar) => scrollbar.radius(radius),
-            _ => ScrollbarStyle::new().radius(radius),
-        };
-        self.scroll.scrollbar = StyleValue::Value(scrollbar);
+        self.scroll.scrollbar.radius = StyleValue::Value(radius.into());
         self
     }
 
     pub fn scrollbar_visibility(mut self, visibility: ScrollbarVisibilityStyle) -> Self {
-        let scrollbar = match self.scroll.scrollbar {
-            StyleValue::Value(scrollbar) => scrollbar.visibility(visibility),
-            _ => ScrollbarStyle::new().visibility(visibility),
-        };
-        self.scroll.scrollbar = StyleValue::Value(scrollbar);
+        self.scroll.scrollbar.visibility = StyleValue::Value(visibility);
         self
     }
 
@@ -738,6 +751,7 @@ impl Style {
     }
 }
 
+/// Animation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AnimationEasing {
     Linear,
@@ -871,6 +885,8 @@ pub struct WidgetState {
     pub disabled: bool,
 }
 
+/// Computed Style
+/// It's real
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComputedTextStyle {
     pub color: Color,
@@ -917,13 +933,33 @@ impl From<&TextStyle> for ComputedTextStyle {
 pub struct ComputedLayoutStyle {
     pub flex_direction: FlexDirectionStyle,
     pub gap: f32,
-    pub size: Option<Size<Sizing>>,
-    pub min_size: Option<Size<Sizing>>,
-    pub max_size: Option<Size<Sizing>>,
+    // pub size: Size<Sizing>,
+    pub width: Sizing,
+    pub height: Sizing,
+    pub min_height: Option<Sizing>,
+    pub max_height: Option<Sizing>,
+    pub min_width: Option<Sizing>,
+    pub max_width: Option<Sizing>,
+    // pub min_size: Option<Size<Sizing>>,
+    // pub max_size: Option<Size<Sizing>>,
     pub margin: EdgeInsets,
     pub padding: EdgeInsets,
     pub align: AlignStyle,
     pub justify: JustifyStyle,
+}
+
+impl ComputedLayoutStyle {
+    pub fn size(&self) -> Size<Sizing> {
+        Size::<Sizing>::new(self.width, self.height)
+    }
+
+    pub fn min_size(&self) -> Size<Option<Sizing>> {
+        Size::new(self.min_width, self.min_height)
+    }
+
+    pub fn max_size(&self) -> Size<Option<Sizing>> {
+        Size::new(self.max_width, self.max_height)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1037,9 +1073,12 @@ impl ComputedStyle {
             layout: ComputedLayoutStyle {
                 flex_direction: FlexDirectionStyle::Column,
                 gap: 0.0,
-                size: None,
-                min_size: None,
-                max_size: None,
+                width: Sizing::Hug,
+                height: Sizing::Hug,
+                min_height: None,
+                min_width: None,
+                max_height: None,
+                max_width: None,
                 margin: EdgeInsets::ZERO,
                 padding: EdgeInsets::ZERO,
                 align: AlignStyle::Start,
@@ -1067,6 +1106,12 @@ impl ComputedStyle {
         }
     }
 
+    pub fn compute(parent: &ComputedStyle, patch: &Style, theme: &Theme) -> Self {
+        let mut computed = parent.inherited_from(theme);
+        computed.apply(parent, patch, theme);
+        computed
+    }
+
     pub fn apply(&mut self, parent: &ComputedStyle, patch: &Style, theme: &Theme) {
         apply_text(&mut self.text, &parent.text, &patch.text, theme);
         apply_layout(&mut self.layout, &patch.layout, theme);
@@ -1075,9 +1120,18 @@ impl ComputedStyle {
     }
 
     pub fn inherited_from(&self, theme: &Theme) -> Self {
-        let mut next = Self::initial(theme);
-        next.text = self.text.clone();
-        next
+        let mut computed = Self::initial(theme);
+
+        computed.text.color = self.text.color;
+        computed.text.font_family = self.text.font_family.clone();
+        computed.text.font_size = self.text.font_size;
+        computed.text.font_weight = self.text.font_weight;
+        computed.text.font_style = self.text.font_style;
+        computed.text.line_height = self.text.line_height;
+        computed.text.letter_spacing = self.text.letter_spacing;
+        computed.text.decoration = self.text.decoration;
+
+        computed
     }
 }
 
@@ -1185,9 +1239,12 @@ fn merge_text(target: &mut TextStylePatch, other: &TextStylePatch) {
 fn merge_layout(target: &mut LayoutStylePatch, other: &LayoutStylePatch) {
     // merge_value(&mut target.flex_direction, &other.flex_direction);
     merge_value(&mut target.gap, &other.gap);
-    merge_value(&mut target.size, &other.size);
-    merge_value(&mut target.min_size, &other.min_size);
-    merge_value(&mut target.max_size, &other.max_size);
+    merge_value(&mut target.width, &other.width);
+    merge_value(&mut target.height, &other.height);
+    merge_value(&mut target.min_height, &other.min_height);
+    merge_value(&mut target.min_width, &other.min_width);
+    merge_value(&mut target.max_height, &other.max_height);
+    merge_value(&mut target.max_width, &other.max_width);
     merge_value(&mut target.margin, &other.margin);
     merge_value(&mut target.padding, &other.padding);
     merge_value(&mut target.align, &other.align);
@@ -1206,7 +1263,15 @@ fn merge_paint(target: &mut PaintStylePatch, other: &PaintStylePatch) {
 
 fn merge_scroll(target: &mut ScrollStylePatch, other: &ScrollStylePatch) {
     merge_value(&mut target.direction, &other.direction);
-    merge_value(&mut target.scrollbar, &other.scrollbar);
+    merge_scrollbar(&mut target.scrollbar, &other.scrollbar);
+}
+
+fn merge_scrollbar(target: &mut ScrollbarStylePatch, other: &ScrollbarStylePatch) {
+    merge_value(&mut target.width, &other.width);
+    merge_value(&mut target.track_color, &other.track_color);
+    merge_value(&mut target.thumb_color, &other.thumb_color);
+    merge_value(&mut target.radius, &other.radius);
+    merge_value(&mut target.visibility, &other.visibility);
 }
 
 fn merge_value<T: Clone>(target: &mut StyleValue<T>, other: &StyleValue<T>) {
@@ -1276,17 +1341,20 @@ fn apply_text(
 
 fn apply_layout(target: &mut ComputedLayoutStyle, patch: &LayoutStylePatch, theme: &Theme) {
     let initial = ComputedStyle::initial(theme).layout;
-    // target.flex_direction = resolve_copy_no_inherit(
-    //     patch.flex_direction,
-    //     target.flex_direction,
-    //     initial.flex_direction,
-    // );
+
     target.gap = resolve_length_no_inherit(patch.gap, target.gap, initial.gap, theme);
-    target.size = resolve_optional_size_no_inherit(patch.size, target.size, initial.size);
-    target.min_size =
-        resolve_optional_size_no_inherit(patch.min_size, target.min_size, initial.min_size);
-    target.max_size =
-        resolve_optional_size_no_inherit(patch.max_size, target.max_size, initial.max_size);
+    target.width = resolve_copy_no_inherit(patch.width, target.width, initial.width);
+    target.height = resolve_copy_no_inherit(patch.height, target.height, initial.height);
+
+    target.min_height =
+        resolve_optional_copy_no_inherit(patch.min_height, target.min_height, initial.min_height);
+    target.min_width =
+        resolve_optional_copy_no_inherit(patch.min_width, target.min_width, initial.min_width);
+
+    target.max_height =
+        resolve_optional_copy_no_inherit(patch.max_height, target.max_height, initial.max_height);
+    target.max_width =
+        resolve_optional_copy_no_inherit(patch.max_width, target.max_width, initial.max_width);
     target.margin = resolve_copy_no_inherit(patch.margin, target.margin, initial.margin);
     target.padding = resolve_copy_no_inherit(patch.padding, target.padding, initial.padding);
     target.align = resolve_copy_no_inherit(patch.align, target.align, initial.align);
@@ -1340,21 +1408,33 @@ fn apply_scroll(target: &mut ComputedScrollStyle, patch: &ScrollStylePatch, them
 }
 
 fn resolve_scrollbar_no_inherit(
-    value: StyleValue<ScrollbarStyle>,
+    value: ScrollbarStylePatch,
     current: ComputedScrollbarStyle,
     initial: ComputedScrollbarStyle,
     theme: &Theme,
 ) -> ComputedScrollbarStyle {
-    match value {
-        StyleValue::Unset | StyleValue::Inherit => current,
-        StyleValue::Initial => initial,
-        StyleValue::Value(value) => ComputedScrollbarStyle {
-            width: length_value(value.width, theme),
-            track_color: color_style(value.track_color, theme),
-            thumb_color: color_style(value.thumb_color, theme),
-            radius: length_value(value.radius, theme),
-            visibility: value.visibility,
-        },
+    let width = resolve_length_no_inherit(value.width, current.width, initial.width, theme);
+    let track_color = resolve_color_style_no_inherit(
+        value.track_color,
+        current.track_color,
+        initial.track_color,
+        theme,
+    );
+    let thumb_color = resolve_color_style_no_inherit(
+        value.thumb_color,
+        current.thumb_color,
+        initial.thumb_color,
+        theme,
+    );
+    let radius = resolve_length_no_inherit(value.radius, current.radius, initial.radius, theme);
+    let visibility =
+        resolve_copy_no_inherit(value.visibility, current.visibility, initial.visibility);
+    ComputedScrollbarStyle {
+        width,
+        track_color,
+        thumb_color,
+        radius,
+        visibility,
     }
 }
 
@@ -1530,6 +1610,18 @@ fn resolve_copy_no_inherit<T: Copy>(value: StyleValue<T>, current: T, initial: T
     }
 }
 
+fn resolve_optional_copy_no_inherit<T: Copy>(
+    value: StyleValue<T>,
+    current: Option<T>,
+    initial: Option<T>,
+) -> Option<T> {
+    match value {
+        StyleValue::Unset | StyleValue::Inherit => current,
+        StyleValue::Initial => initial,
+        StyleValue::Value(value) => Some(value),
+    }
+}
+
 fn resolve_optional_size_no_inherit(
     value: StyleValue<Size<Sizing>>,
     current: Option<Size<Sizing>>,
@@ -1641,11 +1733,15 @@ impl Hash for TextStylePatch {
 
 impl Hash for LayoutStylePatch {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // self.flex_direction.hash(state);
         self.gap.hash(state);
-        hash_style_value_size(&self.size, state);
-        hash_style_value_size(&self.min_size, state);
-        hash_style_value_size(&self.max_size, state);
+        self.width.hash(state);
+        self.height.hash(state);
+        self.min_height.hash(state);
+        self.min_width.hash(state);
+        self.max_height.hash(state);
+        self.max_width.hash(state);
+        self.align.hash(state);
+        self.justify.hash(state);
         hash_style_value_edge_insets(&self.margin, state);
         hash_style_value_edge_insets(&self.padding, state);
     }
@@ -1703,15 +1799,12 @@ fn hash_style_value_shadow<H: Hasher>(value: &StyleValue<ShadowStyle>, state: &m
     }
 }
 
-fn hash_style_value_scrollbar<H: Hasher>(value: &StyleValue<ScrollbarStyle>, state: &mut H) {
-    core::mem::discriminant(value).hash(state);
-    if let StyleValue::Value(value) = value {
-        value.width.hash(state);
-        value.track_color.hash(state);
-        value.thumb_color.hash(state);
-        value.radius.hash(state);
-        value.visibility.hash(state);
-    }
+fn hash_style_value_scrollbar<H: Hasher>(value: &ScrollbarStylePatch, state: &mut H) {
+    value.width.hash(state);
+    value.track_color.hash(state);
+    value.thumb_color.hash(state);
+    value.radius.hash(state);
+    value.visibility.hash(state);
 }
 
 #[cfg(test)]
@@ -1779,21 +1872,6 @@ mod tests {
             ComputedColorStyle::Solid(Color::rgb(0.2, 0.3, 0.4))
         );
         assert_eq!(computed.layout.gap, 18.0);
-    }
-
-    #[test]
-    fn width_and_height_create_size_patch_when_unset() {
-        let width_style = Style::new().width(Sizing::fix(300.0));
-        assert_eq!(
-            width_style.layout.size,
-            StyleValue::Value(Size::<Sizing>::new(Sizing::fix(300.0), Sizing::Hug))
-        );
-
-        let height_style = Style::new().height(Sizing::Fill);
-        assert_eq!(
-            height_style.layout.size,
-            StyleValue::Value(Size::<Sizing>::new(Sizing::Hug, Sizing::Fill))
-        );
     }
 
     #[test]
