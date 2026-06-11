@@ -41,28 +41,28 @@ pub fn parse_text_style_attr<T: quote::ToTokens + ?Sized>(
 ) -> Option<TokenStream2> {
     match name {
         "color" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().color(#value));
+            __xui_style =  __xui_style.color(#value);
         }),
         "font_family" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().font_family(#value));
+            __xui_style =  __xui_style.font_family(#value);
         }),
         "font_size" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().font_size(#value));
+            __xui_style =  __xui_style.font_size(#value);
         }),
         "font_weight" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().font_weight(#value));
+            __xui_style =  __xui_style.font_weight(#value);
         }),
         "font_style" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().font_style(#value));
+            __xui_style =  __xui_style.font_style(#value);
         }),
         "line_height" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().line_height(#value));
+            __xui_style =  __xui_style.line_height(#value);
         }),
         "letter_spacing" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().letter_spacing(#value));
+            __xui_style =  __xui_style.letter_spacing(#value);
         }),
         "decoration" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().decoration(#value));
+            __xui_style =  __xui_style.decoration(#value);
         }),
         _ => None,
     }
@@ -74,49 +74,38 @@ pub fn parse_layout_style_attr<T: quote::ToTokens + ?Sized>(
 ) -> Option<TokenStream2> {
     match name {
         "flex_direction" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().flex_direction(#value));
+            __xui_style =  __xui_style.flex_direction(#value);
         }),
         "gap" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().gap(#value));
+            __xui_style =  __xui_style.gap(#value);
         }),
         "padding" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().padding(#value));
+            __xui_style =  __xui_style.padding(#value);
         }),
         "size" => Some(quote! {
-            if let Some(__xui_size) = #value {
-                __xui_style.merge(&::xui::Style::new().size(__xui_size));
-            }
+            __xui_style = __xui_style.size(#value);
         }),
         "min_size" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().min_size(#value));
+            __xui_style =  __xui_style.min_size(#value);
         }),
         "max_size" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().max_size(#value));
+            __xui_style =  __xui_style.max_size(#value);
         }),
         "margin" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().margin(#value));
+            __xui_style =  __xui_style.margin(#value);
         }),
         "align" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().align(#value));
+            __xui_style =  __xui_style.align(#value);
         }),
         "justify" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().justify(#value));
+            __xui_style =  __xui_style.justify(#value);
         }),
         "width" => Some(quote! {
-            let mut __xui_size = match __xui_style.layout.size {
-                ::xui::StyleValue::Value(size) => size,
-                _ => ::xui::Size::hug(),
-            };
-            __xui_size.width = #value;
-            __xui_style.layout.size = ::xui::StyleValue::Value(__xui_size);
+            __xui_style = __xui_style.width(#value);
+
         }),
         "height" => Some(quote! {
-            let mut __xui_size = match __xui_style.layout.size {
-                ::xui::StyleValue::Value(size) => size,
-                _ => ::xui::Size::hug(),
-            };
-            __xui_size.height = #value;
-            __xui_style.layout.size = ::xui::StyleValue::Value(__xui_size);
+            __xui_style = __xui_style.height(#value);
         }),
 
         _ => None,
@@ -129,19 +118,19 @@ pub fn parse_paint_style_attr<T: quote::ToTokens + ?Sized>(
 ) -> Option<TokenStream2> {
     match name {
         "background" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().background(#value));
+            __xui_style = __xui_style.background(#value);
         }),
         "border_color" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().border_color(#value));
+            __xui_style =  __xui_style.border_color(#value);
         }),
         "border_width" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().border_width(#value));
+            __xui_style =  __xui_style.border_width(#value);
         }),
         "border_radius" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().border_radius(#value));
+            __xui_style =  __xui_style.border_radius(#value);
         }),
         "stroke" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().stroke(#value));
+            __xui_style =  __xui_style.stroke(#value);
         }),
         "stroke_style" => Some(quote! {
             let (__xui_stroke_color, __xui_stroke_width, __xui_stroke_line_style) = #value;
@@ -154,11 +143,11 @@ pub fn parse_paint_style_attr<T: quote::ToTokens + ?Sized>(
         }),
         "no_stroke" => Some(quote! {
             if #value {
-                __xui_style.merge(&::xui::Style::new().no_stroke());
+                __xui_style =  __xui_style.no_stroke();
             }
         }),
         "shadow" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().shadow(#value));
+            __xui_style =  __xui_style.shadow(#value);
         }),
         "box_shadow" => Some(quote! {
             let (
@@ -177,11 +166,11 @@ pub fn parse_paint_style_attr<T: quote::ToTokens + ?Sized>(
         }),
         "no_shadow" => Some(quote! {
             if #value {
-                __xui_style.merge(&::xui::Style::new().no_shadow());
+                __xui_style =  __xui_style.no_shadow();
             }
         }),
         "clip" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().clip(#value));
+            __xui_style =  __xui_style.clip(#value);
         }),
         _ => None,
     }
@@ -193,25 +182,25 @@ pub fn parse_scroll_style_attr<T: quote::ToTokens + ?Sized>(
 ) -> Option<TokenStream2> {
     match name {
         "scroll_direction" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().scroll_direction(#value));
+            __xui_style =  __xui_style.scroll_direction(#value);
         }),
         "scrollbar" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().scrollbar(#value));
+            __xui_style =  __xui_style.scrollbar(#value);
         }),
         "scrollbar_width" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().scrollbar_width(#value));
+            __xui_style =  __xui_style.scrollbar_width(#value);
         }),
         "scrollbar_track_color" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().scrollbar_track_color(#value));
+            __xui_style =  __xui_style.scrollbar_track_color(#value);
         }),
         "scrollbar_thumb_color" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().scrollbar_thumb_color(#value));
+            __xui_style =  __xui_style.scrollbar_thumb_color(#value);
         }),
         "scrollbar_radius" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().scrollbar_radius(#value));
+            __xui_style =  __xui_style.scrollbar_radius(#value);
         }),
         "scrollbar_visibility" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().scrollbar_visibility(#value));
+            __xui_style =  __xui_style.scrollbar_visibility(#value);
         }),
         _ => None,
     }
@@ -251,7 +240,7 @@ pub fn parse_stack_attr<T: quote::ToTokens + ?Sized>(
 ) -> Option<TokenStream2> {
     match name {
         "gap" => Some(quote! {
-            __xui_style.merge(&::xui::Style::new().gap(#value));
+            __xui_style =  __xui_style.gap(#value);
         }),
         _ => None,
     }

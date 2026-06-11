@@ -292,6 +292,14 @@ pub type PropertyAnimation<T> = Tween<T>;
 //         self.tween.transition
 //     }
 // }
+impl<T: Animatable> Animatable for Option<T> {
+    fn interpolate(from: &Self, to: &Self, progress: f32) -> Self {
+        match (from, to) {
+            (Some(from), Some(to)) => Some(T::interpolate(from, to, progress)),
+            _ => None,
+        }
+    }
+}
 
 impl Animatable for f32 {
     fn interpolate(from: &Self, to: &Self, progress: f32) -> Self {

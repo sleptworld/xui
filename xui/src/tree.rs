@@ -124,11 +124,11 @@ impl Node {
 
     fn refresh_animation_style(&mut self) {
         // let mut style = Style::new();
-        let mut style = AnimableStyle::default();
-        for animation in &self.active_animations {
-            style.merge(&animation.sample());
-        }
-        self.animation_style = style;
+        // let mut style = AnimableStyle::default();
+        // for animation in &self.active_animations {
+        //     style.merge(&animation.sample());
+        // }
+        // self.animation_style = style;
     }
 }
 

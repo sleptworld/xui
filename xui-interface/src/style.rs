@@ -501,8 +501,8 @@ impl Style {
         self
     }
 
-    pub fn font_family(mut self, font_family: FontFamily) -> Self {
-        self.text.font_family = StyleValue::Value(font_family);
+    pub fn font_family(mut self, font_family: impl Into<FontFamily>) -> Self {
+        self.text.font_family = StyleValue::Value(font_family.into());
         self
     }
 
@@ -541,7 +541,8 @@ impl Style {
         self
     }
 
-    pub fn size(mut self, size: Size<Sizing>) -> Self {
+    pub fn size(mut self, size: impl Into<Size<Sizing>>) -> Self {
+        let size = size.into();
         self.layout.width = StyleValue::Value(size.width);
         self.layout.height = StyleValue::Value(size.height);
         self

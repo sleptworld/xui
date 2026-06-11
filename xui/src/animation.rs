@@ -62,28 +62,28 @@ pub struct AnimableStyle {
 
 #[derive(Animatable, Clone, Copy, Default)]
 pub struct AnimableTextStyle {
-    pub color: ColorStyle,
-    pub font_size: f32,
+    pub color: Option<ColorStyle>,
+    pub font_size: Option<f32>,
 }
 
 #[derive(Animatable, Clone, Copy, Default)]
 pub struct AnimablePaintStyle {
-    pub background: ColorStyle,
-    pub border_color: ColorStyle,
-    pub border_width: f32,
-    pub border_radius: f32,
+    pub background: Option<ColorStyle>,
+    pub border_color: Option<ColorStyle>,
+    pub border_width: Option<f32>,
+    pub border_radius: Option<f32>,
 }
 
 #[derive(Animatable, Clone, Copy, Default)]
 pub struct AnimableShadowStyle {
-    pub color: Color,
-    pub offset: Point,
-    pub blur: f32,
-    pub spread: f32,
+    pub color: Option<Color>,
+    pub offset: Option<Point>,
+    pub blur: Option<f32>,
+    pub spread: Option<f32>,
 }
 
 #[derive(Animatable, Clone, Copy, Default)]
 pub struct AnimableStrokeStyle {
-    pub color: ColorStyle,
-    pub width: f32,
+    pub color: Option<ColorStyle>,
+    pub width: Option<f32>,
 }

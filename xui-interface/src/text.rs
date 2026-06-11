@@ -161,6 +161,12 @@ pub enum FontFamily {
     Stack(Vec<String>),
 }
 
+impl From<&'static str> for FontFamily {
+    fn from(value: &'static str) -> Self {
+        Self::Named(value.to_string())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FontWeight {
     Thin,
