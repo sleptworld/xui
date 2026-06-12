@@ -14,3 +14,4 @@ xui-interface = { path = "../xui-interface" }
 xui-macros = { path = "../xui-macros" }
 xui-text = { path = "../xui-text" }
 slot = { path = "../slot" }
+bitflags = "2.13.0"

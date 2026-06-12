@@ -397,7 +397,7 @@ impl ComponentDesc {
         P: Any + Hash,
     {
         self.props_hash = props_hash(&props);
-        self.props = Some(Rc::new(props));
+        self.props = Some(Box::new(props));
         self
     }
 
@@ -406,7 +406,7 @@ impl ComponentDesc {
         P: Any,
     {
         self.props_hash = props_hash;
-        self.props = Some(Rc::new(props));
+        self.props = Some(Box::new(props));
         self
     }
 }

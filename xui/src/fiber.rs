@@ -1,9 +1,8 @@
+use rustc_hash::FxHashMap;
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
-use smallvec::SmallVec;
 use std::any::Any;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
-use std::rc::Rc;
 use taffy::prelude as tf;
 pub use xui_interface::Key;
 use xui_interface::widget::WidgetType;
@@ -18,8 +17,7 @@ use crate::widgets::WidgetI;
 
 pub type ErasedProps = Box<dyn Any>;
 pub type ErasedPropsRef<'a> = &'a dyn Any;
-pub type ComponentCall =
-    fn(&mut HookContext<'_>, Option<ErasedPropsRef<'_>>) -> ElementDesc;
+pub type ComponentCall = fn(&mut HookContext<'_>, Option<ErasedPropsRef<'_>>) -> ElementDesc;
 
 new_key_type! {
     pub struct FiberId;
@@ -98,11 +96,15 @@ pub enum FiberTag {
     Component,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EffectTag {
-    None,
-    Placement,
-    Update,
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct EffectTag: u8 {
+        const NONE      = 0;
+        const PLACEMENT = 1 << 0;
+        const UPDATE    = 1 << 1;
+        const MOVE      = 1 << 2;
+        const DELETION  = 1 << 3;
+    }
 }
 
 pub struct HostState {
@@ -153,9 +155,6 @@ pub struct Node {
     pub effect: EffectTag,
     pub dirty: DirtyFlags,
     pub subtree_dirty: DirtyFlags,
-    pub pending_props: Option<PendingProps>,
-    pub pending_children: Option<SmallVec<[ElementDesc; 20]>>,
-    pub memoized_props_hash: u64,
     pub host: Option<HostState>,
     pub component: Option<ComponentState>,
 }
@@ -170,18 +169,15 @@ impl Node {
             key: None,
             position: 0,
             tag: FiberTag::Root,
-            effect: EffectTag::None,
+            effect: EffectTag::empty(),
             dirty: DirtyFlags::default(),
             subtree_dirty: DirtyFlags::empty(),
-            pending_props: None,
-            pending_children: None,
-            memoized_props_hash: 0,
             host: None,
             component: None,
         }
     }
 
-    fn component(id: FiberId, element: ComponentDesc) -> Self {
+    pub fn component(id: FiberId, element: ComponentDesc) -> Self {
         Self {
             id,
             parent: None,
@@ -190,12 +186,9 @@ impl Node {
             key: element.key.clone(),
             position: 0,
             tag: FiberTag::Component,
-            effect: EffectTag::Placement,
+            effect: EffectTag::PLACEMENT,
             dirty: DirtyFlags::STATE,
             subtree_dirty: DirtyFlags::empty(),
-            pending_props: None,
-            pending_children: None,
-            memoized_props_hash: element.props_hash,
             host: None,
             component: Some(ComponentState {
                 render: element.render,
@@ -327,7 +320,7 @@ impl FiberArena {
         self.set_children(parent, children);
     }
 
-    pub fn set_children(&mut self, parent: FiberId, children: Vec<FiberId>) {
+    pub fn set_children(&mut self, parent: FiberId, children: &[FiberId]) {
         if !self.nodes.contains_key(parent) {
             return;
         }
