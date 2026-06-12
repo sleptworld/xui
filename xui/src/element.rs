@@ -2,28 +2,28 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use crate::{
-    ComponentType,
+    ComponentRender,
     fiber::{ErasedProps, Key},
     widgets::WidgetI,
 };
 use xui_interface::WidgetType;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum ElementDesc {
     Host(WidgetDesc),
     Component(ComponentDesc),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct WidgetDesc {
     pub widget: WidgetI,
     pub children: Vec<ElementDesc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ComponentDesc {
     pub key: Option<Key>,
-    pub component_type: ComponentType,
+    pub render: ComponentRender,
     pub props: Option<ErasedProps>,
     pub props_hash: u64,
     pub children: Vec<ElementDesc>,
@@ -51,14 +51,14 @@ impl WidgetDesc {
 
 impl ComponentDesc {
     pub fn new(
-        component_type: ComponentType,
+        render: ComponentRender,
         props: Option<ErasedProps>,
         props_hash: u64,
         children: Vec<ElementDesc>,
     ) -> Self {
         Self {
             key: None,
-            component_type,
+            render,
             props,
             props_hash,
             children,
@@ -97,11 +97,17 @@ impl ElementDesc {
             Self::Component(component) => {
                 let mut hasher = DefaultHasher::new();
                 component.key.hash(&mut hasher);
-                component.component_type.hash(&mut hasher);
+                component.render.hash(&mut hasher);
                 component.props_hash.hash(&mut hasher);
                 hasher.finish()
             }
         }
+    }
+}
+
+impl Hash for ElementDesc {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.props_hash().hash(state);
     }
 }
 

@@ -1,7 +1,7 @@
-use rustc_hash::FxHashMap;
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
 use smallvec::SmallVec;
 use std::any::Any;
+use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::rc::Rc;
 use taffy::prelude as tf;
@@ -16,8 +16,10 @@ use crate::lanes::{Lanes, NO_LANES};
 use crate::render::PaintCommand;
 use crate::widgets::WidgetI;
 
-pub type ErasedProps = Rc<dyn Any>;
+pub type ErasedProps = Box<dyn Any>;
 pub type ErasedPropsRef<'a> = &'a dyn Any;
+pub type ComponentCall =
+    fn(&mut HookContext<'_>, Option<ErasedPropsRef<'_>>) -> ElementDesc;
 
 new_key_type! {
     pub struct FiberId;
@@ -38,6 +40,37 @@ impl ComponentType {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ComponentRender {
+    pub component_type: ComponentType,
+    pub name: &'static str,
+    pub call: ComponentCall,
+}
+
+impl ComponentRender {
+    pub const fn new(component_type: ComponentType, call: ComponentCall) -> Self {
+        Self {
+            component_type,
+            name: component_type.name(),
+            call,
+        }
+    }
+}
+
+impl PartialEq for ComponentRender {
+    fn eq(&self, other: &Self) -> bool {
+        self.component_type == other.component_type
+    }
+}
+
+impl Eq for ComponentRender {}
+
+impl Hash for ComponentRender {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.component_type.hash(state);
+    }
+}
+
 pub struct FiberContext<'a> {
     node_id: FiberId,
     hook_context: HookContext<'a>,
@@ -55,124 +88,6 @@ impl<'a> FiberContext<'a> {
 
     pub fn node_id(&self) -> FiberId {
         self.node_id
-    }
-}
-
-pub trait ComponentFn {
-    fn call(&self, cx: &mut HookContext<'_>, props: ErasedPropsRef<'_>) -> ElementDesc;
-}
-
-impl<F> ComponentFn for F
-where
-    F: for<'a> Fn(&mut HookContext<'a>) -> ElementDesc,
-{
-    fn call(&self, cx: &mut HookContext<'_>, _props: ErasedPropsRef<'_>) -> ElementDesc {
-        (self)(cx)
-    }
-}
-
-struct PropsComponentFn<P, F> {
-    render: F,
-    _marker: PhantomData<P>,
-}
-
-impl<P, F> PropsComponentFn<P, F> {
-    fn new(render: F) -> Self {
-        Self {
-            render,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<P, F> ComponentFn for PropsComponentFn<P, F>
-where
-    P: 'static,
-    F: for<'a> Fn(&mut HookContext<'a>, &P) -> ElementDesc,
-{
-    fn call(&self, cx: &mut HookContext<'_>, props: ErasedPropsRef<'_>) -> ElementDesc {
-        let props = props
-            .downcast_ref::<P>()
-            .unwrap_or_else(|| panic!("component props type mismatch"));
-        (self.render)(cx, props)
-    }
-}
-
-pub struct ComponentDef {
-    pub name: &'static str,
-    create: Box<dyn ComponentFn>,
-}
-
-impl ComponentDef {
-    pub fn call(&self, cx: &mut HookContext<'_>, props: ErasedPropsRef<'_>) -> ElementDesc {
-        self.create.call(cx, props)
-    }
-}
-
-#[derive(Default)]
-pub struct ComponentRegistry {
-    components: FxHashMap<ComponentType, ComponentDef>,
-}
-
-impl ComponentRegistry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn register<F>(&mut self, component_type: ComponentType, create: F) -> ComponentType
-    where
-        F: for<'a> Fn(&mut HookContext<'a>) -> ElementDesc + 'static,
-    {
-        let previous = self.components.insert(
-            component_type,
-            ComponentDef {
-                name: component_type.name(),
-                create: Box::new(create),
-            },
-        );
-        assert!(
-            previous.is_none(),
-            "component registered more than once: {}",
-            component_type.name()
-        );
-
-        component_type
-    }
-
-    pub fn register_with_props<P, F>(
-        &mut self,
-        component_type: ComponentType,
-        create: F,
-    ) -> ComponentType
-    where
-        P: 'static,
-        F: for<'a> Fn(&mut HookContext<'a>, &P) -> ElementDesc + 'static,
-    {
-        let previous = self.components.insert(
-            component_type,
-            ComponentDef {
-                name: component_type.name(),
-                create: Box::new(PropsComponentFn::<P, F>::new(create)),
-            },
-        );
-        assert!(
-            previous.is_none(),
-            "component registered more than once: {}",
-            component_type.name()
-        );
-
-        component_type
-    }
-
-    pub fn get(&self, component_type: ComponentType) -> &ComponentDef {
-        assert_ne!(
-            component_type,
-            ComponentType::ROOT,
-            "root is not a registered component"
-        );
-        self.components
-            .get(&component_type)
-            .unwrap_or_else(|| panic!("component is not registered: {}", component_type.name()))
     }
 }
 
@@ -202,12 +117,11 @@ pub struct HostState {
     pub props_hash: u64,
 }
 
-#[derive(Clone)]
 pub struct ComponentState {
-    pub render: ComponentType,
+    pub render: ComponentRender,
     pub key: Option<Key>,
     pub props_hash: u64,
-    pub props: ErasedProps,
+    pub props: Option<ErasedProps>,
 }
 
 pub enum PendingProps {
@@ -223,9 +137,9 @@ pub struct HostUpdate {
 }
 
 pub struct ComponentProps {
-    pub component_type: ComponentType,
+    pub render: ComponentRender,
     pub props_hash: u64,
-    pub props: ErasedProps,
+    pub props: Option<ErasedProps>,
 }
 
 pub struct Node {
@@ -284,7 +198,7 @@ impl Node {
             memoized_props_hash: element.props_hash,
             host: None,
             component: Some(ComponentState {
-                render: element.component_type,
+                render: element.render,
                 key: element.key,
                 props_hash: element.props_hash,
                 props: element.props,

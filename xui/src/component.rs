@@ -1,5 +1,5 @@
 use crate::fiber::{
-    ComponentRegistry, ComponentState, ComponentType, EffectTag, ErasedProps, FiberArena, FiberId,
+    ComponentRender, ComponentState, EffectTag, ErasedProps, FiberArena, FiberId,
     FiberTag, HostState, Key, Node,
 };
 use crate::lanes::{Lanes, NO_LANES, current_update_lane, includes_some_lane, should_interrupt};
@@ -7,8 +7,8 @@ use crate::layout::{computed_style_for_widget, taffy_style_for_widget};
 use crate::state::{HookContext, HookStorage, Scheduler};
 use crate::style::{ComputedStyle, Theme};
 use crate::tree::UiArena;
-use crate::widgets::{ComponentRender, WidgetI};
-use crate::{ComponentDesc, ElementDesc};
+use crate::widgets::{RootComponentRender, WidgetI};
+use crate::{ComponentDesc, ElementDesc, ErasedPropsRef};
 use rustc_hash::FxHashMap;
 use slot::Runtime;
 use smallvec::SmallVec;
@@ -18,7 +18,6 @@ use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use taffy as tf;
 use xui_interface::{DirtyFlags, EventHandlers, NodeId};
-use xui_text::par::Run;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct WipId(usize);
@@ -39,7 +38,7 @@ pub struct WorkNode {
     began: bool,
     host_work: Option<HostWork>,
     host_node: Option<NodeId>,
-    component_state: Option<ComponentWork>,
+    // component_state: Option<ComponentState>,
 }
 
 struct HostWork {
@@ -50,12 +49,11 @@ struct HostWork {
     props_hash: u64,
 }
 
-#[derive(Clone)]
 struct ComponentWork {
-    render: ComponentType,
+    render: ComponentRender,
     key: Option<Key>,
     props_hash: u64,
-    props: ErasedProps,
+    props: Option<ErasedProps>,
 }
 
 impl WorkNode {
@@ -82,7 +80,7 @@ impl WorkNode {
             began: false,
             host_node: current.host.as_ref().and_then(|host| host.node_id),
             host_work: None,
-            component_state: current.component.as_ref().map(ComponentWork::from_state),
+            // component_state: current.component.as_ref().map(ComponentWork::from_state),
         }
     }
 
@@ -154,7 +152,7 @@ impl WorkNode {
             began: false,
             host_work,
             host_node,
-            component_state,
+            // component_state,
         }
     }
 
@@ -166,16 +164,7 @@ impl WorkNode {
     }
 }
 
-impl ComponentWork {
-    fn from_state(state: &ComponentState) -> Self {
-        Self {
-            render: state.render,
-            key: state.key.clone(),
-            props_hash: state.props_hash,
-            props: state.props.clone(),
-        }
-    }
-}
+
 
 struct PreparedElement {
     key: Option<Key>,
@@ -194,9 +183,9 @@ enum PreparedPending {
     },
     Component {
         key: Option<Key>,
-        render: ComponentType,
+        render: ComponentRender,
         props_hash: u64,
-        props: ErasedProps,
+        props: Option<ErasedProps>,
     },
 }
 
@@ -229,268 +218,36 @@ impl<'a> WorkInProgressLive<'a> {
     }
 }
 
-// impl fmt::Debug for WorkInProgress {
-//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-//         writeln!(f, "WorkInProgress")?;
-//         writeln!(
-//             f,
-//             "  render_lanes: {:#018b} ({:#x})",
-//             self.render_lanes, self.render_lanes
-//         )?;
-//         writeln!(f, "  root: {:?}", self.root)?;
-//         writeln!(f, "  next: {:?}", self.next_work)?;
-//         if !self.deletions.is_empty() {
-//             writeln!(f, "  deletions: {:?}", self.deletions)?;
-//         }
-//         writeln!(f, "  tree:")?;
-
-//         let mut visited = Vec::new();
-//         self.fmt_node(f, self.root, "    ", true, &mut visited)?;
-
-//         if self.live_len() > visited.len() {
-//             writeln!(f, "  detached:")?;
-//             let detached: Vec<_> = self
-//                 .nodes
-//                 .iter()
-//                 .enumerate()
-//                 .filter_map(|(index, node)| node.as_ref().map(|_| WipId(index)))
-//                 .filter(|id| !visited.contains(id))
-//                 .collect();
-//             for id in detached {
-//                 self.fmt_node(f, id, "    ", true, &mut visited)?;
-//             }
-//         }
-
-//         Ok(())
-//     }
-// }
-
-impl WorkInProgress {
-    // fn fmt_node(
-    //     &self,
-    //     f: &mut fmt::Formatter<'_>,
-    //     id: WipId,
-    //     prefix: &str,
-    //     is_last: bool,
-    //     visited: &mut Vec<WipId>,
-    // ) -> fmt::Result {
-    //     let branch = if is_last { "`-" } else { "+-" };
-    //     let child_prefix = if is_last { "  " } else { "| " };
-
-    //     let Some(node) = self.node(id) else {
-    //         writeln!(f, "{prefix}{branch} {:?} <missing work node>", id)?;
-    //         return Ok(());
-    //     };
-
-    //     let details_prefix = format!("{prefix}{child_prefix}  ");
-
-    //     write!(
-    //         f,
-    //         "{prefix}{branch} {:?} {:?} {}",
-    //         id,
-    //         node.fiber_id,
-    //         WorkNodeTitle(node),
-    //     )?;
-    //     self.fmt_node_badges(f, id, node)?;
-    //     writeln!(f)?;
-
-    //     self.fmt_node_details(f, node, &details_prefix)?;
-
-    //     if visited.contains(&id) {
-    //         writeln!(f, "{prefix}{child_prefix}`- <cycle>")?;
-    //         return Ok(());
-    //     }
-    //     visited.push(id);
-
-    //     let next_prefix = format!("{prefix}{child_prefix}");
-    //     for (index, child) in node.children.iter().enumerate() {
-    //         self.fmt_node(
-    //             f,
-    //             *child,
-    //             &next_prefix,
-    //             index + 1 == node.children.len(),
-    //             visited,
-    //         )?;
-    //     }
-
-    //     Ok(())
-    // }
-
-    fn fmt_node_badges(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-        id: WipId,
-        node: &WorkNode,
-    ) -> fmt::Result {
-        let mut wrote = false;
-        let mut write_badge = |f: &mut fmt::Formatter<'_>, label: &str| {
-            if !wrote {
-                write!(f, " [")?;
-                wrote = true;
-            } else {
-                write!(f, ", ")?;
-            }
-            write!(f, "{label}")
-        };
-
-        if self.next_work == Some(id) {
-            write_badge(f, "next")?;
-        }
-        match node.effect {
-            EffectTag::None => {}
-            EffectTag::Placement => write_badge(f, "placement")?,
-            EffectTag::Update => write_badge(f, "update")?,
-        }
-        if node.current.is_none() {
-            write_badge(f, "new")?;
-        }
-        if node.began {
-            write_badge(f, "began")?;
-        }
-        if node.children_resolved {
-            write_badge(f, "children resolved")?;
-        }
-        if node.host_work.is_some() {
-            write_badge(f, "host work")?;
-        }
-        if let Some(children) = &node.pending_children {
-            write_badge(f, &format!("pending children: {}", children.len()))?;
-        }
-        if node.lanes != NO_LANES {
-            write_badge(f, &format!("lanes: {:#x}", node.lanes))?;
-        }
-        if node.child_lanes != NO_LANES {
-            write_badge(f, &format!("child lanes: {:#x}", node.child_lanes))?;
-        }
-
-        if wrote {
-            write!(f, "]")?;
-        }
-        Ok(())
-    }
-
-    fn fmt_node_details(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-        node: &WorkNode,
-        prefix: &str,
-    ) -> fmt::Result {
-        write!(f, "{prefix}meta: pos={} current=", node.position,)?;
-        match node.current {
-            Some(current) => write!(f, "{current:?}")?,
-            None => write!(f, "new")?,
-        }
-        if let Some(parent) = node.parent {
-            write!(f, " parent={parent:?}")?;
-        }
-        if let Some(key) = &node.key {
-            write!(f, " key={key:?}")?;
-        }
-        if let Some(host_node) = node.host_node {
-            write!(f, " host_node={host_node:?}")?;
-        }
-        writeln!(f)?;
-
-        if let Some(component) = &node.component_state {
-            writeln!(
-                f,
-                "{prefix}component: render={} props_hash={:#x}",
-                component.render.name(),
-                component.props_hash,
-            )?;
-        }
-
-        if let Some(children) = &node.pending_children {
-            writeln!(f, "{prefix}pending children: {}", children.len())?;
-            for (index, child) in children.iter().enumerate() {
-                writeln!(f, "{prefix}  {index}: {:?}", PendingElementDebug(child))?;
-            }
-        }
-
-        Ok(())
-    }
-}
-
-struct PendingElementDebug<'a>(&'a ElementDesc);
-
-struct WorkNodeTitle<'a>(&'a WorkNode);
-
-impl fmt::Display for WorkNodeTitle<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0.tag {
-            FiberTag::Root => write!(f, "Root"),
-            FiberTag::Host(widget) => write!(f, "Host({widget:?})"),
-            FiberTag::Component => {
-                if let Some(component) = &self.0.component_state {
-                    write!(f, "Component({})", component.render.name())
-                } else {
-                    write!(f, "Component")
-                }
-            }
-        }
-    }
-}
-
-impl fmt::Debug for PendingElementDebug<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            ElementDesc::Host(widget) => f
-                .debug_struct("Host")
-                .field("tag", &widget.widget.node_type())
-                .field("key", &widget.widget.key())
-                .field(
-                    "props_hash",
-                    &format_args!("{:#x}", widget.widget.props_hash()),
-                )
-                .finish(),
-            ElementDesc::Component(component) => f
-                .debug_struct("Component")
-                .field("render", &component.component_type.name())
-                .field("key", &component.key)
-                .field("props_hash", &format_args!("{:#x}", component.props_hash))
-                .finish(),
-        }
-    }
-}
-
 pub struct ComponentRuntime {
     nodes: FiberArena,
     current: FiberId,
-    root_render: ComponentRender,
+    root_render: RootComponentRender,
     work_in_progress: Option<WorkInProgress>,
     scheduler: Scheduler,
     hooks: FxHashMap<FiberId, HookStorage>,
     root_widget: NodeId,
     budget: Duration,
     wip_nodes: Vec<Option<WorkNode>>,
-
-    component_registry: ComponentRegistry,
 }
 
 impl ComponentRuntime {
-    pub fn new<I, F>(root_widget: NodeId, scheduler: Scheduler, init_components: I) -> Self
-    where
-        I: FnOnce(&mut ComponentRegistry) -> F,
-        F: for<'a> FnMut(&mut HookContext<'a>) -> ElementDesc + 'static,
+    pub fn new(root_widget: NodeId, scheduler: Scheduler, root_render: fn(&mut HookContext) -> ElementDesc) -> Self
     {
         let arena = FiberArena::new();
         let current = arena.root();
         scheduler.set_root(current);
         scheduler.mark_component_dirty(current, current_update_lane());
-        let mut component_registry = ComponentRegistry::default();
-        let root_render = init_components(&mut component_registry);
 
         Self {
             nodes: arena,
             current,
-            root_render: Rc::new(RefCell::new(root_render)),
+            root_render,
             root_widget,
             work_in_progress: None,
             scheduler,
             hooks: FxHashMap::default(),
             budget: Duration::from_millis(4),
             wip_nodes: Vec::with_capacity(200),
-            component_registry,
         }
     }
 
@@ -657,9 +414,8 @@ impl ComponentRuntime {
         match tag {
             FiberTag::Root => {
                 if should_render {
-                    let render = self.root_render.clone();
                     let mut cx = cx!(fiber_id);
-                    let element = (render.borrow_mut())(&mut cx);
+                    let element = (self.root_render)(&mut cx);
                     self.reconcile_children(id, [element], theme);
                 } else {
                     self.clone_current_children(id);
@@ -670,7 +426,7 @@ impl ComponentRuntime {
                     let render = self
                         .work_in_progress
                         .as_ref()
-                        .and_then(|_| self.wip_node(id))
+                        .and_then(|_| self.wip_nodes.get(id.0).and_then(Option::as_ref))
                         .and_then(|node| node.component_state.as_ref())
                         .map(|component| component.render.clone())
                         .or_else(|| {
@@ -683,19 +439,18 @@ impl ComponentRuntime {
                     let props = self
                         .work_in_progress
                         .as_ref()
-                        .and_then(|_| self.wip_node(id))
+                        .and_then(|_| self.wip_nodes.get(id.0).and_then(Option::as_ref))
                         .and_then(|node| node.component_state.as_ref())
-                        .map(|component| component.props.clone())
-                        .or_else(|| {
+                        .map(|component| component.props.as_ref())
+                        .unwrap_or_else(|| {
                             self.nodes
                                 .node(fiber_id)
                                 .and_then(|node| node.component.as_ref())
-                                .map(|component| component.props.clone())
-                        })
-                        .expect("component fiber missing props");
-                    let render = self.component_registry.get(render);
+                                .map(|component| component.props.as_ref())
+                                .expect("component fiber missing state")
+                        });
                     let mut cx = cx!(fiber_id);
-                    let element = render.call(&mut cx, props.as_ref());
+                    let element = (render.call)(&mut cx, props.map(|v|&**v));
                     self.reconcile_children(id, [element], theme);
                 } else {
                     self.clone_current_children(id);
@@ -820,7 +575,6 @@ impl ComponentRuntime {
                     self.parent_style_for_work(parent)
                 {
                     let computed_style = computed_style_for_widget(&widget, parent_style, theme);
-
                     let style = taffy_style_for_widget(&widget, &parent_style, &computed_style);
                     (computed_style, style)
                 } else {
@@ -879,7 +633,7 @@ impl ComponentRuntime {
             tag: FiberTag::Component,
             pending: PreparedPending::Component {
                 key,
-                render: component.component_type,
+                render: component.render,
                 props_hash: component.props_hash,
                 props: component.props,
             },

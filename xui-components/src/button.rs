@@ -206,7 +206,7 @@ component_fn! {
 }
 
 pub fn pbutton(props: ButtonProps) -> ComponentDesc {
-    component(pbutton_component_type()).props(props)
+    component(pbutton_component_render()).props(props)
 }
 
 fn merged_style(mut base: Style, override_style: &Style) -> Style {

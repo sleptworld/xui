@@ -9,7 +9,7 @@ pub use xui_interface::{EventHandlers, Widget, WidgetType};
 
 use crate::core::Rect;
 use crate::element::{ComponentDesc, ElementDesc, WidgetDesc};
-use crate::fiber::{ComponentType, Key};
+use crate::fiber::{ComponentRender, Key};
 use crate::render::PaintCommand;
 use crate::state::HookContext;
 use crate::style::{ComputedStyle, Style};
@@ -129,7 +129,7 @@ pub use row::RowWidget;
 pub use style_scope::StyleScopeWidget;
 pub use text::TextWidget;
 
-pub type ComponentRender = Rc<RefCell<dyn for<'a> FnMut(&mut HookContext<'a>) -> ElementDesc>>;
+pub type RootComponentRender = fn(&mut HookContext) -> ElementDesc;
 
 macro_rules! define_widgets {
     ($($name:ident => $widget:ty),+ $(,)?) => {
@@ -397,7 +397,7 @@ impl ComponentDesc {
         P: Any + Hash,
     {
         self.props_hash = props_hash(&props);
-        self.props = Rc::new(props);
+        self.props = Some(Rc::new(props));
         self
     }
 
@@ -406,7 +406,7 @@ impl ComponentDesc {
         P: Any,
     {
         self.props_hash = props_hash;
-        self.props = Rc::new(props);
+        self.props = Some(Rc::new(props));
         self
     }
 }
@@ -443,7 +443,7 @@ pub fn root_widget() -> WidgetI {
     WidgetI::new(RootWidget::default())
 }
 
-pub fn component(render: ComponentType) -> ComponentDesc {
+pub fn component(render: ComponentRender) -> ComponentDesc {
     ComponentDesc::new(render, None, 0, Vec::new())
 }
 

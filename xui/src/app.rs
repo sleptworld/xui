@@ -2,7 +2,6 @@ use crate::ElementDesc;
 use crate::component::ComponentRuntime;
 use crate::core::Size;
 use crate::event::{Event, EventResult};
-use crate::fiber::ComponentRegistry;
 use crate::lanes::{event_lane, with_update_lane};
 use crate::render::RenderBackend;
 use crate::state::{HookContext, Scheduler};
@@ -20,19 +19,11 @@ pub struct App {
 
 impl App {
     pub fn new(
-        root_component: impl for<'a> FnMut(&mut HookContext<'a>) -> ElementDesc + 'static,
+        root_component: fn(&mut HookContext<'_>) -> ElementDesc,
     ) -> Self {
-        Self::with_component_registry(|_| root_component)
-    }
-
-    pub fn with_component_registry<I, F>(init_components: I) -> Self
-    where
-        I: FnOnce(&mut ComponentRegistry) -> F,
-        F: for<'a> FnMut(&mut HookContext<'a>) -> ElementDesc + 'static,
-    {
         let arena = UiArena::new();
         let scheduler = Scheduler::default();
-        let components = ComponentRuntime::new(arena.root(), scheduler, init_components);
+        let components = ComponentRuntime::new(arena.root(), scheduler, root_component);
         let app = Self {
             arena,
             components,
@@ -148,7 +139,7 @@ impl App {
 }
 
 pub fn app(
-    root_component: impl for<'a> FnMut(&mut HookContext<'a>) -> ElementDesc + 'static,
+    root_component: fn(&mut HookContext<'_>) -> ElementDesc,
 ) -> App {
     App::new(root_component)
 }

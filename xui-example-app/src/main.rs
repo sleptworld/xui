@@ -4,127 +4,90 @@ use winit::window::Window;
 use xui::prelude::*;
 use xui_winit::{CosmicTextEngine, WGPUBackend, WinitRunner, WinitRunnerOptions, WinitTextEngine};
 
-pub struct MainProp {
-    pub info: String,
+#[component]
+fn btn(name: &String) {
+    xui! {
+    <button
+        style={Style::new()
+            .width(Sizing::Hug)
+            .background(Color::BLACK)
+            .color(Color::WHITE)
+            .padding(EdgeInsets::symmetric(12.0, 4.0))
+            .border_radius(5.0)}
+        hover_style={Style::new().background(Color::BLUE_500)}
+    >
+        {name}
+    </button>}
 }
 
-component_fn! {
+#[component]
+fn counter() {
+    let count = cx.use_state(|| 0);
 
-    fn btn(name: &String) {
-            <button
-                style={Style::new()
-                    .width(Sizing::Hug)
-                    .background(Color::BLACK)
-                    .color(Color::WHITE)
-                    .padding(EdgeInsets::symmetric(12.0, 4.0))
-                    .border_radius(5.0)}
-                hover_style={Style::new().background(Color::BLUE_500)}
-            >
-                {name}
-            </button>
-    }
-
-
-    fn counter() {
-        let count = cx.use_state(|| 0);
-
-        <column gap={8.0}>
-            <text font_size={16.0} font_weight={FontWeight::Bold}> {"HI!! NEW WORLD"} </text>
-            <column gap={2.0}>
-                <text font_family={"PingFang SC"}> {format!("Current count: {}", count.get())} </text>
-                <text> {"你好吗, FUCK THE WORLD"} </text>
-                <text> {"What the Fuck!!"} </text>
-                <text> {"Do you know me, 哈哈哈哈哈哈"} </text>
-            </column>
-
-            <button on_click={{
-                move |_| {
-                    count.set(count.get() + 1);
-                    EventResult::Consumed
-                }
-            }}>
-                {"Increment"}
-            </button>
-            <button on_click={{
-                move |_| {
-                    count.set(count.get() - 1);
-                    println!("{}", count.get());
-                    EventResult::Consumed
-                }
-            }}>
-                {"Decrement"}
-            </button>
-
-            <row gap={2.0}>
-                <btn props= {"Hello\nWorld".to_string()}/>
-                <btn props= {"Hello".to_string()}/>
-                <btn props= {"Hello".to_string()}/>
-                <btn props= {"Hello".to_string()}/>
-                <btn props= {"Oh".to_string()}/>
-                <btn props= {"MY🤔".to_string()}/>
-            </row>
+    xui! {<column gap={8.0}>
+        <text font_size={16.0} font_weight={FontWeight::Bold}> {"HI!! NEW WORLD"} </text>
+        <column gap={2.0}>
+            <text font_family={"PingFang SC"}> {format!("Current count: {}", count.get())} </text>
+            <text> {"你好吗, FUCK THE WORLD"} </text>
+            <text> {"What the Fuck!!"} </text>
+            <text> {"Do you know me, 哈哈哈哈哈哈"} </text>
         </column>
 
-    }
+        <button on_click={{
+            move |_| {
+                count.set(count.get() + 1);
+                EventResult::Consumed
+            }
+        }}>
+            {"Increment"}
+        </button>
+        <button on_click={{
+            move |_| {
+                count.set(count.get() - 1);
+                println!("{}", count.get());
+                EventResult::Consumed
+            }
+        }}>
+            {"Decrement"}
+        </button>
 
-    fn test_page() {
+        <row gap={2.0}>
+            <btn props= {"Hello\nWorld".to_string()}/>
+            <btn props= {"Hello".to_string()}/>
+            <btn props= {"Hello".to_string()}/>
+            <btn props= {"Hello".to_string()}/>
+            <btn props= {"Oh".to_string()}/>
+            <btn props= {"MY🤔".to_string()}/>
+        </row>
+    </column>}
+}
+
+#[component]
+fn test_page() {
+    xui! {
         <row gap={0.0}>
             <container background={Color::BLUE_500}>
                 <text> {"HELLO<WORLF"}</text>
             </container>
         <container />
         </row>
-
     }
+}
 
-    fn main_page(MainProp{info}: &MainProp) {
-
-        <column gap={12.0}>
-            <label color={Color::BLUE_500}>{info}</label>
-            <counter />
-        </column>
-    }
-
-    fn editor() {
+#[component]
+fn editor() {
+    xui! {
         <row size={Size::fill()}>
             <container width={Sizing::percent(0.3)} height={Sizing::fill()} background ={Color::rgb(1.0,0.0,0.0)} />
-            <container size={Size::fill()} background ={Color::BLUE_500} />
+            <container size={Size::fill()} background ={Color::BLUE_500} >
+                <text> {"Hello,World"} </text>
+            </container>
         </row>
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let app = App::with_component_registry(|registry| {
-        register_components(registry);
-        components::register_components(registry);
-        xui_components::register_components(registry);
-
-        |_| {
-            xui! {
-                <container scrollable={true}  scroll_direction={ScrollDirectionStyle::Vertical}>
-                    <column gap={12.0} padding={EdgeInsets::all(12.0)}>
-                       <container size={Size::fix(200.0,200.0)}
-                        background={Color::hex("#4287f5")} border_radius={15.0}
-                        shadow={ShadowStyle::default()
-                            .color(Color::BLACK)
-                            .offset(Point::new(0., 1.)).blur(5.)}
-                        />
-
-                        <container size={Size::fix(200.0,200.0)}
-                        background={Color::BLUE_500} border_radius={15.0}
-                        shadow={ShadowStyle::default()
-                            .color(Color::BLACK)
-                            .offset(Point::new(0., 1.)).blur(5.)}
-                        />
-
-                        <counter />
-                    </column>
-                </container>
-
-                // <editor />
-            }
-        }
-    });
+    let app = app(editor_component);
 
     let options = WinitRunnerOptions {
         window_attributes: Window::default_attributes()

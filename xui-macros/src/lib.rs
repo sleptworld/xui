@@ -33,10 +33,21 @@ pub fn xui(input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn component(_attrs: TokenStream, item: TokenStream) -> TokenStream {
     let mut function = parse_macro_input!(item as ComponentFunction);
+    if let Err(error) = reject_signature_defaults(&function) {
+        return error.to_compile_error().into();
+    }
+    if let Err(error) = apply_defaults_attr(&mut function) {
+        return error.to_compile_error().into();
+    }
     match expand_component_function(&mut function) {
         Ok(expanded) => expanded.tokens.into(),
         Err(error) => error.to_compile_error().into(),
     }
+}
+
+#[proc_macro_attribute]
+pub fn defaults(_attrs: TokenStream, item: TokenStream) -> TokenStream {
+    item
 }
 
 #[proc_macro]
@@ -198,7 +209,6 @@ struct ComponentFunction {
 
 struct ExpandedComponentFunction {
     tokens: TokenStream2,
-    register_name: TokenIdent,
 }
 
 struct ComponentParam {
@@ -206,9 +216,38 @@ struct ComponentParam {
     default: Option<Expr>,
 }
 
+struct DefaultsAttr {
+    defaults: Vec<(Ident, Expr)>,
+}
+
 struct GeneratedComponentProps {
     tokens: TokenStream2,
     bindings: Vec<TokenStream2>,
+}
+
+impl Parse for DefaultsAttr {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        let mut defaults = Vec::new();
+        let entries = Punctuated::<ComponentDefaultEntry, Token![,]>::parse_terminated(input)?;
+        for entry in entries {
+            defaults.push((entry.name, entry.value));
+        }
+        Ok(Self { defaults })
+    }
+}
+
+struct ComponentDefaultEntry {
+    name: Ident,
+    value: Expr,
+}
+
+impl Parse for ComponentDefaultEntry {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        let name: Ident = input.parse()?;
+        input.parse::<Token![=]>()?;
+        let value = input.parse()?;
+        Ok(Self { name, value })
+    }
 }
 
 impl Parse for ComponentFunction {
@@ -294,20 +333,75 @@ fn strip_component_param_defaults(
     Ok((output, defaults))
 }
 
+fn reject_signature_defaults(function: &ComponentFunction) -> Result<()> {
+    if let Some(default) = function
+        .input_defaults
+        .iter()
+        .find_map(|default| default.as_ref())
+    {
+        return Err(Error::new(
+            default.span(),
+            "default component parameters in `#[component]` must be declared with `#[defaults(name = expr)]`",
+        ));
+    }
+    Ok(())
+}
+
+fn apply_defaults_attr(function: &mut ComponentFunction) -> Result<()> {
+    let mut defaults = Vec::new();
+    let mut attrs = Vec::new();
+    let old_attrs = std::mem::take(&mut function.attrs);
+    for attr in old_attrs {
+        if attr.path().is_ident("defaults") {
+            let parsed = attr.parse_args::<DefaultsAttr>()?;
+            defaults.extend(parsed.defaults);
+        } else {
+            attrs.push(attr);
+        }
+    }
+    function.attrs = attrs;
+
+    for (name, value) in defaults {
+        let Some(index) = component_param_index(function, &name) else {
+            return Err(Error::new(
+                name.span(),
+                format!("unknown component default parameter `{name}`"),
+            ));
+        };
+        if function.input_defaults[index].is_some() {
+            return Err(Error::new(
+                name.span(),
+                format!("duplicate default value for component parameter `{name}`"),
+            ));
+        }
+        function.input_defaults[index] = Some(value);
+    }
+    Ok(())
+}
+
+fn component_param_index(function: &ComponentFunction, name: &Ident) -> Option<usize> {
+    function
+        .sig
+        .inputs
+        .iter()
+        .enumerate()
+        .find_map(|(index, input)| {
+            let FnArg::Typed(arg) = input else {
+                return None;
+            };
+            let Pat::Ident(pat) = arg.pat.as_ref() else {
+                return None;
+            };
+            (pat.ident == *name).then_some(index)
+        })
+}
+
 fn expand_component_functions(functions: &mut ComponentFunctions) -> Result<TokenStream2> {
     let mut output = TokenStream2::new();
-    let mut register_calls = Vec::new();
     for function in &mut functions.functions {
         let expanded = expand_component_function(function)?;
-        let register_name = &expanded.register_name;
-        register_calls.push(quote!(#register_name(registry);));
         output.extend(expanded.tokens);
     }
-    output.extend(quote! {
-        pub fn register_components(registry: &mut ::xui::ComponentRegistry) {
-            #(#register_calls)*
-        }
-    });
     Ok(output)
 }
 
@@ -317,7 +411,8 @@ fn expand_component_function(
     let original_name = function.sig.ident.clone();
     let component_name = component_render_name(&original_name);
     let component_type_name = component_type_name(&original_name);
-    let register_name = component_register_name(&original_name);
+    let component_call_name = component_call_name(&original_name);
+    let component_handle_name = component_handle_name(&original_name);
     let props_name = component_props_name(&original_name);
     function.sig.ident = component_name.clone();
     function.sig.output = ReturnType::Type(
@@ -390,10 +485,29 @@ fn expand_component_function(
     };
 
     let props_type = component_props_type(&function.sig)?;
-    let register_call = if let Some(props_type) = props_type {
-        quote!(registry.register_with_props::<#props_type, _>(#component_type_name(), #component_name))
+    let component_call = if let Some(props_type) = props_type {
+        quote! {
+            fn #component_call_name(
+                cx: &mut ::xui::HookContext<'_>,
+                props: ::std::option::Option<::xui::ErasedPropsRef<'_>>,
+            ) -> ::xui::ElementDesc {
+                let props = props
+                    .expect("component props missing")
+                    .downcast_ref::<#props_type>()
+                    .unwrap_or_else(|| panic!("component props type mismatch"));
+                #component_name(cx, props)
+            }
+        }
     } else {
-        quote!(registry.register(#component_type_name(), #component_name))
+        quote! {
+            fn #component_call_name(
+                cx: &mut ::xui::HookContext<'_>,
+                props: ::std::option::Option<::xui::ErasedPropsRef<'_>>,
+            ) -> ::xui::ElementDesc {
+                let _ = props;
+                #component_name(cx)
+            }
+        }
     };
     let attrs = &function.attrs;
     let vis = &function.vis;
@@ -409,7 +523,6 @@ fn expand_component_function(
         .unwrap_or(&[]);
 
     Ok(ExpandedComponentFunction {
-        register_name: register_name.clone(),
         tokens: quote! {
             #props_tokens
 
@@ -423,8 +536,10 @@ fn expand_component_function(
                 ::xui::ComponentType::new(concat!(module_path!(), "::", stringify!(#original_name)))
             }
 
-            #vis fn #register_name(registry: &mut ::xui::ComponentRegistry) -> ::xui::ComponentType {
-                #register_call
+            #component_call
+
+            #vis fn #component_handle_name() -> ::xui::ComponentRender {
+                ::xui::ComponentRender::new(#component_type_name(), #component_call_name)
             }
         },
     })
@@ -598,9 +713,16 @@ fn component_type_name(original_name: &Ident) -> TokenIdent {
     )
 }
 
-fn component_register_name(original_name: &Ident) -> TokenIdent {
+fn component_call_name(original_name: &Ident) -> TokenIdent {
     TokenIdent::new(
-        &format!("register_{}_component", original_name),
+        &format!("{}_component_call", original_name),
+        original_name.span(),
+    )
+}
+
+fn component_handle_name(original_name: &Ident) -> TokenIdent {
+    TokenIdent::new(
+        &format!("{}_component_render", original_name),
         original_name.span(),
     )
 }
@@ -1071,8 +1193,8 @@ fn expand_function_component(node: &ElementNode) -> Result<TokenStream2> {
         ));
     }
 
-    let component_type_name =
-        TokenIdent::new(&format!("{}_component_type", node.name), Span::call_site());
+    let component_handle_name =
+        TokenIdent::new(&format!("{}_component_render", node.name), Span::call_site());
     let component_props_name = component_props_name(&node.name);
     let has_children = !node.children.is_empty();
     let named_props_value = if named_props.is_empty() {
@@ -1100,11 +1222,14 @@ fn expand_function_component(node: &ElementNode) -> Result<TokenStream2> {
             .map(expand_child)
             .collect::<Result<Vec<_>>>()?;
         let mut element_expr = quote! {{
+            let __xui_children = ::std::vec![#(#children),*];
             let __xui_props = ::xui::WithChildren::with_children(
                 #props_value,
-                ::std::vec![#(#children),*],
+                __xui_children.clone(),
             );
-            ::xui::component(#component_type_name()).props(__xui_props)
+            ::xui::component(#component_handle_name())
+                .props(__xui_props)
+                .with_children(__xui_children)
         }};
         if let Some(key) = key {
             element_expr = quote! {{
@@ -1114,7 +1239,7 @@ fn expand_function_component(node: &ElementNode) -> Result<TokenStream2> {
         }
         element_expr
     } else {
-        let mut expr = quote!(::xui::component(#component_type_name()));
+        let mut expr = quote!(::xui::component(#component_handle_name()));
         if let Some(key) = key {
             expr = quote!(#expr.key(#key));
         }
