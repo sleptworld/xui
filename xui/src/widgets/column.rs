@@ -1,7 +1,8 @@
+use crate::animation::AnimatedStyle;
 use crate::element::ElementDesc;
 use xui_interface::{
-    AnimatedStyle, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key,
-    PaintCommand, Rect, Size, Style, Widget, WidgetType,
+    ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, PaintCommand,
+    Rect, Size, Style, Widget, WidgetType,
 };
 
 use super::{props_hash, widget_element_desc};
@@ -83,10 +84,6 @@ impl Widget for ColumnWidget {
 
     fn style(&self) -> &Style {
         &self.animated_style.base
-    }
-
-    fn style_animations(&self) -> &[xui_interface::StyleAnimation] {
-        &self.animated_style.animations
     }
 
     fn paint(&self, _rect: Rect, _style: &ComputedStyle, _commands: &mut Vec<PaintCommand>) {}

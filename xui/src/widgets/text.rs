@@ -1,8 +1,9 @@
+use crate::animation::AnimatedStyle;
 use crate::element::ElementDesc;
 use xui_interface::{
-    AnimatedStyle, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key,
-    OverflowWrap, PaintCommand, ParagraphStyle, Rect, Style, TextBoxStyle, TextContent,
-    TextOverflow, TextPaintCommand, TextProps, Widget, WidgetType,
+    ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, OverflowWrap,
+    PaintCommand, ParagraphStyle, Rect, Style, TextBoxStyle, TextContent, TextOverflow,
+    TextPaintCommand, TextProps, Widget, WidgetType,
 };
 
 use super::{label::apply_text_style, props_hash, widget_element_desc};
@@ -114,10 +115,6 @@ impl Widget for TextWidget {
 
     fn style(&self) -> &Style {
         &self.animated_style.base
-    }
-
-    fn style_animations(&self) -> &[xui_interface::StyleAnimation] {
-        &self.animated_style.animations
     }
 
     fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {

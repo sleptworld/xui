@@ -182,19 +182,19 @@ fn justify_content(value: JustifyStyle) -> tf::JustifyContent {
 
 fn edge_insets(value: EdgeInsets) -> tf::Rect<tf::LengthPercentage> {
     tf::Rect {
-        left: length_percentage(value.left),
-        right: length_percentage(value.right),
-        top: length_percentage(value.top),
-        bottom: length_percentage(value.bottom),
+        left: length_percentage(value.left()),
+        right: length_percentage(value.right()),
+        top: length_percentage(value.top()),
+        bottom: length_percentage(value.bottom()),
     }
 }
 
 fn edge_insets_auto(value: EdgeInsets) -> tf::Rect<tf::LengthPercentageAuto> {
     tf::Rect {
-        left: tf::LengthPercentageAuto::length(value.left),
-        right: tf::LengthPercentageAuto::length(value.right),
-        top: tf::LengthPercentageAuto::length(value.top),
-        bottom: tf::LengthPercentageAuto::length(value.bottom),
+        left: tf::LengthPercentageAuto::length(value.left()),
+        right: tf::LengthPercentageAuto::length(value.right()),
+        top: tf::LengthPercentageAuto::length(value.top()),
+        bottom: tf::LengthPercentageAuto::length(value.bottom()),
     }
 }
 

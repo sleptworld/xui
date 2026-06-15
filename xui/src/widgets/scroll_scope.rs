@@ -1,11 +1,9 @@
 use crate::{
     ElementDesc,
+    animation::AnimatedStyle,
     widgets::{props_hash, widget_element_desc},
 };
-use xui_interface::{
-    AnimatedStyle, DirtyFlags, Event, EventHandlers, Key, Style, StyleAnimation, Translation,
-    Widget,
-};
+use xui_interface::{DirtyFlags, Event, EventHandlers, Key, Style, Translation, Widget};
 
 pub struct ScrollScope {
     key: Option<Key>,
@@ -99,10 +97,6 @@ impl Widget for ScrollScope {
 
     fn style(&self) -> &xui_interface::Style {
         &self.animated_style.base
-    }
-
-    fn style_animations(&self) -> &[StyleAnimation] {
-        &self.animated_style.animations
     }
 
     fn paint(

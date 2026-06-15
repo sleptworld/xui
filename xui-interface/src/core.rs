@@ -1,5 +1,8 @@
 use ordered_float::NotNan;
-use std::ops::{Add, Sub};
+use std::{
+    hash::{Hash, Hasher},
+    ops::{Add, Sub},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Point {
@@ -221,6 +224,27 @@ pub struct Color {
     pub a: f32,
 }
 
+fn hash_f32_canonical<H: Hasher>(x: f32, state: &mut H) {
+    debug_assert!(!x.is_nan());
+
+    let bits = if x == 0.0 {
+        0.0f32.to_bits()
+    } else {
+        x.to_bits()
+    };
+
+    bits.hash(state);
+}
+
+impl Hash for Color {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        hash_f32_canonical(self.r, state);
+        hash_f32_canonical(self.g, state);
+        hash_f32_canonical(self.b, state);
+        hash_f32_canonical(self.a, state);
+    }
+}
+
 impl Color {
     pub const TRANSPARENT: Self = Self::rgba(0.0, 0.0, 0.0, 0.0);
     pub const BLACK: Self = Self::rgb(0.0, 0.0, 0.0);
@@ -262,18 +286,34 @@ impl Default for Color {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Hash)]
 pub struct EdgeInsets {
-    pub left: f32,
-    pub right: f32,
-    pub top: f32,
-    pub bottom: f32,
+    pub left: NotNan<f32>,
+    pub right: NotNan<f32>,
+    pub top: NotNan<f32>,
+    pub bottom: NotNan<f32>,
 }
 
 impl EdgeInsets {
-    pub const ZERO: Self = Self::all(0.0);
+    pub fn zero() -> Self {
+        Self::all(0.0)
+    }
 
-    pub const fn all(value: f32) -> Self {
+    pub fn new(left: f32, right: f32, top: f32, bottom: f32) -> Self {
+        let left = NotNan::new(left).unwrap();
+        let right = NotNan::new(right).unwrap();
+        let top = NotNan::new(top).unwrap();
+        let bottom = NotNan::new(bottom).unwrap();
+        Self {
+            left,
+            right,
+            top,
+            bottom,
+        }
+    }
+
+    pub fn all(value: f32) -> Self {
+        let value = NotNan::new(value).unwrap();
         Self {
             left: value,
             right: value,
@@ -282,13 +322,34 @@ impl EdgeInsets {
         }
     }
 
-    pub const fn symmetric(horizontal: f32, vertical: f32) -> Self {
+    pub fn symmetric(horizontal: f32, vertical: f32) -> Self {
+        let horizontal = NotNan::new(horizontal).unwrap();
+        let vertical = NotNan::new(vertical).unwrap();
         Self {
             left: horizontal,
             right: horizontal,
             top: vertical,
             bottom: vertical,
         }
+    }
+
+    #[inline(always)]
+    pub fn left(&self) -> f32 {
+        self.left.into_inner()
+    }
+    #[inline(always)]
+    pub fn right(&self) -> f32 {
+        self.right.into_inner()
+    }
+
+    #[inline(always)]
+    pub fn top(&self) -> f32 {
+        self.top.into_inner()
+    }
+
+    #[inline(always)]
+    pub fn bottom(&self) -> f32 {
+        self.bottom.into_inner()
     }
 }
 

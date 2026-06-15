@@ -4,12 +4,12 @@ use std::time::Duration;
 use taffy::prelude as tf;
 use xui_interface::render::Damage;
 use xui_interface::{
-    AnimationTransition, ComputedColorStyle, ComputedScrollbarStyle, ComputedStyle,
-    ComputedTextStyle, DirtyFlags, EventHandlers, EventTrigger, NodeId, NodeLifecycleEvent,
-    ScrollbarVisibilityStyle, TextContent, TextLayoutConstraints, TextMeasurer, Theme, Translation,
+    ComputedColorStyle, ComputedScrollbarStyle, ComputedStyle, ComputedTextStyle, DirtyFlags,
+    EventHandlers, EventTrigger, NodeId, NodeLifecycleEvent, ScrollbarVisibilityStyle, TextContent,
+    TextLayoutConstraints, TextMeasurer, Theme, Translation,
 };
 
-use crate::animation::{ActiveAnimation, AnimableStyle, StyleAnimationRule};
+use crate::animation::{ActiveAnimation, AnimableStyle, AnimationTransition, StyleAnimationRule};
 use crate::core::{Point, Rect, Size};
 use crate::event::{Event, EventHandlerSet, EventHandlerStore, EventResult};
 use crate::event_system::{self, EventState};
@@ -308,10 +308,12 @@ impl UiArena {
         !changed.is_empty()
     }
 
+    #[inline(always)]
     pub fn has_running_style_animations(&self) -> bool {
         self.nodes.values().any(Node::has_running_style_animations)
     }
 
+    #[inline(always)]
     pub fn effective_style(&self, id: NodeId) -> Option<ComputedStyle> {
         let node = self.nodes.get(id)?;
         Some(self.effective_style_for_node(node))
@@ -910,8 +912,7 @@ impl UiArena {
         }
 
         let widget = self.nodes[id].widget.clone();
-        let parent_style = self
-            .nodes[id]
+        let parent_style = self.nodes[id]
             .parent
             .and_then(|p| self.node(p))
             .map(|p| p.computed_style.clone())
@@ -938,7 +939,7 @@ impl UiArena {
             let animation_target = animation_rule.as_ref().map(|rule| {
                 let mut target = computed_style.clone();
                 if let Some(style) = &rule.style {
-                    target.apply(&parent_style, style, &self.theme);
+                    style.apply_to_computed(&mut target, &self.theme);
                 }
                 target
             });
@@ -1014,16 +1015,19 @@ impl UiArena {
         self.compute_layout(size, measurer);
     }
 
+    #[inline(always)]
     fn has_layout_dirty(&self) -> bool {
         self.nodes
             .values()
             .any(|node| node.dirty.intersects(Self::layout_dirty_flags()))
     }
 
+    #[inline(always)]
     fn layout_dirty_flags() -> DirtyFlags {
         DirtyFlags::LAYOUT | DirtyFlags::STYLE | DirtyFlags::TREE
     }
 
+    #[inline(always)]
     fn paint_dirty_flags() -> DirtyFlags {
         DirtyFlags::PAINT | DirtyFlags::LAYOUT | DirtyFlags::STYLE | DirtyFlags::ANIMATE
     }
@@ -1521,9 +1525,10 @@ impl Default for UiArena {
 #[cfg(test)]
 mod mutation_tests {
     use super::*;
+    use crate::animation::AnimationEasing;
     use crate::widgets::{button, column, container, text};
     use std::time::Duration;
-    use xui_interface::{AnimationEasing, Color, EventTrigger, PointerButton, Style};
+    use xui_interface::{Color, EventTrigger, PointerButton, Style};
 
     fn default_style() -> tf::Style {
         tf::Style::default()
@@ -1696,7 +1701,7 @@ mod mutation_tests {
                 .style(Style::new().background(Color::BLACK))
                 .animation(
                     EventTrigger::OnHover,
-                    Style::new().background(Color::WHITE),
+                    AnimableStyle::new().background(Color::WHITE),
                     linear_transition(),
                 ),
             sized_style(40.0, 20.0),
@@ -1738,7 +1743,7 @@ mod mutation_tests {
                 .style(Style::new().background(Color::BLACK))
                 .animation(
                     EventTrigger::OnClick,
-                    Style::new().background(Color::WHITE),
+                    AnimableStyle::new().background(Color::WHITE),
                     linear_transition(),
                 ),
             sized_style(40.0, 20.0),

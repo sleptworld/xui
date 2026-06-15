@@ -7,7 +7,7 @@ use std::rc::Rc;
 use xui_interface::TextContent;
 pub use xui_interface::{EventHandlers, Widget, WidgetType};
 
-use crate::animation::StyleAnimationRule;
+use crate::animation::{StyleAnimation, StyleAnimationRule};
 use crate::core::Rect;
 use crate::element::{ComponentDesc, ElementDesc, WidgetDesc};
 use crate::fiber::{ComponentRender, Key};
@@ -113,7 +113,7 @@ macro_rules! event_handler_methods {
 
 macro_rules! animated_style_methods {
     ($field:ident) => {
-        pub fn animated_style(mut self, animated_style: xui_interface::AnimatedStyle) -> Self {
+        pub fn animated_style(mut self, animated_style: crate::animation::AnimatedStyle) -> Self {
             self.$field = animated_style;
             self
         }
@@ -121,13 +121,19 @@ macro_rules! animated_style_methods {
         pub fn animation(
             mut self,
             trigger: xui_interface::EventTrigger,
-            style: xui_interface::Style,
-            transition: xui_interface::AnimationTransition,
+            style: crate::animation::AnimableStyle,
+            transition: crate::animation::AnimationTransition,
         ) -> Self {
             self.$field
                 .animations
-                .push(xui_interface::StyleAnimation::new(trigger, style, transition));
+                .push(crate::animation::StyleAnimation::new(
+                    trigger, style, transition,
+                ));
             self
+        }
+
+        pub(crate) fn style_animations(&self) -> &[crate::animation::StyleAnimation] {
+            &self.$field.animations
         }
     };
 }
@@ -176,6 +182,14 @@ macro_rules! define_widgets {
                 match self {
                     $(
                         Self::$name(widget) => &mut widget.event_handlers,
+                    )+
+                }
+            }
+
+            pub(crate) fn style_animations(&self) -> &[StyleAnimation] {
+                match self {
+                    $(
+                        Self::$name(widget) => widget.style_animations(),
                     )+
                 }
             }
@@ -231,14 +245,6 @@ macro_rules! define_widgets {
                 match self {
                     $(
                         Self::$name(widget) => widget.style(),
-                    )+
-                }
-            }
-
-            fn style_animations(&self) -> &[xui_interface::StyleAnimation] {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.style_animations(),
                     )+
                 }
             }

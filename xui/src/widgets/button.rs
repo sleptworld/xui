@@ -1,11 +1,13 @@
 use std::fmt::Debug;
 
-use crate::animation::{StyleAnimationRule, default_style_transition};
+use crate::animation::{
+    AnimatedStyle, AnimationTransition, StyleAnimationRule, default_style_transition,
+};
 use crate::element::ElementDesc;
 use xui_interface::{
-    AnimatedStyle, AnimationTransition, ColorToken, ComputedStyle, DirtyFlags, Event,
-    EventContext, EventHandlers, EventResult, EventTrigger, Key, PaintCommand, PointerButton, Rect,
-    Style, TextContent, TextPaintCommand, TextProps, Widget, WidgetState, WidgetType,
+    ColorToken, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult,
+    EventTrigger, Key, PaintCommand, PointerButton, Rect, Style, TextContent, TextPaintCommand,
+    TextProps, Widget, WidgetState, WidgetType,
 };
 
 use super::{container::paint_box, label::apply_text_style, props_hash, widget_element_desc};
@@ -167,22 +169,13 @@ impl Widget for ButtonWidget {
             .background(ColorToken::Surface)
             .border_color(ColorToken::Border)
             .border_width(1.0)
-            .padding(crate::core::EdgeInsets {
-                left: 8.0,
-                right: 8.0,
-                top: 4.0,
-                bottom: 4.0,
-            })
+            .padding(crate::core::EdgeInsets::new(8.0, 8.0, 4.0, 4.0))
             .color(ColorToken::Text)
             .font_size(14.0)
     }
 
     fn style(&self) -> &Style {
         &self.animated_style.base
-    }
-
-    fn style_animations(&self) -> &[xui_interface::StyleAnimation] {
-        &self.animated_style.animations
     }
 
     fn state_style(&self, state: WidgetState) -> Style {
@@ -230,10 +223,10 @@ impl Widget for ButtonWidget {
         commands.push(PaintCommand::Text(TextPaintCommand {
             node_id: Default::default(),
             rect: Rect::new(
-                rect.x + padding.left,
-                rect.y + padding.top,
-                (rect.width - padding.left - padding.right).max(0.0),
-                (rect.height - padding.top - padding.bottom).max(0.0),
+                rect.x + padding.left(),
+                rect.y + padding.top(),
+                (rect.width - padding.left() - padding.right()).max(0.0),
+                (rect.height - padding.top() - padding.bottom()).max(0.0),
             ),
             props: text_props,
         }));

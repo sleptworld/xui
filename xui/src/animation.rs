@@ -1,20 +1,180 @@
-use std::time::Duration;
+use std::{
+    hash::{Hash, Hasher},
+    time::Duration,
+};
 use xui_animation::{Animatable, Timeline};
 use xui_interface::{
-    AnimationEasing, AnimationTransition, Color, ColorStyle, ColorValue, ComputedColorStyle,
-    ComputedLinearGradientStyle, ComputedRadialGradientStyle, ComputedStrokeStyle, ComputedStyle,
-    EventTrigger, LinearGradientStyle, Point, RadialGradientStyle, StrokeLineStyle, Style,
-    StyleAnimation, Theme,
+    Color, ColorStyle, ColorValue, ComputedColorStyle, ComputedLinearGradientStyle,
+    ComputedRadialGradientStyle, ComputedStrokeStyle, ComputedStyle, EventTrigger,
+    LinearGradientStyle, Point, RadialGradientStyle, StrokeLineStyle, Style, Theme,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum AnimationEasing {
+    #[default]
+    Linear,
+    QuadIn,
+    QuadOut,
+    QuadInOut,
+    CubicIn,
+    CubicOut,
+    CubicInOut,
+    QuartIn,
+    QuartOut,
+    QuartInOut,
+    QuintIn,
+    QuintOut,
+    QuintInOut,
+    SineIn,
+    SineOut,
+    SineInOut,
+}
+
+impl From<AnimationEasing> for xui_animation::Easing {
+    fn from(value: AnimationEasing) -> Self {
+        match value {
+            AnimationEasing::Linear => Self::Linear,
+            AnimationEasing::QuadIn => Self::QuadIn,
+            AnimationEasing::QuadOut => Self::QuadOut,
+            AnimationEasing::QuadInOut => Self::QuadInOut,
+            AnimationEasing::CubicIn => Self::CubicIn,
+            AnimationEasing::CubicOut => Self::CubicOut,
+            AnimationEasing::CubicInOut => Self::CubicInOut,
+            AnimationEasing::QuartIn => Self::QuartIn,
+            AnimationEasing::QuartOut => Self::QuartOut,
+            AnimationEasing::QuartInOut => Self::QuartInOut,
+            AnimationEasing::QuintIn => Self::QuintIn,
+            AnimationEasing::QuintOut => Self::QuintOut,
+            AnimationEasing::QuintInOut => Self::QuintInOut,
+            AnimationEasing::SineIn => Self::SineIn,
+            AnimationEasing::SineOut => Self::SineOut,
+            AnimationEasing::SineInOut => Self::SineInOut,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AnimationTransition {
+    pub duration: Duration,
+    pub delay: Duration,
+    pub easing: AnimationEasing,
+}
+
+impl AnimationTransition {
+    pub fn new(duration: Duration) -> Self {
+        Self {
+            duration,
+            delay: Duration::ZERO,
+            easing: AnimationEasing::default(),
+        }
+    }
+
+    pub fn delay(mut self, delay: Duration) -> Self {
+        self.delay = delay;
+        self
+    }
+
+    pub fn ease(mut self, easing: AnimationEasing) -> Self {
+        self.easing = easing;
+        self
+    }
+}
+
+impl Default for AnimationTransition {
+    fn default() -> Self {
+        Self::new(Duration::ZERO)
+    }
+}
+
+impl From<AnimationTransition> for xui_animation::Transition {
+    fn from(value: AnimationTransition) -> Self {
+        Self {
+            duration: value.duration,
+            delay: value.delay,
+            easing: value.easing.into(),
+        }
+    }
+}
 
 pub fn default_style_transition() -> AnimationTransition {
     AnimationTransition::new(Duration::from_millis(120)).ease(AnimationEasing::CubicOut)
 }
 
 #[derive(Debug, Clone, PartialEq, Hash)]
+pub struct StyleAnimation {
+    pub trigger: EventTrigger,
+    pub style: AnimableStyle,
+    pub transition: AnimationTransition,
+}
+
+impl StyleAnimation {
+    pub fn new(
+        trigger: EventTrigger,
+        style: AnimableStyle,
+        transition: AnimationTransition,
+    ) -> Self {
+        Self {
+            trigger,
+            style,
+            transition,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Hash)]
+pub struct AnimatedStyle {
+    pub base: Style,
+    pub animations: Vec<StyleAnimation>,
+}
+
+impl AnimatedStyle {
+    pub fn new(base: Style) -> Self {
+        Self {
+            base,
+            animations: Vec::new(),
+        }
+    }
+
+    pub fn animation(
+        mut self,
+        trigger: EventTrigger,
+        style: AnimableStyle,
+        transition: AnimationTransition,
+    ) -> Self {
+        self.animations
+            .push(StyleAnimation::new(trigger, style, transition));
+        self
+    }
+
+    pub fn on_hover(self, style: AnimableStyle, transition: AnimationTransition) -> Self {
+        self.animation(EventTrigger::OnHover, style, transition)
+    }
+
+    pub fn on_hover_start(self, style: AnimableStyle, transition: AnimationTransition) -> Self {
+        self.animation(EventTrigger::OnHoverStart, style, transition)
+    }
+
+    pub fn on_hover_end(self, style: AnimableStyle, transition: AnimationTransition) -> Self {
+        self.animation(EventTrigger::OnHoverEnd, style, transition)
+    }
+
+    pub fn on_press(self, style: AnimableStyle, transition: AnimationTransition) -> Self {
+        self.animation(EventTrigger::OnPress, style, transition)
+    }
+
+    pub fn on_focus(self, style: AnimableStyle, transition: AnimationTransition) -> Self {
+        self.animation(EventTrigger::OnFocus, style, transition)
+    }
+
+    pub fn on_click(self, style: AnimableStyle, transition: AnimationTransition) -> Self {
+        self.animation(EventTrigger::OnClick, style, transition)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Hash)]
 pub struct StyleAnimationRule {
     pub trigger: EventTrigger,
-    pub style: Option<Style>,
+    pub style: Option<AnimableStyle>,
     pub transition: AnimationTransition,
 }
 
@@ -96,6 +256,40 @@ pub struct AnimableStyle {
 }
 
 impl AnimableStyle {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn color(mut self, color: impl Into<ColorValue>) -> Self {
+        self.text.color = Some(ColorStyle::solid(color));
+        self
+    }
+
+    pub fn font_size(mut self, font_size: f32) -> Self {
+        self.text.font_size = Some(font_size);
+        self
+    }
+
+    pub fn background(mut self, background: impl Into<ColorStyle>) -> Self {
+        self.paint.background = Some(background.into());
+        self
+    }
+
+    pub fn border_color(mut self, color: impl Into<ColorStyle>) -> Self {
+        self.paint.border_color = Some(color.into());
+        self
+    }
+
+    pub fn border_width(mut self, width: f32) -> Self {
+        self.paint.border_width = Some(width);
+        self
+    }
+
+    pub fn border_radius(mut self, radius: f32) -> Self {
+        self.paint.border_radius = Some(radius);
+        self
+    }
+
     pub fn is_empty(&self) -> bool {
         self.text.color.is_none()
             && self.text.font_size.is_none()
@@ -231,6 +425,75 @@ pub struct AnimableStrokeStyle {
     pub width: Option<f32>,
 }
 
+impl Hash for AnimableStyle {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.text.hash(state);
+        self.paint.hash(state);
+    }
+}
+
+impl Hash for AnimableTextStyle {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.color.hash(state);
+        hash_f32_option(self.font_size, state);
+    }
+}
+
+impl Hash for AnimablePaintStyle {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.background.hash(state);
+        self.border_color.hash(state);
+        hash_f32_option(self.border_width, state);
+        hash_f32_option(self.border_radius, state);
+    }
+}
+
+impl Hash for AnimableShadowStyle {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        hash_color_option(self.color, state);
+        match self.offset {
+            Some(point) => {
+                true.hash(state);
+                point.x.to_bits().hash(state);
+                point.y.to_bits().hash(state);
+            }
+            None => false.hash(state),
+        }
+        hash_f32_option(self.blur, state);
+        hash_f32_option(self.spread, state);
+    }
+}
+
+impl Hash for AnimableStrokeStyle {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.color.hash(state);
+        hash_f32_option(self.width, state);
+    }
+}
+
+fn hash_f32_option<H: Hasher>(value: Option<f32>, state: &mut H) {
+    match value {
+        Some(value) => {
+            true.hash(state);
+            value.to_bits().hash(state);
+        }
+        None => false.hash(state),
+    }
+}
+
+fn hash_color_option<H: Hasher>(value: Option<Color>, state: &mut H) {
+    match value {
+        Some(color) => {
+            true.hash(state);
+            color.r.to_bits().hash(state);
+            color.g.to_bits().hash(state);
+            color.b.to_bits().hash(state);
+            color.a.to_bits().hash(state);
+        }
+        None => false.hash(state),
+    }
+}
+
 fn color_style_from_computed(value: ComputedColorStyle) -> ColorStyle {
     match value {
         ComputedColorStyle::Solid(color) => ColorStyle::solid(color),
@@ -340,5 +603,26 @@ mod tests {
         assert_near(color.g, 0.5);
         assert_near(color.b, 0.5);
         assert_near(effective.paint.border_radius, 5.0);
+    }
+
+    #[test]
+    fn animated_style_records_event_triggered_animable_style_animation() {
+        let transition = AnimationTransition::new(Duration::from_millis(120))
+            .delay(Duration::from_millis(20))
+            .ease(AnimationEasing::CubicOut);
+        let animated = AnimatedStyle::new(Style::new().background(Color::BLACK))
+            .on_hover(AnimableStyle::new().background(Color::WHITE), transition);
+
+        assert_eq!(
+            animated.base.paint.background,
+            xui_interface::StyleValue::Value(ColorStyle::Solid(ColorValue::Color(Color::BLACK)))
+        );
+        assert_eq!(animated.animations.len(), 1);
+        assert_eq!(animated.animations[0].trigger, EventTrigger::OnHover);
+        assert_eq!(animated.animations[0].transition, transition);
+        assert_eq!(
+            animated.animations[0].style.paint.background,
+            Some(ColorStyle::Solid(ColorValue::Color(Color::WHITE)))
+        );
     }
 }

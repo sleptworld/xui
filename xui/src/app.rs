@@ -18,9 +18,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(
-        root_component: fn(&mut HookContext<'_>) -> ElementDesc,
-    ) -> Self {
+    pub fn new(root_component: fn(&mut HookContext<'_>) -> ElementDesc) -> Self {
         let arena = UiArena::new();
         let scheduler = Scheduler::default();
         let components = ComponentRuntime::new(arena.root(), scheduler, root_component);
@@ -76,10 +74,12 @@ impl App {
         result
     }
 
+    #[inline(always)]
     pub fn tick_style_animations(&mut self, delta: Duration) -> bool {
         self.arena.tick_style_animations(delta)
     }
 
+    #[inline(always)]
     pub fn has_running_style_animations(&self) -> bool {
         self.arena.has_running_style_animations()
     }
@@ -142,9 +142,7 @@ impl App {
     }
 }
 
-pub fn app(
-    root_component: fn(&mut HookContext<'_>) -> ElementDesc,
-) -> App {
+pub fn app(root_component: fn(&mut HookContext<'_>) -> ElementDesc) -> App {
     App::new(root_component)
 }
 

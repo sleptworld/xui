@@ -1,8 +1,9 @@
+use crate::animation::AnimatedStyle;
 use crate::element::ElementDesc;
 use xui_interface::{
-    AnimatedStyle, ColorStyle, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers,
-    EventResult, Key, LengthValue, PaintCommand, Rect, ScrollDirectionStyle,
-    ScrollbarVisibilityStyle, Style, Widget, WidgetType, style::ScrollbarStylePatch,
+    ColorStyle, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key,
+    LengthValue, PaintCommand, Rect, ScrollDirectionStyle, ScrollbarVisibilityStyle, Style, Widget,
+    WidgetType, style::ScrollbarStylePatch,
 };
 
 use super::{props_hash, widget_element_desc};
@@ -59,12 +60,20 @@ impl ContainerWidget {
     }
 
     pub fn scrollbar_track_color(mut self, color: impl Into<ColorStyle>) -> Self {
-        self.animated_style.base = self.animated_style.base.clone().scrollbar_track_color(color);
+        self.animated_style.base = self
+            .animated_style
+            .base
+            .clone()
+            .scrollbar_track_color(color);
         self
     }
 
     pub fn scrollbar_thumb_color(mut self, color: impl Into<ColorStyle>) -> Self {
-        self.animated_style.base = self.animated_style.base.clone().scrollbar_thumb_color(color);
+        self.animated_style.base = self
+            .animated_style
+            .base
+            .clone()
+            .scrollbar_thumb_color(color);
         self
     }
 
@@ -74,7 +83,11 @@ impl ContainerWidget {
     }
 
     pub fn scrollbar_visibility(mut self, visibility: ScrollbarVisibilityStyle) -> Self {
-        self.animated_style.base = self.animated_style.base.clone().scrollbar_visibility(visibility);
+        self.animated_style.base = self
+            .animated_style
+            .base
+            .clone()
+            .scrollbar_visibility(visibility);
         self
     }
 
@@ -129,10 +142,6 @@ impl Widget for ContainerWidget {
 
     fn style(&self) -> &Style {
         &self.animated_style.base
-    }
-
-    fn style_animations(&self) -> &[xui_interface::StyleAnimation] {
-        &self.animated_style.animations
     }
 
     fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {

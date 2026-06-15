@@ -1,7 +1,7 @@
+use crate::animation::AnimatedStyle;
 use xui_interface::{
-    AnimatedStyle, Color, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers,
-    EventResult, PaintCommand, Rect, ScrollDirectionStyle, Size, Style, StyleAnimation, Widget,
-    WidgetType, core::Sizing,
+    Color, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult,
+    PaintCommand, Rect, Size, Style, Widget, WidgetType, core::Sizing,
 };
 
 use super::props_hash;
@@ -49,20 +49,14 @@ impl Widget for RootWidget {
     }
 
     fn default_style(&self) -> Style {
-        Style::new()
-            .size(Size::<Sizing>::new(
-                Sizing::Percent(1.0.try_into().unwrap()),
-                Sizing::Percent(1.0.try_into().unwrap()),
-            ))
-            .scroll_direction(ScrollDirectionStyle::Both)
+        Style::new().size(Size::<Sizing>::new(
+            Sizing::Percent(1.0.try_into().unwrap()),
+            Sizing::Percent(1.0.try_into().unwrap()),
+        ))
     }
 
     fn style(&self) -> &Style {
         &self.animated_style.base
-    }
-
-    fn style_animations(&self) -> &[StyleAnimation] {
-        &self.animated_style.animations
     }
 
     fn paint(&self, _rect: Rect, _style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {

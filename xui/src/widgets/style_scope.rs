@@ -1,7 +1,8 @@
+use crate::animation::AnimatedStyle;
 use crate::element::ElementDesc;
 use xui_interface::{
-    AnimatedStyle, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key,
-    PaintCommand, Rect, Style, Widget, WidgetType,
+    ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, PaintCommand,
+    Rect, Style, Widget, WidgetType,
 };
 
 use super::{props_hash, widget_element_desc};
@@ -81,10 +82,6 @@ impl Widget for StyleScopeWidget {
 
     fn style(&self) -> &Style {
         &self.local_style.base
-    }
-
-    fn style_animations(&self) -> &[xui_interface::StyleAnimation] {
-        &self.local_style.animations
     }
 
     fn paint(&self, _rect: Rect, _style: &ComputedStyle, _commands: &mut Vec<PaintCommand>) {}

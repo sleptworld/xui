@@ -2912,6 +2912,7 @@ name = "xui-animation"
 version = "0.1.0"
 dependencies = [
  "easer",
+ "ordered-float",
  "palette",
  "xui-interface",
  "xui-macros",

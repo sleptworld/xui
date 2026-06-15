@@ -4,6 +4,8 @@ use winit::window::Window;
 use xui::prelude::*;
 use xui_winit::{CosmicTextEngine, WGPUBackend, WinitRunner, WinitRunnerOptions, WinitTextEngine};
 
+use xui_components::button::*;
+
 #[component]
 fn btn(name: &String) {
     xui! {
@@ -76,11 +78,17 @@ fn test_page() {
 
 #[component]
 fn editor() {
+    let label = cx.use_state(|| "Hello,World".to_string());
+    let mut button_prop = ButtonProp::default();
+    button_prop.text_color = Color::BLUE_500.into();
     xui! {
         <row size={Size::fill()}>
             <container width={Sizing::percent(0.3)} height={Sizing::fill()} background ={Color::rgb(1.0,0.0,0.0)} />
             <container size={Size::fill()} background ={Color::BLUE_500} >
-                <text> {"Hello,World"} </text>
+                <column gap={8.0}>
+                    <text> {"Hello,World"} </text>
+                    <pbutton text={label.get()} ps = {button_prop}/>
+                </column>
             </container>
         </row>
     }

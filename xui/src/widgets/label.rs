@@ -1,9 +1,10 @@
+use crate::animation::AnimatedStyle;
 use crate::element::ElementDesc;
 
 use super::{props_hash, widget_element_desc};
 use xui_interface::{
-    AnimatedStyle, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key,
-    PaintCommand, Rect, Style, TextContent, TextPaintCommand, TextProps, Widget, WidgetType,
+    ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, PaintCommand,
+    Rect, Style, TextContent, TextPaintCommand, TextProps, Widget, WidgetType,
 };
 
 #[derive(Debug)]
@@ -71,10 +72,6 @@ impl Widget for LabelWidget {
 
     fn style(&self) -> &Style {
         &self.animated_style.base
-    }
-
-    fn style_animations(&self) -> &[xui_interface::StyleAnimation] {
-        &self.animated_style.animations
     }
 
     fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {

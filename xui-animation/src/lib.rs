@@ -1,11 +1,11 @@
+use ordered_float::NotNan;
 use std::time::Duration;
 
 use easer::functions::{Cubic, Easing as EaserFunction, Linear, Quad, Quart, Quint, Sine};
 use palette::{LinSrgba, Mix};
 use xui_interface::{
-    AnimationEasing, AnimationTransition, Color, ColorStyle, ColorValue, EdgeInsets, LengthValue,
-    LinearGradientStyle, Point, RadialGradientStyle, ScrollbarStyle, ShadowStyle, Size, Sizing,
-    StrokeStyle, Style, StyleValue,
+    Color, ColorStyle, ColorValue, EdgeInsets, LengthValue, LinearGradientStyle, Point,
+    RadialGradientStyle, ScrollbarStyle, ShadowStyle, Size, Sizing, StrokeStyle, StyleValue,
 };
 pub use xui_macros::Animatable;
 
@@ -60,29 +60,6 @@ impl Easing {
     }
 }
 
-impl From<AnimationEasing> for Easing {
-    fn from(value: AnimationEasing) -> Self {
-        match value {
-            AnimationEasing::Linear => Self::Linear,
-            AnimationEasing::QuadIn => Self::QuadIn,
-            AnimationEasing::QuadOut => Self::QuadOut,
-            AnimationEasing::QuadInOut => Self::QuadInOut,
-            AnimationEasing::CubicIn => Self::CubicIn,
-            AnimationEasing::CubicOut => Self::CubicOut,
-            AnimationEasing::CubicInOut => Self::CubicInOut,
-            AnimationEasing::QuartIn => Self::QuartIn,
-            AnimationEasing::QuartOut => Self::QuartOut,
-            AnimationEasing::QuartInOut => Self::QuartInOut,
-            AnimationEasing::QuintIn => Self::QuintIn,
-            AnimationEasing::QuintOut => Self::QuintOut,
-            AnimationEasing::QuintInOut => Self::QuintInOut,
-            AnimationEasing::SineIn => Self::SineIn,
-            AnimationEasing::SineOut => Self::SineOut,
-            AnimationEasing::SineInOut => Self::SineInOut,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Transition {
     pub duration: Duration,
@@ -129,16 +106,6 @@ impl Transition {
 impl Default for Transition {
     fn default() -> Self {
         Self::new(Duration::ZERO)
-    }
-}
-
-impl From<AnimationTransition> for Transition {
-    fn from(value: AnimationTransition) -> Self {
-        Self {
-            duration: value.duration,
-            delay: value.delay,
-            easing: value.easing.into(),
-        }
     }
 }
 
@@ -307,6 +274,14 @@ impl Animatable for f32 {
     }
 }
 
+impl Animatable for NotNan<f32> {
+    fn interpolate(from: &Self, to: &Self, progress: f32) -> Self {
+        let from = from.into_inner();
+        let to = to.into_inner();
+        NotNan::new(lerp_f32(from, to, progress)).unwrap()
+    }
+}
+
 impl Animatable for Point {
     fn interpolate(from: &Self, to: &Self, progress: f32) -> Self {
         Self::new(
@@ -328,10 +303,10 @@ impl Animatable for Size<f32> {
 impl Animatable for EdgeInsets {
     fn interpolate(from: &Self, to: &Self, progress: f32) -> Self {
         Self {
-            left: f32::interpolate(&from.left, &to.left, progress),
-            right: f32::interpolate(&from.right, &to.right, progress),
-            top: f32::interpolate(&from.top, &to.top, progress),
-            bottom: f32::interpolate(&from.bottom, &to.bottom, progress),
+            left: NotNan::<f32>::interpolate(&from.left, &to.left, progress),
+            right: NotNan::<f32>::interpolate(&from.right, &to.right, progress),
+            top: NotNan::<f32>::interpolate(&from.top, &to.top, progress),
+            bottom: NotNan::<f32>::interpolate(&from.bottom, &to.bottom, progress),
         }
     }
 }
