@@ -429,7 +429,10 @@ impl UiArena {
 
         let old_parent = self.nodes[child].parent;
         let old_position = self.nodes[child].position;
-        self.detach_child_from_current_parent(child);
+
+        if let Some(old_parent) = old_parent {
+            self.detach_child_from_current_parent(child, old_parent);
+        }
 
         if !self.nodes[parent].children.contains(&child) {
             self.nodes[parent].children.push(child);
@@ -460,15 +463,17 @@ impl UiArena {
 
         let old_parent = self.nodes[child].parent;
         let old_position = self.nodes[child].position;
-        self.detach_child_from_current_parent(child);
+
+        if let Some(old_parent) = old_parent {
+            self.detach_child_from_current_parent(child, old_parent);
+        }
 
         let Some(index) = self.nodes[parent]
             .children
             .iter()
             .position(|candidate| *candidate == before)
         else {
-            self.append_child(parent, child);
-            return;
+            panic!("ERROR");
         };
 
         self.nodes[parent].children.insert(index, child);
@@ -1283,11 +1288,7 @@ impl UiArena {
             .expect("failed to sync taffy children");
     }
 
-    fn detach_child_from_current_parent(&mut self, child: NodeId) {
-        let Some(old_parent) = self.nodes.get(child).and_then(|node| node.parent) else {
-            return;
-        };
-
+    fn detach_child_from_current_parent(&mut self, child: NodeId, old_parent: NodeId) {
         self.nodes[old_parent]
             .children
             .retain(|candidate| *candidate != child);

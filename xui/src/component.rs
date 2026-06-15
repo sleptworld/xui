@@ -792,17 +792,12 @@ impl ComponentRuntime {
             return;
         };
 
-        if effect.contains(EffectTag::PLACEMENT) {
+        if effect.intersects(EffectTag::PLACEMENT.union(EffectTag::MOVE)) {
             let before = self.find_host_sibling_for_wip(wip_id);
             self.commit_placement_subtree(wip_id, parent_host, before, arena);
         } else {
             if effect.contains(EffectTag::UPDATE) {
                 self.commit_update_if_host(wip_id, arena);
-            }
-
-            if effect.contains(EffectTag::MOVE) {
-                let before = self.find_host_sibling_for_wip(wip_id);
-                self.commit_move_subtree(wip_id, parent_host, before, arena);
             }
         }
 
@@ -903,47 +898,13 @@ impl ComponentRuntime {
             }
             if let Some(node) = self.wip_nodes.get_mut(wip_id) {
                 node.effect.remove(EffectTag::PLACEMENT);
-            }
-            return;
-        }
-
-        for child in children {
-            self.commit_placement_subtree(child, parent_host, before, arena);
-        }
-    }
-
-    fn commit_move_subtree(
-        &mut self,
-        wip_id: WipId,
-        parent_host: NodeId,
-        before: Option<NodeId>,
-        arena: &mut UiArena,
-    ) {
-        let Some((tag, children)) = self
-            .wip_nodes
-            .get(wip_id)
-            .map(|node| (node.tag, node.children.clone()))
-        else {
-            return;
-        };
-
-        if matches!(tag, FiberTag::Host(_)) {
-            let host_id = self
-                .host_node_for_wip(wip_id)
-                .expect("move host fiber missing host node");
-            if let Some(before) = before {
-                arena.insert_before(parent_host, host_id, before);
-            } else {
-                arena.append_child(parent_host, host_id);
-            }
-            if let Some(node) = self.wip_nodes.get_mut(wip_id) {
                 node.effect.remove(EffectTag::MOVE);
             }
             return;
         }
 
         for child in children {
-            self.commit_move_subtree(child, parent_host, before, arena);
+            self.commit_placement_subtree(child, parent_host, before, arena);
         }
     }
 
