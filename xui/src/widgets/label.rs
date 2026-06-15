@@ -2,15 +2,15 @@ use crate::element::ElementDesc;
 
 use super::{props_hash, widget_element_desc};
 use xui_interface::{
-    ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, PaintCommand,
-    Rect, Style, TextContent, TextPaintCommand, TextProps, Widget, WidgetType,
+    AnimatedStyle, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key,
+    PaintCommand, Rect, Style, TextContent, TextPaintCommand, TextProps, Widget, WidgetType,
 };
 
 #[derive(Debug)]
 pub struct LabelWidget {
     pub key: Option<Key>,
     pub text: TextContent,
-    pub style: Style,
+    pub animated_style: AnimatedStyle,
     pub event_handlers: EventHandlers,
 }
 
@@ -19,15 +19,17 @@ impl LabelWidget {
         Self {
             key: None,
             text: text.into(),
-            style: Style::new(),
+            animated_style: AnimatedStyle::new(Style::new()),
             event_handlers: EventHandlers::default(),
         }
     }
 
     pub fn style(mut self, style: Style) -> Self {
-        self.style = style;
+        self.animated_style.base = style;
         self
     }
+
+    animated_style_methods!(animated_style);
 
     pub fn key(mut self, key: impl Into<Key>) -> Self {
         self.key = Some(key.into());
@@ -51,7 +53,7 @@ impl Widget for LabelWidget {
     }
 
     fn props_hash(&self) -> u64 {
-        props_hash(&(&self.text, &self.style))
+        props_hash(&(&self.text, &self.animated_style))
     }
 
     fn update_from(&mut self, next: &Self) -> DirtyFlags {
@@ -60,15 +62,19 @@ impl Widget for LabelWidget {
             self.text = next.text.clone();
             flags |= DirtyFlags::LAYOUT | DirtyFlags::PAINT;
         }
-        if self.style != next.style {
-            self.style = next.style.clone();
+        if self.animated_style != next.animated_style {
+            self.animated_style = next.animated_style.clone();
             flags |= DirtyFlags::LAYOUT | DirtyFlags::PAINT;
         }
         flags
     }
 
     fn style(&self) -> &Style {
-        &self.style
+        &self.animated_style.base
+    }
+
+    fn style_animations(&self) -> &[xui_interface::StyleAnimation] {
+        &self.animated_style.animations
     }
 
     fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {

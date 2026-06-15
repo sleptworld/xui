@@ -1,14 +1,14 @@
 use crate::element::ElementDesc;
 use xui_interface::{
-    ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, PaintCommand,
-    Rect, Size, Style, Widget, WidgetType,
+    AnimatedStyle, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key,
+    PaintCommand, Rect, Size, Style, Widget, WidgetType,
 };
 
 use super::{props_hash, widget_element_desc};
 
 pub struct RowWidget {
     pub key: Option<Key>,
-    pub style: Style,
+    pub animated_style: AnimatedStyle,
     pub event_handlers: EventHandlers,
 }
 
@@ -16,7 +16,7 @@ impl std::fmt::Debug for RowWidget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RowWidget")
             .field("key", &self.key)
-            .field("style", &self.style)
+            .field("animated_style", &self.animated_style)
             .finish()
     }
 }
@@ -25,15 +25,17 @@ impl RowWidget {
     pub fn new() -> Self {
         Self {
             key: None,
-            style: Style::new(),
+            animated_style: AnimatedStyle::new(Style::new()),
             event_handlers: EventHandlers::default(),
         }
     }
 
     pub fn style(mut self, style: Style) -> Self {
-        self.style = style;
+        self.animated_style.base = style;
         self
     }
+
+    animated_style_methods!(animated_style);
 
     pub fn key(mut self, key: impl Into<Key>) -> Self {
         self.key = Some(key.into());
@@ -63,12 +65,12 @@ impl Widget for RowWidget {
     }
 
     fn props_hash(&self) -> u64 {
-        props_hash(&self.style)
+        props_hash(&self.animated_style)
     }
 
     fn update_from(&mut self, next: &Self) -> DirtyFlags {
-        if self.style != next.style {
-            self.style = next.style.clone();
+        if self.animated_style != next.animated_style {
+            self.animated_style = next.animated_style.clone();
             DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT
         } else {
             DirtyFlags::empty()
@@ -80,7 +82,11 @@ impl Widget for RowWidget {
     }
 
     fn style(&self) -> &Style {
-        &self.style
+        &self.animated_style.base
+    }
+
+    fn style_animations(&self) -> &[xui_interface::StyleAnimation] {
+        &self.animated_style.animations
     }
 
     fn paint(&self, _rect: Rect, _style: &ComputedStyle, _commands: &mut Vec<PaintCommand>) {}

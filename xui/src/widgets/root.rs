@@ -1,19 +1,33 @@
 use xui_interface::{
-    Color, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult,
-    PaintCommand, Rect, ScrollDirectionStyle, Size, Style, Widget, WidgetType, core::Sizing,
+    AnimatedStyle, Color, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers,
+    EventResult, PaintCommand, Rect, ScrollDirectionStyle, Size, Style, StyleAnimation, Widget,
+    WidgetType, core::Sizing,
 };
+
+use super::props_hash;
 
 #[derive(Debug)]
 pub struct RootWidget {
+    pub animated_style: AnimatedStyle,
     pub event_handlers: EventHandlers,
 }
 
 impl Default for RootWidget {
     fn default() -> Self {
         Self {
+            animated_style: AnimatedStyle::new(Style::new()),
             event_handlers: EventHandlers::default(),
         }
     }
+}
+
+impl RootWidget {
+    pub fn style(mut self, style: Style) -> Self {
+        self.animated_style.base = style;
+        self
+    }
+
+    animated_style_methods!(animated_style);
 }
 
 impl Widget for RootWidget {
@@ -22,11 +36,16 @@ impl Widget for RootWidget {
     }
 
     fn props_hash(&self) -> u64 {
-        0
+        props_hash(&self.animated_style)
     }
 
-    fn update_from(&mut self, _next: &Self) -> DirtyFlags {
-        DirtyFlags::empty()
+    fn update_from(&mut self, next: &Self) -> DirtyFlags {
+        if self.animated_style != next.animated_style {
+            self.animated_style = next.animated_style.clone();
+            DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT
+        } else {
+            DirtyFlags::empty()
+        }
     }
 
     fn default_style(&self) -> Style {
@@ -36,6 +55,14 @@ impl Widget for RootWidget {
                 Sizing::Percent(1.0.try_into().unwrap()),
             ))
             .scroll_direction(ScrollDirectionStyle::Both)
+    }
+
+    fn style(&self) -> &Style {
+        &self.animated_style.base
+    }
+
+    fn style_animations(&self) -> &[StyleAnimation] {
+        &self.animated_style.animations
     }
 
     fn paint(&self, _rect: Rect, _style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {

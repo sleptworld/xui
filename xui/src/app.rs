@@ -80,6 +80,10 @@ impl App {
         self.arena.tick_style_animations(delta)
     }
 
+    pub fn has_running_style_animations(&self) -> bool {
+        self.arena.has_running_style_animations()
+    }
+
     pub fn render<B: RenderBackend<T>, T: TextMeasurer>(
         &mut self,
         backend: &mut B,

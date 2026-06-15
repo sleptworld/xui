@@ -1,8 +1,8 @@
 use crate::element::ElementDesc;
 use xui_interface::{
-    ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, OverflowWrap,
-    PaintCommand, ParagraphStyle, Rect, Style, TextBoxStyle, TextContent, TextOverflow,
-    TextPaintCommand, TextProps, Widget, WidgetType,
+    AnimatedStyle, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key,
+    OverflowWrap, PaintCommand, ParagraphStyle, Rect, Style, TextBoxStyle, TextContent,
+    TextOverflow, TextPaintCommand, TextProps, Widget, WidgetType,
 };
 
 use super::{label::apply_text_style, props_hash, widget_element_desc};
@@ -11,7 +11,7 @@ use super::{label::apply_text_style, props_hash, widget_element_desc};
 pub struct TextWidget {
     pub key: Option<Key>,
     pub props: TextProps,
-    pub style: Style,
+    pub animated_style: AnimatedStyle,
     pub event_handlers: EventHandlers,
 }
 
@@ -20,7 +20,7 @@ impl TextWidget {
         Self {
             key: None,
             props: TextProps::new(text),
-            style: Style::new(),
+            animated_style: AnimatedStyle::new(Style::new()),
             event_handlers: EventHandlers::default(),
         }
     }
@@ -36,9 +36,11 @@ impl TextWidget {
     }
 
     pub fn style(mut self, style: Style) -> Self {
-        self.style = style;
+        self.animated_style.base = style;
         self
     }
+
+    animated_style_methods!(animated_style);
 
     pub fn paragraph(mut self, paragraph: ParagraphStyle) -> Self {
         self.props.paragraph = paragraph;
@@ -91,7 +93,7 @@ impl Widget for TextWidget {
             &self.props.text,
             &self.props.paragraph,
             &self.props.text_box,
-            &self.style,
+            &self.animated_style,
         ))
     }
 
@@ -100,18 +102,22 @@ impl Widget for TextWidget {
         if self.props.text != next.props.text
             || self.props.paragraph != next.props.paragraph
             || self.props.text_box != next.props.text_box
-            || self.style != next.style
+            || self.animated_style != next.animated_style
         {
             flags |= DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
         }
 
         self.props = next.props.clone();
-        self.style = next.style.clone();
+        self.animated_style = next.animated_style.clone();
         flags
     }
 
     fn style(&self) -> &Style {
-        &self.style
+        &self.animated_style.base
+    }
+
+    fn style_animations(&self) -> &[xui_interface::StyleAnimation] {
+        &self.animated_style.animations
     }
 
     fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {

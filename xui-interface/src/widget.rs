@@ -5,7 +5,7 @@ use smallstr::SmallString;
 
 use crate::{
     ComputedStyle, ComputedTextStyle, DirtyFlags, Event, EventContext, EventResult, PaintCommand,
-    Rect, Size, Style, TextContent, TextLayoutConstraints, WidgetState,
+    Rect, Size, Style, StyleAnimation, TextContent, TextLayoutConstraints, WidgetState,
 };
 
 new_key_type! {
@@ -161,6 +161,10 @@ pub trait Widget: Debug {
     fn style(&self) -> &Style {
         static STYLE: std::sync::LazyLock<Style> = std::sync::LazyLock::new(Style::new);
         &STYLE
+    }
+
+    fn style_animations(&self) -> &[StyleAnimation] {
+        &[]
     }
 
     fn state_style(&self, _state: WidgetState) -> Style {

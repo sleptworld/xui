@@ -1,10 +1,11 @@
 use std::fmt::Debug;
 
+use crate::animation::{StyleAnimationRule, default_style_transition};
 use crate::element::ElementDesc;
 use xui_interface::{
-    ColorToken, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key,
-    PaintCommand, PointerButton, Rect, Style, TextContent, TextPaintCommand, TextProps, Widget,
-    WidgetState, WidgetType,
+    AnimatedStyle, AnimationTransition, ColorToken, ComputedStyle, DirtyFlags, Event,
+    EventContext, EventHandlers, EventResult, EventTrigger, Key, PaintCommand, PointerButton, Rect,
+    Style, TextContent, TextPaintCommand, TextProps, Widget, WidgetState, WidgetType,
 };
 
 use super::{container::paint_box, label::apply_text_style, props_hash, widget_element_desc};
@@ -12,10 +13,12 @@ use super::{container::paint_box, label::apply_text_style, props_hash, widget_el
 pub struct ButtonWidget {
     pub key: Option<Key>,
     pub text: TextContent,
-    pub style: Style,
+    pub animated_style: AnimatedStyle,
     pub hover_style: Style,
     pub pressed_style: Style,
     pub disabled_style: Style,
+    pub hover_transition: AnimationTransition,
+    pub pressed_transition: AnimationTransition,
     pub event_handlers: EventHandlers,
     pub pressed: bool,
     pub hovered: bool,
@@ -27,10 +30,12 @@ impl ButtonWidget {
         Self {
             key: None,
             text: text.into(),
-            style: Style::new(),
+            animated_style: AnimatedStyle::new(Style::new()),
             hover_style: Style::new(),
             pressed_style: Style::new(),
             disabled_style: Style::new(),
+            hover_transition: default_style_transition(),
+            pressed_transition: default_style_transition(),
             event_handlers: EventHandlers::default(),
             pressed: false,
             hovered: false,
@@ -39,9 +44,11 @@ impl ButtonWidget {
     }
 
     pub fn style(mut self, style: Style) -> Self {
-        self.style = style;
+        self.animated_style.base = style;
         self
     }
+
+    animated_style_methods!(animated_style);
 
     pub fn hover_style(mut self, style: Style) -> Self {
         self.hover_style = style;
@@ -58,6 +65,22 @@ impl ButtonWidget {
         self
     }
 
+    pub fn transition(mut self, transition: AnimationTransition) -> Self {
+        self.hover_transition = transition;
+        self.pressed_transition = transition;
+        self
+    }
+
+    pub fn hover_transition(mut self, transition: AnimationTransition) -> Self {
+        self.hover_transition = transition;
+        self
+    }
+
+    pub fn pressed_transition(mut self, transition: AnimationTransition) -> Self {
+        self.pressed_transition = transition;
+        self
+    }
+
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -70,6 +93,18 @@ impl ButtonWidget {
 
     pub fn into_element_desc(self, children: Vec<ElementDesc>) -> ElementDesc {
         widget_element_desc(self, children)
+    }
+
+    pub(crate) fn state_style_animation_rules(&self) -> Vec<StyleAnimationRule> {
+        vec![
+            StyleAnimationRule::new(EventTrigger::OnHover, self.hover_transition),
+            StyleAnimationRule::new(EventTrigger::OnHoverStart, self.hover_transition),
+            StyleAnimationRule::new(EventTrigger::OnHoverEnd, self.hover_transition),
+            StyleAnimationRule::new(EventTrigger::OnPress, self.pressed_transition),
+            StyleAnimationRule::new(EventTrigger::OnPressStart, self.pressed_transition),
+            StyleAnimationRule::new(EventTrigger::OnPressEnd, self.pressed_transition),
+            StyleAnimationRule::new(EventTrigger::OnClick, self.pressed_transition),
+        ]
     }
 
     event_handler_methods!();
@@ -93,27 +128,33 @@ impl Widget for ButtonWidget {
     fn props_hash(&self) -> u64 {
         props_hash(&(
             &self.text,
-            &self.style,
+            &self.animated_style,
             &self.hover_style,
             &self.pressed_style,
             &self.disabled_style,
+            self.hover_transition,
+            self.pressed_transition,
             self.disabled,
         ))
     }
 
     fn update_from(&mut self, next: &Self) -> DirtyFlags {
         if self.text != next.text
-            || self.style != next.style
             || self.hover_style != next.hover_style
             || self.pressed_style != next.pressed_style
             || self.disabled_style != next.disabled_style
+            || self.animated_style != next.animated_style
+            || self.hover_transition != next.hover_transition
+            || self.pressed_transition != next.pressed_transition
             || self.disabled != next.disabled
         {
             self.text = next.text.clone();
-            self.style = next.style.clone();
+            self.animated_style = next.animated_style.clone();
             self.hover_style = next.hover_style.clone();
             self.pressed_style = next.pressed_style.clone();
             self.disabled_style = next.disabled_style.clone();
+            self.hover_transition = next.hover_transition;
+            self.pressed_transition = next.pressed_transition;
             self.disabled = next.disabled;
             DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT
         } else {
@@ -137,7 +178,11 @@ impl Widget for ButtonWidget {
     }
 
     fn style(&self) -> &Style {
-        &self.style
+        &self.animated_style.base
+    }
+
+    fn style_animations(&self) -> &[xui_interface::StyleAnimation] {
+        &self.animated_style.animations
     }
 
     fn state_style(&self, state: WidgetState) -> Style {

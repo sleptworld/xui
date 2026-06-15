@@ -1,7 +1,7 @@
 use crate::element::ElementDesc;
 use xui_interface::{
-    ColorStyle, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key,
-    LengthValue, PaintCommand, Rect, ScrollDirectionStyle, ScrollbarStyle,
+    AnimatedStyle, ColorStyle, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers,
+    EventResult, Key, LengthValue, PaintCommand, Rect, ScrollDirectionStyle,
     ScrollbarVisibilityStyle, Style, Widget, WidgetType, style::ScrollbarStylePatch,
 };
 
@@ -9,7 +9,7 @@ use super::{props_hash, widget_element_desc};
 
 pub struct ContainerWidget {
     pub key: Option<Key>,
-    pub style: Style,
+    pub animated_style: AnimatedStyle,
     pub event_handlers: EventHandlers,
 }
 
@@ -17,7 +17,7 @@ impl std::fmt::Debug for ContainerWidget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ContainerWidget")
             .field("key", &self.key)
-            .field("style", &self.style)
+            .field("animated_style", &self.animated_style)
             .finish()
     }
 }
@@ -26,53 +26,55 @@ impl ContainerWidget {
     pub fn new() -> Self {
         Self {
             key: None,
-            style: Style::new(),
+            animated_style: AnimatedStyle::new(Style::new()),
             event_handlers: EventHandlers::default(),
         }
     }
 
     pub fn style(mut self, style: Style) -> Self {
-        self.style = style;
+        self.animated_style.base = style;
         self
     }
 
+    animated_style_methods!(animated_style);
+
     pub fn scrollable(mut self) -> Self {
-        self.style = self.style.clone().scroll_vertical();
+        self.animated_style.base = self.animated_style.base.clone().scroll_vertical();
         self
     }
 
     pub fn scroll_direction(mut self, direction: ScrollDirectionStyle) -> Self {
-        self.style = self.style.clone().scroll_direction(direction);
+        self.animated_style.base = self.animated_style.base.clone().scroll_direction(direction);
         self
     }
 
     pub fn scrollbar(mut self, scrollbar: ScrollbarStylePatch) -> Self {
-        self.style = self.style.clone().scrollbar(scrollbar);
+        self.animated_style.base = self.animated_style.base.clone().scrollbar(scrollbar);
         self
     }
 
     pub fn scrollbar_width(mut self, width: impl Into<LengthValue>) -> Self {
-        self.style = self.style.clone().scrollbar_width(width);
+        self.animated_style.base = self.animated_style.base.clone().scrollbar_width(width);
         self
     }
 
     pub fn scrollbar_track_color(mut self, color: impl Into<ColorStyle>) -> Self {
-        self.style = self.style.clone().scrollbar_track_color(color);
+        self.animated_style.base = self.animated_style.base.clone().scrollbar_track_color(color);
         self
     }
 
     pub fn scrollbar_thumb_color(mut self, color: impl Into<ColorStyle>) -> Self {
-        self.style = self.style.clone().scrollbar_thumb_color(color);
+        self.animated_style.base = self.animated_style.base.clone().scrollbar_thumb_color(color);
         self
     }
 
     pub fn scrollbar_radius(mut self, radius: impl Into<LengthValue>) -> Self {
-        self.style = self.style.clone().scrollbar_radius(radius);
+        self.animated_style.base = self.animated_style.base.clone().scrollbar_radius(radius);
         self
     }
 
     pub fn scrollbar_visibility(mut self, visibility: ScrollbarVisibilityStyle) -> Self {
-        self.style = self.style.clone().scrollbar_visibility(visibility);
+        self.animated_style.base = self.animated_style.base.clone().scrollbar_visibility(visibility);
         self
     }
 
@@ -104,13 +106,13 @@ impl Widget for ContainerWidget {
     }
 
     fn props_hash(&self) -> u64 {
-        props_hash(&self.style)
+        props_hash(&self.animated_style)
     }
 
     fn update_from(&mut self, next: &Self) -> DirtyFlags {
         let mut flags = DirtyFlags::empty();
-        if self.style != next.style {
-            self.style = next.style.clone();
+        if self.animated_style != next.animated_style {
+            self.animated_style = next.animated_style.clone();
             flags |= DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
         }
 
@@ -126,7 +128,11 @@ impl Widget for ContainerWidget {
     }
 
     fn style(&self) -> &Style {
-        &self.style
+        &self.animated_style.base
+    }
+
+    fn style_animations(&self) -> &[xui_interface::StyleAnimation] {
+        &self.animated_style.animations
     }
 
     fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {

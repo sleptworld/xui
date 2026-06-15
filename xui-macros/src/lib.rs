@@ -16,9 +16,9 @@ use syn::{
 };
 
 use crate::tools::{
-    event_attr_stmt, parse_attrs_helper, parse_base_attr, parse_layout_style_attr,
-    parse_paint_style_attr, parse_scroll_style_attr, parse_stack_attr, parse_text_style_attr,
-    unsupported_attr,
+    event_attr_stmt, parse_animation_attr, parse_attrs_helper, parse_base_attr,
+    parse_layout_style_attr, parse_paint_style_attr, parse_scroll_style_attr, parse_stack_attr,
+    parse_text_style_attr, unsupported_attr,
 };
 
 #[proc_macro]
@@ -921,7 +921,7 @@ fn expand_style_scope(node: &ElementNode) -> Result<TokenStream2> {
                 __xui_scope_style.merge(&::xui::Style::new().font_size(#value));
             }),
             other => {
-                if let Some(stmt) = event_attr_stmt(attr) {
+                if let Some(stmt) = parse_animation_attr(other, value).or(event_attr_stmt(attr)) {
                     element_stmts.push(stmt);
                 } else {
                     return unsupported_attr(attr, "style_scope", other);
@@ -941,7 +941,12 @@ fn expand_style_scope(node: &ElementNode) -> Result<TokenStream2> {
         let mut __xui_scope_style = #style_init;
         #(#style_stmts)*
         let mut __xui_element = ::xui::style_scope(__xui_scope_style);
+        let mut __xui_animated_style = ::xui::AnimatedStyle::new(::xui::Style::new());
+        let mut __xui_has_animated_style = false;
         #(#element_stmts)*
+        if __xui_has_animated_style {
+            __xui_element = __xui_element.animated_style(__xui_animated_style);
+        }
         #(
             __xui_element = __xui_element.child(#children);
         )*
@@ -964,7 +969,7 @@ fn expand_label(node: &ElementNode) -> Result<TokenStream2> {
             "font_size" => attr_stmts
                 .push(quote! { __xui_style.merge(&::xui::Style::new().font_size(#value)); }),
             other => {
-                if let Some(stmt) = event_attr_stmt(attr) {
+                if let Some(stmt) = parse_animation_attr(other, value).or(event_attr_stmt(attr)) {
                     attr_stmts.push(stmt);
                 } else {
                     return unsupported_attr(attr, "label", other);
@@ -976,8 +981,15 @@ fn expand_label(node: &ElementNode) -> Result<TokenStream2> {
     Ok(quote! {{
         let mut __xui_element = ::xui::label(#text);
         let mut __xui_style = ::xui::Style::new();
+        let mut __xui_animated_style = ::xui::AnimatedStyle::new(::xui::Style::new());
+        let mut __xui_has_animated_style = false;
         #(#attr_stmts)*
-        __xui_element = __xui_element.style(__xui_style);
+        if __xui_has_animated_style {
+            __xui_animated_style.base.merge(&__xui_style);
+            __xui_element = __xui_element.animated_style(__xui_animated_style);
+        } else {
+            __xui_element = __xui_element.style(__xui_style);
+        }
         __xui_element.into_element_desc()
     }})
 }
@@ -1025,7 +1037,7 @@ fn expand_text(node: &ElementNode) -> Result<TokenStream2> {
             "decoration" => attr_stmts
                 .push(quote! { __xui_style.merge(&::xui::Style::new().decoration(#value)); }),
             other => {
-                if let Some(stmt) = event_attr_stmt(attr) {
+                if let Some(stmt) = parse_animation_attr(other, value).or(event_attr_stmt(attr)) {
                     attr_stmts.push(stmt);
                 } else {
                     return unsupported_attr(attr, "text", other);
@@ -1037,8 +1049,15 @@ fn expand_text(node: &ElementNode) -> Result<TokenStream2> {
     Ok(quote! {{
         let mut __xui_element = ::xui::text(#text);
         let mut __xui_style = ::xui::Style::new();
+        let mut __xui_animated_style = ::xui::AnimatedStyle::new(::xui::Style::new());
+        let mut __xui_has_animated_style = false;
         #(#attr_stmts)*
-        __xui_element = __xui_element.style(__xui_style);
+        if __xui_has_animated_style {
+            __xui_animated_style.base.merge(&__xui_style);
+            __xui_element = __xui_element.animated_style(__xui_animated_style);
+        } else {
+            __xui_element = __xui_element.style(__xui_style);
+        }
         __xui_element.into_element_desc()
     }})
 }
@@ -1067,6 +1086,14 @@ fn expand_button(node: &ElementNode) -> Result<TokenStream2> {
             "disabled_style" => {
                 attr_stmts.push(quote! { __xui_element = __xui_element.disabled_style(#value); })
             }
+            "transition" => {
+                attr_stmts.push(quote! { __xui_element = __xui_element.transition(#value); })
+            }
+            "hover_transition" => {
+                attr_stmts.push(quote! { __xui_element = __xui_element.hover_transition(#value); })
+            }
+            "pressed_transition" => attr_stmts
+                .push(quote! { __xui_element = __xui_element.pressed_transition(#value); }),
             "background" => attr_stmts
                 .push(quote! { __xui_style.merge(&::xui::Style::new().background(#value)); }),
             "color" => {
@@ -1075,7 +1102,7 @@ fn expand_button(node: &ElementNode) -> Result<TokenStream2> {
             "font_size" => attr_stmts
                 .push(quote! { __xui_style.merge(&::xui::Style::new().font_size(#value)); }),
             other => {
-                if let Some(stmt) = event_attr_stmt(attr) {
+                if let Some(stmt) = parse_animation_attr(other, value).or(event_attr_stmt(attr)) {
                     attr_stmts.push(stmt);
                 } else {
                     return unsupported_attr(attr, "button", other);
@@ -1087,13 +1114,24 @@ fn expand_button(node: &ElementNode) -> Result<TokenStream2> {
     Ok(quote! {{
         let mut __xui_element = ::xui::button(#text);
         let mut __xui_style = ::xui::Style::new();
+        let mut __xui_animated_style = ::xui::AnimatedStyle::new(::xui::Style::new());
+        let mut __xui_has_animated_style = false;
         #(#attr_stmts)*
-        __xui_element = __xui_element.style(__xui_style);
+        if __xui_has_animated_style {
+            __xui_animated_style.base.merge(&__xui_style);
+            __xui_element = __xui_element.animated_style(__xui_animated_style);
+        } else {
+            __xui_element = __xui_element.style(__xui_style);
+        }
         __xui_element.into_element_desc(::std::vec::Vec::new())
     }})
 }
 
-fn expand_stack(node: &ElementNode, tag: &str, constructor: TokenStream2) -> Result<TokenStream2> {
+fn expand_stack(
+    node: &ElementNode,
+    _tag: &str,
+    constructor: TokenStream2,
+) -> Result<TokenStream2> {
     let mut attr_stmts = Vec::new();
 
     parse_attrs_helper(
@@ -1103,7 +1141,8 @@ fn expand_stack(node: &ElementNode, tag: &str, constructor: TokenStream2) -> Res
                 .or(parse_layout_style_attr(name, value))
                 .or(parse_paint_style_attr(name, value))
                 .or(parse_scroll_style_attr(name, value))
-                .or(parse_stack_attr(name, value)))
+                .or(parse_stack_attr(name, value))
+                .or(parse_animation_attr(name, value)))
         },
         &mut attr_stmts,
     )?;
@@ -1117,8 +1156,15 @@ fn expand_stack(node: &ElementNode, tag: &str, constructor: TokenStream2) -> Res
     Ok(quote! {{
         let mut __xui_element = #constructor;
         let mut __xui_style = ::xui::Style::new();
+        let mut __xui_animated_style = ::xui::AnimatedStyle::new(::xui::Style::new());
+        let mut __xui_has_animated_style = false;
         #(#attr_stmts)*
-        __xui_element = __xui_element.style(__xui_style);
+        if __xui_has_animated_style {
+            __xui_animated_style.base.merge(&__xui_style);
+            __xui_element = __xui_element.animated_style(__xui_animated_style);
+        } else {
+            __xui_element = __xui_element.style(__xui_style);
+        }
         __xui_element.into_element_desc(::std::vec![#(#children),*])
     }})
 }
@@ -1131,7 +1177,8 @@ fn expand_container(node: &ElementNode) -> Result<TokenStream2> {
             parse_base_attr(name, value).or(parse_text_style_attr(name, value)
                 .or(parse_layout_style_attr(name, value))
                 .or(parse_paint_style_attr(name, value))
-                .or(parse_scroll_style_attr(name, value)))
+                .or(parse_scroll_style_attr(name, value))
+                .or(parse_animation_attr(name, value)))
         },
         &mut attr_stmts,
     )?;
@@ -1145,8 +1192,15 @@ fn expand_container(node: &ElementNode) -> Result<TokenStream2> {
     Ok(quote! {{
         let mut __xui_element = ::xui::container();
         let mut __xui_style = ::xui::Style::new();
+        let mut __xui_animated_style = ::xui::AnimatedStyle::new(::xui::Style::new());
+        let mut __xui_has_animated_style = false;
         #(#attr_stmts)*
-        __xui_element = __xui_element.style(__xui_style);
+        if __xui_has_animated_style {
+            __xui_animated_style.base.merge(&__xui_style);
+            __xui_element = __xui_element.animated_style(__xui_animated_style);
+        } else {
+            __xui_element = __xui_element.style(__xui_style);
+        }
         __xui_element.into_element_desc(::std::vec![#(#children),*])
     }})
 }

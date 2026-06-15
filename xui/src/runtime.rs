@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::time::Instant;
 
 use crate::app::App;
 use crate::core::Size;
@@ -62,6 +63,7 @@ pub struct GuiRuntime<B: RenderBackend<T>, T: TextMeasurer> {
     backend: B,
     control_flow: ControlFlow,
     text_measure: T,
+    last_animation_tick: Option<Instant>,
 }
 
 impl<B: RenderBackend<T>, T: TextMeasurer> GuiRuntime<B, T> {
@@ -71,6 +73,7 @@ impl<B: RenderBackend<T>, T: TextMeasurer> GuiRuntime<B, T> {
             backend,
             control_flow: ControlFlow::Poll,
             text_measure,
+            last_animation_tick: None,
         }
     }
 
@@ -116,6 +119,7 @@ impl<B: RenderBackend<T>, T: TextMeasurer> GuiRuntime<B, T> {
     }
 
     pub fn frame(&mut self) -> Result<FrameReport, B::Error> {
+        self.tick_style_animations();
         let should_render = self.app.is_dirty();
         if should_render {
             self.app.render(&mut self.backend, &mut self.text_measure)?;
@@ -124,6 +128,21 @@ impl<B: RenderBackend<T>, T: TextMeasurer> GuiRuntime<B, T> {
             rendered: should_render,
             event_results: Vec::new(),
         })
+    }
+
+    fn tick_style_animations(&mut self) {
+        if !self.app.has_running_style_animations() {
+            self.last_animation_tick = None;
+            return;
+        }
+
+        let now = Instant::now();
+        let delta = self
+            .last_animation_tick
+            .map(|last| now.saturating_duration_since(last))
+            .unwrap_or_default();
+        self.last_animation_tick = Some(now);
+        self.app.tick_style_animations(delta);
     }
 
     pub fn text_measure(&self) -> &T {

@@ -1,12 +1,18 @@
-use crate::{ElementDesc, widgets::props_hash};
-use xui_interface::{Event, EventHandlers, Key, Style, Translation, Widget};
+use crate::{
+    ElementDesc,
+    widgets::{props_hash, widget_element_desc},
+};
+use xui_interface::{
+    AnimatedStyle, DirtyFlags, Event, EventHandlers, Key, Style, StyleAnimation, Translation,
+    Widget,
+};
 
 pub struct ScrollScope {
     key: Option<Key>,
     translation: Translation,
-    style: Style,
+    animated_style: AnimatedStyle,
     children: Vec<ElementDesc>,
-    event_handlers: EventHandlers,
+    pub event_handlers: EventHandlers,
 }
 
 impl std::fmt::Debug for ScrollScope {
@@ -20,11 +26,18 @@ impl ScrollScope {
         Self {
             key: None,
             translation: Default::default(),
-            style: Style::new(),
+            animated_style: AnimatedStyle::new(Style::new()),
             children: Vec::new(),
             event_handlers: EventHandlers::default(),
         }
     }
+
+    pub fn style(mut self, style: Style) -> Self {
+        self.animated_style.base = style;
+        self
+    }
+
+    animated_style_methods!(animated_style);
 
     pub fn child(mut self, child: impl Into<ElementDesc>) -> Self {
         self.children.push(child.into());
@@ -34,6 +47,10 @@ impl ScrollScope {
     pub fn key(mut self, key: Key) -> Self {
         self.key = Some(key);
         self
+    }
+
+    pub fn into_element_desc(self, children: Vec<ElementDesc>) -> ElementDesc {
+        widget_element_desc(self, children)
     }
 
     event_handler_methods!();
@@ -49,17 +66,22 @@ impl Widget for ScrollScope {
     }
 
     fn props_hash(&self) -> u64 {
-        props_hash(&self.key)
+        props_hash(&(&self.key, &self.animated_style))
     }
 
     fn update_from(&mut self, next: &Self) -> xui_interface::DirtyFlags {
-        xui_interface::DirtyFlags::empty()
+        if self.animated_style != next.animated_style {
+            self.animated_style = next.animated_style.clone();
+            DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT
+        } else {
+            DirtyFlags::empty()
+        }
     }
 
     fn handle_event(
         &mut self,
         event: &xui_interface::Event,
-        cx: &mut xui_interface::EventContext<'_>,
+        _cx: &mut xui_interface::EventContext<'_>,
     ) -> xui_interface::EventResult {
         match event {
             Event::Wheel { delta, .. } => {
@@ -76,13 +98,17 @@ impl Widget for ScrollScope {
     }
 
     fn style(&self) -> &xui_interface::Style {
-        &self.style
+        &self.animated_style.base
+    }
+
+    fn style_animations(&self) -> &[StyleAnimation] {
+        &self.animated_style.animations
     }
 
     fn paint(
         &self,
-        rect: xui_interface::Rect,
-        style: &xui_interface::ComputedStyle,
+        _rect: xui_interface::Rect,
+        _style: &xui_interface::ComputedStyle,
         commands: &mut Vec<xui_interface::PaintCommand>,
     ) {
         commands.push(xui_interface::PaintCommand::PushTransform {

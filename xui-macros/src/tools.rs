@@ -35,6 +35,28 @@ pub fn parse_base_attr<T: quote::ToTokens + ?Sized>(name: &str, value: &T) -> Op
     }
 }
 
+pub fn parse_animation_attr<T: quote::ToTokens + ?Sized>(
+    name: &str,
+    value: &T,
+) -> Option<TokenStream2> {
+    match name {
+        "animated_style" => Some(quote! {
+            __xui_animated_style = #value;
+            __xui_has_animated_style = true;
+        }),
+        "animation" => Some(quote! {
+            let (__xui_animation_trigger, __xui_animation_style, __xui_animation_transition) = #value;
+            __xui_animated_style = __xui_animated_style.animation(
+                __xui_animation_trigger,
+                __xui_animation_style,
+                __xui_animation_transition,
+            );
+            __xui_has_animated_style = true;
+        }),
+        _ => None,
+    }
+}
+
 pub fn parse_text_style_attr<T: quote::ToTokens + ?Sized>(
     name: &str,
     value: &T,

@@ -222,6 +222,52 @@ fn dispatch_to_node(
 
         match dispatch {
             NodeDispatch::Raw(event) => {
+                if phase == EventPhase::Target {
+                    match event {
+                        Event::PointerDown {
+                            button: PointerButton::Primary,
+                            ..
+                        } => {
+                            arena.queue_style_animation_trigger(
+                                id,
+                                xui_interface::EventTrigger::OnPressStart,
+                            );
+                            arena.queue_style_animation_trigger(
+                                id,
+                                xui_interface::EventTrigger::OnPress,
+                            );
+                            arena.queue_style_animation_trigger(
+                                id,
+                                xui_interface::EventTrigger::OnPointerDown,
+                            );
+                        }
+                        Event::PointerUp {
+                            button: PointerButton::Primary,
+                            ..
+                        } => {
+                            arena.queue_style_animation_trigger(
+                                id,
+                                xui_interface::EventTrigger::OnPressEnd,
+                            );
+                            arena.queue_style_animation_trigger(
+                                id,
+                                xui_interface::EventTrigger::OnPress,
+                            );
+                            arena.queue_style_animation_trigger(
+                                id,
+                                xui_interface::EventTrigger::OnPointerUp,
+                            );
+                        }
+                        Event::PointerMove { .. } => {
+                            arena.queue_style_animation_trigger(
+                                id,
+                                xui_interface::EventTrigger::OnPointerMove,
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+
                 let handler_result =
                     arena
                         .event_handlers_mut()
@@ -274,6 +320,15 @@ fn dispatch_to_node(
                 }
             }
             NodeDispatch::HoverChange(hovered) => {
+                arena.queue_style_animation_trigger(
+                    id,
+                    if hovered {
+                        xui_interface::EventTrigger::OnHoverStart
+                    } else {
+                        xui_interface::EventTrigger::OnHoverEnd
+                    },
+                );
+                arena.queue_style_animation_trigger(id, xui_interface::EventTrigger::OnHover);
                 let hover_dirty = widget.on_hovered_change(hovered);
                 cx.mark_dirty(hover_dirty);
 
@@ -283,9 +338,12 @@ fn dispatch_to_node(
                     &mut cx,
                 )
             }
-            NodeDispatch::Click => arena
-                .event_handlers_mut()
-                .dispatch_on_click(handlers.on_click, &mut cx),
+            NodeDispatch::Click => {
+                arena.queue_style_animation_trigger(id, xui_interface::EventTrigger::OnClick);
+                arena
+                    .event_handlers_mut()
+                    .dispatch_on_click(handlers.on_click, &mut cx)
+            }
         }
     };
 

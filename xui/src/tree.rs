@@ -6,11 +6,10 @@ use xui_interface::render::Damage;
 use xui_interface::{
     AnimationTransition, ComputedColorStyle, ComputedScrollbarStyle, ComputedStyle,
     ComputedTextStyle, DirtyFlags, EventHandlers, EventTrigger, NodeId, NodeLifecycleEvent,
-    ScrollbarVisibilityStyle, Style, TextContent, TextLayoutConstraints, TextMeasurer, Theme,
-    Translation,
+    ScrollbarVisibilityStyle, TextContent, TextLayoutConstraints, TextMeasurer, Theme, Translation,
 };
 
-use crate::animation::{ActiveAnimation, AnimableStyle};
+use crate::animation::{ActiveAnimation, AnimableStyle, StyleAnimationRule};
 use crate::core::{Point, Rect, Size};
 use crate::event::{Event, EventHandlerSet, EventHandlerStore, EventResult};
 use crate::event_system::{self, EventState};
@@ -43,7 +42,9 @@ pub struct Node {
     pub old_props_hash: u64,
     pub new_props_hash: u64,
     pub computed_style: ComputedStyle,
-    pub animation_style: Style,
+    pub animation_style: AnimableStyle,
+    pub style_animation_rules: Vec<StyleAnimationRule>,
+    pub pending_animation_triggers: Vec<EventTrigger>,
     pub active_animations: Vec<ActiveAnimation<AnimableStyle>>,
     pub paint_cache: Vec<PaintCommand>,
     pub widget: WidgetI,
@@ -82,7 +83,9 @@ impl Node {
             new_props_hash: props_hash,
             // style,
             computed_style,
-            animation_style: Style::new(),
+            animation_style: AnimableStyle::default(),
+            style_animation_rules: widget.style_animation_rules(),
+            pending_animation_triggers: Vec::new(),
             active_animations: Vec::new(),
             paint_cache: Vec::new(),
             widget,
@@ -97,8 +100,7 @@ impl Node {
         to_style: AnimableStyle,
         transition: AnimationTransition,
     ) {
-        self.active_animations
-            .retain(|animation| animation.trigger != trigger);
+        self.active_animations.clear();
         self.active_animations.push(ActiveAnimation::new(
             trigger, from_style, to_style, transition,
         ));
@@ -112,6 +114,7 @@ impl Node {
         }
         if changed {
             self.refresh_animation_style();
+            self.active_animations.retain(ActiveAnimation::is_running);
         }
         changed
     }
@@ -123,12 +126,66 @@ impl Node {
     }
 
     fn refresh_animation_style(&mut self) {
-        // let mut style = Style::new();
-        // let mut style = AnimableStyle::default();
-        // for animation in &self.active_animations {
-        //     style.merge(&animation.sample());
-        // }
-        // self.animation_style = style;
+        let mut style = AnimableStyle::default();
+        for animation in &self.active_animations {
+            style.merge(&animation.sample());
+        }
+        self.animation_style = style;
+    }
+
+    fn queue_style_animation_trigger(&mut self, trigger: EventTrigger) -> bool {
+        if self.style_animation_rule_for(trigger).is_none() {
+            return false;
+        }
+        self.pending_animation_triggers.push(trigger);
+        true
+    }
+
+    fn take_pending_animation_rule(&mut self) -> Option<StyleAnimationRule> {
+        let triggers = std::mem::take(&mut self.pending_animation_triggers);
+        triggers
+            .into_iter()
+            .rev()
+            .find_map(|trigger| self.style_animation_rule_for(trigger))
+    }
+
+    fn style_animation_rule_for(&self, trigger: EventTrigger) -> Option<StyleAnimationRule> {
+        if let Some(rule) = self
+            .style_animation_rules
+            .iter()
+            .find(|rule| rule.trigger == trigger)
+            .cloned()
+        {
+            return Some(rule);
+        }
+
+        let fallback = match trigger {
+            EventTrigger::OnHoverStart => EventTrigger::OnHover,
+            EventTrigger::OnHoverEnd => EventTrigger::OnHover,
+            EventTrigger::OnPressStart => EventTrigger::OnPress,
+            EventTrigger::OnPressEnd => EventTrigger::OnPress,
+            _ => return None,
+        };
+
+        self.style_animation_rules
+            .iter()
+            .find(|rule| rule.trigger == fallback)
+            .map(|rule| {
+                if matches!(trigger, EventTrigger::OnHoverEnd | EventTrigger::OnPressEnd) {
+                    StyleAnimationRule::reverse(trigger, rule.transition)
+                } else {
+                    StyleAnimationRule {
+                        trigger,
+                        style: rule.style.clone(),
+                        transition: rule.transition,
+                    }
+                }
+            })
+    }
+
+    fn clear_style_animation(&mut self) {
+        self.animation_style = AnimableStyle::default();
+        self.active_animations.clear();
     }
 }
 
@@ -216,12 +273,24 @@ impl UiArena {
         to_style: AnimableStyle,
         transition: AnimationTransition,
     ) {
+        if from_style.is_empty() && to_style.is_empty() {
+            return;
+        }
         let Some(node) = self.nodes.get_mut(id) else {
             return;
         };
 
         node.start_style_animation(trigger, from_style, to_style, transition);
         self.mark_dirty(id, DirtyFlags::ANIMATE);
+    }
+
+    pub(crate) fn queue_style_animation_trigger(&mut self, id: NodeId, trigger: EventTrigger) {
+        let Some(node) = self.nodes.get_mut(id) else {
+            return;
+        };
+        if node.queue_style_animation_trigger(trigger) {
+            self.mark_dirty(id, DirtyFlags::STYLE | DirtyFlags::PAINT);
+        }
     }
 
     pub fn tick_style_animations(&mut self, delta: Duration) -> bool {
@@ -241,6 +310,18 @@ impl UiArena {
 
     pub fn has_running_style_animations(&self) -> bool {
         self.nodes.values().any(Node::has_running_style_animations)
+    }
+
+    pub fn effective_style(&self, id: NodeId) -> Option<ComputedStyle> {
+        let node = self.nodes.get(id)?;
+        Some(self.effective_style_for_node(node))
+    }
+
+    fn effective_style_for_node(&self, node: &Node) -> ComputedStyle {
+        let mut style = node.computed_style.clone();
+        node.animation_style
+            .apply_to_computed(&mut style, &self.theme);
+        style
     }
 
     pub fn children(&self, id: NodeId) -> &[NodeId] {
@@ -829,18 +910,14 @@ impl UiArena {
         }
 
         let widget = self.nodes[id].widget.clone();
-        let (computed_style, taffy_style) =
-            if let Some(p) = self.nodes[id].parent.and_then(|p| self.node(p)) {
-                let parent_style = &p.computed_style;
-                let computed_style = computed_style_for_widget(&widget, parent_style, &self.theme);
-                let style = taffy_style_for_widget(&widget, &parent_style, &computed_style);
-                (computed_style, style)
-            } else {
-                let parent_style = ComputedStyle::initial(&self.theme);
-                let computed_style = computed_style_for_widget(&widget, &parent_style, &self.theme);
-                let style = taffy_style_for_widget(&widget, &parent_style, &computed_style);
-                (computed_style, style)
-            };
+        let parent_style = self
+            .nodes[id]
+            .parent
+            .and_then(|p| self.node(p))
+            .map(|p| p.computed_style.clone())
+            .unwrap_or_else(|| ComputedStyle::initial(&self.theme));
+        let computed_style = computed_style_for_widget(&widget, &parent_style, &self.theme);
+        let taffy_style = taffy_style_for_widget(&widget, &parent_style, &computed_style);
 
         let mut changed = false;
         let mut refresh_context = false;
@@ -851,6 +928,21 @@ impl UiArena {
                 .get(id)
                 .map(|n| n.taffy_node)
                 .expect("checked node existence");
+            let previous_effective_style = self
+                .effective_style(id)
+                .expect("checked node existence before style recompute");
+            let animation_rule = self
+                .nodes
+                .get_mut(id)
+                .and_then(|n| n.take_pending_animation_rule());
+            let animation_target = animation_rule.as_ref().map(|rule| {
+                let mut target = computed_style.clone();
+                if let Some(style) = &rule.style {
+                    target.apply(&parent_style, style, &self.theme);
+                }
+                target
+            });
+            let has_animation_rule = animation_rule.is_some();
 
             if let Some(n) = self.node_mut(id) {
                 if n.computed_style != computed_style {
@@ -864,6 +956,25 @@ impl UiArena {
                         refresh_context = true;
                     }
                     changed = true;
+                    if !has_animation_rule {
+                        n.clear_style_animation();
+                    }
+                } else if has_animation_rule {
+                    n.dirty |= DirtyFlags::STYLE | DirtyFlags::PAINT;
+                }
+
+                if let Some((rule, target)) = animation_rule.zip(animation_target) {
+                    let (from_style, to_style) =
+                        AnimableStyle::diff(&previous_effective_style, &target);
+                    if !to_style.is_empty() {
+                        n.start_style_animation(
+                            rule.trigger,
+                            from_style,
+                            to_style,
+                            rule.transition,
+                        );
+                        n.dirty |= DirtyFlags::ANIMATE;
+                    }
                 }
             }
 
@@ -928,7 +1039,9 @@ impl UiArena {
 
         self.repaint_passes += 1;
         let rect = self.nodes[id].layout;
-        let style = self.nodes[id].computed_style.clone();
+        let style = self
+            .effective_style(id)
+            .expect("checked node existence before repaint");
         let mut cache = Vec::new();
         self.nodes[id].widget.paint(rect, &style, &mut cache);
         for command in &mut cache {
@@ -1171,8 +1284,8 @@ impl UiArena {
                 commands.push(PaintCommand::PushClip(node.layout));
             }
             if node.paint_cache.is_empty() {
-                node.widget
-                    .paint(node.layout, &node.computed_style, commands);
+                let style = self.effective_style_for_node(node);
+                node.widget.paint(node.layout, &style, commands);
             } else {
                 commands.extend_from_slice(&node.paint_cache);
             }
@@ -1267,6 +1380,7 @@ impl UiArena {
 
             flags |= widget_flags;
             node.event_handlers = event_handlers;
+            node.style_animation_rules = node.widget.style_animation_rules();
             current_widget = node.widget.clone();
         }
 
@@ -1407,10 +1521,60 @@ impl Default for UiArena {
 #[cfg(test)]
 mod mutation_tests {
     use super::*;
-    use crate::widgets::{column, text};
+    use crate::widgets::{button, column, container, text};
+    use std::time::Duration;
+    use xui_interface::{AnimationEasing, Color, EventTrigger, PointerButton, Style};
 
     fn default_style() -> tf::Style {
         tf::Style::default()
+    }
+
+    fn sized_style(width: f32, height: f32) -> tf::Style {
+        tf::Style {
+            size: tf::Size {
+                width: tf::Dimension::length(width),
+                height: tf::Dimension::length(height),
+            },
+            ..Default::default()
+        }
+    }
+
+    fn linear_transition() -> AnimationTransition {
+        AnimationTransition::new(Duration::from_millis(100)).ease(AnimationEasing::Linear)
+    }
+
+    fn assert_near(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() < 0.0001,
+            "expected {actual} to be near {expected}"
+        );
+    }
+
+    fn assert_background_near(style: &ComputedStyle, expected: Color) {
+        let ComputedColorStyle::Solid(color) = style.paint.background else {
+            panic!("expected solid background");
+        };
+        assert_near(color.r, expected.r);
+        assert_near(color.g, expected.g);
+        assert_near(color.b, expected.b);
+        assert_near(color.a, expected.a);
+    }
+
+    struct ZeroTextMeasurer;
+
+    impl TextMeasurer for ZeroTextMeasurer {
+        fn measure_text(&mut self, _text: &str, _props: &ComputedTextStyle) -> Size<f32> {
+            Size::<f32>::ZERO
+        }
+
+        fn measure_text_with_constraints(
+            &mut self,
+            _text: &str,
+            _props: &ComputedTextStyle,
+            _constraints: TextLayoutConstraints,
+        ) -> Size<f32> {
+            Size::<f32>::ZERO
+        }
     }
 
     #[test]
@@ -1481,6 +1645,150 @@ mod mutation_tests {
         assert_eq!(arena.children(parent), &[b]);
         assert_eq!(arena.node(a).and_then(|node| node.parent), None);
         assert_eq!(arena.node(a).map(|node| node.position), Some(0));
+    }
+
+    #[test]
+    fn hover_change_starts_button_animation_and_repaints_sampled_style() {
+        let mut arena = UiArena::new();
+        let root = arena.root();
+        let button = arena.insert(
+            root,
+            button("Hover")
+                .style(Style::new().background(Color::BLACK))
+                .hover_style(Style::new().background(Color::WHITE))
+                .hover_transition(linear_transition()),
+            sized_style(40.0, 20.0),
+        );
+        let mut measurer = ZeroTextMeasurer;
+        arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+
+        arena.dispatch_event(&Event::PointerMove {
+            position: Point::new(1.0, 1.0),
+        });
+        arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+
+        assert!(arena.has_running_style_animations());
+        arena.tick_style_animations(Duration::from_millis(50));
+        arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+
+        let effective = arena.effective_style(button).unwrap();
+        assert_background_near(&effective, Color::rgb(0.5, 0.5, 0.5));
+
+        let paint_cache = &arena.node(button).unwrap().paint_cache;
+        let PaintCommand::Rect { color, .. } = paint_cache.first().unwrap() else {
+            panic!("expected button box paint command");
+        };
+        let ComputedColorStyle::Solid(color) = *color else {
+            panic!("expected solid painted background");
+        };
+        assert_near(color.r, 0.5);
+        assert_near(color.g, 0.5);
+        assert_near(color.b, 0.5);
+    }
+
+    #[test]
+    fn hover_change_starts_generic_widget_animation_and_repaints_sampled_style() {
+        let mut arena = UiArena::new();
+        let root = arena.root();
+        let item = arena.insert(
+            root,
+            container()
+                .style(Style::new().background(Color::BLACK))
+                .animation(
+                    EventTrigger::OnHover,
+                    Style::new().background(Color::WHITE),
+                    linear_transition(),
+                ),
+            sized_style(40.0, 20.0),
+        );
+        let mut measurer = ZeroTextMeasurer;
+        arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+
+        arena.dispatch_event(&Event::PointerMove {
+            position: Point::new(1.0, 1.0),
+        });
+        arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+
+        assert!(arena.has_running_style_animations());
+        arena.tick_style_animations(Duration::from_millis(50));
+        arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+
+        let effective = arena.effective_style(item).unwrap();
+        assert_background_near(&effective, Color::rgb(0.5, 0.5, 0.5));
+
+        let paint_cache = &arena.node(item).unwrap().paint_cache;
+        let PaintCommand::Rect { color, .. } = paint_cache.first().unwrap() else {
+            panic!("expected container box paint command");
+        };
+        let ComputedColorStyle::Solid(color) = *color else {
+            panic!("expected solid painted background");
+        };
+        assert_near(color.r, 0.5);
+        assert_near(color.g, 0.5);
+        assert_near(color.b, 0.5);
+    }
+
+    #[test]
+    fn click_starts_generic_widget_animation() {
+        let mut arena = UiArena::new();
+        let root = arena.root();
+        let item = arena.insert(
+            root,
+            container()
+                .style(Style::new().background(Color::BLACK))
+                .animation(
+                    EventTrigger::OnClick,
+                    Style::new().background(Color::WHITE),
+                    linear_transition(),
+                ),
+            sized_style(40.0, 20.0),
+        );
+        let mut measurer = ZeroTextMeasurer;
+        arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+
+        arena.dispatch_event(&Event::PointerDown {
+            position: Point::new(1.0, 1.0),
+            button: PointerButton::Primary,
+        });
+        arena.dispatch_event(&Event::PointerUp {
+            position: Point::new(1.0, 1.0),
+            button: PointerButton::Primary,
+        });
+        arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+
+        assert!(arena.has_running_style_animations());
+        arena.tick_style_animations(Duration::from_millis(50));
+
+        let effective = arena.effective_style(item).unwrap();
+        assert_background_near(&effective, Color::rgb(0.5, 0.5, 0.5));
+    }
+
+    #[test]
+    fn pointer_press_uses_pressed_transition_rule() {
+        let mut arena = UiArena::new();
+        let root = arena.root();
+        let button = arena.insert(
+            root,
+            button("Press")
+                .style(Style::new().background(Color::BLACK))
+                .pressed_style(Style::new().background(Color::WHITE))
+                .pressed_transition(linear_transition()),
+            sized_style(40.0, 20.0),
+        );
+        let mut measurer = ZeroTextMeasurer;
+        arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+
+        arena.dispatch_event(&Event::PointerDown {
+            position: Point::new(1.0, 1.0),
+            button: PointerButton::Primary,
+        });
+        arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+
+        assert!(arena.has_running_style_animations());
+        arena.tick_style_animations(Duration::from_millis(50));
+
+        let effective = arena.effective_style(button).unwrap();
+        assert_background_near(&effective, Color::rgb(0.5, 0.5, 0.5));
     }
 }
 

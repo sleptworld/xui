@@ -7,6 +7,7 @@ use std::rc::Rc;
 use xui_interface::TextContent;
 pub use xui_interface::{EventHandlers, Widget, WidgetType};
 
+use crate::animation::StyleAnimationRule;
 use crate::core::Rect;
 use crate::element::{ComponentDesc, ElementDesc, WidgetDesc};
 use crate::fiber::{ComponentRender, Key};
@@ -110,6 +111,27 @@ macro_rules! event_handler_methods {
     };
 }
 
+macro_rules! animated_style_methods {
+    ($field:ident) => {
+        pub fn animated_style(mut self, animated_style: xui_interface::AnimatedStyle) -> Self {
+            self.$field = animated_style;
+            self
+        }
+
+        pub fn animation(
+            mut self,
+            trigger: xui_interface::EventTrigger,
+            style: xui_interface::Style,
+            transition: xui_interface::AnimationTransition,
+        ) -> Self {
+            self.$field
+                .animations
+                .push(xui_interface::StyleAnimation::new(trigger, style, transition));
+            self
+        }
+    };
+}
+
 mod button;
 mod column;
 mod container;
@@ -126,6 +148,7 @@ pub use container::ContainerWidget;
 pub use label::LabelWidget;
 pub use root::RootWidget;
 pub use row::RowWidget;
+pub use scroll_scope::ScrollScope;
 pub use style_scope::StyleScopeWidget;
 pub use text::TextWidget;
 
@@ -208,6 +231,14 @@ macro_rules! define_widgets {
                 match self {
                     $(
                         Self::$name(widget) => widget.style(),
+                    )+
+                }
+            }
+
+            fn style_animations(&self) -> &[xui_interface::StyleAnimation] {
+                match self {
+                    $(
+                        Self::$name(widget) => widget.style_animations(),
                     )+
                 }
             }
@@ -297,6 +328,7 @@ define_widgets! {
     Text => TextWidget,
     Button => ButtonWidget,
     StyleScope => StyleScopeWidget,
+    ScrollScope => ScrollScope,
     Root => RootWidget,
 }
 
@@ -336,6 +368,20 @@ impl WidgetI {
 
     pub fn text(&self) -> Option<TextContent> {
         self.with_widgets(|widget| widget.text())
+    }
+
+    pub(crate) fn style_animation_rules(&self) -> Vec<StyleAnimationRule> {
+        self.with_widgets(|widget| {
+            let mut rules = widget
+                .style_animations()
+                .iter()
+                .map(StyleAnimationRule::from_style_animation)
+                .collect::<Vec<_>>();
+            if let Widgets::Button(button) = widget {
+                rules.extend(button.state_style_animation_rules());
+            }
+            rules
+        })
     }
 
     pub fn take_event_handlers(&self) -> EventHandlers {
@@ -437,6 +483,10 @@ pub fn container() -> ContainerWidget {
 
 pub fn style_scope(style: Style) -> StyleScopeWidget {
     StyleScopeWidget::new(style)
+}
+
+pub fn scroll_scope() -> ScrollScope {
+    ScrollScope::new()
 }
 
 pub fn root_widget() -> WidgetI {
