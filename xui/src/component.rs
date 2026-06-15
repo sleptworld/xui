@@ -1,6 +1,6 @@
 use crate::fiber::{
-    self, ComponentRender, ComponentState, EffectTag, ErasedProps, FiberArena, FiberId, FiberTag,
-    Key, Node,
+    ComponentRender, ComponentState, EffectTag, ErasedProps, FiberArena, FiberId, FiberTag,
+    HostState, Key, Node,
 };
 use crate::lanes::{Lanes, NO_LANES, current_update_lane, includes_some_lane, should_interrupt};
 use crate::layout::{computed_style_for_widget, taffy_style_for_widget};
@@ -8,10 +8,11 @@ use crate::state::{HookContext, HookStorage, Scheduler};
 use crate::style::{ComputedStyle, Theme};
 use crate::tree::UiArena;
 use crate::widgets::{RootComponentRender, WidgetI};
-use crate::{ComponentDesc, ElementDesc};
+use crate::{ComponentDesc, ElementDesc, ErasedPropsRef};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use std::fmt;
+use std::ops::RangeBounds;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use taffy as tf;
 use xui_interface::{DirtyFlags, EventHandlers, NodeId};
@@ -199,6 +200,21 @@ impl WorkNode {
     fn is_from_current(&self) -> bool {
         self.current.is_some()
     }
+
+    fn component_render_props<'a, 'b: 'a>(
+        &'a self,
+        fiber_tree: &'b FiberArena,
+    ) -> Option<(ComponentRender, Option<ErasedPropsRef<'a>>)> {
+        if let Some(component) = self.component_work.as_ref() {
+            Some((component.render, component.props.as_ref().map(|p| &**p)))
+        } else {
+            let fiber_node_component = self
+                .current
+                .and_then(|c| fiber_tree.node(c))
+                .and_then(|n| n.component.as_ref());
+            fiber_node_component.map(|c| (c.render, c.props.as_ref().map(|p| &**p)))
+        }
+    }
 }
 
 struct PreparedElement {
@@ -232,13 +248,13 @@ pub struct WorkInProgress {
 }
 
 impl WorkInProgress {
-    fn live<'a>(&'a self, nodes: &'a mut Vec<Option<WorkNode>>) -> WorkInProgressLive<'a> {
+    fn live<'a>(&'a self, nodes: &'a mut WipArena) -> WorkInProgressLive<'a> {
         WorkInProgressLive { nodes }
     }
 }
 
 struct WorkInProgressLive<'a> {
-    nodes: &'a mut Vec<Option<WorkNode>>,
+    nodes: &'a mut WipArena,
 }
 
 impl<'a> WorkInProgressLive<'a> {
@@ -249,7 +265,50 @@ impl<'a> WorkInProgressLive<'a> {
     }
 
     fn take_node(&mut self, id: WipId) -> Option<WorkNode> {
-        self.nodes.get_mut(id.0).and_then(Option::take)
+        self.nodes.take_node(id)
+    }
+}
+
+struct WipArena {
+    wip_nodes: Vec<Option<WorkNode>>,
+}
+
+impl WipArena {
+    fn new() -> Self {
+        Self {
+            wip_nodes: Vec::with_capacity(200),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.wip_nodes.len()
+    }
+
+    fn push(&mut self, node: Option<WorkNode>) {
+        self.wip_nodes.push(node);
+    }
+
+    fn get(&self, id: WipId) -> Option<&WorkNode> {
+        self.wip_nodes.get(id.0).map(|n| n.as_ref()).flatten()
+    }
+
+    fn get_mut(&mut self, id: WipId) -> Option<&mut WorkNode> {
+        self.wip_nodes.get_mut(id.0).map(|n| n.as_mut()).flatten()
+    }
+
+    fn take_node(&mut self, id: WipId) -> Option<WorkNode> {
+        self.wip_nodes.get_mut(id.0).and_then(Option::take)
+    }
+
+    fn clear(&mut self) {
+        self.wip_nodes.clear();
+    }
+
+    fn drain<R>(&mut self, range: R) -> std::vec::Drain<'_, Option<WorkNode>>
+    where
+        R: RangeBounds<usize>,
+    {
+        self.wip_nodes.drain(range)
     }
 }
 
@@ -262,7 +321,7 @@ pub struct ComponentRuntime {
     hooks: FxHashMap<FiberId, HookStorage>,
     root_widget: NodeId,
     budget: Duration,
-    wip_nodes: Vec<Option<WorkNode>>,
+    wip_nodes: WipArena,
 }
 
 impl ComponentRuntime {
@@ -285,7 +344,7 @@ impl ComponentRuntime {
             scheduler,
             hooks: FxHashMap::default(),
             budget: Duration::from_millis(4),
-            wip_nodes: Vec::with_capacity(200),
+            wip_nodes: WipArena::new(),
         }
     }
 
@@ -307,14 +366,6 @@ impl ComponentRuntime {
             .expect("work missing")
             .live(&mut self.wip_nodes)
             .alloc_node(node)
-    }
-
-    fn wip_node(&self, id: WipId) -> Option<&WorkNode> {
-        self.wip_nodes.get(id.0).and_then(Option::as_ref)
-    }
-
-    fn wip_node_mut(&mut self, id: WipId) -> Option<&mut WorkNode> {
-        self.wip_nodes.get_mut(id.0).and_then(Option::as_mut)
     }
 
     pub fn set_budget(&mut self, budget: Duration) {
@@ -365,10 +416,7 @@ impl ComponentRuntime {
                 .is_some_and(|work| work.next_work.is_some())
             {
                 self.perform_unit_of_work(theme);
-                let more_work = self
-                    .work_in_progress
-                    .as_ref()
-                    .is_some_and(|work| work.next_work.is_some());
+                let more_work = self.need_more_work();
                 if more_work && deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                     return false;
                 }
@@ -378,6 +426,13 @@ impl ComponentRuntime {
                 return true;
             }
         }
+    }
+
+    #[inline]
+    fn need_more_work(&self) -> bool {
+        self.work_in_progress
+            .as_ref()
+            .is_some_and(|wip| wip.next_work.is_some())
     }
 
     fn perform_unit_of_work(&mut self, theme: &Theme) {
@@ -403,8 +458,7 @@ impl ComponentRuntime {
                 }
                 return;
             }
-
-            let parent = self.wip_node(current).and_then(|node| node.parent);
+            let parent = self.wip_nodes.get(current).and_then(|n| n.parent);
 
             match parent {
                 Some(parent) => current = parent,
@@ -419,14 +473,9 @@ impl ComponentRuntime {
     }
 
     fn begin_work(&mut self, id: WipId, theme: &Theme) -> Option<WipId> {
-        if self.wip_node(id).is_some() {
-            return self.first_child_needing_work(id);
-        }
-
         let (fiber_id, tag, should_render, should_reconcile_pending, render_lanes) = {
             let work = self.work_in_progress.as_ref().expect("work missing");
-            let node = self.wip_node(id).expect("work node missing");
-
+            let node = self.wip_nodes.get(id).expect("work node missing");
             let should_reconcile_pending = node
                 .host_work
                 .as_ref()
@@ -461,17 +510,12 @@ impl ComponentRuntime {
             }
             FiberTag::Component => {
                 if should_render {
-                    let (render, props) = self
-                        .work_in_progress
-                        .as_ref()
-                        .and_then(|_| self.wip_node(id))
-                        .and_then(|node| self.nodes.node(node.fiber_id))
-                        .and_then(|component| component.component.as_ref())
-                        .map(|state| (state.render, state.props.as_ref().map(|p| &**p)))
-                        .expect("component fiber missing render function");
-                    let mut cx = cx!(fiber_id);
-                    let element = (render.call)(&mut cx, props);
-                    self.reconcile_children(id, [element], theme);
+                    let wip_node = self.wip_nodes.get(id).unwrap();
+                    if let Some((render, props)) = wip_node.component_render_props(&self.nodes) {
+                        let mut cx = cx!(fiber_id);
+                        let element = (render.call)(&mut cx, props);
+                        self.reconcile_children(id, [element], theme);
+                    }
                 } else {
                     self.clone_current_children(id);
                 }
@@ -479,8 +523,9 @@ impl ComponentRuntime {
             FiberTag::Host(_) => {
                 if should_reconcile_pending {
                     let children = self
-                        .wip_node_mut(id)
-                        .and_then(|node| node.take_work_nodes())
+                        .wip_nodes
+                        .get_mut(id)
+                        .and_then(|n| n.take_work_nodes())
                         .unwrap_or_default();
                     self.reconcile_children(id, children, theme);
                 } else {
@@ -496,7 +541,7 @@ impl ComponentRuntime {
     where
         I: IntoIterator<Item = ElementDesc>,
     {
-        let work_node = self.wip_node(parent).unwrap();
+        let work_node = self.wip_nodes.get(parent).unwrap();
         let work_node_current = work_node.current;
 
         let old_children = work_node_current
@@ -542,7 +587,7 @@ impl ComponentRuntime {
                 let reused_child_node = self.nodes.node(reused_child_node_id).unwrap();
                 used[old_index] = true;
 
-                let current_lane = self.scheduler.component_lanes(old_id);
+                let current_lane = self.scheduler.component_lanes(old_id) & render_lanes;
                 let children_lanes = child_tree_lanes(
                     &self.nodes,
                     reused_child_node,
@@ -601,8 +646,7 @@ impl ComponentRuntime {
                     .push(old_child);
             }
         }
-
-        let node = self.wip_node_mut(parent).unwrap();
+        let node = self.wip_nodes.get_mut(parent).unwrap();
         node.children = next_children;
         node.children_resolved = true;
     }
@@ -653,7 +697,7 @@ impl ComponentRuntime {
     fn parent_style_for_work(&self, parent: WipId) -> Option<&ComputedStyle> {
         let mut cursor = Some(parent);
         while let Some(id) = cursor {
-            let Some(node) = self.wip_node(id) else {
+            let Some(node) = self.wip_nodes.get(id) else {
                 return None;
             };
             if let Some(host) = node.host_work.as_ref() {
@@ -699,22 +743,17 @@ impl ComponentRuntime {
             return;
         }
 
-        // let deletions = std::mem::take(&mut work.deletions);
-        // for deletion in deletions {
-        //     self.commit_deletion(deletion, arena, true);
-        // }
+        let render_lanes = work.render_lanes;
+        let deletions = std::mem::take(&mut work.deletions);
+        for deletion in deletions {
+            self.commit_deletion(deletion, arena, true);
+        }
 
-        let next_current = self.commit_and_freeze_work_tree(
-            work.root,
-            None,
-            self.root_widget,
-            arena,
-            &mut work,
-            0,
-        );
+        self.commit_mutation_effects(work.root, self.root_widget, arena);
+
+        let next_current = self.freeze_work_tree(work.root, None, &mut work, arena);
         self.current = next_current;
-        self.sync_host_children(arena);
-        self.scheduler.mark_render_finished(work.render_lanes);
+        self.scheduler.mark_render_finished(render_lanes);
     }
 
     fn commit_deletion(&mut self, id: FiberId, arena: &mut UiArena, remove_host: bool) {
@@ -744,44 +783,361 @@ impl ComponentRuntime {
         self.nodes.remove_node(id);
     }
 
-    fn commit_and_freeze_work_tree(
+    fn commit_mutation_effects(&mut self, wip_id: WipId, parent_host: NodeId, arena: &mut UiArena) {
+        let Some((effect, tag, children)) = self
+            .wip_nodes
+            .get(wip_id)
+            .map(|node| (node.effect, node.tag, node.children.clone()))
+        else {
+            return;
+        };
+
+        if effect.contains(EffectTag::PLACEMENT) {
+            let before = self.find_host_sibling_for_wip(wip_id);
+            self.commit_placement_subtree(wip_id, parent_host, before, arena);
+        } else {
+            if effect.contains(EffectTag::UPDATE) {
+                self.commit_update_if_host(wip_id, arena);
+            }
+
+            if effect.contains(EffectTag::MOVE) {
+                let before = self.find_host_sibling_for_wip(wip_id);
+                self.commit_move_subtree(wip_id, parent_host, before, arena);
+            }
+        }
+
+        let child_parent_host = if matches!(tag, FiberTag::Host(_)) {
+            self.host_node_for_wip(wip_id)
+                .expect("host fiber missing host node after mutation")
+        } else {
+            parent_host
+        };
+
+        for child in children {
+            self.commit_mutation_effects(child, child_parent_host, arena);
+        }
+    }
+
+    fn host_node_for_wip(&self, wip_id: WipId) -> Option<NodeId> {
+        let wip = self.wip_nodes.get(wip_id)?;
+
+        if let Some(node_id) = wip.host_node {
+            return Some(node_id);
+        }
+
+        wip.current
+            .and_then(|id| self.nodes.node(id))
+            .and_then(|node| node.host.as_ref())
+            .and_then(|host| host.node_id)
+    }
+
+    fn ensure_host_created(&mut self, wip_id: WipId, arena: &mut UiArena) -> NodeId {
+        if let Some(node_id) = self.wip_nodes.get(wip_id).and_then(|node| node.host_node) {
+            return node_id;
+        }
+
+        let (key, props_hash, style, computed_style, widget, event_handlers) = {
+            let wip = self
+                .wip_nodes
+                .get_mut(wip_id)
+                .expect("placement host fiber missing work node");
+            let key = wip.key.clone();
+            let host_work = wip
+                .host_work
+                .as_mut()
+                .expect("placement host fiber missing host work");
+            let widget = host_work
+                .widget
+                .take()
+                .expect("placement host work missing widget");
+            let event_handlers = host_work
+                .event_handlers
+                .take()
+                .expect("placement host work missing event handlers");
+            (
+                key,
+                host_work.props_hash,
+                host_work.style.clone(),
+                host_work.computed_style.clone(),
+                widget,
+                event_handlers,
+            )
+        };
+
+        let node_id = arena.create_node(
+            key,
+            props_hash,
+            widget,
+            event_handlers,
+            style,
+            computed_style,
+        );
+        self.wip_nodes
+            .get_mut(wip_id)
+            .expect("placement host fiber missing work node")
+            .host_node = Some(node_id);
+        node_id
+    }
+
+    fn commit_placement_subtree(
         &mut self,
-        id: WipId,
+        wip_id: WipId,
+        parent_host: NodeId,
+        before: Option<NodeId>,
+        arena: &mut UiArena,
+    ) {
+        let Some((tag, children)) = self
+            .wip_nodes
+            .get(wip_id)
+            .map(|node| (node.tag, node.children.clone()))
+        else {
+            return;
+        };
+
+        if matches!(tag, FiberTag::Host(_)) {
+            let host_id = self.ensure_host_created(wip_id, arena);
+            if let Some(before) = before {
+                arena.insert_before(parent_host, host_id, before);
+            } else {
+                arena.append_child(parent_host, host_id);
+            }
+            if let Some(node) = self.wip_nodes.get_mut(wip_id) {
+                node.effect.remove(EffectTag::PLACEMENT);
+            }
+            return;
+        }
+
+        for child in children {
+            self.commit_placement_subtree(child, parent_host, before, arena);
+        }
+    }
+
+    fn commit_move_subtree(
+        &mut self,
+        wip_id: WipId,
+        parent_host: NodeId,
+        before: Option<NodeId>,
+        arena: &mut UiArena,
+    ) {
+        let Some((tag, children)) = self
+            .wip_nodes
+            .get(wip_id)
+            .map(|node| (node.tag, node.children.clone()))
+        else {
+            return;
+        };
+
+        if matches!(tag, FiberTag::Host(_)) {
+            let host_id = self
+                .host_node_for_wip(wip_id)
+                .expect("move host fiber missing host node");
+            if let Some(before) = before {
+                arena.insert_before(parent_host, host_id, before);
+            } else {
+                arena.append_child(parent_host, host_id);
+            }
+            if let Some(node) = self.wip_nodes.get_mut(wip_id) {
+                node.effect.remove(EffectTag::MOVE);
+            }
+            return;
+        }
+
+        for child in children {
+            self.commit_move_subtree(child, parent_host, before, arena);
+        }
+    }
+
+    fn commit_update_if_host(&mut self, wip_id: WipId, arena: &mut UiArena) {
+        if !self
+            .wip_nodes
+            .get(wip_id)
+            .is_some_and(|node| matches!(node.tag, FiberTag::Host(_)))
+        {
+            return;
+        }
+
+        let node_id = self
+            .host_node_for_wip(wip_id)
+            .expect("update host fiber missing host node");
+        let wip = self
+            .wip_nodes
+            .get_mut(wip_id)
+            .expect("update host fiber missing work node");
+        let key = wip.key.clone();
+        let host_work = wip
+            .host_work
+            .as_mut()
+            .expect("host update missing host work");
+        let widget = host_work.widget.take().expect("host update missing widget");
+        let event_handlers = host_work
+            .event_handlers
+            .take()
+            .expect("host update missing event handlers");
+
+        arena.update_widget_node_from_parts(
+            node_id,
+            key,
+            host_work.props_hash,
+            host_work.style.clone(),
+            host_work.computed_style.clone(),
+            widget,
+            event_handlers,
+        );
+        wip.host_node = Some(node_id);
+    }
+
+    fn find_host_sibling_for_wip(&self, wip_id: WipId) -> Option<NodeId> {
+        let mut node = wip_id;
+
+        loop {
+            let parent = self.wip_nodes.get(node)?.parent?;
+            let siblings = &self.wip_nodes.get(parent)?.children;
+            let index = siblings.iter().position(|id| *id == node)?;
+
+            for sibling in siblings.iter().copied().skip(index + 1) {
+                if let Some(host) = self.find_stable_host_in_wip_subtree(sibling) {
+                    return Some(host);
+                }
+            }
+
+            node = parent;
+
+            if matches!(self.wip_nodes.get(node)?.tag, FiberTag::Host(_)) {
+                return None;
+            }
+        }
+    }
+
+    fn find_stable_host_in_wip_subtree(&self, wip_id: WipId) -> Option<NodeId> {
+        let node = self.wip_nodes.get(wip_id)?;
+
+        if node
+            .effect
+            .intersects(EffectTag::PLACEMENT | EffectTag::MOVE)
+        {
+            return None;
+        }
+
+        if let Some(host_id) = self.host_node_for_wip(wip_id) {
+            return Some(host_id);
+        }
+
+        for child in &node.children {
+            if let Some(host) = self.find_stable_host_in_wip_subtree(*child) {
+                return Some(host);
+            }
+        }
+
+        None
+    }
+
+    fn freeze_work_tree(
+        &mut self,
+        wip_id: WipId,
         parent_fiber: Option<FiberId>,
         work: &mut WorkInProgress,
-        arena: &mut UiArena,
+        arena: &UiArena,
     ) -> FiberId {
-        let node = work
+        let mut wip = work
             .live(&mut self.wip_nodes)
-            .take_node(id)
+            .take_node(wip_id)
             .expect("commit missing work node");
 
-        let effect = node.effect;
-        let children = node.children;
-        let mut fiber_children = Vec::with_capacity(children.len());
-        for child in children {
-            let id = self.commit_and_freeze_work_tree(child, Some(node.fiber_id), work, arena);
-            fiber_children.push(id);
-        }
-        let fiber_node = crate::fiber::Node {
-            id: node.fiber_id,
+        let fiber_id = wip.fiber_id;
+        let fiber_children = if wip.children_resolved {
+            std::mem::take(&mut wip.children)
+                .into_iter()
+                .map(|child| self.freeze_work_tree(child, Some(fiber_id), work, arena))
+                .collect::<Vec<_>>()
+        } else {
+            self.collect_current_child_ids(wip.current)
+        };
+
+        let host = self.freeze_host_state(&mut wip, arena);
+        let component = self.freeze_component_state(&mut wip);
+        let frozen = crate::fiber::Node {
+            id: fiber_id,
             parent: parent_fiber,
             child: None,
             sibling: None,
-            key: node.key,
-            tag: node.tag,
-            effect: effect,
+            key: wip.key,
+            tag: wip.tag,
+            effect: EffectTag::empty(),
             dirty: DirtyFlags::empty(),
             subtree_dirty: DirtyFlags::empty(),
-            host: None,
-            component: None,
-            position: 0,
+            host,
+            component,
+            position: wip.position,
         };
 
-        self.nodes.insert_node(node.fiber_id, fiber_node);
-        self.nodes.set_children(node.fiber_id, &fiber_children);
+        self.nodes.insert_node(fiber_id, frozen);
+        self.nodes.set_children(fiber_id, &fiber_children);
+        self.scheduler.mark_mounted(fiber_id);
 
-        node.fiber_id
+        fiber_id
+    }
+
+    fn collect_current_child_ids(&self, current: Option<FiberId>) -> Vec<FiberId> {
+        current
+            .and_then(|id| self.nodes.node(id))
+            .map(|node| node.children(&self.nodes).map(|child| child.id).collect())
+            .unwrap_or_default()
+    }
+
+    fn freeze_host_state(&mut self, wip: &mut WorkNode, arena: &UiArena) -> Option<HostState> {
+        if !matches!(wip.tag, FiberTag::Host(_)) {
+            return None;
+        }
+
+        let current_host = wip
+            .current
+            .and_then(|id| self.nodes.node_mut(id))
+            .and_then(|node| node.host.take());
+        let node_id = wip
+            .host_node
+            .or_else(|| current_host.as_ref().and_then(|host| host.node_id))
+            .expect("host fiber missing committed host node");
+        let arena_node = arena
+            .node(node_id)
+            .expect("committed host node missing from arena");
+        let style = wip
+            .host_work
+            .as_ref()
+            .map(|host| host.style.clone())
+            .or_else(|| current_host.as_ref().map(|host| host.style.clone()))
+            .unwrap_or_default();
+        let props_hash = wip
+            .host_work
+            .as_ref()
+            .map(|host| host.props_hash)
+            .or_else(|| current_host.as_ref().map(|host| host.props_hash))
+            .unwrap_or(arena_node.new_props_hash);
+
+        Some(HostState {
+            node_id: Some(node_id),
+            widget: Some(arena_node.widget.clone()),
+            taffy_node: Some(arena_node.taffy_node),
+            style,
+            computed_style: arena_node.computed_style.clone(),
+            layout: arena_node.layout,
+            previous_layout: arena_node.previous_layout,
+            paint_cache: arena_node.paint_cache.clone(),
+            props_hash,
+        })
+    }
+
+    fn freeze_component_state(&mut self, wip: &mut WorkNode) -> Option<ComponentState> {
+        if !matches!(wip.tag, FiberTag::Component) {
+            return None;
+        }
+
+        if let Some(component) = wip.component_work.take() {
+            return Some(component.into());
+        }
+
+        wip.current
+            .and_then(|id| self.nodes.node_mut(id))
+            .and_then(|node| node.component.take())
     }
 
     fn trace_commit_work_node(&self, depth: usize, event: fmt::Arguments<'_>) {
@@ -791,7 +1147,8 @@ impl ComponentRuntime {
 
     fn clone_current_children(&mut self, parent: WipId) {
         let Some(current_children) = self
-            .wip_node(parent)
+            .wip_nodes
+            .get(parent)
             .and_then(|node| node.current)
             .and_then(|id| self.nodes.node(id))
             .map(|node| {
@@ -825,7 +1182,7 @@ impl ComponentRuntime {
             children.push(child);
         }
 
-        if let Some(node) = self.wip_node_mut(parent) {
+        if let Some(node) = self.wip_nodes.get_mut(parent) {
             node.children = children;
             node.children_resolved = true;
         }
@@ -833,12 +1190,14 @@ impl ComponentRuntime {
 
     fn first_child_needing_work(&self, parent: WipId) -> Option<WipId> {
         let work = self.work_in_progress.as_ref()?;
-        self.wip_node(parent)?
+        self.wip_nodes
+            .get(parent)?
             .children
             .iter()
             .copied()
             .find(|child| {
-                self.wip_node(*child)
+                self.wip_nodes
+                    .get(*child)
                     .is_some_and(|node| node.needs_work(work.render_lanes))
             })
     }
@@ -912,12 +1271,13 @@ impl ComponentRuntime {
 
     fn next_sibling_needing_work(&self, id: WipId) -> Option<WipId> {
         let work = self.work_in_progress.as_ref()?;
-        let node = self.wip_node(id)?;
+        let node = self.wip_nodes.get(id)?;
         let parent = node.parent?;
-        let siblings = &self.wip_node(parent)?.children;
+        let siblings = &self.wip_nodes.get(parent)?.children;
         let index = siblings.iter().position(|child| *child == id)?;
         siblings.iter().copied().skip(index + 1).find(|sibling| {
-            self.wip_node(*sibling)
+            self.wip_nodes
+                .get(*sibling)
                 .is_some_and(|node| node.needs_work(work.render_lanes))
         })
     }
@@ -1114,4 +1474,265 @@ fn child_tree_lanes(
         lanes |= child_tree_lanes(nodes, child, scheduler, render_lanes);
     }
     lanes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fiber::{ComponentType, ErasedPropsRef};
+    use crate::widgets::{column, component as component_desc, text};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static HOST_REORDER_STEP: AtomicUsize = AtomicUsize::new(0);
+    static COMPONENT_REORDER_STEP: AtomicUsize = AtomicUsize::new(0);
+    static INSERT_STEP: AtomicUsize = AtomicUsize::new(0);
+    static APPEND_STEP: AtomicUsize = AtomicUsize::new(0);
+    static DELETE_STEP: AtomicUsize = AtomicUsize::new(0);
+    static MOVE_UPDATE_STEP: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Hash)]
+    struct ItemProps {
+        text: &'static str,
+    }
+
+    fn item_call(cx: &mut HookContext<'_>, props: Option<ErasedPropsRef<'_>>) -> ElementDesc {
+        let _state = cx.use_state(|| 1usize);
+        let props = props
+            .expect("item props missing")
+            .downcast_ref::<ItemProps>()
+            .expect("item props type changed");
+        text(props.text).into_element_desc()
+    }
+
+    fn item_render() -> ComponentRender {
+        ComponentRender::new(ComponentType::new("__xui_test_item"), item_call)
+    }
+
+    fn item(key: &'static str, label: &'static str) -> ElementDesc {
+        component_desc(item_render())
+            .key(key)
+            .props(ItemProps { text: label })
+            .into()
+    }
+
+    fn keyed_text(key: &'static str, label: &'static str) -> ElementDesc {
+        text(label).key(key).into_element_desc()
+    }
+
+    fn column_with(children: Vec<ElementDesc>) -> ElementDesc {
+        column().into_element_desc(children)
+    }
+
+    fn runtime(root: RootComponentRender) -> (UiArena, ComponentRuntime) {
+        let arena = UiArena::new();
+        let runtime = ComponentRuntime::new(arena.root(), Scheduler::default(), root);
+        (arena, runtime)
+    }
+
+    fn rerender(runtime: &mut ComponentRuntime, arena: &mut UiArena) {
+        runtime.mark_root_dirty();
+        runtime.flush_sync(arena);
+    }
+
+    fn column_fiber(runtime: &ComponentRuntime) -> FiberId {
+        let root_children = runtime.nodes.children(runtime.root());
+        assert_eq!(root_children.len(), 1);
+        root_children[0]
+    }
+
+    fn column_host(runtime: &ComponentRuntime) -> NodeId {
+        runtime
+            .nodes
+            .node(column_fiber(runtime))
+            .and_then(|node| node.host.as_ref())
+            .and_then(|host| host.node_id)
+            .expect("column host missing")
+    }
+
+    fn fiber_key_order(runtime: &ComponentRuntime, parent: FiberId) -> Vec<Key> {
+        runtime
+            .nodes
+            .children(parent)
+            .into_iter()
+            .map(|id| runtime.nodes.node(id).unwrap().key.clone().unwrap())
+            .collect()
+    }
+
+    fn host_text_order(arena: &UiArena, parent: NodeId) -> Vec<String> {
+        arena
+            .children(parent)
+            .iter()
+            .map(|id| {
+                arena
+                    .node(*id)
+                    .and_then(|node| node.widget.text())
+                    .expect("text node missing text")
+                    .as_str()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    fn host_reorder_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        if HOST_REORDER_STEP.load(Ordering::SeqCst) == 0 {
+            column_with(vec![keyed_text("a", "A"), keyed_text("b", "B")])
+        } else {
+            column_with(vec![keyed_text("b", "B"), keyed_text("a", "A")])
+        }
+    }
+
+    #[test]
+    fn host_children_reorder_updates_fiber_and_host_order() {
+        HOST_REORDER_STEP.store(0, Ordering::SeqCst);
+        let (mut arena, mut runtime) = runtime(host_reorder_root);
+        runtime.flush_sync(&mut arena);
+
+        HOST_REORDER_STEP.store(1, Ordering::SeqCst);
+        rerender(&mut runtime, &mut arena);
+
+        let column = column_fiber(&runtime);
+        let column_host = column_host(&runtime);
+        assert_eq!(
+            fiber_key_order(&runtime, column),
+            vec![Key::from("b"), Key::from("a")]
+        );
+        assert_eq!(host_text_order(&arena, column_host), ["B", "A"]);
+    }
+
+    fn component_reorder_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        if COMPONENT_REORDER_STEP.load(Ordering::SeqCst) == 0 {
+            column_with(vec![item("a", "A"), item("b", "B")])
+        } else {
+            column_with(vec![item("b", "B"), item("a", "A")])
+        }
+    }
+
+    #[test]
+    fn component_children_reorder_moves_descendant_hosts() {
+        COMPONENT_REORDER_STEP.store(0, Ordering::SeqCst);
+        let (mut arena, mut runtime) = runtime(component_reorder_root);
+        runtime.flush_sync(&mut arena);
+
+        COMPONENT_REORDER_STEP.store(1, Ordering::SeqCst);
+        rerender(&mut runtime, &mut arena);
+
+        let column = column_fiber(&runtime);
+        let column_host = column_host(&runtime);
+        assert_eq!(
+            fiber_key_order(&runtime, column),
+            vec![Key::from("b"), Key::from("a")]
+        );
+        assert_eq!(host_text_order(&arena, column_host), ["B", "A"]);
+    }
+
+    fn insert_before_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        if INSERT_STEP.load(Ordering::SeqCst) == 0 {
+            column_with(vec![keyed_text("a", "A"), keyed_text("c", "C")])
+        } else {
+            column_with(vec![
+                keyed_text("a", "A"),
+                keyed_text("b", "B"),
+                keyed_text("c", "C"),
+            ])
+        }
+    }
+
+    #[test]
+    fn insertion_uses_stable_host_sibling() {
+        INSERT_STEP.store(0, Ordering::SeqCst);
+        let (mut arena, mut runtime) = runtime(insert_before_root);
+        runtime.flush_sync(&mut arena);
+        let column_host = column_host(&runtime);
+        let c_node = arena.children(column_host)[1];
+
+        INSERT_STEP.store(1, Ordering::SeqCst);
+        rerender(&mut runtime, &mut arena);
+
+        let children = arena.children(column_host);
+        assert_eq!(host_text_order(&arena, column_host), ["A", "B", "C"]);
+        assert_eq!(children[2], c_node);
+    }
+
+    fn append_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        if APPEND_STEP.load(Ordering::SeqCst) == 0 {
+            column_with(vec![keyed_text("a", "A")])
+        } else {
+            column_with(vec![keyed_text("a", "A"), keyed_text("b", "B")])
+        }
+    }
+
+    #[test]
+    fn insertion_appends_when_no_stable_sibling_exists() {
+        APPEND_STEP.store(0, Ordering::SeqCst);
+        let (mut arena, mut runtime) = runtime(append_root);
+        runtime.flush_sync(&mut arena);
+        let column_host = column_host(&runtime);
+        let a_node = arena.children(column_host)[0];
+
+        APPEND_STEP.store(1, Ordering::SeqCst);
+        rerender(&mut runtime, &mut arena);
+
+        let children = arena.children(column_host);
+        assert_eq!(host_text_order(&arena, column_host), ["A", "B"]);
+        assert_eq!(children[0], a_node);
+    }
+
+    fn delete_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        if DELETE_STEP.load(Ordering::SeqCst) == 0 {
+            column_with(vec![item("a", "A"), item("b", "B")])
+        } else {
+            column_with(vec![item("b", "B")])
+        }
+    }
+
+    #[test]
+    fn deleting_component_subtree_removes_descendant_host_and_state() {
+        DELETE_STEP.store(0, Ordering::SeqCst);
+        let (mut arena, mut runtime) = runtime(delete_root);
+        runtime.flush_sync(&mut arena);
+        let column = column_fiber(&runtime);
+        let column_host = column_host(&runtime);
+        let item_a = runtime.nodes.children(column)[0];
+        let text_a = arena.children(column_host)[0];
+
+        DELETE_STEP.store(1, Ordering::SeqCst);
+        rerender(&mut runtime, &mut arena);
+
+        assert!(!runtime.nodes.contains(item_a));
+        assert!(!runtime.hooks.contains_key(&item_a));
+        assert!(!arena.contains(text_a));
+        assert_eq!(
+            fiber_key_order(&runtime, column_fiber(&runtime)),
+            vec![Key::from("b")]
+        );
+        assert_eq!(host_text_order(&arena, column_host), ["B"]);
+    }
+
+    fn move_update_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        if MOVE_UPDATE_STEP.load(Ordering::SeqCst) == 0 {
+            column_with(vec![keyed_text("a", "A"), keyed_text("b", "B")])
+        } else {
+            column_with(vec![keyed_text("b", "B2"), keyed_text("a", "A")])
+        }
+    }
+
+    #[test]
+    fn moving_host_can_also_update_it() {
+        MOVE_UPDATE_STEP.store(0, Ordering::SeqCst);
+        let (mut arena, mut runtime) = runtime(move_update_root);
+        runtime.flush_sync(&mut arena);
+        let column_host = column_host(&runtime);
+        let b_node = arena.children(column_host)[1];
+
+        MOVE_UPDATE_STEP.store(1, Ordering::SeqCst);
+        rerender(&mut runtime, &mut arena);
+
+        let children = arena.children(column_host);
+        assert_eq!(children[0], b_node);
+        assert_eq!(host_text_order(&arena, column_host), ["B2", "A"]);
+        assert_eq!(
+            fiber_key_order(&runtime, column_fiber(&runtime)),
+            vec![Key::from("b"), Key::from("a")]
+        );
+    }
 }

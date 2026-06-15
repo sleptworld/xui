@@ -317,7 +317,7 @@ impl FiberArena {
     pub fn append_child(&mut self, parent: FiberId, child: FiberId) {
         let mut children = self.children(parent);
         children.push(child);
-        self.set_children(parent, children);
+        self.set_children(parent, &children);
     }
 
     pub fn set_children(&mut self, parent: FiberId, children: &[FiberId]) {

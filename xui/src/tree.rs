@@ -422,6 +422,94 @@ impl UiArena {
         let _ = child_taffy;
     }
 
+    pub fn append_child(&mut self, parent: NodeId, child: NodeId) {
+        if parent == child || !self.nodes.contains_key(parent) || !self.nodes.contains_key(child) {
+            return;
+        }
+
+        let old_parent = self.nodes[child].parent;
+        let old_position = self.nodes[child].position;
+        self.detach_child_from_current_parent(child);
+
+        if !self.nodes[parent].children.contains(&child) {
+            self.nodes[parent].children.push(child);
+        }
+        self.nodes[child].parent = Some(parent);
+        self.sync_taffy_children(parent);
+        self.reindex_children(parent);
+
+        let new_position = self.nodes[child].position;
+        self.record_node_move(child, old_parent, Some(parent), old_position, new_position);
+        self.mark_dirty(parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
+        self.add_node_damage(child, self.nodes[child].layout);
+    }
+
+    pub fn insert_before(&mut self, parent: NodeId, child: NodeId, before: NodeId) {
+        if child == before {
+            return;
+        }
+        if parent == child || !self.nodes.contains_key(parent) || !self.nodes.contains_key(child) {
+            return;
+        }
+        if !self.nodes.contains_key(before)
+            || self.nodes.get(before).and_then(|node| node.parent) != Some(parent)
+        {
+            self.append_child(parent, child);
+            return;
+        }
+
+        let old_parent = self.nodes[child].parent;
+        let old_position = self.nodes[child].position;
+        self.detach_child_from_current_parent(child);
+
+        let Some(index) = self.nodes[parent]
+            .children
+            .iter()
+            .position(|candidate| *candidate == before)
+        else {
+            self.append_child(parent, child);
+            return;
+        };
+
+        self.nodes[parent].children.insert(index, child);
+        self.nodes[child].parent = Some(parent);
+        self.sync_taffy_children(parent);
+        self.reindex_children(parent);
+
+        let new_position = self.nodes[child].position;
+        self.record_node_move(child, old_parent, Some(parent), old_position, new_position);
+        self.mark_dirty(parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
+        self.add_node_damage(child, self.nodes[child].layout);
+    }
+
+    pub fn remove_child(&mut self, parent: NodeId, child: NodeId) {
+        if !self.nodes.contains_key(parent) || !self.nodes.contains_key(child) {
+            return;
+        }
+        if self.nodes[child].parent != Some(parent) {
+            return;
+        }
+
+        let old_position = self.nodes[child].position;
+        self.nodes[parent]
+            .children
+            .retain(|candidate| *candidate != child);
+        self.nodes[child].parent = None;
+        self.nodes[child].position = 0;
+        self.sync_taffy_children(parent);
+        self.reindex_children(parent);
+        self.record_node_move(child, Some(parent), None, old_position, 0);
+        self.mark_dirty(parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
+        self.add_node_damage(child, self.nodes[child].layout);
+    }
+
+    pub fn remove_from_parent(&mut self, child: NodeId) {
+        let Some(parent) = self.nodes.get(child).and_then(|node| node.parent) else {
+            return;
+        };
+        self.remove_child(parent, child);
+    }
+
     pub fn clear_children(&mut self, parent: NodeId) {
         let children = self.nodes[parent].children.clone();
         for child in children {
@@ -1195,6 +1283,21 @@ impl UiArena {
             .expect("failed to sync taffy children");
     }
 
+    fn detach_child_from_current_parent(&mut self, child: NodeId) {
+        let Some(old_parent) = self.nodes.get(child).and_then(|node| node.parent) else {
+            return;
+        };
+
+        self.nodes[old_parent]
+            .children
+            .retain(|candidate| *candidate != child);
+        self.nodes[child].parent = None;
+        self.nodes[child].position = 0;
+        self.sync_taffy_children(old_parent);
+        self.reindex_children(old_parent);
+        self.mark_dirty(old_parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
+    }
+
     pub fn set_children(&mut self, parent: NodeId, children: Vec<NodeId>) {
         if !self.nodes.contains_key(parent) {
             return;
@@ -1297,6 +1400,86 @@ impl UiArena {
 impl Default for UiArena {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod mutation_tests {
+    use super::*;
+    use crate::widgets::{column, text};
+
+    fn default_style() -> tf::Style {
+        tf::Style::default()
+    }
+
+    #[test]
+    fn append_child_moves_existing_child_to_end() {
+        let mut arena = UiArena::new();
+        let parent = arena.insert(arena.root(), column(), default_style());
+        let a = arena.insert(parent, text("A"), default_style());
+        let b = arena.insert(parent, text("B"), default_style());
+
+        arena.append_child(parent, a);
+
+        assert_eq!(arena.children(parent), &[b, a]);
+        assert_eq!(arena.node(a).and_then(|node| node.parent), Some(parent));
+        assert_eq!(arena.node(a).map(|node| node.position), Some(1));
+    }
+
+    #[test]
+    fn insert_before_moves_existing_child() {
+        let mut arena = UiArena::new();
+        let parent = arena.insert(arena.root(), column(), default_style());
+        let a = arena.insert(parent, text("A"), default_style());
+        let b = arena.insert(parent, text("B"), default_style());
+        let c = arena.insert(parent, text("C"), default_style());
+
+        arena.insert_before(parent, c, b);
+
+        assert_eq!(arena.children(parent), &[a, c, b]);
+        assert_eq!(arena.node(c).and_then(|node| node.parent), Some(parent));
+        assert_eq!(arena.node(c).map(|node| node.position), Some(1));
+    }
+
+    #[test]
+    fn insert_before_child_itself_is_noop() {
+        let mut arena = UiArena::new();
+        let parent = arena.insert(arena.root(), column(), default_style());
+        let a = arena.insert(parent, text("A"), default_style());
+        let b = arena.insert(parent, text("B"), default_style());
+
+        arena.insert_before(parent, a, a);
+
+        assert_eq!(arena.children(parent), &[a, b]);
+    }
+
+    #[test]
+    fn insert_before_missing_sibling_falls_back_to_append() {
+        let mut arena = UiArena::new();
+        let parent = arena.insert(arena.root(), column(), default_style());
+        let other_parent = arena.insert(arena.root(), column(), default_style());
+        let a = arena.insert(parent, text("A"), default_style());
+        let b = arena.insert(parent, text("B"), default_style());
+        let other = arena.insert(other_parent, text("Other"), default_style());
+
+        arena.insert_before(parent, a, other);
+
+        assert_eq!(arena.children(parent), &[b, a]);
+        assert_eq!(arena.children(other_parent), &[other]);
+    }
+
+    #[test]
+    fn remove_from_parent_detaches_child() {
+        let mut arena = UiArena::new();
+        let parent = arena.insert(arena.root(), column(), default_style());
+        let a = arena.insert(parent, text("A"), default_style());
+        let b = arena.insert(parent, text("B"), default_style());
+
+        arena.remove_from_parent(a);
+
+        assert_eq!(arena.children(parent), &[b]);
+        assert_eq!(arena.node(a).and_then(|node| node.parent), None);
+        assert_eq!(arena.node(a).map(|node| node.position), Some(0));
     }
 }
 

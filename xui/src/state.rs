@@ -89,10 +89,10 @@ fn read_slot<T: 'static>(pointer: Pointer<Slot, T>) -> &'static T {
 }
 
 fn write_slot<T: 'static>(pointer: Pointer<Slot, T>, value: impl for<'a> FnOnce(&'a mut T)) {
-    unsafe {
+    SlotRuntime::with_phase(SlotRenderPhase::Effect, || unsafe {
         let p = pointer.try_write().unwrap();
         value(p);
-    }
+    });
 }
 
 impl HookStorage {
@@ -298,10 +298,7 @@ impl Scheduler {
                     let state = value
                         .downcast_ref::<Pointer<Slot, StateSlot<T>>>()
                         .expect("hook state update type changed");
-                    unsafe {
-                        let v = state.try_write().unwrap();
-                        update(&mut v.value);
-                    }
+                    write_slot(*state, |state| update(&mut state.value));
                 }),
             });
         *inner.dirty_components.entry(owner).or_insert(NO_LANES) |= lane;
