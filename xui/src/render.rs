@@ -1,4 +1,4 @@
 pub use xui_interface::{
-    DamageRegion, DrawBackend, MockRenderBackend, PaintCommand, Painter, RenderBackend,
-    TextPaintCommand,
+    DamageRegion, DrawBackend, ImageFormat, ImageKey, ImagePaintCommand, ImageResource,
+    MockRenderBackend, PaintCommand, Painter, RenderBackend, TextPaintCommand,
 };

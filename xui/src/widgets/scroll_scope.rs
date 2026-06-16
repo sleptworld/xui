@@ -4,7 +4,9 @@ use crate::{
     event_system::callbacks::EventHandlers,
     widgets::{props_hash, widget_element_desc},
 };
-use xui_interface::{DirtyFlags, Event, Key, Style, Translation, Widget, events::RawEvent};
+use xui_interface::{
+    DirtyFlags, Event, EventRef, Key, Style, Translation, Widget, events::RawEvent,
+};
 
 pub struct ScrollScope {
     key: Option<Key>,
@@ -79,11 +81,11 @@ impl Widget for ScrollScope {
 
     fn handle_event(
         &mut self,
-        event: &xui_interface::Event,
+        event: xui_interface::EventRef<'_>,
         _cx: &mut xui_interface::EventContext<'_>,
     ) -> xui_interface::EventResult {
         match event {
-            Event::Raw(RawEvent::Wheel(raw)) => {
+            EventRef::Raw(RawEvent::Wheel(raw)) => {
                 let delta = match raw.delta {
                     xui_interface::ScrollDelta::Pixels(delta) => delta,
                     xui_interface::ScrollDelta::Lines(delta) => {

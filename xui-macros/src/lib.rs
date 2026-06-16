@@ -1,18 +1,18 @@
 mod tools;
 use proc_macro::TokenStream;
+use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{
     Delimiter, Group, Ident as TokenIdent, Span, TokenStream as TokenStream2, TokenTree,
 };
-use proc_macro_crate::{crate_name, FoundCrate};
-use quote::{quote, ToTokens};
+use quote::{ToTokens, quote};
 use syn::parse::Parser;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{
-    braced, parse_macro_input, parse_quote, Attribute as SynAttribute, Data, DeriveInput, Error,
-    Expr, Fields, FnArg, Ident, LitStr, Pat, Result, ReturnType, Signature, Token, Type,
-    TypeReference, Visibility,
+    Attribute as SynAttribute, Data, DeriveInput, Error, Expr, Fields, FnArg, Ident, LitStr, Pat,
+    Result, ReturnType, Signature, Token, Type, TypeReference, Visibility, braced,
+    parse_macro_input, parse_quote,
 };
 
 use crate::tools::{
@@ -897,6 +897,7 @@ fn expand_node(node: &ElementNode) -> Result<TokenStream2> {
         "column" => expand_stack(node, "column", quote!(::xui::column())),
         "row" => expand_stack(node, "row", quote!(::xui::row())),
         "container" => expand_container(node),
+        "image" => expand_image(node),
         "style_scope" => expand_style_scope(node),
         "component" => expand_component(node),
         _ => expand_function_component(node),
@@ -1124,11 +1125,7 @@ fn expand_button(node: &ElementNode) -> Result<TokenStream2> {
     }})
 }
 
-fn expand_stack(
-    node: &ElementNode,
-    _tag: &str,
-    constructor: TokenStream2,
-) -> Result<TokenStream2> {
+fn expand_stack(node: &ElementNode, _tag: &str, constructor: TokenStream2) -> Result<TokenStream2> {
     let mut attr_stmts = Vec::new();
 
     parse_attrs_helper(
@@ -1204,6 +1201,54 @@ fn expand_container(node: &ElementNode) -> Result<TokenStream2> {
     }})
 }
 
+fn expand_image(node: &ElementNode) -> Result<TokenStream2> {
+    let mut attr_stmts = Vec::new();
+    parse_attrs_helper(
+        node,
+        |name, value| {
+            match name {
+                "image_key" => Some(quote! {
+                    __xui_element = __xui_element.image_key(#value);
+                }),
+                "opacity" => Some(quote! {
+                    __xui_element = __xui_element.opacity(#value);
+                }),
+                _ => None,
+            }
+            .or(parse_base_attr(name, value))
+            .or(parse_text_style_attr(name, value)
+                .or(parse_layout_style_attr(name, value))
+                .or(parse_paint_style_attr(name, value))
+                .or(parse_scroll_style_attr(name, value))
+                .or(parse_animation_attr(name, value))
+                .or(parse_event_attr(name, value)))
+        },
+        &mut attr_stmts,
+    )?;
+
+    if !node.children.is_empty() {
+        return Err(Error::new(
+            node.name.span(),
+            "image does not support children",
+        ));
+    }
+
+    Ok(quote! {{
+        let mut __xui_element = ::xui::image();
+        let mut __xui_style = ::xui::Style::new();
+        let mut __xui_animated_style = ::xui::AnimatedStyle::new(::xui::Style::new());
+        let mut __xui_has_animated_style = false;
+        #(#attr_stmts)*
+        if __xui_has_animated_style {
+            __xui_animated_style.base.merge(&__xui_style);
+            __xui_element = __xui_element.animated_style(__xui_animated_style);
+        } else {
+            __xui_element = __xui_element.style(__xui_style);
+        }
+        __xui_element.into_element_desc(::std::vec::Vec::new())
+    }})
+}
+
 fn expand_component(node: &ElementNode) -> Result<TokenStream2> {
     let mut render = None;
     let mut key = None;
@@ -1246,8 +1291,10 @@ fn expand_function_component(node: &ElementNode) -> Result<TokenStream2> {
         ));
     }
 
-    let component_handle_name =
-        TokenIdent::new(&format!("{}_component_render", node.name), Span::call_site());
+    let component_handle_name = TokenIdent::new(
+        &format!("{}_component_render", node.name),
+        Span::call_site(),
+    );
     let component_props_name = component_props_name(&node.name);
     let has_children = !node.children.is_empty();
     let named_props_value = if named_props.is_empty() {

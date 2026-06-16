@@ -7,7 +7,7 @@ use crate::element::ElementDesc;
 use crate::event_system::callbacks::EventHandlers;
 use xui_interface::events::RawEvent;
 use xui_interface::{
-    ColorToken, ComputedStyle, DirtyFlags, Event, EventContext, EventResult, EventTrigger, Key,
+    ColorToken, ComputedStyle, DirtyFlags, EventContext, EventRef, EventResult, EventTrigger, Key,
     PaintCommand, PointerButton, Rect, Style, TextContent, TextPaintCommand, TextProps, Widget,
     WidgetState, WidgetType,
 };
@@ -229,9 +229,9 @@ impl Widget for ButtonWidget {
         }));
     }
 
-    fn handle_event(&mut self, event: &Event, cx: &mut EventContext<'_>) -> EventResult {
+    fn handle_event(&mut self, event: EventRef<'_>, cx: &mut EventContext<'_>) -> EventResult {
         match event {
-            Event::Raw(RawEvent::PointerDown(raw)) if raw.button == PointerButton::Primary => {
+            EventRef::Raw(RawEvent::PointerDown(raw)) if raw.button == PointerButton::Primary => {
                 if self.disabled {
                     return EventResult::Ignored;
                 }
@@ -240,13 +240,13 @@ impl Widget for ButtonWidget {
                 cx.mark_dirty(DirtyFlags::STYLE | DirtyFlags::PAINT);
                 EventResult::Consumed
             }
-            Event::Raw(RawEvent::PointerUp(raw)) if raw.button == PointerButton::Primary => {
+            EventRef::Raw(RawEvent::PointerUp(raw)) if raw.button == PointerButton::Primary => {
                 self.pressed = false;
                 cx.release_pointer_capture();
                 cx.mark_dirty(DirtyFlags::STYLE | DirtyFlags::PAINT);
                 EventResult::Consumed
             }
-            Event::Raw(RawEvent::Wheel(_)) => EventResult::Ignored,
+            EventRef::Raw(RawEvent::Wheel(_)) => EventResult::Ignored,
             _ => EventResult::Consumed,
         }
     }

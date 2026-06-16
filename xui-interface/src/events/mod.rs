@@ -8,7 +8,13 @@ use crate::{DirtyFlags, NodeId};
 #[derive(Debug, Clone)]
 pub enum Event {
     Raw(raw::RawEvent),
-    Semantic(semantic::SemanticEvent)
+    Semantic(semantic::SemanticEvent),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum EventRef<'a> {
+    Raw(&'a raw::RawEvent),
+    Semantic(&'a semantic::SemanticEvent),
 }
 
 pub struct EventCtx<'a> {
@@ -35,9 +41,6 @@ impl<'a> EventCtx<'a> {
     }
 }
 
-
-
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventTrigger {
     OnMount,
@@ -56,6 +59,7 @@ pub enum EventTrigger {
     OnPointerMove,
     OnKeyDown,
     OnKeyUp,
+    OnScroll,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +79,7 @@ pub struct EventContext<'a> {
     pub phase: EventPhase,
     request_dirty: &'a mut DirtyFlags,
     requests: &'a mut EventRequests,
+    pub trigger: Option<EventTrigger>,
 }
 
 impl<'a> EventContext<'a> {
@@ -89,6 +94,7 @@ impl<'a> EventContext<'a> {
             phase,
             request_dirty,
             requests,
+            trigger: None,
         }
     }
 

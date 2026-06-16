@@ -1,16 +1,17 @@
 use slotmap::SlotMap;
-use xui_interface::events::RawEvent;
 use std::cell::Cell;
 use std::time::Duration;
-use taffy::{Position, prelude as tf};
+use taffy::prelude as tf;
+use xui_interface::events::RawEvent;
 use xui_interface::render::Damage;
 use xui_interface::{
-    ComputedColorStyle, ComputedScrollbarStyle, ComputedStyle, ComputedTextStyle, DirtyFlags, EventResult, EventTrigger, NodeId, NodeLifecycleEvent, ScrollbarVisibilityStyle, TextContent, TextLayoutConstraints, TextMeasurer, Theme, Translation
+    ComputedColorStyle, ComputedScrollbarStyle, ComputedStyle, ComputedTextStyle, DirtyFlags,
+    EventResult, EventTrigger, NodeId, NodeLifecycleEvent, ScrollbarVisibilityStyle, TextContent,
+    TextLayoutConstraints, TextMeasurer, Theme, Translation,
 };
 
 use crate::animation::{ActiveAnimation, AnimableStyle, AnimationTransition, StyleAnimationRule};
 use crate::core::{Point, Rect, Size};
-// use xui_interface::events::{CallbackHandleSet, CallbackStore, Event, EventHandlers, EventResult};
 use crate::event_system::callbacks::{CallbackHandleSet, CallbackStore, EventHandlers};
 use crate::event_system::{self, EventState, translator::EventTranslator};
 use crate::fiber::Key;
@@ -366,20 +367,17 @@ impl UiArena {
         &mut self.event_state
     }
 
-    pub(crate) fn take_event_translator(&mut self) -> EventTranslator {
-        std::mem::take(&mut self.event_translator)
+    #[inline(always)]
+    pub(crate) fn event_translator(&mut self) -> &mut EventTranslator {
+        &mut self.event_translator
     }
 
     pub(crate) fn replace_event_translator(&mut self, translator: EventTranslator) {
         self.event_translator = translator;
     }
 
-    pub(crate) fn take_event_callbacks(&mut self) -> CallbackStore {
-        std::mem::take(&mut self.event_callbacks)
-    }
-
-    pub(crate) fn replace_event_callbacks(&mut self, callbacks: CallbackStore) {
-        self.event_callbacks = callbacks;
+    pub(crate) fn event_callbacks(&mut self) -> &mut CallbackStore {
+        &mut self.event_callbacks
     }
 
     #[cfg(test)]
@@ -912,8 +910,12 @@ impl UiArena {
     }
 
     #[inline(always)]
-    pub fn dispatch_event(&mut self, event: &RawEvent) -> EventResult {
-        event_system::dispatch_event(self, event)
+    pub fn dispatch_event(
+        &mut self,
+        translator: &mut EventTranslator,
+        event: RawEvent,
+    ) -> EventResult {
+        event_system::dispatch_event(self, translator, event)
     }
 
     pub fn update_tree<T: TextMeasurer>(
@@ -1575,11 +1577,12 @@ impl Default for UiArena {
 mod mutation_tests {
     use super::*;
     use crate::animation::AnimationEasing;
+    use crate::event_system::translator;
     use crate::widgets::{button, column, container, text};
     use std::time::{Duration, Instant};
-    use xui_interface::events::XuiPointerId;
     use xui_interface::events::RawEvent;
-use xui_interface::{
+    use xui_interface::events::XuiPointerId;
+    use xui_interface::{
         Color, EventTrigger, Modifiers, PointerButton, PointerButtons, PointerKind,
         RawPointerButton, RawPointerMove, Style,
     };
@@ -1759,9 +1762,10 @@ use xui_interface::{
             sized_style(40.0, 20.0),
         );
         let mut measurer = ZeroTextMeasurer;
+        let mut translator = EventTranslator::default();
         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
 
-        arena.dispatch_event(&pointer_move(Point::new(1.0, 1.0)));
+        arena.dispatch_event(&mut translator, pointer_move(Point::new(1.0, 1.0)));
         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
 
         assert!(arena.has_running_style_animations());
@@ -1799,9 +1803,11 @@ use xui_interface::{
             sized_style(40.0, 20.0),
         );
         let mut measurer = ZeroTextMeasurer;
+        let mut translator = EventTranslator::default();
+
         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
 
-        arena.dispatch_event(&pointer_move(Point::new(1.0, 1.0)));
+        arena.dispatch_event(&mut translator, pointer_move(Point::new(1.0, 1.0)));
         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
 
         assert!(arena.has_running_style_animations());
@@ -1839,10 +1845,11 @@ use xui_interface::{
             sized_style(40.0, 20.0),
         );
         let mut measurer = ZeroTextMeasurer;
+        let mut translator = EventTranslator::default();
         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
 
-        arena.dispatch_event(&pointer_down(Point::new(1.0, 1.0)));
-        arena.dispatch_event(&pointer_up(Point::new(1.0, 1.0)));
+        arena.dispatch_event(&mut translator, pointer_down(Point::new(1.0, 1.0)));
+        arena.dispatch_event(&mut translator, pointer_up(Point::new(1.0, 1.0)));
         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
 
         assert!(arena.has_running_style_animations());
@@ -1865,9 +1872,11 @@ use xui_interface::{
             sized_style(40.0, 20.0),
         );
         let mut measurer = ZeroTextMeasurer;
+        let mut translator = EventTranslator::default();
+
         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
 
-        arena.dispatch_event(&pointer_down(Point::new(1.0, 1.0)));
+        arena.dispatch_event(&mut translator, pointer_down(Point::new(1.0, 1.0)));
         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
 
         assert!(arena.has_running_style_animations());

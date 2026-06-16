@@ -4,7 +4,8 @@ use slotmap::new_key_type;
 use smallstr::SmallString;
 
 use crate::{
-    ComputedStyle, ComputedTextStyle, DirtyFlags, Event, EventContext, EventResult, PaintCommand, Rect, Size, Style, TextContent, TextLayoutConstraints, WidgetState
+    ComputedStyle, ComputedTextStyle, DirtyFlags, Event, EventContext, EventResult, PaintCommand,
+    Rect, Size, Style, TextContent, TextLayoutConstraints, WidgetState, events::EventRef,
 };
 
 new_key_type! {
@@ -21,6 +22,7 @@ pub enum WidgetType {
     Container,
     StyleScope,
     ScrollScope,
+    Image,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -176,7 +178,7 @@ pub trait Widget: Debug {
 
     fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>);
 
-    fn handle_event(&mut self, event: &Event, cx: &mut EventContext<'_>) -> EventResult;
+    fn handle_event(&mut self, event: EventRef<'_>, cx: &mut EventContext<'_>) -> EventResult;
 
     fn on_click(&mut self) {}
 

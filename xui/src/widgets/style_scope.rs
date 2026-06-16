@@ -2,8 +2,8 @@ use crate::animation::AnimatedStyle;
 use crate::element::ElementDesc;
 use crate::event_system::callbacks::EventHandlers;
 use xui_interface::{
-    ComputedStyle, DirtyFlags, Event, EventContext, EventResult, Key, PaintCommand, Rect, Style,
-    Widget, WidgetType,
+    ComputedStyle, DirtyFlags, Event, EventContext, EventRef, EventResult, Key, PaintCommand, Rect,
+    Style, Widget, WidgetType,
 };
 
 use super::{props_hash, widget_element_desc};
@@ -87,7 +87,7 @@ impl Widget for StyleScopeWidget {
 
     fn paint(&self, _rect: Rect, _style: &ComputedStyle, _commands: &mut Vec<PaintCommand>) {}
 
-    fn handle_event(&mut self, _event: &Event, _cx: &mut EventContext<'_>) -> EventResult {
+    fn handle_event(&mut self, _event: EventRef, _cx: &mut EventContext<'_>) -> EventResult {
         EventResult::Ignored
     }
 }

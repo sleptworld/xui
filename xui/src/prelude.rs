@@ -20,8 +20,8 @@ pub use crate::event_system::callbacks::{
 };
 pub use crate::fiber::{ComponentCall, ComponentRender, ComponentType, ErasedPropsRef};
 pub use crate::render::{
-    DamageRegion, DrawBackend, MockRenderBackend, PaintCommand, Painter, RenderBackend,
-    TextPaintCommand,
+    DamageRegion, DrawBackend, ImageFormat, ImageKey, ImagePaintCommand, ImageResource,
+    MockRenderBackend, PaintCommand, Painter, RenderBackend, TextPaintCommand,
 };
 pub use crate::runtime::{
     ControlFlow, EventSource, FrameReport, GuiRuntime, QueueEventSource, RuntimeEvent,
@@ -37,9 +37,9 @@ pub use crate::style::{
 };
 pub use crate::tree::UiArena;
 pub use crate::widgets::{
-    ButtonWidget, ColumnWidget, ContainerWidget, LabelWidget, RowWidget, StyleScopeWidget,
-    TextWidget, Widget, WidgetI, WithChildren, button, column, component, container, label, row,
-    style_scope, text,
+    ButtonWidget, ColumnWidget, ContainerWidget, ImageWidget, LabelWidget, RowWidget,
+    StyleScopeWidget, TextWidget, Widget, WidgetI, WithChildren, button, column, component,
+    container, image, label, row, style_scope, text,
 };
 pub use xui_interface::{
     DirtyFlags, FontFamily, FontStyle, FontWeight, LineHeight, NodeId, OverflowWrap,

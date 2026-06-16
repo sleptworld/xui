@@ -2,9 +2,9 @@ use crate::animation::AnimatedStyle;
 use crate::element::ElementDesc;
 use crate::event_system::callbacks::EventHandlers;
 use xui_interface::{
-    ComputedStyle, DirtyFlags, Event, EventContext, EventResult, Key, OverflowWrap, PaintCommand,
-    ParagraphStyle, Rect, Style, TextBoxStyle, TextContent, TextOverflow, TextPaintCommand,
-    TextProps, Widget, WidgetType,
+    ComputedStyle, DirtyFlags, Event, EventContext, EventRef, EventResult, Key, OverflowWrap,
+    PaintCommand, ParagraphStyle, Rect, Style, TextBoxStyle, TextContent, TextOverflow,
+    TextPaintCommand, TextProps, Widget, WidgetType,
 };
 
 use super::{label::apply_text_style, props_hash, widget_element_desc};
@@ -128,7 +128,7 @@ impl Widget for TextWidget {
         }));
     }
 
-    fn handle_event(&mut self, _event: &Event, _cx: &mut EventContext<'_>) -> EventResult {
+    fn handle_event(&mut self, _event: EventRef, _cx: &mut EventContext<'_>) -> EventResult {
         EventResult::Ignored
     }
 

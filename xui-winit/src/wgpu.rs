@@ -1,12 +1,14 @@
-use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 use glam::{Vec2, Vec3};
+use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 use wgpu::util::DeviceExt;
 use xui_interface::widget::PType;
 use xui_interface::{
-    Color, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, DamageRegion, GlyphBitmap,
-    GlyphPlacement, PaintCommand, Point, Rect, RenderBackend, TextLayoutBackend, TextPaintCommand,
+    Color, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, DamageRegion,
+    GlyphPlacement, ImageFormat, ImageKey, ImagePaintCommand, ImageResource, PaintCommand, Point,
+    Rect, RenderBackend, Size, TextLayoutBackend, TextPaintCommand,
 };
 
+use crate::renders::image::ImageRender;
 use crate::sdf::UI_SHADER_WGSL;
 use crate::text::atlas::Atlas;
 use crate::text::render::GlyphRender;
@@ -27,6 +29,8 @@ pub struct WGPUBackend<T: TextLayoutBackend = WinitTextEngine> {
     glyph_render: GlyphRender,
     atlas: Atlas,
     last_text_glyph_records: Vec<TextGlyphRecord>,
+    // Images
+    image_render: ImageRender,
     // Composite State
     composite_pipeline: wgpu::RenderPipeline,
     composite_bind_group_layout: wgpu::BindGroupLayout,
@@ -64,6 +68,12 @@ const UI_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 10] = wgpu::vertex_attr_ar
     9 => Float32x4,
 ];
 
+const IMAGE_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
+    0 => Float32x4,
+    1 => Float32x4,
+    2 => Float32x4,
+];
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct UiUniforms {
@@ -96,6 +106,14 @@ struct GlyphInstance {
     color: [f32; 4],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ImageInstance {
+    bounds: [f32; 4],
+    clip: [f32; 4],
+    params: [f32; 4],
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextGlyphRecord {
     pub ptype: PType,
@@ -108,12 +126,30 @@ pub struct TextGlyphRecord {
     pub atlas_rect: Rect,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageDrawRecord {
+    pub key: ImageKey,
+    pub rect: Rect,
+    pub clip: Rect,
+    pub opacity: f32,
+}
+
 impl UiInstance {
     fn layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &UI_INSTANCE_ATTRIBUTES,
+        }
+    }
+}
+
+impl ImageInstance {
+    fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &IMAGE_INSTANCE_ATTRIBUTES,
         }
     }
 }
@@ -212,6 +248,7 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
 
         let atlas = Atlas::new(&device);
         let glyph_render = GlyphRender::new(&device, &atlas, &ui_bind_group_layout);
+        let image_render = ImageRender::new(&device, &ui_bind_group_layout);
 
         let composite_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -289,6 +326,7 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
             multiview_mask: None,
             cache: None,
         });
+
         let composite_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("xui composite render pipeline"),
             layout: Some(&composite_pipeline_layout),
@@ -338,6 +376,7 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
             queue,
             config,
             render_pipeline,
+            image_render,
             composite_pipeline,
             composite_bind_group_layout,
             composite_sampler,
@@ -385,6 +424,18 @@ impl SceneTexture {
             view,
         }
     }
+}
+
+struct RegisteredImageResource {
+    resource: ImageResource,
+    version: u64,
+}
+
+struct CachedImageTexture {
+    _texture: wgpu::Texture,
+    _view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
+    version: u64,
 }
 
 fn choose_srgb_surface_format(
@@ -503,9 +554,10 @@ impl<T: TextLayoutBackend> RenderBackend<T> for WGPUBackend<T> {
             logical_scene_size.width,
             logical_scene_size.height,
         ));
-        let (instances, text_glyph_records) =
+        let (instances, image_records, text_glyph_records) =
             self.build_ui_instances(commands, scene_clip, text)?;
         self.last_text_glyph_records = text_glyph_records;
+        self.prepare_image_textures(&image_records)?;
 
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
@@ -559,8 +611,25 @@ impl<T: TextLayoutBackend> RenderBackend<T> for WGPUBackend<T> {
                     usage: wgpu::BufferUsages::VERTEX,
                 })
         });
+        let image_instances: Vec<ImageInstance> = image_records
+            .iter()
+            .map(|record| ImageInstance {
+                bounds: rect_to_array(record.rect),
+                clip: rect_to_array(record.clip),
+                params: [record.opacity, 0.0, 0.0, 0.0],
+            })
+            .collect();
+        let image_instance_buffer = (!image_instances.is_empty()).then(|| {
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("xui image instances"),
+                    contents: bytemuck::cast_slice(&image_instances),
+                    usage: wgpu::BufferUsages::VERTEX,
+                })
+        });
 
-        self.glyph_render.deal_glyphs(&self.device, &self.queue, &self.last_text_glyph_records);
+        self.glyph_render
+            .deal_glyphs(&self.device, &self.queue, &self.last_text_glyph_records);
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -594,6 +663,19 @@ impl<T: TextLayoutBackend> RenderBackend<T> for WGPUBackend<T> {
                 pass.set_bind_group(0, &self.ui_bind_group, &[]);
                 pass.set_vertex_buffer(0, instance_buffer.slice(..));
                 pass.draw(0..6, 0..instances.len() as u32);
+            }
+
+            if let Some(image_instance_buffer) = &image_instance_buffer {
+                pass.set_pipeline(&self.image_pipeline);
+                pass.set_bind_group(0, &self.ui_bind_group, &[]);
+                pass.set_vertex_buffer(0, image_instance_buffer.slice(..));
+                for (index, record) in image_records.iter().enumerate() {
+                    let Some(texture) = self.image_textures.get(&record.key) else {
+                        continue;
+                    };
+                    pass.set_bind_group(1, &texture.bind_group, &[]);
+                    pass.draw(0..6, index as u32..index as u32 + 1);
+                }
             }
 
             self.glyph_render.render(&mut pass, &self.ui_bind_group);
@@ -643,8 +725,10 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
         commands: &[PaintCommand],
         viewport_clip: Rect,
         text: &mut T,
-    ) -> Result<(Vec<UiInstance>, Vec<TextGlyphRecord>), WgpuBackendError> {
+    ) -> Result<(Vec<UiInstance>, Vec<ImageDrawRecord>, Vec<TextGlyphRecord>), WgpuBackendError>
+    {
         let mut instances = Vec::new();
+        let mut image_records = Vec::new();
         let mut text_glyph_records = Vec::new();
         let mut transform_stack = vec![Point::new(0.0, 0.0)];
         let mut clip_stack = vec![viewport_clip];
@@ -715,6 +799,10 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
                         &mut text_glyph_records,
                     )?;
                 }
+                PaintCommand::Image(command) => {
+                    let rect = translate_rect(command.rect, current_transform(&transform_stack));
+                    push_image_record(&mut image_records, command, rect, current_clip(&clip_stack));
+                }
                 PaintCommand::PushClip(rect) => {
                     let rect = translate_rect(*rect, current_transform(&transform_stack));
                     let clip =
@@ -751,7 +839,38 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
             }
         }
 
-        Ok((instances, text_glyph_records))
+        Ok((instances, image_records, text_glyph_records))
+    }
+
+    fn prepare_image_textures(
+        &mut self,
+        records: &[ImageDrawRecord],
+    ) -> Result<(), WgpuBackendError> {
+        for record in records {
+            let Some(registered) = self.image_resources.get(&record.key) else {
+                continue;
+            };
+            let needs_upload = self
+                .image_textures
+                .get(&record.key)
+                .is_none_or(|texture| texture.version != registered.version);
+            if !needs_upload {
+                continue;
+            }
+
+            let resource = registered.resource.clone();
+            let version = registered.version;
+            let texture = create_cached_image_texture(
+                &self.device,
+                &self.queue,
+                &self.image_bind_group_layout,
+                &self.image_sampler,
+                &resource,
+                version,
+            )?;
+            self.image_textures.insert(record.key.clone(), texture);
+        }
+        Ok(())
     }
 
     fn push_text_glyph_records(
@@ -830,7 +949,6 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
         text: &mut T,
         key: &T::GlyphKey,
     ) -> Result<Option<(AllocInfo, GlyphPlacement, PType)>, WgpuBackendError> {
-
         let value = if let Some(bitmap) = text.rasterize_glyph(key) {
             if bitmap.width == 0 || bitmap.height == 0 {
                 None
@@ -846,6 +964,139 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
         };
         Ok(value)
     }
+}
+
+fn push_image_record(
+    records: &mut Vec<ImageDrawRecord>,
+    command: &ImagePaintCommand,
+    rect: Rect,
+    clip: Rect,
+) {
+    if rect.width <= 0.0
+        || rect.height <= 0.0
+        || clip.width <= 0.0
+        || clip.height <= 0.0
+        || command.opacity <= 0.0
+        || command.key.0.is_empty()
+    {
+        return;
+    }
+
+    let Some(clip) = intersect_rect(clip, rect) else {
+        return;
+    };
+    records.push(ImageDrawRecord {
+        key: command.key.clone(),
+        rect,
+        clip,
+        opacity: command.opacity.clamp(0.0, 1.0),
+    });
+}
+
+fn create_cached_image_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    resource: &ImageResource,
+    version: u64,
+) -> Result<CachedImageTexture, WgpuBackendError> {
+    validate_image_resource(resource)?;
+
+    let format = match resource.format {
+        ImageFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("xui image texture"),
+        size: wgpu::Extent3d {
+            width: resource.size.width,
+            height: resource.size.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        resource.pixels.as_ref(),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(resource.size.width * 4),
+            rows_per_image: Some(resource.size.height),
+        },
+        wgpu::Extent3d {
+            width: resource.size.width,
+            height: resource.size.height,
+            depth_or_array_layers: 1,
+        },
+    );
+
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("xui image bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    });
+
+    Ok(CachedImageTexture {
+        _texture: texture,
+        _view: view,
+        bind_group,
+        version,
+    })
+}
+
+fn validate_image_resource(resource: &ImageResource) -> Result<(), WgpuBackendError> {
+    if resource.key.0.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "image resource key cannot be empty",
+        )
+        .into());
+    }
+    if resource.size.width == 0 || resource.size.height == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "image resource size cannot be zero",
+        )
+        .into());
+    }
+
+    let bytes_per_pixel = match resource.format {
+        ImageFormat::Rgba8UnormSrgb => 4usize,
+    };
+    let expected_len =
+        resource.size.width as usize * resource.size.height as usize * bytes_per_pixel;
+    if resource.pixels.len() != expected_len {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "image resource pixel length mismatch: expected {expected_len}, got {}",
+                resource.pixels.len()
+            ),
+        )
+        .into());
+    }
+
+    Ok(())
 }
 
 fn push_rect_instance(
@@ -1152,7 +1403,6 @@ fn push_line_instance(
     });
 }
 
-
 fn current_transform(stack: &[Point]) -> Point {
     stack.last().copied().unwrap_or_default()
 }
@@ -1289,6 +1539,18 @@ mod tests {
         )
         .validate(&module)
         .expect("composite.wgsl should validate");
+    }
+
+    #[test]
+    fn image_shader_is_valid_wgsl() {
+        let module = wgpu::naga::front::wgsl::parse_str(include_str!("shaders/image.wgsl"))
+            .expect("image.wgsl should parse");
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .expect("image.wgsl should validate");
     }
 
     #[test]

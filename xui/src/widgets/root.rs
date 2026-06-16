@@ -1,8 +1,8 @@
 use crate::animation::AnimatedStyle;
 use crate::event_system::callbacks::EventHandlers;
 use xui_interface::{
-    Color, ComputedStyle, DirtyFlags, Event, EventContext, EventResult, PaintCommand, Rect, Size,
-    Style, Widget, WidgetType, core::Sizing,
+    Color, ComputedStyle, DirtyFlags, Event, EventContext, EventRef, EventResult, PaintCommand,
+    Rect, Size, Style, Widget, WidgetType, core::Sizing,
 };
 
 use super::props_hash;
@@ -64,7 +64,7 @@ impl Widget for RootWidget {
         commands.push(PaintCommand::Clear(Color::WHITE));
     }
 
-    fn handle_event(&mut self, _event: &Event, _cx: &mut EventContext<'_>) -> EventResult {
+    fn handle_event(&mut self, _event: EventRef<'_>, _cx: &mut EventContext<'_>) -> EventResult {
         EventResult::Ignored
     }
 }

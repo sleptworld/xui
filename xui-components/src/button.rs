@@ -34,6 +34,11 @@ pub fn pbutton(text: &String, ps: &ButtonProp) {
                 println!("HEllo");
                 EventResult::Ignored
             }}
+
+            on_hover_enter={|_,_| {
+                println!("ABABA");
+                EventResult::Ignored
+            }}
             // animation= {(
             //     EventTrigger::OnHover,
             //     Style::new()

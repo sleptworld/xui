@@ -1,19 +1,21 @@
 use crate::ElementDesc;
 use crate::component::ComponentRuntime;
 use crate::core::Size;
-use xui_interface::events::{Event, EventResult, RawEvent};
+use crate::event_system::translator::EventTranslator;
 use crate::lanes::{event_lane, with_update_lane};
 use crate::render::RenderBackend;
 use crate::state::{HookContext, Scheduler};
 use crate::style::Theme;
 use crate::tree::UiArena;
 use std::time::Duration;
+use xui_interface::events::{EventResult, RawEvent};
 use xui_interface::render::Damage;
 use xui_interface::{DirtyFlags, TextMeasurer};
 
 pub struct App {
     arena: UiArena,
     components: ComponentRuntime,
+    event_translator: EventTranslator,
     size: Size<f32>,
 }
 
@@ -25,6 +27,7 @@ impl App {
         let app = Self {
             arena,
             components,
+            event_translator: EventTranslator::default(),
             size: Size::<f32>::ZERO,
         };
         // app.rebuild_if_needed(measure);
@@ -67,7 +70,9 @@ impl App {
         self.rebuild_sync_if_needed();
         self.arena.update_tree(self.arena.root(), self.size, m);
         let lane = event_lane(&event);
-        let result = with_update_lane(lane, || self.arena.dispatch_event(&event));
+        let result = with_update_lane(lane, || {
+            self.arena.dispatch_event(&mut self.event_translator, event)
+        });
         if self.scheduler().is_dirty() {
             self.arena.mark_dirty(self.arena.root(), DirtyFlags::STATE);
         }

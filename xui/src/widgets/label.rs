@@ -4,8 +4,8 @@ use crate::event_system::callbacks::EventHandlers;
 
 use super::{props_hash, widget_element_desc};
 use xui_interface::{
-    ComputedStyle, DirtyFlags, Event, EventContext, EventResult, Key, PaintCommand, Rect, Style,
-    TextContent, TextPaintCommand, TextProps, Widget, WidgetType,
+    ComputedStyle, DirtyFlags, Event, EventContext, EventRef, EventResult, Key, PaintCommand, Rect,
+    Style, TextContent, TextPaintCommand, TextProps, Widget, WidgetType,
 };
 
 #[derive(Debug)]
@@ -85,7 +85,7 @@ impl Widget for LabelWidget {
         }));
     }
 
-    fn handle_event(&mut self, _event: &Event, _cx: &mut EventContext<'_>) -> EventResult {
+    fn handle_event(&mut self, _event: EventRef<'_>, _cx: &mut EventContext<'_>) -> EventResult {
         EventResult::Ignored
     }
 

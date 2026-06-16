@@ -2,35 +2,45 @@ use crate::animation::AnimatedStyle;
 use crate::element::ElementDesc;
 use crate::event_system::callbacks::EventHandlers;
 use xui_interface::{
-    ColorStyle, ComputedStyle, DirtyFlags, Event, EventContext, EventRef, EventResult, Key,
-    LengthValue, PaintCommand, Rect, ScrollDirectionStyle, ScrollbarVisibilityStyle, Style, Widget,
-    WidgetType, style::ScrollbarStylePatch,
+    ColorStyle, ComputedStyle, DirtyFlags, EventContext, EventRef, EventResult, ImageKey,
+    ImagePaintCommand, Key, LengthValue, PaintCommand, Rect, ScrollDirectionStyle,
+    ScrollbarVisibilityStyle, Style, Widget, WidgetType, style::ScrollbarStylePatch,
 };
 
 use super::{props_hash, widget_element_desc};
 
-pub struct ContainerWidget {
+pub struct ImageWidget {
     pub key: Option<Key>,
+    pub image_key: ImageKey,
+    pub opacity: f32,
     pub animated_style: AnimatedStyle,
     pub event_handlers: EventHandlers,
 }
 
-impl std::fmt::Debug for ContainerWidget {
+impl std::fmt::Debug for ImageWidget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ContainerWidget")
+        f.debug_struct("ImageWidget")
             .field("key", &self.key)
+            .field("image_key", &self.image_key)
+            .field("opacity", &self.opacity)
             .field("animated_style", &self.animated_style)
             .finish()
     }
 }
 
-impl ContainerWidget {
+impl ImageWidget {
     pub fn new() -> Self {
         Self {
             key: None,
+            image_key: "".into(),
+            opacity: 1.0,
             animated_style: AnimatedStyle::new(Style::new()),
             event_handlers: EventHandlers::default(),
         }
+    }
+
+    pub fn with_image_key(image_key: impl Into<ImageKey>) -> Self {
+        Self::new().image_key(image_key)
     }
 
     pub fn style(mut self, style: Style) -> Self {
@@ -97,6 +107,16 @@ impl ContainerWidget {
         self
     }
 
+    pub fn image_key(mut self, image_key: impl Into<ImageKey>) -> Self {
+        self.image_key = image_key.into();
+        self
+    }
+
+    pub fn opacity(mut self, opacity: f32) -> Self {
+        self.opacity = opacity.clamp(0.0, 1.0);
+        self
+    }
+
     pub fn into_element_desc(self, children: Vec<ElementDesc>) -> ElementDesc {
         widget_element_desc(self, children)
     }
@@ -104,15 +124,15 @@ impl ContainerWidget {
     event_handler_methods!();
 }
 
-impl Default for ContainerWidget {
+impl Default for ImageWidget {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Widget for ContainerWidget {
+impl Widget for ImageWidget {
     fn node_type(&self) -> WidgetType {
-        WidgetType::Container
+        WidgetType::Image
     }
 
     fn key(&self) -> Option<&Key> {
@@ -120,11 +140,23 @@ impl Widget for ContainerWidget {
     }
 
     fn props_hash(&self) -> u64 {
-        props_hash(&self.animated_style)
+        props_hash(&(
+            &self.image_key,
+            self.opacity.to_bits(),
+            &self.animated_style,
+        ))
     }
 
     fn update_from(&mut self, next: &Self) -> DirtyFlags {
         let mut flags = DirtyFlags::empty();
+        if self.image_key != next.image_key {
+            self.image_key = next.image_key.clone();
+            flags |= DirtyFlags::PAINT;
+        }
+        if self.opacity.to_bits() != next.opacity.to_bits() {
+            self.opacity = next.opacity;
+            flags |= DirtyFlags::PAINT;
+        }
         if self.animated_style != next.animated_style {
             self.animated_style = next.animated_style.clone();
             flags |= DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
@@ -147,6 +179,11 @@ impl Widget for ContainerWidget {
 
     fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
         paint_box(rect, style, commands);
+        commands.push(PaintCommand::Image(ImagePaintCommand {
+            key: self.image_key.clone(),
+            rect,
+            opacity: self.opacity,
+        }));
     }
 
     fn handle_event(&mut self, _event: EventRef<'_>, _cx: &mut EventContext<'_>) -> EventResult {

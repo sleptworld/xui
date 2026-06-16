@@ -2,6 +2,8 @@ use crate::{
     Color, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, NodeId,
     NodeLifecycleEvent, Point, Rect, Size, TextProps, Translation,
 };
+use smallstr::SmallString;
+use std::{path::PathBuf, sync::Arc};
 
 pub trait Painter {
     fn push(&mut self, command: PaintCommand);
@@ -35,6 +37,7 @@ pub enum PaintCommand {
         width: f32,
     },
     Text(TextPaintCommand),
+    Image(ImagePaintCommand),
     // Clip
     PushClip(Rect),
     PopClip,
@@ -53,6 +56,90 @@ pub struct TextPaintCommand {
     pub node_id: NodeId,
     pub rect: Rect,
     pub props: TextProps,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImagePaintCommand {
+    pub key: ImageKey,
+    pub rect: Rect,
+    pub opacity: f32,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub enum ImageSourceKey {
+    AssetPath(PathBuf),
+    Url(String),
+    BytesHash(u64),
+    UserProvided(u64),
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub enum ColorSpace {
+    Srgb,
+    LinearSrgb,
+    DisplayP3,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub enum Sampling {
+    Nearest,
+    Linear,
+    Cubic,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct ImageTransform {
+    pub flip_x: bool,
+    pub flip_y: bool,
+    pub rotate: ImageRotation,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub enum ImageRotation {
+    Deg0,
+    Deg90,
+    Deg180,
+    Deg270,
+    Deg360,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct ImageVariantKey {
+    pub target_size_px: Option<(u32, u32)>,
+    pub scale_factor_bits: u32,
+    pub color_space: ColorSpace,
+    pub sampling: Sampling,
+    pub transform: ImageTransform,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct ImageKey {
+    pub source: ImageSourceKey,
+    pub variant: ImageVariantKey,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImageResource {
+    pub key: ImageKey,
+    pub size: Size<u32>,
+    pub pixels: Arc<[u8]>,
+    pub format: ImageFormat,
+}
+
+impl ImageResource {
+    pub fn rgba8(key: impl Into<ImageKey>, size: Size<u32>, pixels: impl Into<Arc<[u8]>>) -> Self {
+        Self {
+            key: key.into(),
+            size,
+            pixels: pixels.into(),
+            format: ImageFormat::Rgba8UnormSrgb,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ImageFormat {
+    Rgba8UnormSrgb,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

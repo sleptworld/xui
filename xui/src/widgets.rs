@@ -446,6 +446,7 @@ macro_rules! animated_style_methods {
 mod button;
 mod column;
 mod container;
+mod image;
 mod label;
 mod root;
 mod row;
@@ -456,6 +457,7 @@ mod text;
 pub use button::ButtonWidget;
 pub use column::ColumnWidget;
 pub use container::ContainerWidget;
+pub use image::ImageWidget;
 pub use label::LabelWidget;
 pub use root::RootWidget;
 pub use row::RowWidget;
@@ -593,7 +595,7 @@ macro_rules! define_widgets {
 
             fn handle_event(
                 &mut self,
-                event: &xui_interface::Event,
+                event: xui_interface::EventRef<'_>,
                 cx: &mut xui_interface::EventContext<'_>,
             ) -> xui_interface::EventResult {
                 match self {
@@ -630,6 +632,7 @@ define_widgets! {
     Label => LabelWidget,
     Text => TextWidget,
     Button => ButtonWidget,
+    Image => ImageWidget,
     StyleScope => StyleScopeWidget,
     ScrollScope => ScrollScope,
     Root => RootWidget,
@@ -697,7 +700,7 @@ impl WidgetI {
 
     pub fn handle_event(
         &self,
-        event: &xui_interface::Event,
+        event: xui_interface::EventRef<'_>,
         cx: &mut xui_interface::EventContext<'_>,
     ) -> xui_interface::EventResult {
         self.with_widgets_mut(|widget| widget.handle_event(event, cx))
@@ -778,6 +781,10 @@ pub fn row() -> RowWidget {
 
 pub fn container() -> ContainerWidget {
     ContainerWidget::new()
+}
+
+pub fn image() -> ImageWidget {
+    ImageWidget::new()
 }
 
 pub fn style_scope(style: Style) -> StyleScopeWidget {

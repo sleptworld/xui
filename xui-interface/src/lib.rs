@@ -10,14 +10,15 @@ pub mod widget;
 pub use core::{Color, EdgeInsets, Point, Rect, Size, Sizing, Translation};
 pub use dirty::DirtyFlags;
 pub use events::{
-    ContextMenuTrigger, Event, EventContext, EventPhase, EventRequest, EventRequests, EventResult,
-    EventTrigger, Key as InputKey, Modifiers, PointerButton, PointerButtons, PointerCoords,
-    PointerKind, PointerSnapshot, RawContextMenu, RawKey, RawPointerButton, RawPointerCancel,
-    RawPointerMove, RawTextInput, RawWheel, RawWindowEvent, ScrollDelta, XuiDeviceId, XuiPointerId,
+    ContextMenuTrigger, Event, EventContext, EventPhase, EventRef, EventRequest, EventRequests,
+    EventResult, EventTrigger, Key as InputKey, Modifiers, PointerButton, PointerButtons,
+    PointerCoords, PointerKind, PointerSnapshot, RawContextMenu, RawKey, RawPointerButton,
+    RawPointerCancel, RawPointerMove, RawTextInput, RawWheel, RawWindowEvent, ScrollDelta,
+    XuiDeviceId, XuiPointerId,
 };
 pub use render::{
-    DamageRegion, DrawBackend, FontRenderBackend, MockRenderBackend, PaintCommand, Painter,
-    RenderBackend, TextPaintCommand,
+    DamageRegion, DrawBackend, FontRenderBackend, ImageFormat, ImageKey, ImagePaintCommand,
+    ImageResource, MockRenderBackend, PaintCommand, Painter, RenderBackend, TextPaintCommand,
 };
 pub use runtime::EventSource;
 pub use style::{

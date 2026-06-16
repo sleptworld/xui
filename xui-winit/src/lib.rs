@@ -1,12 +1,12 @@
+mod device;
 pub mod error;
-mod renders;
+pub(crate) mod renders;
 mod runner;
 pub mod sdf;
 pub mod text;
 mod text_cache;
 mod translate;
 mod wgpu;
-mod device;
 
 pub use runner::{WinitRunError, WinitRunner, WinitRunnerOptions};
 pub use sdf::UI_SHADER_WGSL;
