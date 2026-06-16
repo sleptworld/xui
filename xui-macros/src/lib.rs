@@ -16,7 +16,7 @@ use syn::{
 };
 
 use crate::tools::{
-    event_attr_stmt, parse_animation_attr, parse_attrs_helper, parse_base_attr,
+    event_attr_stmt, parse_animation_attr, parse_attrs_helper, parse_base_attr, parse_event_attr,
     parse_layout_style_attr, parse_paint_style_attr, parse_scroll_style_attr, parse_stack_attr,
     parse_text_style_attr, unsupported_attr,
 };
@@ -1070,9 +1070,6 @@ fn expand_button(node: &ElementNode) -> Result<TokenStream2> {
         match attr.name.to_string().as_str() {
             "key" => attr_stmts.push(quote! { __xui_element = __xui_element.key(#value); }),
             "text" => {}
-            "on_click" => {
-                attr_stmts.push(quote! { __xui_element = __xui_element.on_click(#value); });
-            }
             "disabled" => {
                 attr_stmts.push(quote! { __xui_element = __xui_element.disabled(#value); });
             }
@@ -1142,7 +1139,8 @@ fn expand_stack(
                 .or(parse_paint_style_attr(name, value))
                 .or(parse_scroll_style_attr(name, value))
                 .or(parse_stack_attr(name, value))
-                .or(parse_animation_attr(name, value)))
+                .or(parse_animation_attr(name, value))
+                .or(parse_event_attr(name, value)))
         },
         &mut attr_stmts,
     )?;
@@ -1178,7 +1176,8 @@ fn expand_container(node: &ElementNode) -> Result<TokenStream2> {
                 .or(parse_layout_style_attr(name, value))
                 .or(parse_paint_style_attr(name, value))
                 .or(parse_scroll_style_attr(name, value))
-                .or(parse_animation_attr(name, value)))
+                .or(parse_animation_attr(name, value))
+                .or(parse_event_attr(name, value)))
         },
         &mut attr_stmts,
     )?;

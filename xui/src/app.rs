@@ -1,7 +1,7 @@
 use crate::ElementDesc;
 use crate::component::ComponentRuntime;
 use crate::core::Size;
-use crate::event::{Event, EventResult};
+use xui_interface::events::{Event, EventResult, RawEvent};
 use crate::lanes::{event_lane, with_update_lane};
 use crate::render::RenderBackend;
 use crate::state::{HookContext, Scheduler};
@@ -63,7 +63,7 @@ impl App {
         self.components.scheduler()
     }
 
-    pub fn dispatch_event<T: TextMeasurer>(&mut self, event: Event, m: &mut T) -> EventResult {
+    pub fn dispatch_event<T: TextMeasurer>(&mut self, event: RawEvent, m: &mut T) -> EventResult {
         self.rebuild_sync_if_needed();
         self.arena.update_tree(self.arena.root(), self.size, m);
         let lane = event_lane(&event);

@@ -1,15 +1,17 @@
-use xui_interface::{DirtyFlags, EventRequest, EventRequests, NodeId};
+pub mod callbacks;
+pub mod dispatcher;
+pub mod translator;
 
-use crate::event::{Event, EventContext, EventPhase, EventResult, PointerButton};
+use xui_interface::events::{Event, EventResult, RawEvent};
+use crate::event_system::dispatcher::DispatchReport;
 use crate::tree::UiArena;
+use xui_interface::NodeId;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct EventState {
     focused: Option<NodeId>,
     hovered: Option<NodeId>,
     pointer_capture: Option<NodeId>,
-    hovered_path: Vec<NodeId>,
-    click_target: Option<NodeId>,
 }
 
 impl EventState {
@@ -35,843 +37,140 @@ impl EventState {
         if self.pointer_capture == Some(id) {
             self.pointer_capture = None;
         }
-        if self.click_target == Some(id) {
-            self.click_target = None;
-        }
-        self.hovered_path.retain(|node| *node != id);
     }
 
-    fn apply(&mut self, request: EventRequest, request_node_exists: bool) {
-        match request {
-            EventRequest::Focus(id) if request_node_exists => self.focused = Some(id),
-            EventRequest::Focus(_) => {}
-            EventRequest::ClearFocus => self.focused = None,
-            EventRequest::CapturePointer(id) if request_node_exists => {
-                self.pointer_capture = Some(id)
-            }
-            EventRequest::CapturePointer(_) => {}
-            EventRequest::ReleasePointerCapture => self.pointer_capture = None,
-        }
+    pub(crate) fn focus(&mut self, id: NodeId) {
+        self.focused = Some(id);
     }
 
-    fn set_hovered(&mut self, hovered: Option<NodeId>) {
-        self.hovered = hovered;
+    pub(crate) fn clear_focus(&mut self) {
+        self.focused = None;
+    }
+
+    pub(crate) fn capture_pointer(&mut self, id: NodeId) {
+        self.pointer_capture = Some(id);
+    }
+
+    pub(crate) fn release_pointer_capture(&mut self) {
+        self.pointer_capture = None;
     }
 }
 
-enum NodeDispatch<'a> {
-    Raw(&'a Event),
-    HoverChange(bool),
-    Click,
+pub fn dispatch_event(arena: &mut UiArena, event: &RawEvent) -> EventResult {
+    dispatch_event_pipeline(arena, event).result()
 }
 
-pub fn dispatch_event(arena: &mut UiArena, event: &Event) -> EventResult {
-    update_hover(arena, event);
-    let target = resolve_target(arena, event);
-    if matches!(
-        event,
-        Event::PointerDown {
-            button: PointerButton::Primary,
-            ..
-        }
-    ) {
-        arena.event_state_mut().click_target = Some(target);
-    }
-
-    let result = dispatch_event_path(arena, target, event);
-    if !result.is_consumed() {
-        if let Event::Wheel { delta, .. } = event {
-            if arena.scroll_node_by(target, *delta) {
-                update_hover(arena, event);
-                return EventResult::Consumed;
-            }
-        }
-    }
-
-    if matches!(
-        event,
-        Event::PointerUp {
-            button: PointerButton::Primary,
-            ..
-        }
-    ) {
-        let should_click = arena.event_state().click_target == Some(target);
-        arena.event_state_mut().click_target = None;
-        if should_click {
-            let click_result = dispatch_target_and_bubble(arena, target);
-            if click_result.is_consumed() {
-                return click_result;
-            }
-        }
-    }
-
-    result
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EventDispatchReport {
+    pub raw: DispatchReport,
+    pub semantic: Vec<DispatchReport>,
 }
 
-fn update_hover(arena: &mut UiArena, event: &Event) {
-    if let Some(position) = event.pointer_position() {
-        let hovered = arena.hit_test(position);
-        let new_path = hovered.map(|id| arena.event_path(id)).unwrap_or_default();
-        let old_path = arena.event_state().hovered_path.clone();
-
-        let common = old_path
-            .iter()
-            .zip(new_path.iter())
-            .take_while(|(old, new)| old == new)
-            .count();
-
-        for id in old_path[common..].iter().rev().copied() {
-            dispatch_to_node(
-                arena,
-                id,
-                NodeDispatch::HoverChange(false),
-                EventPhase::Target,
-            );
-        }
-
-        for id in new_path[common..].iter().copied() {
-            dispatch_to_node(
-                arena,
-                id,
-                NodeDispatch::HoverChange(true),
-                EventPhase::Target,
-            );
-        }
-
-        arena.event_state_mut().set_hovered(hovered);
-        arena.event_state_mut().hovered_path = new_path;
-    }
-}
-
-fn dispatch_event_path(arena: &mut UiArena, target: NodeId, event: &Event) -> EventResult {
-    let path = arena.event_path(target);
-
-    for id in path.iter().copied().take(path.len().saturating_sub(1)) {
-        if dispatch_to_node(arena, id, NodeDispatch::Raw(event), EventPhase::Capture).is_consumed()
+impl EventDispatchReport {
+    pub fn result(&self) -> EventResult {
+        if self.raw.result.is_consumed()
+            || self
+                .semantic
+                .iter()
+                .any(|report| report.result.is_consumed())
         {
-            return EventResult::Consumed;
+            EventResult::Consumed
+        } else {
+            EventResult::Ignored
         }
     }
-
-    if dispatch_to_node(arena, target, NodeDispatch::Raw(event), EventPhase::Target).is_consumed() {
-        return EventResult::Consumed;
-    }
-
-    for id in path.into_iter().rev().skip(1) {
-        if dispatch_to_node(arena, id, NodeDispatch::Raw(event), EventPhase::Bubble).is_consumed() {
-            return EventResult::Consumed;
-        }
-    }
-
-    EventResult::Ignored
 }
 
-fn dispatch_target_and_bubble(arena: &mut UiArena, target: NodeId) -> EventResult {
-    if dispatch_to_node(arena, target, NodeDispatch::Click, EventPhase::Target).is_consumed() {
-        return EventResult::Consumed;
-    }
+pub fn dispatch_event_pipeline(arena: &mut UiArena, event: &RawEvent) -> EventDispatchReport {
+    let raw = dispatcher::dispatch_raw(arena, event);
 
-    for id in arena.event_path(target).into_iter().rev().skip(1) {
-        if dispatch_to_node(arena, id, NodeDispatch::Click, EventPhase::Bubble).is_consumed() {
-            return EventResult::Consumed;
-        }
-    }
+    let mut translator = arena.take_event_translator();
+    let mut semantic_events = translator.translate_raw_event(event, arena);
+    arena.replace_event_translator(translator);
 
-    EventResult::Ignored
+    let semantic = semantic_events
+        .iter_mut()
+        .map(|event| dispatcher::dispatch_semantic(arena, event))
+        .collect();
+
+    EventDispatchReport { raw, semantic }
 }
 
-fn resolve_target(arena: &UiArena, event: &Event) -> NodeId {
-    if let Some(position) = event.pointer_position() {
-        if let Some(captured) = arena
-            .event_state()
-            .pointer_capture()
-            .filter(|id| arena.contains(*id))
-        {
-            return captured;
-        }
-
-        if let Some(hit) = arena.hit_test(position) {
-            return hit;
-        }
-    }
-
-    arena
-        .event_state()
-        .focused()
-        .filter(|id| arena.contains(*id))
-        .unwrap_or_else(|| arena.root())
-}
-
-fn dispatch_to_node(
-    arena: &mut UiArena,
-    id: NodeId,
-    dispatch: NodeDispatch<'_>,
-    phase: EventPhase,
-) -> EventResult {
-    let mut request_dirty = DirtyFlags::empty();
-    let mut requests = EventRequests::default();
-
-    let result = {
-        let Some((handlers, widget)) = arena
-            .node(id)
-            .map(|node| (node.event_handlers, node.widget.clone()))
-        else {
-            return EventResult::Ignored;
-        };
-        let mut cx = EventContext::new(id, phase, &mut request_dirty, &mut requests);
-
-        match dispatch {
-            NodeDispatch::Raw(event) => {
-                if phase == EventPhase::Target {
-                    match event {
-                        Event::PointerDown {
-                            button: PointerButton::Primary,
-                            ..
-                        } => {
-                            arena.queue_style_animation_trigger(
-                                id,
-                                xui_interface::EventTrigger::OnPressStart,
-                            );
-                            arena.queue_style_animation_trigger(
-                                id,
-                                xui_interface::EventTrigger::OnPress,
-                            );
-                            arena.queue_style_animation_trigger(
-                                id,
-                                xui_interface::EventTrigger::OnPointerDown,
-                            );
-                        }
-                        Event::PointerUp {
-                            button: PointerButton::Primary,
-                            ..
-                        } => {
-                            arena.queue_style_animation_trigger(
-                                id,
-                                xui_interface::EventTrigger::OnPressEnd,
-                            );
-                            arena.queue_style_animation_trigger(
-                                id,
-                                xui_interface::EventTrigger::OnPress,
-                            );
-                            arena.queue_style_animation_trigger(
-                                id,
-                                xui_interface::EventTrigger::OnPointerUp,
-                            );
-                        }
-                        Event::PointerMove { .. } => {
-                            arena.queue_style_animation_trigger(
-                                id,
-                                xui_interface::EventTrigger::OnPointerMove,
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-
-                let handler_result =
-                    arena
-                        .event_handlers_mut()
-                        .dispatch_on_event(handlers.on_event, event, &mut cx);
-
-                if handler_result.is_consumed() {
-                    handler_result
-                } else if phase == EventPhase::Capture {
-                    EventResult::Ignored
-                } else {
-                    let specialized = match event {
-                        Event::PointerDown { .. } => arena
-                            .event_handlers_mut()
-                            .dispatch_on_pointer_down(handlers.on_pointer_down, &mut cx),
-                        Event::PointerUp { .. } => arena
-                            .event_handlers_mut()
-                            .dispatch_on_pointer_up(handlers.on_pointer_up, &mut cx),
-                        Event::PointerMove { .. } => arena
-                            .event_handlers_mut()
-                            .dispatch_on_pointer_move(handlers.on_pointer_move, &mut cx),
-                        _ => EventResult::Ignored,
-                    };
-                    if specialized.is_consumed() {
-                        specialized
-                    } else if matches!(event, Event::KeyDown { .. } | Event::KeyUp { .. })
-                        && phase != EventPhase::Capture
-                    {
-                        let key_result =
-                            match event {
-                                Event::KeyDown { key } => arena
-                                    .event_handlers_mut()
-                                    .dispatch_on_key_down(handlers.on_key_down, key, &mut cx),
-                                Event::KeyUp { key } => arena
-                                    .event_handlers_mut()
-                                    .dispatch_on_key_up(handlers.on_key_up, key, &mut cx),
-                                _ => EventResult::Ignored,
-                            };
-                        if key_result.is_consumed() {
-                            key_result
-                        } else if phase == EventPhase::Target {
-                            widget.handle_event(event, &mut cx)
-                        } else {
-                            EventResult::Ignored
-                        }
-                    } else if phase == EventPhase::Target {
-                        widget.handle_event(event, &mut cx)
-                    } else {
-                        EventResult::Ignored
-                    }
-                }
-            }
-            NodeDispatch::HoverChange(hovered) => {
-                arena.queue_style_animation_trigger(
-                    id,
-                    if hovered {
-                        xui_interface::EventTrigger::OnHoverStart
-                    } else {
-                        xui_interface::EventTrigger::OnHoverEnd
-                    },
-                );
-                arena.queue_style_animation_trigger(id, xui_interface::EventTrigger::OnHover);
-                let hover_dirty = widget.on_hovered_change(hovered);
-                cx.mark_dirty(hover_dirty);
-
-                arena.event_handlers_mut().dispatch_on_hover_change(
-                    handlers.on_hover_change,
-                    hovered,
-                    &mut cx,
-                )
-            }
-            NodeDispatch::Click => {
-                arena.queue_style_animation_trigger(id, xui_interface::EventTrigger::OnClick);
-                arena
-                    .event_handlers_mut()
-                    .dispatch_on_click(handlers.on_click, &mut cx)
-            }
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Size;
+    use xui_interface::events::{EventPhase, RawEvent};
+    use std::time::Instant;
+    use xui_interface::XuiPointerId;
+    use xui_interface::{
+        ComputedTextStyle, Modifiers, PointerButtons, PointerKind, RawPointerMove,
+        TextLayoutConstraints, TextMeasurer,
     };
 
-    if !request_dirty.is_empty() {
-        arena.mark_dirty(id, request_dirty);
-    }
+    struct ZeroTextMeasurer;
 
-    if !requests.is_empty() {
-        let requests: Vec<_> = requests.iter().collect();
-        for request in requests {
-            let request_node = match request {
-                EventRequest::Focus(id) | EventRequest::CapturePointer(id) => Some(id),
-                EventRequest::ClearFocus | EventRequest::ReleasePointerCapture => None,
-            };
-            let request_node_exists = request_node.is_none_or(|id| arena.contains(id));
-            arena.event_state_mut().apply(request, request_node_exists);
+    impl TextMeasurer for ZeroTextMeasurer {
+        fn measure_text(&mut self, _text: &str, _props: &ComputedTextStyle) -> Size<f32> {
+            Size::<f32>::ZERO
+        }
+
+        fn measure_text_with_constraints(
+            &mut self,
+            _text: &str,
+            _props: &ComputedTextStyle,
+            _constraints: TextLayoutConstraints,
+        ) -> Size<f32> {
+            Size::<f32>::ZERO
         }
     }
 
-    result
+    fn pointer_move(position: crate::core::Point) -> RawEvent {
+        RawEvent::PointerMove(RawPointerMove {
+            position,
+            pointer_id: XuiPointerId::new(0),
+            device_id: None,
+            kind: PointerKind::Mouse,
+            button: None,
+            buttons: PointerButtons::default(),
+            modifiers: Modifiers::default(),
+            timestamp: Instant::now(),
+        })
+    }
+
+    #[test]
+    fn dispatch_event_pipeline_translates_raw_and_dispatches_semantic_events() {
+        let mut arena = UiArena::new();
+        let target = arena.root();
+        let mut measurer = ZeroTextMeasurer;
+        arena.update_tree(target, Size::new(100.0, 100.0), &mut measurer);
+
+        let event = pointer_move(crate::core::Point::new(1.0, 1.0));
+        let report = dispatch_event_pipeline(&mut arena, &event);
+
+        assert_eq!(report.raw.steps.last().map(|step| step.node), Some(target));
+        assert!(report.semantic.iter().any(|semantic| {
+            semantic.steps
+                == vec![dispatcher::DispatchStep {
+                    node: target,
+                    phase: EventPhase::Target,
+                }]
+        }));
+    }
+
+    #[test]
+    fn dispatch_event_pipeline_keeps_translator_state_between_events() {
+        let mut arena = UiArena::new();
+        let root = arena.root();
+        let mut measurer = ZeroTextMeasurer;
+        arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+
+        let event = pointer_move(crate::core::Point::new(1.0, 1.0));
+        let first = dispatch_event_pipeline(&mut arena, &event);
+        let second = dispatch_event_pipeline(&mut arena, &event);
+
+        assert!(!first.semantic.is_empty());
+        assert!(second.semantic.is_empty());
+        assert!(!second.raw.steps.is_empty());
+    }
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use std::cell::RefCell;
-//     use std::rc::Rc;
-
-//     use taffy::prelude as tf;
-//     use xui_interface::{
-//         Color, ComputedColorStyle, DirtyFlags, EventHandlers, NodeId, Point, Rect, Size,
-//     };
-
-//     use super::*;
-
-//     fn test_tree() -> (UiArena, NodeId, NodeId) {
-//         let mut arena = UiArena::new();
-//         let root = arena.root();
-//         let parent = arena.insert(
-//             root,
-//             crate::widgets::ContainerWidget::new()
-//                 .style(crate::Style::new().background(Color::TRANSPARENT)),
-//             tf::Style::default(),
-//         );
-//         let child = arena.insert(
-//             parent,
-//             crate::widgets::ContainerWidget::new()
-//                 .style(crate::Style::new().background(Color::TRANSPARENT)),
-//             tf::Style::default(),
-//         );
-
-//         arena.node_mut(root).unwrap().layout = Rect::new(0.0, 0.0, 100.0, 100.0);
-//         arena.node_mut(parent).unwrap().layout = Rect::new(0.0, 0.0, 80.0, 80.0);
-//         arena.node_mut(child).unwrap().layout = Rect::new(0.0, 0.0, 40.0, 40.0);
-//         (arena, parent, child)
-//     }
-
-//     #[test]
-//     fn dispatches_capture_target_and_bubble_in_order() {
-//         let (mut arena, parent, child) = test_tree();
-//         let seen = Rc::new(RefCell::new(Vec::new()));
-
-//         for id in [arena.root(), parent, child] {
-//             let seen = seen.clone();
-//             let mut handlers = EventHandlers::default();
-//             handlers.on_event = Some(Box::new(move |_, cx| {
-//                 seen.borrow_mut().push((cx.node_id, cx.phase));
-//                 EventResult::Ignored
-//             }));
-//             arena.set_event_handlers(id, handlers);
-//         }
-
-//         let result = arena.dispatch_event(&Event::PointerDown {
-//             position: Point::new(2.0, 2.0),
-//             button: crate::event::PointerButton::Primary,
-//         });
-
-//         assert_eq!(result, EventResult::Ignored);
-//         assert_eq!(
-//             seen.borrow().as_slice(),
-//             &[
-//                 (arena.root(), EventPhase::Capture),
-//                 (parent, EventPhase::Capture),
-//                 (child, EventPhase::Target),
-//                 (parent, EventPhase::Bubble),
-//                 (arena.root(), EventPhase::Bubble),
-//             ]
-//         );
-//     }
-
-//     #[test]
-//     fn consumed_handler_commits_dirty_before_stopping_propagation() {
-//         let (mut arena, parent, child) = test_tree();
-//         let mut child_handlers = EventHandlers::default();
-//         child_handlers.on_event = Some(Box::new(|_, cx| {
-//             cx.mark_dirty(DirtyFlags::PAINT);
-//             EventResult::Consumed
-//         }));
-//         arena.set_event_handlers(child, child_handlers);
-
-//         let mut parent_handlers = EventHandlers::default();
-//         parent_handlers.on_event = Some(Box::new(|_, cx| {
-//             if cx.phase == EventPhase::Bubble {
-//                 panic!("bubble should be stopped");
-//             }
-//             EventResult::Ignored
-//         }));
-//         arena.set_event_handlers(parent, parent_handlers);
-
-//         let result = arena.dispatch_event(&Event::PointerDown {
-//             position: Point::new(2.0, 2.0),
-//             button: crate::event::PointerButton::Primary,
-//         });
-
-//         assert_eq!(result, EventResult::Consumed);
-//         assert!(arena.node(child).unwrap().dirty.contains(DirtyFlags::PAINT));
-//     }
-
-//     #[test]
-//     fn hit_test_uses_scroll_offset_for_child_layout() {
-//         let mut arena = UiArena::new();
-//         let root = arena.root();
-//         let parent = arena.insert(
-//             root,
-//             crate::widgets::ContainerWidget::new().style(crate::Style::new().scroll_vertical()),
-//             tf::Style::default(),
-//         );
-//         let child = arena.insert(
-//             parent,
-//             crate::widgets::ContainerWidget::new(),
-//             tf::Style::default(),
-//         );
-
-//         arena.node_mut(root).unwrap().layout = Rect::new(0.0, 0.0, 100.0, 100.0);
-//         arena.node_mut(parent).unwrap().layout = Rect::new(0.0, 0.0, 80.0, 40.0);
-//         arena.node_mut(parent).unwrap().scroll_offset = Point::new(0.0, 30.0);
-//         arena.node_mut(child).unwrap().layout = Rect::new(0.0, 50.0, 40.0, 40.0);
-
-//         assert_eq!(arena.hit_test(Point::new(5.0, 25.0)), Some(child));
-//         assert_eq!(arena.hit_test(Point::new(5.0, 55.0)), Some(root));
-//     }
-
-//     #[test]
-//     fn dirty_child_damage_uses_scrolled_visual_rect() {
-//         let mut arena = UiArena::new();
-//         let root = arena.root();
-//         let parent = arena.insert(
-//             root,
-//             crate::widgets::ContainerWidget::new().style(crate::Style::new().scroll_vertical()),
-//             tf::Style::default(),
-//         );
-//         let child = arena.insert(
-//             parent,
-//             crate::widgets::ContainerWidget::new()
-//                 .style(crate::Style::new().background(Color::BLUE_500)),
-//             tf::Style::default(),
-//         );
-
-//         arena.node_mut(root).unwrap().layout = Rect::new(0.0, 0.0, 100.0, 100.0);
-//         arena.node_mut(parent).unwrap().layout = Rect::new(0.0, 0.0, 80.0, 40.0);
-//         arena.node_mut(parent).unwrap().scroll_offset = Point::new(0.0, 30.0);
-//         arena.node_mut(child).unwrap().layout = Rect::new(0.0, 50.0, 40.0, 40.0);
-//         arena.finish_paint();
-
-//         arena.mark_dirty(child, DirtyFlags::PAINT);
-//         let (damage, commands) = arena.prepare_paint_commands();
-
-//         assert_eq!(damage.rects(), &[Rect::new(0.0, 20.0, 40.0, 20.0)]);
-//         assert!(commands.iter().any(|command| matches!(
-//             command,
-//             crate::PaintCommand::Rect {
-//                 rect,
-//                 color: ComputedColorStyle::Solid(color),
-//                 ..
-//             } if *rect == Rect::new(0.0, 50.0, 40.0, 40.0) && *color == Color::BLUE_500
-//         )));
-//     }
-
-//     #[test]
-//     fn focus_routes_keyboard_events_to_focused_node() {
-//         let (mut arena, _parent, child) = test_tree();
-//         let key_events = Rc::new(RefCell::new(0));
-//         let key_events_for_child = key_events.clone();
-
-//         let mut child_handlers = EventHandlers::default();
-//         child_handlers.on_event = Some(Box::new(move |event, cx| {
-//             if matches!(event, Event::PointerDown { .. }) {
-//                 cx.request_focus();
-//                 return EventResult::Consumed;
-//             }
-//             if matches!(event, Event::KeyDown { .. }) && cx.phase == EventPhase::Target {
-//                 *key_events_for_child.borrow_mut() += 1;
-//                 return EventResult::Consumed;
-//             }
-//             EventResult::Ignored
-//         }));
-//         arena.set_event_handlers(child, child_handlers);
-
-//         arena.dispatch_event(&Event::PointerDown {
-//             position: Point::new(2.0, 2.0),
-//             button: crate::event::PointerButton::Primary,
-//         });
-//         arena.dispatch_event(&Event::KeyDown {
-//             key: crate::event::Key::Enter,
-//         });
-
-//         assert_eq!(arena.focused_node(), Some(child));
-//         assert_eq!(*key_events.borrow(), 1);
-//     }
-
-//     #[test]
-//     fn pointer_capture_overrides_hit_test_until_released() {
-//         let (mut arena, parent, child) = test_tree();
-//         let child_hits = Rc::new(RefCell::new(0));
-//         let child_hits_for_handler = child_hits.clone();
-//         let parent_hits = Rc::new(RefCell::new(0));
-//         let parent_hits_for_handler = parent_hits.clone();
-
-//         let mut child_handlers = EventHandlers::default();
-//         child_handlers.on_event = Some(Box::new(move |event, cx| match event {
-//             Event::PointerDown { .. } => {
-//                 cx.capture_pointer();
-//                 EventResult::Consumed
-//             }
-//             Event::PointerMove { .. } => {
-//                 *child_hits_for_handler.borrow_mut() += 1;
-//                 cx.release_pointer_capture();
-//                 EventResult::Consumed
-//             }
-//             _ => EventResult::Ignored,
-//         }));
-//         arena.set_event_handlers(child, child_handlers);
-
-//         let mut parent_handlers = EventHandlers::default();
-//         parent_handlers.on_event = Some(Box::new(move |event, cx| {
-//             if matches!(event, Event::PointerMove { .. }) && cx.phase == EventPhase::Target {
-//                 *parent_hits_for_handler.borrow_mut() += 1;
-//                 return EventResult::Consumed;
-//             }
-//             EventResult::Ignored
-//         }));
-//         arena.set_event_handlers(parent, parent_handlers);
-
-//         arena.dispatch_event(&Event::PointerDown {
-//             position: Point::new(2.0, 2.0),
-//             button: crate::event::PointerButton::Primary,
-//         });
-//         arena.dispatch_event(&Event::PointerMove {
-//             position: Point::new(60.0, 60.0),
-//         });
-//         arena.dispatch_event(&Event::PointerMove {
-//             position: Point::new(60.0, 60.0),
-//         });
-
-//         assert_eq!(*child_hits.borrow(), 1);
-//         assert_eq!(*parent_hits.borrow(), 1);
-//         assert_eq!(arena.pointer_capture_node(), None);
-//         assert_eq!(arena.hovered_node(), Some(parent));
-//     }
-
-//     #[test]
-//     fn capture_on_event_can_intercept_and_commit_requests() {
-//         let (mut arena, parent, child) = test_tree();
-//         let child_reached = Rc::new(RefCell::new(false));
-//         let child_reached_for_handler = child_reached.clone();
-
-//         let mut parent_handlers = EventHandlers::default();
-//         parent_handlers.on_event = Some(Box::new(|_, cx| {
-//             if cx.phase == EventPhase::Capture {
-//                 cx.mark_dirty(DirtyFlags::PAINT);
-//                 cx.request_focus();
-//                 cx.capture_pointer();
-//                 return EventResult::Consumed;
-//             }
-//             EventResult::Ignored
-//         }));
-//         arena.set_event_handlers(parent, parent_handlers);
-
-//         let mut child_handlers = EventHandlers::default();
-//         child_handlers.on_event = Some(Box::new(move |_, _| {
-//             *child_reached_for_handler.borrow_mut() = true;
-//             EventResult::Ignored
-//         }));
-//         arena.set_event_handlers(child, child_handlers);
-
-//         let result = arena.dispatch_event(&Event::PointerDown {
-//             position: Point::new(2.0, 2.0),
-//             button: crate::event::PointerButton::Primary,
-//         });
-
-//         assert_eq!(result, EventResult::Consumed);
-//         assert!(!*child_reached.borrow());
-//         assert_eq!(arena.focused_node(), Some(parent));
-//         assert_eq!(arena.pointer_capture_node(), Some(parent));
-//         assert!(arena
-//             .node(parent)
-//             .unwrap()
-//             .dirty
-//             .contains(DirtyFlags::PAINT));
-//     }
-
-//     #[test]
-//     fn pointer_handlers_run_target_then_bubble_and_stop_on_consume() {
-//         let (mut arena, parent, child) = test_tree();
-//         let seen = Rc::new(RefCell::new(Vec::new()));
-
-//         for id in [arena.root(), parent, child] {
-//             let seen = seen.clone();
-//             let mut handlers = EventHandlers::default();
-//             handlers.on_pointer_down = Some(Box::new(move |cx| {
-//                 seen.borrow_mut().push((cx.node_id, cx.phase));
-//                 if cx.node_id == parent {
-//                     EventResult::Consumed
-//                 } else {
-//                     EventResult::Ignored
-//                 }
-//             }));
-//             arena.set_event_handlers(id, handlers);
-//         }
-
-//         let result = arena.dispatch_event(&Event::PointerDown {
-//             position: Point::new(2.0, 2.0),
-//             button: crate::event::PointerButton::Primary,
-//         });
-
-//         assert_eq!(result, EventResult::Consumed);
-//         assert_eq!(
-//             seen.borrow().as_slice(),
-//             &[(child, EventPhase::Target), (parent, EventPhase::Bubble),]
-//         );
-//     }
-
-//     #[test]
-//     fn key_handlers_run_target_then_bubble_for_focused_node() {
-//         let (mut arena, parent, child) = test_tree();
-//         let seen = Rc::new(RefCell::new(Vec::new()));
-
-//         for id in [arena.root(), parent, child] {
-//             let seen = seen.clone();
-//             let mut handlers = EventHandlers::default();
-//             if id == child {
-//                 handlers.on_event = Some(Box::new(|event, cx| {
-//                     if matches!(event, Event::PointerDown { .. }) && cx.phase == EventPhase::Target
-//                     {
-//                         cx.request_focus();
-//                         return EventResult::Consumed;
-//                     }
-//                     EventResult::Ignored
-//                 }));
-//             }
-//             handlers.on_key_down = Some(Box::new(move |key, cx| {
-//                 seen.borrow_mut().push((key.clone(), cx.node_id, cx.phase));
-//                 if cx.node_id == parent {
-//                     EventResult::Consumed
-//                 } else {
-//                     EventResult::Ignored
-//                 }
-//             }));
-//             arena.set_event_handlers(id, handlers);
-//         }
-
-//         arena.dispatch_event(&Event::PointerDown {
-//             position: Point::new(2.0, 2.0),
-//             button: crate::event::PointerButton::Primary,
-//         });
-//         let result = arena.dispatch_event(&Event::KeyDown {
-//             key: crate::event::Key::Enter,
-//         });
-
-//         assert_eq!(result, EventResult::Consumed);
-//         assert_eq!(
-//             seen.borrow().as_slice(),
-//             &[
-//                 (crate::event::Key::Enter, child, EventPhase::Target),
-//                 (crate::event::Key::Enter, parent, EventPhase::Bubble),
-//             ]
-//         );
-//     }
-
-//     #[test]
-//     fn key_up_handler_receives_key_at_target() {
-//         let (mut arena, _parent, child) = test_tree();
-//         let seen = Rc::new(RefCell::new(Vec::new()));
-//         let seen_for_handler = seen.clone();
-
-//         let mut child_handlers = EventHandlers::default();
-//         child_handlers.on_event = Some(Box::new(|event, cx| {
-//             if matches!(event, Event::PointerDown { .. }) {
-//                 cx.request_focus();
-//                 return EventResult::Consumed;
-//             }
-//             EventResult::Ignored
-//         }));
-//         child_handlers.on_key_up = Some(Box::new(move |key, cx| {
-//             seen_for_handler
-//                 .borrow_mut()
-//                 .push((key.clone(), cx.node_id, cx.phase));
-//             EventResult::Consumed
-//         }));
-//         arena.set_event_handlers(child, child_handlers);
-
-//         arena.dispatch_event(&Event::PointerDown {
-//             position: Point::new(2.0, 2.0),
-//             button: crate::event::PointerButton::Primary,
-//         });
-//         let result = arena.dispatch_event(&Event::KeyUp {
-//             key: crate::event::Key::Escape,
-//         });
-
-//         assert_eq!(result, EventResult::Consumed);
-//         assert_eq!(
-//             seen.borrow().as_slice(),
-//             &[(crate::event::Key::Escape, child, EventPhase::Target)]
-//         );
-//     }
-
-//     #[test]
-//     fn hover_change_only_reports_entered_and_left_path_segments() {
-//         let (mut arena, parent, child) = test_tree();
-//         let seen = Rc::new(RefCell::new(Vec::new()));
-
-//         for id in [arena.root(), parent, child] {
-//             let seen = seen.clone();
-//             let mut handlers = EventHandlers::default();
-//             handlers.on_hover_change = Some(Box::new(move |hovered, cx| {
-//                 seen.borrow_mut().push((cx.node_id, hovered));
-//                 EventResult::Ignored
-//             }));
-//             arena.set_event_handlers(id, handlers);
-//         }
-
-//         arena.dispatch_event(&Event::PointerMove {
-//             position: Point::new(2.0, 2.0),
-//         });
-//         arena.dispatch_event(&Event::PointerMove {
-//             position: Point::new(60.0, 60.0),
-//         });
-//         arena.dispatch_event(&Event::PointerMove {
-//             position: Point::new(120.0, 120.0),
-//         });
-
-//         assert_eq!(
-//             seen.borrow().as_slice(),
-//             &[
-//                 (arena.root(), true),
-//                 (parent, true),
-//                 (child, true),
-//                 (child, false),
-//                 (parent, false),
-//                 (arena.root(), false),
-//             ]
-//         );
-//     }
-
-//     #[test]
-//     fn wheel_scroll_recomputes_hover_at_pointer_position() {
-//         let mut arena = UiArena::new();
-//         let root = arena.root();
-//         let parent = arena.insert(
-//             root,
-//             crate::widgets::ContainerWidget::new().style(crate::Style::new().scroll_vertical()),
-//             tf::Style::default(),
-//         );
-//         let child = arena.insert(
-//             parent,
-//             crate::widgets::ContainerWidget::new(),
-//             tf::Style::default(),
-//         );
-
-//         arena.node_mut(root).unwrap().layout = Rect::new(0.0, 0.0, 100.0, 100.0);
-//         arena.node_mut(parent).unwrap().layout = Rect::new(0.0, 0.0, 80.0, 40.0);
-//         arena.node_mut(parent).unwrap().content_size = Size::<f32>::new(80.0, 120.0);
-//         arena.node_mut(child).unwrap().layout = Rect::new(0.0, 50.0, 40.0, 40.0);
-
-//         arena.dispatch_event(&Event::PointerMove {
-//             position: Point::new(5.0, 25.0),
-//         });
-//         assert_eq!(arena.hovered_node(), Some(parent));
-
-//         let result = arena.dispatch_event(&Event::Wheel {
-//             position: Point::new(5.0, 25.0),
-//             delta: Point::new(0.0, -30.0),
-//         });
-
-//         assert_eq!(result, EventResult::Consumed);
-//         assert_eq!(arena.node(parent).unwrap().scroll_offset.y, 30.0);
-//         assert_eq!(arena.hovered_node(), Some(child));
-//     }
-
-//     #[test]
-//     fn hover_change_notifies_widget_without_registered_handler() {
-//         let mut arena = UiArena::new();
-//         let root = arena.root();
-//         let button = arena.insert(
-//             root,
-//             crate::widgets::ButtonWidget::new("Press"),
-//             tf::Style::default(),
-//         );
-
-//         arena.node_mut(root).unwrap().layout = Rect::new(0.0, 0.0, 100.0, 100.0);
-//         arena.node_mut(button).unwrap().layout = Rect::new(0.0, 0.0, 40.0, 40.0);
-
-//         arena.dispatch_event(&Event::PointerMove {
-//             position: Point::new(2.0, 2.0),
-//         });
-
-//         let hovered = arena.node(button).unwrap().widget.with_widgets(|widget| {
-//             let crate::widgets::Widgets::Button(button) = widget else {
-//                 unreachable!("expected button widget");
-//             };
-//             button.hovered
-//         });
-//         assert!(hovered);
-//         assert!(arena
-//             .node(button)
-//             .unwrap()
-//             .dirty
-//             .contains(DirtyFlags::PAINT));
-
-//         arena.dispatch_event(&Event::PointerMove {
-//             position: Point::new(80.0, 80.0),
-//         });
-
-//         let hovered = arena.node(button).unwrap().widget.with_widgets(|widget| {
-//             let crate::widgets::Widgets::Button(button) = widget else {
-//                 unreachable!("expected button widget");
-//             };
-//             button.hovered
-//         });
-//         assert!(!hovered);
-//     }
-// }

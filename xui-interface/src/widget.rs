@@ -4,8 +4,7 @@ use slotmap::new_key_type;
 use smallstr::SmallString;
 
 use crate::{
-    ComputedStyle, ComputedTextStyle, DirtyFlags, Event, EventContext, EventResult, PaintCommand,
-    Rect, Size, Style, TextContent, TextLayoutConstraints, WidgetState,
+    ComputedStyle, ComputedTextStyle, DirtyFlags, Event, EventContext, EventResult, PaintCommand, Rect, Size, Style, TextContent, TextLayoutConstraints, WidgetState
 };
 
 new_key_type! {
@@ -178,10 +177,6 @@ pub trait Widget: Debug {
     fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>);
 
     fn handle_event(&mut self, event: &Event, cx: &mut EventContext<'_>) -> EventResult;
-
-    fn on_hovered_change(&mut self, _hovered: bool) -> DirtyFlags {
-        DirtyFlags::empty()
-    }
 
     fn on_click(&mut self) {}
 

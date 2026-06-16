@@ -4,10 +4,12 @@ use crate::animation::{
     AnimatedStyle, AnimationTransition, StyleAnimationRule, default_style_transition,
 };
 use crate::element::ElementDesc;
+use crate::event_system::callbacks::EventHandlers;
+use xui_interface::events::RawEvent;
 use xui_interface::{
-    ColorToken, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult,
-    EventTrigger, Key, PaintCommand, PointerButton, Rect, Style, TextContent, TextPaintCommand,
-    TextProps, Widget, WidgetState, WidgetType,
+    ColorToken, ComputedStyle, DirtyFlags, Event, EventContext, EventResult, EventTrigger, Key,
+    PaintCommand, PointerButton, Rect, Style, TextContent, TextPaintCommand, TextProps, Widget,
+    WidgetState, WidgetType,
 };
 
 use super::{container::paint_box, label::apply_text_style, props_hash, widget_element_desc};
@@ -206,11 +208,6 @@ impl Widget for ButtonWidget {
         }
     }
 
-    fn on_hovered_change(&mut self, hovered: bool) -> DirtyFlags {
-        self.hovered = hovered;
-        DirtyFlags::STYLE | DirtyFlags::PAINT
-    }
-
     fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
         paint_box(rect, style, commands);
         if self.text.as_str().is_empty() {
@@ -234,10 +231,7 @@ impl Widget for ButtonWidget {
 
     fn handle_event(&mut self, event: &Event, cx: &mut EventContext<'_>) -> EventResult {
         match event {
-            Event::PointerDown {
-                button: PointerButton::Primary,
-                ..
-            } => {
+            Event::Raw(RawEvent::PointerDown(raw)) if raw.button == PointerButton::Primary => {
                 if self.disabled {
                     return EventResult::Ignored;
                 }
@@ -246,16 +240,13 @@ impl Widget for ButtonWidget {
                 cx.mark_dirty(DirtyFlags::STYLE | DirtyFlags::PAINT);
                 EventResult::Consumed
             }
-            Event::PointerUp {
-                button: PointerButton::Primary,
-                ..
-            } => {
+            Event::Raw(RawEvent::PointerUp(raw)) if raw.button == PointerButton::Primary => {
                 self.pressed = false;
                 cx.release_pointer_capture();
                 cx.mark_dirty(DirtyFlags::STYLE | DirtyFlags::PAINT);
                 EventResult::Consumed
             }
-            Event::Wheel { .. } => EventResult::Ignored,
+            Event::Raw(RawEvent::Wheel(_)) => EventResult::Ignored,
             _ => EventResult::Consumed,
         }
     }

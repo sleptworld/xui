@@ -1,8 +1,9 @@
 use crate::animation::AnimatedStyle;
 use crate::element::ElementDesc;
+use crate::event_system::callbacks::EventHandlers;
 use xui_interface::{
-    ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key, PaintCommand,
-    Rect, Size, Style, Widget, WidgetType,
+    ComputedStyle, DirtyFlags, Event, EventContext, EventResult, Key, PaintCommand, Rect, Size,
+    Style, Widget, WidgetType,
 };
 
 use super::{props_hash, widget_element_desc};

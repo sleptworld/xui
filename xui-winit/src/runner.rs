@@ -1,16 +1,23 @@
 use std::fmt;
 use std::sync::Arc;
+use std::time::Instant;
 
-use crate::translate::{translate_key_event, translate_mouse_button, translate_mouse_wheel};
+use crate::device::WinitDeviceRegistry;
+use crate::translate::{translate_key, translate_mouse_button, translate_mouse_wheel};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::error::{EventLoopError, OsError};
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowAttributes, WindowId};
-use xui::{App, Event};
+use xui::App;
 use xui::{runtime::ControlFlow as XuiControlFlow, runtime::GuiRuntime, runtime::RuntimeEvent};
-use xui_interface::{Point, RenderBackend, Size, TextMeasurer};
+use xui_interface::events::{RawEvent, XuiPointerId};
+use xui_interface::{
+    Event, Modifiers, Point, PointerButtons, PointerKind, RawKey, RawPointerButton, RawPointerMove,
+    RawTextInput, RawWheel, RawWindowEvent, RenderBackend, Size, TextMeasurer,
+};
 
 #[derive(Debug, Clone)]
 pub struct WinitRunnerOptions {
@@ -84,8 +91,11 @@ where
     window: Option<Arc<Window>>,
     window_id: Option<WindowId>,
     last_cursor_position: Option<Point>,
+    modifiers: Modifiers,
+    pointer_buttons: PointerButtons,
     window_error: Option<OsError>,
     render_error: Option<B::Error>,
+    device_registry: WinitDeviceRegistry,
 }
 
 impl<B: RenderBackend<T>, T: TextMeasurer, F> WinitRunner<B, T, F>
@@ -104,8 +114,11 @@ where
             window: None,
             window_id: None,
             last_cursor_position: None,
+            modifiers: Modifiers::default(),
+            pointer_buttons: PointerButtons::default(),
             window_error: None,
             render_error: None,
+            device_registry: WinitDeviceRegistry::default(),
         }
     }
 
@@ -173,10 +186,11 @@ where
     }
 
     fn translate_window_event(
-        &self,
+        &mut self,
         event: &WindowEvent,
         last_cursor_position: Option<Point>,
     ) -> (Vec<RuntimeEvent>, Option<Point>) {
+        let timestamp = Instant::now();
         match event {
             WindowEvent::Resized(size) => {
                 (vec![RuntimeEvent::Resize(self.logical_size(*size))], None)
@@ -184,38 +198,107 @@ where
             WindowEvent::CloseRequested | WindowEvent::Destroyed => {
                 (vec![RuntimeEvent::Exit], None)
             }
-            WindowEvent::Focused(true) => (vec![RuntimeEvent::Input(Event::FocusGained)], None),
-            WindowEvent::Focused(false) => (vec![RuntimeEvent::Input(Event::FocusLost)], None),
-            WindowEvent::CursorMoved { position, .. } => {
+            WindowEvent::Focused(true) => (
+                vec![RuntimeEvent::Input(RawEvent::WindowFocus(RawWindowEvent {
+                    timestamp,
+                    modifiers: self.modifiers,
+                }))],
+                None,
+            ),
+            WindowEvent::Focused(false) => (
+                vec![RuntimeEvent::Input(RawEvent::WindowBlur(RawWindowEvent {
+                    timestamp,
+                    modifiers: self.modifiers,
+                }))],
+                None,
+            ),
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = translate_modifiers(modifiers.state());
+                (Vec::new(), None)
+            }
+            WindowEvent::CursorMoved {
+                position,
+                device_id,
+            } => {
                 let pointer = self.translate_pointer_position(position);
+                let device_id = self.device_registry.get_or_insert(*device_id);
+
                 (
-                    vec![RuntimeEvent::Input(Event::PointerMove {
+                    vec![RuntimeEvent::Input(RawEvent::PointerMove(RawPointerMove {
                         position: pointer,
-                    })],
+                        device_id: Some(device_id),
+                        pointer_id: XuiPointerId::new(0),
+                        kind: PointerKind::Mouse,
+                        button: None,
+                        buttons: self.pointer_buttons,
+                        modifiers: self.modifiers,
+                        timestamp,
+                    }))],
                     Some(pointer),
                 )
             }
-            WindowEvent::MouseInput { state, button, .. } => {
+            WindowEvent::MouseInput {
+                state,
+                button,
+                device_id,
+                ..
+            } => {
                 let Some(button) = translate_mouse_button(*button) else {
                     return (Vec::new(), None);
                 };
                 let position = last_cursor_position.unwrap_or(Point::new(0.0, 0.0));
+                self.pointer_buttons
+                    .set(button, *state == ElementState::Pressed);
+                let device_id = self.device_registry.get_or_insert(*device_id);
+                let raw = RawPointerButton {
+                    position,
+                    pointer_id: XuiPointerId::new(0),
+                    device_id: Some(device_id),
+                    kind: PointerKind::Mouse,
+                    button,
+                    buttons: self.pointer_buttons,
+                    modifiers: self.modifiers,
+                    timestamp,
+                };
                 let event = match state {
-                    ElementState::Pressed => Event::PointerDown { position, button },
-                    ElementState::Released => Event::PointerUp { position, button },
+                    ElementState::Pressed => RawEvent::PointerDown(raw),
+                    ElementState::Released => RawEvent::PointerUp(raw),
                 };
                 (vec![RuntimeEvent::Input(event)], None)
             }
-            WindowEvent::MouseWheel { delta, .. } => (
-                vec![RuntimeEvent::Input(Event::Wheel {
+            WindowEvent::MouseWheel {
+                delta, device_id, ..
+            } => (
+                vec![RuntimeEvent::Input(RawEvent::Wheel(RawWheel {
                     position: last_cursor_position.unwrap_or(Point::new(0.0, 0.0)),
                     delta: translate_mouse_wheel(self.scale_factor(), delta),
-                })],
+                    device_id: Some(self.device_registry.get_or_insert(*device_id)),
+                    pointer_id: Some(XuiPointerId::new(0)),
+                    modifiers: self.modifiers,
+                    timestamp,
+                    is_inertial: false,
+                }))],
                 None,
             ),
-            WindowEvent::KeyboardInput { event, .. } => (translate_key_event(event), None),
+            WindowEvent::KeyboardInput { event, .. } => {
+                let raw = RawKey {
+                    key: translate_key(&event.logical_key),
+                    modifiers: self.modifiers,
+                    timestamp,
+                    is_repeat: event.repeat,
+                };
+                let event = match event.state {
+                    ElementState::Pressed => RawEvent::KeyDown(raw),
+                    ElementState::Released => RawEvent::KeyUp(raw),
+                };
+                (vec![RuntimeEvent::Input(event)], None)
+            }
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => (
-                vec![RuntimeEvent::Input(Event::TextInput { text: text.clone() })],
+                vec![RuntimeEvent::Input(RawEvent::TextInput(RawTextInput {
+                    text: text.clone(),
+                    modifiers: self.modifiers,
+                    timestamp,
+                }))],
                 None,
             ),
             WindowEvent::RedrawRequested => (vec![RuntimeEvent::RedrawRequested], None),
@@ -240,6 +323,15 @@ where
     fn logical_size_at_scale(size: PhysicalSize<u32>, scale: f32) -> Size<f32> {
         let scale = scale.max(f32::EPSILON);
         Size::<f32>::new(size.width as f32 / scale, size.height as f32 / scale)
+    }
+}
+
+fn translate_modifiers(modifiers: ModifiersState) -> Modifiers {
+    Modifiers {
+        shift: modifiers.shift_key(),
+        ctrl: modifiers.control_key(),
+        alt: modifiers.alt_key(),
+        meta: modifiers.super_key(),
     }
 }
 

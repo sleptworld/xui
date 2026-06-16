@@ -1,6 +1,5 @@
+use crate::{NodeId, Point, Translation};
 use std::time::Instant;
-
-use crate::{DirtyFlags, NodeId, Point, Translation};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct XuiDeviceId(pub u32);
@@ -119,7 +118,7 @@ pub enum Key {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Event {
+pub enum RawEvent {
     PointerMove(RawPointerMove),
     PointerDown(RawPointerButton),
     PointerUp(RawPointerButton),
@@ -208,7 +207,7 @@ pub struct RawTextInput {
     pub timestamp: Instant,
 }
 
-impl Event {
+impl RawEvent {
     pub fn pointer_position(&self) -> Option<Point> {
         match self {
             Self::PointerMove(event) => Some(event.position),
@@ -219,13 +218,6 @@ impl Event {
             _ => None,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EventPhase {
-    Capture,
-    Target,
-    Bubble,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -284,53 +276,5 @@ impl EventRequests {
 
     pub fn is_empty(&self) -> bool {
         self.requests.is_empty()
-    }
-}
-
-pub struct EventContext<'a> {
-    pub node_id: NodeId,
-    pub phase: EventPhase,
-    request_dirty: &'a mut DirtyFlags,
-    requests: &'a mut EventRequests,
-}
-
-impl<'a> EventContext<'a> {
-    pub fn new(
-        node_id: NodeId,
-        phase: EventPhase,
-        request_dirty: &'a mut DirtyFlags,
-        requests: &'a mut EventRequests,
-    ) -> Self {
-        Self {
-            node_id,
-            phase,
-            request_dirty,
-            requests,
-        }
-    }
-
-    pub fn mark_needs_paint(&mut self) {
-        *self.request_dirty |= DirtyFlags::PAINT;
-    }
-
-    pub fn mark_dirty(&mut self, flags: DirtyFlags) {
-        *self.request_dirty |= flags;
-    }
-
-    pub fn request_focus(&mut self) {
-        self.requests.push(EventRequest::Focus(self.node_id));
-    }
-
-    pub fn clear_focus(&mut self) {
-        self.requests.push(EventRequest::ClearFocus);
-    }
-
-    pub fn capture_pointer(&mut self) {
-        self.requests
-            .push(EventRequest::CapturePointer(self.node_id));
-    }
-
-    pub fn release_pointer_capture(&mut self) {
-        self.requests.push(EventRequest::ReleasePointerCapture);
     }
 }

@@ -36,7 +36,7 @@ fn counter() {
         </column>
 
         <button on_click={{
-            move |_| {
+            move |_, _| {
                 count.set(count.get() + 1);
                 EventResult::Consumed
             }
@@ -44,7 +44,7 @@ fn counter() {
             {"Increment"}
         </button>
         <button on_click={{
-            move |_| {
+            move |_, _| {
                 count.set(count.get() - 1);
                 println!("{}", count.get());
                 EventResult::Consumed

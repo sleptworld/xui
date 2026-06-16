@@ -1,9 +1,10 @@
 use crate::animation::AnimatedStyle;
 use crate::element::ElementDesc;
+use crate::event_system::callbacks::EventHandlers;
 use xui_interface::{
-    ColorStyle, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult, Key,
-    LengthValue, PaintCommand, Rect, ScrollDirectionStyle, ScrollbarVisibilityStyle, Style, Widget,
-    WidgetType, style::ScrollbarStylePatch,
+    ColorStyle, ComputedStyle, DirtyFlags, Event, EventContext, EventResult, Key, LengthValue,
+    PaintCommand, Rect, ScrollDirectionStyle, ScrollbarVisibilityStyle, Style, Widget, WidgetType,
+    style::ScrollbarStylePatch,
 };
 
 use super::{props_hash, widget_element_desc};

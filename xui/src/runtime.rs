@@ -3,10 +3,10 @@ use std::time::Instant;
 
 use crate::app::App;
 use crate::core::Size;
-use crate::event::{Event, EventResult};
 use crate::render::RenderBackend;
 pub use xui_interface::EventSource;
 use xui_interface::TextMeasurer;
+use xui_interface::events::{EventResult, RawEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlFlow {
@@ -18,7 +18,7 @@ pub enum ControlFlow {
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeEvent {
     Resize(Size<f32>),
-    Input(Event),
+    Input(RawEvent),
     RedrawRequested,
     Exit,
 }

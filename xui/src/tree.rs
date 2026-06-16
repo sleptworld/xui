@@ -1,18 +1,18 @@
 use slotmap::SlotMap;
+use xui_interface::events::RawEvent;
 use std::cell::Cell;
 use std::time::Duration;
-use taffy::prelude as tf;
+use taffy::{Position, prelude as tf};
 use xui_interface::render::Damage;
 use xui_interface::{
-    ComputedColorStyle, ComputedScrollbarStyle, ComputedStyle, ComputedTextStyle, DirtyFlags,
-    EventHandlers, EventTrigger, NodeId, NodeLifecycleEvent, ScrollbarVisibilityStyle, TextContent,
-    TextLayoutConstraints, TextMeasurer, Theme, Translation,
+    ComputedColorStyle, ComputedScrollbarStyle, ComputedStyle, ComputedTextStyle, DirtyFlags, EventResult, EventTrigger, NodeId, NodeLifecycleEvent, ScrollbarVisibilityStyle, TextContent, TextLayoutConstraints, TextMeasurer, Theme, Translation
 };
 
 use crate::animation::{ActiveAnimation, AnimableStyle, AnimationTransition, StyleAnimationRule};
 use crate::core::{Point, Rect, Size};
-use crate::event::{Event, EventHandlerSet, EventHandlerStore, EventResult};
-use crate::event_system::{self, EventState};
+// use xui_interface::events::{CallbackHandleSet, CallbackStore, Event, EventHandlers, EventResult};
+use crate::event_system::callbacks::{CallbackHandleSet, CallbackStore, EventHandlers};
+use crate::event_system::{self, EventState, translator::EventTranslator};
 use crate::fiber::Key;
 use crate::layout::{computed_style_for_widget, taffy_style_for_widget};
 use crate::render::{DamageRegion, PaintCommand};
@@ -48,7 +48,7 @@ pub struct Node {
     pub active_animations: Vec<ActiveAnimation<AnimableStyle>>,
     pub paint_cache: Vec<PaintCommand>,
     pub widget: WidgetI,
-    pub event_handlers: EventHandlerSet,
+    pub event_callbacks: CallbackHandleSet,
     // Text
 }
 
@@ -60,7 +60,7 @@ impl Node {
         props_hash: u64,
         computed_style: ComputedStyle,
         widget: WidgetI,
-        event_handlers: EventHandlerSet,
+        event_callbacks: CallbackHandleSet,
         taffy_node: tf::NodeId,
     ) -> Self {
         let node_type = widget.node_type();
@@ -89,7 +89,7 @@ impl Node {
             active_animations: Vec::new(),
             paint_cache: Vec::new(),
             widget,
-            event_handlers,
+            event_callbacks,
         }
     }
 
@@ -196,8 +196,9 @@ pub struct UiArena {
     damage: DamageRegion,
     damage_nodes: Vec<NodeId>,
     node_lifecycle_events: Vec<NodeLifecycleEvent>,
-    event_state: EventState,
-    event_handlers: EventHandlerStore,
+    pub event_state: EventState,
+    event_translator: EventTranslator,
+    event_callbacks: CallbackStore,
     theme: Theme,
     paint_frames: Cell<usize>,
     pub update_visits: usize,
@@ -228,7 +229,7 @@ impl UiArena {
                 // root_style,
                 root_computed_style,
                 root_widget,
-                EventHandlerSet::default(),
+                CallbackHandleSet::default(),
                 taffy_root,
             )
         });
@@ -240,7 +241,8 @@ impl UiArena {
             damage_nodes: vec![],
             node_lifecycle_events: Vec::new(),
             event_state: EventState::default(),
-            event_handlers: EventHandlerStore::default(),
+            event_translator: EventTranslator::default(),
+            event_callbacks: CallbackStore::default(),
             theme,
             paint_frames: Cell::new(0),
             update_visits: 0,
@@ -364,18 +366,30 @@ impl UiArena {
         &mut self.event_state
     }
 
-    pub(crate) fn event_handlers_mut(&mut self) -> &mut EventHandlerStore {
-        &mut self.event_handlers
+    pub(crate) fn take_event_translator(&mut self) -> EventTranslator {
+        std::mem::take(&mut self.event_translator)
+    }
+
+    pub(crate) fn replace_event_translator(&mut self, translator: EventTranslator) {
+        self.event_translator = translator;
+    }
+
+    pub(crate) fn take_event_callbacks(&mut self) -> CallbackStore {
+        std::mem::take(&mut self.event_callbacks)
+    }
+
+    pub(crate) fn replace_event_callbacks(&mut self, callbacks: CallbackStore) {
+        self.event_callbacks = callbacks;
     }
 
     #[cfg(test)]
     pub(crate) fn set_event_handlers(&mut self, id: NodeId, event_handlers: EventHandlers) {
-        let Some(current) = self.nodes.get(id).map(|node| node.event_handlers) else {
+        let Some(current) = self.nodes.get(id).map(|node| node.event_callbacks) else {
             return;
         };
-        let event_handlers = self.event_handlers.update_set(current, event_handlers);
+        let event_callbacks = self.event_callbacks.update_set(current, event_handlers);
         if let Some(node) = self.nodes.get_mut(id) {
-            node.event_handlers = event_handlers;
+            node.event_callbacks = event_callbacks;
         }
     }
 
@@ -392,9 +406,9 @@ impl UiArena {
             .taffy
             .new_leaf(style)
             .expect("failed to create taffy node");
-        let event_handlers = self
-            .event_handlers
-            .update_set(EventHandlerSet::default(), event_handlers);
+        let event_callbacks = self
+            .event_callbacks
+            .update_set(CallbackHandleSet::default(), event_handlers);
         let id = self.nodes.insert_with_key(|id| {
             Node::new(
                 id,
@@ -403,7 +417,7 @@ impl UiArena {
                 props_hash,
                 computed_style,
                 widget,
-                event_handlers,
+                event_callbacks,
                 taffy_node,
             )
         });
@@ -449,9 +463,9 @@ impl UiArena {
             .taffy
             .new_leaf(style)
             .expect("failed to create taffy node");
-        let event_handlers = self
-            .event_handlers
-            .update_set(EventHandlerSet::default(), event_handlers);
+        let event_callbacks = self
+            .event_callbacks
+            .update_set(CallbackHandleSet::default(), event_handlers);
         let id = self.nodes.insert_with_key(|id| {
             Node::new(
                 id,
@@ -461,7 +475,7 @@ impl UiArena {
                 // style,
                 computed_style,
                 widget,
-                event_handlers,
+                event_callbacks,
                 taffy_node,
             )
         });
@@ -470,6 +484,39 @@ impl UiArena {
         self.refresh_taffy_context(id);
         self.attach(parent, id);
         id
+    }
+
+    pub fn to_local(&self, node_id: NodeId, viewport_pos: Point) -> Option<Point> {
+        let node = self.node(node_id)?;
+
+        if let Some(parent_id) = node.parent {
+            let parent = self.node(parent_id)?;
+
+            let parent_local = self.to_local(parent_id, viewport_pos)?;
+            let parent_content_pos = parent_local + parent.scroll_offset;
+
+            let node_pos = Point {
+                x: node.layout.x,
+                y: node.layout.y,
+            };
+
+            Some(parent_content_pos - node_pos)
+        } else {
+            let root_pos = Point {
+                x: node.layout.x,
+                y: node.layout.y,
+            };
+
+            Some(viewport_pos - root_pos)
+        }
+    }
+
+    pub fn to_content_local(&self, node_id: NodeId, viewport_pos: Point) -> Option<Point> {
+        let node = self.node(node_id)?;
+
+        let local = self.to_local(node_id, viewport_pos)?;
+
+        Some(local + node.scroll_offset)
     }
 
     pub fn attach(&mut self, parent: NodeId, child: NodeId) {
@@ -638,7 +685,8 @@ impl UiArena {
         }
 
         self.event_state.clear_node(id);
-        self.event_handlers.clear_set(self.nodes[id].event_handlers);
+        self.event_callbacks
+            .clear_set(self.nodes[id].event_callbacks);
 
         let _ = self.taffy.remove(self.nodes[id].taffy_node);
         self.nodes.remove(id);
@@ -863,7 +911,8 @@ impl UiArena {
         path
     }
 
-    pub fn dispatch_event(&mut self, event: &Event) -> EventResult {
+    #[inline(always)]
+    pub fn dispatch_event(&mut self, event: &RawEvent) -> EventResult {
         event_system::dispatch_event(self, event)
     }
 
@@ -1345,13 +1394,13 @@ impl UiArena {
     ) -> WidgetI {
         let mut flags = DirtyFlags::empty();
         let current_widget;
-        let event_handlers = {
+        let event_callbacks = {
             let current = self
                 .nodes
                 .get(id)
                 .expect("reused node missing")
-                .event_handlers;
-            self.event_handlers.update_set(current, event_handlers)
+                .event_callbacks;
+            self.event_callbacks.update_set(current, event_handlers)
         };
 
         {
@@ -1383,7 +1432,7 @@ impl UiArena {
             let widget_flags = node.widget.update_from(&widget);
 
             flags |= widget_flags;
-            node.event_handlers = event_handlers;
+            node.event_callbacks = event_callbacks;
             node.style_animation_rules = node.widget.style_animation_rules();
             current_widget = node.widget.clone();
         }
@@ -1527,8 +1576,13 @@ mod mutation_tests {
     use super::*;
     use crate::animation::AnimationEasing;
     use crate::widgets::{button, column, container, text};
-    use std::time::Duration;
-    use xui_interface::{Color, EventTrigger, PointerButton, Style};
+    use std::time::{Duration, Instant};
+    use xui_interface::events::XuiPointerId;
+    use xui_interface::events::RawEvent;
+use xui_interface::{
+        Color, EventTrigger, Modifiers, PointerButton, PointerButtons, PointerKind,
+        RawPointerButton, RawPointerMove, Style,
+    };
 
     fn default_style() -> tf::Style {
         tf::Style::default()
@@ -1563,6 +1617,46 @@ mod mutation_tests {
         assert_near(color.g, expected.g);
         assert_near(color.b, expected.b);
         assert_near(color.a, expected.a);
+    }
+
+    fn pointer_move(position: Point) -> RawEvent {
+        RawEvent::PointerMove(RawPointerMove {
+            position,
+            pointer_id: XuiPointerId::new(0),
+            device_id: None,
+            kind: PointerKind::Mouse,
+            button: None,
+            buttons: PointerButtons::default(),
+            modifiers: Modifiers::default(),
+            timestamp: Instant::now(),
+        })
+    }
+
+    fn pointer_down(position: Point) -> RawEvent {
+        let button = PointerButton::Primary;
+        RawEvent::PointerDown(RawPointerButton {
+            position,
+            pointer_id: XuiPointerId::new(0),
+            device_id: None,
+            kind: PointerKind::Mouse,
+            button,
+            buttons: PointerButtons::from_button(button),
+            modifiers: Modifiers::default(),
+            timestamp: Instant::now(),
+        })
+    }
+
+    fn pointer_up(position: Point) -> RawEvent {
+        RawEvent::PointerUp(RawPointerButton {
+            position,
+            pointer_id: XuiPointerId::new(0),
+            device_id: None,
+            kind: PointerKind::Mouse,
+            button: PointerButton::Primary,
+            buttons: PointerButtons::default(),
+            modifiers: Modifiers::default(),
+            timestamp: Instant::now(),
+        })
     }
 
     struct ZeroTextMeasurer;
@@ -1667,9 +1761,7 @@ mod mutation_tests {
         let mut measurer = ZeroTextMeasurer;
         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
 
-        arena.dispatch_event(&Event::PointerMove {
-            position: Point::new(1.0, 1.0),
-        });
+        arena.dispatch_event(&pointer_move(Point::new(1.0, 1.0)));
         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
 
         assert!(arena.has_running_style_animations());
@@ -1709,9 +1801,7 @@ mod mutation_tests {
         let mut measurer = ZeroTextMeasurer;
         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
 
-        arena.dispatch_event(&Event::PointerMove {
-            position: Point::new(1.0, 1.0),
-        });
+        arena.dispatch_event(&pointer_move(Point::new(1.0, 1.0)));
         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
 
         assert!(arena.has_running_style_animations());
@@ -1751,14 +1841,8 @@ mod mutation_tests {
         let mut measurer = ZeroTextMeasurer;
         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
 
-        arena.dispatch_event(&Event::PointerDown {
-            position: Point::new(1.0, 1.0),
-            button: PointerButton::Primary,
-        });
-        arena.dispatch_event(&Event::PointerUp {
-            position: Point::new(1.0, 1.0),
-            button: PointerButton::Primary,
-        });
+        arena.dispatch_event(&pointer_down(Point::new(1.0, 1.0)));
+        arena.dispatch_event(&pointer_up(Point::new(1.0, 1.0)));
         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
 
         assert!(arena.has_running_style_animations());
@@ -1783,10 +1867,7 @@ mod mutation_tests {
         let mut measurer = ZeroTextMeasurer;
         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
 
-        arena.dispatch_event(&Event::PointerDown {
-            position: Point::new(1.0, 1.0),
-            button: PointerButton::Primary,
-        });
+        arena.dispatch_event(&pointer_down(Point::new(1.0, 1.0)));
         arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
 
         assert!(arena.has_running_style_animations());

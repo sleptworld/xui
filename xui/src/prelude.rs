@@ -7,12 +7,17 @@ pub use crate::app::{App, app};
 pub use crate::component::ComponentRuntime;
 pub use crate::core::{Color, EdgeInsets, Point, Rect, Size};
 pub use crate::element::{ComponentDesc, ElementDesc, WidgetDesc};
-pub use crate::event::{
-    ClickEventHandler, Event, EventContext, EventHandler, EventHandlers, EventPhase, EventRequest,
-    EventRequests, EventResult, EventTrigger, HoverChangeEventHandler, Key, KeyEventHandler,
-    PointerButton, PointerEventHandler,
+pub use xui_interface::events::{
+    ClickEvent, ContextMenuEvent, DragEvent, Event, EventContext, EventPhase, EventRequest,
+    EventRequests, EventResult, EventTrigger, FocusEvent, HoverChangeEvent, HoverEvent, Key,
+    PointerButton, PressEvent, ScrollEvent, SemanticEvent,
 };
+
 pub use crate::event_system::EventState;
+pub use crate::event_system::callbacks::{
+    ClickEventHandler, ContextMenuEventHandler, DragEventHandler, FocusEventHandler,
+    HoverChangeEventHandler, HoverEventHandler, PressEventHandler, ScrollEventHandler,
+};
 pub use crate::fiber::{ComponentCall, ComponentRender, ComponentType, ErasedPropsRef};
 pub use crate::render::{
     DamageRegion, DrawBackend, MockRenderBackend, PaintCommand, Painter, RenderBackend,

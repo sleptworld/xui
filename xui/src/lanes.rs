@@ -1,6 +1,6 @@
 use std::cell::Cell;
 
-use crate::event::Event;
+use xui_interface::events::RawEvent;
 
 pub type Lane = u32;
 pub type Lanes = u32;
@@ -60,16 +60,18 @@ pub fn claim_next_transition_lane() -> Lane {
     })
 }
 
-pub fn event_lane(event: &Event) -> Lane {
+pub fn event_lane(event: &RawEvent) -> Lane {
     match event {
-        Event::PointerMove { .. } | Event::Wheel { .. } => INPUT_CONTINUOUS_LANE,
-        Event::PointerDown { .. }
-        | Event::PointerUp { .. }
-        | Event::KeyDown { .. }
-        | Event::KeyUp { .. }
-        | Event::TextInput { .. }
-        | Event::FocusGained
-        | Event::FocusLost => SYNC_LANE,
+        RawEvent::PointerMove(_) | RawEvent::Wheel(_) => INPUT_CONTINUOUS_LANE,
+        RawEvent::PointerDown(_)
+        | RawEvent::PointerUp(_)
+        | RawEvent::PointerCancel(_)
+        | RawEvent::KeyDown(_)
+        | RawEvent::KeyUp(_)
+        | RawEvent::TextInput(_)
+        | RawEvent::WindowFocus(_)
+        | RawEvent::WindowBlur(_)
+        | RawEvent::ContextMenu(_) => SYNC_LANE,
     }
 }
 

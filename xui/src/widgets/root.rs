@@ -1,7 +1,8 @@
 use crate::animation::AnimatedStyle;
+use crate::event_system::callbacks::EventHandlers;
 use xui_interface::{
-    Color, ComputedStyle, DirtyFlags, Event, EventContext, EventHandlers, EventResult,
-    PaintCommand, Rect, Size, Style, Widget, WidgetType, core::Sizing,
+    Color, ComputedStyle, DirtyFlags, Event, EventContext, EventResult, PaintCommand, Rect, Size,
+    Style, Widget, WidgetType, core::Sizing,
 };
 
 use super::props_hash;

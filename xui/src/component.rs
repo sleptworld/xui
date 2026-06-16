@@ -1,3 +1,4 @@
+use crate::event_system::callbacks::EventHandlers;
 use crate::fiber::{
     ComponentRender, ComponentState, EffectTag, ErasedProps, FiberArena, FiberId, FiberTag,
     HostState, Key, Node,
@@ -15,7 +16,7 @@ use std::fmt;
 use std::ops::RangeBounds;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use taffy as tf;
-use xui_interface::{DirtyFlags, EventHandlers, NodeId};
+use xui_interface::{DirtyFlags, NodeId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct WipId(usize);

@@ -229,22 +229,83 @@ pub fn parse_scroll_style_attr<T: quote::ToTokens + ?Sized>(
 }
 
 pub fn event_attr_stmt(attr: &XuiAttribute) -> Option<TokenStream2> {
-    let value = &attr.value;
-    match attr.name.to_string().as_str() {
+    parse_event_attr(attr.name.to_string().as_str(), &attr.value)
+}
+
+pub fn parse_event_attr<T: quote::ToTokens + ?Sized>(
+    name: &str,
+    value: &T,
+) -> Option<TokenStream2> {
+    match name {
         "on_event" => Some(quote! { __xui_element = __xui_element.on_event(#value); }),
+        "on_event_capture" => {
+            Some(quote! { __xui_element = __xui_element.on_event_capture(#value); })
+        }
         "on_click" => Some(quote! { __xui_element = __xui_element.on_click(#value); }),
+        "on_click_capture" => {
+            Some(quote! { __xui_element = __xui_element.on_click_capture(#value); })
+        }
+        "on_double_click" => {
+            Some(quote! { __xui_element = __xui_element.on_double_click(#value); })
+        }
+        "on_double_click_capture" => {
+            Some(quote! { __xui_element = __xui_element.on_double_click_capture(#value); })
+        }
+        "on_context_menu" => {
+            Some(quote! { __xui_element = __xui_element.on_context_menu(#value); })
+        }
+        "on_context_menu_capture" => {
+            Some(quote! { __xui_element = __xui_element.on_context_menu_capture(#value); })
+        }
+        "on_hover_enter" => Some(quote! { __xui_element = __xui_element.on_hover_enter(#value); }),
+        "on_hover_leave" => Some(quote! { __xui_element = __xui_element.on_hover_leave(#value); }),
         "on_hover_change" => {
             Some(quote! { __xui_element = __xui_element.on_hover_change(#value); })
         }
-        "on_pointer_down" => {
-            Some(quote! { __xui_element = __xui_element.on_pointer_down(#value); })
+        "on_press_start" => Some(quote! { __xui_element = __xui_element.on_press_start(#value); }),
+        "on_press_start_capture" => {
+            Some(quote! { __xui_element = __xui_element.on_press_start_capture(#value); })
         }
-        "on_pointer_up" => Some(quote! { __xui_element = __xui_element.on_pointer_up(#value); }),
-        "on_pointer_move" => {
-            Some(quote! { __xui_element = __xui_element.on_pointer_move(#value); })
+        "on_press_end" => Some(quote! { __xui_element = __xui_element.on_press_end(#value); }),
+        "on_press_end_capture" => {
+            Some(quote! { __xui_element = __xui_element.on_press_end_capture(#value); })
         }
-        "on_key_down" => Some(quote! { __xui_element = __xui_element.on_key_down(#value); }),
-        "on_key_up" => Some(quote! { __xui_element = __xui_element.on_key_up(#value); }),
+        "on_press_cancel" => {
+            Some(quote! { __xui_element = __xui_element.on_press_cancel(#value); })
+        }
+        "on_press_cancel_capture" => {
+            Some(quote! { __xui_element = __xui_element.on_press_cancel_capture(#value); })
+        }
+        "on_focus" => Some(quote! { __xui_element = __xui_element.on_focus(#value); }),
+        "on_blur" => Some(quote! { __xui_element = __xui_element.on_blur(#value); }),
+        "on_focus_in" => Some(quote! { __xui_element = __xui_element.on_focus_in(#value); }),
+        "on_focus_in_capture" => {
+            Some(quote! { __xui_element = __xui_element.on_focus_in_capture(#value); })
+        }
+        "on_focus_out" => Some(quote! { __xui_element = __xui_element.on_focus_out(#value); }),
+        "on_focus_out_capture" => {
+            Some(quote! { __xui_element = __xui_element.on_focus_out_capture(#value); })
+        }
+        "on_drag_start" => Some(quote! { __xui_element = __xui_element.on_drag_start(#value); }),
+        "on_drag_start_capture" => {
+            Some(quote! { __xui_element = __xui_element.on_drag_start_capture(#value); })
+        }
+        "on_drag_move" => Some(quote! { __xui_element = __xui_element.on_drag_move(#value); }),
+        "on_drag_move_capture" => {
+            Some(quote! { __xui_element = __xui_element.on_drag_move_capture(#value); })
+        }
+        "on_drag_end" => Some(quote! { __xui_element = __xui_element.on_drag_end(#value); }),
+        "on_drag_end_capture" => {
+            Some(quote! { __xui_element = __xui_element.on_drag_end_capture(#value); })
+        }
+        "on_drag_cancel" => Some(quote! { __xui_element = __xui_element.on_drag_cancel(#value); }),
+        "on_drag_cancel_capture" => {
+            Some(quote! { __xui_element = __xui_element.on_drag_cancel_capture(#value); })
+        }
+        "on_scroll" => Some(quote! { __xui_element = __xui_element.on_scroll(#value); }),
+        "on_scroll_capture" => {
+            Some(quote! { __xui_element = __xui_element.on_scroll_capture(#value); })
+        }
         _ => None,
     }
 }

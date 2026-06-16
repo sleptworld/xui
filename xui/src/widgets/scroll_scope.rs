@@ -1,9 +1,10 @@
 use crate::{
     ElementDesc,
     animation::AnimatedStyle,
+    event_system::callbacks::EventHandlers,
     widgets::{props_hash, widget_element_desc},
 };
-use xui_interface::{DirtyFlags, Event, EventHandlers, Key, Style, Translation, Widget};
+use xui_interface::{DirtyFlags, Event, Key, Style, Translation, Widget, events::RawEvent};
 
 pub struct ScrollScope {
     key: Option<Key>,
@@ -82,8 +83,18 @@ impl Widget for ScrollScope {
         _cx: &mut xui_interface::EventContext<'_>,
     ) -> xui_interface::EventResult {
         match event {
-            Event::Wheel { delta, .. } => {
-                self.translation.translate(*delta);
+            Event::Raw(RawEvent::Wheel(raw)) => {
+                let delta = match raw.delta {
+                    xui_interface::ScrollDelta::Pixels(delta) => delta,
+                    xui_interface::ScrollDelta::Lines(delta) => {
+                        xui_interface::Translation::new(delta.x * 16.0, delta.y * 16.0)
+                    }
+                    xui_interface::ScrollDelta::Pages(delta) => {
+                        xui_interface::Translation::new(delta.x * 800.0, delta.y * 800.0)
+                    }
+                };
+                self.translation
+                    .translate(xui_interface::Point::new(delta.x, delta.y));
                 xui_interface::EventResult::Consumed
             }
 

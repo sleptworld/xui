@@ -1,6 +1,6 @@
 pub mod core;
 pub mod dirty;
-pub mod event;
+pub mod events;
 pub mod render;
 pub mod runtime;
 pub mod style;
@@ -9,10 +9,11 @@ pub mod widget;
 
 pub use core::{Color, EdgeInsets, Point, Rect, Size, Sizing, Translation};
 pub use dirty::DirtyFlags;
-pub use event::{
-    ClickEventHandler, Event, EventContext, EventHandler, EventHandlers, EventPhase, EventRequest,
-    EventRequests, EventResult, EventTrigger, HoverChangeEventHandler, Key as InputKey,
-    KeyEventHandler, PointerButton, PointerEventHandler,
+pub use events::{
+    ContextMenuTrigger, Event, EventContext, EventPhase, EventRequest, EventRequests, EventResult,
+    EventTrigger, Key as InputKey, Modifiers, PointerButton, PointerButtons, PointerCoords,
+    PointerKind, PointerSnapshot, RawContextMenu, RawKey, RawPointerButton, RawPointerCancel,
+    RawPointerMove, RawTextInput, RawWheel, RawWindowEvent, ScrollDelta, XuiDeviceId, XuiPointerId,
 };
 pub use render::{
     DamageRegion, DrawBackend, FontRenderBackend, MockRenderBackend, PaintCommand, Painter,

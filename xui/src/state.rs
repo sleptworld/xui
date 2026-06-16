@@ -514,20 +514,20 @@ mod tests {
         let mut cx = HookContext::new(&mut storage, owner, scheduler, SYNC_LANE);
 
         let callback = cx.use_callback((), || {
-            Box::new(|cx: &mut crate::event::EventContext<'_>| {
+            Box::new(|cx: &mut xui_interface::events::EventContext<'_>| {
                 cx.mark_needs_paint();
-                crate::event::EventResult::Consumed
+                xui_interface::events::EventResult::Consumed
             })
                 as Box<
                     dyn for<'a> FnMut(
-                        &mut crate::event::EventContext<'a>,
-                    ) -> crate::event::EventResult,
+                        &mut xui_interface::events::EventContext<'a>,
+                    ) -> xui_interface::events::EventResult,
                 >
         });
 
         let mut dirty = DirtyFlags::empty();
         let mut requests = EventRequests::default();
-        let mut event_cx = crate::event::EventContext::new(
+        let mut event_cx = xui_interface::events::EventContext::new(
             Default::default(),
             EventPhase::Target,
             &mut dirty,
@@ -535,7 +535,7 @@ mod tests {
         );
         let result = callback.call_mut(|handler| handler(&mut event_cx));
 
-        assert_eq!(result, crate::event::EventResult::Consumed);
+        assert_eq!(result, xui_interface::events::EventResult::Consumed);
         assert!(dirty.contains(DirtyFlags::PAINT));
     }
 }

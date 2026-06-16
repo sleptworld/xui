@@ -3,14 +3,21 @@ use winit::event::{
 };
 use winit::keyboard::{Key as WinitKey, NamedKey};
 use xui::prelude::{RuntimeEvent, Size};
-use xui_interface::{Event, InputKey, Point, PointerButton};
+use xui_interface::events::RawEvent;
+use xui_interface::{
+    Event, InputKey, Modifiers, Point, PointerButton, PointerButtons, PointerKind, RawKey,
+    RawPointerButton, RawPointerMove, RawTextInput, RawWheel, RawWindowEvent, ScrollDelta,
+    Translation, events::XuiPointerId,
+};
 
 pub fn translate_mouse_button(button: WinitMouseButton) -> Option<PointerButton> {
     match button {
         WinitMouseButton::Left => Some(PointerButton::Primary),
         WinitMouseButton::Right => Some(PointerButton::Secondary),
-        WinitMouseButton::Middle => Some(PointerButton::Middle),
-        WinitMouseButton::Back | WinitMouseButton::Forward | WinitMouseButton::Other(_) => None,
+        WinitMouseButton::Middle => Some(PointerButton::Auxiliary),
+        WinitMouseButton::Back => Some(PointerButton::Back),
+        WinitMouseButton::Forward => Some(PointerButton::Forward),
+        WinitMouseButton::Other(button) => Some(PointerButton::Other(button)),
     }
 }
 
@@ -28,18 +35,15 @@ pub fn translate_key(key: &WinitKey) -> InputKey {
     }
 }
 
-const LINE_SCROLL_LOGICAL_PIXELS: f32 = 48.0;
-
-pub fn translate_mouse_wheel(scale: f32, delta: &MouseScrollDelta) -> Point {
+pub fn translate_mouse_wheel(scale: f32, delta: &MouseScrollDelta) -> ScrollDelta {
     let scale = scale.max(1.0);
     match delta {
-        MouseScrollDelta::LineDelta(x, y) => Point::new(
-            *x * LINE_SCROLL_LOGICAL_PIXELS,
-            *y * LINE_SCROLL_LOGICAL_PIXELS,
+        MouseScrollDelta::LineDelta(x, y) => ScrollDelta::Lines(Translation::new(*x, *y)),
+        MouseScrollDelta::PixelDelta(position) => ScrollDelta::Pixels(
+            Point::new(position.x as f32, position.y as f32)
+                .scale(1.0 / scale)
+                .into(),
         ),
-        MouseScrollDelta::PixelDelta(position) => {
-            Point::new(position.x as f32, position.y as f32).scale(1.0 / scale)
-        }
     }
 }
 
@@ -54,52 +58,101 @@ pub fn translate_window_event(
             size.height as f32,
         ))],
         WindowEvent::CloseRequested | WindowEvent::Destroyed => vec![RuntimeEvent::Exit],
-        WindowEvent::Focused(true) => vec![RuntimeEvent::Input(Event::FocusGained)],
-        WindowEvent::Focused(false) => vec![RuntimeEvent::Input(Event::FocusLost)],
+        WindowEvent::Focused(true) => {
+            vec![RuntimeEvent::Input(RawEvent::WindowFocus(RawWindowEvent {
+                timestamp: std::time::Instant::now(),
+                modifiers: Modifiers::default(),
+            }))]
+        }
+        WindowEvent::Focused(false) => {
+            vec![RuntimeEvent::Input(RawEvent::WindowBlur(RawWindowEvent {
+                timestamp: std::time::Instant::now(),
+                modifiers: Modifiers::default(),
+            }))]
+        }
         WindowEvent::CursorMoved { position, .. } => {
-            vec![RuntimeEvent::Input(Event::PointerMove {
+            vec![RuntimeEvent::Input(RawEvent::PointerMove(RawPointerMove {
                 position: Point::new(position.x as f32, position.y as f32).scale(1. / scale),
-            })]
+                pointer_id: XuiPointerId::new(0),
+                device_id: None,
+                kind: PointerKind::Mouse,
+                button: None,
+                buttons: PointerButtons::default(),
+                modifiers: Modifiers::default(),
+                timestamp: std::time::Instant::now(),
+            }))]
         }
         WindowEvent::MouseInput { state, button, .. } => {
             let Some(button) = translate_mouse_button(*button) else {
                 return Vec::new();
             };
             let position = last_cursor_position.unwrap_or(Point::new(0.0, 0.0));
+            let buttons = match state {
+                ElementState::Pressed => PointerButtons::from_button(button),
+                ElementState::Released => PointerButtons::default(),
+            };
+            let event = RawPointerButton {
+                position,
+                pointer_id: XuiPointerId::new(0),
+                device_id: None,
+                kind: PointerKind::Mouse,
+                button,
+                buttons,
+                modifiers: Modifiers::default(),
+                timestamp: std::time::Instant::now(),
+            };
             let event = match state {
-                ElementState::Pressed => Event::PointerDown { position, button },
-                ElementState::Released => Event::PointerUp { position, button },
+                ElementState::Pressed => RawEvent::PointerDown(event),
+                ElementState::Released => RawEvent::PointerUp(event),
             };
             vec![RuntimeEvent::Input(event)]
         }
         WindowEvent::MouseWheel { delta, .. } => {
-            vec![RuntimeEvent::Input(Event::Wheel {
+            vec![RuntimeEvent::Input(RawEvent::Wheel(RawWheel {
                 position: last_cursor_position.unwrap_or(Point::new(0.0, 0.0)),
                 delta: translate_mouse_wheel(scale, delta),
-            })]
+                device_id: None,
+                pointer_id: Some(XuiPointerId::new(0)),
+                modifiers: Modifiers::default(),
+                timestamp: std::time::Instant::now(),
+                is_inertial: false,
+            }))]
         }
         WindowEvent::KeyboardInput { event, .. } => translate_key_event(event),
         WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
-            vec![RuntimeEvent::Input(Event::TextInput { text: text.clone() })]
+            vec![RuntimeEvent::Input(RawEvent::TextInput(RawTextInput {
+                text: text.clone(),
+                modifiers: Modifiers::default(),
+                timestamp: std::time::Instant::now(),
+            }))]
         }
         WindowEvent::RedrawRequested => vec![RuntimeEvent::RedrawRequested],
         _ => Vec::new(),
     }
+
 }
 
 pub fn translate_key_event(event: &KeyEvent) -> Vec<RuntimeEvent> {
     let key = translate_key(&event.logical_key);
+    let raw = RawKey {
+        key,
+        modifiers: Modifiers::default(),
+        timestamp: std::time::Instant::now(),
+        is_repeat: event.repeat,
+    };
     let mut events = vec![RuntimeEvent::Input(match event.state {
-        ElementState::Pressed => Event::KeyDown { key },
-        ElementState::Released => Event::KeyUp { key },
+        ElementState::Pressed => RawEvent::KeyDown(raw),
+        ElementState::Released => RawEvent::KeyUp(raw),
     })];
 
     if event.state == ElementState::Pressed {
         if let Some(text) = event.text.as_ref() {
             if !text.is_empty() && text != "\r" && text != "\t" {
-                events.push(RuntimeEvent::Input(Event::TextInput {
+                events.push(RuntimeEvent::Input(RawEvent::TextInput(RawTextInput {
                     text: text.to_string(),
-                }));
+                    modifiers: Modifiers::default(),
+                    timestamp: std::time::Instant::now(),
+                })));
             }
         }
     }
@@ -124,7 +177,14 @@ mod tests {
             translate_mouse_button(WinitMouseButton::Right),
             Some(PointerButton::Secondary)
         );
-        assert_eq!(translate_mouse_button(WinitMouseButton::Other(9)), None);
+        assert_eq!(
+            translate_mouse_button(WinitMouseButton::Middle),
+            Some(PointerButton::Auxiliary)
+        );
+        assert_eq!(
+            translate_mouse_button(WinitMouseButton::Other(9)),
+            Some(PointerButton::Other(9))
+        );
     }
 
     #[test]
@@ -147,14 +207,14 @@ mod tests {
     fn maps_scroll_delta() {
         assert_eq!(
             translate_mouse_wheel(1.0, &MouseScrollDelta::LineDelta(1.0, -2.0)),
-            Point::new(48.0, -96.0)
+            ScrollDelta::Lines(Translation::new(1.0, -2.0))
         );
         assert_eq!(
             translate_mouse_wheel(
                 2.0,
                 &MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(20.0, -10.0))
             ),
-            Point::new(10.0, -5.0)
+            ScrollDelta::Pixels(Translation::new(10.0, -5.0))
         );
     }
 }

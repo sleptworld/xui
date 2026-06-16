@@ -6,6 +6,7 @@ pub mod text;
 mod text_cache;
 mod translate;
 mod wgpu;
+mod device;
 
 pub use runner::{WinitRunError, WinitRunner, WinitRunnerOptions};
 pub use sdf::UI_SHADER_WGSL;

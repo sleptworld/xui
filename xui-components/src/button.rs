@@ -30,8 +30,9 @@ pub fn pbutton(text: &String, ps: &ButtonProp) {
             border_radius = {ps.border_radius as f32}
             padding = {ps.padding}
             color = {ps.text_color}
-            on_click={|| {
+            on_click={|_, _| {
                 println!("HEllo");
+                EventResult::Ignored
             }}
             // animation= {(
             //     EventTrigger::OnHover,
