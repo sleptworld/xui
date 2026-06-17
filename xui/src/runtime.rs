@@ -119,6 +119,7 @@ impl<B: RenderBackend<T>, T: TextMeasurer> GuiRuntime<B, T> {
     }
 
     pub fn frame(&mut self) -> Result<FrameReport, B::Error> {
+        self.app.drain_async_messages();
         self.tick_style_animations();
         let should_render = self.app.is_dirty();
         if should_render {

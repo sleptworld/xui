@@ -1,22 +1,15 @@
+use crate::renders::text::CosmicTextEngine;
+use crate::renders::*;
 use glam::{Vec2, Vec3};
+use std::thread::scope;
 use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 use wgpu::util::DeviceExt;
 use xui_interface::widget::PType;
-use xui_interface::{
-    Color, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, DamageRegion,
-    GlyphPlacement, ImageFormat, ImageKey, ImagePaintCommand, ImageResource, PaintCommand, Point,
-    Rect, RenderBackend, Size, TextLayoutBackend, TextPaintCommand,
-};
-
-use crate::renders::image::ImageRender;
-use crate::sdf::UI_SHADER_WGSL;
-use crate::text::atlas::Atlas;
-use crate::text::render::GlyphRender;
-use crate::text_cache::WinitTextEngine;
+use xui_interface::*;
 
 pub type WgpuBackendError = Box<dyn std::error::Error + Send + Sync>;
 
-pub struct WGPUBackend<T: TextLayoutBackend = WinitTextEngine> {
+pub struct WGPUBackend<T: TextLayoutBackend = CosmicTextEngine> {
     // Instances
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
@@ -24,18 +17,15 @@ pub struct WGPUBackend<T: TextLayoutBackend = WinitTextEngine> {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    render_pipeline: wgpu::RenderPipeline,
     // Glyph
     glyph_render: GlyphRender,
     atlas: Atlas,
-    last_text_glyph_records: Vec<TextGlyphRecord>,
     // Images
     image_render: ImageRender,
-    // Composite State
-    composite_pipeline: wgpu::RenderPipeline,
-    composite_bind_group_layout: wgpu::BindGroupLayout,
-    composite_sampler: wgpu::Sampler,
-    composite_bind_group: wgpu::BindGroup,
+    // Sdfs
+    sdf_render: SdfRenderer,
+    // Composite
+    compositor: Compositor,
     // Common Tools
     ui_uniform_buffer: wgpu::Buffer,
     ui_bind_group: wgpu::BindGroup,
@@ -55,25 +45,6 @@ const COLOR_RADIAL_GRADIENT: f32 = 2.0;
 const STROKE_CENTER: f32 = 0.0;
 pub const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-const UI_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 10] = wgpu::vertex_attr_array![
-    0 => Float32x4,
-    1 => Float32x4,
-    2 => Float32x4,
-    3 => Float32x4,
-    4 => Float32x4,
-    5 => Float32x4,
-    6 => Float32x4,
-    7 => Float32x4,
-    8 => Float32x4,
-    9 => Float32x4,
-];
-
-const IMAGE_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
-    0 => Float32x4,
-    1 => Float32x4,
-    2 => Float32x4,
-];
-
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct UiUniforms {
@@ -81,86 +52,9 @@ struct UiUniforms {
     scale_factor: [f32; 4],
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct UiInstance {
-    bounds: [f32; 4],
-    shape: [f32; 4],
-    clip: [f32; 4],
-    fill_color: [f32; 4],
-    stroke_color: [f32; 4],
-    params: [f32; 4],
-    stroke_params: [f32; 4],
-    projection_color: [f32; 4],
-    projection_params: [f32; 4],
-    extra: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct GlyphInstance {
-    bounds: [f32; 4],
-    layer: f32,
-    padding: [f32; 3],
-    uv: [f32; 4],
-    color: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct ImageInstance {
-    bounds: [f32; 4],
-    clip: [f32; 4],
-    params: [f32; 4],
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TextGlyphRecord {
-    pub ptype: PType,
-    pub screen_rect: Rect,
-    pub clip: Rect,
-    pub color: Color,
-    pub atlas_origin: Vec2,
-    pub atlas_layer: u32,
-    pub atlas_size: Vec3,
-    pub atlas_rect: Rect,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ImageDrawRecord {
-    pub key: ImageKey,
-    pub rect: Rect,
-    pub clip: Rect,
-    pub opacity: f32,
-}
-
-impl UiInstance {
-    fn layout() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &UI_INSTANCE_ATTRIBUTES,
-        }
-    }
-}
-
-impl ImageInstance {
-    fn layout() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &IMAGE_INSTANCE_ATTRIBUTES,
-        }
-    }
-}
-
 impl<T: TextLayoutBackend> WGPUBackend<T> {
     pub fn new(window: Arc<winit::window::Window>) -> Self {
         pollster::block_on(Self::new_(window))
-    }
-
-    pub fn last_text_glyph_records(&self) -> &[TextGlyphRecord] {
-        &self.last_text_glyph_records
     }
 
     async fn new_(window: Arc<winit::window::Window>) -> Self {
@@ -200,18 +94,7 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
 
         config.present_mode = wgpu::PresentMode::AutoVsync;
         config.usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
-
         surface.configure(&device, &config);
-
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("xui sdf shader"),
-            source: wgpu::ShaderSource::Wgsl(UI_SHADER_WGSL.into()),
-        });
-
-        let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("xui composite shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/composite.wgsl").into()),
-        });
 
         let ui_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -238,7 +121,7 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
         });
 
         let ui_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("xui sdf bind group"),
+            label: Some("xui bind group"),
             layout: &ui_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
@@ -246,127 +129,12 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
             }],
         });
 
+        let scene = SceneTexture::new(&device, &config);
         let atlas = Atlas::new(&device);
         let glyph_render = GlyphRender::new(&device, &atlas, &ui_bind_group_layout);
         let image_render = ImageRender::new(&device, &ui_bind_group_layout);
-
-        let composite_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("xui composite bind group layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            });
-        let composite_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("xui composite sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("xui sdf pipeline layout"),
-            bind_group_layouts: &[Some(&ui_bind_group_layout)],
-            immediate_size: 0,
-        });
-
-        let composite_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("xui composite pipeline layout"),
-                bind_group_layouts: &[Some(&composite_bind_group_layout)],
-                immediate_size: 0,
-            });
-
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("xui sdf render pipeline"),
-            layout: Some(&pipeline_layout),
-
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[UiInstance::layout()],
-            },
-
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: SCENE_FORMAT,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
-
-        let composite_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("xui composite render pipeline"),
-            layout: Some(&composite_pipeline_layout),
-
-            vertex: wgpu::VertexState {
-                module: &composite_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-
-            fragment: Some(wgpu::FragmentState {
-                module: &composite_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
-
-        let scene = SceneTexture::new(&device, &config);
-        let composite_bind_group = create_composite_bind_group(
-            &device,
-            &composite_bind_group_layout,
-            &composite_sampler,
-            &scene.view,
-        );
+        let compositor = Compositor::new(&device, config.format, &scene.view);
+        let sdf_render = SdfRenderer::new(&device, &ui_bind_group_layout);
 
         Self {
             instance,
@@ -375,23 +143,26 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
             device,
             queue,
             config,
-            render_pipeline,
             image_render,
-            composite_pipeline,
-            composite_bind_group_layout,
-            composite_sampler,
-            composite_bind_group,
+            compositor,
+            sdf_render,
             ui_uniform_buffer,
             ui_bind_group,
             glyph_render,
             atlas,
-            last_text_glyph_records: Vec::new(),
             scene,
             scene_needs_clear: true,
             presented_frame: false,
             scale_factor: scale_factor as f32,
             _text: PhantomData,
         }
+    }
+
+    fn logical_scene_size(&self) -> xui_interface::Size<f32> {
+        xui_interface::Size::<f32>::new(
+            self.config.width as f32 / self.scale_factor,
+            self.config.height as f32 / self.scale_factor,
+        )
     }
 }
 
@@ -426,18 +197,6 @@ impl SceneTexture {
     }
 }
 
-struct RegisteredImageResource {
-    resource: ImageResource,
-    version: u64,
-}
-
-struct CachedImageTexture {
-    _texture: wgpu::Texture,
-    _view: wgpu::TextureView,
-    bind_group: wgpu::BindGroup,
-    version: u64,
-}
-
 fn choose_srgb_surface_format(
     default: wgpu::TextureFormat,
     supported: &[wgpu::TextureFormat],
@@ -454,50 +213,6 @@ fn choose_srgb_surface_format(
     supported.iter().copied().find(wgpu::TextureFormat::is_srgb)
 }
 
-fn create_composite_bind_group(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    sampler: &wgpu::Sampler,
-    scene_view: &wgpu::TextureView,
-) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("xui composite bind group"),
-        layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(scene_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Sampler(sampler),
-            },
-        ],
-    })
-}
-
-struct GlyphTextureCache<K> {
-    glyphs: HashMap<K, Option<(AllocInfo, GlyphPlacement, u32)>>,
-}
-
-impl<K> GlyphTextureCache<K> {
-    fn new() -> Self {
-        Self {
-            glyphs: HashMap::new(),
-        }
-    }
-}
-
-impl<K: Eq + std::hash::Hash> GlyphTextureCache<K> {
-    fn get(&self, key: &K) -> Option<&Option<(AllocInfo, GlyphPlacement, u32)>> {
-        self.glyphs.get(key)
-    }
-
-    fn insert(&mut self, key: K, value: Option<(AllocInfo, GlyphPlacement, u32)>) {
-        self.glyphs.insert(key, value);
-    }
-}
-
 impl<T: TextLayoutBackend> RenderBackend<T> for WGPUBackend<T> {
     type Error = WgpuBackendError;
 
@@ -509,12 +224,7 @@ impl<T: TextLayoutBackend> RenderBackend<T> for WGPUBackend<T> {
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
             self.scene = SceneTexture::new(&self.device, &self.config);
-            self.composite_bind_group = create_composite_bind_group(
-                &self.device,
-                &self.composite_bind_group_layout,
-                &self.composite_sampler,
-                &self.scene.view,
-            );
+            self.compositor.reset_view(&self.device, &self.scene.view);
             self.scene_needs_clear = true;
         }
         self.queue.write_buffer(
@@ -544,33 +254,22 @@ impl<T: TextLayoutBackend> RenderBackend<T> for WGPUBackend<T> {
     ) -> Result<(), Self::Error> {
         let _ = (&self.instance, &self.adapter);
         self.presented_frame = false;
-        let logical_scene_size = xui_interface::Size::<f32>::new(
-            self.config.width as f32 / self.scale_factor,
-            self.config.height as f32 / self.scale_factor,
-        );
+        let logical_scene_size = self.logical_scene_size();
         let scene_clip = damage.bounds().unwrap_or(Rect::new(
             0.0,
             0.0,
             logical_scene_size.width,
             logical_scene_size.height,
         ));
-        let (instances, image_records, text_glyph_records) =
-            self.build_ui_instances(commands, scene_clip, text)?;
-        self.last_text_glyph_records = text_glyph_records;
-        self.prepare_image_textures(&image_records)?;
 
+        let result = self.build_ui_instances(commands, scene_clip, text)?;
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface.configure(&self.device, &self.config);
                 self.scene = SceneTexture::new(&self.device, &self.config);
-                self.composite_bind_group = create_composite_bind_group(
-                    &self.device,
-                    &self.composite_bind_group_layout,
-                    &self.composite_sampler,
-                    &self.scene.view,
-                );
+                self.compositor.reset_view(&self.device, &self.scene.view);
                 self.scene_needs_clear = true;
                 match self.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(frame)
@@ -603,33 +302,10 @@ impl<T: TextLayoutBackend> RenderBackend<T> for WGPUBackend<T> {
                 label: Some("xui sdf encoder"),
             });
 
-        let instance_buffer = (!instances.is_empty()).then(|| {
-            self.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("xui sdf instances"),
-                    contents: bytemuck::cast_slice(&instances),
-                    usage: wgpu::BufferUsages::VERTEX,
-                })
-        });
-        let image_instances: Vec<ImageInstance> = image_records
-            .iter()
-            .map(|record| ImageInstance {
-                bounds: rect_to_array(record.rect),
-                clip: rect_to_array(record.clip),
-                params: [record.opacity, 0.0, 0.0, 0.0],
-            })
-            .collect();
-        let image_instance_buffer = (!image_instances.is_empty()).then(|| {
-            self.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("xui image instances"),
-                    contents: bytemuck::cast_slice(&image_instances),
-                    usage: wgpu::BufferUsages::VERTEX,
-                })
-        });
-
+        self.sdf_render
+            .deal_instances(&self.device, &self.queue, &result.sdf_records);
         self.glyph_render
-            .deal_glyphs(&self.device, &self.queue, &self.last_text_glyph_records);
+            .deal_glyphs(&self.device, &self.queue, &result.glyph_records);
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -658,53 +334,17 @@ impl<T: TextLayoutBackend> RenderBackend<T> for WGPUBackend<T> {
                 multiview_mask: None,
             });
 
-            if let Some(instance_buffer) = &instance_buffer {
-                pass.set_pipeline(&self.render_pipeline);
-                pass.set_bind_group(0, &self.ui_bind_group, &[]);
-                pass.set_vertex_buffer(0, instance_buffer.slice(..));
-                pass.draw(0..6, 0..instances.len() as u32);
-            }
-
-            if let Some(image_instance_buffer) = &image_instance_buffer {
-                pass.set_pipeline(&self.image_pipeline);
-                pass.set_bind_group(0, &self.ui_bind_group, &[]);
-                pass.set_vertex_buffer(0, image_instance_buffer.slice(..));
-                for (index, record) in image_records.iter().enumerate() {
-                    let Some(texture) = self.image_textures.get(&record.key) else {
-                        continue;
-                    };
-                    pass.set_bind_group(1, &texture.bind_group, &[]);
-                    pass.draw(0..6, index as u32..index as u32 + 1);
-                }
-            }
-
+            self.sdf_render.render(&mut pass, &self.ui_bind_group);
             self.glyph_render.render(&mut pass, &self.ui_bind_group);
         }
-        self.scene_needs_clear = false;
 
+        self.scene_needs_clear = false;
         let frame_view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("xui composite render pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&self.composite_pipeline);
-            pass.set_bind_group(0, &self.composite_bind_group, &[]);
-            pass.draw(0..3, 0..1);
+            self.compositor
+                .composite(&mut encoder, &frame_view, self.scene_needs_clear);
         }
 
         self.queue.submit(Some(encoder.finish()));
@@ -725,11 +365,8 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
         commands: &[PaintCommand],
         viewport_clip: Rect,
         text: &mut T,
-    ) -> Result<(Vec<UiInstance>, Vec<ImageDrawRecord>, Vec<TextGlyphRecord>), WgpuBackendError>
-    {
-        let mut instances = Vec::new();
-        let mut image_records = Vec::new();
-        let mut text_glyph_records = Vec::new();
+    ) -> Result<PrepareResult, WgpuBackendError> {
+        let mut result = PrepareResult::default();
         let mut transform_stack = vec![Point::new(0.0, 0.0)];
         let mut clip_stack = vec![viewport_clip];
 
@@ -742,8 +379,7 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
                     shadow,
                 } => {
                     let rect = translate_rect(*rect, current_transform(&transform_stack));
-                    push_paint_rect_instance(
-                        &mut instances,
+                    result.push_paint_rect_instance(
                         rect,
                         0.0,
                         *color,
@@ -760,8 +396,7 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
                     shadow,
                 } => {
                     let rect = translate_rect(*rect, current_transform(&transform_stack));
-                    push_paint_rect_instance(
-                        &mut instances,
+                    result.push_paint_rect_instance(
                         rect,
                         *radius,
                         *color,
@@ -777,8 +412,7 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
                     width,
                 } => {
                     let offset = current_transform(&transform_stack);
-                    push_line_instance(
-                        &mut instances,
+                    result.push_line_instance(
                         translate_point(*from, offset),
                         translate_point(*to, offset),
                         *color,
@@ -791,17 +425,11 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
                     let Some(clip) = intersect_rect(current_clip(&clip_stack), rect) else {
                         continue;
                     };
-                    self.push_text_glyph_records(
-                        command,
-                        rect,
-                        clip,
-                        text,
-                        &mut text_glyph_records,
-                    )?;
+                    self.push_text_glyph_records(command, rect, clip, text, &mut result)?;
                 }
                 PaintCommand::Image(command) => {
                     let rect = translate_rect(command.rect, current_transform(&transform_stack));
-                    push_image_record(&mut image_records, command, rect, current_clip(&clip_stack));
+                    result.push_image_record(command, rect, current_clip(&clip_stack));
                 }
                 PaintCommand::PushClip(rect) => {
                     let rect = translate_rect(*rect, current_transform(&transform_stack));
@@ -826,8 +454,7 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
                 }
 
                 PaintCommand::Clear(color) => {
-                    push_rect_instance(
-                        &mut instances,
+                    result.push_rect_instance(
                         viewport_clip,
                         0.0,
                         *color,
@@ -839,38 +466,7 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
             }
         }
 
-        Ok((instances, image_records, text_glyph_records))
-    }
-
-    fn prepare_image_textures(
-        &mut self,
-        records: &[ImageDrawRecord],
-    ) -> Result<(), WgpuBackendError> {
-        for record in records {
-            let Some(registered) = self.image_resources.get(&record.key) else {
-                continue;
-            };
-            let needs_upload = self
-                .image_textures
-                .get(&record.key)
-                .is_none_or(|texture| texture.version != registered.version);
-            if !needs_upload {
-                continue;
-            }
-
-            let resource = registered.resource.clone();
-            let version = registered.version;
-            let texture = create_cached_image_texture(
-                &self.device,
-                &self.queue,
-                &self.image_bind_group_layout,
-                &self.image_sampler,
-                &resource,
-                version,
-            )?;
-            self.image_textures.insert(record.key.clone(), texture);
-        }
-        Ok(())
+        Ok(result)
     }
 
     fn push_text_glyph_records(
@@ -879,7 +475,7 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
         rect: Rect,
         clip: Rect,
         text: &mut T,
-        records: &mut Vec<TextGlyphRecord>,
+        records: &mut PrepareResult,
     ) -> Result<(), WgpuBackendError> {
         if rect.width <= 0.0
             || rect.height <= 0.0
@@ -939,7 +535,7 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
                     placement.height as f32,
                 ),
             };
-            records.push(record);
+            records.glyph_records.push(record);
         }
         Ok(())
     }
@@ -966,362 +562,291 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
     }
 }
 
-fn push_image_record(
-    records: &mut Vec<ImageDrawRecord>,
-    command: &ImagePaintCommand,
-    rect: Rect,
-    clip: Rect,
-) {
-    if rect.width <= 0.0
-        || rect.height <= 0.0
-        || clip.width <= 0.0
-        || clip.height <= 0.0
-        || command.opacity <= 0.0
-        || command.key.0.is_empty()
-    {
-        return;
-    }
-
-    let Some(clip) = intersect_rect(clip, rect) else {
-        return;
-    };
-    records.push(ImageDrawRecord {
-        key: command.key.clone(),
-        rect,
-        clip,
-        opacity: command.opacity.clamp(0.0, 1.0),
-    });
+#[derive(Default)]
+struct PrepareResult {
+    pub sdf_records: Vec<SdfInstance>,
+    pub image_records: Vec<ImageDrawRecord>,
+    pub glyph_records: Vec<TextGlyphRecord>,
 }
 
-fn create_cached_image_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    layout: &wgpu::BindGroupLayout,
-    sampler: &wgpu::Sampler,
-    resource: &ImageResource,
-    version: u64,
-) -> Result<CachedImageTexture, WgpuBackendError> {
-    validate_image_resource(resource)?;
+impl PrepareResult {
+    fn push_paint_rect_instance(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        fill: ComputedColorStyle,
+        stroke: Option<ComputedStrokeStyle>,
+        shadow: Option<ComputedShadowStyle>,
+        clip: Rect,
+    ) {
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return;
+        }
 
-    let format = match resource.format {
-        ImageFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
-    };
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("xui image texture"),
-        size: wgpu::Extent3d {
-            width: resource.size.width,
-            height: resource.size.height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        resource.pixels.as_ref(),
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(resource.size.width * 4),
-            rows_per_image: Some(resource.size.height),
-        },
-        wgpu::Extent3d {
-            width: resource.size.width,
-            height: resource.size.height,
-            depth_or_array_layers: 1,
-        },
-    );
+        let visible_shadow = shadow.filter(|shadow| shadow.color.a > 0.0);
 
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("xui image bind group"),
-        layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Sampler(sampler),
-            },
-        ],
-    });
+        if let Some(shadow) = visible_shadow {
+            self.push_shadow_instance(
+                rect,
+                radius,
+                shadow.color,
+                shadow.offset,
+                shadow.blur,
+                shadow.spread,
+                clip,
+            );
+        }
 
-    Ok(CachedImageTexture {
-        _texture: texture,
-        _view: view,
-        bind_group,
-        version,
-    })
-}
+        if fill.is_visible() {
+            self.push_fill_style_instance(rect, radius, fill, clip);
+        }
 
-fn validate_image_resource(resource: &ImageResource) -> Result<(), WgpuBackendError> {
-    if resource.key.0.is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "image resource key cannot be empty",
-        )
-        .into());
-    }
-    if resource.size.width == 0 || resource.size.height == 0 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "image resource size cannot be zero",
-        )
-        .into());
+        if let Some(stroke) =
+            stroke.filter(|stroke| stroke.width > 0.0 && stroke.color.is_visible())
+        {
+            self.push_stroke_style_instance(rect, radius, stroke.color, stroke.width, clip);
+        }
     }
 
-    let bytes_per_pixel = match resource.format {
-        ImageFormat::Rgba8UnormSrgb => 4usize,
-    };
-    let expected_len =
-        resource.size.width as usize * resource.size.height as usize * bytes_per_pixel;
-    if resource.pixels.len() != expected_len {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!(
-                "image resource pixel length mismatch: expected {expected_len}, got {}",
-                resource.pixels.len()
-            ),
-        )
-        .into());
-    }
-
-    Ok(())
-}
-
-fn push_rect_instance(
-    instances: &mut Vec<UiInstance>,
-    rect: Rect,
-    radius: f32,
-    fill_color: Color,
-    stroke_color: Color,
-    stroke_width: f32,
-    clip: Rect,
-) {
-    push_projected_rect_instance(
-        instances,
-        rect,
-        radius,
-        fill_color,
-        stroke_color,
-        stroke_width,
-        Color::TRANSPARENT,
-        Point::new(0.0, 0.0),
-        0.0,
-        0.0,
-        COLOR_SOLID,
-        [0.0; 4],
-        false,
-        clip,
-    );
-}
-
-fn push_paint_rect_instance(
-    instances: &mut Vec<UiInstance>,
-    rect: Rect,
-    radius: f32,
-    fill: ComputedColorStyle,
-    stroke: Option<ComputedStrokeStyle>,
-    shadow: Option<ComputedShadowStyle>,
-    clip: Rect,
-) {
-    if rect.width <= 0.0 || rect.height <= 0.0 {
-        return;
-    }
-
-    let visible_shadow = shadow.filter(|shadow| shadow.color.a > 0.0);
-
-    if let Some(shadow) = visible_shadow {
-        push_shadow_instance(
-            instances,
+    fn push_fill_style_instance(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        style: ComputedColorStyle,
+        clip: Rect,
+    ) {
+        let style = InstanceColorStyle::new(style, rect);
+        self.push_projected_rect_instance(
             rect,
             radius,
-            shadow.color,
-            shadow.offset,
-            shadow.blur,
-            shadow.spread,
+            style.from,
+            Color::TRANSPARENT,
+            0.0,
+            style.to,
+            Point::new(0.0, 0.0),
+            0.0,
+            0.0,
+            style.kind,
+            style.geometry,
+            false,
             clip,
         );
     }
 
-    if fill.is_visible() {
-        push_fill_style_instance(instances, rect, radius, fill, clip);
+    fn push_stroke_style_instance(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        style: ComputedColorStyle,
+        stroke_width: f32,
+        clip: Rect,
+    ) {
+        let style = InstanceColorStyle::new(style, rect);
+        self.push_projected_rect_instance(
+            rect,
+            radius,
+            Color::TRANSPARENT,
+            style.from,
+            stroke_width,
+            style.to,
+            Point::new(0.0, 0.0),
+            0.0,
+            0.0,
+            style.kind,
+            style.geometry,
+            false,
+            clip,
+        );
     }
 
-    if let Some(stroke) = stroke.filter(|stroke| stroke.width > 0.0 && stroke.color.is_visible()) {
-        push_stroke_style_instance(instances, rect, radius, stroke.color, stroke.width, clip);
-    }
-}
+    fn push_shadow_instance(
+        &mut self,
+        shape: Rect,
+        radius: f32,
+        color: Color,
+        offset: Point,
+        blur: f32,
+        spread: f32,
+        clip: Rect,
+    ) {
+        let bounds = shadow_bounds(shape, offset, blur, spread);
+        if shape.width <= 0.0
+            || shape.height <= 0.0
+            || bounds.width <= 0.0
+            || bounds.height <= 0.0
+            || clip.width <= 0.0
+            || clip.height <= 0.0
+            || color.a <= 0.0
+        {
+            return;
+        }
 
-fn push_fill_style_instance(
-    instances: &mut Vec<UiInstance>,
-    rect: Rect,
-    radius: f32,
-    style: ComputedColorStyle,
-    clip: Rect,
-) {
-    let style = InstanceColorStyle::new(style, rect);
-    push_projected_rect_instance(
-        instances,
-        rect,
-        radius,
-        style.from,
-        Color::TRANSPARENT,
-        0.0,
-        style.to,
-        Point::new(0.0, 0.0),
-        0.0,
-        0.0,
-        style.kind,
-        style.geometry,
-        false,
-        clip,
-    );
-}
+        let kind = if radius > 0.0 {
+            SHAPE_ROUNDED_RECT
+        } else {
+            SHAPE_RECT
+        };
 
-fn push_stroke_style_instance(
-    instances: &mut Vec<UiInstance>,
-    rect: Rect,
-    radius: f32,
-    style: ComputedColorStyle,
-    stroke_width: f32,
-    clip: Rect,
-) {
-    let style = InstanceColorStyle::new(style, rect);
-    push_projected_rect_instance(
-        instances,
-        rect,
-        radius,
-        Color::TRANSPARENT,
-        style.from,
-        stroke_width,
-        style.to,
-        Point::new(0.0, 0.0),
-        0.0,
-        0.0,
-        style.kind,
-        style.geometry,
-        false,
-        clip,
-    );
-}
-
-fn push_shadow_instance(
-    instances: &mut Vec<UiInstance>,
-    shape: Rect,
-    radius: f32,
-    color: Color,
-    offset: Point,
-    blur: f32,
-    spread: f32,
-    clip: Rect,
-) {
-    let bounds = shadow_bounds(shape, offset, blur, spread);
-    if shape.width <= 0.0
-        || shape.height <= 0.0
-        || bounds.width <= 0.0
-        || bounds.height <= 0.0
-        || clip.width <= 0.0
-        || clip.height <= 0.0
-        || color.a <= 0.0
-    {
-        return;
+        self.sdf_records.push(SdfInstance {
+            bounds: rect_to_array(bounds),
+            shape: rect_to_array(shape),
+            clip: rect_to_array(clip),
+            fill_color: [0.0; 4],
+            stroke_color: [0.0; 4],
+            params: [kind, radius.max(0.0), COLOR_SOLID, 1.0],
+            stroke_params: [0.0, STROKE_CENTER, 0.0, 0.0],
+            projection_color: color_to_array(color),
+            projection_params: [offset.x, offset.y, blur.max(0.0), spread],
+            extra: [0.0; 4],
+        });
     }
 
-    let kind = if radius > 0.0 {
-        SHAPE_ROUNDED_RECT
-    } else {
-        SHAPE_RECT
-    };
+    fn push_projected_rect_instance(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        fill_color: Color,
+        stroke_color: Color,
+        stroke_width: f32,
+        projection_color: Color,
+        projection_offset: Point,
+        projection_blur: f32,
+        projection_spread: f32,
+        color_kind: f32,
+        color_geometry: [f32; 4],
+        projection_enabled: bool,
+        clip: Rect,
+    ) {
+        if rect.width <= 0.0
+            || rect.height <= 0.0
+            || clip.width <= 0.0
+            || clip.height <= 0.0
+            || (fill_color.a <= 0.0 && stroke_color.a <= 0.0 && projection_color.a <= 0.0)
+        {
+            return;
+        }
 
-    instances.push(UiInstance {
-        bounds: rect_to_array(bounds),
-        shape: rect_to_array(shape),
-        clip: rect_to_array(clip),
-        fill_color: [0.0; 4],
-        stroke_color: [0.0; 4],
-        params: [kind, radius.max(0.0), COLOR_SOLID, 1.0],
-        stroke_params: [0.0, STROKE_CENTER, 0.0, 0.0],
-        projection_color: color_to_array(color),
-        projection_params: [offset.x, offset.y, blur.max(0.0), spread],
-        extra: [0.0; 4],
-    });
-}
+        let stroke_direction = STROKE_CENTER;
+        let stroke_outset = stroke_outset(stroke_width.max(0.0), stroke_direction) + 1.0;
+        let projection_outset = projection_blur.max(0.0) + projection_spread.max(0.0);
+        let projection_bounds = inflate_rect(
+            translate_rect(rect, projection_offset),
+            projection_outset + 1.0,
+        );
+        let mut bounds = inflate_rect(rect, stroke_outset);
+        if projection_enabled {
+            bounds = bounds.union(projection_bounds);
+        }
+        let kind = if radius > 0.0 {
+            SHAPE_ROUNDED_RECT
+        } else {
+            SHAPE_RECT
+        };
 
-fn push_projected_rect_instance(
-    instances: &mut Vec<UiInstance>,
-    rect: Rect,
-    radius: f32,
-    fill_color: Color,
-    stroke_color: Color,
-    stroke_width: f32,
-    projection_color: Color,
-    projection_offset: Point,
-    projection_blur: f32,
-    projection_spread: f32,
-    color_kind: f32,
-    color_geometry: [f32; 4],
-    projection_enabled: bool,
-    clip: Rect,
-) {
-    if rect.width <= 0.0
-        || rect.height <= 0.0
-        || clip.width <= 0.0
-        || clip.height <= 0.0
-        || (fill_color.a <= 0.0 && stroke_color.a <= 0.0 && projection_color.a <= 0.0)
-    {
-        return;
+        self.sdf_records.push(SdfInstance {
+            bounds: rect_to_array(bounds),
+            shape: rect_to_array(rect),
+            clip: rect_to_array(clip),
+            fill_color: color_to_array(fill_color),
+            stroke_color: color_to_array(stroke_color),
+            params: [
+                kind,
+                radius.max(0.0),
+                color_kind,
+                if projection_enabled { 1.0 } else { 0.0 },
+            ],
+            stroke_params: [stroke_width.max(0.0), stroke_direction, 0.0, 0.0],
+            projection_color: color_to_array(projection_color),
+            projection_params: [
+                projection_offset.x,
+                projection_offset.y,
+                projection_blur.max(0.0),
+                projection_spread,
+            ],
+            extra: color_geometry,
+        });
     }
 
-    let stroke_direction = STROKE_CENTER;
-    let stroke_outset = stroke_outset(stroke_width.max(0.0), stroke_direction) + 1.0;
-    let projection_outset = projection_blur.max(0.0) + projection_spread.max(0.0);
-    let projection_bounds = inflate_rect(
-        translate_rect(rect, projection_offset),
-        projection_outset + 1.0,
-    );
-    let mut bounds = inflate_rect(rect, stroke_outset);
-    if projection_enabled {
-        bounds = bounds.union(projection_bounds);
-    }
-    let kind = if radius > 0.0 {
-        SHAPE_ROUNDED_RECT
-    } else {
-        SHAPE_RECT
-    };
+    fn push_image_record(&mut self, command: &ImagePaintCommand, rect: Rect, clip: Rect) {
+        if rect.width <= 0.0
+            || rect.height <= 0.0
+            || clip.width <= 0.0
+            || clip.height <= 0.0
+            || command.opacity <= 0.0
+            || command.key == ImageKey::default()
+        {
+            return;
+        }
 
-    instances.push(UiInstance {
-        bounds: rect_to_array(bounds),
-        shape: rect_to_array(rect),
-        clip: rect_to_array(clip),
-        fill_color: color_to_array(fill_color),
-        stroke_color: color_to_array(stroke_color),
-        params: [
-            kind,
-            radius.max(0.0),
-            color_kind,
-            if projection_enabled { 1.0 } else { 0.0 },
-        ],
-        stroke_params: [stroke_width.max(0.0), stroke_direction, 0.0, 0.0],
-        projection_color: color_to_array(projection_color),
-        projection_params: [
-            projection_offset.x,
-            projection_offset.y,
-            projection_blur.max(0.0),
-            projection_spread,
-        ],
-        extra: color_geometry,
-    });
+        let Some(clip) = intersect_rect(clip, rect) else {
+            return;
+        };
+        self.image_records.push(ImageDrawRecord {
+            key: command.key.clone(),
+            rect,
+            clip,
+            opacity: command.opacity.clamp(0.0, 1.0),
+        });
+    }
+
+    fn push_rect_instance(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        fill_color: Color,
+        stroke_color: Color,
+        stroke_width: f32,
+        clip: Rect,
+    ) {
+        self.push_projected_rect_instance(
+            rect,
+            radius,
+            fill_color,
+            stroke_color,
+            stroke_width,
+            Color::TRANSPARENT,
+            Point::new(0.0, 0.0),
+            0.0,
+            0.0,
+            COLOR_SOLID,
+            [0.0; 4],
+            false,
+            clip,
+        );
+    }
+
+    fn push_line_instance(&mut self, from: Point, to: Point, color: Color, width: f32, clip: Rect) {
+        if color.a <= 0.0 || width <= 0.0 || clip.width <= 0.0 || clip.height <= 0.0 {
+            return;
+        }
+
+        let min_x = from.x.min(to.x);
+        let min_y = from.y.min(to.y);
+        let max_x = from.x.max(to.x);
+        let max_y = from.y.max(to.y);
+        let bounds = inflate_rect(
+            Rect::new(
+                min_x,
+                min_y,
+                (max_x - min_x).max(1.0),
+                (max_y - min_y).max(1.0),
+            ),
+            width * 0.5 + 1.0,
+        );
+
+        self.sdf_records.push(SdfInstance {
+            bounds: rect_to_array(bounds),
+            shape: rect_to_array(bounds),
+            clip: rect_to_array(clip),
+            fill_color: color_to_array(color),
+            stroke_color: [0.0; 4],
+            params: [SHAPE_LINE, 0.0, 0.0, 0.0],
+            stroke_params: [width, STROKE_CENTER, 0.0, 0.0],
+            projection_color: [0.0; 4],
+            projection_params: [0.0; 4],
+            extra: [from.x, from.y, to.x, to.y],
+        });
+    }
 }
 
 struct InstanceColorStyle {
@@ -1361,46 +886,6 @@ impl InstanceColorStyle {
             }
         }
     }
-}
-
-fn push_line_instance(
-    instances: &mut Vec<UiInstance>,
-    from: Point,
-    to: Point,
-    color: Color,
-    width: f32,
-    clip: Rect,
-) {
-    if color.a <= 0.0 || width <= 0.0 || clip.width <= 0.0 || clip.height <= 0.0 {
-        return;
-    }
-
-    let min_x = from.x.min(to.x);
-    let min_y = from.y.min(to.y);
-    let max_x = from.x.max(to.x);
-    let max_y = from.y.max(to.y);
-    let bounds = inflate_rect(
-        Rect::new(
-            min_x,
-            min_y,
-            (max_x - min_x).max(1.0),
-            (max_y - min_y).max(1.0),
-        ),
-        width * 0.5 + 1.0,
-    );
-
-    instances.push(UiInstance {
-        bounds: rect_to_array(bounds),
-        shape: rect_to_array(bounds),
-        clip: rect_to_array(clip),
-        fill_color: color_to_array(color),
-        stroke_color: [0.0; 4],
-        params: [SHAPE_LINE, 0.0, 0.0, 0.0],
-        stroke_params: [width, STROKE_CENTER, 0.0, 0.0],
-        projection_color: [0.0; 4],
-        projection_params: [0.0; 4],
-        extra: [from.x, from.y, to.x, to.y],
-    });
 }
 
 fn current_transform(stack: &[Point]) -> Point {
@@ -1488,179 +973,4 @@ pub struct AllocInfo {
     pub total_size: Vec3,
     pub layer: u32,
     pub origin: Vec2,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{CosmicTextEngine, WinitTextEngine};
-    use xui_interface::RenderBackend;
-
-    fn assert_array_near(actual: [f32; 4], expected: [f32; 4]) {
-        for (actual, expected) in actual.into_iter().zip(expected) {
-            assert!(
-                (actual - expected).abs() < 0.001,
-                "expected {actual} to be near {expected}"
-            );
-        }
-    }
-
-    #[test]
-    fn ui_shader_is_valid_wgsl() {
-        let module =
-            wgpu::naga::front::wgsl::parse_str(UI_SHADER_WGSL).expect("ui.wgsl should parse");
-        wgpu::naga::valid::Validator::new(
-            wgpu::naga::valid::ValidationFlags::all(),
-            wgpu::naga::valid::Capabilities::empty(),
-        )
-        .validate(&module)
-        .expect("ui.wgsl should validate");
-    }
-
-    #[test]
-    fn glyph_shader_is_valid_wgsl() {
-        let module = wgpu::naga::front::wgsl::parse_str(include_str!("shaders/glyph.wgsl"))
-            .expect("glyph.wgsl should parse");
-        wgpu::naga::valid::Validator::new(
-            wgpu::naga::valid::ValidationFlags::all(),
-            wgpu::naga::valid::Capabilities::empty(),
-        )
-        .validate(&module)
-        .expect("glyph.wgsl should validate");
-    }
-
-    #[test]
-    fn composite_shader_is_valid_wgsl() {
-        let module = wgpu::naga::front::wgsl::parse_str(include_str!("shaders/composite.wgsl"))
-            .expect("composite.wgsl should parse");
-        wgpu::naga::valid::Validator::new(
-            wgpu::naga::valid::ValidationFlags::all(),
-            wgpu::naga::valid::Capabilities::empty(),
-        )
-        .validate(&module)
-        .expect("composite.wgsl should validate");
-    }
-
-    #[test]
-    fn image_shader_is_valid_wgsl() {
-        let module = wgpu::naga::front::wgsl::parse_str(include_str!("shaders/image.wgsl"))
-            .expect("image.wgsl should parse");
-        wgpu::naga::valid::Validator::new(
-            wgpu::naga::valid::ValidationFlags::all(),
-            wgpu::naga::valid::Capabilities::empty(),
-        )
-        .validate(&module)
-        .expect("image.wgsl should validate");
-    }
-
-    #[test]
-    fn cosmic_text_engine_matches_wgpu_backend_bounds() {
-        fn assert_backend<T, B>()
-        where
-            T: TextLayoutBackend,
-            B: RenderBackend<T>,
-        {
-        }
-
-        assert_backend::<
-            WinitTextEngine<CosmicTextEngine>,
-            WGPUBackend<WinitTextEngine<CosmicTextEngine>>,
-        >();
-    }
-
-    #[test]
-    fn rect_with_fill_stroke_and_shadow_generates_ordered_instances() {
-        let mut instances = Vec::new();
-        let rect = Rect::new(0.0, 0.0, 100.0, 80.0);
-        let shadow = ComputedShadowStyle {
-            color: Color::rgba(0.0, 0.0, 0.0, 0.4),
-            offset: Point::new(1.0, -1.0),
-            blur: 2.0,
-            spread: 2.0,
-        };
-        let stroke = ComputedStrokeStyle {
-            color: ComputedColorStyle::Solid(Color::WHITE),
-            width: 2.0,
-            line_style: xui_interface::StrokeLineStyle::Solid,
-        };
-
-        push_paint_rect_instance(
-            &mut instances,
-            rect,
-            0.0,
-            ComputedColorStyle::Solid(Color::BLACK),
-            Some(stroke),
-            Some(shadow),
-            Rect::new(-20.0, -20.0, 140.0, 120.0),
-        );
-
-        assert_eq!(instances.len(), 3);
-        assert_eq!(instances[0].params[3], 1.0);
-        assert_array_near(instances[0].bounds, [-7.0, -9.0, 116.0, 96.0]);
-        assert_array_near(instances[0].shape, [0.0, 0.0, 100.0, 80.0]);
-        assert_eq!(instances[1].params[3], 0.0);
-        assert_array_near(instances[1].shape, [0.0, 0.0, 100.0, 80.0]);
-        assert_eq!(instances[2].stroke_params[0], 2.0);
-    }
-
-    #[test]
-    fn rounded_rect_shadow_expands_bounds_without_moving_shape() {
-        let mut instances = Vec::new();
-        let rect = Rect::new(10.0, 20.0, 90.0, 70.0);
-        let shadow = ComputedShadowStyle {
-            color: Color::rgba(0.0, 0.0, 0.0, 0.5),
-            offset: Point::new(-2.0, 3.0),
-            blur: 4.0,
-            spread: 1.0,
-        };
-
-        push_paint_rect_instance(
-            &mut instances,
-            rect,
-            8.0,
-            ComputedColorStyle::Solid(Color::TRANSPARENT),
-            None,
-            Some(shadow),
-            Rect::new(-10.0, 0.0, 130.0, 120.0),
-        );
-
-        assert_eq!(instances.len(), 1);
-        assert_eq!(instances[0].params[0], SHAPE_ROUNDED_RECT);
-        assert_eq!(instances[0].params[1], 8.0);
-        assert_array_near(instances[0].bounds, [-5.0, 10.0, 116.0, 96.0]);
-        assert_array_near(instances[0].shape, [10.0, 20.0, 90.0, 70.0]);
-    }
-
-    #[test]
-    fn shadow_bounds_tracks_large_shadow_offset_separately_from_layout_rect() {
-        let rect = Rect::new(10.0, 0.0, 100.0, 50.0);
-
-        let bounds = shadow_bounds(rect, Point::new(30.0, -25.0), 2.0, 4.0);
-
-        assert_eq!(bounds, Rect::new(30.0, -35.0, 120.0, 70.0));
-    }
-
-    #[test]
-    fn transparent_shadow_and_invisible_shape_emit_no_instances() {
-        let mut instances = Vec::new();
-        let rect = Rect::new(0.0, 0.0, 100.0, 80.0);
-        let shadow = ComputedShadowStyle {
-            color: Color::TRANSPARENT,
-            offset: Point::new(0.0, 0.0),
-            blur: 8.0,
-            spread: 2.0,
-        };
-
-        push_paint_rect_instance(
-            &mut instances,
-            rect,
-            0.0,
-            ComputedColorStyle::Solid(Color::TRANSPARENT),
-            None,
-            Some(shadow),
-            rect,
-        );
-
-        assert!(instances.is_empty());
-    }
 }

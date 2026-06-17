@@ -4,10 +4,16 @@ use crate::core::Size;
 use crate::event_system::translator::EventTranslator;
 use crate::lanes::{event_lane, with_update_lane};
 use crate::render::RenderBackend;
-use crate::state::{HookContext, Scheduler};
+use crate::state::{AsyncDispatcher, AsyncMessage, HookContext, Scheduler};
 use crate::style::Theme;
 use crate::tree::UiArena;
+use std::future::Future;
+use std::sync::mpsc;
 use std::time::Duration;
+use tokio::runtime::{
+    Builder as TokioRuntimeBuilder, Handle as TokioHandle, Runtime as TokioRuntime,
+};
+use tokio::task::JoinHandle;
 use xui_interface::events::{EventResult, RawEvent};
 use xui_interface::render::Damage;
 use xui_interface::{DirtyFlags, TextMeasurer};
@@ -17,21 +23,42 @@ pub struct App {
     components: ComponentRuntime,
     event_translator: EventTranslator,
     size: Size<f32>,
+    tokio_runtime: TokioRuntime,
+    async_dispatcher: AsyncDispatcher,
+    async_receiver: mpsc::Receiver<AsyncMessage>,
 }
 
 impl App {
     pub fn new(root_component: fn(&mut HookContext<'_>) -> ElementDesc) -> Self {
         let arena = UiArena::new();
         let scheduler = Scheduler::default();
-        let components = ComponentRuntime::new(arena.root(), scheduler, root_component);
-        let app = Self {
+        let tokio_runtime = Self::create_tokio_runtime();
+        let (async_sender, async_receiver) = mpsc::channel();
+        let async_dispatcher = AsyncDispatcher::new(async_sender);
+        let components = ComponentRuntime::new_with_async(
+            arena.root(),
+            scheduler,
+            async_dispatcher.clone(),
+            Some(tokio_runtime.handle().clone()),
+            root_component,
+        );
+        Self {
             arena,
             components,
             event_translator: EventTranslator::default(),
             size: Size::<f32>::ZERO,
-        };
-        // app.rebuild_if_needed(measure);
-        app
+            tokio_runtime,
+            async_dispatcher,
+            async_receiver,
+        }
+    }
+
+    fn create_tokio_runtime() -> TokioRuntime {
+        TokioRuntimeBuilder::new_multi_thread()
+            .thread_name("xui-app-runtime")
+            .enable_all()
+            .build()
+            .expect("failed to create xui app tokio runtime")
     }
 
     pub fn arena(&self) -> &UiArena {
@@ -52,6 +79,35 @@ impl App {
 
     pub fn set_rebuild_budget(&mut self, budget: Duration) {
         self.components.set_budget(budget);
+    }
+
+    pub fn tokio_handle(&self) -> TokioHandle {
+        self.tokio_runtime.handle().clone()
+    }
+
+    pub fn spawn_background<F>(&self, future: F) -> JoinHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        self.tokio_runtime.spawn(future)
+    }
+
+    pub fn set_async_wake_callback(&self, wake: impl Fn() + Send + Sync + 'static) {
+        self.async_dispatcher.set_wake_callback(wake);
+    }
+
+    pub fn drain_async_messages(&mut self) -> bool {
+        let mut changed = false;
+        while let Ok(message) = self.async_receiver.try_recv() {
+            changed |= self.components.scheduler().enqueue_async_message(message);
+        }
+
+        if changed {
+            self.arena.mark_dirty(self.arena.root(), DirtyFlags::STATE);
+            self.arena.add_damage(Damage::full(self.size));
+        }
+        changed
     }
 
     pub fn resize(&mut self, size: Size<f32>) {
@@ -94,6 +150,8 @@ impl App {
         backend: &mut B,
         m: &mut T,
     ) -> Result<(), B::Error> {
+        self.drain_async_messages();
+
         if self.rebuild_slice_if_needed() {
             self.flush_node_lifecycle(backend, m);
         }

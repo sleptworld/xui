@@ -1,11 +1,9 @@
+use super::atlas::Atlas;
+use crate::wgpu::SCENE_FORMAT;
+use glam::{Vec2, Vec3};
 use wgpu::{BindGroup, BindGroupLayout, util::DeviceExt, wgc::device};
 use xui::{Color, Rect};
 use xui_interface::widget::PType;
-
-use crate::{
-    text::atlas::Atlas,
-    wgpu::{ SCENE_FORMAT, TextGlyphRecord},
-};
 
 const GLYPH_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
     0 => Float32x4,
@@ -17,7 +15,7 @@ const GLYPH_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct GlyphInstance {
+pub struct GlyphInstance {
     bounds: [f32; 4],
     layer: f32,
     padding: [f32; 3],
@@ -39,6 +37,18 @@ struct GlyphBuffer {
     buffer: wgpu::Buffer,
     size: u64,
     len: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextGlyphRecord {
+    pub ptype: PType,
+    pub screen_rect: Rect,
+    pub clip: Rect,
+    pub color: Color,
+    pub atlas_origin: Vec2,
+    pub atlas_layer: u32,
+    pub atlas_size: Vec3,
+    pub atlas_rect: Rect,
 }
 
 impl GlyphBuffer {
@@ -99,13 +109,15 @@ pub struct GlyphRender {
     subpixel_buffer: GlyphBuffer,
     mask_buffer: GlyphBuffer,
     color_buffer: GlyphBuffer,
+    // Atlas
+    atlas: Atlas,
 }
 
 impl GlyphRender {
     pub fn new(device: &wgpu::Device, atlas: &Atlas, common_tools: &BindGroupLayout) -> Self {
         let glyph_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("xui glyph shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/glyph.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/glyph.wgsl").into()),
         });
 
         let glyph_bind_group_layout =
@@ -203,6 +215,8 @@ impl GlyphRender {
         let color_buffer = GlyphBuffer::new::<GlyphInstance>(&device, 1000);
         let subpixel_buffer = GlyphBuffer::new::<GlyphInstance>(&device, 1000);
 
+        let atlas = Atlas::new(device);
+
         Self {
             subpixel_pipelines,
             mask_pipeline,
@@ -212,6 +226,7 @@ impl GlyphRender {
             subpixel_buffer,
             mask_buffer,
             color_buffer,
+            atlas,
         }
     }
 

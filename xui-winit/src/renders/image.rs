@@ -1,5 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
+use moka::sync::Cache;
+use wgpu::util::DeviceExt;
 use xui::{ImageFormat, ImageKey, ImageResource, Rect, Size};
 
 use crate::wgpu::{SCENE_FORMAT, WgpuBackendError};
@@ -10,12 +12,18 @@ const IMAGE_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_
     2 => Float32x4,
 ];
 
+const DEFAULT_IMAGE_TEXTURE_CACHE_CAPACITY: u64 = 256;
+
 pub struct ImageRender {
     image_pipeline: wgpu::RenderPipeline,
     image_bind_group_layout: wgpu::BindGroupLayout,
     image_sampler: wgpu::Sampler,
     image_resources: HashMap<ImageKey, RegisteredImageResource>,
-    image_textures: HashMap<ImageKey, CachedImageTexture>,
+    image_textures: Cache<ImageKey, Arc<CachedImageTexture>>,
+
+    instance_buffer: wgpu::Buffer,
+    instance_count: u32,
+    instance_size: usize,
 }
 
 #[repr(C)]
@@ -135,13 +143,57 @@ impl ImageRender {
             cache: None,
         });
 
+        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("instance_buffer"),
+            size: 0,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Self {
             image_pipeline,
             image_bind_group_layout,
             image_sampler,
             image_resources: HashMap::new(),
-            image_textures: HashMap::new(),
+            image_textures: Cache::new(DEFAULT_IMAGE_TEXTURE_CACHE_CAPACITY),
+            instance_buffer,
+            instance_count: 0,
+            instance_size: 0,
         }
+    }
+
+    pub fn deal_records(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        records: &[ImageResource],
+    ) -> Result<(), WgpuBackendError> {
+        if records.is_empty() {
+            self.instance_count = 0;
+            return Ok(());
+        }
+
+        let mut instances: Vec<ImageInstance> = vec![];
+
+        for record in records {}
+
+        let instance_size = std::mem::size_of::<ImageInstance>();
+        let instance_count = records.len() as u32;
+
+        if instance_count > self.instance_count {
+            self.instance_size = instance_size;
+            self.instance_count = instance_count;
+            self.instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("instance_buffer"),
+                contents: unsafe { bytemuck::cast_slice(&instances) },
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        }
+
+        Ok(())
+
+        // self.instance_size = instance_size;
+        // self.instance_count = instance_count;
     }
 
     pub fn set_image_resource(&mut self, resource: ImageResource) -> Result<(), WgpuBackendError> {
@@ -176,23 +228,87 @@ impl ImageRender {
 
     pub fn remove_image_resource(&mut self, key: &ImageKey) {
         self.image_resources.remove(key);
-        self.image_textures.remove(key);
+        self.image_textures.invalidate(key);
     }
 
     pub fn clear_image_resources(&mut self) {
         self.image_resources.clear();
-        self.image_textures.clear();
+        self.image_textures.invalidate_all();
+    }
+
+    pub fn prepare_textures(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        records: &[ImageDrawRecord],
+    ) -> Result<(), WgpuBackendError> {
+        for record in records {
+            let Some(registered) = self.image_resources.get(&record.key) else {
+                continue;
+            };
+
+            let cached = self.image_textures.get(&record.key);
+            if cached
+                .as_ref()
+                .is_some_and(|texture| texture.version == registered.version)
+            {
+                continue;
+            }
+
+            let texture = Arc::new(create_cached_image_texture(
+                device,
+                queue,
+                &self.image_bind_group_layout,
+                &self.image_sampler,
+                &registered.resource,
+                registered.version,
+            )?);
+            self.image_textures.insert(record.key.clone(), texture);
+        }
+
+        Ok(())
+    }
+
+    pub fn render(
+        &self,
+        device: &wgpu::Device,
+        pass: &mut wgpu::RenderPass<'_>,
+        tool_bind_group: &wgpu::BindGroup,
+        records: &[ImageDrawRecord],
+    ) {
+        let image_instances: Vec<ImageInstance> = records
+            .iter()
+            .map(|record| ImageInstance {
+                bounds: rect_to_array(record.rect),
+                clip: rect_to_array(record.clip),
+                params: [record.opacity, 0.0, 0.0, 0.0],
+            })
+            .collect();
+
+        if image_instances.is_empty() {
+            return;
+        }
+
+        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("xui image instances"),
+            contents: bytemuck::cast_slice(&image_instances),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        pass.set_pipeline(&self.image_pipeline);
+        pass.set_bind_group(0, tool_bind_group, &[]);
+        pass.set_vertex_buffer(0, instance_buffer.slice(..));
+        for (index, record) in records.iter().enumerate() {
+            let Some(texture) = self.image_textures.get(&record.key) else {
+                continue;
+            };
+            pass.set_bind_group(1, &texture.bind_group, &[]);
+            pass.draw(0..6, index as u32..index as u32 + 1);
+        }
     }
 }
 
 fn validate_image_resource(resource: &ImageResource) -> Result<(), WgpuBackendError> {
-    if resource.key.0.is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "image resource key cannot be empty",
-        )
-        .into());
-    }
     if resource.size.width == 0 || resource.size.height == 0 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -220,8 +336,77 @@ fn validate_image_resource(resource: &ImageResource) -> Result<(), WgpuBackendEr
     Ok(())
 }
 
-struct GpuImage {
-    texture: wgpu::Texture,
-    view: wgpu::TextureView,
-    bind_group: wgpu::BindGroup,
+fn create_cached_image_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    resource: &ImageResource,
+    version: u64,
+) -> Result<CachedImageTexture, WgpuBackendError> {
+    validate_image_resource(resource)?;
+
+    let format = match resource.format {
+        ImageFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("xui image texture"),
+        size: wgpu::Extent3d {
+            width: resource.size.width,
+            height: resource.size.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        resource.pixels.as_ref(),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(resource.size.width * 4),
+            rows_per_image: Some(resource.size.height),
+        },
+        wgpu::Extent3d {
+            width: resource.size.width,
+            height: resource.size.height,
+            depth_or_array_layers: 1,
+        },
+    );
+
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("xui image bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    });
+
+    Ok(CachedImageTexture {
+        _texture: texture,
+        _view: view,
+        bind_group,
+        version,
+    })
+}
+
+fn rect_to_array(rect: Rect) -> [f32; 4] {
+    [rect.x, rect.y, rect.width, rect.height]
 }

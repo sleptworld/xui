@@ -3,12 +3,15 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::device::WinitDeviceRegistry;
+// Default
+use crate::renders::text::CosmicTextEngine;
 use crate::translate::{translate_key, translate_mouse_button, translate_mouse_wheel};
+use crate::wgpu::WGPUBackend;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::error::{EventLoopError, OsError};
 use winit::event::{ElementState, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowAttributes, WindowId};
 use xui::App;
@@ -40,6 +43,11 @@ pub enum WinitRunError<E> {
     EventLoop(EventLoopError),
     Window(OsError),
     Render(E),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum WinitUserEvent {
+    Wake,
 }
 
 impl<E: fmt::Debug> fmt::Debug for WinitRunError<E> {
@@ -96,6 +104,7 @@ where
     window_error: Option<OsError>,
     render_error: Option<B::Error>,
     device_registry: WinitDeviceRegistry,
+    event_proxy: Option<EventLoopProxy<WinitUserEvent>>,
 }
 
 impl<B: RenderBackend<T>, T: TextMeasurer, F> WinitRunner<B, T, F>
@@ -119,6 +128,7 @@ where
             window_error: None,
             render_error: None,
             device_registry: WinitDeviceRegistry::default(),
+            event_proxy: None,
         }
     }
 
@@ -135,7 +145,8 @@ where
     }
 
     pub fn run(mut self) -> Result<(), WinitRunError<B::Error>> {
-        let event_loop = EventLoop::new()?;
+        let event_loop = EventLoop::<WinitUserEvent>::with_user_event().build()?;
+        self.event_proxy = Some(event_loop.create_proxy());
         event_loop.run_app(&mut self)?;
 
         if let Some(error) = self.window_error {
@@ -326,6 +337,20 @@ where
     }
 }
 
+pub fn start_runner(
+    app: App,
+    options: Option<WinitRunnerOptions>,
+) -> WinitRunner<
+    WGPUBackend,
+    CosmicTextEngine,
+    impl FnOnce(Arc<Window>) -> (App, CosmicTextEngine, WGPUBackend),
+> {
+    WinitRunner::with_backend_factory(
+        |w| (app, CosmicTextEngine::new(), WGPUBackend::new(w)),
+        options,
+    )
+}
+
 fn translate_modifiers(modifiers: ModifiersState) -> Modifiers {
     Modifiers {
         shift: modifiers.shift_key(),
@@ -335,7 +360,8 @@ fn translate_modifiers(modifiers: ModifiersState) -> Modifiers {
     }
 }
 
-impl<B: RenderBackend<T>, T: TextMeasurer, F> ApplicationHandler for WinitRunner<B, T, F>
+impl<B: RenderBackend<T>, T: TextMeasurer, F> ApplicationHandler<WinitUserEvent>
+    for WinitRunner<B, T, F>
 where
     F: FnOnce(Arc<Window>) -> (App, T, B),
 {
@@ -349,6 +375,11 @@ where
                 self.window_id = Some(window.id());
                 let window = Arc::new(window);
                 let (app, text, backend) = (self.f_init.take().unwrap())(window.clone());
+                if let Some(proxy) = self.event_proxy.clone() {
+                    app.set_async_wake_callback(move || {
+                        let _ = proxy.send_event(WinitUserEvent::Wake);
+                    });
+                }
                 self.runtime = Some(GuiRuntime::new(app, backend, text));
                 let size = window.inner_size();
                 let init_scale_factor = window.scale_factor();
@@ -406,6 +437,17 @@ where
             XuiControlFlow::Exit => event_loop.exit(),
             XuiControlFlow::Poll => self.request_redraw_if_dirty(),
             XuiControlFlow::Wait => {}
+        }
+    }
+
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: WinitUserEvent) {
+        match event {
+            WinitUserEvent::Wake => {
+                if let Some(runtime) = self.runtime.as_mut() {
+                    runtime.app_mut().drain_async_messages();
+                }
+                self.request_redraw_if_dirty();
+            }
         }
     }
 }

@@ -2,7 +2,6 @@ use crate::{
     Color, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, NodeId,
     NodeLifecycleEvent, Point, Rect, Size, TextProps, Translation,
 };
-use smallstr::SmallString;
 use std::{path::PathBuf, sync::Arc};
 
 pub trait Painter {
@@ -94,6 +93,16 @@ pub struct ImageTransform {
     pub rotate: ImageRotation,
 }
 
+impl Default for ImageTransform {
+    fn default() -> Self {
+        Self {
+            flip_x: false,
+            flip_y: false,
+            rotate: ImageRotation::Deg0,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum ImageRotation {
     Deg0,
@@ -112,10 +121,50 @@ pub struct ImageVariantKey {
     pub transform: ImageTransform,
 }
 
+impl Default for ImageVariantKey {
+    fn default() -> Self {
+        Self {
+            target_size_px: None,
+            scale_factor_bits: 1.0f32.to_bits(),
+            color_space: ColorSpace::Srgb,
+            sampling: Sampling::Linear,
+            transform: ImageTransform::default(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ImageKey {
     pub source: ImageSourceKey,
     pub variant: ImageVariantKey,
+}
+
+impl Default for ImageKey {
+    fn default() -> Self {
+        Self {
+            source: ImageSourceKey::UserProvided(0),
+            variant: ImageVariantKey::default(),
+        }
+    }
+}
+
+impl From<&str> for ImageKey {
+    fn from(value: &str) -> Self {
+        if value.is_empty() {
+            return Self::default();
+        }
+
+        Self {
+            source: ImageSourceKey::AssetPath(PathBuf::from(value)),
+            variant: ImageVariantKey::default(),
+        }
+    }
+}
+
+impl From<String> for ImageKey {
+    fn from(value: String) -> Self {
+        Self::from(value.as_str())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

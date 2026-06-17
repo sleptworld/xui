@@ -5,7 +5,7 @@ use crate::fiber::{
 };
 use crate::lanes::{Lanes, NO_LANES, current_update_lane, includes_some_lane, should_interrupt};
 use crate::layout::{computed_style_for_widget, taffy_style_for_widget};
-use crate::state::{HookContext, HookStorage, Scheduler};
+use crate::state::{AsyncDispatcher, HookContext, HookStorage, Scheduler};
 use crate::style::{ComputedStyle, Theme};
 use crate::tree::UiArena;
 use crate::widgets::{RootComponentRender, WidgetI};
@@ -16,6 +16,7 @@ use std::fmt;
 use std::ops::RangeBounds;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use taffy as tf;
+use tokio::runtime::Handle as TokioHandle;
 use xui_interface::{DirtyFlags, NodeId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -319,6 +320,8 @@ pub struct ComponentRuntime {
     root_render: RootComponentRender,
     work_in_progress: Option<WorkInProgress>,
     scheduler: Scheduler,
+    async_dispatcher: AsyncDispatcher,
+    tokio_handle: Option<TokioHandle>,
     hooks: FxHashMap<FiberId, HookStorage>,
     root_widget: NodeId,
     budget: Duration,
@@ -329,6 +332,22 @@ impl ComponentRuntime {
     pub fn new(
         root_widget: NodeId,
         scheduler: Scheduler,
+        root_render: fn(&mut HookContext) -> ElementDesc,
+    ) -> Self {
+        Self::new_with_async(
+            root_widget,
+            scheduler,
+            AsyncDispatcher::noop(),
+            None,
+            root_render,
+        )
+    }
+
+    pub(crate) fn new_with_async(
+        root_widget: NodeId,
+        scheduler: Scheduler,
+        async_dispatcher: AsyncDispatcher,
+        tokio_handle: Option<TokioHandle>,
         root_render: fn(&mut HookContext) -> ElementDesc,
     ) -> Self {
         let arena = FiberArena::new();
@@ -343,6 +362,8 @@ impl ComponentRuntime {
             root_widget,
             work_in_progress: None,
             scheduler,
+            async_dispatcher,
+            tokio_handle,
             hooks: FxHashMap::default(),
             budget: Duration::from_millis(4),
             wip_nodes: WipArena::new(),
@@ -494,7 +515,14 @@ impl ComponentRuntime {
         macro_rules! cx {
             ($id: ident) => {{
                 let storage = self.hooks.entry($id).or_default();
-                let cx = HookContext::new(storage, $id, self.scheduler.clone(), render_lanes);
+                let cx = HookContext::new_with_async(
+                    storage,
+                    $id,
+                    self.scheduler.clone(),
+                    render_lanes,
+                    self.async_dispatcher.clone(),
+                    self.tokio_handle.clone(),
+                );
                 cx
             }};
         }

@@ -7,7 +7,7 @@ use cosmic_text::SwashContent;
 pub use cosmic::CosmicTextEngine;
 use xui_interface::widget::PType;
 
-pub(crate) fn rgba_bitmap_data(content: SwashContent, data: &[u8]) -> (Vec<u8>, PType) {
+pub(super) fn rgba_bitmap_data(content: SwashContent, data: &[u8]) -> (Vec<u8>, PType) {
     match content {
         SwashContent::Mask => {
             let mut rgba = Vec::with_capacity(data.len() * 4);

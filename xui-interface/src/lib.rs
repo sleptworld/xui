@@ -1,6 +1,7 @@
 pub mod core;
 pub mod dirty;
 pub mod events;
+pub mod image;
 pub mod render;
 pub mod runtime;
 pub mod style;

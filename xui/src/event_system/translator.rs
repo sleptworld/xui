@@ -2,8 +2,7 @@ use std::time::{Duration, Instant};
 
 use rustc_hash::FxHashMap;
 use xui_interface::{
-    DirtyFlags, InputKey, NodeId, Point, PointerButton, Translation, WidgetType,
-    XuiPointerId,
+    DirtyFlags, InputKey, NodeId, Point, PointerButton, Translation, WidgetType, XuiPointerId,
 };
 
 use crate::tree::UiArena;

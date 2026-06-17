@@ -2,7 +2,7 @@ mod components;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 use xui::prelude::*;
-use xui_winit::{CosmicTextEngine, WGPUBackend, WinitRunner, WinitRunnerOptions, WinitTextEngine};
+use xui_winit::{WGPUBackend, WinitRunner, WinitRunnerOptions, start_runner};
 
 use xui_components::button::*;
 
@@ -103,19 +103,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_inner_size(PhysicalSize::new(800, 600)),
         ..Default::default()
     };
-
-    WinitRunner::with_backend_factory(
-        |window| {
-            (
-                app,
-                WinitTextEngine::<CosmicTextEngine>::new(),
-                WGPUBackend::new(window),
-            )
-        },
-        Some(options),
-    )
-    .run()
-    .unwrap();
-
+    start_runner(app, Some(options)).run().unwrap();
     Ok(())
 }

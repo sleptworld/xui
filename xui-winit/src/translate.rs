@@ -129,7 +129,6 @@ pub fn translate_window_event(
         WindowEvent::RedrawRequested => vec![RuntimeEvent::RedrawRequested],
         _ => Vec::new(),
     }
-
 }
 
 pub fn translate_key_event(event: &KeyEvent) -> Vec<RuntimeEvent> {
