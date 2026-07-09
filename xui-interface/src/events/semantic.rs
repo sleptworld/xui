@@ -1,7 +1,6 @@
 use super::raw::{
     ContextMenuTrigger, Modifiers, PointerButton, PointerSnapshot, RawEvent, ScrollDelta,
 };
-use crate::EventTrigger;
 use crate::core::{Point, Translation};
 use crate::widget::NodeId;
 use std::time::{Duration, Instant};
@@ -161,34 +160,6 @@ impl SemanticEvent {
             SemanticEvent::DragCancel(_) => PropagationMode::CaptureTargetBubble,
 
             SemanticEvent::Scroll(_) => PropagationMode::CaptureTargetBubble,
-        }
-    }
-
-    pub fn trigger(&self) -> Option<EventTrigger> {
-        match self {
-            SemanticEvent::HoverEnter(_) => Some(EventTrigger::OnHover),
-            SemanticEvent::HoverLeave(_) => Some(EventTrigger::OnHoverEnd),
-            SemanticEvent::HoverChange(_) => Some(EventTrigger::OnHover),
-
-            SemanticEvent::PressStart(_) => Some(EventTrigger::OnPress),
-            SemanticEvent::PressEnd(_) => Some(EventTrigger::OnPressEnd),
-
-            SemanticEvent::Click(_) => Some(EventTrigger::OnClick),
-            // SemanticEvent::DoubleClick(_) => Some(EventTrigger::OnDoubleClick),
-            // SemanticEvent::ContextMenu(_) => Some(EventTrigger::OnContextMenu),
-            SemanticEvent::Focus(_) => Some(EventTrigger::OnFocus),
-            SemanticEvent::Blur(_) => Some(EventTrigger::OnBlur),
-
-            // SemanticEvent::DragStart(_) => Some(EventTrigger::OnDrag),
-            // SemanticEvent::DragMove(_) => Some(EventTrigger::OnDrag),
-            // SemanticEvent::DragEnd(_) => Some(EventTrigger::OnDragEnd),
-            // SemanticEvent::DragCancel(_) => Some(EventTrigger::OnDragEnd),
-            SemanticEvent::Scroll(_) => Some(EventTrigger::OnScroll),
-
-            SemanticEvent::FocusIn(_) => Some(EventTrigger::OnFocus),
-            SemanticEvent::FocusOut(_) => Some(EventTrigger::OnBlur),
-
-            _ => None,
         }
     }
 

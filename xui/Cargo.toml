@@ -9,10 +9,15 @@ slotmap = "1.1.1"
 smallstr = "0.3.1"
 smallvec = "1.15.1"
 taffy = "0.10.1"
-tokio = { version = "1.48.0", features = ["rt-multi-thread"] }
 xui-animation = { path = "../xui-animation" }
+xui-assets = { path = "../xui-assets" }
 xui-interface = { path = "../xui-interface" }
 xui-macros = { path = "../xui-macros" }
 xui-text = { path = "../xui-text" }
 slot = { path = "../slot" }
 bitflags = "2.13.0"
+ropey = "1.6.1"
+zune-core = { workspace = true }
+zune-image = { workspace = true }
+tokio.workspace = true
+num-traits = "0.2.19"

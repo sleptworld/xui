@@ -1,6 +1,6 @@
 use etagere::{Allocation, AllocatorOptions, BucketedAtlasAllocator, Size};
 use glam::{Vec2, Vec3};
-use xui_interface::GlyphBitmap;
+use xui_interface::RasterizedGlyph;
 
 use crate::wgpu::AllocInfo;
 
@@ -69,7 +69,7 @@ impl Atlas {
     pub fn handle_allocation(
         &mut self,
         queue: &wgpu::Queue,
-        bitmap: &GlyphBitmap,
+        bitmap: &RasterizedGlyph,
     ) -> Result<AllocInfo, crate::error::Error> {
         if let Some(alloc) = self
             .allocator
@@ -109,7 +109,12 @@ impl Atlas {
         ))
     }
 
-    fn write_glyph_to_texture(&self, queue: &wgpu::Queue, bitmap: &GlyphBitmap, alloc: Allocation) {
+    fn write_glyph_to_texture(
+        &self,
+        queue: &wgpu::Queue,
+        bitmap: &RasterizedGlyph,
+        alloc: Allocation,
+    ) {
         let layer = self.current_layer;
 
         queue.write_texture(
@@ -123,7 +128,7 @@ impl Atlas {
                 },
                 aspect: wgpu::TextureAspect::All,
             },
-            bitmap.data.as_slice(),
+            bitmap.pixels.as_ref(),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(bitmap.width * 4),

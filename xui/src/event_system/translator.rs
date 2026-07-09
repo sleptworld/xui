@@ -2,7 +2,8 @@ use std::time::{Duration, Instant};
 
 use rustc_hash::FxHashMap;
 use xui_interface::{
-    DirtyFlags, InputKey, NodeId, Point, PointerButton, Translation, WidgetType, XuiPointerId,
+    InputKey, NodeId, Point, PointerButton, Translation, WidgetType, WidgetUpdateFlags,
+    XuiPointerId,
 };
 
 use crate::tree::UiArena;
@@ -1186,7 +1187,8 @@ fn is_focusable(arena: &UiArena, node_id: NodeId) -> bool {
         return false;
     };
 
-    node.node_type == WidgetType::Button || node.event_callbacks.has_focus_callbacks()
+    matches!(node.node_type, WidgetType::Button | WidgetType::TextInput)
+        || node.event_callbacks.has_focus_callbacks()
 }
 
 fn is_draggable(arena: &UiArena, node_id: NodeId) -> bool {
@@ -1258,7 +1260,7 @@ fn consume_scroll_delta(
     delta: Translation,
 ) -> Option<(Translation, Translation, Translation)> {
     let node = arena.node(node_id)?;
-    let direction = node.computed_style.scroll.direction;
+    let direction = node.target_style.scroll.direction;
     if !direction.is_scrollable() {
         return None;
     }
@@ -1295,7 +1297,7 @@ fn consume_scroll_delta(
         .node_mut(node_id)
         .expect("node was checked before scroll mutation");
     node.scroll_offset = offset_after;
-    arena.mark_dirty(node_id, DirtyFlags::PAINT);
+    arena.mark_dirty(node_id, WidgetUpdateFlags::PAINT_OUTPUT);
 
     Some((offset_before.into(), offset_after.into(), consumed))
 }

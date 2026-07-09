@@ -1,4 +1,4 @@
-use slotmap::{Key as SlotMapKey, SlotMap, new_key_type};
+use slotmap::{new_key_type, Key as SlotMapKey, SlotMap};
 use xui_interface::{EventContext, EventPhase, EventResult};
 
 use xui_interface::events::semantic::{

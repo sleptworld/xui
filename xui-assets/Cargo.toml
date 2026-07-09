@@ -1,0 +1,16 @@
+[package]
+name = "xui-assets"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+blake3 = { workspace = true }
+camino = { workspace = true }
+ignore = "0.4"
+moka = { version = "0.12", features = ["sync"] }
+thiserror = { workspace = true }
+xui-pak = { path = "../xui-pak" }
+
+[dev-dependencies]
+tempfile = "3"
+xui-pak-build = { path = "../xui-pak-build" }

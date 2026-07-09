@@ -23,6 +23,8 @@ struct ImageInstance {
     @location(0) bounds: vec4<f32>,
     @location(1) clip: vec4<f32>,
     @location(2) params: vec4<f32>,
+    @location(3) tile: vec4<f32>,
+    @location(4) repeat: vec4<f32>,
 }
 
 struct VertexOutput {
@@ -41,7 +43,28 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32, instance: ImageInstance) ->
 
     var output: VertexOutput;
     output.position = vec4<f32>(ndc, 0.0, 1.0);
-    output.uv = corner;
+    var uv = (current_position - instance.tile.xy) / instance.tile.zw;
+    if instance.repeat.x > 0.5 {
+        uv.x = fract(uv.x);
+    }
+    if instance.repeat.y > 0.5 {
+        uv.y = fract(uv.y);
+    }
+    if instance.params.y > 0.5 {
+        uv.x = 1.0 - uv.x;
+    }
+    if instance.params.z > 0.5 {
+        uv.y = 1.0 - uv.y;
+    }
+    let rotation = u32(instance.params.w + 0.5) % 4u;
+    if rotation == 1u {
+        uv = vec2<f32>(uv.y, 1.0 - uv.x);
+    } else if rotation == 2u {
+        uv = vec2<f32>(1.0 - uv.x, 1.0 - uv.y);
+    } else if rotation == 3u {
+        uv = vec2<f32>(1.0 - uv.y, uv.x);
+    }
+    output.uv = uv;
     output.logical_position = current_position;
     output.clip = instance.clip;
     output.opacity = instance.params.x;

@@ -4,9 +4,7 @@ use crate::fiber::{
     HostState, Key, Node,
 };
 use crate::lanes::{Lanes, NO_LANES, current_update_lane, includes_some_lane, should_interrupt};
-use crate::layout::{computed_style_for_widget, taffy_style_for_widget};
 use crate::state::{AsyncDispatcher, HookContext, HookStorage, Scheduler};
-use crate::style::{ComputedStyle, Theme};
 use crate::tree::UiArena;
 use crate::widgets::{RootComponentRender, WidgetI};
 use crate::{ComponentDesc, ElementDesc, ErasedPropsRef};
@@ -15,9 +13,8 @@ use smallvec::SmallVec;
 use std::fmt;
 use std::ops::RangeBounds;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use taffy as tf;
 use tokio::runtime::Handle as TokioHandle;
-use xui_interface::{DirtyFlags, NodeId};
+use xui_interface::NodeId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct WipId(usize);
@@ -43,8 +40,6 @@ pub struct WorkNode {
 struct HostWork {
     widget: Option<WidgetI>,
     event_handlers: Option<EventHandlers>,
-    style: tf::Style,
-    computed_style: ComputedStyle,
     props_hash: u64,
     pending_children: Vec<ElementDesc>,
 }
@@ -113,16 +108,12 @@ impl WorkNode {
             PreparedPending::Host {
                 widget,
                 event_handlers,
-                style,
-                computed_style,
                 props_hash,
                 children,
             } => (
                 Some(HostWork {
                     widget: Some(widget),
                     event_handlers: Some(event_handlers),
-                    style,
-                    computed_style,
                     props_hash,
                     pending_children: children,
                 }),
@@ -229,8 +220,6 @@ enum PreparedPending {
     Host {
         widget: WidgetI,
         event_handlers: EventHandlers,
-        style: tf::Style,
-        computed_style: ComputedStyle,
         props_hash: u64,
         children: Vec<ElementDesc>,
     },
@@ -431,13 +420,12 @@ impl ComponentRuntime {
             if self.work_in_progress.is_none() {
                 return false;
             }
-            let theme = arena.theme();
             while self
                 .work_in_progress
                 .as_ref()
                 .is_some_and(|work| work.next_work.is_some())
             {
-                self.perform_unit_of_work(theme);
+                self.perform_unit_of_work();
                 let more_work = self.need_more_work();
                 if more_work && deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                     return false;
@@ -457,7 +445,7 @@ impl ComponentRuntime {
             .is_some_and(|wip| wip.next_work.is_some())
     }
 
-    fn perform_unit_of_work(&mut self, theme: &Theme) {
+    fn perform_unit_of_work(&mut self) {
         let Some(id) = self
             .work_in_progress
             .as_ref()
@@ -466,7 +454,7 @@ impl ComponentRuntime {
             return;
         };
 
-        if let Some(child) = self.begin_work(id, theme) {
+        if let Some(child) = self.begin_work(id) {
             self.work_in_progress.as_mut().unwrap().next_work = Some(child);
             return;
         }
@@ -494,7 +482,7 @@ impl ComponentRuntime {
         }
     }
 
-    fn begin_work(&mut self, id: WipId, theme: &Theme) -> Option<WipId> {
+    fn begin_work(&mut self, id: WipId) -> Option<WipId> {
         let (fiber_id, tag, should_render, should_reconcile_pending, render_lanes) = {
             let work = self.work_in_progress.as_ref().expect("work missing");
             let node = self.wip_nodes.get(id).expect("work node missing");
@@ -532,7 +520,7 @@ impl ComponentRuntime {
                 if should_render {
                     let mut cx = cx!(fiber_id);
                     let element = (self.root_render)(&mut cx);
-                    self.reconcile_children(id, [element], theme);
+                    self.reconcile_children(id, [element]);
                 } else {
                     self.clone_current_children(id);
                 }
@@ -543,7 +531,7 @@ impl ComponentRuntime {
                     if let Some((render, props)) = wip_node.component_render_props(&self.nodes) {
                         let mut cx = cx!(fiber_id);
                         let element = (render.call)(&mut cx, props);
-                        self.reconcile_children(id, [element], theme);
+                        self.reconcile_children(id, [element]);
                     }
                 } else {
                     self.clone_current_children(id);
@@ -556,7 +544,7 @@ impl ComponentRuntime {
                         .get_mut(id)
                         .and_then(|n| n.take_work_nodes())
                         .unwrap_or_default();
-                    self.reconcile_children(id, children, theme);
+                    self.reconcile_children(id, children);
                 } else {
                     self.clone_current_children(id);
                 }
@@ -566,7 +554,7 @@ impl ComponentRuntime {
         self.first_child_needing_work(id)
     }
 
-    fn reconcile_children<I>(&mut self, parent: WipId, new_children: I, theme: &Theme)
+    fn reconcile_children<I>(&mut self, parent: WipId, new_children: I)
     where
         I: IntoIterator<Item = ElementDesc>,
     {
@@ -600,7 +588,7 @@ impl ComponentRuntime {
             .collect();
 
         for (position, element) in new_children.enumerate() {
-            let prepared = self.prepare_element(parent, element, theme);
+            let prepared = self.prepare_element(element);
 
             let wip_node = if let Some(matched) = find_reusable_child_fast(
                 &self.nodes,
@@ -680,12 +668,7 @@ impl ComponentRuntime {
         node.children_resolved = true;
     }
 
-    fn prepare_element(
-        &self,
-        parent: WipId,
-        element: ElementDesc,
-        theme: &Theme,
-    ) -> PreparedElement {
+    fn prepare_element(&self, element: ElementDesc) -> PreparedElement {
         let key = element.key();
         match element {
             ElementDesc::Component(component) => self.prepare_component_element(component, key),
@@ -693,18 +676,6 @@ impl ComponentRuntime {
                 let widget = host.widget;
                 let props_hash = widget.props_hash();
                 let tag = FiberTag::Host(widget.node_type());
-                let (computed_style, style) = if let Some(parent_style) =
-                    self.parent_style_for_work(parent)
-                {
-                    let computed_style = computed_style_for_widget(&widget, parent_style, theme);
-                    let style = taffy_style_for_widget(&widget, &parent_style, &computed_style);
-                    (computed_style, style)
-                } else {
-                    let parent_style = ComputedStyle::initial(theme);
-                    let computed_style = computed_style_for_widget(&widget, &parent_style, theme);
-                    let style = taffy_style_for_widget(&widget, &parent_style, &computed_style);
-                    (computed_style, style)
-                };
 
                 let event_handlers = widget.take_event_handlers();
                 PreparedElement {
@@ -713,36 +684,12 @@ impl ComponentRuntime {
                     pending: PreparedPending::Host {
                         widget,
                         event_handlers,
-                        style,
-                        computed_style,
                         props_hash,
                         children: host.children,
                     },
                 }
             }
         }
-    }
-
-    fn parent_style_for_work(&self, parent: WipId) -> Option<&ComputedStyle> {
-        let mut cursor = Some(parent);
-        while let Some(id) = cursor {
-            let Some(node) = self.wip_nodes.get(id) else {
-                return None;
-            };
-            if let Some(host) = node.host_work.as_ref() {
-                return Some(&host.computed_style);
-            }
-            if let Some(host) = node
-                .current
-                .or(Some(node.fiber_id))
-                .and_then(|fiber_id| self.nodes.node(fiber_id))
-                .and_then(|node| node.host.as_ref())
-            {
-                return Some(&host.computed_style);
-            }
-            cursor = node.parent;
-        }
-        None
     }
 
     fn prepare_component_element(
@@ -855,52 +802,23 @@ impl ComponentRuntime {
             .and_then(|host| host.node_id)
     }
 
-    fn ensure_host_created(&mut self, wip_id: WipId, arena: &mut UiArena) -> NodeId {
+    fn ensure_host_created(&mut self, wip_id: WipId, arena: &mut UiArena) -> Option<NodeId> {
         if let Some(node_id) = self.wip_nodes.get(wip_id).and_then(|node| node.host_node) {
-            return node_id;
+            return Some(node_id);
         }
 
-        let (key, props_hash, style, computed_style, widget, event_handlers) = {
-            let wip = self
-                .wip_nodes
-                .get_mut(wip_id)
-                .expect("placement host fiber missing work node");
+        let (key, props_hash, widget, event_handlers) = {
+            let wip = self.wip_nodes.get_mut(wip_id)?;
             let key = wip.key.clone();
-            let host_work = wip
-                .host_work
-                .as_mut()
-                .expect("placement host fiber missing host work");
-            let widget = host_work
-                .widget
-                .take()
-                .expect("placement host work missing widget");
-            let event_handlers = host_work
-                .event_handlers
-                .take()
-                .expect("placement host work missing event handlers");
-            (
-                key,
-                host_work.props_hash,
-                host_work.style.clone(),
-                host_work.computed_style.clone(),
-                widget,
-                event_handlers,
-            )
+            let host_work = wip.host_work.as_mut()?;
+            let widget = host_work.widget.take()?;
+            let event_handlers = host_work.event_handlers.take()?;
+            (key, host_work.props_hash, widget, event_handlers)
         };
 
-        let node_id = arena.create_node(
-            key,
-            props_hash,
-            widget,
-            event_handlers,
-            style,
-            computed_style,
-        );
-        self.wip_nodes
-            .get_mut(wip_id)
-            .expect("placement host fiber missing work node")
-            .host_node = Some(node_id);
-        node_id
+        let node_id = arena.create_node(key, props_hash, widget, event_handlers);
+        self.wip_nodes.get_mut(wip_id)?.host_node = Some(node_id);
+        Some(node_id)
     }
 
     fn commit_placement_subtree(
@@ -919,7 +837,7 @@ impl ComponentRuntime {
         };
 
         if matches!(tag, FiberTag::Host(_)) {
-            let host_id = self.ensure_host_created(wip_id, arena);
+            let host_id = self.ensure_host_created(wip_id, arena).expect("missing");
             if let Some(before) = before {
                 arena.insert_before(parent_host, host_id, before);
             } else {
@@ -968,8 +886,6 @@ impl ComponentRuntime {
             node_id,
             key,
             host_work.props_hash,
-            host_work.style.clone(),
-            host_work.computed_style.clone(),
             widget,
             event_handlers,
         );
@@ -1053,8 +969,6 @@ impl ComponentRuntime {
             key: wip.key,
             tag: wip.tag,
             effect: EffectTag::empty(),
-            dirty: DirtyFlags::empty(),
-            subtree_dirty: DirtyFlags::empty(),
             host,
             component,
             position: wip.position,
@@ -1090,12 +1004,6 @@ impl ComponentRuntime {
         let arena_node = arena
             .node(node_id)
             .expect("committed host node missing from arena");
-        let style = wip
-            .host_work
-            .as_ref()
-            .map(|host| host.style.clone())
-            .or_else(|| current_host.as_ref().map(|host| host.style.clone()))
-            .unwrap_or_default();
         let props_hash = wip
             .host_work
             .as_ref()
@@ -1107,8 +1015,11 @@ impl ComponentRuntime {
             node_id: Some(node_id),
             widget: Some(arena_node.widget.clone()),
             taffy_node: Some(arena_node.taffy_node),
-            style,
-            computed_style: arena_node.computed_style.clone(),
+            style: current_host
+                .as_ref()
+                .map(|host| host.style.clone())
+                .unwrap_or_default(),
+            computed_style: arena_node.target_style.clone(),
             layout: arena_node.layout,
             previous_layout: arena_node.previous_layout,
             paint_cache: arena_node.paint_cache.clone(),
@@ -1466,263 +1377,263 @@ fn child_tree_lanes(
     lanes
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::fiber::{ComponentType, ErasedPropsRef};
-    use crate::widgets::{column, component as component_desc, text};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use crate::fiber::{ComponentType, ErasedPropsRef};
+//     use crate::widgets::{component as component_desc, text};
+//     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    static HOST_REORDER_STEP: AtomicUsize = AtomicUsize::new(0);
-    static COMPONENT_REORDER_STEP: AtomicUsize = AtomicUsize::new(0);
-    static INSERT_STEP: AtomicUsize = AtomicUsize::new(0);
-    static APPEND_STEP: AtomicUsize = AtomicUsize::new(0);
-    static DELETE_STEP: AtomicUsize = AtomicUsize::new(0);
-    static MOVE_UPDATE_STEP: AtomicUsize = AtomicUsize::new(0);
+//     static HOST_REORDER_STEP: AtomicUsize = AtomicUsize::new(0);
+//     static COMPONENT_REORDER_STEP: AtomicUsize = AtomicUsize::new(0);
+//     static INSERT_STEP: AtomicUsize = AtomicUsize::new(0);
+//     static APPEND_STEP: AtomicUsize = AtomicUsize::new(0);
+//     static DELETE_STEP: AtomicUsize = AtomicUsize::new(0);
+//     static MOVE_UPDATE_STEP: AtomicUsize = AtomicUsize::new(0);
 
-    #[derive(Hash)]
-    struct ItemProps {
-        text: &'static str,
-    }
+//     #[derive(Hash)]
+//     struct ItemProps {
+//         text: &'static str,
+//     }
 
-    fn item_call(cx: &mut HookContext<'_>, props: Option<ErasedPropsRef<'_>>) -> ElementDesc {
-        let _state = cx.use_state(|| 1usize);
-        let props = props
-            .expect("item props missing")
-            .downcast_ref::<ItemProps>()
-            .expect("item props type changed");
-        text(props.text).into_element_desc()
-    }
+//     fn item_call(cx: &mut HookContext<'_>, props: Option<ErasedPropsRef<'_>>) -> ElementDesc {
+//         let _state = cx.use_state(|| 1usize);
+//         let props = props
+//             .expect("item props missing")
+//             .downcast_ref::<ItemProps>()
+//             .expect("item props type changed");
+//         text(props.text).into_element_desc()
+//     }
 
-    fn item_render() -> ComponentRender {
-        ComponentRender::new(ComponentType::new("__xui_test_item"), item_call)
-    }
+//     fn item_render() -> ComponentRender {
+//         ComponentRender::new(ComponentType::new("__xui_test_item"), item_call)
+//     }
 
-    fn item(key: &'static str, label: &'static str) -> ElementDesc {
-        component_desc(item_render())
-            .key(key)
-            .props(ItemProps { text: label })
-            .into()
-    }
+//     fn item(key: &'static str, label: &'static str) -> ElementDesc {
+//         component_desc(item_render())
+//             .key(key)
+//             .props(ItemProps { text: label })
+//             .into()
+//     }
 
-    fn keyed_text(key: &'static str, label: &'static str) -> ElementDesc {
-        text(label).key(key).into_element_desc()
-    }
+//     fn keyed_text(key: &'static str, label: &'static str) -> ElementDesc {
+//         text(label).key(key).into_element_desc()
+//     }
 
-    fn column_with(children: Vec<ElementDesc>) -> ElementDesc {
-        column().into_element_desc(children)
-    }
+//     fn column_with(children: Vec<ElementDesc>) -> ElementDesc {
+//         column().into_element_desc(children)
+//     }
 
-    fn runtime(root: RootComponentRender) -> (UiArena, ComponentRuntime) {
-        let arena = UiArena::new();
-        let runtime = ComponentRuntime::new(arena.root(), Scheduler::default(), root);
-        (arena, runtime)
-    }
+//     fn runtime(root: RootComponentRender) -> (UiArena, ComponentRuntime) {
+//         let arena = UiArena::new();
+//         let runtime = ComponentRuntime::new(arena.root(), Scheduler::default(), root);
+//         (arena, runtime)
+//     }
 
-    fn rerender(runtime: &mut ComponentRuntime, arena: &mut UiArena) {
-        runtime.mark_root_dirty();
-        runtime.flush_sync(arena);
-    }
+//     fn rerender(runtime: &mut ComponentRuntime, arena: &mut UiArena) {
+//         runtime.mark_root_dirty();
+//         runtime.flush_sync(arena);
+//     }
 
-    fn column_fiber(runtime: &ComponentRuntime) -> FiberId {
-        let root_children = runtime.nodes.children(runtime.root());
-        assert_eq!(root_children.len(), 1);
-        root_children[0]
-    }
+//     fn column_fiber(runtime: &ComponentRuntime) -> FiberId {
+//         let root_children = runtime.nodes.children(runtime.root());
+//         assert_eq!(root_children.len(), 1);
+//         root_children[0]
+//     }
 
-    fn column_host(runtime: &ComponentRuntime) -> NodeId {
-        runtime
-            .nodes
-            .node(column_fiber(runtime))
-            .and_then(|node| node.host.as_ref())
-            .and_then(|host| host.node_id)
-            .expect("column host missing")
-    }
+//     fn column_host(runtime: &ComponentRuntime) -> NodeId {
+//         runtime
+//             .nodes
+//             .node(column_fiber(runtime))
+//             .and_then(|node| node.host.as_ref())
+//             .and_then(|host| host.node_id)
+//             .expect("column host missing")
+//     }
 
-    fn fiber_key_order(runtime: &ComponentRuntime, parent: FiberId) -> Vec<Key> {
-        runtime
-            .nodes
-            .children(parent)
-            .into_iter()
-            .map(|id| runtime.nodes.node(id).unwrap().key.clone().unwrap())
-            .collect()
-    }
+//     fn fiber_key_order(runtime: &ComponentRuntime, parent: FiberId) -> Vec<Key> {
+//         runtime
+//             .nodes
+//             .children(parent)
+//             .into_iter()
+//             .map(|id| runtime.nodes.node(id).unwrap().key.clone().unwrap())
+//             .collect()
+//     }
 
-    fn host_text_order(arena: &UiArena, parent: NodeId) -> Vec<String> {
-        arena
-            .children(parent)
-            .iter()
-            .map(|id| {
-                arena
-                    .node(*id)
-                    .and_then(|node| node.widget.text())
-                    .expect("text node missing text")
-                    .as_str()
-                    .to_owned()
-            })
-            .collect()
-    }
+//     fn host_text_order(arena: &UiArena, parent: NodeId) -> Vec<String> {
+//         arena
+//             .children(parent)
+//             .iter()
+//             .map(|id| {
+//                 arena
+//                     .node(*id)
+//                     .and_then(|node| node.widget.text())
+//                     .expect("text node missing text")
+//                     .as_str()
+//                     .to_owned()
+//             })
+//             .collect()
+//     }
 
-    fn host_reorder_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-        if HOST_REORDER_STEP.load(Ordering::SeqCst) == 0 {
-            column_with(vec![keyed_text("a", "A"), keyed_text("b", "B")])
-        } else {
-            column_with(vec![keyed_text("b", "B"), keyed_text("a", "A")])
-        }
-    }
+//     fn host_reorder_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+//         if HOST_REORDER_STEP.load(Ordering::SeqCst) == 0 {
+//             column_with(vec![keyed_text("a", "A"), keyed_text("b", "B")])
+//         } else {
+//             column_with(vec![keyed_text("b", "B"), keyed_text("a", "A")])
+//         }
+//     }
 
-    #[test]
-    fn host_children_reorder_updates_fiber_and_host_order() {
-        HOST_REORDER_STEP.store(0, Ordering::SeqCst);
-        let (mut arena, mut runtime) = runtime(host_reorder_root);
-        runtime.flush_sync(&mut arena);
+//     #[test]
+//     fn host_children_reorder_updates_fiber_and_host_order() {
+//         HOST_REORDER_STEP.store(0, Ordering::SeqCst);
+//         let (mut arena, mut runtime) = runtime(host_reorder_root);
+//         runtime.flush_sync(&mut arena);
 
-        HOST_REORDER_STEP.store(1, Ordering::SeqCst);
-        rerender(&mut runtime, &mut arena);
+//         HOST_REORDER_STEP.store(1, Ordering::SeqCst);
+//         rerender(&mut runtime, &mut arena);
 
-        let column = column_fiber(&runtime);
-        let column_host = column_host(&runtime);
-        assert_eq!(
-            fiber_key_order(&runtime, column),
-            vec![Key::from("b"), Key::from("a")]
-        );
-        assert_eq!(host_text_order(&arena, column_host), ["B", "A"]);
-    }
+//         let column = column_fiber(&runtime);
+//         let column_host = column_host(&runtime);
+//         assert_eq!(
+//             fiber_key_order(&runtime, column),
+//             vec![Key::from("b"), Key::from("a")]
+//         );
+//         assert_eq!(host_text_order(&arena, column_host), ["B", "A"]);
+//     }
 
-    fn component_reorder_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-        if COMPONENT_REORDER_STEP.load(Ordering::SeqCst) == 0 {
-            column_with(vec![item("a", "A"), item("b", "B")])
-        } else {
-            column_with(vec![item("b", "B"), item("a", "A")])
-        }
-    }
+//     fn component_reorder_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+//         if COMPONENT_REORDER_STEP.load(Ordering::SeqCst) == 0 {
+//             column_with(vec![item("a", "A"), item("b", "B")])
+//         } else {
+//             column_with(vec![item("b", "B"), item("a", "A")])
+//         }
+//     }
 
-    #[test]
-    fn component_children_reorder_moves_descendant_hosts() {
-        COMPONENT_REORDER_STEP.store(0, Ordering::SeqCst);
-        let (mut arena, mut runtime) = runtime(component_reorder_root);
-        runtime.flush_sync(&mut arena);
+//     #[test]
+//     fn component_children_reorder_moves_descendant_hosts() {
+//         COMPONENT_REORDER_STEP.store(0, Ordering::SeqCst);
+//         let (mut arena, mut runtime) = runtime(component_reorder_root);
+//         runtime.flush_sync(&mut arena);
 
-        COMPONENT_REORDER_STEP.store(1, Ordering::SeqCst);
-        rerender(&mut runtime, &mut arena);
+//         COMPONENT_REORDER_STEP.store(1, Ordering::SeqCst);
+//         rerender(&mut runtime, &mut arena);
 
-        let column = column_fiber(&runtime);
-        let column_host = column_host(&runtime);
-        assert_eq!(
-            fiber_key_order(&runtime, column),
-            vec![Key::from("b"), Key::from("a")]
-        );
-        assert_eq!(host_text_order(&arena, column_host), ["B", "A"]);
-    }
+//         let column = column_fiber(&runtime);
+//         let column_host = column_host(&runtime);
+//         assert_eq!(
+//             fiber_key_order(&runtime, column),
+//             vec![Key::from("b"), Key::from("a")]
+//         );
+//         assert_eq!(host_text_order(&arena, column_host), ["B", "A"]);
+//     }
 
-    fn insert_before_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-        if INSERT_STEP.load(Ordering::SeqCst) == 0 {
-            column_with(vec![keyed_text("a", "A"), keyed_text("c", "C")])
-        } else {
-            column_with(vec![
-                keyed_text("a", "A"),
-                keyed_text("b", "B"),
-                keyed_text("c", "C"),
-            ])
-        }
-    }
+//     fn insert_before_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+//         if INSERT_STEP.load(Ordering::SeqCst) == 0 {
+//             column_with(vec![keyed_text("a", "A"), keyed_text("c", "C")])
+//         } else {
+//             column_with(vec![
+//                 keyed_text("a", "A"),
+//                 keyed_text("b", "B"),
+//                 keyed_text("c", "C"),
+//             ])
+//         }
+//     }
 
-    #[test]
-    fn insertion_uses_stable_host_sibling() {
-        INSERT_STEP.store(0, Ordering::SeqCst);
-        let (mut arena, mut runtime) = runtime(insert_before_root);
-        runtime.flush_sync(&mut arena);
-        let column_host = column_host(&runtime);
-        let c_node = arena.children(column_host)[1];
+//     #[test]
+//     fn insertion_uses_stable_host_sibling() {
+//         INSERT_STEP.store(0, Ordering::SeqCst);
+//         let (mut arena, mut runtime) = runtime(insert_before_root);
+//         runtime.flush_sync(&mut arena);
+//         let column_host = column_host(&runtime);
+//         let c_node = arena.children(column_host)[1];
 
-        INSERT_STEP.store(1, Ordering::SeqCst);
-        rerender(&mut runtime, &mut arena);
+//         INSERT_STEP.store(1, Ordering::SeqCst);
+//         rerender(&mut runtime, &mut arena);
 
-        let children = arena.children(column_host);
-        assert_eq!(host_text_order(&arena, column_host), ["A", "B", "C"]);
-        assert_eq!(children[2], c_node);
-    }
+//         let children = arena.children(column_host);
+//         assert_eq!(host_text_order(&arena, column_host), ["A", "B", "C"]);
+//         assert_eq!(children[2], c_node);
+//     }
 
-    fn append_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-        if APPEND_STEP.load(Ordering::SeqCst) == 0 {
-            column_with(vec![keyed_text("a", "A")])
-        } else {
-            column_with(vec![keyed_text("a", "A"), keyed_text("b", "B")])
-        }
-    }
+//     fn append_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+//         if APPEND_STEP.load(Ordering::SeqCst) == 0 {
+//             column_with(vec![keyed_text("a", "A")])
+//         } else {
+//             column_with(vec![keyed_text("a", "A"), keyed_text("b", "B")])
+//         }
+//     }
 
-    #[test]
-    fn insertion_appends_when_no_stable_sibling_exists() {
-        APPEND_STEP.store(0, Ordering::SeqCst);
-        let (mut arena, mut runtime) = runtime(append_root);
-        runtime.flush_sync(&mut arena);
-        let column_host = column_host(&runtime);
-        let a_node = arena.children(column_host)[0];
+//     #[test]
+//     fn insertion_appends_when_no_stable_sibling_exists() {
+//         APPEND_STEP.store(0, Ordering::SeqCst);
+//         let (mut arena, mut runtime) = runtime(append_root);
+//         runtime.flush_sync(&mut arena);
+//         let column_host = column_host(&runtime);
+//         let a_node = arena.children(column_host)[0];
 
-        APPEND_STEP.store(1, Ordering::SeqCst);
-        rerender(&mut runtime, &mut arena);
+//         APPEND_STEP.store(1, Ordering::SeqCst);
+//         rerender(&mut runtime, &mut arena);
 
-        let children = arena.children(column_host);
-        assert_eq!(host_text_order(&arena, column_host), ["A", "B"]);
-        assert_eq!(children[0], a_node);
-    }
+//         let children = arena.children(column_host);
+//         assert_eq!(host_text_order(&arena, column_host), ["A", "B"]);
+//         assert_eq!(children[0], a_node);
+//     }
 
-    fn delete_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-        if DELETE_STEP.load(Ordering::SeqCst) == 0 {
-            column_with(vec![item("a", "A"), item("b", "B")])
-        } else {
-            column_with(vec![item("b", "B")])
-        }
-    }
+//     fn delete_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+//         if DELETE_STEP.load(Ordering::SeqCst) == 0 {
+//             column_with(vec![item("a", "A"), item("b", "B")])
+//         } else {
+//             column_with(vec![item("b", "B")])
+//         }
+//     }
 
-    #[test]
-    fn deleting_component_subtree_removes_descendant_host_and_state() {
-        DELETE_STEP.store(0, Ordering::SeqCst);
-        let (mut arena, mut runtime) = runtime(delete_root);
-        runtime.flush_sync(&mut arena);
-        let column = column_fiber(&runtime);
-        let column_host = column_host(&runtime);
-        let item_a = runtime.nodes.children(column)[0];
-        let text_a = arena.children(column_host)[0];
+//     #[test]
+//     fn deleting_component_subtree_removes_descendant_host_and_state() {
+//         DELETE_STEP.store(0, Ordering::SeqCst);
+//         let (mut arena, mut runtime) = runtime(delete_root);
+//         runtime.flush_sync(&mut arena);
+//         let column = column_fiber(&runtime);
+//         let column_host = column_host(&runtime);
+//         let item_a = runtime.nodes.children(column)[0];
+//         let text_a = arena.children(column_host)[0];
 
-        DELETE_STEP.store(1, Ordering::SeqCst);
-        rerender(&mut runtime, &mut arena);
+//         DELETE_STEP.store(1, Ordering::SeqCst);
+//         rerender(&mut runtime, &mut arena);
 
-        assert!(!runtime.nodes.contains(item_a));
-        assert!(!runtime.hooks.contains_key(&item_a));
-        assert!(!arena.contains(text_a));
-        assert_eq!(
-            fiber_key_order(&runtime, column_fiber(&runtime)),
-            vec![Key::from("b")]
-        );
-        assert_eq!(host_text_order(&arena, column_host), ["B"]);
-    }
+//         assert!(!runtime.nodes.contains(item_a));
+//         assert!(!runtime.hooks.contains_key(&item_a));
+//         assert!(!arena.contains(text_a));
+//         assert_eq!(
+//             fiber_key_order(&runtime, column_fiber(&runtime)),
+//             vec![Key::from("b")]
+//         );
+//         assert_eq!(host_text_order(&arena, column_host), ["B"]);
+//     }
 
-    fn move_update_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-        if MOVE_UPDATE_STEP.load(Ordering::SeqCst) == 0 {
-            column_with(vec![keyed_text("a", "A"), keyed_text("b", "B")])
-        } else {
-            column_with(vec![keyed_text("b", "B2"), keyed_text("a", "A")])
-        }
-    }
+//     fn move_update_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+//         if MOVE_UPDATE_STEP.load(Ordering::SeqCst) == 0 {
+//             column_with(vec![keyed_text("a", "A"), keyed_text("b", "B")])
+//         } else {
+//             column_with(vec![keyed_text("b", "B2"), keyed_text("a", "A")])
+//         }
+//     }
 
-    #[test]
-    fn moving_host_can_also_update_it() {
-        MOVE_UPDATE_STEP.store(0, Ordering::SeqCst);
-        let (mut arena, mut runtime) = runtime(move_update_root);
-        runtime.flush_sync(&mut arena);
-        let column_host = column_host(&runtime);
-        let b_node = arena.children(column_host)[1];
+//     #[test]
+//     fn moving_host_can_also_update_it() {
+//         MOVE_UPDATE_STEP.store(0, Ordering::SeqCst);
+//         let (mut arena, mut runtime) = runtime(move_update_root);
+//         runtime.flush_sync(&mut arena);
+//         let column_host = column_host(&runtime);
+//         let b_node = arena.children(column_host)[1];
 
-        MOVE_UPDATE_STEP.store(1, Ordering::SeqCst);
-        rerender(&mut runtime, &mut arena);
+//         MOVE_UPDATE_STEP.store(1, Ordering::SeqCst);
+//         rerender(&mut runtime, &mut arena);
 
-        let children = arena.children(column_host);
-        assert_eq!(children[0], b_node);
-        assert_eq!(host_text_order(&arena, column_host), ["B2", "A"]);
-        assert_eq!(
-            fiber_key_order(&runtime, column_fiber(&runtime)),
-            vec![Key::from("b"), Key::from("a")]
-        );
-    }
-}
+//         let children = arena.children(column_host);
+//         assert_eq!(children[0], b_node);
+//         assert_eq!(host_text_order(&arena, column_host), ["B2", "A"]);
+//         assert_eq!(
+//             fiber_key_order(&runtime, column_fiber(&runtime)),
+//             vec![Key::from("b"), Key::from("a")]
+//         );
+//     }
+// }

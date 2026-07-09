@@ -8,19 +8,19 @@ use crate::{
 };
 use xui_interface::WidgetType;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum ElementDesc {
     Host(WidgetDesc),
     Component(ComponentDesc),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct WidgetDesc {
     pub widget: WidgetI,
     pub children: Vec<ElementDesc>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ComponentDesc {
     pub key: Option<Key>,
     pub render: ComponentRender,

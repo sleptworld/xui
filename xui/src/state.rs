@@ -161,9 +161,9 @@ impl<T: 'static> State<T> {
 }
 
 impl<T: Send + 'static> State<T> {
-    pub fn setter(&self) -> StateSetter<T> {
+    pub fn setter(&self) -> AsyncStateSetter<T> {
         let state = read_slot(self.inner);
-        StateSetter {
+        AsyncStateSetter {
             dispatcher: state.dispatcher.clone(),
             owner: state.owner,
             hook_index: state.hook_index,
@@ -179,7 +179,7 @@ impl<T: Clone + 'static> State<T> {
     }
 }
 
-pub struct StateSetter<T: Send + 'static> {
+pub struct AsyncStateSetter<T: Send + 'static> {
     dispatcher: AsyncDispatcher,
     owner: FiberId,
     hook_index: usize,
@@ -187,7 +187,7 @@ pub struct StateSetter<T: Send + 'static> {
     _marker: PhantomData<fn() -> T>,
 }
 
-impl<T: Send + 'static> Clone for StateSetter<T> {
+impl<T: Send + 'static> Clone for AsyncStateSetter<T> {
     fn clone(&self) -> Self {
         Self {
             dispatcher: self.dispatcher.clone(),
@@ -199,7 +199,7 @@ impl<T: Send + 'static> Clone for StateSetter<T> {
     }
 }
 
-impl<T: Send + 'static> StateSetter<T> {
+impl<T: Send + 'static> AsyncStateSetter<T> {
     fn with_scope(mut self, scope: AsyncScope) -> Self {
         self.scope = Some(scope);
         self
@@ -526,7 +526,10 @@ pub struct TaskContext {
 }
 
 impl TaskContext {
-    pub fn scoped_setter<T: Send + 'static>(&self, setter: StateSetter<T>) -> StateSetter<T> {
+    pub fn scoped_setter<T: Send + 'static>(
+        &self,
+        setter: AsyncStateSetter<T>,
+    ) -> AsyncStateSetter<T> {
         setter.with_scope(self.scope)
     }
 }
@@ -841,6 +844,7 @@ impl Scheduler {
             .mark_starved_lanes_as_expired(now_ms);
     }
 
+    #[inline]
     pub fn is_dirty(&self) -> bool {
         self.inner.borrow().lane_root.pending_lanes != NO_LANES
     }
@@ -855,7 +859,7 @@ mod tests {
 
     use crate::fiber::FiberArena;
     use crate::lanes::{SYNC_LANE, with_update_lane};
-    use xui_interface::{DirtyFlags, EventPhase, EventRequests};
+    use xui_interface::{EventPhase, EventRequests, WidgetUpdateFlags};
 
     use super::*;
 
@@ -1124,17 +1128,17 @@ mod tests {
                 >
         });
 
-        let mut dirty = DirtyFlags::empty();
+        let mut update = WidgetUpdateFlags::empty();
         let mut requests = EventRequests::default();
         let mut event_cx = xui_interface::events::EventContext::new(
             Default::default(),
             EventPhase::Target,
-            &mut dirty,
+            &mut update,
             &mut requests,
         );
         let result = callback.call_mut(|handler| handler(&mut event_cx));
 
         assert_eq!(result, xui_interface::events::EventResult::Consumed);
-        assert!(dirty.contains(DirtyFlags::PAINT));
+        assert!(update.contains(WidgetUpdateFlags::PAINT_OUTPUT));
     }
 }

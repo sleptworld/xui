@@ -1,17 +1,20 @@
-use crate::animation::AnimatedStyle;
 use crate::element::ElementDesc;
 use crate::event_system::callbacks::EventHandlers;
+use xui_animation::Transition;
+use xui_interface::style::FlexDirectionStyle;
 use xui_interface::{
-    ColorStyle, ComputedStyle, DirtyFlags, Event, EventContext, EventRef, EventResult, Key,
-    LengthValue, PaintCommand, Rect, ScrollDirectionStyle, ScrollbarVisibilityStyle, Style, Widget,
-    WidgetType, style::ScrollbarStylePatch,
+    ColorStyle, ComputedStyle, EventContext, EventRef, EventResult, Key, LengthValue, PaintCommand,
+    Rect, ScrollDirectionStyle, Style, Widget, WidgetType, WidgetUpdateFlags,
+    style::ScrollbarStylePatch,
 };
 
 use super::{props_hash, widget_element_desc};
 
 pub struct ContainerWidget {
     pub key: Option<Key>,
-    pub animated_style: AnimatedStyle,
+    pub style: Style,
+    pub flex_direction: Option<FlexDirectionStyle>,
+    pub transition: Option<Transition>,
     pub event_handlers: EventHandlers,
 }
 
@@ -19,7 +22,8 @@ impl std::fmt::Debug for ContainerWidget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ContainerWidget")
             .field("key", &self.key)
-            .field("animated_style", &self.animated_style)
+            .field("flex_direction", &self.flex_direction)
+            .field("transition", &self.transition)
             .finish()
     }
 }
@@ -28,67 +32,61 @@ impl ContainerWidget {
     pub fn new() -> Self {
         Self {
             key: None,
-            animated_style: AnimatedStyle::new(Style::new()),
+            style: Style::default(),
+            flex_direction: None,
+            transition: None,
             event_handlers: EventHandlers::default(),
         }
     }
 
     pub fn style(mut self, style: Style) -> Self {
-        self.animated_style.base = style;
+        self.style = style;
         self
     }
 
-    animated_style_methods!(animated_style);
+    pub fn transition(mut self, transition: Transition) -> Self {
+        self.transition = Some(transition);
+        self
+    }
+
+    pub fn flex_direction(mut self, direction: FlexDirectionStyle) -> Self {
+        self.flex_direction = Some(direction);
+        self
+    }
 
     pub fn scrollable(mut self) -> Self {
-        self.animated_style.base = self.animated_style.base.clone().scroll_vertical();
+        let style = self.style.scroll_vertical();
+        self.style = style;
         self
     }
 
     pub fn scroll_direction(mut self, direction: ScrollDirectionStyle) -> Self {
-        self.animated_style.base = self.animated_style.base.clone().scroll_direction(direction);
+        let style = self.style.scroll_direction(direction);
+        self.style = style;
         self
     }
 
     pub fn scrollbar(mut self, scrollbar: ScrollbarStylePatch) -> Self {
-        self.animated_style.base = self.animated_style.base.clone().scrollbar(scrollbar);
+        let style = self.style.scrollbar(scrollbar);
+        self.style = style;
         self
     }
 
     pub fn scrollbar_width(mut self, width: impl Into<LengthValue>) -> Self {
-        self.animated_style.base = self.animated_style.base.clone().scrollbar_width(width);
+        let style = self.style.scrollbar_width(width);
+        self.style = style;
         self
     }
 
     pub fn scrollbar_track_color(mut self, color: impl Into<ColorStyle>) -> Self {
-        self.animated_style.base = self
-            .animated_style
-            .base
-            .clone()
-            .scrollbar_track_color(color);
+        let style = self.style.scrollbar_track_color(color);
+        self.style = style;
         self
     }
 
     pub fn scrollbar_thumb_color(mut self, color: impl Into<ColorStyle>) -> Self {
-        self.animated_style.base = self
-            .animated_style
-            .base
-            .clone()
-            .scrollbar_thumb_color(color);
-        self
-    }
-
-    pub fn scrollbar_radius(mut self, radius: impl Into<LengthValue>) -> Self {
-        self.animated_style.base = self.animated_style.base.clone().scrollbar_radius(radius);
-        self
-    }
-
-    pub fn scrollbar_visibility(mut self, visibility: ScrollbarVisibilityStyle) -> Self {
-        self.animated_style.base = self
-            .animated_style
-            .base
-            .clone()
-            .scrollbar_visibility(visibility);
+        let style = self.style.scrollbar_thumb_color(color);
+        self.style = style;
         self
     }
 
@@ -120,18 +118,26 @@ impl Widget for ContainerWidget {
     }
 
     fn props_hash(&self) -> u64 {
-        props_hash(&self.animated_style)
+        props_hash(&(&self.style, self.flex_direction, self.transition))
     }
 
-    fn update_from(&mut self, next: &Self) -> DirtyFlags {
-        let mut flags = DirtyFlags::empty();
-        if self.animated_style != next.animated_style {
-            self.animated_style = next.animated_style.clone();
-            flags |= DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
+    fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
+        let mut flags = WidgetUpdateFlags::empty();
+        if self.style != next.style {
+            self.style = next.style.clone();
+            flags |= WidgetUpdateFlags::STYLE_TARGET;
+        }
+        if self.flex_direction != next.flex_direction {
+            self.flex_direction = next.flex_direction;
+            flags |= WidgetUpdateFlags::LAYOUT_INPUT;
+        }
+        if self.transition != next.transition {
+            self.transition = next.transition;
+            flags |= WidgetUpdateFlags::STYLE_TARGET;
         }
 
         if flags.is_empty() {
-            DirtyFlags::empty()
+            WidgetUpdateFlags::empty()
         } else {
             flags
         }
@@ -142,7 +148,7 @@ impl Widget for ContainerWidget {
     }
 
     fn style(&self) -> &Style {
-        &self.animated_style.base
+        &self.style
     }
 
     fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
@@ -175,4 +181,22 @@ pub(super) fn paint_box(rect: Rect, style: &ComputedStyle, commands: &mut Vec<Pa
     };
 
     commands.push(cmd);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use xui_interface::Color;
+
+    #[test]
+    fn style_update_only_invalidates_style_target() {
+        let mut widget = ContainerWidget::new().style(Style::new().background(Color::BLACK));
+        let next = ContainerWidget::new().style(Style::new().background(Color::WHITE));
+
+        let flags = widget.update_from(&next);
+
+        assert!(flags.contains(WidgetUpdateFlags::STYLE_TARGET));
+        assert!(!flags.contains(WidgetUpdateFlags::LAYOUT_INPUT));
+        assert!(!flags.contains(WidgetUpdateFlags::PAINT_OUTPUT));
+    }
 }

@@ -1,12 +1,11 @@
+use crate::core::Size;
+use crate::{app::App, text::TextHost};
 use std::collections::VecDeque;
 use std::time::Instant;
-
-use crate::app::App;
-use crate::core::Size;
-use crate::render::RenderBackend;
-pub use xui_interface::EventSource;
-use xui_interface::TextMeasurer;
-use xui_interface::events::{EventResult, RawEvent};
+use xui_interface::{
+    EventSource, RenderBackend, TextBackend as TextBackendI,
+    events::{EventResult, RawEvent},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlFlow {
@@ -58,21 +57,21 @@ impl EventSource for QueueEventSource {
     }
 }
 
-pub struct GuiRuntime<B: RenderBackend<T>, T: TextMeasurer> {
+pub struct GuiRuntime<B: RenderBackend<TextHost<T>>, T: TextBackendI> {
     app: App,
     backend: B,
     control_flow: ControlFlow,
-    text_measure: T,
+    text_backend: TextHost<T>,
     last_animation_tick: Option<Instant>,
 }
 
-impl<B: RenderBackend<T>, T: TextMeasurer> GuiRuntime<B, T> {
-    pub fn new(app: App, backend: B, text_measure: T) -> Self {
+impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
+    pub fn new(app: App, backend: B, text_backend: T) -> Self {
         Self {
             app,
             backend,
             control_flow: ControlFlow::Poll,
-            text_measure,
+            text_backend: TextHost::new(text_backend),
             last_animation_tick: None,
         }
     }
@@ -108,7 +107,7 @@ impl<B: RenderBackend<T>, T: TextMeasurer> GuiRuntime<B, T> {
                 Vec::new()
             }
             RuntimeEvent::Input(event) => {
-                vec![self.app.dispatch_event(event, &mut self.text_measure)]
+                vec![self.app.dispatch_event(event, &mut self.text_backend)]
             }
             RuntimeEvent::RedrawRequested => Vec::new(),
             RuntimeEvent::Exit => {
@@ -123,7 +122,7 @@ impl<B: RenderBackend<T>, T: TextMeasurer> GuiRuntime<B, T> {
         self.tick_style_animations();
         let should_render = self.app.is_dirty();
         if should_render {
-            self.app.render(&mut self.backend, &mut self.text_measure)?;
+            self.app.render(&mut self.backend, &mut self.text_backend)?;
         }
         Ok(FrameReport {
             rendered: should_render,
@@ -147,11 +146,11 @@ impl<B: RenderBackend<T>, T: TextMeasurer> GuiRuntime<B, T> {
     }
 
     pub fn text_measure(&self) -> &T {
-        &self.text_measure
+        self.text_backend.backend()
     }
 
     pub fn text_measure_mut(&mut self) -> &mut T {
-        &mut self.text_measure
+        self.text_backend.backend_mut()
     }
 
     pub fn tick(

@@ -16,8 +16,8 @@ use syn::{
 };
 
 use crate::tools::{
-    event_attr_stmt, parse_animation_attr, parse_attrs_helper, parse_base_attr, parse_event_attr,
-    parse_layout_style_attr, parse_paint_style_attr, parse_scroll_style_attr, parse_stack_attr,
+    event_attr_stmt, parse_attrs_helper, parse_base_attr, parse_event_attr,
+    parse_layout_style_attr, parse_paint_style_attr, parse_scroll_style_attr,
     parse_text_style_attr, unsupported_attr,
 };
 
@@ -25,6 +25,15 @@ use crate::tools::{
 pub fn xui(input: TokenStream) -> TokenStream {
     let root = parse_macro_input!(input as ElementNode);
     match expand_node(&root) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+#[proc_macro]
+pub fn style(input: TokenStream) -> TokenStream {
+    let style = parse_macro_input!(input as StyleInput);
+    match expand_style(&style) {
         Ok(tokens) => tokens.into(),
         Err(error) => error.to_compile_error().into(),
     }
@@ -43,6 +52,83 @@ pub fn component(_attrs: TokenStream, item: TokenStream) -> TokenStream {
         Ok(expanded) => expanded.tokens.into(),
         Err(error) => error.to_compile_error().into(),
     }
+}
+
+#[proc_macro_attribute]
+pub fn main(_attrs: TokenStream, item: TokenStream) -> TokenStream {
+    let function = parse_macro_input!(item as MainFunction);
+    match expand_main_function(function) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+fn xui_crate_path() -> Result<TokenStream2> {
+    match crate_name("xui") {
+        Ok(FoundCrate::Itself) => Ok(quote!(crate)),
+        Ok(FoundCrate::Name(name)) => {
+            let ident = TokenIdent::new(&name, Span::call_site());
+            Ok(quote!(::#ident))
+        }
+        Err(error) => Err(Error::new(
+            Span::call_site(),
+            format!("failed to find xui dependency: {error}"),
+        )),
+    }
+}
+
+fn expand_main_function(function: MainFunction) -> Result<TokenStream2> {
+    let MainFunction {
+        attrs,
+        vis,
+        sig,
+        input_defaults,
+        body,
+    } = function;
+
+    if input_defaults.iter().any(Option::is_some) {
+        return Err(Error::new(
+            sig.span(),
+            "#[main] does not support parameter default values",
+        ));
+    }
+
+    let xui = xui_crate_path()?;
+    let assets_bootstrap = match std::env::var("XUI_ASSETS_BOOTSTRAP") {
+        Ok(path) => {
+            let path = LitStr::new(&path, Span::call_site());
+            quote! {
+                include!(#path);
+            }
+        }
+        Err(_) => {
+            return Ok(quote! {
+                compile_error!("XUI assets require building through `cargo xui`");
+
+                #(#attrs)*
+                #vis #sig {
+                    #body
+                }
+            });
+        }
+    };
+
+    Ok(quote! {
+        #assets_bootstrap
+
+        #(#attrs)*
+        #vis #sig {
+            match xui_assets::manager() {
+                ::std::result::Result::Ok(__xui_asset_manager) => {
+                    #xui::assets::install_asset_manager(__xui_asset_manager);
+                }
+                ::std::result::Result::Err(_) => {
+                    #xui::assets::clear_asset_manager();
+                }
+            }
+            #body
+        }
+    })
 }
 
 #[proc_macro_attribute]
@@ -207,8 +293,49 @@ struct ComponentFunction {
     body: TokenStream2,
 }
 
+struct MainFunction {
+    attrs: Vec<SynAttribute>,
+    vis: Visibility,
+    sig: Signature,
+    input_defaults: Vec<Option<Expr>>,
+    body: TokenStream2,
+}
+
 struct ExpandedComponentFunction {
     tokens: TokenStream2,
+}
+
+struct StyleInput {
+    entries: Punctuated<StyleEntry, Token![,]>,
+}
+
+struct StyleEntry {
+    name: Ident,
+    value: Expr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StyleConditionMask {
+    required: u32,
+    forbidden: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StyleConditionExpr {
+    State(u32),
+    Not(Box<StyleConditionExpr>),
+    And(Box<StyleConditionExpr>, Box<StyleConditionExpr>),
+    Or(Box<StyleConditionExpr>, Box<StyleConditionExpr>),
+}
+
+struct StyleRuleEntries {
+    mask: StyleConditionMask,
+    entries: Vec<StyleEntryTokens>,
+}
+
+struct StyleEntryTokens {
+    name: Ident,
+    value: TokenStream2,
 }
 
 struct ComponentParam {
@@ -236,6 +363,399 @@ impl Parse for DefaultsAttr {
     }
 }
 
+impl Parse for StyleInput {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        Ok(Self {
+            entries: Punctuated::<StyleEntry, Token![,]>::parse_terminated(input)?,
+        })
+    }
+}
+
+impl Parse for StyleEntry {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        let name: Ident = input.parse()?;
+        input.parse::<Token![:]>()?;
+        let value = input.parse()?;
+        Ok(Self { name, value })
+    }
+}
+
+const STATE_HOVERED: u32 = 1 << 0;
+const STATE_PRESSED: u32 = 1 << 1;
+const STATE_FOCUSED: u32 = 1 << 2;
+const STATE_DISABLED: u32 = 1 << 3;
+const STATE_SELECTED: u32 = 1 << 4;
+const STATE_CHECKED: u32 = 1 << 5;
+const STATE_DRAGGING: u32 = 1 << 6;
+
+fn expand_style(style: &StyleInput) -> Result<TokenStream2> {
+    let xui = quote!(::xui);
+    let mut base_entries = Vec::new();
+    let mut rules: Vec<StyleRuleEntries> = Vec::new();
+
+    for entry in &style.entries {
+        collect_style_value(
+            &entry.name,
+            &entry.value,
+            &[StyleConditionMask::empty()],
+            &mut base_entries,
+            &mut rules,
+        )?;
+    }
+
+    let mut base_patch = quote!(#xui::StylePatch::default());
+    for entry in &base_entries {
+        let name = &entry.name;
+        let value = &entry.value;
+        base_patch = quote!(#base_patch.#name(#value));
+    }
+
+    let mut style_expr = quote!(#xui::Style::from_patch(#base_patch));
+    for rule in &rules {
+        let required = widget_state_tokens(rule.mask.required, &xui);
+        let forbidden = widget_state_tokens(rule.mask.forbidden, &xui);
+        let mut rule_patch = quote!(s);
+        for entry in &rule.entries {
+            let name = &entry.name;
+            let value = &entry.value;
+            rule_patch = quote!(#rule_patch.#name(#value));
+        }
+        style_expr = quote! {
+            #style_expr.when_state(
+                #xui::WidgetStateMatcher::new(#required, #forbidden),
+                |s| #rule_patch,
+            )
+        };
+    }
+
+    Ok(style_expr)
+}
+
+impl StyleConditionMask {
+    fn empty() -> Self {
+        Self {
+            required: 0,
+            forbidden: 0,
+        }
+    }
+}
+
+impl StyleConditionExpr {
+    fn true_masks(&self) -> Vec<StyleConditionMask> {
+        match self {
+            Self::State(flag) => vec![StyleConditionMask {
+                required: *flag,
+                forbidden: 0,
+            }],
+            Self::Not(expr) => expr.false_masks(),
+            Self::And(left, right) => cross_condition_masks(left.true_masks(), right.true_masks()),
+            Self::Or(left, right) => {
+                dedupe_condition_masks([left.true_masks(), right.true_masks()].concat())
+            }
+        }
+    }
+
+    fn false_masks(&self) -> Vec<StyleConditionMask> {
+        match self {
+            Self::State(flag) => vec![StyleConditionMask {
+                required: 0,
+                forbidden: *flag,
+            }],
+            Self::Not(expr) => expr.true_masks(),
+            Self::And(left, right) => {
+                dedupe_condition_masks([left.false_masks(), right.false_masks()].concat())
+            }
+            Self::Or(left, right) => cross_condition_masks(left.false_masks(), right.false_masks()),
+        }
+    }
+}
+
+fn collect_style_value(
+    name: &Ident,
+    value: &Expr,
+    conditions: &[StyleConditionMask],
+    base_entries: &mut Vec<StyleEntryTokens>,
+    rules: &mut Vec<StyleRuleEntries>,
+) -> Result<()> {
+    if let Expr::If(if_expr) = value {
+        if let Some(condition) = parse_style_condition(&if_expr.cond)? {
+            let then_conditions =
+                cross_condition_masks(conditions.to_vec(), condition.true_masks());
+            collect_style_block_value(
+                name,
+                &if_expr.then_branch,
+                &then_conditions,
+                base_entries,
+                rules,
+            )?;
+
+            if let Some((_, else_expr)) = &if_expr.else_branch {
+                let else_conditions =
+                    cross_condition_masks(conditions.to_vec(), condition.false_masks());
+                collect_style_value(name, else_expr, &else_conditions, base_entries, rules)?;
+            }
+
+            return Ok(());
+        }
+    }
+
+    push_style_value(
+        name,
+        style_expr_value_tokens(value),
+        conditions,
+        base_entries,
+        rules,
+    );
+    Ok(())
+}
+
+fn collect_style_block_value(
+    name: &Ident,
+    block: &syn::Block,
+    conditions: &[StyleConditionMask],
+    base_entries: &mut Vec<StyleEntryTokens>,
+    rules: &mut Vec<StyleRuleEntries>,
+) -> Result<()> {
+    if let Some(expr) = single_tail_expr(block) {
+        collect_style_value(name, expr, conditions, base_entries, rules)
+    } else {
+        push_style_value(name, quote!(#block), conditions, base_entries, rules);
+        Ok(())
+    }
+}
+
+fn push_style_value(
+    name: &Ident,
+    value: TokenStream2,
+    conditions: &[StyleConditionMask],
+    base_entries: &mut Vec<StyleEntryTokens>,
+    rules: &mut Vec<StyleRuleEntries>,
+) {
+    for condition in conditions {
+        let entry = StyleEntryTokens {
+            name: name.clone(),
+            value: value.clone(),
+        };
+        if *condition == StyleConditionMask::empty() {
+            base_entries.push(entry);
+        } else {
+            push_style_rule_entry(rules, *condition, entry);
+        }
+    }
+}
+
+fn style_expr_value_tokens(expr: &Expr) -> TokenStream2 {
+    if let Expr::Block(block) = expr {
+        style_block_value_tokens(&block.block)
+    } else {
+        quote!(#expr)
+    }
+}
+
+fn style_block_value_tokens(block: &syn::Block) -> TokenStream2 {
+    if let Some(expr) = single_tail_expr(block) {
+        return quote!(#expr);
+    }
+    quote!(#block)
+}
+
+fn single_tail_expr(block: &syn::Block) -> Option<&Expr> {
+    if block.stmts.len() == 1 {
+        if let syn::Stmt::Expr(expr, None) = &block.stmts[0] {
+            return Some(expr);
+        }
+    }
+    None
+}
+
+fn push_style_rule_entry(
+    rules: &mut Vec<StyleRuleEntries>,
+    mask: StyleConditionMask,
+    entry: StyleEntryTokens,
+) {
+    if let Some(rule) = rules.iter_mut().find(|rule| rule.mask == mask) {
+        rule.entries.push(entry);
+    } else {
+        rules.push(StyleRuleEntries {
+            mask,
+            entries: vec![entry],
+        });
+    }
+}
+
+fn cross_condition_masks(
+    left: Vec<StyleConditionMask>,
+    right: Vec<StyleConditionMask>,
+) -> Vec<StyleConditionMask> {
+    let mut masks = Vec::new();
+    for left in left {
+        for right in &right {
+            if let Some(mask) = combine_condition_masks(left, *right) {
+                masks.push(mask);
+            }
+        }
+    }
+    dedupe_condition_masks(masks)
+}
+
+fn combine_condition_masks(
+    left: StyleConditionMask,
+    right: StyleConditionMask,
+) -> Option<StyleConditionMask> {
+    let required = left.required | right.required;
+    let forbidden = left.forbidden | right.forbidden;
+    (required & forbidden == 0).then_some(StyleConditionMask {
+        required,
+        forbidden,
+    })
+}
+
+fn dedupe_condition_masks(masks: Vec<StyleConditionMask>) -> Vec<StyleConditionMask> {
+    let mut deduped = Vec::new();
+    for mask in masks {
+        if !deduped.contains(&mask) {
+            deduped.push(mask);
+        }
+    }
+    deduped
+}
+
+fn parse_style_condition(expr: &Expr) -> Result<Option<StyleConditionExpr>> {
+    match expr {
+        Expr::Path(path) => Ok(path
+            .path
+            .get_ident()
+            .and_then(state_flag)
+            .map(StyleConditionExpr::State)),
+        Expr::Paren(paren) => parse_style_condition(&paren.expr),
+        Expr::Group(group) => parse_style_condition(&group.expr),
+        Expr::Unary(unary) => {
+            if !matches!(unary.op, syn::UnOp::Not(_)) {
+                return unsupported_state_condition_if_needed(expr);
+            }
+            Ok(parse_style_condition(&unary.expr)?
+                .map(|condition| StyleConditionExpr::Not(Box::new(condition))))
+        }
+        Expr::Binary(binary) => match &binary.op {
+            syn::BinOp::And(_) => {
+                let left = parse_style_condition(&binary.left)?;
+                let right = parse_style_condition(&binary.right)?;
+                Ok(match (left, right) {
+                    (Some(left), Some(right)) => {
+                        Some(StyleConditionExpr::And(Box::new(left), Box::new(right)))
+                    }
+                    (None, None) => None,
+                    _ => {
+                        return Err(Error::new(
+                            expr.span(),
+                            "`style!` state conditions cannot mix state names with runtime expressions",
+                        ));
+                    }
+                })
+            }
+            syn::BinOp::Or(_) => {
+                let left = parse_style_condition(&binary.left)?;
+                let right = parse_style_condition(&binary.right)?;
+                Ok(match (left, right) {
+                    (Some(left), Some(right)) => {
+                        Some(StyleConditionExpr::Or(Box::new(left), Box::new(right)))
+                    }
+                    (None, None) => None,
+                    _ => {
+                        return Err(Error::new(
+                            expr.span(),
+                            "`style!` state conditions cannot mix state names with runtime expressions",
+                        ));
+                    }
+                })
+            }
+            _ => unsupported_state_condition_if_needed(expr),
+        },
+        _ => unsupported_state_condition_if_needed(expr),
+    }
+}
+
+fn unsupported_state_condition_if_needed(expr: &Expr) -> Result<Option<StyleConditionExpr>> {
+    if expr_contains_state_ident(expr) {
+        Err(Error::new(
+            expr.span(),
+            "`style!` state conditions only support state names, `&&`, `!`, and parentheses",
+        ))
+    } else {
+        Ok(None)
+    }
+}
+
+fn expr_contains_state_ident(expr: &Expr) -> bool {
+    match expr {
+        Expr::Path(path) => path.path.get_ident().and_then(state_flag).is_some(),
+        Expr::Paren(paren) => expr_contains_state_ident(&paren.expr),
+        Expr::Group(group) => expr_contains_state_ident(&group.expr),
+        Expr::Unary(unary) => expr_contains_state_ident(&unary.expr),
+        Expr::Binary(binary) => {
+            expr_contains_state_ident(&binary.left) || expr_contains_state_ident(&binary.right)
+        }
+        Expr::Call(call) => {
+            expr_contains_state_ident(&call.func) || call.args.iter().any(expr_contains_state_ident)
+        }
+        Expr::MethodCall(call) => {
+            expr_contains_state_ident(&call.receiver)
+                || call.args.iter().any(expr_contains_state_ident)
+        }
+        Expr::If(if_expr) => {
+            expr_contains_state_ident(&if_expr.cond)
+                || if_expr
+                    .else_branch
+                    .as_ref()
+                    .is_some_and(|(_, expr)| expr_contains_state_ident(expr))
+        }
+        _ => false,
+    }
+}
+
+fn state_flag(ident: &Ident) -> Option<u32> {
+    match ident.to_string().as_str() {
+        "hovered" => Some(STATE_HOVERED),
+        "pressed" => Some(STATE_PRESSED),
+        "focused" => Some(STATE_FOCUSED),
+        "disabled" => Some(STATE_DISABLED),
+        "selected" => Some(STATE_SELECTED),
+        "checked" => Some(STATE_CHECKED),
+        "dragging" => Some(STATE_DRAGGING),
+        _ => None,
+    }
+}
+
+fn widget_state_tokens(mask: u32, xui: &TokenStream2) -> TokenStream2 {
+    let mut tokens = Vec::new();
+    if mask & STATE_HOVERED != 0 {
+        tokens.push(quote!(#xui::WidgetState::HOVERED));
+    }
+    if mask & STATE_PRESSED != 0 {
+        tokens.push(quote!(#xui::WidgetState::PRESSED));
+    }
+    if mask & STATE_FOCUSED != 0 {
+        tokens.push(quote!(#xui::WidgetState::FOCUSED));
+    }
+    if mask & STATE_DISABLED != 0 {
+        tokens.push(quote!(#xui::WidgetState::DISABLED));
+    }
+    if mask & STATE_SELECTED != 0 {
+        tokens.push(quote!(#xui::WidgetState::SELECTED));
+    }
+    if mask & STATE_CHECKED != 0 {
+        tokens.push(quote!(#xui::WidgetState::CHECKED));
+    }
+    if mask & STATE_DRAGGING != 0 {
+        tokens.push(quote!(#xui::WidgetState::DRAGGING));
+    }
+
+    tokens
+        .into_iter()
+        .reduce(|acc, token| quote!(#acc | #token))
+        .unwrap_or_else(|| quote!(#xui::WidgetState::empty()))
+}
+
 struct ComponentDefaultEntry {
     name: Ident,
     value: Expr,
@@ -251,6 +771,36 @@ impl Parse for ComponentDefaultEntry {
 }
 
 impl Parse for ComponentFunction {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        let attrs = input.call(SynAttribute::parse_outer)?;
+        let vis: Visibility = input.parse()?;
+        let mut sig_tokens = TokenStream2::new();
+        let mut body = None;
+        while !input.is_empty() {
+            let token: TokenTree = input.parse()?;
+            if let TokenTree::Group(group) = &token {
+                if group.delimiter() == Delimiter::Brace {
+                    body = Some(group.stream());
+                    break;
+                }
+            }
+            sig_tokens.extend(std::iter::once(token));
+        }
+        let body =
+            body.ok_or_else(|| Error::new(input.span(), "component function requires a body"))?;
+        let (sig_tokens, input_defaults) = strip_component_param_defaults(sig_tokens)?;
+        let sig = syn::parse2::<Signature>(sig_tokens)?;
+        Ok(Self {
+            attrs,
+            vis,
+            sig,
+            input_defaults,
+            body,
+        })
+    }
+}
+
+impl Parse for MainFunction {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
         let attrs = input.call(SynAttribute::parse_outer)?;
         let vis: Visibility = input.parse()?;
@@ -550,10 +1100,8 @@ fn generate_component_props(
     props_name: &TokenIdent,
 ) -> Result<GeneratedComponentProps> {
     let vis = &function.vis;
-    let mut fields = Vec::new();
-    let mut default_values = Vec::new();
-    let mut setters = Vec::new();
-    let mut bindings = Vec::new();
+    let builder_name = component_props_builder_name(props_name);
+    let mut props = Vec::new();
     let mut has_children = false;
 
     for (arg, default) in function
@@ -589,20 +1137,184 @@ fn generate_component_props(
         if field == "children" {
             has_children = true;
         }
+        let field_pascal = ident_pascal_case(field);
+        let field_state = TokenIdent::new(&format!("__Xui{field_pascal}State"), Span::call_site());
+        let field_missing = component_prop_state_name(props_name, field, "Missing");
+        let field_set = component_prop_state_name(props_name, field, "Set");
+        let field_required_trait =
+            component_prop_state_name(props_name, field, "RequiredPropIsSet");
+        let is_children = field == "children";
         let default_value = default
             .as_ref()
             .map(|expr| quote!(#expr))
-            .unwrap_or_else(|| quote!(::std::default::Default::default()));
-        fields.push(quote!(pub #field: #field_type));
-        default_values.push(quote!(#field: #default_value));
-        setters.push(quote! {
-            pub fn #field(mut self, #field: impl ::std::convert::Into<#field_type>) -> Self {
-                self.#field = #field.into();
-                self
-            }
+            .or_else(|| is_children.then(|| quote!(::std::vec::Vec::new())));
+
+        let required_state = default_value.is_none().then(|| RequiredPropState {
+            param: field_state,
+            missing: field_missing,
+            set: field_set,
+            required_trait: field_required_trait,
         });
-        bindings.push(binding);
+
+        props.push(ComponentProp {
+            field: field.clone(),
+            field_type,
+            default_value,
+            required_state,
+            binding,
+        });
     }
+
+    let fields = props
+        .iter()
+        .map(|prop| {
+            let field = &prop.field;
+            let field_type = &prop.field_type;
+            quote!(pub #field: #field_type)
+        })
+        .collect::<Vec<_>>();
+    let builder_fields = props
+        .iter()
+        .map(|prop| {
+            let field = &prop.field;
+            let field_type = &prop.field_type;
+            quote!(#field: ::std::option::Option<#field_type>)
+        })
+        .collect::<Vec<_>>();
+    let builder_init_values = props
+        .iter()
+        .map(|prop| {
+            let field = &prop.field;
+            quote!(#field: ::std::option::Option::None)
+        })
+        .collect::<Vec<_>>();
+    let build_values = props
+        .iter()
+        .map(|prop| {
+            let field = &prop.field;
+            if let Some(default_value) = &prop.default_value {
+                quote!(#field: self.#field.unwrap_or_else(|| #default_value))
+            } else {
+                quote! {
+                    #field: self.#field.expect(concat!(
+                        "required component prop `",
+                        stringify!(#field),
+                        "` was marked as set by its typed builder state"
+                    ))
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+    let bindings = props
+        .iter()
+        .map(|prop| prop.binding.clone())
+        .collect::<Vec<_>>();
+    let required_states = props
+        .iter()
+        .filter_map(|prop| prop.required_state.as_ref())
+        .collect::<Vec<_>>();
+    let required_markers = required_states
+        .iter()
+        .map(|state| {
+            let required_trait = &state.required_trait;
+            let missing = &state.missing;
+            let set = &state.set;
+            quote! {
+                #[doc = "Implemented only when this required component prop has been set on the typed builder."]
+                #vis trait #required_trait {}
+                #vis struct #missing;
+                #vis struct #set;
+                impl #required_trait for #set {}
+            }
+        })
+        .collect::<Vec<_>>();
+    let state_params = required_states
+        .iter()
+        .map(|state| state.param.clone())
+        .collect::<Vec<_>>();
+    let missing_state_args = required_states
+        .iter()
+        .map(|state| state.missing.clone())
+        .collect::<Vec<_>>();
+    let required_trait_bounds = required_states
+        .iter()
+        .map(|state| {
+            let param = &state.param;
+            let required_trait = &state.required_trait;
+            quote!(#param: #required_trait)
+        })
+        .collect::<Vec<_>>();
+    let builder_generics = generics(&state_params);
+    let builder_current_type = builder_type(&builder_name, &state_params);
+    let builder_initial_type = builder_type(&builder_name, &missing_state_args);
+    let state_phantom_type = phantom_type(&state_params);
+    let build_where_clause = (!required_trait_bounds.is_empty()).then(|| {
+        quote! {
+            where
+                #(#required_trait_bounds),*
+        }
+    });
+    let setters = props
+        .iter()
+        .map(|prop| {
+            let field = &prop.field;
+            let field_type = &prop.field_type;
+            if let Some(required_state) = prop.required_state.as_ref() {
+                let result_state_args = required_states
+                    .iter()
+                    .map(|state| {
+                        if state.param == required_state.param {
+                            required_state.set.clone()
+                        } else {
+                            state.param.clone()
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let builder_type = builder_type(&builder_name, &result_state_args);
+                let destructure_fields = props
+                    .iter()
+                    .map(|prop| {
+                        let name = &prop.field;
+                        if name == field {
+                            quote!(#name: _)
+                        } else {
+                            quote!(#name)
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let reconstruct_fields = props
+                    .iter()
+                    .map(|prop| {
+                        let name = &prop.field;
+                        if name == field {
+                            quote!(#name: ::std::option::Option::Some(#field.into()))
+                        } else {
+                            quote!(#name)
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                quote! {
+                    pub fn #field(self, #field: impl ::std::convert::Into<#field_type>) -> #builder_type {
+                        let Self {
+                            #(#destructure_fields),*,
+                            _states: _,
+                        } = self;
+                        #builder_name {
+                            #(#reconstruct_fields),*,
+                            _states: ::std::marker::PhantomData,
+                        }
+                    }
+                }
+            } else {
+                quote! {
+                    pub fn #field(mut self, #field: impl ::std::convert::Into<#field_type>) -> Self {
+                        self.#field = ::std::option::Option::Some(#field.into());
+                        self
+                    }
+                }
+            }
+        })
+        .collect::<Vec<_>>();
 
     let children_impl = has_children.then(|| {
         quote! {
@@ -625,22 +1337,55 @@ fn generate_component_props(
                 #(#fields),*
             }
 
-            impl ::std::default::Default for #props_name {
-                fn default() -> Self {
-                    Self {
-                        #(#default_values),*
+            #(#required_markers)*
+
+            #vis struct #builder_name #builder_generics {
+                #(#builder_fields),*,
+                _states: ::std::marker::PhantomData<#state_phantom_type>,
+            }
+
+            impl #props_name {
+                pub fn builder() -> #builder_initial_type {
+                    #builder_name {
+                        #(#builder_init_values),*,
+                        _states: ::std::marker::PhantomData,
                     }
                 }
             }
 
-            impl #props_name {
+            impl #builder_generics #builder_current_type {
                 #(#setters)*
+            }
+
+            impl #builder_generics #builder_current_type
+            #build_where_clause
+            {
+                pub fn build(self) -> #props_name {
+                    #props_name {
+                        #(#build_values),*
+                    }
+                }
             }
 
             #children_impl
         },
         bindings,
     })
+}
+
+struct RequiredPropState {
+    param: TokenIdent,
+    missing: TokenIdent,
+    set: TokenIdent,
+    required_trait: TokenIdent,
+}
+
+struct ComponentProp {
+    field: Ident,
+    field_type: Type,
+    default_value: Option<TokenStream2>,
+    required_state: Option<RequiredPropState>,
+    binding: TokenStream2,
 }
 
 fn component_prop_field_type_and_binding(
@@ -742,6 +1487,60 @@ fn component_props_name(original_name: &Ident) -> TokenIdent {
     }
     name.push_str("Props");
     TokenIdent::new(&name, original_name.span())
+}
+
+fn component_props_builder_name(props_name: &TokenIdent) -> TokenIdent {
+    TokenIdent::new(&format!("{props_name}Builder"), props_name.span())
+}
+
+fn component_prop_state_name(props_name: &TokenIdent, field: &Ident, suffix: &str) -> TokenIdent {
+    let field = ident_pascal_case(field);
+    TokenIdent::new(&format!("{props_name}{field}{suffix}"), Span::call_site())
+}
+
+fn ident_pascal_case(ident: &Ident) -> String {
+    let source = ident.to_string();
+    let source = source.strip_prefix("r#").unwrap_or(&source);
+    let mut output = String::new();
+    let mut uppercase_next = true;
+    for ch in source.chars() {
+        if ch == '_' {
+            uppercase_next = true;
+        } else if uppercase_next {
+            output.extend(ch.to_uppercase());
+            uppercase_next = false;
+        } else {
+            output.push(ch);
+        }
+    }
+    if output.is_empty() {
+        output.push_str("Prop");
+    }
+    output
+}
+
+fn generics(params: &[TokenIdent]) -> TokenStream2 {
+    if params.is_empty() {
+        quote!()
+    } else {
+        quote!(<#(#params),*>)
+    }
+}
+
+fn builder_type(builder_name: &TokenIdent, args: &[TokenIdent]) -> TokenStream2 {
+    if args.is_empty() {
+        quote!(#builder_name)
+    } else {
+        quote!(#builder_name<#(#args),*>)
+    }
+}
+
+fn phantom_type(params: &[TokenIdent]) -> TokenStream2 {
+    match params {
+        [] => quote!(()),
+        [param] => quote!(#param),
+        _ => quote!((#(#params),*)),
+    }
 }
 
 fn expand_component_body(body: &TokenStream2) -> Result<TokenStream2> {
@@ -891,108 +1690,10 @@ fn starts_closing_tag(input: ParseStream<'_>) -> bool {
 
 fn expand_node(node: &ElementNode) -> Result<TokenStream2> {
     match node.name.to_string().as_str() {
-        "label" => expand_label(node),
         "text" => expand_text(node),
-        "button" => expand_button(node),
-        "column" => expand_stack(node, "column", quote!(::xui::column())),
-        "row" => expand_stack(node, "row", quote!(::xui::row())),
         "container" => expand_container(node),
-        "image" => expand_image(node),
-        "style_scope" => expand_style_scope(node),
-        "component" => expand_component(node),
         _ => expand_function_component(node),
     }
-}
-
-fn expand_style_scope(node: &ElementNode) -> Result<TokenStream2> {
-    let mut style = None;
-    let mut style_stmts = Vec::new();
-    let mut element_stmts = Vec::new();
-    for attr in &node.attrs {
-        let value = &attr.value;
-        match attr.name.to_string().as_str() {
-            "style" => style = Some(value.clone()),
-            "key" => element_stmts.push(quote! {
-                __xui_element = __xui_element.key(#value);
-            }),
-            "color" => style_stmts.push(quote! {
-                __xui_scope_style.merge(&::xui::Style::new().color(#value));
-            }),
-            "font_size" => style_stmts.push(quote! {
-                __xui_scope_style.merge(&::xui::Style::new().font_size(#value));
-            }),
-            other => {
-                if let Some(stmt) = parse_animation_attr(other, value).or(event_attr_stmt(attr)) {
-                    element_stmts.push(stmt);
-                } else {
-                    return unsupported_attr(attr, "style_scope", other);
-                }
-            }
-        }
-    }
-    let children = node
-        .children
-        .iter()
-        .map(expand_child)
-        .collect::<Result<Vec<_>>>()?;
-    let style_init = style
-        .map(|style| quote!(#style))
-        .unwrap_or_else(|| quote!(::xui::Style::new()));
-    Ok(quote! {{
-        let mut __xui_scope_style = #style_init;
-        #(#style_stmts)*
-        let mut __xui_element = ::xui::style_scope(__xui_scope_style);
-        let mut __xui_animated_style = ::xui::AnimatedStyle::new(::xui::Style::new());
-        let mut __xui_has_animated_style = false;
-        #(#element_stmts)*
-        if __xui_has_animated_style {
-            __xui_element = __xui_element.animated_style(__xui_animated_style);
-        }
-        #(
-            __xui_element = __xui_element.child(#children);
-        )*
-        __xui_element.into_element_desc(::std::vec![#(#children),*])
-    }})
-}
-
-fn expand_label(node: &ElementNode) -> Result<TokenStream2> {
-    let text = required_text(node, "label")?;
-    let mut attr_stmts = Vec::new();
-    for attr in &node.attrs {
-        let value = &attr.value;
-        match attr.name.to_string().as_str() {
-            "key" => attr_stmts.push(quote! { __xui_element = __xui_element.key(#value); }),
-            "text" => {}
-            "style" => attr_stmts.push(quote! { __xui_style.merge(&#value); }),
-            "color" => {
-                attr_stmts.push(quote! { __xui_style.merge(&::xui::Style::new().color(#value)); })
-            }
-            "font_size" => attr_stmts
-                .push(quote! { __xui_style.merge(&::xui::Style::new().font_size(#value)); }),
-            other => {
-                if let Some(stmt) = parse_animation_attr(other, value).or(event_attr_stmt(attr)) {
-                    attr_stmts.push(stmt);
-                } else {
-                    return unsupported_attr(attr, "label", other);
-                }
-            }
-        }
-    }
-    no_children_except_text(node, "label")?;
-    Ok(quote! {{
-        let mut __xui_element = ::xui::label(#text);
-        let mut __xui_style = ::xui::Style::new();
-        let mut __xui_animated_style = ::xui::AnimatedStyle::new(::xui::Style::new());
-        let mut __xui_has_animated_style = false;
-        #(#attr_stmts)*
-        if __xui_has_animated_style {
-            __xui_animated_style.base.merge(&__xui_style);
-            __xui_element = __xui_element.animated_style(__xui_animated_style);
-        } else {
-            __xui_element = __xui_element.style(__xui_style);
-        }
-        __xui_element.into_element_desc()
-    }})
 }
 
 fn expand_text(node: &ElementNode) -> Result<TokenStream2> {
@@ -1038,7 +1739,7 @@ fn expand_text(node: &ElementNode) -> Result<TokenStream2> {
             "decoration" => attr_stmts
                 .push(quote! { __xui_style.merge(&::xui::Style::new().decoration(#value)); }),
             other => {
-                if let Some(stmt) = parse_animation_attr(other, value).or(event_attr_stmt(attr)) {
+                if let Some(stmt) = event_attr_stmt(attr) {
                     attr_stmts.push(stmt);
                 } else {
                     return unsupported_attr(attr, "text", other);
@@ -1050,117 +1751,9 @@ fn expand_text(node: &ElementNode) -> Result<TokenStream2> {
     Ok(quote! {{
         let mut __xui_element = ::xui::text(#text);
         let mut __xui_style = ::xui::Style::new();
-        let mut __xui_animated_style = ::xui::AnimatedStyle::new(::xui::Style::new());
-        let mut __xui_has_animated_style = false;
         #(#attr_stmts)*
-        if __xui_has_animated_style {
-            __xui_animated_style.base.merge(&__xui_style);
-            __xui_element = __xui_element.animated_style(__xui_animated_style);
-        } else {
-            __xui_element = __xui_element.style(__xui_style);
-        }
+        __xui_element = __xui_element.style(__xui_style);
         __xui_element.into_element_desc()
-    }})
-}
-
-fn expand_button(node: &ElementNode) -> Result<TokenStream2> {
-    let text = required_text(node, "button")?;
-    let mut attr_stmts = Vec::new();
-    for attr in &node.attrs {
-        let value = &attr.value;
-        match attr.name.to_string().as_str() {
-            "key" => attr_stmts.push(quote! { __xui_element = __xui_element.key(#value); }),
-            "text" => {}
-            "disabled" => {
-                attr_stmts.push(quote! { __xui_element = __xui_element.disabled(#value); });
-            }
-            "style" => attr_stmts.push(quote! { __xui_style.merge(&#value); }),
-            "hover_style" => {
-                attr_stmts.push(quote! { __xui_element = __xui_element.hover_style(#value); })
-            }
-            "pressed_style" => {
-                attr_stmts.push(quote! { __xui_element = __xui_element.pressed_style(#value); })
-            }
-            "disabled_style" => {
-                attr_stmts.push(quote! { __xui_element = __xui_element.disabled_style(#value); })
-            }
-            "transition" => {
-                attr_stmts.push(quote! { __xui_element = __xui_element.transition(#value); })
-            }
-            "hover_transition" => {
-                attr_stmts.push(quote! { __xui_element = __xui_element.hover_transition(#value); })
-            }
-            "pressed_transition" => attr_stmts
-                .push(quote! { __xui_element = __xui_element.pressed_transition(#value); }),
-            "background" => attr_stmts
-                .push(quote! { __xui_style.merge(&::xui::Style::new().background(#value)); }),
-            "color" => {
-                attr_stmts.push(quote! { __xui_style.merge(&::xui::Style::new().color(#value)); })
-            }
-            "font_size" => attr_stmts
-                .push(quote! { __xui_style.merge(&::xui::Style::new().font_size(#value)); }),
-            other => {
-                if let Some(stmt) = parse_animation_attr(other, value).or(event_attr_stmt(attr)) {
-                    attr_stmts.push(stmt);
-                } else {
-                    return unsupported_attr(attr, "button", other);
-                }
-            }
-        }
-    }
-    no_children_except_text(node, "button")?;
-    Ok(quote! {{
-        let mut __xui_element = ::xui::button(#text);
-        let mut __xui_style = ::xui::Style::new();
-        let mut __xui_animated_style = ::xui::AnimatedStyle::new(::xui::Style::new());
-        let mut __xui_has_animated_style = false;
-        #(#attr_stmts)*
-        if __xui_has_animated_style {
-            __xui_animated_style.base.merge(&__xui_style);
-            __xui_element = __xui_element.animated_style(__xui_animated_style);
-        } else {
-            __xui_element = __xui_element.style(__xui_style);
-        }
-        __xui_element.into_element_desc(::std::vec::Vec::new())
-    }})
-}
-
-fn expand_stack(node: &ElementNode, _tag: &str, constructor: TokenStream2) -> Result<TokenStream2> {
-    let mut attr_stmts = Vec::new();
-
-    parse_attrs_helper(
-        node,
-        |name, value| {
-            parse_base_attr(name, value).or(parse_text_style_attr(name, value)
-                .or(parse_layout_style_attr(name, value))
-                .or(parse_paint_style_attr(name, value))
-                .or(parse_scroll_style_attr(name, value))
-                .or(parse_stack_attr(name, value))
-                .or(parse_animation_attr(name, value))
-                .or(parse_event_attr(name, value)))
-        },
-        &mut attr_stmts,
-    )?;
-
-    let children = node
-        .children
-        .iter()
-        .map(expand_child)
-        .collect::<Result<Vec<_>>>()?;
-
-    Ok(quote! {{
-        let mut __xui_element = #constructor;
-        let mut __xui_style = ::xui::Style::new();
-        let mut __xui_animated_style = ::xui::AnimatedStyle::new(::xui::Style::new());
-        let mut __xui_has_animated_style = false;
-        #(#attr_stmts)*
-        if __xui_has_animated_style {
-            __xui_animated_style.base.merge(&__xui_style);
-            __xui_element = __xui_element.animated_style(__xui_animated_style);
-        } else {
-            __xui_element = __xui_element.style(__xui_style);
-        }
-        __xui_element.into_element_desc(::std::vec![#(#children),*])
     }})
 }
 
@@ -1169,11 +1762,17 @@ fn expand_container(node: &ElementNode) -> Result<TokenStream2> {
     parse_attrs_helper(
         node,
         |name, value| {
-            parse_base_attr(name, value).or(parse_text_style_attr(name, value)
+            match name {
+                "transition" => Some(quote! {
+                    __xui_element = __xui_element.transition(#value);
+                }),
+                _ => None,
+            }
+            .or(parse_base_attr(name, value))
+            .or(parse_text_style_attr(name, value)
                 .or(parse_layout_style_attr(name, value))
                 .or(parse_paint_style_attr(name, value))
                 .or(parse_scroll_style_attr(name, value))
-                .or(parse_animation_attr(name, value))
                 .or(parse_event_attr(name, value)))
         },
         &mut attr_stmts,
@@ -1188,25 +1787,36 @@ fn expand_container(node: &ElementNode) -> Result<TokenStream2> {
     Ok(quote! {{
         let mut __xui_element = ::xui::container();
         let mut __xui_style = ::xui::Style::new();
-        let mut __xui_animated_style = ::xui::AnimatedStyle::new(::xui::Style::new());
-        let mut __xui_has_animated_style = false;
         #(#attr_stmts)*
-        if __xui_has_animated_style {
-            __xui_animated_style.base.merge(&__xui_style);
-            __xui_element = __xui_element.animated_style(__xui_animated_style);
-        } else {
-            __xui_element = __xui_element.style(__xui_style);
-        }
+        __xui_element = __xui_element.style(__xui_style);
         __xui_element.into_element_desc(::std::vec![#(#children),*])
     }})
 }
 
+#[cfg(test)]
 fn expand_image(node: &ElementNode) -> Result<TokenStream2> {
+    let has_asset = node.attrs.iter().any(|attr| attr.name == "asset");
+    let has_image_key = node.attrs.iter().any(|attr| attr.name == "image_key");
+    if has_asset && has_image_key {
+        return Err(Error::new(
+            node.name.span(),
+            "image cannot use `asset` and `image_key` together",
+        ));
+    }
+
     let mut attr_stmts = Vec::new();
     parse_attrs_helper(
         node,
         |name, value| {
             match name {
+                "asset" => Some(match syn::parse2::<LitStr>(value.clone()) {
+                    Ok(path) => quote! {
+                        __xui_element = __xui_element.asset_path(#path);
+                    },
+                    Err(_) => quote! {
+                        __xui_element = __xui_element.asset(#value);
+                    },
+                }),
                 "image_key" => Some(quote! {
                     __xui_element = __xui_element.image_key(#value);
                 }),
@@ -1220,7 +1830,6 @@ fn expand_image(node: &ElementNode) -> Result<TokenStream2> {
                 .or(parse_layout_style_attr(name, value))
                 .or(parse_paint_style_attr(name, value))
                 .or(parse_scroll_style_attr(name, value))
-                .or(parse_animation_attr(name, value))
                 .or(parse_event_attr(name, value)))
         },
         &mut attr_stmts,
@@ -1236,41 +1845,10 @@ fn expand_image(node: &ElementNode) -> Result<TokenStream2> {
     Ok(quote! {{
         let mut __xui_element = ::xui::image();
         let mut __xui_style = ::xui::Style::new();
-        let mut __xui_animated_style = ::xui::AnimatedStyle::new(::xui::Style::new());
-        let mut __xui_has_animated_style = false;
         #(#attr_stmts)*
-        if __xui_has_animated_style {
-            __xui_animated_style.base.merge(&__xui_style);
-            __xui_element = __xui_element.animated_style(__xui_animated_style);
-        } else {
-            __xui_element = __xui_element.style(__xui_style);
-        }
+        __xui_element = __xui_element.style(__xui_style);
         __xui_element.into_element_desc(::std::vec::Vec::new())
     }})
-}
-
-fn expand_component(node: &ElementNode) -> Result<TokenStream2> {
-    let mut render = None;
-    let mut key = None;
-    for attr in &node.attrs {
-        match attr.name.to_string().as_str() {
-            "render" => render = Some(attr.value.clone()),
-            "key" => key = Some(attr.value.clone()),
-            other => return unsupported_attr(attr, "component", other),
-        }
-    }
-    if !node.children.is_empty() {
-        return Err(Error::new(
-            node.name.span(),
-            "component tags must be self-closing in xui! v1",
-        ));
-    }
-    let render = render.ok_or_else(|| Error::new(node.name.span(), "component requires render"))?;
-    let mut expr = quote!(::xui::component(#render));
-    if let Some(key) = key {
-        expr = quote!(#expr.key(#key));
-    }
-    Ok(to_element(expr))
 }
 
 fn expand_function_component(node: &ElementNode) -> Result<TokenStream2> {
@@ -1300,22 +1878,19 @@ fn expand_function_component(node: &ElementNode) -> Result<TokenStream2> {
     let named_props_value = if named_props.is_empty() {
         None
     } else {
-        let mut props_expr = quote!(#component_props_name::default());
+        let mut props_expr = quote!(#component_props_name::builder());
         for attr in named_props {
             let name = &attr.name;
             let value = &attr.value;
             props_expr = quote!(#props_expr.#name(#value));
         }
-        Some(props_expr)
+        Some(quote!(#props_expr.build()))
     };
 
     let expr = if has_children {
-        let props_value = props_value.or(named_props_value).ok_or_else(|| {
-            Error::new(
-                node.name.span(),
-                "registered function components with children require `props` or named props attributes",
-            )
-        })?;
+        let props_value = props_value
+            .or(named_props_value)
+            .unwrap_or_else(|| quote!(#component_props_name::builder().build()));
         let children = node
             .children
             .iter()
@@ -1363,23 +1938,6 @@ fn expand_child(child: &Child) -> Result<TokenStream2> {
     }
 }
 
-fn required_text(node: &ElementNode, tag: &str) -> Result<TokenStream2> {
-    for attr in &node.attrs {
-        if attr.name == "text" {
-            return Ok(attr.value.clone());
-        }
-    }
-    if node.children.len() == 1 {
-        if let Child::Expr(expr) = &node.children[0] {
-            return Ok(expr.into_token_stream());
-        }
-    }
-    Err(Error::new(
-        node.name.span(),
-        format!("{tag} requires text=\"...\" or a single braced text expression"),
-    ))
-}
-
 fn optional_text(node: &ElementNode) -> TokenStream2 {
     for attr in &node.attrs {
         if attr.name == "text" {
@@ -1404,4 +1962,179 @@ fn no_children_except_text(node: &ElementNode, tag: &str) -> Result<()> {
         node.name.span(),
         format!("{tag} does not support element children"),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quote::quote;
+
+    fn expand(tokens: TokenStream2) -> String {
+        let node = syn::parse2::<ElementNode>(tokens).unwrap();
+        expand_image(&node).unwrap().to_string()
+    }
+
+    #[test]
+    fn image_asset_literal_expands_as_path() {
+        let expanded = expand(quote!(<image asset="images/demo.png" />));
+        assert!(expanded.contains("asset_path"));
+        assert!(expanded.contains("images/demo.png"));
+    }
+
+    #[test]
+    fn image_asset_expression_expands_as_asset_id() {
+        let expanded = expand(quote!(
+            <image asset={xui_assets::refs::images::DEMO_PNG} />
+        ));
+        assert!(expanded.contains("asset (xui_assets :: refs :: images :: DEMO_PNG)"));
+        assert!(!expanded.contains("asset_path"));
+    }
+
+    #[test]
+    fn image_rejects_asset_with_manual_image_key() {
+        let node = syn::parse2::<ElementNode>(quote!(
+            <image asset="images/demo.png" image_key="manual" />
+        ))
+        .unwrap();
+        let error = expand_image(&node).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot use `asset` and `image_key`")
+        );
+    }
+
+    #[test]
+    fn function_component_named_props_use_builder_build() {
+        let node = syn::parse2::<ElementNode>(quote!(
+            <pbutton text={"hello".to_string()} ps={button_prop} />
+        ))
+        .unwrap();
+        let expanded = expand_function_component(&node).unwrap().to_string();
+        assert!(expanded.contains("PbuttonProps :: builder"));
+        assert!(expanded.contains(". build"));
+    }
+
+    #[test]
+    fn generated_component_props_include_required_prop_bounds() {
+        let mut function = syn::parse2::<ComponentFunction>(quote!(
+            fn pair(text: &String, color: &Color) {
+                todo!()
+            }
+        ))
+        .unwrap();
+        let expanded = expand_component_function(&mut function)
+            .unwrap()
+            .tokens
+            .to_string();
+        assert!(expanded.contains("PairPropsTextRequiredPropIsSet"));
+        assert!(expanded.contains("PairPropsTextMissing"));
+        assert!(expanded.contains("PairPropsColorRequiredPropIsSet"));
+        assert!(expanded.contains("PairPropsColorMissing"));
+    }
+
+    #[test]
+    fn style_macro_expands_base_and_hover_rule() {
+        let input = syn::parse2::<StyleInput>(quote!(
+            background: Color::BLACK,
+            color: if hovered { Color::BLACK } else { Color::WHITE },
+        ))
+        .unwrap();
+        let expanded = expand_style(&input).unwrap().to_string();
+
+        assert!(expanded.contains("Style :: from_patch"));
+        assert!(expanded.contains("StylePatch :: default"));
+        assert!(expanded.contains(". background (Color :: BLACK)"));
+        assert!(expanded.contains(". color (Color :: WHITE)"));
+        assert!(expanded.contains(". when_state"));
+        assert_eq!(expanded.matches("when_state").count(), 2);
+        assert!(expanded.contains("WidgetState :: HOVERED"));
+        assert!(expanded.contains(". color (Color :: BLACK)"));
+    }
+
+    #[test]
+    fn style_macro_groups_entries_with_the_same_state_matcher() {
+        let input = syn::parse2::<StyleInput>(quote!(
+            color: if hovered { Color::BLACK } else { Color::WHITE },
+            background: if hovered { Color::WHITE } else { Color::BLACK },
+        ))
+        .unwrap();
+        let expanded = expand_style(&input).unwrap().to_string();
+
+        assert_eq!(expanded.matches("when_state").count(), 2);
+        assert!(expanded.contains(". color (Color :: BLACK)"));
+        assert!(expanded.contains(". background (Color :: WHITE)"));
+    }
+
+    #[test]
+    fn style_macro_expands_combined_required_and_forbidden_states() {
+        let input = syn::parse2::<StyleInput>(quote!(
+            color: if hovered && pressed && !disabled { Color::BLACK } else { Color::WHITE },
+        ))
+        .unwrap();
+        let expanded = expand_style(&input).unwrap().to_string();
+
+        assert!(expanded.contains("WidgetState :: HOVERED"));
+        assert!(expanded.contains("WidgetState :: PRESSED"));
+        assert!(expanded.contains("WidgetState :: DISABLED"));
+        assert!(expanded.contains("WidgetStateMatcher :: new"));
+    }
+
+    #[test]
+    fn style_macro_keeps_runtime_if_expression_in_base() {
+        let input = syn::parse2::<StyleInput>(quote!(
+            color: if is_hovered { Color::BLACK } else { Color::WHITE },
+        ))
+        .unwrap();
+        let expanded = expand_style(&input).unwrap().to_string();
+
+        assert!(expanded.contains("if is_hovered"));
+        assert!(!expanded.contains("when_state"));
+    }
+
+    #[test]
+    fn style_macro_supports_or_conditions() {
+        let input = syn::parse2::<StyleInput>(quote!(
+            color: if hovered || pressed { Color::BLACK } else { Color::WHITE },
+        ))
+        .unwrap();
+        let expanded = expand_style(&input).unwrap().to_string();
+
+        assert_eq!(expanded.matches("when_state").count(), 3);
+        assert!(expanded.contains("WidgetState :: HOVERED"));
+        assert!(expanded.contains("WidgetState :: PRESSED"));
+        assert!(expanded.contains(". color (Color :: BLACK)"));
+        assert!(expanded.contains(". color (Color :: WHITE)"));
+    }
+
+    #[test]
+    fn style_macro_parses_nested_state_branches_into_rules() {
+        let input = syn::parse2::<StyleInput>(quote!(
+            color: if hovered {
+                if pressed { Color::BLACK } else { Color::WHITE }
+            } else {
+                Color::BLUE
+            },
+        ))
+        .unwrap();
+        let expanded = expand_style(&input).unwrap().to_string();
+
+        assert_eq!(expanded.matches("when_state").count(), 3);
+        assert!(expanded.contains("WidgetState :: HOVERED"));
+        assert!(expanded.contains("WidgetState :: PRESSED"));
+        assert!(expanded.contains(". color (Color :: BLACK)"));
+        assert!(expanded.contains(". color (Color :: WHITE)"));
+        assert!(expanded.contains(". color (Color :: BLUE)"));
+    }
+
+    #[test]
+    fn style_macro_rejects_mixed_state_and_runtime_conditions() {
+        let input = syn::parse2::<StyleInput>(quote!(
+            color: if hovered && is_pressed { Color::BLACK } else { Color::WHITE },
+        ))
+        .unwrap();
+        let error = expand_style(&input).unwrap_err();
+
+        assert!(error.to_string().contains("cannot mix state names"));
+    }
 }

@@ -3,7 +3,7 @@ use crate::wgpu::SCENE_FORMAT;
 use glam::{Vec2, Vec3};
 use wgpu::{BindGroup, BindGroupLayout, util::DeviceExt, wgc::device};
 use xui::{Color, Rect};
-use xui_interface::widget::PType;
+use xui_interface::RasterizedGlyphFormat;
 
 const GLYPH_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
     0 => Float32x4,
@@ -41,7 +41,7 @@ struct GlyphBuffer {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextGlyphRecord {
-    pub ptype: PType,
+    pub ptype: RasterizedGlyphFormat,
     pub screen_rect: Rect,
     pub clip: Rect,
     pub color: Color,
@@ -265,13 +265,13 @@ impl GlyphRender {
                 color: color_to_array(glyph.color),
             };
             match glyph.ptype {
-                PType::Mask => {
+                RasterizedGlyphFormat::Mask => {
                     mask_glyphs.push(glyph_instant);
                 }
-                PType::SubPixelMask => {
+                RasterizedGlyphFormat::SubpixelMask => {
                     subpixel_glyphs.push(glyph_instant);
                 }
-                PType::Color => {
+                RasterizedGlyphFormat::Color => {
                     color_glyphs.push(glyph_instant);
                 }
             }

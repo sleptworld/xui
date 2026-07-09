@@ -9,7 +9,7 @@ use xui_interface::{
 };
 pub use xui_macros::Animatable;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash)]
 pub enum Easing {
     Linear,
     QuadIn,
@@ -60,7 +60,7 @@ impl Easing {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash)]
 pub struct Transition {
     pub duration: Duration,
     pub delay: Duration,

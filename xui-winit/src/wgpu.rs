@@ -1,15 +1,14 @@
-use crate::renders::text::CosmicTextEngine;
 use crate::renders::*;
 use glam::{Vec2, Vec3};
-use std::thread::scope;
-use std::{collections::HashMap, marker::PhantomData, sync::Arc};
+use std::{marker::PhantomData, sync::Arc};
 use wgpu::util::DeviceExt;
-use xui_interface::widget::PType;
+use xui::text::TextHost;
 use xui_interface::*;
+use xui_text_engine::CosmicEngine;
 
 pub type WgpuBackendError = Box<dyn std::error::Error + Send + Sync>;
 
-pub struct WGPUBackend<T: TextLayoutBackend = CosmicTextEngine> {
+pub struct WGPUBackend<T: TextBackend = CosmicEngine> {
     // Instances
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
@@ -52,7 +51,7 @@ struct UiUniforms {
     scale_factor: [f32; 4],
 }
 
-impl<T: TextLayoutBackend> WGPUBackend<T> {
+impl<T: TextBackend> WGPUBackend<T> {
     pub fn new(window: Arc<winit::window::Window>) -> Self {
         pollster::block_on(Self::new_(window))
     }
@@ -213,7 +212,7 @@ fn choose_srgb_surface_format(
     supported.iter().copied().find(wgpu::TextureFormat::is_srgb)
 }
 
-impl<T: TextLayoutBackend> RenderBackend<T> for WGPUBackend<T> {
+impl<T: TextBackend> RenderBackend<TextHost<T>> for WGPUBackend<T> {
     type Error = WgpuBackendError;
 
     fn begin_frame(&mut self, size: xui_interface::Size<f32>) -> Result<(), Self::Error> {
@@ -250,7 +249,7 @@ impl<T: TextLayoutBackend> RenderBackend<T> for WGPUBackend<T> {
         &mut self,
         commands: &[PaintCommand],
         damage: &DamageRegion,
-        text: &mut T,
+        text: &mut TextHost<T>,
     ) -> Result<(), Self::Error> {
         let _ = (&self.instance, &self.adapter);
         self.presented_frame = false;
@@ -304,6 +303,8 @@ impl<T: TextLayoutBackend> RenderBackend<T> for WGPUBackend<T> {
 
         self.sdf_render
             .deal_instances(&self.device, &self.queue, &result.sdf_records);
+        self.image_render
+            .deal_records(&self.device, &self.queue, &result.image_records)?;
         self.glyph_render
             .deal_glyphs(&self.device, &self.queue, &result.glyph_records);
 
@@ -335,6 +336,8 @@ impl<T: TextLayoutBackend> RenderBackend<T> for WGPUBackend<T> {
             });
 
             self.sdf_render.render(&mut pass, &self.ui_bind_group);
+            self.image_render
+                .render(&mut pass, &self.ui_bind_group, &result.image_records);
             self.glyph_render.render(&mut pass, &self.ui_bind_group);
         }
 
@@ -359,12 +362,12 @@ impl<T: TextLayoutBackend> RenderBackend<T> for WGPUBackend<T> {
     }
 }
 
-impl<T: TextLayoutBackend> WGPUBackend<T> {
+impl<T: TextBackend> WGPUBackend<T> {
     fn build_ui_instances(
         &mut self,
         commands: &[PaintCommand],
         viewport_clip: Rect,
-        text: &mut T,
+        text: &mut TextHost<T>,
     ) -> Result<PrepareResult, WgpuBackendError> {
         let mut result = PrepareResult::default();
         let mut transform_stack = vec![Point::new(0.0, 0.0)];
@@ -474,68 +477,62 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
         command: &TextPaintCommand,
         rect: Rect,
         clip: Rect,
-        text: &mut T,
+        text: &mut TextHost<T>,
         records: &mut PrepareResult,
     ) -> Result<(), WgpuBackendError> {
-        if rect.width <= 0.0
-            || rect.height <= 0.0
-            || clip.width <= 0.0
-            || clip.height <= 0.0
-            || command.props.style.color.a <= 0.0
-            || command.props.text.as_str().is_empty()
-        {
+        if rect.width <= 0.0 || rect.height <= 0.0 || clip.width <= 0.0 || clip.height <= 0.0 {
             return Ok(());
         }
 
-        let layout = if let Some(layout) = text.get_cached_layout(command.node_id) {
-            layout
-        } else {
-            return Ok(());
-        };
+        let layout = text
+            .simple_layout(command.node_id)
+            .expect("text layout must be prepared before paint");
 
-        let scale = 1. / self.scale_factor;
-        let mut positioned_glyphs = Vec::new();
-        text.visit_layout_glyphs(
-            &layout,
-            Point::new(rect.x, rect.y),
-            self.scale_factor,
-            &mut |glyph| positioned_glyphs.push(glyph),
-        );
+        let backend = text.backend_mut();
 
-        for glyph in positioned_glyphs {
-            let Some((alloc, placement, ptype)) = self.glyph_allocation(text, &glyph.key)? else {
-                continue;
-            };
-            if placement.width == 0 || placement.height == 0 {
-                continue;
+        if command.paint.style.color.a > 0.0 {
+            let scale = 1. / self.scale_factor;
+
+            for glyph in &layout.glyphs {
+                let Some((alloc, bitmap)) = self.glyph_allocation(backend, glyph.key.clone())?
+                else {
+                    continue;
+                };
+                if bitmap.width == 0 || bitmap.height == 0 {
+                    continue;
+                }
+
+                let screen_rect = Rect::new(
+                    rect.x + glyph.draw_pos.x + bitmap.left as f32 * scale,
+                    rect.y + glyph.draw_pos.y - bitmap.top as f32 * scale,
+                    bitmap.width as f32 * scale,
+                    bitmap.height as f32 * scale,
+                );
+                if intersect_rect(clip, screen_rect).is_none() {
+                    continue;
+                }
+
+                let record = TextGlyphRecord {
+                    ptype: bitmap.format,
+                    screen_rect,
+                    clip,
+                    color: command.paint.style.color,
+                    atlas_origin: alloc.origin,
+                    atlas_layer: alloc.layer,
+                    atlas_size: alloc.total_size,
+                    atlas_rect: Rect::new(
+                        alloc.origin.x,
+                        alloc.origin.y,
+                        bitmap.width as f32,
+                        bitmap.height as f32,
+                    ),
+                };
+                records.glyph_records.push(record);
             }
+        }
 
-            let screen_rect = Rect::new(
-                (glyph.physical_x + placement.left) as f32 * scale,
-                (glyph.physical_y - placement.top) as f32 * scale,
-                placement.width as f32 * scale,
-                placement.height as f32 * scale,
-            );
-            if intersect_rect(clip, screen_rect).is_none() {
-                continue;
-            }
-
-            let record = TextGlyphRecord {
-                ptype,
-                screen_rect,
-                clip,
-                color: command.props.style.color,
-                atlas_origin: alloc.origin,
-                atlas_layer: alloc.layer,
-                atlas_size: alloc.total_size,
-                atlas_rect: Rect::new(
-                    alloc.origin.x,
-                    alloc.origin.y,
-                    placement.width as f32,
-                    placement.height as f32,
-                ),
-            };
-            records.glyph_records.push(record);
+        if let Some(caret) = command.paint.caret {
+            push_text_caret(command, rect, clip, Some(layout.size()), records, caret);
         }
         Ok(())
     }
@@ -543,22 +540,56 @@ impl<T: TextLayoutBackend> WGPUBackend<T> {
     fn glyph_allocation(
         &mut self,
         text: &mut T,
-        key: &T::GlyphKey,
-    ) -> Result<Option<(AllocInfo, GlyphPlacement, PType)>, WgpuBackendError> {
-        let value = if let Some(bitmap) = text.rasterize_glyph(key) {
+        key: <T as Shaper>::GlyphKey,
+    ) -> Result<Option<(AllocInfo, RasterizedGlyph)>, WgpuBackendError> {
+        let value = if let Some(bitmap) = text.rasterize(key) {
             if bitmap.width == 0 || bitmap.height == 0 {
                 None
             } else {
-                Some((
-                    self.atlas.handle_allocation(&self.queue, &bitmap)?,
-                    bitmap.placement,
-                    bitmap.ptype,
-                ))
+                Some((self.atlas.handle_allocation(&self.queue, &bitmap)?, bitmap))
             }
         } else {
             None
         };
         Ok(value)
+    }
+}
+
+fn push_text_caret(
+    command: &TextPaintCommand,
+    rect: Rect,
+    clip: Rect,
+    layout_size: Option<Size<f32>>,
+    records: &mut PrepareResult,
+    caret: TextCaret,
+) {
+    if caret.color.a <= 0.0 || caret.width <= 0.0 {
+        return;
+    }
+
+    let _ = caret.char_index;
+    let caret_x = rect.x + layout_size.map(|size| size.width).unwrap_or(0.0);
+    let height = line_height_for_caret(
+        command.paint.style.line_height,
+        command.paint.style.font_size,
+    )
+    .min(rect.height)
+    .max(1.0);
+    let top = rect.y + ((rect.height - height) * 0.5).max(0.0);
+    records.push_line_instance(
+        Point::new(caret_x, top),
+        Point::new(caret_x, top + height),
+        caret.color,
+        caret.width,
+        clip,
+    );
+}
+
+fn line_height_for_caret(line_height: LineHeight, font_size: f32) -> f32 {
+    match line_height {
+        LineHeight::Normal => font_size * 1.2,
+        LineHeight::Px(px) => px,
+        LineHeight::Em(em) => em * font_size,
     }
 }
 
@@ -778,14 +809,28 @@ impl PrepareResult {
             return;
         }
 
-        let Some(clip) = intersect_rect(clip, rect) else {
+        let Some(container_clip) = intersect_rect(clip, rect) else {
             return;
         };
+        let Some(tile) = fitted_image_rect(rect, command.data.size, command.style) else {
+            return;
+        };
+        let draw_rect = repeated_image_bounds(rect, tile, command.style.repeat);
+        let Some(clip) = intersect_rect(container_clip, draw_rect) else {
+            return;
+        };
+        let mut variant = command.variant.clone();
+        variant.sampling = command.style.sampling;
+
         self.image_records.push(ImageDrawRecord {
             key: command.key.clone(),
-            rect,
+            data: command.data.clone(),
+            rect: draw_rect,
             clip,
+            tile,
+            repeat: command.style.repeat,
             opacity: command.opacity.clamp(0.0, 1.0),
+            variant,
         });
     }
 
@@ -909,6 +954,72 @@ fn translate_rect(rect: Rect, offset: Point) -> Rect {
     )
 }
 
+fn fitted_image_rect(
+    container: Rect,
+    image_size: Size<u32>,
+    image_style: ImageStyle,
+) -> Option<Rect> {
+    if container.width <= 0.0
+        || container.height <= 0.0
+        || image_size.width == 0
+        || image_size.height == 0
+    {
+        return None;
+    }
+
+    let image_width = image_size.width as f32;
+    let image_height = image_size.height as f32;
+    let scale_x = container.width / image_width;
+    let scale_y = container.height / image_height;
+    let (draw_width, draw_height) = match image_style.fit {
+        ImageFit::Fill => (container.width, container.height),
+        ImageFit::Contain => scaled_size(image_width, image_height, scale_x.min(scale_y)),
+        ImageFit::Cover => scaled_size(image_width, image_height, scale_x.max(scale_y)),
+        ImageFit::None => (image_width, image_height),
+        ImageFit::ScaleDown => {
+            scaled_size(image_width, image_height, scale_x.min(scale_y).min(1.0))
+        }
+    };
+
+    Some(aligned_rect(
+        container,
+        Size::new(draw_width, draw_height),
+        image_style.alignment,
+    ))
+}
+
+fn scaled_size(width: f32, height: f32, scale: f32) -> (f32, f32) {
+    (width * scale, height * scale)
+}
+
+fn aligned_rect(container: Rect, size: Size<f32>, alignment: Alignment) -> Rect {
+    Rect::new(
+        container.x + (container.width - size.width) * alignment.x,
+        container.y + (container.height - size.height) * alignment.y,
+        size.width,
+        size.height,
+    )
+}
+
+fn repeated_image_bounds(container: Rect, tile: Rect, repeat: ImageRepeat) -> Rect {
+    let repeat_x = matches!(repeat, ImageRepeat::Repeat | ImageRepeat::RepeatX);
+    let repeat_y = matches!(repeat, ImageRepeat::Repeat | ImageRepeat::RepeatY);
+    Rect::new(
+        if repeat_x { container.x } else { tile.x },
+        if repeat_y { container.y } else { tile.y },
+        if repeat_x {
+            container.width
+        } else {
+            tile.width
+        },
+        if repeat_y {
+            container.height
+        } else {
+            tile.height
+        },
+    )
+}
+
 fn shadow_bounds(shape: Rect, offset: Point, blur: f32, spread: f32) -> Rect {
     let center = Point::new(
         shape.x + shape.width * 0.5 + offset.x,
@@ -973,4 +1084,119 @@ pub struct AllocInfo {
     pub total_size: Vec3,
     pub layer: u32,
     pub origin: Vec2,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pixels(width: u32, height: u32) -> ImageData {
+        ImageData::rgba8(
+            Size::new(width, height),
+            vec![255; width as usize * height as usize * 4],
+        )
+    }
+
+    fn image_command(data: ImageData, style: ImageStyle) -> ImagePaintCommand {
+        ImagePaintCommand {
+            key: ImageKey::UserProvided(1),
+            data,
+            rect: Rect::new(0.0, 0.0, 100.0, 100.0),
+            opacity: 1.0,
+            variant: ImageVariant::default(),
+            style,
+        }
+    }
+
+    #[test]
+    fn image_record_contain_fit_uses_fitted_tile_rect() {
+        let mut result = PrepareResult::default();
+        let command = image_command(
+            pixels(2, 1),
+            ImageStyle {
+                fit: ImageFit::Contain,
+                sampling: Sampling::Nearest,
+                ..ImageStyle::default()
+            },
+        );
+
+        result.push_image_record(&command, command.rect, Rect::new(0.0, 0.0, 100.0, 100.0));
+
+        assert_eq!(result.image_records.len(), 1);
+        let record = &result.image_records[0];
+        assert_eq!(record.rect, Rect::new(0.0, 25.0, 100.0, 50.0));
+        assert_eq!(record.clip, Rect::new(0.0, 25.0, 100.0, 50.0));
+        assert_eq!(record.tile, Rect::new(0.0, 25.0, 100.0, 50.0));
+        assert_eq!(record.repeat, ImageRepeat::NoRepeat);
+        assert_eq!(record.variant.sampling, Sampling::Nearest);
+    }
+
+    #[test]
+    fn image_record_cover_fit_clips_to_container() {
+        let mut result = PrepareResult::default();
+        let command = image_command(
+            pixels(2, 1),
+            ImageStyle {
+                fit: ImageFit::Cover,
+                ..ImageStyle::default()
+            },
+        );
+
+        result.push_image_record(&command, command.rect, Rect::new(0.0, 0.0, 100.0, 100.0));
+
+        assert_eq!(result.image_records.len(), 1);
+        let record = &result.image_records[0];
+        assert_eq!(record.rect, Rect::new(-50.0, 0.0, 200.0, 100.0));
+        assert_eq!(record.clip, Rect::new(0.0, 0.0, 100.0, 100.0));
+        assert_eq!(record.tile, Rect::new(-50.0, 0.0, 200.0, 100.0));
+    }
+
+    #[test]
+    fn image_record_repeat_x_draws_container_axis_with_tile_uvs() {
+        let mut result = PrepareResult::default();
+        let command = image_command(
+            pixels(10, 10),
+            ImageStyle {
+                fit: ImageFit::None,
+                alignment: Alignment::START,
+                repeat: ImageRepeat::RepeatX,
+                ..ImageStyle::default()
+            },
+        );
+        let rect = Rect::new(0.0, 0.0, 25.0, 10.0);
+
+        result.push_image_record(&command, rect, rect);
+
+        assert_eq!(result.image_records.len(), 1);
+        let record = &result.image_records[0];
+        assert_eq!(record.rect, Rect::new(0.0, 0.0, 25.0, 10.0));
+        assert_eq!(record.clip, Rect::new(0.0, 0.0, 25.0, 10.0));
+        assert_eq!(record.tile, Rect::new(0.0, 0.0, 10.0, 10.0));
+        assert_eq!(record.repeat, ImageRepeat::RepeatX);
+    }
+
+    #[test]
+    fn scale_down_uses_natural_size_until_image_would_overflow() {
+        let small = fitted_image_rect(
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            Size::new(20, 10),
+            ImageStyle {
+                fit: ImageFit::ScaleDown,
+                ..ImageStyle::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(small, Rect::new(40.0, 45.0, 20.0, 10.0));
+
+        let large = fitted_image_rect(
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            Size::new(200, 100),
+            ImageStyle {
+                fit: ImageFit::ScaleDown,
+                ..ImageStyle::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(large, Rect::new(0.0, 25.0, 100.0, 50.0));
+    }
 }

@@ -1,0 +1,15 @@
+[package]
+name = "xui-pak-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "xpak"
+path = "src/main.rs"
+
+[dependencies]
+xui-pak = { path = "../xui-pak" }
+xui-pak-build = { path = "../xui-pak-build" }
+
+[dev-dependencies]
+tempfile = "3"

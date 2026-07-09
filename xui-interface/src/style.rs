@@ -1,8 +1,13 @@
 use crate::{
-    Color, EdgeInsets, FontFamily, FontStyle, FontWeight, LineHeight, Point, Size, TextDecoration,
-    core::Sizing, text::TextStyle,
+    Color, EdgeInsets, FontFamily, FontStyle, FontWeight, LineHeight, Point, Size, StyleDiffFlags,
+    TextDecoration, WidgetState, core::Sizing, text::TextStyle,
 };
-use std::hash::{Hash, Hasher};
+use std::{
+    cell::RefCell,
+    fmt,
+    hash::{Hash, Hasher},
+    ops::{Deref, DerefMut},
+};
 
 thread_local! {
     static BASIC_STYLE: ComputedStyle = ComputedStyle::initial(&Theme::default());
@@ -479,16 +484,375 @@ pub struct ScrollStylePatch {
     pub scrollbar: ScrollbarStylePatch,
 }
 
+#[derive(Default)]
+pub struct Style {
+    pub base: StylePatch,
+    pub rules: Vec<StateStyleRule>,
+    state_deps: WidgetState,
+    patch_cache: RefCell<Vec<(WidgetState, StylePatch)>>,
+}
+
+impl fmt::Debug for Style {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Style")
+            .field("base", &self.base)
+            .field("rules", &self.rules)
+            .field("state_deps", &self.state_deps)
+            .finish()
+    }
+}
+
+impl Clone for Style {
+    fn clone(&self) -> Self {
+        Self {
+            base: self.base.clone(),
+            rules: self.rules.clone(),
+            state_deps: self.state_deps,
+            patch_cache: RefCell::default(),
+        }
+    }
+}
+
+impl PartialEq for Style {
+    fn eq(&self, other: &Self) -> bool {
+        self.base == other.base && self.rules == other.rules && self.state_deps == other.state_deps
+    }
+}
+
+impl Style {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn from_patch(base: StylePatch) -> Self {
+        Self {
+            base,
+            rules: Vec::new(),
+            state_deps: WidgetState::empty(),
+            patch_cache: RefCell::default(),
+        }
+    }
+
+    pub fn merge<S: StyleMerge + ?Sized>(&mut self, other: &S) {
+        other.merge_into(self);
+    }
+
+    fn map_base(mut self, f: impl FnOnce(StylePatch) -> StylePatch) -> Self {
+        self.base = f(self.base);
+        self.patch_cache.borrow_mut().clear();
+        self
+    }
+
+    pub fn color(self, color: impl Into<ColorValue>) -> Self {
+        self.map_base(|base| base.color(color))
+    }
+
+    pub fn font_family(self, font_family: impl Into<FontFamily>) -> Self {
+        self.map_base(|base| base.font_family(font_family))
+    }
+
+    pub fn font_size(self, font_size: impl Into<LengthValue>) -> Self {
+        self.map_base(|base| base.font_size(font_size))
+    }
+
+    pub fn font_weight(self, font_weight: FontWeight) -> Self {
+        self.map_base(|base| base.font_weight(font_weight))
+    }
+
+    pub fn font_style(self, font_style: FontStyle) -> Self {
+        self.map_base(|base| base.font_style(font_style))
+    }
+
+    pub fn line_height(self, line_height: LineHeight) -> Self {
+        self.map_base(|base| base.line_height(line_height))
+    }
+
+    pub fn letter_spacing(self, letter_spacing: impl Into<LengthValue>) -> Self {
+        self.map_base(|base| base.letter_spacing(letter_spacing))
+    }
+
+    pub fn decoration(self, decoration: TextDecoration) -> Self {
+        self.map_base(|base| base.decoration(decoration))
+    }
+
+    pub fn gap(self, gap: impl Into<LengthValue>) -> Self {
+        self.map_base(|base| base.gap(gap))
+    }
+
+    pub fn size(self, size: impl Into<Size<Sizing>>) -> Self {
+        self.map_base(|base| base.size(size))
+    }
+
+    pub fn width(self, width: impl Into<Sizing>) -> Self {
+        self.map_base(|base| base.width(width))
+    }
+
+    pub fn height(self, height: impl Into<Sizing>) -> Self {
+        self.map_base(|base| base.height(height))
+    }
+
+    pub fn min_size(self, size: impl Into<Size<Sizing>>) -> Self {
+        self.map_base(|base| base.min_size(size))
+    }
+
+    pub fn min_width(self, width: impl Into<Sizing>) -> Self {
+        self.map_base(|base| base.min_width(width))
+    }
+
+    pub fn min_height(self, height: impl Into<Sizing>) -> Self {
+        self.map_base(|base| base.min_height(height))
+    }
+
+    pub fn max_size(self, size: Size<Sizing>) -> Self {
+        self.map_base(|base| base.max_size(size))
+    }
+
+    pub fn max_width(self, width: impl Into<Sizing>) -> Self {
+        self.map_base(|base| base.max_width(width))
+    }
+
+    pub fn max_height(self, height: impl Into<Sizing>) -> Self {
+        self.map_base(|base| base.max_height(height))
+    }
+
+    pub fn margin(self, margin: EdgeInsets) -> Self {
+        self.map_base(|base| base.margin(margin))
+    }
+
+    pub fn padding(self, padding: EdgeInsets) -> Self {
+        self.map_base(|base| base.padding(padding))
+    }
+
+    pub fn align(self, align: AlignStyle) -> Self {
+        self.map_base(|base| base.align(align))
+    }
+
+    pub fn justify(self, justify: JustifyStyle) -> Self {
+        self.map_base(|base| base.justify(justify))
+    }
+
+    pub fn background(self, color: impl Into<ColorStyle>) -> Self {
+        self.map_base(|base| base.background(color))
+    }
+
+    pub fn border_color(self, color: impl Into<ColorStyle>) -> Self {
+        self.map_base(|base| base.border_color(color))
+    }
+
+    pub fn border_width(self, width: impl Into<LengthValue>) -> Self {
+        self.map_base(|base| base.border_width(width))
+    }
+
+    pub fn border_radius(self, radius: impl Into<LengthValue>) -> Self {
+        self.map_base(|base| base.border_radius(radius))
+    }
+
+    pub fn stroke(self, stroke: StrokeStyle) -> Self {
+        self.map_base(|base| base.stroke(stroke))
+    }
+
+    pub fn stroke_style(
+        self,
+        color: impl Into<ColorStyle>,
+        width: impl Into<LengthValue>,
+        line_style: StrokeLineStyle,
+    ) -> Self {
+        self.map_base(|base| base.stroke_style(color, width, line_style))
+    }
+
+    pub fn no_stroke(self) -> Self {
+        self.map_base(StylePatch::no_stroke)
+    }
+
+    pub fn shadow(self, shadow: ShadowStyle) -> Self {
+        self.map_base(|base| base.shadow(shadow))
+    }
+
+    pub fn box_shadow(
+        self,
+        color: impl Into<ColorValue>,
+        offset: Point,
+        blur: impl Into<LengthValue>,
+        spread: impl Into<LengthValue>,
+    ) -> Self {
+        self.map_base(|base| base.box_shadow(color, offset, blur, spread))
+    }
+
+    pub fn no_shadow(self) -> Self {
+        self.map_base(StylePatch::no_shadow)
+    }
+
+    pub fn clip(self, clip: bool) -> Self {
+        self.map_base(|base| base.clip(clip))
+    }
+
+    pub fn scroll_direction(self, direction: ScrollDirectionStyle) -> Self {
+        self.map_base(|base| base.scroll_direction(direction))
+    }
+
+    pub fn scroll_vertical(self) -> Self {
+        self.scroll_direction(ScrollDirectionStyle::Vertical)
+    }
+
+    pub fn scroll_horizontal(self) -> Self {
+        self.scroll_direction(ScrollDirectionStyle::Horizontal)
+    }
+
+    pub fn scroll_both(self) -> Self {
+        self.scroll_direction(ScrollDirectionStyle::Both)
+    }
+
+    pub fn no_scroll(self) -> Self {
+        self.scroll_direction(ScrollDirectionStyle::None)
+    }
+
+    pub fn scrollbar_style(self, scrollbar: ScrollbarStyle) -> Self {
+        self.map_base(|base| base.scrollbar_style(scrollbar))
+    }
+
+    pub fn scrollbar(self, scrollbar: ScrollbarStylePatch) -> Self {
+        self.map_base(|base| base.scrollbar(scrollbar))
+    }
+
+    pub fn scrollbar_width(self, width: impl Into<LengthValue>) -> Self {
+        self.map_base(|base| base.scrollbar_width(width))
+    }
+
+    pub fn scrollbar_track_color(self, color: impl Into<ColorStyle>) -> Self {
+        self.map_base(|base| base.scrollbar_track_color(color))
+    }
+
+    pub fn scrollbar_thumb_color(self, color: impl Into<ColorStyle>) -> Self {
+        self.map_base(|base| base.scrollbar_thumb_color(color))
+    }
+
+    pub fn scrollbar_radius(self, radius: impl Into<LengthValue>) -> Self {
+        self.map_base(|base| base.scrollbar_radius(radius))
+    }
+
+    pub fn scrollbar_visibility(self, visibility: ScrollbarVisibilityStyle) -> Self {
+        self.map_base(|base| base.scrollbar_visibility(visibility))
+    }
+
+    pub fn when<F: FnOnce(StylePatch) -> StylePatch>(
+        mut self,
+        condition: WidgetState,
+        f: F,
+    ) -> Self {
+        self = self.when_state(WidgetStateMatcher::all(condition), f);
+
+        self
+    }
+
+    pub fn when_state<F: FnOnce(StylePatch) -> StylePatch>(
+        mut self,
+        matcher: WidgetStateMatcher,
+        f: F,
+    ) -> Self {
+        let patch = f(StylePatch::default());
+        self.rules.push(StateStyleRule { matcher, patch });
+        self.state_deps |= matcher.dependencies();
+        self.patch_cache.borrow_mut().clear();
+        self
+    }
+
+    pub fn state_deps(&self) -> WidgetState {
+        self.state_deps
+    }
+
+    pub fn match_state(&self, state: WidgetState) -> bool {
+        for rule in &self.rules {
+            if rule.matcher.matches(state) {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn affects_state_change(&self, before: WidgetState, after: WidgetState) -> bool {
+        if before == after {
+            return false;
+        }
+
+        let changed = before ^ after;
+        if !self.state_deps.intersects(changed) {
+            return false;
+        }
+
+        for rule in &self.rules {
+            if rule.matcher.matches_state_change(before, after) {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn patch_for_state(&self, state: WidgetState) -> StylePatch {
+        if let Some((_, patch)) = self
+            .patch_cache
+            .borrow()
+            .iter()
+            .find(|(cached_state, _)| *cached_state == state)
+        {
+            return patch.clone();
+        }
+
+        let mut patch = self.base.clone();
+        for rule in &self.rules {
+            if rule.matcher.matches(state) {
+                patch.merge(&rule.patch);
+            }
+        }
+        self.patch_cache.borrow_mut().push((state, patch.clone()));
+        patch
+    }
+}
+
+impl Deref for Style {
+    type Target = StylePatch;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl DerefMut for Style {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.patch_cache.borrow_mut().clear();
+        &mut self.base
+    }
+}
+
+pub trait StyleMerge {
+    fn merge_into(&self, target: &mut Style);
+}
+
+impl StyleMerge for Style {
+    fn merge_into(&self, target: &mut Style) {
+        target.base.merge(&self.base);
+        target.rules.extend(self.rules.iter().cloned());
+        target.state_deps |= self.state_deps;
+        target.patch_cache.borrow_mut().clear();
+    }
+}
+
+impl StyleMerge for StylePatch {
+    fn merge_into(&self, target: &mut Style) {
+        target.base.merge(self);
+        target.patch_cache.borrow_mut().clear();
+    }
+}
+
 /// Style Patches Info
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct Style {
+pub struct StylePatch {
     pub text: TextStylePatch,
     pub layout: LayoutStylePatch,
     pub paint: PaintStylePatch,
     pub scroll: ScrollStylePatch,
 }
 
-impl Style {
+impl StylePatch {
     pub fn new() -> Self {
         Self::default()
     }
@@ -741,7 +1105,7 @@ impl Style {
         self
     }
 
-    pub fn merge(&mut self, other: &Style) {
+    pub fn merge(&mut self, other: &StylePatch) {
         merge_text(&mut self.text, &other.text);
         merge_layout(&mut self.layout, &other.layout);
         merge_paint(&mut self.paint, &other.paint);
@@ -749,11 +1113,41 @@ impl Style {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct WidgetState {
-    pub hovered: bool,
-    pub pressed: bool,
-    pub disabled: bool,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WidgetStateMatcher {
+    required: WidgetState,
+    forbidden: WidgetState,
+}
+
+impl WidgetStateMatcher {
+    pub fn new(required: WidgetState, forbidden: WidgetState) -> Self {
+        Self {
+            required,
+            forbidden,
+        }
+    }
+
+    pub fn all(required: WidgetState) -> Self {
+        Self::new(required, WidgetState::empty())
+    }
+
+    pub fn matches(&self, state: WidgetState) -> bool {
+        state.contains(self.required) && !state.intersects(self.forbidden)
+    }
+
+    pub fn matches_state_change(&self, before: WidgetState, after: WidgetState) -> bool {
+        self.matches(before) != self.matches(after)
+    }
+
+    pub fn dependencies(&self) -> WidgetState {
+        self.required | self.forbidden
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Hash)]
+pub struct StateStyleRule {
+    matcher: WidgetStateMatcher,
+    patch: StylePatch,
 }
 
 /// Computed Style
@@ -977,17 +1371,39 @@ impl ComputedStyle {
         }
     }
 
-    pub fn compute(parent: &ComputedStyle, patch: &Style, theme: &Theme) -> Self {
+    pub fn compute(parent: &ComputedStyle, patch: &StylePatch, theme: &Theme) -> Self {
         let mut computed = parent.inherited_from(theme);
         computed.apply(parent, patch, theme);
         computed
     }
 
-    pub fn apply(&mut self, parent: &ComputedStyle, patch: &Style, theme: &Theme) {
+    pub fn apply(&mut self, parent: &ComputedStyle, patch: &StylePatch, theme: &Theme) {
         apply_text(&mut self.text, &parent.text, &patch.text, theme);
         apply_layout(&mut self.layout, &patch.layout, theme);
         apply_paint(&mut self.paint, &patch.paint, theme);
         apply_scroll(&mut self.scroll, &patch.scroll, theme);
+    }
+
+    pub fn diff(&self, other: &ComputedStyle) -> StyleDiffFlags {
+        let mut flags = StyleDiffFlags::empty();
+
+        if self.text != other.text {
+            flags |= StyleDiffFlags::TEXT;
+        }
+
+        if self.layout != other.layout {
+            flags |= StyleDiffFlags::LAYOUT;
+        }
+
+        if self.paint != other.paint {
+            flags |= StyleDiffFlags::PAINT;
+        }
+
+        if self.scroll != other.scroll {
+            flags |= StyleDiffFlags::SCROLL;
+        }
+
+        flags
     }
 
     pub fn inherited_from(&self, theme: &Theme) -> Self {
@@ -1582,6 +1998,13 @@ impl Hash for LengthValue {
 
 impl Hash for Style {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        self.base.hash(state);
+        self.rules.hash(state);
+    }
+}
+
+impl Hash for StylePatch {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         self.text.hash(state);
         self.layout.hash(state);
         self.paint.hash(state);
@@ -1683,17 +2106,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn computed_style_diff_is_empty_when_styles_match() {
+        let theme = Theme::default();
+        let style = ComputedStyle::initial(&theme);
+
+        assert!(style.diff(&style).is_empty());
+    }
+
+    #[test]
+    fn computed_style_diff_marks_paint_changes() {
+        let theme = Theme::default();
+        let current = ComputedStyle::initial(&theme);
+        let mut next = current.clone();
+        next.paint.background = ComputedColorStyle::Solid(Color::BLACK);
+
+        let flags = current.diff(&next);
+
+        assert!(flags.contains(StyleDiffFlags::PAINT));
+        assert!(!flags.contains(StyleDiffFlags::LAYOUT));
+        assert!(!flags.contains(StyleDiffFlags::TEXT));
+    }
+
+    #[test]
+    fn computed_style_diff_marks_inherited_text_changes_as_subtree_style() {
+        let theme = Theme::default();
+        let current = ComputedStyle::initial(&theme);
+        let mut next = current.clone();
+        next.text.font_size += 1.0;
+
+        let flags = current.diff(&next);
+
+        assert!(flags.contains(StyleDiffFlags::TEXT));
+        assert!(!flags.contains(StyleDiffFlags::PAINT));
+    }
+
+    #[test]
     fn inherited_text_properties_flow_from_parent() {
         let theme = Theme::default();
         let mut parent = ComputedStyle::initial(&theme);
         parent.apply(
             &ComputedStyle::initial(&theme),
-            &Style::new().color(Color::BLUE_500).font_size(20.0),
+            &StylePatch::new().color(Color::BLUE_500).font_size(20.0),
             &theme,
         );
 
         let mut child = parent.inherited_from(&theme);
-        child.apply(&parent, &Style::new(), &theme);
+        child.apply(&parent, &StylePatch::new(), &theme);
 
         assert_eq!(child.text.color, Color::BLUE_500);
         assert_eq!(child.text.font_size, 20.0);
@@ -1710,11 +2168,11 @@ mod tests {
         let mut parent = ComputedStyle::initial(&theme);
         parent.apply(
             &ComputedStyle::initial(&theme),
-            &Style::new().font_size(20.0),
+            &StylePatch::new().font_size(20.0),
             &theme,
         );
 
-        let mut patch = Style::new();
+        let mut patch = StylePatch::new();
         patch.text.font_size = StyleValue::Initial;
         let mut child = parent.inherited_from(&theme);
         child.apply(&parent, &patch, &theme);
@@ -1732,7 +2190,7 @@ mod tests {
         let mut computed = initial.inherited_from(&theme);
         computed.apply(
             &initial,
-            &Style::new()
+            &StylePatch::new()
                 .background(ColorToken::Primary)
                 .gap(SpacingToken::Lg),
             &theme,
@@ -1755,7 +2213,7 @@ mod tests {
         let mut computed = initial.inherited_from(&theme);
         computed.apply(
             &initial,
-            &Style::new().background(ColorStyle::linear_gradient(
+            &StylePatch::new().background(ColorStyle::linear_gradient(
                 Point::new(0.0, 0.0),
                 Point::new(1.0, 1.0),
                 ColorToken::Primary,
@@ -1785,7 +2243,7 @@ mod tests {
         let mut computed = initial.inherited_from(&theme);
         computed.apply(
             &initial,
-            &Style::new().box_shadow(
+            &StylePatch::new().box_shadow(
                 ColorToken::Primary,
                 Point::new(2.0, 4.0),
                 SpacingToken::Sm,
@@ -1800,8 +2258,115 @@ mod tests {
         assert_eq!(shadow.blur, 10.0);
         assert_eq!(shadow.spread, 3.0);
 
-        computed.apply(&initial, &Style::new().no_shadow(), &theme);
+        computed.apply(&initial, &StylePatch::new().no_shadow(), &theme);
 
         assert_eq!(computed.paint.shadow, None);
+    }
+
+    #[test]
+    fn style_patch_for_state_uses_base_without_state_rules() {
+        let style = Style::from_patch(
+            StylePatch::default()
+                .background(Color::BLACK)
+                .color(Color::WHITE),
+        );
+
+        let patch = style.patch_for_state(WidgetState::empty());
+
+        assert_eq!(
+            patch.paint.background,
+            StyleValue::Value(ColorStyle::from(Color::BLACK))
+        );
+        assert_eq!(
+            patch.text.color,
+            StyleValue::Value(ColorValue::from(Color::WHITE))
+        );
+    }
+
+    #[test]
+    fn style_patch_for_state_applies_hover_rule_over_base() {
+        let style = Style::from_patch(StylePatch::default().color(Color::WHITE))
+            .when(WidgetState::HOVERED, |s| s.color(Color::BLACK));
+
+        let normal = style.patch_for_state(WidgetState::empty());
+        let hovered = style.patch_for_state(WidgetState::HOVERED);
+
+        assert_eq!(
+            normal.text.color,
+            StyleValue::Value(ColorValue::from(Color::WHITE))
+        );
+        assert_eq!(
+            hovered.text.color,
+            StyleValue::Value(ColorValue::from(Color::BLACK))
+        );
+    }
+
+    #[test]
+    fn widget_state_matcher_supports_required_and_forbidden_bits() {
+        let matcher = WidgetStateMatcher::new(WidgetState::HOVERED, WidgetState::DISABLED);
+
+        assert!(matcher.matches(WidgetState::HOVERED));
+        assert!(!matcher.matches(WidgetState::HOVERED | WidgetState::DISABLED));
+        assert!(!matcher.matches(WidgetState::PRESSED));
+    }
+
+    #[test]
+    fn style_reports_state_changes_that_affect_matching_rules() {
+        let style = Style::new().when(WidgetState::HOVERED, |s| s.color(Color::WHITE));
+
+        assert!(style.affects_state_change(WidgetState::empty(), WidgetState::HOVERED));
+        assert!(style.affects_state_change(WidgetState::HOVERED, WidgetState::empty()));
+        assert!(!style.affects_state_change(WidgetState::empty(), WidgetState::PRESSED));
+    }
+
+    #[test]
+    fn style_tracks_state_dependencies_from_rules() {
+        let style = Style::new().when_state(
+            WidgetStateMatcher::new(WidgetState::HOVERED, WidgetState::DISABLED),
+            |s| s.color(Color::WHITE),
+        );
+
+        assert!(style.state_deps().contains(WidgetState::HOVERED));
+        assert!(style.state_deps().contains(WidgetState::DISABLED));
+        assert!(!style.state_deps().contains(WidgetState::PRESSED));
+    }
+
+    #[test]
+    fn style_patch_cache_is_invalidated_by_mutating_base_style() {
+        let mut style = Style::new().color(Color::WHITE);
+        let first = style.patch_for_state(WidgetState::empty());
+        assert_eq!(
+            first.text.color,
+            StyleValue::Value(ColorValue::from(Color::WHITE))
+        );
+
+        style.text.color = StyleValue::Value(ColorValue::from(Color::BLACK));
+        let second = style.patch_for_state(WidgetState::empty());
+        assert_eq!(
+            second.text.color,
+            StyleValue::Value(ColorValue::from(Color::BLACK))
+        );
+    }
+
+    #[test]
+    fn matching_state_rules_merge_without_resetting_each_other() {
+        let style = Style::from_patch(StylePatch::default().background(Color::BLACK))
+            .when(WidgetState::HOVERED, |s| s.color(Color::WHITE))
+            .when(WidgetState::HOVERED, |s| s.border_radius(4.0));
+
+        let patch = style.patch_for_state(WidgetState::HOVERED);
+
+        assert_eq!(
+            patch.paint.background,
+            StyleValue::Value(ColorStyle::from(Color::BLACK))
+        );
+        assert_eq!(
+            patch.text.color,
+            StyleValue::Value(ColorValue::from(Color::WHITE))
+        );
+        assert_eq!(
+            patch.paint.border_radius,
+            StyleValue::Value(LengthValue::Px(4.0))
+        );
     }
 }

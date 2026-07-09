@@ -4,4 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+reqwest = "0.13.4"
 xui = { path = "../xui" }
+tokio = { version = "1", features = ["full"] }
+thiserror.workspace = true
+zune-core.workspace = true
+zune-image.workspace = true
+anyhow = "1.0.102"

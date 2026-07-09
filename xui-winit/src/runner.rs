@@ -3,8 +3,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::device::WinitDeviceRegistry;
-// Default
-use crate::renders::text::CosmicTextEngine;
 use crate::translate::{translate_key, translate_mouse_button, translate_mouse_wheel};
 use crate::wgpu::WGPUBackend;
 use winit::application::ApplicationHandler;
@@ -15,12 +13,15 @@ use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowAttributes, WindowId};
 use xui::App;
+use xui::app::ComponentFn;
+use xui::text::TextHost;
 use xui::{runtime::ControlFlow as XuiControlFlow, runtime::GuiRuntime, runtime::RuntimeEvent};
 use xui_interface::events::{RawEvent, XuiPointerId};
 use xui_interface::{
     Event, Modifiers, Point, PointerButtons, PointerKind, RawKey, RawPointerButton, RawPointerMove,
-    RawTextInput, RawWheel, RawWindowEvent, RenderBackend, Size, TextMeasurer,
+    RawTextInput, RawWheel, RawWindowEvent, RenderBackend, Size, TextBackend,
 };
+use xui_text_engine::CosmicEngine;
 
 #[derive(Debug, Clone)]
 pub struct WinitRunnerOptions {
@@ -89,7 +90,7 @@ impl<E> From<EventLoopError> for WinitRunError<E> {
     }
 }
 
-pub struct WinitRunner<B: RenderBackend<T>, T: TextMeasurer, F>
+pub struct WinitRunner<B: RenderBackend<TextHost<T>>, T: TextBackend, F>
 where
     F: FnOnce(Arc<Window>) -> (App, T, B),
 {
@@ -107,7 +108,7 @@ where
     event_proxy: Option<EventLoopProxy<WinitUserEvent>>,
 }
 
-impl<B: RenderBackend<T>, T: TextMeasurer, F> WinitRunner<B, T, F>
+impl<B: RenderBackend<TextHost<T>>, T: TextBackend, F> WinitRunner<B, T, F>
 where
     F: FnOnce(Arc<Window>) -> (App, T, B),
 {
@@ -337,16 +338,23 @@ where
     }
 }
 
-pub fn start_runner(
-    app: App,
+pub fn runner(
+    app: ComponentFn,
     options: Option<WinitRunnerOptions>,
 ) -> WinitRunner<
     WGPUBackend,
-    CosmicTextEngine,
-    impl FnOnce(Arc<Window>) -> (App, CosmicTextEngine, WGPUBackend),
+    CosmicEngine,
+    impl FnOnce(Arc<Window>) -> (App, CosmicEngine, WGPUBackend),
 > {
+    let app = App::new(app);
     WinitRunner::with_backend_factory(
-        |w| (app, CosmicTextEngine::new(), WGPUBackend::new(w)),
+        |w| {
+            (
+                app,
+                CosmicEngine::new(w.scale_factor() as f32),
+                WGPUBackend::new(w),
+            )
+        },
         options,
     )
 }
@@ -360,7 +368,7 @@ fn translate_modifiers(modifiers: ModifiersState) -> Modifiers {
     }
 }
 
-impl<B: RenderBackend<T>, T: TextMeasurer, F> ApplicationHandler<WinitUserEvent>
+impl<B: RenderBackend<TextHost<T>>, T: TextBackend, F> ApplicationHandler<WinitUserEvent>
     for WinitRunner<B, T, F>
 where
     F: FnOnce(Arc<Window>) -> (App, T, B),

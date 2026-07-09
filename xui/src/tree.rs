@@ -1,27 +1,120 @@
 use slotmap::SlotMap;
-use std::cell::Cell;
+use std::collections::HashMap;
 use std::time::Duration;
 use taffy::prelude as tf;
+use xui_animation::{Animatable, Timeline, Transition};
 use xui_interface::events::RawEvent;
 use xui_interface::render::Damage;
 use xui_interface::{
-    ComputedColorStyle, ComputedScrollbarStyle, ComputedStyle, ComputedTextStyle, DirtyFlags,
-    EventResult, EventTrigger, NodeId, NodeLifecycleEvent, ScrollbarVisibilityStyle, TextContent,
-    TextLayoutConstraints, TextMeasurer, Theme, Translation,
+    ComputedColorStyle, ComputedScrollStyle, ComputedScrollbarStyle, ComputedStyle, DamageRegion,
+    EventResult, NodeId, NodeLifecycleEvent, PaintCommand, ScrollbarVisibilityStyle,
+    StyleDiffFlags, TextBackend, TextLayoutConstraints, TextLayoutInput, Theme, Translation,
+    Widget, WidgetState, WidgetUpdateFlags,
 };
 
-use crate::animation::{ActiveAnimation, AnimableStyle, AnimationTransition, StyleAnimationRule};
+use crate::animation::AnimableStyle;
 use crate::core::{Point, Rect, Size};
 use crate::event_system::callbacks::{CallbackHandleSet, CallbackStore, EventHandlers};
 use crate::event_system::{self, EventState, translator::EventTranslator};
 use crate::fiber::Key;
 use crate::layout::{computed_style_for_widget, taffy_style_for_widget};
-use crate::render::{DamageRegion, PaintCommand};
-use crate::widgets::{WidgetI, WidgetType, Widgets};
+use crate::text::TextHost;
+use crate::widgets::{WidgetI, WidgetType};
 
 pub enum WidgetContext {
-    Text(NodeId, ComputedTextStyle, Option<TextContent>),
-    Button(NodeId, ComputedTextStyle, Option<TextContent>),
+    Text(NodeId),
+    Image(Size<f32>),
+}
+
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct HostWorkFlags: u8 {
+        const RECALC_STYLE = 1 << 0;
+        const RECALC_STYLE_SUBTREE = 1 << 1;
+        const RECALC_LAYOUT = 1 << 2;
+        const REBUILD_PAINT = 1 << 3;
+        const SYNC_TREE = 1 << 4;
+        const SYNC_STATE_CHANGE = 1 << 5;
+    }
+}
+
+impl HostWorkFlags {
+    fn from_widget_update(flags: WidgetUpdateFlags) -> Self {
+        let mut work = Self::empty();
+        if flags.intersects(WidgetUpdateFlags::STYLE_TARGET) {
+            work |= Self::RECALC_STYLE | Self::RECALC_LAYOUT;
+        }
+        if flags.intersects(WidgetUpdateFlags::LAYOUT_INPUT) {
+            work |= Self::RECALC_LAYOUT;
+        }
+        if flags.intersects(WidgetUpdateFlags::PAINT_OUTPUT) {
+            work |= Self::REBUILD_PAINT;
+        }
+        if flags.intersects(WidgetUpdateFlags::TREE) {
+            work |=
+                Self::SYNC_TREE | Self::RECALC_STYLE | Self::RECALC_LAYOUT | Self::REBUILD_PAINT;
+        }
+
+        if flags.intersects(WidgetUpdateFlags::STATE_CHANGE) {
+            work |= Self::SYNC_STATE_CHANGE;
+        }
+        work
+    }
+
+    fn from_style_diff(flags: StyleDiffFlags) -> Self {
+        let mut work = Self::empty();
+        if flags.intersects(StyleDiffFlags::TEXT) {
+            work |= Self::REBUILD_PAINT | Self::RECALC_STYLE_SUBTREE;
+        }
+        if flags.intersects(StyleDiffFlags::LAYOUT) {
+            work |= Self::RECALC_LAYOUT | Self::REBUILD_PAINT;
+        }
+        if flags.intersects(StyleDiffFlags::PAINT) {
+            work |= Self::REBUILD_PAINT;
+        }
+        if flags.intersects(StyleDiffFlags::SCROLL) {
+            work |= Self::RECALC_LAYOUT | Self::REBUILD_PAINT;
+        }
+        work
+    }
+}
+
+struct ActiveStyleTransition {
+    timeline: Timeline,
+    from: AnimableStyle,
+    to: AnimableStyle,
+}
+
+impl ActiveStyleTransition {
+    fn new(
+        transition: Transition,
+        from_style: &ComputedStyle,
+        target_style: &ComputedStyle,
+    ) -> Option<Self> {
+        let (from, to) = AnimableStyle::diff(from_style, target_style);
+        if !to.has_properties() {
+            return None;
+        }
+
+        Some(Self {
+            timeline: Timeline::new(transition),
+            from,
+            to,
+        })
+    }
+
+    fn tick(&mut self, delta: Duration, node: &mut Node, theme: &Theme) -> bool {
+        let progress = self.timeline.tick(delta);
+        if progress.completed {
+            node.effective_style = node.target_style.clone();
+            return true;
+        }
+
+        node.effective_style = node.target_style.clone();
+        let interpolated = AnimableStyle::interpolate(&self.from, &self.to, progress.eased);
+        interpolated.apply_to_computed(&mut node.effective_style, theme);
+        false
+    }
 }
 
 pub struct Node {
@@ -38,19 +131,21 @@ pub struct Node {
     pub previous_layout: Rect,
     pub content_size: Size<f32>,
     pub scroll_offset: Point,
-    pub dirty: DirtyFlags,
-    pub subtree_dirty: DirtyFlags,
+    work: HostWorkFlags,
+    subtree_work: HostWorkFlags,
     pub old_props_hash: u64,
     pub new_props_hash: u64,
-    pub computed_style: ComputedStyle,
-    pub animation_style: AnimableStyle,
-    pub style_animation_rules: Vec<StyleAnimationRule>,
-    pub pending_animation_triggers: Vec<EventTrigger>,
-    pub active_animations: Vec<ActiveAnimation<AnimableStyle>>,
+    // Style
+    pub target_style: ComputedStyle,
+    pub effective_style: ComputedStyle,
+    style_initialized: bool,
+    // State
+    pub state: WidgetState,
+    pub(crate) state_before_change: Option<WidgetState>,
+    // Paint
     pub paint_cache: Vec<PaintCommand>,
     pub widget: WidgetI,
     pub event_callbacks: CallbackHandleSet,
-    // Text
 }
 
 impl Node {
@@ -59,7 +154,7 @@ impl Node {
         key: Option<Key>,
         position: usize,
         props_hash: u64,
-        computed_style: ComputedStyle,
+        target_style: ComputedStyle,
         widget: WidgetI,
         event_callbacks: CallbackHandleSet,
         taffy_node: tf::NodeId,
@@ -78,115 +173,129 @@ impl Node {
             previous_layout: Rect::ZERO,
             content_size: Size::<f32>::ZERO,
             scroll_offset: Point::new(0.0, 0.0),
-            dirty: DirtyFlags::default(),
-            subtree_dirty: DirtyFlags::empty(),
+            work: HostWorkFlags::RECALC_LAYOUT | HostWorkFlags::REBUILD_PAINT,
+            subtree_work: HostWorkFlags::empty(),
             old_props_hash: 0,
             new_props_hash: props_hash,
-            // style,
-            computed_style,
-            animation_style: AnimableStyle::default(),
-            style_animation_rules: widget.style_animation_rules(),
-            pending_animation_triggers: Vec::new(),
-            active_animations: Vec::new(),
+            effective_style: target_style.clone(),
+            target_style,
+            style_initialized: false,
+            // state
+            state: WidgetState::default(),
+            state_before_change: None,
             paint_cache: Vec::new(),
             widget,
             event_callbacks,
         }
     }
 
-    fn start_style_animation(
+    #[inline(always)]
+    fn scroll_style(&self) -> &ComputedScrollStyle {
+        &self.target_style.scroll
+    }
+}
+
+#[derive(Default)]
+struct UiState {
+    animation_driver: AnimationDriver,
+    layout_dirty_list: Vec<NodeId>,
+    style_subtree_dirty_list: Vec<NodeId>,
+    style_dirty_list: Vec<NodeId>,
+    state_change_dirty_list: Vec<NodeId>,
+}
+
+impl UiState {
+    #[inline]
+    fn mark_layout_dirty(&mut self, id: NodeId) {
+        self.layout_dirty_list.push(id);
+    }
+
+    #[inline]
+    fn start_style_transition(
         &mut self,
-        trigger: EventTrigger,
-        from_style: AnimableStyle,
-        to_style: AnimableStyle,
-        transition: AnimationTransition,
-    ) {
-        self.active_animations.clear();
-        self.active_animations.push(ActiveAnimation::new(
-            trigger, from_style, to_style, transition,
-        ));
-        self.refresh_animation_style();
+        id: NodeId,
+        transition: Transition,
+        from_style: &ComputedStyle,
+        target_style: &ComputedStyle,
+    ) -> bool {
+        self.animation_driver
+            .start_node(id, transition, from_style, target_style)
     }
 
-    fn tick_style_animations(&mut self, delta: Duration) -> bool {
-        let mut changed = false;
-        for animation in &mut self.active_animations {
-            changed |= animation.tick(delta);
-        }
-        if changed {
-            self.refresh_animation_style();
-            self.active_animations.retain(ActiveAnimation::is_running);
-        }
-        changed
+    #[inline]
+    fn mark_style_subtree_dirty(&mut self, id: NodeId) {
+        self.style_subtree_dirty_list.push(id);
     }
 
-    fn has_running_style_animations(&self) -> bool {
-        self.active_animations
-            .iter()
-            .any(ActiveAnimation::is_running)
+    #[inline]
+    fn mark_state_change_dirty(&mut self, id: NodeId) {
+        self.state_change_dirty_list.push(id);
     }
 
-    fn refresh_animation_style(&mut self) {
-        let mut style = AnimableStyle::default();
-        for animation in &self.active_animations {
-            style.merge(&animation.sample());
-        }
-        self.animation_style = style;
+    #[inline]
+    fn mark_style_dirty(&mut self, id: NodeId) {
+        self.style_dirty_list.push(id);
     }
 
-    fn queue_style_animation_trigger(&mut self, trigger: EventTrigger) -> bool {
-        if self.style_animation_rule_for(trigger).is_none() {
+    fn drain_subtree_dirty_list(&mut self) -> Vec<NodeId> {
+        let mut list = std::mem::take(&mut self.style_subtree_dirty_list);
+        list.sort();
+        list.dedup();
+        list
+    }
+
+    fn drain_style_dirty_list(&mut self) -> Vec<NodeId> {
+        let mut list = std::mem::take(&mut self.style_dirty_list);
+        list.sort();
+        list.dedup();
+        list
+    }
+
+    fn drain_state_change_dirty_list(&mut self) -> Vec<NodeId> {
+        let mut list = std::mem::take(&mut self.state_change_dirty_list);
+        list.sort();
+        list.dedup();
+        list
+    }
+}
+
+#[derive(Default)]
+struct AnimationDriver {
+    nodes: HashMap<NodeId, ActiveStyleTransition>,
+}
+
+impl AnimationDriver {
+    fn start_node(
+        &mut self,
+        id: NodeId,
+        transition: Transition,
+        from_style: &ComputedStyle,
+        target_style: &ComputedStyle,
+    ) -> bool {
+        let Some(animation) = ActiveStyleTransition::new(transition, from_style, target_style)
+        else {
+            self.nodes.remove(&id);
             return false;
-        }
-        self.pending_animation_triggers.push(trigger);
+        };
+
+        self.nodes.insert(id, animation);
         true
     }
 
-    fn take_pending_animation_rule(&mut self) -> Option<StyleAnimationRule> {
-        let triggers = std::mem::take(&mut self.pending_animation_triggers);
-        triggers
-            .into_iter()
-            .rev()
-            .find_map(|trigger| self.style_animation_rule_for(trigger))
+    fn remove_node(&mut self, id: NodeId) {
+        self.nodes.remove(&id);
     }
 
-    fn style_animation_rule_for(&self, trigger: EventTrigger) -> Option<StyleAnimationRule> {
-        if let Some(rule) = self
-            .style_animation_rules
-            .iter()
-            .find(|rule| rule.trigger == trigger)
-            .cloned()
-        {
-            return Some(rule);
-        }
-
-        let fallback = match trigger {
-            EventTrigger::OnHoverStart => EventTrigger::OnHover,
-            EventTrigger::OnHoverEnd => EventTrigger::OnHover,
-            EventTrigger::OnPressStart => EventTrigger::OnPress,
-            EventTrigger::OnPressEnd => EventTrigger::OnPress,
-            _ => return None,
-        };
-
-        self.style_animation_rules
-            .iter()
-            .find(|rule| rule.trigger == fallback)
-            .map(|rule| {
-                if matches!(trigger, EventTrigger::OnHoverEnd | EventTrigger::OnPressEnd) {
-                    StyleAnimationRule::reverse(trigger, rule.transition)
-                } else {
-                    StyleAnimationRule {
-                        trigger,
-                        style: rule.style.clone(),
-                        transition: rule.transition,
-                    }
-                }
-            })
+    fn is_running(&self) -> bool {
+        !self.nodes.is_empty()
     }
 
-    fn clear_style_animation(&mut self) {
-        self.animation_style = AnimableStyle::default();
-        self.active_animations.clear();
+    fn take_nodes(&mut self) -> HashMap<NodeId, ActiveStyleTransition> {
+        std::mem::take(&mut self.nodes)
+    }
+
+    fn set_nodes(&mut self, nodes: HashMap<NodeId, ActiveStyleTransition>) {
+        self.nodes = nodes;
     }
 }
 
@@ -198,13 +307,18 @@ pub struct UiArena {
     damage_nodes: Vec<NodeId>,
     node_lifecycle_events: Vec<NodeLifecycleEvent>,
     pub event_state: EventState,
-    event_translator: EventTranslator,
     event_callbacks: CallbackStore,
     theme: Theme,
-    paint_frames: Cell<usize>,
     pub update_visits: usize,
     pub layout_passes: usize,
     pub repaint_passes: usize,
+    default_style: ComputedStyle,
+    ui_state: UiState,
+}
+
+pub struct PaintFrame {
+    pub damage: DamageRegion,
+    pub commands: Vec<PaintCommand>,
 }
 
 impl UiArena {
@@ -213,8 +327,12 @@ impl UiArena {
         let theme = Theme::default();
         let root_widget = crate::widgets::root_widget();
         let root_parent_style = ComputedStyle::initial(&theme);
-        let root_computed_style =
-            computed_style_for_widget(&root_widget, &root_parent_style, &theme);
+        let root_computed_style = computed_style_for_widget(
+            &root_widget,
+            &root_parent_style,
+            &theme,
+            WidgetState::empty(),
+        );
         let root_taffy_style =
             taffy_style_for_widget(&root_widget, &root_parent_style, &root_computed_style);
         let taffy_root = taffy
@@ -227,13 +345,14 @@ impl UiArena {
                 None,
                 0,
                 0,
-                // root_style,
                 root_computed_style,
                 root_widget,
                 CallbackHandleSet::default(),
                 taffy_root,
             )
         });
+        nodes[root].style_initialized = true;
+        let default_style = ComputedStyle::initial(&theme);
         Self {
             nodes,
             taffy,
@@ -242,13 +361,13 @@ impl UiArena {
             damage_nodes: vec![],
             node_lifecycle_events: Vec::new(),
             event_state: EventState::default(),
-            event_translator: EventTranslator::default(),
             event_callbacks: CallbackStore::default(),
             theme,
-            paint_frames: Cell::new(0),
             update_visits: 0,
             layout_passes: 0,
             repaint_passes: 0,
+            ui_state: UiState::default(),
+            default_style,
         }
     }
 
@@ -266,67 +385,6 @@ impl UiArena {
 
     pub fn node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
         self.nodes.get_mut(id)
-    }
-
-    pub fn start_style_animation(
-        &mut self,
-        id: NodeId,
-        trigger: EventTrigger,
-        from_style: AnimableStyle,
-        to_style: AnimableStyle,
-        transition: AnimationTransition,
-    ) {
-        if from_style.is_empty() && to_style.is_empty() {
-            return;
-        }
-        let Some(node) = self.nodes.get_mut(id) else {
-            return;
-        };
-
-        node.start_style_animation(trigger, from_style, to_style, transition);
-        self.mark_dirty(id, DirtyFlags::ANIMATE);
-    }
-
-    pub(crate) fn queue_style_animation_trigger(&mut self, id: NodeId, trigger: EventTrigger) {
-        let Some(node) = self.nodes.get_mut(id) else {
-            return;
-        };
-        if node.queue_style_animation_trigger(trigger) {
-            self.mark_dirty(id, DirtyFlags::STYLE | DirtyFlags::PAINT);
-        }
-    }
-
-    pub fn tick_style_animations(&mut self, delta: Duration) -> bool {
-        let mut changed = Vec::new();
-        for (id, node) in self.nodes.iter_mut() {
-            if node.tick_style_animations(delta) {
-                changed.push(id);
-            }
-        }
-
-        for id in &changed {
-            self.mark_dirty(*id, DirtyFlags::ANIMATE);
-        }
-
-        !changed.is_empty()
-    }
-
-    #[inline(always)]
-    pub fn has_running_style_animations(&self) -> bool {
-        self.nodes.values().any(Node::has_running_style_animations)
-    }
-
-    #[inline(always)]
-    pub fn effective_style(&self, id: NodeId) -> Option<ComputedStyle> {
-        let node = self.nodes.get(id)?;
-        Some(self.effective_style_for_node(node))
-    }
-
-    fn effective_style_for_node(&self, node: &Node) -> ComputedStyle {
-        let mut style = node.computed_style.clone();
-        node.animation_style
-            .apply_to_computed(&mut style, &self.theme);
-        style
     }
 
     pub fn children(&self, id: NodeId) -> &[NodeId] {
@@ -352,9 +410,12 @@ impl UiArena {
     pub fn set_theme(&mut self, theme: Theme) {
         if self.theme != theme {
             self.theme = theme;
-            self.mark_dirty(
+            self.mark_work(
                 self.root,
-                DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT,
+                HostWorkFlags::RECALC_STYLE
+                    | HostWorkFlags::RECALC_STYLE_SUBTREE
+                    | HostWorkFlags::RECALC_LAYOUT
+                    | HostWorkFlags::REBUILD_PAINT,
             );
         }
     }
@@ -365,15 +426,6 @@ impl UiArena {
 
     pub(crate) fn event_state_mut(&mut self) -> &mut EventState {
         &mut self.event_state
-    }
-
-    #[inline(always)]
-    pub(crate) fn event_translator(&mut self) -> &mut EventTranslator {
-        &mut self.event_translator
-    }
-
-    pub(crate) fn replace_event_translator(&mut self, translator: EventTranslator) {
-        self.event_translator = translator;
     }
 
     pub(crate) fn event_callbacks(&mut self) -> &mut CallbackStore {
@@ -397,23 +449,22 @@ impl UiArena {
         props_hash: u64,
         widget: WidgetI,
         event_handlers: EventHandlers,
-        style: tf::Style,
-        computed_style: ComputedStyle,
     ) -> NodeId {
         let taffy_node = self
             .taffy
-            .new_leaf(style)
+            .new_leaf(tf::Style::default())
             .expect("failed to create taffy node");
         let event_callbacks = self
             .event_callbacks
             .update_set(CallbackHandleSet::default(), event_handlers);
+
         let id = self.nodes.insert_with_key(|id| {
             Node::new(
                 id,
                 key,
                 0,
                 props_hash,
-                computed_style,
+                self.default_style.clone(),
                 widget,
                 event_callbacks,
                 taffy_node,
@@ -422,65 +473,13 @@ impl UiArena {
         self.node_lifecycle_events
             .push(NodeLifecycleEvent::Created(id));
         self.refresh_taffy_context(id);
+        self.mark_work(
+            id,
+            HostWorkFlags::RECALC_STYLE
+                | HostWorkFlags::RECALC_LAYOUT
+                | HostWorkFlags::REBUILD_PAINT,
+        );
 
-        id
-    }
-
-    pub fn insert(
-        &mut self,
-        parent: NodeId,
-        widget: impl Into<Widgets>,
-        style: tf::Style,
-    ) -> NodeId {
-        let parent_style = &self.nodes[parent].computed_style;
-        let widget_ref = WidgetI::new(widget);
-        let computed_style = computed_style_for_widget(&widget_ref, parent_style, &self.theme);
-        self.insert_node(
-            parent,
-            None,
-            0,
-            style,
-            computed_style,
-            widget_ref,
-            EventHandlers::default(),
-        )
-    }
-
-    pub fn insert_node(
-        &mut self,
-        parent: NodeId,
-        key: Option<Key>,
-        props_hash: u64,
-        style: tf::Style,
-        computed_style: ComputedStyle,
-        widget: WidgetI,
-        event_handlers: EventHandlers,
-    ) -> NodeId {
-        let position = self.nodes[parent].children.len();
-        let taffy_node = self
-            .taffy
-            .new_leaf(style)
-            .expect("failed to create taffy node");
-        let event_callbacks = self
-            .event_callbacks
-            .update_set(CallbackHandleSet::default(), event_handlers);
-        let id = self.nodes.insert_with_key(|id| {
-            Node::new(
-                id,
-                key,
-                position,
-                props_hash,
-                // style,
-                computed_style,
-                widget,
-                event_callbacks,
-                taffy_node,
-            )
-        });
-        self.node_lifecycle_events
-            .push(NodeLifecycleEvent::Created(id));
-        self.refresh_taffy_context(id);
-        self.attach(parent, id);
         id
     }
 
@@ -526,7 +525,10 @@ impl UiArena {
                 .retain(|candidate| *candidate != child);
             self.sync_taffy_children(old_parent);
             self.reindex_children(old_parent);
-            self.mark_dirty(old_parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
+            self.mark_work(
+                old_parent,
+                HostWorkFlags::SYNC_TREE | HostWorkFlags::RECALC_LAYOUT,
+            );
         }
         let parent_taffy = self.nodes[parent].taffy_node;
         let child_taffy = self.nodes[child].taffy_node;
@@ -545,7 +547,10 @@ impl UiArena {
         self.reindex_children(parent);
         let new_position = self.nodes[child].position;
         self.record_node_move(child, old_parent, Some(parent), old_position, new_position);
-        self.mark_dirty(parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
+        self.mark_work(
+            parent,
+            HostWorkFlags::SYNC_TREE | HostWorkFlags::RECALC_LAYOUT,
+        );
         self.add_node_damage(child, self.nodes[child].layout);
         let _ = child_taffy;
     }
@@ -571,7 +576,10 @@ impl UiArena {
 
         let new_position = self.nodes[child].position;
         self.record_node_move(child, old_parent, Some(parent), old_position, new_position);
-        self.mark_dirty(parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
+        self.mark_work(
+            parent,
+            HostWorkFlags::SYNC_TREE | HostWorkFlags::RECALC_LAYOUT,
+        );
         self.add_node_damage(child, self.nodes[child].layout);
     }
 
@@ -611,7 +619,10 @@ impl UiArena {
 
         let new_position = self.nodes[child].position;
         self.record_node_move(child, old_parent, Some(parent), old_position, new_position);
-        self.mark_dirty(parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
+        self.mark_work(
+            parent,
+            HostWorkFlags::SYNC_TREE | HostWorkFlags::RECALC_LAYOUT,
+        );
         self.add_node_damage(child, self.nodes[child].layout);
     }
 
@@ -632,7 +643,10 @@ impl UiArena {
         self.sync_taffy_children(parent);
         self.reindex_children(parent);
         self.record_node_move(child, Some(parent), None, old_position, 0);
-        self.mark_dirty(parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
+        self.mark_work(
+            parent,
+            HostWorkFlags::SYNC_TREE | HostWorkFlags::RECALC_LAYOUT,
+        );
         self.add_node_damage(child, self.nodes[child].layout);
     }
 
@@ -653,7 +667,10 @@ impl UiArena {
         self.taffy
             .set_children(parent_taffy, &[])
             .expect("failed to clear taffy children");
-        self.mark_dirty(parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
+        self.mark_work(
+            parent,
+            HostWorkFlags::SYNC_TREE | HostWorkFlags::RECALC_LAYOUT,
+        );
     }
 
     pub fn remove_subtree(&mut self, id: NodeId) {
@@ -679,12 +696,16 @@ impl UiArena {
                 .collect();
             let _ = self.taffy.set_children(parent_taffy, &taffy_children);
             self.reindex_children(parent);
-            self.mark_dirty(parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
+            self.mark_work(
+                parent,
+                HostWorkFlags::SYNC_TREE | HostWorkFlags::RECALC_LAYOUT,
+            );
         }
 
         self.event_state.clear_node(id);
         self.event_callbacks
             .clear_set(self.nodes[id].event_callbacks);
+        self.ui_state.animation_driver.remove_node(id);
 
         let _ = self.taffy.remove(self.nodes[id].taffy_node);
         self.nodes.remove(id);
@@ -696,23 +717,38 @@ impl UiArena {
         std::mem::take(&mut self.node_lifecycle_events)
     }
 
-    pub fn mark_dirty(&mut self, id: NodeId, flags: DirtyFlags) {
+    pub fn mark_dirty(&mut self, id: NodeId, flags: WidgetUpdateFlags) {
+        self.mark_work(id, HostWorkFlags::from_widget_update(flags));
+    }
+
+    fn mark_work(&mut self, id: NodeId, flags: HostWorkFlags) {
         if flags.is_empty() || !self.nodes.contains_key(id) {
             return;
         }
-
-        let rect = {
+        {
             let node = self.nodes.get_mut(id).expect("checked node existence");
-            node.dirty |= flags;
-            node.layout
-        };
-        if flags.intersects(DirtyFlags::PAINT | DirtyFlags::STYLE | DirtyFlags::ANIMATE) {
-            self.add_node_damage(id, rect);
+            node.work |= flags;
+        }
+
+        if flags.intersects(HostWorkFlags::RECALC_LAYOUT | HostWorkFlags::SYNC_TREE) {
+            self.ui_state.mark_layout_dirty(id);
+        }
+
+        if flags.intersects(HostWorkFlags::RECALC_STYLE_SUBTREE) {
+            self.ui_state.mark_style_subtree_dirty(id);
+        }
+
+        if flags.intersects(HostWorkFlags::RECALC_STYLE) {
+            self.ui_state.mark_style_dirty(id);
+        }
+
+        if flags.intersects(HostWorkFlags::SYNC_STATE_CHANGE) {
+            self.ui_state.mark_state_change_dirty(id);
         }
 
         let mut current = id;
         while let Some(parent) = self.nodes[current].parent {
-            self.nodes[parent].subtree_dirty |= flags;
+            self.nodes[parent].subtree_work |= flags;
             current = parent;
         }
     }
@@ -742,7 +778,8 @@ impl UiArena {
         let mut total_scroll_offset = Point::zero();
         for ancestor in &ancestors {
             let node = &self.nodes[*ancestor];
-            if node.computed_style.scroll.direction.is_scrollable() {
+            let scroll_style = node.scroll_style();
+            if scroll_style.direction.is_scrollable() {
                 total_scroll_offset.x += node.scroll_offset.x;
                 total_scroll_offset.y += node.scroll_offset.y;
             }
@@ -753,9 +790,12 @@ impl UiArena {
         let mut clip_scroll_offset = Point::zero();
         for ancestor in ancestors.into_iter().rev() {
             let node = &self.nodes[ancestor];
-            let scrollable = node.computed_style.scroll.direction.is_scrollable();
+            let scroll_style = node.scroll_style();
+            let scrollable = scroll_style.direction.is_scrollable();
 
-            if node.computed_style.paint.clip || scrollable {
+            let node_style = &node.target_style;
+
+            if node_style.paint.clip || scrollable {
                 let clip = Rect::new(
                     node.layout.x - clip_scroll_offset.x,
                     node.layout.y - clip_scroll_offset.y,
@@ -774,16 +814,19 @@ impl UiArena {
         Some(rect)
     }
 
-    pub fn clear_dirty(&mut self, id: NodeId) {
+    pub fn clear_work(&mut self, id: NodeId) {
         if let Some(node) = self.nodes.get_mut(id) {
             node.old_props_hash = node.new_props_hash;
-            node.dirty = DirtyFlags::empty();
-            node.subtree_dirty = DirtyFlags::empty();
+            node.work = HostWorkFlags::empty();
+            node.subtree_work = HostWorkFlags::empty();
         }
     }
 
     pub fn mark_subtree_layout_dirty(&mut self, id: NodeId) {
-        self.mark_dirty(id, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+        self.mark_work(
+            id,
+            HostWorkFlags::RECALC_LAYOUT | HostWorkFlags::REBUILD_PAINT,
+        );
         let children = self.nodes[id].children.clone();
         for child in children {
             self.mark_subtree_layout_dirty(child);
@@ -811,8 +854,9 @@ impl UiArena {
         if !visual_layout.contains(point) {
             return None;
         }
+        let node_style = &node.target_style;
 
-        let child_scroll_offset = if node.computed_style.scroll.direction.is_scrollable() {
+        let child_scroll_offset = if node_style.scroll.direction.is_scrollable() {
             Point::new(
                 scroll_offset.x + node.scroll_offset.x,
                 scroll_offset.y + node.scroll_offset.y,
@@ -845,7 +889,8 @@ impl UiArena {
         let Some(node) = self.nodes.get(id) else {
             return false;
         };
-        let direction = node.computed_style.scroll.direction;
+
+        let direction = node.scroll_style().direction;
         if !direction.is_scrollable() {
             return false;
         }
@@ -877,7 +922,7 @@ impl UiArena {
         let node = self.nodes.get_mut(id).expect("checked node existence");
         node.scroll_offset = next;
         self.add_scroll_damage(id, old_layout);
-        self.mark_dirty(id, DirtyFlags::PAINT);
+        self.mark_work(id, HostWorkFlags::REBUILD_PAINT);
         true
     }
 
@@ -889,8 +934,8 @@ impl UiArena {
             let node = &self.nodes[parent];
             let layout = node.layout;
             let next_parent = node.parent;
-            let needs_damage = node.computed_style.paint.clip
-                || node.computed_style.scroll.direction.is_scrollable();
+            let node_style = &node.target_style;
+            let needs_damage = node_style.paint.clip || node_style.scroll.direction.is_scrollable();
             if needs_damage {
                 self.add_node_damage(parent, layout);
             }
@@ -918,148 +963,174 @@ impl UiArena {
         event_system::dispatch_event(self, translator, event)
     }
 
-    pub fn update_tree<T: TextMeasurer>(
-        &mut self,
-        root: NodeId,
-        size: Size<f32>,
-        measurer: &mut T,
-    ) {
-        self.update_node(root, measurer);
+    pub fn tick_style_animations(&mut self, delta: Duration) -> bool {
+        if !self.ui_state.animation_driver.is_running() {
+            return false;
+        }
+
+        let mut changed = false;
+        let mut remaining = HashMap::new();
+        let active = self.ui_state.animation_driver.take_nodes();
+
+        for (id, mut animation) in active {
+            if !self.nodes.contains_key(id) {
+                continue;
+            }
+
+            let completed = {
+                let node = self.nodes.get_mut(id).expect("checked node existence");
+                animation.tick(delta, node, &self.theme)
+            };
+
+            self.mark_work(id, HostWorkFlags::REBUILD_PAINT);
+            changed = true;
+            if !completed {
+                remaining.insert(id, animation);
+            }
+        }
+
+        self.ui_state.animation_driver.set_nodes(remaining);
+        changed
+    }
+
+    pub fn has_running_style_animations(&self) -> bool {
+        self.ui_state.animation_driver.is_running()
+    }
+
+    pub fn update_tree<T: TextBackend>(&mut self, size: Size<f32>, measurer: &mut TextHost<T>) {
+        for node_id in self.ui_state.drain_state_change_dirty_list() {
+            self.recompute_node_state(node_id);
+        }
+
+        // Fiber-style bailout: skip the whole branch when neither this node nor
+        // any descendant has scheduled work.
+        for node_id in self.ui_state.drain_style_dirty_list() {
+            self.recompute_node_style(node_id);
+        }
+
+        for node_id in self.ui_state.drain_subtree_dirty_list() {
+            self.recompute_subtree_styles(node_id);
+        }
+
+        // Recompute layout if needed.
         if self.has_layout_dirty() {
             self.compute_layout(size, measurer);
         }
-        self.rebuild_subtree_dirty(root);
-        self.repaint_dirty_subtree(root);
-        self.clear_dirty_subtree(root);
+
+        self.ui_state.layout_dirty_list.clear();
+        self.rebuild_subtree_dirty(self.root);
+        self.repaint_dirty_subtree(self.root);
+        self.clear_work_subtree(self.root, HostWorkFlags::all());
     }
 
-    fn update_node<T: TextMeasurer>(&mut self, id: NodeId, measurer: &mut T) {
+    fn recompute_node_state(&mut self, id: NodeId) {
         if !self.nodes.contains_key(id) {
             return;
         }
-        let dirty = self.nodes[id].dirty;
-        let subtree_dirty = self.nodes[id].subtree_dirty;
-        // Fiber-style bailout: skip the whole branch when neither this node nor
-        // any descendant has scheduled work.
-        if dirty.is_empty() && subtree_dirty.is_empty() {
-            return;
-        }
 
-        self.update_visits += 1;
+        let state = self.nodes[id].state;
+        let before = self.nodes[id].state_before_change.take().unwrap_or(state);
+        let widget = self.nodes[id].widget.clone();
 
-        if dirty.intersects(DirtyFlags::STYLE) {
-            self.recompute_subtree_styles(id, measurer);
-        }
-
-        let children = self.nodes[id].children.clone();
-        for child in children {
-            self.update_node(child, measurer);
+        // Recompute style if the widget's style affects the state change.
+        if widget.with_widgets(|w| w.style().affects_state_change(before, state)) {
+            self.mark_dirty(id, WidgetUpdateFlags::STYLE_TARGET);
         }
     }
 
-    fn recompute_subtree_styles<T: TextMeasurer>(&mut self, id: NodeId, measurer: &mut T) {
+    fn recompute_subtree_styles(&mut self, id: NodeId) {
+        if !self.nodes.contains_key(id) {
+            return;
+        }
+
+        self.recompute_node_style(id);
+
+        let children = self.nodes[id].children.clone();
+        for child in children {
+            self.recompute_subtree_styles(child);
+        }
+    }
+
+    fn recompute_node_style(&mut self, id: NodeId) {
         if !self.nodes.contains_key(id) {
             return;
         }
 
         let widget = self.nodes[id].widget.clone();
+        let state = self.nodes[id].state;
         let parent_style = self.nodes[id]
             .parent
             .and_then(|p| self.node(p))
-            .map(|p| p.computed_style.clone())
-            .unwrap_or_else(|| ComputedStyle::initial(&self.theme));
-        let computed_style = computed_style_for_widget(&widget, &parent_style, &self.theme);
-        let taffy_style = taffy_style_for_widget(&widget, &parent_style, &computed_style);
+            .map(|p| &p.target_style)
+            .unwrap_or(&self.default_style);
 
-        let mut changed = false;
-        let mut refresh_context = false;
+        let computed_style = computed_style_for_widget(&widget, parent_style, &self.theme, state);
+        let taffy_style = taffy_style_for_widget(&widget, parent_style, &computed_style);
 
-        {
-            let taffy_node_id = self
-                .nodes
-                .get(id)
-                .map(|n| n.taffy_node)
-                .expect("checked node existence");
-            let previous_effective_style = self
-                .effective_style(id)
-                .expect("checked node existence before style recompute");
-            let animation_rule = self
-                .nodes
-                .get_mut(id)
-                .and_then(|n| n.take_pending_animation_rule());
-            let animation_target = animation_rule.as_ref().map(|rule| {
-                let mut target = computed_style.clone();
-                if let Some(style) = &rule.style {
-                    style.apply_to_computed(&mut target, &self.theme);
-                }
-                target
-            });
-            let has_animation_rule = animation_rule.is_some();
+        let node = self.node(id).unwrap();
+        let current_taffy_style = self
+            .taffy
+            .style(node.taffy_node)
+            .expect("Missing taffy node");
 
-            if let Some(n) = self.node_mut(id) {
-                if n.computed_style != computed_style {
-                    let text_measure_changed =
-                        matches!(n.node_type, WidgetType::Text | WidgetType::Label)
-                            && n.computed_style.text != computed_style.text;
-                    n.computed_style = computed_style.clone();
-                    n.dirty |= DirtyFlags::STYLE | DirtyFlags::PAINT;
-                    if text_measure_changed {
-                        n.dirty |= DirtyFlags::LAYOUT;
-                        refresh_context = true;
-                    }
-                    changed = true;
-                    if !has_animation_rule {
-                        n.clear_style_animation();
-                    }
-                } else if has_animation_rule {
-                    n.dirty |= DirtyFlags::STYLE | DirtyFlags::PAINT;
-                }
-
-                if let Some((rule, target)) = animation_rule.zip(animation_target) {
-                    let (from_style, to_style) =
-                        AnimableStyle::diff(&previous_effective_style, &target);
-                    if !to_style.is_empty() {
-                        n.start_style_animation(
-                            rule.trigger,
-                            from_style,
-                            to_style,
-                            rule.transition,
-                        );
-                        n.dirty |= DirtyFlags::ANIMATE;
-                    }
-                }
-            }
-
-            let node_taffy_style = self.taffy.style(taffy_node_id).expect("No Taffy Node");
-
-            if *node_taffy_style != taffy_style {
-                if let Some(n) = self.node_mut(id) {
-                    n.dirty |= DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
-                }
-                changed = true;
-
-                self.taffy
-                    .set_style(taffy_node_id, taffy_style)
-                    .expect("failed to update taffy style");
-            }
+        let style_diff = node.target_style.diff(&computed_style);
+        let mut work_flags = HostWorkFlags::from_style_diff(style_diff);
+        if *current_taffy_style != taffy_style {
+            self.taffy
+                .set_style(node.taffy_node, taffy_style)
+                .expect("failed to update taffy style");
+            work_flags |= HostWorkFlags::RECALC_LAYOUT | HostWorkFlags::REBUILD_PAINT;
         }
 
-        if refresh_context {
+        let transition = widget.transition();
+        if !self.nodes[id].style_initialized {
+            let node_mut = self.node_mut(id).unwrap();
+            node_mut.target_style = computed_style;
+            node_mut.effective_style = node_mut.target_style.clone();
+            node_mut.style_initialized = true;
+            node_mut.work |= work_flags;
             self.refresh_taffy_context(id);
+            return;
         }
 
-        let children = self.nodes[id].children.clone();
-        if changed {
-            for child in &children {
-                self.nodes[*child].dirty |= DirtyFlags::STYLE | DirtyFlags::PAINT;
-            }
+        if work_flags.is_empty() {
+            return;
         }
-        for child in children {
-            self.recompute_subtree_styles(child, measurer);
+
+        let from_style = self.nodes[id].effective_style.clone();
+        let started_transition = transition
+            .map(|transition| {
+                self.ui_state
+                    .start_style_transition(id, transition, &from_style, &computed_style)
+            })
+            .unwrap_or_else(|| {
+                self.ui_state.animation_driver.remove_node(id);
+                false
+            });
+        self.nodes[id].target_style = computed_style;
+
+        if started_transition {
+            work_flags |= HostWorkFlags::REBUILD_PAINT;
+        } else {
+            let effective_style = self.nodes[id].target_style.clone();
+            self.nodes[id].effective_style = effective_style;
         }
+
+        self.refresh_taffy_context(id);
+
+        if work_flags.intersects(HostWorkFlags::RECALC_STYLE_SUBTREE) {
+            self.ui_state.mark_style_subtree_dirty(id);
+        }
+
+        let node_mut = self.node_mut(id).unwrap();
+        node_mut.work |= work_flags;
     }
 
-    pub fn compute_layout_if_needed<T: TextMeasurer>(&mut self, size: Size<f32>, measurer: &mut T) {
+    pub fn compute_layout_if_needed<T: TextBackend>(
+        &mut self,
+        size: Size<f32>,
+        measurer: &mut TextHost<T>,
+    ) {
         if !self.has_layout_dirty() {
             return;
         }
@@ -1070,24 +1141,28 @@ impl UiArena {
     fn has_layout_dirty(&self) -> bool {
         self.nodes
             .values()
-            .any(|node| node.dirty.intersects(Self::layout_dirty_flags()))
+            .any(|node| node.work.intersects(Self::layout_work_flags()))
     }
 
     #[inline(always)]
-    fn layout_dirty_flags() -> DirtyFlags {
-        DirtyFlags::LAYOUT | DirtyFlags::STYLE | DirtyFlags::TREE
+    fn layout_work_flags() -> HostWorkFlags {
+        HostWorkFlags::RECALC_LAYOUT
     }
 
     #[inline(always)]
-    fn paint_dirty_flags() -> DirtyFlags {
-        DirtyFlags::PAINT | DirtyFlags::LAYOUT | DirtyFlags::STYLE | DirtyFlags::ANIMATE
+    fn paint_work_flags() -> HostWorkFlags {
+        HostWorkFlags::REBUILD_PAINT
+    }
+
+    fn effective_style(&self, id: NodeId) -> Option<&ComputedStyle> {
+        self.nodes.get(id).map(|node| &node.effective_style)
     }
 
     pub fn repaint_if_needed(&mut self, id: NodeId) {
         let should_repaint = self
             .nodes
             .get(id)
-            .is_some_and(|node| node.dirty.intersects(Self::paint_dirty_flags()));
+            .is_some_and(|node| node.work.intersects(HostWorkFlags::REBUILD_PAINT));
         if !should_repaint {
             return;
         }
@@ -1098,7 +1173,7 @@ impl UiArena {
             .effective_style(id)
             .expect("checked node existence before repaint");
         let mut cache = Vec::new();
-        self.nodes[id].widget.paint(rect, &style, &mut cache);
+        self.nodes[id].widget.paint(rect, style, &mut cache);
         for command in &mut cache {
             if let PaintCommand::Text(command) = command {
                 command.node_id = id;
@@ -1111,7 +1186,7 @@ impl UiArena {
         self.add_node_damage(id, rect);
     }
 
-    pub fn compute_layout<T: TextMeasurer>(&mut self, size: Size<f32>, measurer: &mut T) {
+    pub fn compute_layout<T: TextBackend>(&mut self, size: Size<f32>, measurer: &mut TextHost<T>) {
         self.layout_passes += 1;
         let root_taffy = self.nodes[self.root].taffy_node;
         self.taffy
@@ -1123,6 +1198,7 @@ impl UiArena {
                 },
                 |known_dimensions, available_space, _node_id, node_context, _style| {
                     measure_layout_context(
+                        &self.nodes,
                         known_dimensions,
                         available_space,
                         node_context,
@@ -1134,9 +1210,9 @@ impl UiArena {
         self.sync_layout(self.root, 0.0, 0.0);
     }
 
-    fn sync_layout(&mut self, id: NodeId, offset_x: f32, offset_y: f32) -> DirtyFlags {
+    fn sync_layout(&mut self, id: NodeId, offset_x: f32, offset_y: f32) -> HostWorkFlags {
         if !self.nodes.contains_key(id) {
-            return DirtyFlags::empty();
+            return HostWorkFlags::empty();
         }
 
         let taffy_node = self.nodes[id].taffy_node;
@@ -1160,28 +1236,28 @@ impl UiArena {
             self.add_node_damage(id, rect);
         }
 
-        let (children, mut subtree_dirty) = {
+        let (children, mut subtree_work) = {
             let node = &mut self.nodes[id];
             let should_sync_children = layout_changed
-                || node.dirty.intersects(Self::layout_dirty_flags())
-                || node.subtree_dirty.intersects(Self::layout_dirty_flags());
+                || node.work.intersects(Self::layout_work_flags())
+                || node.subtree_work.intersects(Self::layout_work_flags());
 
             node.previous_layout = node.layout;
             node.layout = rect;
-            node.dirty.remove(DirtyFlags::LAYOUT);
+            node.work.remove(HostWorkFlags::RECALC_LAYOUT);
             if layout_changed {
-                node.dirty.insert(DirtyFlags::PAINT);
+                node.work.insert(HostWorkFlags::REBUILD_PAINT);
             }
 
             if should_sync_children {
-                (node.children.clone(), DirtyFlags::empty())
+                (node.children.clone(), HostWorkFlags::empty())
             } else {
-                return node.dirty | node.subtree_dirty;
+                return node.work | node.subtree_work;
             }
         };
 
         for child in children {
-            subtree_dirty |= self.sync_layout(child, rect.x, rect.y);
+            subtree_work |= self.sync_layout(child, rect.x, rect.y);
         }
 
         let content_size = self.content_size_from_children(id, taffy_content_size);
@@ -1192,7 +1268,7 @@ impl UiArena {
             node.content_size = content_size;
             clamp_scroll_offset(node);
             (
-                node.computed_style.scroll.direction.is_scrollable()
+                node.target_style.scroll.direction.is_scrollable()
                     && (content_size_changed || node.scroll_offset != scroll_offset_before_clamp),
                 node.layout,
             )
@@ -1200,11 +1276,11 @@ impl UiArena {
         if scroll_dirty {
             self.add_node_damage(id, rect);
             let node = self.nodes.get_mut(id).expect("node removed during layout");
-            node.dirty.insert(DirtyFlags::PAINT);
+            node.work.insert(HostWorkFlags::REBUILD_PAINT);
         }
         let node = self.nodes.get_mut(id).expect("node removed during layout");
-        node.subtree_dirty = subtree_dirty;
-        node.dirty | node.subtree_dirty
+        node.subtree_work = subtree_work;
+        node.work | node.subtree_work
     }
 
     fn content_size_from_children(&self, id: NodeId, taffy_content_size: Size<f32>) -> Size<f32> {
@@ -1224,7 +1300,12 @@ impl UiArena {
     fn node_uses_unrounded_layout(&self, id: NodeId) -> bool {
         self.nodes
             .get(id)
-            .map(|node| matches!(node.widget.node_type(), WidgetType::Text))
+            .map(|node| {
+                matches!(
+                    node.widget.node_type(),
+                    WidgetType::Text | WidgetType::TextInput
+                )
+            })
             .unwrap_or(false)
     }
 
@@ -1233,15 +1314,15 @@ impl UiArena {
             return;
         }
 
-        let dirty = self.nodes[id].dirty;
-        let subtree_dirty = self.nodes[id].subtree_dirty;
-        if !dirty.intersects(Self::paint_dirty_flags())
-            && !subtree_dirty.intersects(Self::paint_dirty_flags())
+        let work = self.nodes[id].work;
+        let subtree_work = self.nodes[id].subtree_work;
+        if !work.intersects(Self::paint_work_flags())
+            && !subtree_work.intersects(Self::paint_work_flags())
         {
             return;
         }
 
-        if dirty.intersects(Self::paint_dirty_flags()) {
+        if work.intersects(Self::paint_work_flags()) {
             self.repaint_if_needed(id);
         }
 
@@ -1251,38 +1332,38 @@ impl UiArena {
         }
     }
 
-    fn clear_dirty_subtree(&mut self, id: NodeId) {
+    fn clear_work_subtree(&mut self, id: NodeId, flags: HostWorkFlags) -> HostWorkFlags {
         if !self.nodes.contains_key(id) {
-            return;
-        }
-
-        let dirty = self.nodes[id].dirty;
-        let subtree_dirty = self.nodes[id].subtree_dirty;
-        if dirty.is_empty() && subtree_dirty.is_empty() {
-            return;
+            return HostWorkFlags::empty();
         }
 
         let children = self.nodes[id].children.clone();
+        let mut subtree_work = HostWorkFlags::empty();
         for child in children {
-            self.clear_dirty_subtree(child);
-        }
-        self.clear_dirty(id);
-    }
-
-    fn rebuild_subtree_dirty(&mut self, id: NodeId) -> DirtyFlags {
-        if !self.nodes.contains_key(id) {
-            return DirtyFlags::empty();
-        }
-
-        let children = self.nodes[id].children.clone();
-        let mut subtree_dirty = DirtyFlags::empty();
-        for child in children {
-            subtree_dirty |= self.rebuild_subtree_dirty(child);
+            subtree_work |= self.clear_work_subtree(child, flags);
         }
 
         let node = self.nodes.get_mut(id).expect("checked node existence");
-        node.subtree_dirty = subtree_dirty;
-        node.dirty | node.subtree_dirty
+        node.old_props_hash = node.new_props_hash;
+        node.work.remove(flags);
+        node.subtree_work = subtree_work;
+        node.work | node.subtree_work
+    }
+
+    fn rebuild_subtree_dirty(&mut self, id: NodeId) -> HostWorkFlags {
+        if !self.nodes.contains_key(id) {
+            return HostWorkFlags::empty();
+        }
+
+        let children = self.nodes[id].children.clone();
+        let mut subtree_work = HostWorkFlags::empty();
+        for child in children {
+            subtree_work |= self.rebuild_subtree_dirty(child);
+        }
+
+        let node = self.nodes.get_mut(id).expect("checked node existence");
+        node.subtree_work = subtree_work;
+        node.work | node.subtree_work
     }
 
     // pub fn collect_paint_commands(&mut self) -> (DamageRegion, Vec<PaintCommand>) {
@@ -1291,7 +1372,17 @@ impl UiArena {
     //     (damage, cmds)
     // }
 
-    pub fn prepare_paint_commands(&mut self) -> (&DamageRegion, Vec<PaintCommand>) {
+    pub fn collect_paint_commands(&self) -> PaintFrame {
+        let damage = self.damage.clone();
+        let mut commands = Vec::new();
+        if !damage.is_empty() {
+            self.paint_node(self.root, &damage, &mut commands);
+        }
+
+        PaintFrame { damage, commands }
+    }
+
+    pub fn prepare_paint_commands(&self) -> (&DamageRegion, Vec<PaintCommand>) {
         let damage = &self.damage;
         let mut commands = Vec::new();
         if damage.is_empty() {
@@ -1306,9 +1397,7 @@ impl UiArena {
         // println!("CLEAR DAMAGE");
         self.damage.clear();
         self.damage_nodes.clear();
-        for (_, node) in self.nodes.iter_mut() {
-            node.dirty.remove(DirtyFlags::PAINT | DirtyFlags::ANIMATE);
-        }
+        self.clear_work_subtree(self.root, HostWorkFlags::REBUILD_PAINT);
     }
 
     #[inline(always)]
@@ -1334,13 +1423,13 @@ impl UiArena {
 
         if force || damage.intersects(visual_layout) {
             // println!("{id:?} NEED REPAINT");
-            let scrollable = node.computed_style.scroll.direction.is_scrollable();
-            if node.computed_style.paint.clip || scrollable {
+            let scrollable = node.target_style.scroll.direction.is_scrollable();
+            if node.target_style.paint.clip || scrollable {
                 commands.push(PaintCommand::PushClip(node.layout));
             }
             if node.paint_cache.is_empty() {
-                let style = self.effective_style_for_node(node);
-                node.widget.paint(node.layout, &style, commands);
+                node.widget
+                    .paint(node.layout, &node.effective_style, commands);
             } else {
                 commands.extend_from_slice(&node.paint_cache);
             }
@@ -1367,7 +1456,7 @@ impl UiArena {
                 commands.push(PaintCommand::PopTransform);
                 paint_scrollbars(node, commands);
             }
-            if node.computed_style.paint.clip || scrollable {
+            if node.target_style.paint.clip || scrollable {
                 commands.push(PaintCommand::PopClip);
             }
         }
@@ -1378,10 +1467,13 @@ impl UiArena {
     pub fn is_dirty(&self) -> bool {
         !self.damage.is_empty()
             || self.has_running_style_animations()
+            || !self.ui_state.style_dirty_list.is_empty()
+            || !self.ui_state.style_subtree_dirty_list.is_empty()
+            || !self.ui_state.layout_dirty_list.is_empty()
             || self
                 .nodes
                 .values()
-                .any(|node| !node.dirty.is_empty() || !node.subtree_dirty.is_empty())
+                .any(|node| !node.work.is_empty() || !node.subtree_work.is_empty())
     }
 
     pub fn update_widget_node_from_parts(
@@ -1389,12 +1481,10 @@ impl UiArena {
         id: NodeId,
         key: Option<Key>,
         props_hash: u64,
-        style: tf::Style,
-        computed_style: ComputedStyle,
         widget: WidgetI,
         event_handlers: EventHandlers,
     ) -> WidgetI {
-        let mut flags = DirtyFlags::empty();
+        let mut flags = WidgetUpdateFlags::empty();
         let current_widget;
         let event_callbacks = {
             let current = self
@@ -1409,38 +1499,19 @@ impl UiArena {
             let node = self.nodes.get_mut(id).expect("reused node missing");
             node.key = key;
             node.new_props_hash = props_hash;
-            if node.old_props_hash != props_hash {
-                flags |= DirtyFlags::PROPS;
-            }
-            if node.computed_style != computed_style {
-                node.computed_style = computed_style.clone();
-                flags |= DirtyFlags::STYLE | DirtyFlags::PAINT;
-            }
-            let node_taffy_id = node.taffy_node;
-            let node_taffy_style = self
-                .taffy
-                .style(node_taffy_id)
-                .expect("get taffy node style");
 
-            if *node_taffy_style != style {
-                flags |= DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
-                self.taffy
-                    .set_style(node.taffy_node, style)
-                    .expect("failed to update taffy style");
-            }
             if node.node_type != widget.node_type() {
-                flags |= DirtyFlags::TREE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
+                flags |= WidgetUpdateFlags::TREE;
             }
+
             let widget_flags = node.widget.update_from(&widget);
 
             flags |= widget_flags;
             node.event_callbacks = event_callbacks;
-            node.style_animation_rules = node.widget.style_animation_rules();
             current_widget = node.widget.clone();
         }
 
         self.refresh_taffy_context(id);
-
         self.mark_dirty(id, flags);
         current_widget
     }
@@ -1465,7 +1536,10 @@ impl UiArena {
         self.nodes[child].position = 0;
         self.sync_taffy_children(old_parent);
         self.reindex_children(old_parent);
-        self.mark_dirty(old_parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
+        self.mark_work(
+            old_parent,
+            HostWorkFlags::SYNC_TREE | HostWorkFlags::RECALC_LAYOUT,
+        );
     }
 
     pub fn set_children(&mut self, parent: NodeId, children: Vec<NodeId>) {
@@ -1499,7 +1573,10 @@ impl UiArena {
                         .retain(|candidate| *candidate != child);
                     self.sync_taffy_children(old_parent);
                     self.reindex_children(old_parent);
-                    self.mark_dirty(old_parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
+                    self.mark_work(
+                        old_parent,
+                        HostWorkFlags::SYNC_TREE | HostWorkFlags::RECALC_LAYOUT,
+                    );
                 }
                 self.nodes[child].parent = Some(parent);
                 self.nodes[child].position = new_position;
@@ -1510,7 +1587,10 @@ impl UiArena {
         self.sync_taffy_children(parent);
 
         if tree_changed {
-            self.mark_dirty(parent, DirtyFlags::TREE | DirtyFlags::LAYOUT);
+            self.mark_work(
+                parent,
+                HostWorkFlags::SYNC_TREE | HostWorkFlags::RECALC_LAYOUT,
+            );
         }
     }
 
@@ -1548,16 +1628,8 @@ impl UiArena {
         let node = &self.nodes[id];
 
         let context = match node.node_type {
-            WidgetType::Text | WidgetType::Label => Some(WidgetContext::Text(
-                id,
-                node.computed_style.text.clone(),
-                node.widget.text(),
-            )),
-            WidgetType::Button => Some(WidgetContext::Button(
-                id,
-                node.computed_style.text.clone(),
-                node.widget.text(),
-            )),
+            WidgetType::Text | WidgetType::TextInput => Some(WidgetContext::Text(id)),
+            WidgetType::Image => node.widget.intrinsic_size().map(WidgetContext::Image),
             _ => None,
         };
 
@@ -1574,52 +1646,32 @@ impl Default for UiArena {
 }
 
 #[cfg(test)]
-mod mutation_tests {
+mod tests {
     use super::*;
-    use crate::animation::AnimationEasing;
-    use crate::event_system::translator;
-    use crate::widgets::{button, column, container, text};
+    use crate::event_system::callbacks::EventHandlers;
+    use crate::event_system::translator::EventTranslator;
+    use crate::text::testing::ZeroTextBackend;
+    use crate::widgets::{WidgetI, container};
     use std::time::{Duration, Instant};
-    use xui_interface::events::RawEvent;
-    use xui_interface::events::XuiPointerId;
-    use xui_interface::{
-        Color, EventTrigger, Modifiers, PointerButton, PointerButtons, PointerKind,
-        RawPointerButton, RawPointerMove, Style,
+    use xui_animation::{Easing, Transition};
+    use xui_interface::events::{
+        Modifiers, PointerButtons, PointerKind, RawPointerMove, XuiPointerId,
     };
+    use xui_interface::{Color, ComputedColorStyle, Style, WidgetState};
 
-    fn default_style() -> tf::Style {
-        tf::Style::default()
+    fn create_host(arena: &mut UiArena, widget: WidgetI) -> NodeId {
+        let parent = arena.root();
+        let key = widget.key();
+        let props_hash = widget.props_hash();
+        let id = arena.create_node(key, props_hash, widget, EventHandlers::default());
+        arena.append_child(parent, id);
+        id
     }
 
-    fn sized_style(width: f32, height: f32) -> tf::Style {
-        tf::Style {
-            size: tf::Size {
-                width: tf::Dimension::length(width),
-                height: tf::Dimension::length(height),
-            },
-            ..Default::default()
-        }
-    }
-
-    fn linear_transition() -> AnimationTransition {
-        AnimationTransition::new(Duration::from_millis(100)).ease(AnimationEasing::Linear)
-    }
-
-    fn assert_near(actual: f32, expected: f32) {
-        assert!(
-            (actual - expected).abs() < 0.0001,
-            "expected {actual} to be near {expected}"
-        );
-    }
-
-    fn assert_background_near(style: &ComputedStyle, expected: Color) {
-        let ComputedColorStyle::Solid(color) = style.paint.background else {
-            panic!("expected solid background");
-        };
-        assert_near(color.r, expected.r);
-        assert_near(color.g, expected.g);
-        assert_near(color.b, expected.b);
-        assert_near(color.a, expected.a);
+    fn update_host(arena: &mut UiArena, id: NodeId, widget: WidgetI) {
+        let key = widget.key();
+        let props_hash = widget.props_hash();
+        arena.update_widget_node_from_parts(id, key, props_hash, widget, EventHandlers::default());
     }
 
     fn pointer_move(position: Point) -> RawEvent {
@@ -1635,284 +1687,300 @@ mod mutation_tests {
         })
     }
 
-    fn pointer_down(position: Point) -> RawEvent {
-        let button = PointerButton::Primary;
-        RawEvent::PointerDown(RawPointerButton {
-            position,
-            pointer_id: XuiPointerId::new(0),
-            device_id: None,
-            kind: PointerKind::Mouse,
-            button,
-            buttons: PointerButtons::from_button(button),
-            modifiers: Modifiers::default(),
-            timestamp: Instant::now(),
-        })
+    fn assert_background_near(style: &ComputedStyle, expected: Color) {
+        let ComputedColorStyle::Solid(color) = style.paint.background else {
+            panic!("expected solid background");
+        };
+        assert_near(color.r, expected.r);
+        assert_near(color.g, expected.g);
+        assert_near(color.b, expected.b);
+        assert_near(color.a, expected.a);
     }
 
-    fn pointer_up(position: Point) -> RawEvent {
-        RawEvent::PointerUp(RawPointerButton {
-            position,
-            pointer_id: XuiPointerId::new(0),
-            device_id: None,
-            kind: PointerKind::Mouse,
-            button: PointerButton::Primary,
-            buttons: PointerButtons::default(),
-            modifiers: Modifiers::default(),
-            timestamp: Instant::now(),
-        })
-    }
-
-    struct ZeroTextMeasurer;
-
-    impl TextMeasurer for ZeroTextMeasurer {
-        fn measure_text(&mut self, _text: &str, _props: &ComputedTextStyle) -> Size<f32> {
-            Size::<f32>::ZERO
-        }
-
-        fn measure_text_with_constraints(
-            &mut self,
-            _text: &str,
-            _props: &ComputedTextStyle,
-            _constraints: TextLayoutConstraints,
-        ) -> Size<f32> {
-            Size::<f32>::ZERO
-        }
-    }
-
-    #[test]
-    fn append_child_moves_existing_child_to_end() {
-        let mut arena = UiArena::new();
-        let parent = arena.insert(arena.root(), column(), default_style());
-        let a = arena.insert(parent, text("A"), default_style());
-        let b = arena.insert(parent, text("B"), default_style());
-
-        arena.append_child(parent, a);
-
-        assert_eq!(arena.children(parent), &[b, a]);
-        assert_eq!(arena.node(a).and_then(|node| node.parent), Some(parent));
-        assert_eq!(arena.node(a).map(|node| node.position), Some(1));
-    }
-
-    #[test]
-    fn insert_before_moves_existing_child() {
-        let mut arena = UiArena::new();
-        let parent = arena.insert(arena.root(), column(), default_style());
-        let a = arena.insert(parent, text("A"), default_style());
-        let b = arena.insert(parent, text("B"), default_style());
-        let c = arena.insert(parent, text("C"), default_style());
-
-        arena.insert_before(parent, c, b);
-
-        assert_eq!(arena.children(parent), &[a, c, b]);
-        assert_eq!(arena.node(c).and_then(|node| node.parent), Some(parent));
-        assert_eq!(arena.node(c).map(|node| node.position), Some(1));
-    }
-
-    #[test]
-    fn insert_before_child_itself_is_noop() {
-        let mut arena = UiArena::new();
-        let parent = arena.insert(arena.root(), column(), default_style());
-        let a = arena.insert(parent, text("A"), default_style());
-        let b = arena.insert(parent, text("B"), default_style());
-
-        arena.insert_before(parent, a, a);
-
-        assert_eq!(arena.children(parent), &[a, b]);
-    }
-
-    #[test]
-    fn insert_before_missing_sibling_falls_back_to_append() {
-        let mut arena = UiArena::new();
-        let parent = arena.insert(arena.root(), column(), default_style());
-        let other_parent = arena.insert(arena.root(), column(), default_style());
-        let a = arena.insert(parent, text("A"), default_style());
-        let b = arena.insert(parent, text("B"), default_style());
-        let other = arena.insert(other_parent, text("Other"), default_style());
-
-        arena.insert_before(parent, a, other);
-
-        assert_eq!(arena.children(parent), &[b, a]);
-        assert_eq!(arena.children(other_parent), &[other]);
-    }
-
-    #[test]
-    fn remove_from_parent_detaches_child() {
-        let mut arena = UiArena::new();
-        let parent = arena.insert(arena.root(), column(), default_style());
-        let a = arena.insert(parent, text("A"), default_style());
-        let b = arena.insert(parent, text("B"), default_style());
-
-        arena.remove_from_parent(a);
-
-        assert_eq!(arena.children(parent), &[b]);
-        assert_eq!(arena.node(a).and_then(|node| node.parent), None);
-        assert_eq!(arena.node(a).map(|node| node.position), Some(0));
-    }
-
-    #[test]
-    fn hover_change_starts_button_animation_and_repaints_sampled_style() {
-        let mut arena = UiArena::new();
-        let root = arena.root();
-        let button = arena.insert(
-            root,
-            button("Hover")
-                .style(Style::new().background(Color::BLACK))
-                .hover_style(Style::new().background(Color::WHITE))
-                .hover_transition(linear_transition()),
-            sized_style(40.0, 20.0),
+    fn assert_near(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() < 0.0001,
+            "expected {actual} to be near {expected}"
         );
-        let mut measurer = ZeroTextMeasurer;
-        let mut translator = EventTranslator::default();
-        arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+    }
 
-        arena.dispatch_event(&mut translator, pointer_move(Point::new(1.0, 1.0)));
-        arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+    #[test]
+    fn style_diff_domains_map_to_host_work_without_mixing_public_flags() {
+        let text = HostWorkFlags::from_style_diff(StyleDiffFlags::TEXT);
+        assert!(text.contains(HostWorkFlags::REBUILD_PAINT));
+        assert!(text.contains(HostWorkFlags::RECALC_STYLE_SUBTREE));
+        assert!(!text.contains(HostWorkFlags::RECALC_LAYOUT));
+
+        let layout = HostWorkFlags::from_style_diff(StyleDiffFlags::LAYOUT);
+        assert!(layout.contains(HostWorkFlags::RECALC_LAYOUT));
+        assert!(layout.contains(HostWorkFlags::REBUILD_PAINT));
+        assert!(!layout.contains(HostWorkFlags::RECALC_STYLE));
+
+        let paint = HostWorkFlags::from_style_diff(StyleDiffFlags::PAINT);
+        assert_eq!(paint, HostWorkFlags::REBUILD_PAINT);
+
+        let scroll = HostWorkFlags::from_style_diff(StyleDiffFlags::SCROLL);
+        assert!(scroll.contains(HostWorkFlags::RECALC_LAYOUT));
+        assert!(scroll.contains(HostWorkFlags::REBUILD_PAINT));
+    }
+
+    #[test]
+    fn style_target_change_starts_transition_and_repaints_effective_style() {
+        let mut arena = UiArena::new();
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        let transition = Transition::new(Duration::from_millis(100)).ease(Easing::Linear);
+        let initial = WidgetI::new(
+            container()
+                .style(
+                    Style::new()
+                        .width(40.0)
+                        .height(20.0)
+                        .background(Color::BLACK),
+                )
+                .transition(transition),
+        );
+        let id = create_host(&mut arena, initial);
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+
+        let next = WidgetI::new(
+            container()
+                .style(
+                    Style::new()
+                        .width(40.0)
+                        .height(20.0)
+                        .background(Color::WHITE),
+                )
+                .transition(transition),
+        );
+        update_host(&mut arena, id, next);
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
         assert!(arena.has_running_style_animations());
+        assert_background_near(&arena.nodes[id].effective_style, Color::BLACK);
+
         arena.tick_style_animations(Duration::from_millis(50));
-        arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
-        let effective = arena.effective_style(button).unwrap();
-        assert_background_near(&effective, Color::rgb(0.5, 0.5, 0.5));
-
-        let paint_cache = &arena.node(button).unwrap().paint_cache;
-        let PaintCommand::Rect { color, .. } = paint_cache.first().unwrap() else {
-            panic!("expected button box paint command");
+        assert_background_near(&arena.nodes[id].effective_style, Color::rgb(0.5, 0.5, 0.5));
+        let PaintCommand::Rect { color, .. } = arena.nodes[id].paint_cache.first().unwrap() else {
+            panic!("expected rect paint command");
         };
         let ComputedColorStyle::Solid(color) = *color else {
             panic!("expected solid painted background");
         };
         assert_near(color.r, 0.5);
-        assert_near(color.g, 0.5);
-        assert_near(color.b, 0.5);
+
+        arena.tick_style_animations(Duration::from_millis(50));
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+
+        assert!(!arena.has_running_style_animations());
+        assert_background_near(&arena.nodes[id].effective_style, Color::WHITE);
     }
 
     #[test]
-    fn hover_change_starts_generic_widget_animation_and_repaints_sampled_style() {
+    fn semantic_hover_updates_widget_state_and_recomputes_style() {
         let mut arena = UiArena::new();
-        let root = arena.root();
-        let item = arena.insert(
-            root,
-            container()
-                .style(Style::new().background(Color::BLACK))
-                .animation(
-                    EventTrigger::OnHover,
-                    AnimableStyle::new().background(Color::WHITE),
-                    linear_transition(),
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        let id = create_host(
+            &mut arena,
+            WidgetI::new(
+                container().style(
+                    Style::new()
+                        .width(40.0)
+                        .height(20.0)
+                        .background(Color::BLACK)
+                        .when(WidgetState::HOVERED, |s| s.background(Color::WHITE)),
                 ),
-            sized_style(40.0, 20.0),
+            ),
         );
-        let mut measurer = ZeroTextMeasurer;
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+
         let mut translator = EventTranslator::default();
-
-        arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
-
         arena.dispatch_event(&mut translator, pointer_move(Point::new(1.0, 1.0)));
-        arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
-        assert!(arena.has_running_style_animations());
-        arena.tick_style_animations(Duration::from_millis(50));
-        arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
-
-        let effective = arena.effective_style(item).unwrap();
-        assert_background_near(&effective, Color::rgb(0.5, 0.5, 0.5));
-
-        let paint_cache = &arena.node(item).unwrap().paint_cache;
-        let PaintCommand::Rect { color, .. } = paint_cache.first().unwrap() else {
-            panic!("expected container box paint command");
-        };
-        let ComputedColorStyle::Solid(color) = *color else {
-            panic!("expected solid painted background");
-        };
-        assert_near(color.r, 0.5);
-        assert_near(color.g, 0.5);
-        assert_near(color.b, 0.5);
+        assert!(arena.nodes[id].state.contains(WidgetState::HOVERED));
+        assert_background_near(&arena.nodes[id].target_style, Color::WHITE);
+        assert_background_near(&arena.nodes[id].effective_style, Color::WHITE);
     }
 
     #[test]
-    fn click_starts_generic_widget_animation() {
+    fn semantic_hover_leave_recomputes_default_style() {
         let mut arena = UiArena::new();
-        let root = arena.root();
-        let item = arena.insert(
-            root,
-            container()
-                .style(Style::new().background(Color::BLACK))
-                .animation(
-                    EventTrigger::OnClick,
-                    AnimableStyle::new().background(Color::WHITE),
-                    linear_transition(),
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        let id = create_host(
+            &mut arena,
+            WidgetI::new(
+                container().style(
+                    Style::new()
+                        .width(40.0)
+                        .height(20.0)
+                        .background(Color::BLACK)
+                        .when(WidgetState::HOVERED, |s| s.background(Color::WHITE)),
                 ),
-            sized_style(40.0, 20.0),
+            ),
         );
-        let mut measurer = ZeroTextMeasurer;
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+
         let mut translator = EventTranslator::default();
-        arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+        arena.dispatch_event(&mut translator, pointer_move(Point::new(1.0, 1.0)));
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        arena.dispatch_event(&mut translator, pointer_move(Point::new(80.0, 80.0)));
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
-        arena.dispatch_event(&mut translator, pointer_down(Point::new(1.0, 1.0)));
-        arena.dispatch_event(&mut translator, pointer_up(Point::new(1.0, 1.0)));
-        arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
-
-        assert!(arena.has_running_style_animations());
-        arena.tick_style_animations(Duration::from_millis(50));
-
-        let effective = arena.effective_style(item).unwrap();
-        assert_background_near(&effective, Color::rgb(0.5, 0.5, 0.5));
+        assert!(!arena.nodes[id].state.contains(WidgetState::HOVERED));
+        assert_background_near(&arena.nodes[id].target_style, Color::BLACK);
+        assert_background_near(&arena.nodes[id].effective_style, Color::BLACK);
     }
 
     #[test]
-    fn pointer_press_uses_pressed_transition_rule() {
+    fn target_layout_change_marks_layout_and_damage() {
         let mut arena = UiArena::new();
-        let root = arena.root();
-        let button = arena.insert(
-            root,
-            button("Press")
-                .style(Style::new().background(Color::BLACK))
-                .pressed_style(Style::new().background(Color::WHITE))
-                .pressed_transition(linear_transition()),
-            sized_style(40.0, 20.0),
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        let id = create_host(
+            &mut arena,
+            WidgetI::new(container().style(Style::new().width(10.0).height(10.0))),
         );
-        let mut measurer = ZeroTextMeasurer;
-        let mut translator = EventTranslator::default();
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        arena.finish_paint();
 
-        arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+        update_host(
+            &mut arena,
+            id,
+            WidgetI::new(container().style(Style::new().width(20.0).height(10.0))),
+        );
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
-        arena.dispatch_event(&mut translator, pointer_down(Point::new(1.0, 1.0)));
-        arena.update_tree(root, Size::new(100.0, 100.0), &mut measurer);
+        assert_near(arena.nodes[id].layout.width, 20.0);
+        let frame = arena.collect_paint_commands();
+        assert!(!frame.damage.is_empty());
+    }
 
-        assert!(arena.has_running_style_animations());
-        arena.tick_style_animations(Duration::from_millis(50));
+    #[test]
+    fn damage_generates_paint_commands_and_finish_clears_frame_damage() {
+        let mut arena = UiArena::new();
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        create_host(
+            &mut arena,
+            WidgetI::new(
+                container().style(
+                    Style::new()
+                        .width(40.0)
+                        .height(20.0)
+                        .background(Color::BLACK),
+                ),
+            ),
+        );
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
-        let effective = arena.effective_style(button).unwrap();
-        assert_background_near(&effective, Color::rgb(0.5, 0.5, 0.5));
+        let frame = arena.collect_paint_commands();
+        assert!(!frame.damage.is_empty());
+        assert!(!frame.commands.is_empty());
+
+        arena.finish_paint();
+        let frame = arena.collect_paint_commands();
+        assert!(frame.damage.is_empty());
+        assert!(frame.commands.is_empty());
+    }
+
+    #[test]
+    fn mark_dirty_schedules_work_without_collecting_damage() {
+        let mut arena = UiArena::new();
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        let id = create_host(
+            &mut arena,
+            WidgetI::new(
+                container().style(
+                    Style::new()
+                        .width(40.0)
+                        .height(20.0)
+                        .background(Color::BLACK),
+                ),
+            ),
+        );
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        arena.finish_paint();
+
+        arena.mark_dirty(id, WidgetUpdateFlags::PAINT_OUTPUT);
+
+        assert!(arena.damage.is_empty());
+
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        let frame = arena.collect_paint_commands();
+        assert!(!frame.damage.is_empty());
+        assert!(!frame.commands.is_empty());
     }
 }
 
-fn measure_layout_context<T: TextMeasurer>(
+fn measure_layout_context<T: TextBackend>(
+    ui_tree: &SlotMap<NodeId, Node>,
     known_dimensions: tf::Size<Option<f32>>,
-    _available_space: tf::Size<tf::AvailableSpace>,
+    available_space: tf::Size<tf::AvailableSpace>,
     node_context: Option<&mut WidgetContext>,
-    measurer: &mut T,
+    measurer: &mut TextHost<T>,
 ) -> tf::Size<f32> {
-    if let tf::Size {
+    let known_size = if let tf::Size {
         width: Some(width),
         height: Some(height),
     } = known_dimensions
     {
-        return tf::Size { width, height };
-    }
+        Some(tf::Size { width, height })
+    } else {
+        None
+    };
 
     let measured = match node_context {
-        Some(WidgetContext::Text(node_id, props, t))
-        | Some(WidgetContext::Button(node_id, props, t)) => {
-            let str = t.as_ref().map(|t| t.as_str()).unwrap_or_default();
-            let constraints = match known_dimensions.width {
-                Some(width) => TextLayoutConstraints::max_width(width),
-                None => TextLayoutConstraints::UNBOUNDED,
+        Some(WidgetContext::Text(node_id)) => {
+            let node = ui_tree.get(*node_id).expect("node not found");
+            if let Some(props) = node
+                .widget
+                .with_widgets(|w| w.text_layout_props(&node.effective_style))
+            {
+                let constraints = match known_dimensions.width {
+                    Some(width) => TextLayoutConstraints::max_width(width),
+                    None => match available_space.width {
+                        tf::AvailableSpace::MaxContent => TextLayoutConstraints::UNBOUNDED,
+                        tf::AvailableSpace::MinContent => TextLayoutConstraints::MIN_SIZE,
+                        tf::AvailableSpace::Definite(width) => {
+                            TextLayoutConstraints::max_width(width)
+                        }
+                    },
+                };
+
+                let font_context = measurer.backend().epoch();
+                let input = TextLayoutInput::new(
+                    props.text,
+                    constraints,
+                    props.style.into(),
+                    props.paragraph,
+                    font_context,
+                );
+                let layout = measurer.simple_doc(*node_id, input);
+                let size = layout.kind.size();
+                return tf::Size {
+                    width: known_dimensions.width.unwrap_or(size.width),
+                    height: known_dimensions.height.unwrap_or(size.height),
+                };
+            } else {
+                return tf::Size {
+                    width: known_dimensions.width.unwrap_or(0.0),
+                    height: known_dimensions.height.unwrap_or(0.0),
+                };
+            }
+        }
+        Some(WidgetContext::Image(size)) => {
+            return tf::Size {
+                width: known_dimensions.width.unwrap_or(size.width),
+                height: known_dimensions.height.unwrap_or(size.height),
             };
-            measurer.measure_node_text_with_constraints(*node_id, str, props, constraints)
         }
 
-        _ => Size::<f32>::ZERO,
+        _ => {
+            if let Some(size) = known_size {
+                return size;
+            }
+            Size::<f32>::ZERO
+        }
     };
 
     tf::Size {
@@ -1943,7 +2011,7 @@ fn scroll_acceleration_factor(magnitude: f32) -> f32 {
 }
 
 fn clamp_scroll_offset(node: &mut Node) {
-    let direction = node.computed_style.scroll.direction;
+    let direction = node.target_style.scroll.direction;
     let max_x = if direction.allows_horizontal() {
         (node.content_size.width - node.layout.width).max(0.0)
     } else {
@@ -1959,8 +2027,8 @@ fn clamp_scroll_offset(node: &mut Node) {
 }
 
 fn paint_scrollbars(node: &Node, commands: &mut Vec<PaintCommand>) {
-    let direction = node.computed_style.scroll.direction;
-    let scrollbar = node.computed_style.scroll.scrollbar;
+    let direction = node.target_style.scroll.direction;
+    let scrollbar = node.target_style.scroll.scrollbar;
     if scrollbar.visibility == ScrollbarVisibilityStyle::Hidden || scrollbar.width <= 0.0 {
         return;
     }
@@ -2129,7 +2197,7 @@ fn paint_scrollbar_part(
 //         arena.node_mut(scroller).unwrap().scroll_offset = Point::new(0.0, 30.0);
 //         arena.finish_paint();
 
-//         arena.mark_dirty(scroller, DirtyFlags::PAINT);
+//         arena.mark_dirty(scroller, WidgetUpdateFlags::PAINT_OUTPUT);
 
 //         assert_eq!(
 //             arena.prepare_paint_commands().0.rects(),
@@ -2161,7 +2229,7 @@ fn paint_scrollbar_part(
 //         arena.node_mut(child).unwrap().layout = Rect::new(0.0, 90.0, 40.0, 40.0);
 //         arena.finish_paint();
 
-//         arena.mark_dirty(child, DirtyFlags::PAINT);
+//         arena.mark_dirty(child, WidgetUpdateFlags::PAINT_OUTPUT);
 
 //         assert_eq!(
 //             arena.prepare_paint_commands().0.rects(),
@@ -2186,7 +2254,7 @@ fn paint_scrollbar_part(
 //         arena.node_mut(child).unwrap().layout = Rect::new(0.0, 132.0, 80.0, 40.0);
 //         arena.finish_paint();
 
-//         arena.mark_dirty(child, DirtyFlags::PAINT);
+//         arena.mark_dirty(child, WidgetUpdateFlags::PAINT_OUTPUT);
 
 //         assert_eq!(
 //             arena.prepare_paint_commands().0.rects(),

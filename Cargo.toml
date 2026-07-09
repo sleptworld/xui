@@ -1,18 +1,33 @@
 [workspace]
 resolver = "3"
 members = [
+    "xui-assets",
     "xui-interface",
+    "xui-pak",
+    "xui-pak-build",
+    "xui-pak-cli",
     "xui",
     "xui-macros",
     "xui-winit",
     "xui-example-app",
     "xui-text",
     "xui-components",
+    "xui-cli",
     "xui-animation",
-    "slot",
+    "slot", "xui-text-engine",
 ]
 
 
 [workspace.dependencies]
+blake3 = "1"
+camino = { version = "1", features = ["serde1"] }
 glam = "0.32.1"
-image = "0.25.10"
+memmap2 = "0.9"
+postcard = { version = "1", features = ["alloc"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+zune-core = "0.5.1"
+zune-image = { version = "0.5.0", default-features = false, features = ["jpeg", "png"] }
+zstd = "0.13"
+tokio = { version = "1.52.3", features = ["full"] }

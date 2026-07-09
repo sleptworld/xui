@@ -5,14 +5,13 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 pub use crate::event_system::callbacks::EventHandlers;
+use xui_animation::Transition;
 use xui_interface::TextContent;
-pub use xui_interface::{Widget, WidgetType};
+pub use xui_interface::{PaintCommand, Widget, WidgetType};
 
-use crate::animation::{StyleAnimation, StyleAnimationRule};
-use crate::core::Rect;
+use crate::core::{Rect, Size};
 use crate::element::{ComponentDesc, ElementDesc, WidgetDesc};
 use crate::fiber::{ComponentRender, Key};
-use crate::render::PaintCommand;
 use crate::state::HookContext;
 use crate::style::{ComputedStyle, Style};
 
@@ -416,54 +415,17 @@ macro_rules! event_handler_methods {
     };
 }
 
-macro_rules! animated_style_methods {
-    ($field:ident) => {
-        pub fn animated_style(mut self, animated_style: crate::animation::AnimatedStyle) -> Self {
-            self.$field = animated_style;
-            self
-        }
-
-        pub fn animation(
-            mut self,
-            trigger: xui_interface::EventTrigger,
-            style: crate::animation::AnimableStyle,
-            transition: crate::animation::AnimationTransition,
-        ) -> Self {
-            self.$field
-                .animations
-                .push(crate::animation::StyleAnimation::new(
-                    trigger, style, transition,
-                ));
-            self
-        }
-
-        pub(crate) fn style_animations(&self) -> &[crate::animation::StyleAnimation] {
-            &self.$field.animations
-        }
-    };
-}
-
-mod button;
-mod column;
 mod container;
 mod image;
-mod label;
 mod root;
-mod row;
-mod scroll_scope;
-mod style_scope;
 mod text;
+mod text_input;
 
-pub use button::ButtonWidget;
-pub use column::ColumnWidget;
 pub use container::ContainerWidget;
 pub use image::ImageWidget;
-pub use label::LabelWidget;
 pub use root::RootWidget;
-pub use row::RowWidget;
-pub use scroll_scope::ScrollScope;
-pub use style_scope::StyleScopeWidget;
 pub use text::TextWidget;
+pub use text_input::{TextController, TextInputChange, TextInputWidget};
 
 pub type RootComponentRender = fn(&mut HookContext) -> ElementDesc;
 
@@ -489,14 +451,6 @@ macro_rules! define_widgets {
                 match self {
                     $(
                         Self::$name(widget) => &mut widget.event_handlers,
-                    )+
-                }
-            }
-
-            pub(crate) fn style_animations(&self) -> &[StyleAnimation] {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.style_animations(),
                     )+
                 }
             }
@@ -527,15 +481,13 @@ macro_rules! define_widgets {
                 }
             }
 
-            fn update_from(&mut self, next: &Self) -> xui_interface::DirtyFlags {
+            fn update_from(&mut self, next: &Self) -> xui_interface::WidgetUpdateFlags {
                 match (self, next) {
                     $(
                         (Self::$name(current), Self::$name(next)) => current.update_from(next),
                     )+
                     _ => {
-                        xui_interface::DirtyFlags::TREE
-                            | xui_interface::DirtyFlags::LAYOUT
-                            | xui_interface::DirtyFlags::PAINT
+                        xui_interface::WidgetUpdateFlags::TREE
                     }
                 }
             }
@@ -552,22 +504,6 @@ macro_rules! define_widgets {
                 match self {
                     $(
                         Self::$name(widget) => widget.style(),
-                    )+
-                }
-            }
-
-            fn state_style(&self, state: xui_interface::WidgetState) -> Style {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.state_style(state),
-                    )+
-                }
-            }
-
-            fn state(&self) -> xui_interface::WidgetState {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.state(),
                     )+
                 }
             }
@@ -627,14 +563,9 @@ macro_rules! define_widgets {
 
 define_widgets! {
     Container => ContainerWidget,
-    Column => ColumnWidget,
-    Row => RowWidget,
-    Label => LabelWidget,
     Text => TextWidget,
-    Button => ButtonWidget,
+    TextInput => TextInputWidget,
     Image => ImageWidget,
-    StyleScope => StyleScopeWidget,
-    ScrollScope => ScrollScope,
     Root => RootWidget,
 }
 
@@ -676,17 +607,17 @@ impl WidgetI {
         self.with_widgets(|widget| widget.text())
     }
 
-    pub(crate) fn style_animation_rules(&self) -> Vec<StyleAnimationRule> {
-        self.with_widgets(|widget| {
-            let mut rules = widget
-                .style_animations()
-                .iter()
-                .map(StyleAnimationRule::from_style_animation)
-                .collect::<Vec<_>>();
-            if let Widgets::Button(button) = widget {
-                rules.extend(button.state_style_animation_rules());
-            }
-            rules
+    pub fn intrinsic_size(&self) -> Option<Size<f32>> {
+        self.with_widgets(|widget| match widget {
+            Widgets::Image(image) => image.intrinsic_size(),
+            _ => None,
+        })
+    }
+
+    pub(crate) fn transition(&self) -> Option<Transition> {
+        self.with_widgets(|w| match w {
+            Widgets::Container(c) => c.transition,
+            _ => None,
         })
     }
 
@@ -710,7 +641,7 @@ impl WidgetI {
         self.with_widgets_mut(|widget| widget.on_click());
     }
 
-    pub fn update_from(&self, next: &Self) -> xui_interface::DirtyFlags {
+    pub fn update_from(&self, next: &Self) -> xui_interface::WidgetUpdateFlags {
         self.with_widgets_mut(|current| next.with_widgets(|next| current.update_from(next)))
     }
 
@@ -719,7 +650,12 @@ impl WidgetI {
         parent: &ComputedStyle,
         theme: &crate::style::Theme,
     ) -> ComputedStyle {
-        crate::layout::computed_style_for_widget(self, parent, theme)
+        crate::layout::computed_style_for_widget(
+            self,
+            parent,
+            theme,
+            xui_interface::WidgetState::empty(),
+        )
     }
 }
 
@@ -745,7 +681,7 @@ impl ComponentDesc {
         P: Any + Hash,
     {
         self.props_hash = props_hash(&props);
-        self.props = Some(Box::new(props));
+        self.props = Some(Rc::new(props));
         self
     }
 
@@ -754,30 +690,30 @@ impl ComponentDesc {
         P: Any,
     {
         self.props_hash = props_hash;
-        self.props = Some(Box::new(props));
+        self.props = Some(Rc::new(props));
         self
     }
 }
 
-pub fn label(text: impl Into<TextContent>) -> LabelWidget {
-    LabelWidget::new(text)
-}
+// pub fn label(text: impl Into<TextContent>) -> LabelWidget {
+//     LabelWidget::new(text)
+// }
 
 pub fn text(text: impl Into<xui_interface::TextContent>) -> TextWidget {
     TextWidget::new(text)
 }
 
-pub fn button(text: impl Into<TextContent>) -> ButtonWidget {
-    ButtonWidget::new(text)
+pub fn text_input() -> TextInputWidget {
+    TextInputWidget::new()
 }
 
-pub fn column() -> ColumnWidget {
-    ColumnWidget::new()
-}
+// pub fn column() -> ColumnWidget {
+//     ColumnWidget::new()
+// }
 
-pub fn row() -> RowWidget {
-    RowWidget::new()
-}
+// pub fn row() -> RowWidget {
+//     RowWidget::new()
+// }
 
 pub fn container() -> ContainerWidget {
     ContainerWidget::new()
@@ -787,13 +723,13 @@ pub fn image() -> ImageWidget {
     ImageWidget::new()
 }
 
-pub fn style_scope(style: Style) -> StyleScopeWidget {
-    StyleScopeWidget::new(style)
-}
+// pub fn style_scope(style: Style) -> StyleScopeWidget {
+//     StyleScopeWidget::new(style)
+// }
 
-pub fn scroll_scope() -> ScrollScope {
-    ScrollScope::new()
-}
+// pub fn scroll_scope() -> ScrollScope {
+//     ScrollScope::new()
+// }
 
 pub fn root_widget() -> WidgetI {
     WidgetI::new(RootWidget::default())

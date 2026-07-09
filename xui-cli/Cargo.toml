@@ -1,0 +1,21 @@
+[package]
+name = "xui-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "cargo-xui"
+path = "src/main.rs"
+
+[dependencies]
+camino = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+toml = "0.8"
+xui-pak = { path = "../xui-pak" }
+xui-pak-build = { path = "../xui-pak-build" }
+
+[dev-dependencies]
+tempfile = "3"

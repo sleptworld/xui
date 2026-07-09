@@ -1,21 +1,20 @@
-use rustc_hash::FxHashMap;
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
 use std::any::Any;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
+use std::rc::Rc;
 use taffy::prelude as tf;
 pub use xui_interface::Key;
 use xui_interface::widget::WidgetType;
-use xui_interface::{ComputedStyle, DirtyFlags, NodeId};
+use xui_interface::{ComputedStyle, NodeId, PaintCommand};
 
 use crate::HookContext;
 use crate::core::Rect;
 use crate::element::{ComponentDesc, ElementDesc};
 use crate::lanes::{Lanes, NO_LANES};
-use crate::render::PaintCommand;
 use crate::widgets::WidgetI;
 
-pub type ErasedProps = Box<dyn Any>;
+pub type ErasedProps = Rc<dyn Any>;
 pub type ErasedPropsRef<'a> = &'a dyn Any;
 pub type ComponentCall = fn(&mut HookContext<'_>, Option<ErasedPropsRef<'_>>) -> ElementDesc;
 
@@ -133,8 +132,6 @@ pub enum PendingProps {
 
 pub struct HostUpdate {
     pub widget: WidgetI,
-    pub style: tf::Style,
-    pub computed_style: ComputedStyle,
     pub props_hash: u64,
 }
 
@@ -153,8 +150,6 @@ pub struct Node {
     pub position: usize,
     pub tag: FiberTag,
     pub effect: EffectTag,
-    pub dirty: DirtyFlags,
-    pub subtree_dirty: DirtyFlags,
     pub host: Option<HostState>,
     pub component: Option<ComponentState>,
 }
@@ -170,8 +165,6 @@ impl Node {
             position: 0,
             tag: FiberTag::Root,
             effect: EffectTag::empty(),
-            dirty: DirtyFlags::default(),
-            subtree_dirty: DirtyFlags::empty(),
             host: None,
             component: None,
         }
@@ -187,8 +180,6 @@ impl Node {
             position: 0,
             tag: FiberTag::Component,
             effect: EffectTag::PLACEMENT,
-            dirty: DirtyFlags::STATE,
-            subtree_dirty: DirtyFlags::empty(),
             host: None,
             component: Some(ComponentState {
                 render: element.render,
@@ -352,19 +343,6 @@ impl FiberArena {
             }
         }
         self.nodes.remove(id);
-    }
-
-    fn mark_subtree_dirty(&mut self, id: FiberId, flags: DirtyFlags) {
-        if flags.is_empty() || !self.nodes.contains_key(id) {
-            return;
-        }
-
-        self.nodes[id].dirty |= flags;
-        let mut current = id;
-        while let Some(parent) = self.nodes[current].parent {
-            self.nodes[parent].subtree_dirty |= flags;
-            current = parent;
-        }
     }
 
     pub fn new_id(&mut self) -> FiberId {

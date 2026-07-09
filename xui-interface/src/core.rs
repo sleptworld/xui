@@ -57,6 +57,24 @@ pub enum Sizing {
     Fill,
 }
 
+impl From<f32> for Sizing {
+    fn from(value: f32) -> Self {
+        Self::fix(value)
+    }
+}
+
+impl From<NotNan<f32>> for Sizing {
+    fn from(value: NotNan<f32>) -> Self {
+        Self::Fix(value)
+    }
+}
+
+impl From<u32> for Sizing {
+    fn from(value: u32) -> Self {
+        Self::Fix(NotNan::new(value as f32).unwrap())
+    }
+}
+
 impl Sizing {
     pub fn fix(value: f32) -> Self {
         Self::Fix(NotNan::new(value).unwrap())
@@ -113,6 +131,12 @@ impl Size<Sizing> {
             width: Sizing::Fill,
             height: Sizing::Fill,
         }
+    }
+}
+
+impl Size<f32> {
+    pub fn aspect_ratio(&self) -> f32 {
+        self.width / self.height
     }
 }
 

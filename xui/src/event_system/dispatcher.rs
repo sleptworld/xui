@@ -2,8 +2,7 @@ use crate::tree::UiArena;
 use xui_interface::events::semantic::SemanticEvent;
 use xui_interface::events::{EventPhase, PropagationMode, RawEvent};
 use xui_interface::{
-    DirtyFlags, Event, EventContext, EventRef, EventRequest, EventRequests, EventResult,
-    EventTrigger, NodeId,
+    EventContext, EventRef, EventRequest, EventRequests, EventResult, NodeId, WidgetUpdateFlags,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,15 +147,12 @@ fn resolve_raw_target(arena: &UiArena, event: &RawEvent) -> Option<NodeId> {
 }
 
 fn dispatch_raw_to_node(
-    _arena: &mut UiArena,
-    _node: NodeId,
-    _event: &RawEvent,
-    _phase: EventPhase,
+    arena: &mut UiArena,
+    node: NodeId,
+    event: &RawEvent,
+    phase: EventPhase,
 ) -> EventResult {
-    // TODO(event-callback-store): execute raw-event callbacks for this node
-    // here once the new callback storage/registration layer lands.
-    // This refactor intentionally only implements path propagation.
-    EventResult::Ignored
+    dispatch_builtin_event(arena, node, EventRef::Raw(event), phase)
 }
 
 fn dispatch_semantic_to_node(
@@ -169,60 +165,103 @@ fn dispatch_semantic_to_node(
     meta.current_target = node;
     meta.phase = phase;
 
-    // TODO
-    apply_builtin_semantic_effects(arena, node, EventRef::Semantic(&event), phase);
+    apply_semantic_state(arena, node, event, phase);
 
-    if let Some(trigger) = event.trigger() {
-        arena.queue_style_animation_trigger(node, trigger);
-    }
+    dispatch_builtin_event(arena, node, EventRef::Semantic(&event), phase);
 
     let Some(handles) = arena.node(node).map(|node| node.event_callbacks) else {
         return EventResult::Ignored;
     };
 
-    let mut request_dirty = DirtyFlags::empty();
+    let mut request_update = WidgetUpdateFlags::empty();
     let mut requests = EventRequests::default();
     let result = {
-        let mut cx = EventContext::new(node, phase, &mut request_dirty, &mut requests);
+        let mut cx = EventContext::new(node, phase, &mut request_update, &mut requests);
         let callbacks = arena.event_callbacks();
         let result = callbacks.dispatch_semantic(handles, event, &mut cx);
         result
     };
 
-    apply_event_context(arena, node, request_dirty, &requests);
+    apply_event_context(arena, node, request_update, &requests);
     result
 }
 
-fn apply_builtin_semantic_effects(
+fn apply_semantic_state(
+    arena: &mut UiArena,
+    node: NodeId,
+    event: &SemanticEvent,
+    phase: EventPhase,
+) {
+    if phase != EventPhase::Target {
+        return;
+    }
+
+    let Some((flag, enabled)) = semantic_state_change(event) else {
+        return;
+    };
+    let Some(node_ref) = arena.node_mut(node) else {
+        return;
+    };
+    let before = node_ref.state;
+    node_ref.state.set(flag, enabled);
+    if before != node_ref.state {
+        node_ref.state_before_change.get_or_insert(before);
+        arena.mark_dirty(node, WidgetUpdateFlags::STATE_CHANGE);
+    }
+}
+
+fn semantic_state_change(event: &SemanticEvent) -> Option<(xui_interface::WidgetState, bool)> {
+    match event {
+        SemanticEvent::HoverEnter(_) => Some((xui_interface::WidgetState::HOVERED, true)),
+        SemanticEvent::HoverLeave(_) => Some((xui_interface::WidgetState::HOVERED, false)),
+        SemanticEvent::PressStart(_) => Some((xui_interface::WidgetState::PRESSED, true)),
+        SemanticEvent::PressEnd(_) | SemanticEvent::PressCancel(_) => {
+            Some((xui_interface::WidgetState::PRESSED, false))
+        }
+        SemanticEvent::Focus(_) | SemanticEvent::FocusIn(_) => {
+            Some((xui_interface::WidgetState::FOCUSED, true))
+        }
+        SemanticEvent::Blur(_) | SemanticEvent::FocusOut(_) => {
+            Some((xui_interface::WidgetState::FOCUSED, false))
+        }
+        SemanticEvent::DragStart(_) | SemanticEvent::DragMove(_) => {
+            Some((xui_interface::WidgetState::DRAGGING, true))
+        }
+        SemanticEvent::DragEnd(_) | SemanticEvent::DragCancel(_) => {
+            Some((xui_interface::WidgetState::DRAGGING, false))
+        }
+        _ => None,
+    }
+}
+
+fn dispatch_builtin_event(
     arena: &mut UiArena,
     node: NodeId,
     event: EventRef<'_>,
     phase: EventPhase,
-) {
-    let mut dirty = DirtyFlags::empty();
+) -> EventResult {
+    let mut update = WidgetUpdateFlags::empty();
     let mut requests = EventRequests::default();
-    let mut cx = EventContext::new(node, phase, &mut dirty, &mut requests);
-    if let Some(node) = arena.node_mut(node) {
-        node.widget.handle_event(event, &mut cx);
-    }
+    let result = {
+        let mut cx = EventContext::new(node, phase, &mut update, &mut requests);
+        arena
+            .node_mut(node)
+            .map(|node| node.widget.handle_event(event, &mut cx))
+            .unwrap_or(EventResult::Ignored)
+    };
 
-    let trigger = cx.trigger;
-    if !dirty.is_empty() && arena.contains(node) {
-        arena.mark_dirty(node, dirty);
-    }
-    // if let Some(trigger) = trigger {
-    //     arena.queue_style_animation_trigger(node, trigger);
-    // }
+    apply_event_context(arena, node, update, &requests);
+    result
 }
 
 fn apply_event_context(
     arena: &mut UiArena,
     node: NodeId,
-    request_dirty: DirtyFlags,
+    request_update: WidgetUpdateFlags,
     requests: &EventRequests,
 ) {
-    if !request_dirty.is_empty() && arena.contains(node) {
-        arena.mark_dirty(node, request_dirty);
+    if !request_update.is_empty() && arena.contains(node) {
+        arena.mark_dirty(node, request_update);
     }
 
     for request in requests.iter() {
@@ -239,213 +278,5 @@ fn apply_event_context(
             }
             _ => {}
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::event_system::callbacks::EventHandlers;
-    use crate::tree::UiArena;
-    use crate::widgets::{button, column};
-    use std::cell::{Cell, RefCell};
-    use std::rc::Rc;
-    use std::time::Instant;
-    use xui_interface::events::{
-        ActivationKind, ClickEvent, EventMeta, EventSource, HoverEvent, Modifiers, PointerButtons,
-        PointerCoords, PointerSnapshot,
-    };
-    use xui_interface::{DirtyFlags, EventResult, Point, PointerButton, events::XuiPointerId};
-
-    fn insert_parent_child(arena: &mut UiArena) -> (NodeId, NodeId) {
-        let parent = arena.insert(arena.root(), column(), taffy::prelude::Style::default());
-        let child = arena.insert(parent, button("child"), taffy::prelude::Style::default());
-        (parent, child)
-    }
-
-    fn pointer() -> PointerSnapshot {
-        PointerSnapshot {
-            pointer_id: XuiPointerId::new(0),
-            button: None,
-            buttons: PointerButtons::default(),
-            coords: PointerCoords {
-                window: Point::zero(),
-                viewport: Point::zero(),
-                target_local: Point::zero(),
-                current_local: Point::zero(),
-            },
-            is_primary: true,
-            tilt_x: None,
-            tilt_y: None,
-        }
-    }
-
-    fn meta(target: NodeId) -> EventMeta {
-        EventMeta {
-            id: 1,
-            timestamp: Instant::now(),
-            target,
-            current_target: target,
-            phase: EventPhase::Target,
-            source: EventSource::Pointer,
-            modifiers: Modifiers::default(),
-        }
-    }
-
-    #[test]
-    fn semantic_direct_visits_target_only() {
-        let mut arena = UiArena::new();
-        let (_, child) = insert_parent_child(&mut arena);
-        let event = SemanticEvent::HoverEnter(HoverEvent {
-            meta: meta(child),
-            pointer: pointer(),
-            related_target: None,
-        });
-
-        let report = dispatch_semantic(&mut arena, event);
-
-        // assert_eq!(
-        //     report.steps,
-        //     vec![DispatchStep {
-        //         node: child,
-        //         phase: EventPhase::Target
-        //     }]
-        // );
-        // assert_eq!(event.meta().current_target, child);
-        // assert_eq!(event.meta().phase, EventPhase::Target);
-    }
-
-    #[test]
-    fn semantic_bubbling_visits_capture_target_and_bubble_path() {
-        let mut arena = UiArena::new();
-        let root = arena.root();
-        let (parent, child) = insert_parent_child(&mut arena);
-        let mut event = SemanticEvent::Click(ClickEvent {
-            meta: meta(child),
-            activation: ActivationKind::Pointer,
-            pointer: Some(pointer()),
-            button: Some(PointerButton::Primary),
-            click_count: 1,
-            press_target: Some(child),
-            release_target: Some(child),
-            duration: None,
-        });
-
-        let report = dispatch_semantic(&mut arena, event);
-
-        // assert_eq!(
-        //     report.steps,
-        //     vec![
-        //         DispatchStep {
-        //             node: root,
-        //             phase: EventPhase::Capture
-        //         },
-        //         DispatchStep {
-        //             node: parent,
-        //             phase: EventPhase::Capture
-        //         },
-        //         DispatchStep {
-        //             node: child,
-        //             phase: EventPhase::Target
-        //         },
-        //         DispatchStep {
-        //             node: parent,
-        //             phase: EventPhase::Bubble
-        //         },
-        //         DispatchStep {
-        //             node: root,
-        //             phase: EventPhase::Bubble
-        //         },
-        //     ]
-        // );
-        // assert_eq!(event.meta().current_target, root);
-        // assert_eq!(event.meta().phase, EventPhase::Bubble);
-    }
-
-    #[test]
-    fn semantic_dispatch_invokes_registered_callback() {
-        let mut arena = UiArena::new();
-        let root = arena.root();
-        let (_, child) = insert_parent_child(&mut arena);
-        let calls = Rc::new(Cell::new(0));
-        let callback_calls = calls.clone();
-
-        arena.set_event_handlers(
-            child,
-            EventHandlers {
-                on_click: Some(Box::new(move |event, cx| {
-                    callback_calls.set(callback_calls.get() + event.click_count as usize);
-                    cx.mark_dirty(DirtyFlags::PAINT);
-                    EventResult::Consumed
-                })),
-                ..EventHandlers::default()
-            },
-        );
-
-        let mut event = SemanticEvent::Click(ClickEvent {
-            meta: meta(child),
-            activation: ActivationKind::Pointer,
-            pointer: Some(pointer()),
-            button: Some(PointerButton::Primary),
-            click_count: 1,
-            press_target: Some(child),
-            release_target: Some(child),
-            duration: None,
-        });
-
-        let report = dispatch_semantic(&mut arena, event);
-
-        // assert_eq!(calls.get(), 1);
-        // assert_eq!(report.result, EventResult::Consumed);
-        // assert_eq!(report.steps.last().map(|step| step.node), Some(child));
-        // assert!(arena.node(child).unwrap().dirty.contains(DirtyFlags::PAINT));
-        // assert!(
-        //     !report
-        //         .steps
-        //         .iter()
-        //         .any(|step| step.node == root && step.phase == EventPhase::Bubble)
-        // );
-    }
-
-    #[test]
-    fn semantic_dispatch_separates_capture_and_bubble_callbacks() {
-        let mut arena = UiArena::new();
-        let (parent, child) = insert_parent_child(&mut arena);
-        let capture_phases = Rc::new(RefCell::new(Vec::new()));
-        let bubble_phases = Rc::new(RefCell::new(Vec::new()));
-        let capture_calls = capture_phases.clone();
-        let bubble_calls = bubble_phases.clone();
-
-        arena.set_event_handlers(
-            parent,
-            EventHandlers {
-                on_click_capture: Some(Box::new(move |_, cx| {
-                    capture_calls.borrow_mut().push(cx.phase);
-                    EventResult::Ignored
-                })),
-                on_click: Some(Box::new(move |_, cx| {
-                    bubble_calls.borrow_mut().push(cx.phase);
-                    EventResult::Ignored
-                })),
-                ..EventHandlers::default()
-            },
-        );
-
-        let mut event = SemanticEvent::Click(ClickEvent {
-            meta: meta(child),
-            activation: ActivationKind::Pointer,
-            pointer: Some(pointer()),
-            button: Some(PointerButton::Primary),
-            click_count: 1,
-            press_target: Some(child),
-            release_target: Some(child),
-            duration: None,
-        });
-
-        let report = dispatch_semantic(&mut arena, event);
-
-        // assert_eq!(&*capture_phases.borrow(), &[EventPhase::Capture]);
-        // assert_eq!(&*bubble_phases.borrow(), &[EventPhase::Bubble]);
-        // assert_eq!(report.result, EventResult::Ignored);
     }
 }

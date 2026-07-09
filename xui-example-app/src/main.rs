@@ -2,67 +2,8 @@ mod components;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 use xui::prelude::*;
-use xui_winit::{WGPUBackend, WinitRunner, WinitRunnerOptions, start_runner};
-
-use xui_components::button::*;
-
-#[component]
-fn btn(name: &String) {
-    xui! {
-    <button
-        style={Style::new()
-            .width(Sizing::Hug)
-            .background(Color::BLACK)
-            .color(Color::WHITE)
-            .padding(EdgeInsets::symmetric(12.0, 4.0))
-            .border_radius(5.0)}
-        hover_style={Style::new().background(Color::BLUE_500)}
-    >
-        {name}
-    </button>}
-}
-
-#[component]
-fn counter() {
-    let count = cx.use_state(|| 0);
-
-    xui! {<column gap={8.0}>
-        <text font_size={16.0} font_weight={FontWeight::Bold}> {"HI!! NEW WORLD"} </text>
-        <column gap={2.0}>
-            <text font_family={"PingFang SC"}> {format!("Current count: {}", count.get())} </text>
-            <text> {"你好吗, FUCK THE WORLD"} </text>
-            <text> {"What the Fuck!!"} </text>
-            <text> {"Do you know me, 哈哈哈哈哈哈"} </text>
-        </column>
-
-        <button on_click={{
-            move |_, _| {
-                count.set(count.get() + 1);
-                EventResult::Consumed
-            }
-        }}>
-            {"Increment"}
-        </button>
-        <button on_click={{
-            move |_, _| {
-                count.set(count.get() - 1);
-                println!("{}", count.get());
-                EventResult::Consumed
-            }
-        }}>
-            {"Decrement"}
-        </button>
-
-        <row gap={2.0}>
-            <btn props= {"Hello\nWorld".to_string()}/>
-            <btn props= {"Hello".to_string()}/>
-            <btn props= {"Hello".to_string()}/>
-            <btn props= {"Hello".to_string()}/>
-            <btn props= {"Oh".to_string()}/>
-            <btn props= {"MY🤔".to_string()}/>
-        </row>
-    </column>}
-}
+use xui_components::*;
+use xui_winit::{WinitRunnerOptions, runner};
 
 #[component]
 fn test_page() {
@@ -85,24 +26,26 @@ fn editor() {
         <row size={Size::fill()}>
             <container width={Sizing::percent(0.3)} height={Sizing::fill()} background ={Color::rgb(1.0,0.0,0.0)} />
             <container size={Size::fill()} background ={Color::BLUE_500} >
-                <column gap={8.0}>
+                <column gap={12.0}>
                     <text> {"Hello,World"} </text>
-                    <pbutton text={label.get()} ps = {button_prop}/>
+                    <button text={label.get()} ps = {button_prop}/>
+                    <text font_weight={FontWeight::Thin}> {"啊，是关中王来啦"} </text>
+                    <image src={"https://i1.hdslb.com/bfs/archive/8b96913b723e39495c0d1f171779faded87fcbc7.jpg"} height={100} fit={ImageFit::ScaleDown} />
                 </column>
             </container>
         </row>
     }
 }
 
+#[xui::main]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let app = app(editor_component);
-
     let options = WinitRunnerOptions {
         window_attributes: Window::default_attributes()
             .with_title("XUI Example App")
             .with_inner_size(PhysicalSize::new(800, 600)),
         ..Default::default()
     };
-    start_runner(app, Some(options)).run().unwrap();
+
+    runner(editor_component, Some(options)).run().unwrap();
     Ok(())
 }

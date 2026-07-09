@@ -3,7 +3,7 @@ pub mod semantic;
 pub use raw::*;
 pub use semantic::*;
 
-use crate::{DirtyFlags, NodeId};
+use crate::{NodeId, WidgetUpdateFlags};
 
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -41,27 +41,6 @@ impl<'a> EventCtx<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EventTrigger {
-    OnMount,
-    OnUnmount,
-    OnHover,
-    OnHoverStart,
-    OnHoverEnd,
-    OnPress,
-    OnPressStart,
-    OnPressEnd,
-    OnFocus,
-    OnBlur,
-    OnClick,
-    OnPointerDown,
-    OnPointerUp,
-    OnPointerMove,
-    OnKeyDown,
-    OnKeyUp,
-    OnScroll,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventResult {
     Ignored,
@@ -77,33 +56,39 @@ impl EventResult {
 pub struct EventContext<'a> {
     pub node_id: NodeId,
     pub phase: EventPhase,
-    request_dirty: &'a mut DirtyFlags,
+    request_update: &'a mut WidgetUpdateFlags,
     requests: &'a mut EventRequests,
-    pub trigger: Option<EventTrigger>,
 }
 
 impl<'a> EventContext<'a> {
     pub fn new(
         node_id: NodeId,
         phase: EventPhase,
-        request_dirty: &'a mut DirtyFlags,
+        request_update: &'a mut WidgetUpdateFlags,
         requests: &'a mut EventRequests,
     ) -> Self {
         Self {
             node_id,
             phase,
-            request_dirty,
+            request_update,
             requests,
-            trigger: None,
         }
     }
 
-    pub fn mark_needs_paint(&mut self) {
-        *self.request_dirty |= DirtyFlags::PAINT;
+    pub fn mark_needs_style(&mut self) {
+        *self.request_update |= WidgetUpdateFlags::STYLE_TARGET;
     }
 
-    pub fn mark_dirty(&mut self, flags: DirtyFlags) {
-        *self.request_dirty |= flags;
+    pub fn mark_needs_layout(&mut self) {
+        *self.request_update |= WidgetUpdateFlags::LAYOUT_INPUT;
+    }
+
+    pub fn mark_needs_paint(&mut self) {
+        *self.request_update |= WidgetUpdateFlags::PAINT_OUTPUT;
+    }
+
+    pub fn invalidate(&mut self, flags: WidgetUpdateFlags) {
+        *self.request_update |= flags;
     }
 
     pub fn request_focus(&mut self) {

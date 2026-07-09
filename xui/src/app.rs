@@ -3,9 +3,9 @@ use crate::component::ComponentRuntime;
 use crate::core::Size;
 use crate::event_system::translator::EventTranslator;
 use crate::lanes::{event_lane, with_update_lane};
-use crate::render::RenderBackend;
 use crate::state::{AsyncDispatcher, AsyncMessage, HookContext, Scheduler};
 use crate::style::Theme;
+use crate::text::TextHost;
 use crate::tree::UiArena;
 use std::future::Future;
 use std::sync::mpsc;
@@ -16,7 +16,13 @@ use tokio::runtime::{
 use tokio::task::JoinHandle;
 use xui_interface::events::{EventResult, RawEvent};
 use xui_interface::render::Damage;
-use xui_interface::{DirtyFlags, TextMeasurer};
+use xui_interface::{RenderBackend, TextBackend};
+
+pub type ComponentFn = for<'a, 'b> fn(&'a mut HookContext<'b>) -> ElementDesc;
+
+thread_local! {
+    pub(crate) static TOKIO_RUNTIME: TokioRuntime = App::create_tokio_runtime();
+}
 
 pub struct App {
     arena: UiArena,
@@ -29,7 +35,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(root_component: fn(&mut HookContext<'_>) -> ElementDesc) -> Self {
+    pub fn new(root_component: ComponentFn) -> Self {
         let arena = UiArena::new();
         let scheduler = Scheduler::default();
         let tokio_runtime = Self::create_tokio_runtime();
@@ -104,8 +110,7 @@ impl App {
         }
 
         if changed {
-            self.arena.mark_dirty(self.arena.root(), DirtyFlags::STATE);
-            self.arena.add_damage(Damage::full(self.size));
+            self.components.mark_root_dirty();
         }
         changed
     }
@@ -122,15 +127,19 @@ impl App {
         self.components.scheduler()
     }
 
-    pub fn dispatch_event<T: TextMeasurer>(&mut self, event: RawEvent, m: &mut T) -> EventResult {
+    pub fn dispatch_event<T: TextBackend>(
+        &mut self,
+        event: RawEvent,
+        text: &mut TextHost<T>,
+    ) -> EventResult {
         self.rebuild_sync_if_needed();
-        self.arena.update_tree(self.arena.root(), self.size, m);
+        self.arena.update_tree(self.size, text);
         let lane = event_lane(&event);
         let result = with_update_lane(lane, || {
             self.arena.dispatch_event(&mut self.event_translator, event)
         });
         if self.scheduler().is_dirty() {
-            self.arena.mark_dirty(self.arena.root(), DirtyFlags::STATE);
+            self.components.mark_root_dirty();
         }
         result
     }
@@ -145,26 +154,26 @@ impl App {
         self.arena.has_running_style_animations()
     }
 
-    pub fn render<B: RenderBackend<T>, T: TextMeasurer>(
+    pub fn render<B: RenderBackend<TextHost<T>>, T: TextBackend>(
         &mut self,
         backend: &mut B,
-        m: &mut T,
+        text: &mut TextHost<T>,
     ) -> Result<(), B::Error> {
         self.drain_async_messages();
 
         if self.rebuild_slice_if_needed() {
-            self.flush_node_lifecycle(backend, m);
+            self.flush_node_lifecycle(backend, text);
         }
 
-        self.arena.update_tree(self.arena.root(), self.size, m);
+        self.arena.update_tree(self.size, text);
 
-        let (damage, commands) = self.arena.prepare_paint_commands();
-        if damage.is_empty() {
+        let frame = self.arena.collect_paint_commands();
+        if frame.damage.is_empty() {
             return Ok(());
         }
 
         backend.begin_frame(self.size)?;
-        backend.paint(&commands, &damage, m)?;
+        backend.paint(&frame.commands, &frame.damage, text)?;
         backend.end_frame()?;
         if backend.did_present() {
             self.arena.finish_paint();
@@ -179,7 +188,6 @@ impl App {
     #[inline]
     pub fn mark_needs_rebuild(&mut self) {
         self.components.mark_root_dirty();
-        self.arena.mark_dirty(self.arena.root(), DirtyFlags::STATE);
         self.arena.add_damage(Damage::full(self.size));
     }
 
@@ -193,20 +201,101 @@ impl App {
         self.components.rebuild_slice_if_needed(&mut self.arena)
     }
 
-    fn flush_node_lifecycle<B: RenderBackend<T>, T: TextMeasurer>(
+    fn flush_node_lifecycle<B: RenderBackend<TextHost<T>>, T: TextBackend>(
         &mut self,
         backend: &mut B,
-        m: &mut T,
+        text: &mut TextHost<T>,
     ) {
         for event in self.arena.drain_node_lifecycle_events() {
-            m.handle_node_lifecycle(&event);
+            text.handle_node_lifecycle(&event);
             backend.handle_node_lifecycle(&event);
         }
     }
 }
 
-pub fn app(root_component: fn(&mut HookContext<'_>) -> ElementDesc) -> App {
-    App::new(root_component)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lanes::{DEFAULT_LANE, NO_LANES};
+    use crate::prelude::container;
+    use crate::state::State;
+    use crate::text::{TextHost, testing::ZeroTextBackend};
+    use std::cell::RefCell;
+    use xui_interface::{Color, ComputedColorStyle, MockRenderBackend, Style};
+
+    thread_local! {
+        static STATE_SLOT: RefCell<Option<State<bool>>> = const { RefCell::new(None) };
+    }
+
+    fn static_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        container()
+            .style(
+                Style::new()
+                    .width(40.0)
+                    .height(20.0)
+                    .background(Color::BLACK),
+            )
+            .into_element_desc(Vec::new())
+    }
+
+    fn stateful_root(cx: &mut HookContext<'_>) -> ElementDesc {
+        let state = cx.use_state(|| false);
+        STATE_SLOT.with(|slot| {
+            *slot.borrow_mut() = Some(state);
+        });
+        let color = if *state.get() {
+            Color::WHITE
+        } else {
+            Color::BLACK
+        };
+        container()
+            .style(Style::new().width(40.0).height(20.0).background(color))
+            .into_element_desc(Vec::new())
+    }
+
+    #[test]
+    fn render_submits_damage_and_commands_to_mock_backend() {
+        let mut app = App::new(static_root);
+        let mut backend = MockRenderBackend::default();
+        let mut measurer = TextHost::new(ZeroTextBackend);
+
+        app.resize(Size::new(100.0, 100.0));
+        app.render(&mut backend, &mut measurer).unwrap();
+
+        assert_eq!(backend.frames, 1);
+        assert!(!backend.last_damage.is_empty());
+        assert!(!backend.last_commands.is_empty());
+        assert!(!app.arena().is_dirty());
+    }
+
+    #[test]
+    fn state_update_marks_lane_and_commits_host_style() {
+        STATE_SLOT.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
+        let mut app = App::new(stateful_root);
+        let mut backend = MockRenderBackend::default();
+        let mut measurer = TextHost::new(ZeroTextBackend);
+
+        app.resize(Size::new(100.0, 100.0));
+        app.render(&mut backend, &mut measurer).unwrap();
+        assert_eq!(app.components.scheduler().pending_lanes(), NO_LANES);
+
+        let state = STATE_SLOT.with(|slot| slot.borrow().unwrap());
+        state.set(true);
+        assert_eq!(app.components.scheduler().pending_lanes(), DEFAULT_LANE);
+
+        app.render(&mut backend, &mut measurer).unwrap();
+        assert_eq!(app.components.scheduler().pending_lanes(), NO_LANES);
+
+        let root = app.arena().root();
+        let child = app.arena().children(root)[0];
+        let style = &app.arena().node(child).unwrap().effective_style;
+        let ComputedColorStyle::Solid(color) = style.paint.background else {
+            panic!("expected solid background");
+        };
+        assert_eq!(color, Color::WHITE);
+    }
 }
 
 // #[cfg(test)]

@@ -2,15 +2,15 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use swash::shape::ShapeContext;
 use swash::{
-    FontRef, GlyphId, NormalizedCoord, Style, Weight,
-    scale::{Render, ScaleContext, Source, StrikeWith, image::Content as SwashContent},
+    scale::{image::Content as SwashContent, Render, ScaleContext, Source, StrikeWith},
     zeno::{Format, Vector},
+    FontRef, GlyphId, NormalizedCoord, Style, Weight,
 };
-use xui_interface::widget::PType;
 use xui_interface::{
-    ComputedTextStyle, FontFamily, FontStyle as XuiFontStyle, FontWeight as XuiFontWeight,
-    GlyphBitmap, GlyphPlacement, LineHeight, NodeId, Point, PositionedGlyph, Size,
-    TextLayoutBackend, TextLayoutConstraints, TextMeasurer,
+    ComputedTextStyle, FontDataRef, FontDatabase, FontFamily, FontQuery, FontStyle as XuiFontStyle,
+    FontWeight as XuiFontWeight, GlyphInstance, GlyphRasterizer, LineHeight, LineLayout,
+    ParagraphLayout, RasterizedGlyph, RasterizedGlyphFormat, Shaper, Size, TextBackend,
+    TextLayoutConstraints, TextLayoutInput, TextOffset, TextRange,
 };
 
 use crate::{
@@ -22,7 +22,7 @@ use crate::{
     span::{Span, SpanElement},
 };
 
-pub trait TextLayouter: TextMeasurer {
+pub trait TextLayouter {
     fn layout_text(
         &mut self,
         text: &str,
@@ -38,10 +38,6 @@ pub trait TextLayouter: TextMeasurer {
         constraints: TextLayoutConstraints,
     ) -> Arc<Par> {
         self.layout_text(text, style, constraints)
-    }
-
-    fn get_cached_layout(&self, _node_id: NodeId) -> Option<Arc<Par>> {
-        None
     }
 }
 
@@ -221,68 +217,49 @@ impl TextLayouter for Engine {
     }
 }
 
-impl TextLayoutBackend for Engine {
-    type Layout = Arc<Par>;
+impl Shaper for Engine {
+    type State = ();
     type GlyphKey = NativeGlyphKey;
 
-    fn layout_text(
+    fn create_state(&mut self) -> Self::State {}
+
+    fn layout_paragraph(
         &mut self,
-        text: &str,
-        style: &ComputedTextStyle,
-        constraints: TextLayoutConstraints,
-    ) -> Self::Layout {
-        TextLayouter::layout_text(self, text, style, constraints)
+        _state: &mut Self::State,
+        input: TextLayoutInput,
+    ) -> ParagraphLayout<Self::GlyphKey> {
+        let par =
+            self.layout_text_uncached(input.text.as_str(), &input.default_style, input.constraints);
+        paragraph_layout_from_par(&par, 1.0)
+    }
+}
+
+impl FontDatabase for Engine {
+    type FontId = u32;
+
+    fn epoch(&self) -> u64 {
+        0
     }
 
-    fn layout_size(&self, layout: &Self::Layout) -> Size<f32> {
-        size_for_par(layout)
+    fn load_system_fonts(&mut self) {}
+
+    fn load_font_bytes(&mut self, _bytes: Arc<[u8]>) -> Self::FontId {
+        0
     }
 
-    fn visit_layout_glyphs(
-        &self,
-        layout: &Self::Layout,
-        origin: Point,
-        scale_factor: f32,
-        visitor: &mut dyn FnMut(PositionedGlyph<Self::GlyphKey>),
-    ) {
-        for line in layout.lines() {
-            let baseline_y = origin.y + line.baseline();
-            let mut pen_x = origin.x + line.offset();
-
-            for run in line.runs() {
-                let font = run.font().clone();
-                let font_id = font.cache_key();
-                let font_size = run.font_size() * scale_factor;
-                let font_size_bits = font_size.to_bits();
-                let coords = run.normalized_coords().to_vec();
-
-                for cluster in run.visual_clusters() {
-                    for glyph in cluster.glyphs() {
-                        let x = (pen_x + glyph.x) * scale_factor;
-                        let y = (baseline_y - glyph.y) * scale_factor;
-                        pen_x += glyph.advance;
-
-                        let (physical_x, subpx_x) = SubpixelOffset::quantize(x);
-                        let (physical_y, subpx_y) = SubpixelOffset::quantize(y);
-                        visitor(PositionedGlyph {
-                            key: NativeGlyphKey {
-                                font: font.clone(),
-                                font_id,
-                                glyph_id: glyph.id,
-                                subpx: [subpx_x, subpx_y],
-                                font_size_bits,
-                                coords: coords.clone(),
-                            },
-                            physical_x,
-                            physical_y,
-                        });
-                    }
-                }
-            }
-        }
+    fn query(&self, _query: &FontQuery) -> Option<Self::FontId> {
+        Some(0)
     }
 
-    fn rasterize_glyph(&mut self, key: &Self::GlyphKey) -> Option<GlyphBitmap> {
+    fn font_data(&self, _id: Self::FontId) -> Option<FontDataRef<'_>> {
+        None
+    }
+}
+
+impl GlyphRasterizer for Engine {
+    type GlyphKey = NativeGlyphKey;
+
+    fn rasterize(&mut self, key: Self::GlyphKey) -> Option<RasterizedGlyph> {
         rasterize_swash_glyph(
             key.font.as_ref(),
             key.glyph_id,
@@ -293,27 +270,14 @@ impl TextLayoutBackend for Engine {
     }
 }
 
-impl TextMeasurer for Engine {
-    fn measure_text(&mut self, text: &str, style: &ComputedTextStyle) -> Size<f32> {
-        self.measure_text_style(text, style)
-    }
-
-    fn measure_text_with_constraints(
-        &mut self,
-        text: &str,
-        style: &ComputedTextStyle,
-        constraints: TextLayoutConstraints,
-    ) -> Size<f32> {
-        self.measure_text_style_with_constraints(text, style, constraints)
-    }
-}
+impl TextBackend for Engine {}
 
 fn max_advance(constraints: TextLayoutConstraints) -> f32 {
-    constraints
-        .max_width
-        .filter(|width| width.is_finite())
-        .map(|width| width.max(0.0))
-        .unwrap_or(f32::MAX)
+    match constraints {
+        TextLayoutConstraints::Definate(width) if width.is_finite() => width.max(0.0),
+        TextLayoutConstraints::Definate(_) | TextLayoutConstraints::Unbound => f32::MAX,
+        TextLayoutConstraints::MinSize => 0.0,
+    }
 }
 
 fn size_for_par(par: &Par) -> Size<f32> {
@@ -327,13 +291,91 @@ fn size_for_par(par: &Par) -> Size<f32> {
     Size::<f32>::new(width, height)
 }
 
+fn paragraph_layout_from_par(par: &Par, scale_factor: f32) -> ParagraphLayout<NativeGlyphKey> {
+    let mut lines = Vec::new();
+    let mut glyphs = Vec::new();
+    let mut line_y = 0.0;
+
+    for (line_index, line) in par.lines().enumerate() {
+        let line_glyph_start = glyphs.len();
+        let baseline_y = line_y + line.baseline();
+        let mut pen_x = line.offset();
+
+        for run in line.runs() {
+            let font = run.font().clone();
+            let font_id = font.cache_key();
+            let font_size = run.font_size() * scale_factor;
+            let font_size_bits = font_size.to_bits();
+            let coords = run.normalized_coords().to_vec();
+
+            for cluster in run.visual_clusters() {
+                for glyph in cluster.glyphs() {
+                    let x = (pen_x + glyph.x) * scale_factor;
+                    let y = (baseline_y - glyph.y) * scale_factor;
+                    let (_, subpx_x) = SubpixelOffset::quantize(x);
+                    let (_, subpx_y) = SubpixelOffset::quantize(y);
+
+                    glyphs.push(GlyphInstance {
+                        key: NativeGlyphKey {
+                            font: font.clone(),
+                            font_id,
+                            glyph_id: glyph.id,
+                            subpx: [subpx_x, subpx_y],
+                            font_size_bits,
+                            coords: coords.clone(),
+                        },
+                        glyph_id: glyph.id as u32,
+                        draw_pos: xui_interface::Point::new(pen_x + glyph.x, baseline_y - glyph.y),
+                        hitbox: xui_interface::Rect::new(
+                            pen_x + glyph.x,
+                            line_y,
+                            glyph.advance,
+                            line.size(),
+                        ),
+                        cluster: 0,
+                        flags: xui_interface::GlyphFlags::empty(),
+                    });
+                    pen_x += glyph.advance;
+                }
+            }
+        }
+
+        let line_height = line.size();
+        lines.push(LineLayout {
+            source_line: line_index,
+            text_range: TextRange {
+                start: TextOffset::byte_offset(0),
+                end: TextOffset::byte_offset(0),
+            },
+            run_range: 0..0,
+            glyph_range: line_glyph_start..glyphs.len(),
+            cluster_range: 0..0,
+            x: line.offset(),
+            y: line_y,
+            width: line.advance_without_trailing_whitespace(),
+            height: line_height,
+            baseline: baseline_y,
+            hard_break: false,
+            ellipsized: false,
+        });
+        line_y += line_height;
+    }
+
+    ParagraphLayout {
+        lines,
+        runs: Vec::new(),
+        glyphs,
+        clusters: Vec::new(),
+    }
+}
+
 fn rasterize_swash_glyph(
     font: FontRef<'_>,
     glyph_id: GlyphId,
     font_size: f32,
     coords: &[NormalizedCoord],
     offset: Vector,
-) -> Option<GlyphBitmap> {
+) -> Option<RasterizedGlyph> {
     let mut context = ScaleContext::new();
     let mut image = swash::scale::image::Image::new();
     let mut scaler = context
@@ -356,33 +398,38 @@ fn rasterize_swash_glyph(
 
     let placement = image.placement;
 
-    let (data, ptype) = rgba_bitmap_data(image.content, &image.data);
+    let format = rasterized_glyph_format(image.content);
+    let pixels = rgba_bitmap_data(image.content, &image.data);
 
-    Some(GlyphBitmap {
-        ptype,
-        data,
+    Some(RasterizedGlyph {
+        format,
         width: placement.width as u32,
         height: placement.height as u32,
-        placement: GlyphPlacement {
-            left: placement.left,
-            top: placement.top,
-            width: placement.width as u32,
-            height: placement.height as u32,
-        },
+        left: placement.left,
+        top: placement.top,
+        pixels: Arc::from(pixels),
     })
 }
 
-fn rgba_bitmap_data(content: SwashContent, data: &[u8]) -> (Vec<u8>, PType) {
+fn rgba_bitmap_data(content: SwashContent, data: &[u8]) -> Vec<u8> {
     match content {
         SwashContent::Mask => {
             let mut rgba = Vec::with_capacity(data.len() * 4);
             for alpha in data {
                 rgba.extend_from_slice(&[*alpha, *alpha, *alpha, *alpha]);
             }
-            (rgba, PType::Mask)
+            rgba
         }
-        SwashContent::SubpixelMask => (data.to_vec(), PType::SubPixelMask),
-        SwashContent::Color => (data.to_vec(), PType::Color),
+        SwashContent::SubpixelMask => data.to_vec(),
+        SwashContent::Color => data.to_vec(),
+    }
+}
+
+fn rasterized_glyph_format(content: SwashContent) -> RasterizedGlyphFormat {
+    match content {
+        SwashContent::Mask => RasterizedGlyphFormat::Mask,
+        SwashContent::SubpixelMask => RasterizedGlyphFormat::SubpixelMask,
+        SwashContent::Color => RasterizedGlyphFormat::Color,
     }
 }
 
@@ -537,86 +584,3 @@ mod test {
         }
     }
 }
-
-//     #[test]
-//     fn test() {
-//         let mut engine = Engine::new();
-//         let mut session = engine.start(crate::doc::Direction::Ltr, 2.0, 0);
-//         let properties = &[SpanStyle::FamilyList(FamilyList::new("pingfang sc"))];
-//         let doc = Doc::simple(properties, "Hello, World");
-//         session.process(&doc);
-//         let _par = session.finish(None);
-//     }
-
-//     #[test]
-//     fn layout_text_reuses_cached_par_for_same_props() {
-//         let mut engine = Engine::new();
-//         let style = text_style();
-
-//         let first = engine.layout_text("Hello, cache", &style, TextLayoutConstraints::UNBOUNDED,1.);
-//         let second = engine.layout_text("Hello, cache", &style, TextLayoutConstraints::UNBOUNDED,1.);
-
-//         assert!(Arc::ptr_eq(&first, &second));
-//         assert_eq!(engine.layout_cache.len(), 1);
-//     }
-
-//     #[test]
-//     fn layout_text_uses_style_in_cache_key() {
-//         let mut engine = Engine::new();
-//         let style = text_style();
-//         let mut larger = style.clone();
-//         larger.font_size += 1.0;
-//         let mut spaced = style.clone();
-//         spaced.letter_spacing = 1.0;
-
-//         let first = engine.layout_text("Hello, cache", &style, TextLayoutConstraints::UNBOUNDED, 1.0);
-//         let larger = engine.layout_text("Hello, cache", &larger, TextLayoutConstraints::UNBOUNDED,1.);
-//         let spaced = engine.layout_text("Hello, cache", &spaced, TextLayoutConstraints::UNBOUNDED,1.);
-
-//         assert!(!Arc::ptr_eq(&first, &larger));
-//         assert!(!Arc::ptr_eq(&first, &spaced));
-//         assert_eq!(engine.layout_cache.len(), 3);
-//     }
-
-//     #[test]
-//     fn layout_text_uses_constraints_in_cache_key() {
-//         let mut engine = Engine::new();
-//         let style = text_style();
-
-//         let wide = engine.layout_text(
-//             "Hello, cache constraints",
-//             &style,
-//             TextLayoutConstraints::max_width(500.0),
-//             1.
-//         );
-//         let narrow = engine.layout_text(
-//             "Hello, cache constraints",
-//             &style,
-//             TextLayoutConstraints::max_width(50.0),
-//             1.
-//         );
-//         let wide_again = engine.layout_text(
-//             "Hello, cache constraints",
-//             &style,
-//             TextLayoutConstraints::max_width(500.0),
-//             1.
-//         );
-
-//         assert!(Arc::ptr_eq(&wide, &wide_again));
-//         assert!(!Arc::ptr_eq(&wide, &narrow));
-//         assert_eq!(engine.layout_cache.len(), 2);
-//     }
-
-//     #[test]
-//     fn measure_text_populates_layout_cache() {
-//         let mut engine = Engine::new();
-//         let style = text_style();
-
-//         let _ = engine.measure_text("Measured once", &style,1.);
-//         let first = engine.layout_text("Measured once", &style, TextLayoutConstraints::UNBOUNDED,1.);
-//         let second = engine.layout_text("Measured once", &style, TextLayoutConstraints::UNBOUNDED,1.);
-
-//         assert!(Arc::ptr_eq(&first, &second));
-//         assert_eq!(engine.layout_cache.len(), 1);
-//     }
-// }

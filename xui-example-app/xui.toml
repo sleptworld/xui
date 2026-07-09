@@ -1,0 +1,5 @@
+[assets]
+source = "assets"
+bundle = "embedded"
+dev_directory = true
+output = "assets.xpak"

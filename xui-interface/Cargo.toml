@@ -8,4 +8,3 @@ bitflags = "2.6.0"
 ordered-float = "5.3.0"
 slotmap = "1.1.1"
 smallstr = "0.3.1"
-image = {workspace=true}

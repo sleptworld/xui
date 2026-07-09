@@ -11,10 +11,9 @@ wgpu = "29.0.3"
 winit = "0.30.12"
 xui = { path = "../xui" }
 xui-interface = { path = "../xui-interface" }
-xui-text = { path = "../xui-text" }
+xui-text-engine = { path = "../xui-text-engine" }
 
 glam = { workspace = true }
 thiserror = "2.0.18"
 log = "0.4.29"
-cosmic-text = "0.19.0"
 moka = { version = "0.12.15", features = ["sync"] }

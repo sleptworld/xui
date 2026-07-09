@@ -1,19 +1,18 @@
-use crate::animation::AnimatedStyle;
 use crate::element::ElementDesc;
 use crate::event_system::callbacks::EventHandlers;
 use xui_interface::{
-    ComputedStyle, DirtyFlags, Event, EventContext, EventRef, EventResult, Key, OverflowWrap,
-    PaintCommand, ParagraphStyle, Rect, Style, TextBoxStyle, TextContent, TextOverflow,
-    TextPaintCommand, TextProps, Widget, WidgetType,
+    ComputedStyle, EventContext, EventRef, EventResult, Key, OverflowWrap, PaintCommand,
+    ParagraphStyle, Rect, Style, TextBoxStyle, TextContent, TextOverflow, TextPaintCommand,
+    TextPaintProps, TextPaintStyle, TextProps, Widget, WidgetType, WidgetUpdateFlags,
 };
 
-use super::{label::apply_text_style, props_hash, widget_element_desc};
+use super::{props_hash, widget_element_desc};
 
 #[derive(Debug)]
 pub struct TextWidget {
     pub key: Option<Key>,
     pub props: TextProps,
-    pub animated_style: AnimatedStyle,
+    pub style: Style,
     pub event_handlers: EventHandlers,
 }
 
@@ -22,7 +21,7 @@ impl TextWidget {
         Self {
             key: None,
             props: TextProps::new(text),
-            animated_style: AnimatedStyle::new(Style::new()),
+            style: Style::default(),
             event_handlers: EventHandlers::default(),
         }
     }
@@ -38,11 +37,9 @@ impl TextWidget {
     }
 
     pub fn style(mut self, style: Style) -> Self {
-        self.animated_style.base = style;
+        self.style = style;
         self
     }
-
-    animated_style_methods!(animated_style);
 
     pub fn paragraph(mut self, paragraph: ParagraphStyle) -> Self {
         self.props.paragraph = paragraph;
@@ -95,36 +92,35 @@ impl Widget for TextWidget {
             &self.props.text,
             &self.props.paragraph,
             &self.props.text_box,
-            &self.animated_style,
+            &self.style,
         ))
     }
 
-    fn update_from(&mut self, next: &Self) -> DirtyFlags {
-        let mut flags = DirtyFlags::empty();
+    fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
+        let mut flags = WidgetUpdateFlags::empty();
         if self.props.text != next.props.text
             || self.props.paragraph != next.props.paragraph
             || self.props.text_box != next.props.text_box
-            || self.animated_style != next.animated_style
         {
-            flags |= DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT;
+            flags |= WidgetUpdateFlags::LAYOUT_INPUT | WidgetUpdateFlags::PAINT_OUTPUT;
         }
-
+        if self.style != next.style {
+            flags |= WidgetUpdateFlags::STYLE_TARGET;
+        }
         self.props = next.props.clone();
-        self.animated_style = next.animated_style.clone();
+        self.style = next.style.clone();
         flags
     }
 
     fn style(&self) -> &Style {
-        &self.animated_style.base
+        &self.style
     }
 
     fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
-        let mut props = self.props.clone();
-        apply_text_style(&mut props, style);
         commands.push(PaintCommand::Text(TextPaintCommand {
             node_id: Default::default(),
             rect,
-            props,
+            paint: TextPaintProps::new(TextPaintStyle::from_computed(&style.text)),
         }));
     }
 
@@ -135,4 +131,21 @@ impl Widget for TextWidget {
     fn text(&self) -> Option<TextContent> {
         Some(self.props.text.clone())
     }
+
+    fn text_layout_props(&self, style: &ComputedStyle) -> Option<TextProps> {
+        let mut props = self.props.clone();
+        apply_text_style(&mut props, style);
+        Some(props)
+    }
+}
+
+pub(super) fn apply_text_style(text_props: &mut TextProps, style: &ComputedStyle) {
+    text_props.style.color = style.text.color;
+    text_props.style.font_family = style.text.font_family.clone();
+    text_props.style.font_size = style.text.font_size;
+    text_props.style.font_weight = style.text.font_weight;
+    text_props.style.font_style = style.text.font_style;
+    text_props.style.line_height = style.text.line_height;
+    text_props.style.letter_spacing = style.text.letter_spacing;
+    text_props.style.decoration = style.text.decoration;
 }

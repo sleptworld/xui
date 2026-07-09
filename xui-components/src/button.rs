@@ -1,3 +1,4 @@
+use std::time::Duration;
 use xui::prelude::*;
 
 #[derive(Debug, Hash)]
@@ -23,13 +24,15 @@ impl Default for ButtonProp {
 #[defaults(
     ps = ButtonProp::default()
 )]
-pub fn pbutton(text: &String, ps: &ButtonProp) {
+pub fn button(text: &String, ps: &ButtonProp) {
     xui! {
         <container
             background={ps.background}
             border_radius = {ps.border_radius as f32}
             padding = {ps.padding}
             color = {ps.text_color}
+            style={Style::new().when(WidgetState::HOVERED, |s| s.background(Color::WHITE))}
+            transition={Transition::new(Duration::from_millis(200))}
             on_click={|_, _| {
                 println!("HEllo");
                 EventResult::Ignored
@@ -39,12 +42,6 @@ pub fn pbutton(text: &String, ps: &ButtonProp) {
                 println!("ABABA");
                 EventResult::Ignored
             }}
-            // animation= {(
-            //     EventTrigger::OnHover,
-            //     Style::new()
-            //         .background(Color::BLACK),
-            //     AnimationTransition::new(Duration::from_millis(100)),
-            // )}
         >
             <text>{text}</text>
         </container>

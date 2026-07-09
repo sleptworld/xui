@@ -1,15 +1,18 @@
-use std::{collections::HashMap, sync::Arc};
-
-use moka::sync::Cache;
-use wgpu::util::DeviceExt;
-use xui::{ImageFormat, ImageKey, ImageResource, Rect, Size};
-
 use crate::wgpu::{SCENE_FORMAT, WgpuBackendError};
+use moka::sync::Cache;
+use std::sync::Arc;
+use wgpu::util::DeviceExt;
+use xui_interface::{
+    ImageData, ImageDataId, ImageFormat, ImageKey, ImageRepeat, ImageRotation, ImageVariant, Rect,
+    Sampling,
+};
 
-const IMAGE_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
+const IMAGE_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
     0 => Float32x4,
     1 => Float32x4,
     2 => Float32x4,
+    3 => Float32x4,
+    4 => Float32x4,
 ];
 
 const DEFAULT_IMAGE_TEXTURE_CACHE_CAPACITY: u64 = 256;
@@ -17,13 +20,11 @@ const DEFAULT_IMAGE_TEXTURE_CACHE_CAPACITY: u64 = 256;
 pub struct ImageRender {
     image_pipeline: wgpu::RenderPipeline,
     image_bind_group_layout: wgpu::BindGroupLayout,
-    image_sampler: wgpu::Sampler,
-    image_resources: HashMap<ImageKey, RegisteredImageResource>,
+    linear_sampler: wgpu::Sampler,
+    nearest_sampler: wgpu::Sampler,
     image_textures: Cache<ImageKey, Arc<CachedImageTexture>>,
-
     instance_buffer: wgpu::Buffer,
-    instance_count: u32,
-    instance_size: usize,
+    instance_capacity: usize,
 }
 
 #[repr(C)]
@@ -32,6 +33,8 @@ struct ImageInstance {
     bounds: [f32; 4],
     clip: [f32; 4],
     params: [f32; 4],
+    tile: [f32; 4],
+    repeat: [f32; 4],
 }
 
 impl ImageInstance {
@@ -44,24 +47,24 @@ impl ImageInstance {
     }
 }
 
-struct RegisteredImageResource {
-    resource: ImageResource,
-    version: u64,
-}
-
 struct CachedImageTexture {
     _texture: wgpu::Texture,
     _view: wgpu::TextureView,
-    bind_group: wgpu::BindGroup,
-    version: u64,
+    linear_bind_group: wgpu::BindGroup,
+    nearest_bind_group: wgpu::BindGroup,
+    data_id: ImageDataId,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ImageDrawRecord {
     pub key: ImageKey,
+    pub data: ImageData,
     pub rect: Rect,
     pub clip: Rect,
+    pub tile: Rect,
+    pub repeat: ImageRepeat,
     pub opacity: f32,
+    pub variant: ImageVariant,
 }
 
 impl ImageRender {
@@ -93,12 +96,21 @@ impl ImageRender {
                     },
                 ],
             });
-        let image_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("xui image sampler"),
+        let linear_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("xui linear image sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        let nearest_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("xui nearest image sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
@@ -153,12 +165,11 @@ impl ImageRender {
         Self {
             image_pipeline,
             image_bind_group_layout,
-            image_sampler,
-            image_resources: HashMap::new(),
+            linear_sampler,
+            nearest_sampler,
             image_textures: Cache::new(DEFAULT_IMAGE_TEXTURE_CACHE_CAPACITY),
             instance_buffer,
-            instance_count: 0,
-            instance_size: 0,
+            instance_capacity: 0,
         }
     }
 
@@ -166,91 +177,13 @@ impl ImageRender {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        records: &[ImageResource],
-    ) -> Result<(), WgpuBackendError> {
-        if records.is_empty() {
-            self.instance_count = 0;
-            return Ok(());
-        }
-
-        let mut instances: Vec<ImageInstance> = vec![];
-
-        for record in records {}
-
-        let instance_size = std::mem::size_of::<ImageInstance>();
-        let instance_count = records.len() as u32;
-
-        if instance_count > self.instance_count {
-            self.instance_size = instance_size;
-            self.instance_count = instance_count;
-            self.instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("instance_buffer"),
-                contents: unsafe { bytemuck::cast_slice(&instances) },
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-        }
-
-        Ok(())
-
-        // self.instance_size = instance_size;
-        // self.instance_count = instance_count;
-    }
-
-    pub fn set_image_resource(&mut self, resource: ImageResource) -> Result<(), WgpuBackendError> {
-        validate_image_resource(&resource)?;
-        match self.image_resources.get_mut(&resource.key) {
-            Some(existing) if existing.resource == resource => {}
-            Some(existing) => {
-                existing.resource = resource;
-                existing.version = existing.version.saturating_add(1);
-            }
-            None => {
-                self.image_resources.insert(
-                    resource.key.clone(),
-                    RegisteredImageResource {
-                        resource,
-                        version: 1,
-                    },
-                );
-            }
-        }
-        Ok(())
-    }
-
-    pub fn set_rgba_image(
-        &mut self,
-        key: impl Into<ImageKey>,
-        size: Size<u32>,
-        pixels: impl Into<Arc<[u8]>>,
-    ) -> Result<(), WgpuBackendError> {
-        self.set_image_resource(ImageResource::rgba8(key, size, pixels))
-    }
-
-    pub fn remove_image_resource(&mut self, key: &ImageKey) {
-        self.image_resources.remove(key);
-        self.image_textures.invalidate(key);
-    }
-
-    pub fn clear_image_resources(&mut self) {
-        self.image_resources.clear();
-        self.image_textures.invalidate_all();
-    }
-
-    pub fn prepare_textures(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
         records: &[ImageDrawRecord],
     ) -> Result<(), WgpuBackendError> {
         for record in records {
-            let Some(registered) = self.image_resources.get(&record.key) else {
-                continue;
-            };
-
             let cached = self.image_textures.get(&record.key);
             if cached
                 .as_ref()
-                .is_some_and(|texture| texture.version == registered.version)
+                .is_some_and(|texture| texture.data_id == record.data.id())
             {
                 continue;
             }
@@ -259,11 +192,36 @@ impl ImageRender {
                 device,
                 queue,
                 &self.image_bind_group_layout,
-                &self.image_sampler,
-                &registered.resource,
-                registered.version,
+                &self.linear_sampler,
+                &self.nearest_sampler,
+                &record.data,
             )?);
             self.image_textures.insert(record.key.clone(), texture);
+        }
+
+        let instances: Vec<ImageInstance> = records
+            .iter()
+            .map(|record| ImageInstance {
+                bounds: rect_to_array(record.rect),
+                clip: rect_to_array(record.clip),
+                params: image_params(record),
+                tile: rect_to_array(record.tile),
+                repeat: image_repeat(record.repeat),
+            })
+            .collect();
+
+        if instances.is_empty() {
+            return Ok(());
+        }
+        if instances.len() > self.instance_capacity {
+            self.instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("xui image instances"),
+                contents: bytemuck::cast_slice(&instances),
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            });
+            self.instance_capacity = instances.len();
+        } else {
+            queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&instances));
         }
 
         Ok(())
@@ -271,45 +229,33 @@ impl ImageRender {
 
     pub fn render(
         &self,
-        device: &wgpu::Device,
         pass: &mut wgpu::RenderPass<'_>,
         tool_bind_group: &wgpu::BindGroup,
         records: &[ImageDrawRecord],
     ) {
-        let image_instances: Vec<ImageInstance> = records
-            .iter()
-            .map(|record| ImageInstance {
-                bounds: rect_to_array(record.rect),
-                clip: rect_to_array(record.clip),
-                params: [record.opacity, 0.0, 0.0, 0.0],
-            })
-            .collect();
-
-        if image_instances.is_empty() {
+        if records.is_empty() {
             return;
         }
 
-        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("xui image instances"),
-            contents: bytemuck::cast_slice(&image_instances),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
         pass.set_pipeline(&self.image_pipeline);
         pass.set_bind_group(0, tool_bind_group, &[]);
-        pass.set_vertex_buffer(0, instance_buffer.slice(..));
+        pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
         for (index, record) in records.iter().enumerate() {
             let Some(texture) = self.image_textures.get(&record.key) else {
                 continue;
             };
-            pass.set_bind_group(1, &texture.bind_group, &[]);
+            let bind_group = match record.variant.sampling {
+                Sampling::Nearest => &texture.nearest_bind_group,
+                Sampling::Linear | Sampling::Cubic => &texture.linear_bind_group,
+            };
+            pass.set_bind_group(1, bind_group, &[]);
             pass.draw(0..6, index as u32..index as u32 + 1);
         }
     }
 }
 
-fn validate_image_resource(resource: &ImageResource) -> Result<(), WgpuBackendError> {
-    if resource.size.width == 0 || resource.size.height == 0 {
+fn validate_image_data(data: &ImageData) -> Result<(), WgpuBackendError> {
+    if data.size.width == 0 || data.size.height == 0 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "image resource size cannot be zero",
@@ -317,17 +263,16 @@ fn validate_image_resource(resource: &ImageResource) -> Result<(), WgpuBackendEr
         .into());
     }
 
-    let bytes_per_pixel = match resource.format {
+    let bytes_per_pixel = match data.format {
         ImageFormat::Rgba8UnormSrgb => 4usize,
     };
-    let expected_len =
-        resource.size.width as usize * resource.size.height as usize * bytes_per_pixel;
-    if resource.pixels.len() != expected_len {
+    let expected_len = data.size.width as usize * data.size.height as usize * bytes_per_pixel;
+    if data.pixels.len() != expected_len {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!(
                 "image resource pixel length mismatch: expected {expected_len}, got {}",
-                resource.pixels.len()
+                data.pixels.len()
             ),
         )
         .into());
@@ -340,20 +285,20 @@ fn create_cached_image_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     layout: &wgpu::BindGroupLayout,
-    sampler: &wgpu::Sampler,
-    resource: &ImageResource,
-    version: u64,
+    linear_sampler: &wgpu::Sampler,
+    nearest_sampler: &wgpu::Sampler,
+    data: &ImageData,
 ) -> Result<CachedImageTexture, WgpuBackendError> {
-    validate_image_resource(resource)?;
+    validate_image_data(data)?;
 
-    let format = match resource.format {
+    let format = match data.format {
         ImageFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
     };
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("xui image texture"),
         size: wgpu::Extent3d {
-            width: resource.size.width,
-            height: resource.size.height,
+            width: data.size.width,
+            height: data.size.height,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -370,43 +315,134 @@ fn create_cached_image_texture(
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        resource.pixels.as_ref(),
+        data.pixels.as_ref(),
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(resource.size.width * 4),
-            rows_per_image: Some(resource.size.height),
+            bytes_per_row: Some(data.size.width * 4),
+            rows_per_image: Some(data.size.height),
         },
         wgpu::Extent3d {
-            width: resource.size.width,
-            height: resource.size.height,
+            width: data.size.width,
+            height: data.size.height,
             depth_or_array_layers: 1,
         },
     );
 
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("xui image bind group"),
-        layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Sampler(sampler),
-            },
-        ],
-    });
+    let create_bind_group = |label, sampler| {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(label),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        })
+    };
+    let linear_bind_group = create_bind_group("xui linear image bind group", linear_sampler);
+    let nearest_bind_group = create_bind_group("xui nearest image bind group", nearest_sampler);
 
     Ok(CachedImageTexture {
         _texture: texture,
         _view: view,
-        bind_group,
-        version,
+        linear_bind_group,
+        nearest_bind_group,
+        data_id: data.id(),
     })
+}
+
+fn image_params(record: &ImageDrawRecord) -> [f32; 4] {
+    let transform = record.variant.transform;
+    let rotation = match transform.rotate {
+        ImageRotation::Deg0 => 0.0,
+        ImageRotation::Deg90 => 1.0,
+        ImageRotation::Deg180 => 2.0,
+        ImageRotation::Deg270 => 3.0,
+    };
+    [
+        record.opacity.clamp(0.0, 1.0),
+        if transform.flip_x { 1.0 } else { 0.0 },
+        if transform.flip_y { 1.0 } else { 0.0 },
+        rotation,
+    ]
+}
+
+fn image_repeat(repeat: ImageRepeat) -> [f32; 4] {
+    [
+        if matches!(repeat, ImageRepeat::Repeat | ImageRepeat::RepeatX) {
+            1.0
+        } else {
+            0.0
+        },
+        if matches!(repeat, ImageRepeat::Repeat | ImageRepeat::RepeatY) {
+            1.0
+        } else {
+            0.0
+        },
+        0.0,
+        0.0,
+    ]
 }
 
 fn rect_to_array(rect: Rect) -> [f32; 4] {
     [rect.x, rect.y, rect.width, rect.height]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use xui_interface::{ImageTransform, Size};
+
+    fn record(variant: ImageVariant, opacity: f32) -> ImageDrawRecord {
+        ImageDrawRecord {
+            key: ImageKey::UserProvided(1),
+            data: ImageData::rgba8(Size::new(1, 1), [255, 0, 0, 255]),
+            rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+            clip: Rect::new(0.0, 0.0, 10.0, 10.0),
+            tile: Rect::new(0.0, 0.0, 10.0, 10.0),
+            repeat: ImageRepeat::NoRepeat,
+            opacity,
+            variant,
+        }
+    }
+
+    #[test]
+    fn image_params_encode_opacity_flip_and_rotation() {
+        let variant = ImageVariant {
+            transform: ImageTransform {
+                flip_x: true,
+                flip_y: false,
+                rotate: ImageRotation::Deg270,
+            },
+            ..ImageVariant::default()
+        };
+
+        assert_eq!(image_params(&record(variant, 1.5)), [1.0, 1.0, 0.0, 3.0]);
+    }
+
+    #[test]
+    fn image_repeat_encodes_repeated_axes() {
+        assert_eq!(image_repeat(ImageRepeat::NoRepeat), [0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(image_repeat(ImageRepeat::Repeat), [1.0, 1.0, 0.0, 0.0]);
+        assert_eq!(image_repeat(ImageRepeat::RepeatX), [1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(image_repeat(ImageRepeat::RepeatY), [0.0, 1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn image_data_validation_rejects_invalid_dimensions_and_pixel_length() {
+        let valid = ImageData::rgba8(Size::new(1, 2), [0; 8]);
+        assert!(validate_image_data(&valid).is_ok());
+
+        let empty = ImageData::rgba8(Size::new(0, 1), []);
+        assert!(validate_image_data(&empty).is_err());
+
+        let truncated = ImageData::rgba8(Size::new(2, 2), [0; 4]);
+        assert!(validate_image_data(&truncated).is_err());
+    }
 }

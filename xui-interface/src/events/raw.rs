@@ -220,26 +220,6 @@ impl RawEvent {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EventTrigger {
-    OnMount,
-    OnUnmount,
-    OnHover,
-    OnHoverStart,
-    OnHoverEnd,
-    OnPress,
-    OnPressStart,
-    OnPressEnd,
-    OnFocus,
-    OnBlur,
-    OnClick,
-    OnPointerDown,
-    OnPointerUp,
-    OnPointerMove,
-    OnKeyDown,
-    OnKeyUp,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventResult {
     Ignored,

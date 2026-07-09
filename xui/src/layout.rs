@@ -1,32 +1,35 @@
-use taffy::{LengthPercentage, prelude as tf};
+use taffy::{prelude as tf, LengthPercentage};
 use taffy::{Overflow, Point as TaffyPoint};
-pub use xui_interface::TextMeasurer;
-use xui_interface::Widget;
 use xui_interface::core::Sizing;
 use xui_interface::style::{AlignStyle, JustifyStyle};
+use xui_interface::{Widget, WidgetState};
 
 use crate::core::EdgeInsets;
 use crate::style::{ComputedStyle, FlexDirectionStyle, ScrollDirectionStyle, Theme};
 use crate::widgets::{WidgetI, Widgets};
 
-pub fn computed_style_for_widget(
+pub(crate) fn computed_style_for_widget(
     widget: &WidgetI,
     parent: &ComputedStyle,
     theme: &Theme,
+    state: WidgetState,
 ) -> ComputedStyle {
     widget.with_widgets(|widget| {
         let mut computed = parent.inherited_from(theme);
         if let Some(scope) = widget.style_scope() {
             computed.apply(parent, scope, theme);
         }
-        computed.apply(parent, &widget.default_style(), theme);
-        computed.apply(parent, widget.style(), theme);
-        computed.apply(parent, &widget.state_style(widget.state()), theme);
+        let default_style = widget.default_style().patch_for_state(WidgetState::empty());
+        let style = widget.style().patch_for_state(state);
+        computed.apply(parent, &default_style, theme);
+        computed.apply(parent, &style, theme);
         match widget {
-            Widgets::Row(_) => computed.layout.flex_direction = FlexDirectionStyle::Row,
-            Widgets::Column(_) | Widgets::Root(_) => {
-                computed.layout.flex_direction = FlexDirectionStyle::Column;
+            Widgets::Container(widget) => {
+                if let Some(direction) = widget.flex_direction {
+                    computed.layout.flex_direction = direction;
+                }
             }
+            Widgets::Root(_) => computed.layout.flex_direction = FlexDirectionStyle::Column,
             _ => {}
         }
         computed
@@ -50,27 +53,13 @@ pub fn computed_layout_style(
     let layout = computed.layout;
     // let is_root = widget.with_widgets(|w| matches!(w, Widgets::Root(_)));
     let mut style = widget.with_widgets(|w| match w {
-        Widgets::Column(_) => tf::Style {
-            display: tf::Display::Flex,
-            flex_direction: tf::FlexDirection::Column,
-            align_items: Some(align_items(layout.align)),
-            justify_content: Some(justify_content(layout.justify)),
-            gap: tf::Size {
-                height: length_percentage(layout.gap),
-                width: LengthPercentage::length(0.0),
+        Widgets::Container(widget) => match widget.flex_direction {
+            Some(FlexDirectionStyle::Column) => flex_style(FlexDirectionStyle::Column, layout),
+            Some(FlexDirectionStyle::Row) => flex_style(FlexDirectionStyle::Row, layout),
+            None => tf::Style {
+                display: tf::Display::Block,
+                ..Default::default()
             },
-            ..Default::default()
-        },
-        Widgets::Row(_) => tf::Style {
-            display: tf::Display::Flex,
-            flex_direction: tf::FlexDirection::Row,
-            align_items: Some(align_items(layout.align)),
-            justify_content: Some(justify_content(layout.justify)),
-            gap: tf::Size {
-                height: LengthPercentage::length(0.0),
-                width: length_percentage(layout.gap),
-            },
-            ..Default::default()
         },
         Widgets::Root(_) => tf::Style {
             display: tf::Display::Flex,
@@ -81,6 +70,18 @@ pub fn computed_layout_style(
             },
             ..Default::default()
         },
+
+        Widgets::Image(image) => {
+            let aspect_ratio = image
+                .image_data
+                .as_ref()
+                .map(|data| data.size.width as f32 / data.size.height as f32);
+            tf::Style {
+                display: tf::Display::Block,
+                aspect_ratio,
+                ..Default::default()
+            }
+        }
         _ => tf::Style {
             display: tf::Display::Block,
             ..Default::default()
@@ -143,6 +144,37 @@ pub fn computed_layout_style(
     };
 
     style
+}
+
+fn flex_style(
+    direction: FlexDirectionStyle,
+    layout: xui_interface::ComputedLayoutStyle,
+) -> tf::Style {
+    let (flex_direction, gap) = match direction {
+        FlexDirectionStyle::Column => (
+            tf::FlexDirection::Column,
+            tf::Size {
+                height: length_percentage(layout.gap),
+                width: LengthPercentage::length(0.0),
+            },
+        ),
+        FlexDirectionStyle::Row => (
+            tf::FlexDirection::Row,
+            tf::Size {
+                height: LengthPercentage::length(0.0),
+                width: length_percentage(layout.gap),
+            },
+        ),
+    };
+
+    tf::Style {
+        display: tf::Display::Flex,
+        flex_direction,
+        align_items: Some(align_items(layout.align)),
+        justify_content: Some(justify_content(layout.justify)),
+        gap,
+        ..Default::default()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -228,81 +260,3 @@ fn scroll_overflow(direction: ScrollDirectionStyle) -> TaffyPoint<Overflow> {
     };
     TaffyPoint { x, y }
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use crate::prelude::*;
-//     use xui_interface::TextLayoutConstraints;
-
-//     struct ZeroTextMeasurer;
-
-//     impl TextMeasurer for ZeroTextMeasurer {
-//         fn measure_text(&mut self, _text: &str, _props: &ComputedTextStyle) -> Size<f32> {
-//             Size::<f32>::ZERO
-//         }
-
-//         fn measure_text_with_constraints(
-//             &mut self,
-//             _text: &str,
-//             _props: &ComputedTextStyle,
-//             _constraints: TextLayoutConstraints,
-//         ) -> Size<f32> {
-//             Size::<f32>::ZERO
-//         }
-//     }
-
-//     #[test]
-//     fn fill_editor_shell_occupies_window() {
-//         let mut app = App::new(|_| {
-//             row()
-//                 .style(Style::new().size(Size::fill()))
-//                 .into_element_desc(vec![
-//                     container()
-//                         .style(
-//                             Style::new()
-//                                 .width(Sizing::fix(300.0))
-//                                 .height(Sizing::Fill)
-//                                 .background(Color::BLACK),
-//                         )
-//                         .into_element_desc(Vec::new()),
-//                     container()
-//                         .style(Style::new().size(Size::fill()).background(Color::BLUE_500))
-//                         .into_element_desc(Vec::new()),
-//                 ])
-//         });
-//         let mut backend = MockRenderBackend::default();
-//         let mut measurer = ZeroTextMeasurer;
-
-//         app.resize(Size::<f32>::new(800.0, 600.0));
-//         app.render(&mut backend, &mut measurer).unwrap();
-
-//         let root = app.arena().root();
-//         let row_id = app.arena().children(root)[0];
-//         let pane_ids = app.arena().children(row_id);
-//         let row_layout = app.arena().node(row_id).unwrap().layout;
-//         let left_layout = app.arena().node(pane_ids[0]).unwrap().layout;
-//         let right_layout = app.arena().node(pane_ids[1]).unwrap().layout;
-
-//         assert_eq!(row_layout, Rect::new(0.0, 0.0, 792.0, 592.0));
-//         assert_eq!(left_layout, Rect::new(0.0, 0.0, 300.0, 592.0));
-//         assert_eq!(right_layout, Rect::new(300.0, 0.0, 492.0, 592.0));
-
-//         let painted_rects = backend
-//             .last_commands
-//             .iter()
-//             .filter_map(|command| match command {
-//                 PaintCommand::Rect { rect, color, .. } => Some((*rect, *color)),
-//                 _ => None,
-//             })
-//             .collect::<Vec<_>>();
-//         assert!(painted_rects.contains(&(
-//             Rect::new(0.0, 0.0, 300.0, 592.0),
-//             ComputedColorStyle::Solid(Color::BLACK),
-//         )));
-//         assert!(painted_rects.contains(&(
-//             Rect::new(300.0, 0.0, 492.0, 592.0),
-//             ComputedColorStyle::Solid(Color::BLUE_500),
-//         )));
-//     }
-// }
