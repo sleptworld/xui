@@ -73,7 +73,7 @@ impl WorkNode {
         Self {
             fiber_id: current.id,
             parent,
-            key: current.key.clone(),
+            key: current.key,
             position,
             tag: current.tag,
             children: SmallVec::new(),
@@ -581,7 +581,7 @@ impl ComponentRuntime {
             .enumerate()
             .map(|(pos, o)| {
                 let node = self.nodes.node(*o).unwrap();
-                (node.key.clone(), pos)
+                (node.key, pos)
             })
             .filter(|(a, _)| a.is_some())
             .map(|(k, pos)| (k.unwrap(), pos))
@@ -698,7 +698,7 @@ impl ComponentRuntime {
         key: Option<Key>,
     ) -> PreparedElement {
         PreparedElement {
-            key: key.clone(),
+            key,
             tag: FiberTag::Component,
             pending: PreparedPending::Component {
                 key,
@@ -809,7 +809,7 @@ impl ComponentRuntime {
 
         let (key, props_hash, widget, event_handlers) = {
             let wip = self.wip_nodes.get_mut(wip_id)?;
-            let key = wip.key.clone();
+            let key = wip.key;
             let host_work = wip.host_work.as_mut()?;
             let widget = host_work.widget.take()?;
             let event_handlers = host_work.event_handlers.take()?;
@@ -871,7 +871,7 @@ impl ComponentRuntime {
             .wip_nodes
             .get_mut(wip_id)
             .expect("update host fiber missing work node");
-        let key = wip.key.clone();
+        let key = wip.key;
         let host_work = wip
             .host_work
             .as_mut()

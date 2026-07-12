@@ -5,7 +5,8 @@ bitflags::bitflags! {
         const LAYOUT_INPUT = 1 << 1;
         const PAINT_OUTPUT = 1 << 2;
         const STATE_CHANGE = 1 << 3;
-        const TREE = 1 << 4;
+        const TEXT_SHAPE = 1 << 4;
+        const TREE = 1 << 5;
     }
 }
 

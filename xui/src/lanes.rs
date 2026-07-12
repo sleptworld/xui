@@ -63,12 +63,11 @@ pub fn claim_next_transition_lane() -> Lane {
 pub fn event_lane(event: &RawEvent) -> Lane {
     match event {
         RawEvent::PointerMove(_) | RawEvent::Wheel(_) => INPUT_CONTINUOUS_LANE,
-        RawEvent::PointerDown(_)
+        RawEvent::Ime(_)
+        | RawEvent::PointerDown(_)
         | RawEvent::PointerUp(_)
         | RawEvent::PointerCancel(_)
-        | RawEvent::KeyDown(_)
-        | RawEvent::KeyUp(_)
-        | RawEvent::TextInput(_)
+        | RawEvent::Keyboard(_)
         | RawEvent::WindowFocus(_)
         | RawEvent::WindowBlur(_)
         | RawEvent::ContextMenu(_) => SYNC_LANE,

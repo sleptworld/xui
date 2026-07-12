@@ -80,7 +80,7 @@ impl ElementDesc {
     pub fn key(&self) -> Option<Key> {
         match self {
             Self::Host(widget) => widget.widget.key(),
-            Self::Component(component) => component.key.clone(),
+            Self::Component(component) => component.key,
         }
     }
 

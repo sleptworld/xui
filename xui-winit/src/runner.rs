@@ -3,10 +3,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::device::WinitDeviceRegistry;
-use crate::translate::{translate_key, translate_mouse_button, translate_mouse_wheel};
+use crate::translate::{
+    translate_mouse_button, translate_mouse_wheel, translate_named_key, translate_physical_key,
+};
 use crate::wgpu::WGPUBackend;
 use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalSize;
+use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
 use winit::error::{EventLoopError, OsError};
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
@@ -16,10 +18,13 @@ use xui::App;
 use xui::app::ComponentFn;
 use xui::text::TextHost;
 use xui::{runtime::ControlFlow as XuiControlFlow, runtime::GuiRuntime, runtime::RuntimeEvent};
-use xui_interface::events::{RawEvent, XuiPointerId};
+use xui_interface::events::{
+    KeyState, KeyText, RawEvent, RawIme, RawKeyboard, TextPayload, XuiPointerId,
+};
 use xui_interface::{
-    Event, Modifiers, Point, PointerButtons, PointerKind, RawKey, RawPointerButton, RawPointerMove,
-    RawTextInput, RawWheel, RawWindowEvent, RenderBackend, Size, TextBackend,
+    Event, Modifiers, PlatformOutput, Point, PointerButtons, PointerKind, RawPointerButton,
+    RawPointerMove, RawWheel, RawWindowEvent, RenderBackend, Size, TextBackend, TextOffset,
+    TextRange,
 };
 use xui_text_engine::CosmicEngine;
 
@@ -106,6 +111,7 @@ where
     render_error: Option<B::Error>,
     device_registry: WinitDeviceRegistry,
     event_proxy: Option<EventLoopProxy<WinitUserEvent>>,
+    last_platform_output: PlatformOutput,
 }
 
 impl<B: RenderBackend<TextHost<T>>, T: TextBackend, F> WinitRunner<B, T, F>
@@ -130,6 +136,7 @@ where
             render_error: None,
             device_registry: WinitDeviceRegistry::default(),
             event_proxy: None,
+            last_platform_output: PlatformOutput::default(),
         }
     }
 
@@ -165,6 +172,7 @@ where
             RuntimeEvent::Exit if self.options.exit_on_close_requested => event_loop.exit(),
             other => {
                 self.runtime_mut().handle_event(other);
+                self.sync_platform_output();
                 self.request_redraw_if_dirty();
             }
         }
@@ -175,8 +183,37 @@ where
             self.render_error = Some(error);
             event_loop.exit();
         } else {
+            self.sync_platform_output();
             self.request_redraw_if_dirty();
         }
+    }
+
+    fn sync_platform_output(&mut self) {
+        let next = self.runtime().platform_output().clone();
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+
+        if self.last_platform_output.text_input.is_some() != next.text_input.is_some() {
+            window.set_ime_allowed(next.text_input.is_some());
+        }
+
+        let previous_area = self
+            .last_platform_output
+            .text_input
+            .as_ref()
+            .map(|session| session.cursor_area);
+        let next_area = next.text_input.as_ref().map(|session| session.cursor_area);
+        if previous_area != next_area {
+            if let Some(area) = next_area {
+                window.set_ime_cursor_area(
+                    LogicalPosition::new(area.x as f64, area.y as f64),
+                    LogicalSize::new(area.width as f64, area.height as f64),
+                );
+            }
+        }
+
+        self.last_platform_output = next;
     }
 
     fn request_redraw_if_dirty(&self) {
@@ -293,26 +330,41 @@ where
                 None,
             ),
             WindowEvent::KeyboardInput { event, .. } => {
-                let raw = RawKey {
-                    key: translate_key(&event.logical_key),
+                let raw = RawKeyboard {
+                    physical_key: translate_physical_key(event.physical_key),
+                    named_key: translate_named_key(&event.logical_key),
+                    state: match event.state {
+                        ElementState::Pressed => KeyState::Down,
+                        ElementState::Released => KeyState::Up,
+                    },
+                    text: event.text.as_deref().and_then(KeyText::try_new),
                     modifiers: self.modifiers,
                     timestamp,
                     is_repeat: event.repeat,
                 };
-                let event = match event.state {
-                    ElementState::Pressed => RawEvent::KeyDown(raw),
-                    ElementState::Released => RawEvent::KeyUp(raw),
-                };
-                (vec![RuntimeEvent::Input(event)], None)
+                (vec![RuntimeEvent::Input(RawEvent::Keyboard(raw))], None)
             }
-            WindowEvent::Ime(winit::event::Ime::Commit(text)) => (
-                vec![RuntimeEvent::Input(RawEvent::TextInput(RawTextInput {
-                    text: text.clone(),
-                    modifiers: self.modifiers,
-                    timestamp,
-                }))],
-                None,
-            ),
+            WindowEvent::Ime(ime) => {
+                let ime = match ime {
+                    winit::event::Ime::Enabled => RawIme::Enabled { timestamp },
+                    winit::event::Ime::Preedit(text, cursor) => RawIme::Preedit {
+                        text: TextPayload::new(text),
+                        cursor: cursor.map(|(start, end)| {
+                            TextRange::new(
+                                TextOffset::byte_offset(start),
+                                TextOffset::byte_offset(end),
+                            )
+                        }),
+                        timestamp,
+                    },
+                    winit::event::Ime::Commit(text) => RawIme::Commit {
+                        text: TextPayload::new(text),
+                        timestamp,
+                    },
+                    winit::event::Ime::Disabled => RawIme::Disabled { timestamp },
+                };
+                (vec![RuntimeEvent::Input(RawEvent::Ime(ime))], None)
+            }
             WindowEvent::RedrawRequested => (vec![RuntimeEvent::RedrawRequested], None),
             _ => (Vec::new(), None),
         }

@@ -1,14 +1,16 @@
 use winit::event::{
     ElementState, KeyEvent, MouseButton as WinitMouseButton, MouseScrollDelta, WindowEvent,
 };
-use winit::keyboard::{Key as WinitKey, NamedKey};
-use xui::prelude::{RuntimeEvent, Size};
-use xui_interface::events::RawEvent;
-use xui_interface::{
-    Event, InputKey, Modifiers, Point, PointerButton, PointerButtons, PointerKind, RawKey,
-    RawPointerButton, RawPointerMove, RawTextInput, RawWheel, RawWindowEvent, ScrollDelta,
-    Translation, events::XuiPointerId,
+use winit::keyboard::{
+    Key as WinitKey, KeyCode, NamedKey as WinitNamedKey, PhysicalKey as WinitPhysicalKey,
 };
+use xui::prelude::{RuntimeEvent, Size};
+use xui_interface::events::{KeyState, KeyText, NamedKey, PhysicalKey, RawEvent, RawKeyboard};
+use xui_interface::{
+    Event, Modifiers, Point, PointerButton, PointerButtons, PointerKind, RawPointerButton,
+    RawPointerMove, RawWheel, RawWindowEvent, ScrollDelta, Translation, events::XuiPointerId,
+};
+use xui_interface::{RawIme, TextOffset, TextPayload, TextRange};
 
 pub fn translate_mouse_button(button: WinitMouseButton) -> Option<PointerButton> {
     match button {
@@ -21,18 +23,270 @@ pub fn translate_mouse_button(button: WinitMouseButton) -> Option<PointerButton>
     }
 }
 
-pub fn translate_key(key: &WinitKey) -> InputKey {
-    match key {
-        WinitKey::Named(NamedKey::Tab) => InputKey::Tab,
-        WinitKey::Named(NamedKey::Enter) => InputKey::Enter,
-        WinitKey::Named(NamedKey::Escape) => InputKey::Escape,
-        WinitKey::Named(NamedKey::Backspace) => InputKey::Backspace,
-        WinitKey::Named(named) => InputKey::Other(format!("{named:?}")),
-        WinitKey::Character(text) => InputKey::Character(text.to_string()),
-        WinitKey::Unidentified(native) => InputKey::Other(format!("{native:?}")),
-        WinitKey::Dead(Some(ch)) => InputKey::Character(ch.to_string()),
-        WinitKey::Dead(None) => InputKey::Other("Dead".to_owned()),
-    }
+pub fn translate_named_key(key: &WinitKey) -> Option<NamedKey> {
+    let WinitKey::Named(key) = key else {
+        return None;
+    };
+    Some(match key {
+        WinitNamedKey::Tab => NamedKey::Tab,
+        WinitNamedKey::Enter => NamedKey::Enter,
+        WinitNamedKey::Escape => NamedKey::Escape,
+        WinitNamedKey::Backspace => NamedKey::Backspace,
+        WinitNamedKey::Delete => NamedKey::Delete,
+        WinitNamedKey::ArrowLeft => NamedKey::ArrowLeft,
+        WinitNamedKey::ArrowRight => NamedKey::ArrowRight,
+        WinitNamedKey::ArrowUp => NamedKey::ArrowUp,
+        WinitNamedKey::ArrowDown => NamedKey::ArrowDown,
+        WinitNamedKey::Home => NamedKey::Home,
+        WinitNamedKey::End => NamedKey::End,
+        WinitNamedKey::PageUp => NamedKey::PageUp,
+        WinitNamedKey::PageDown => NamedKey::PageDown,
+        WinitNamedKey::Space => NamedKey::Space,
+        WinitNamedKey::ContextMenu => NamedKey::ContextMenu,
+        WinitNamedKey::Shift => NamedKey::Shift,
+        WinitNamedKey::Control => NamedKey::Control,
+        WinitNamedKey::Alt => NamedKey::Alt,
+        WinitNamedKey::Super | WinitNamedKey::Meta | WinitNamedKey::Hyper => NamedKey::Meta,
+        WinitNamedKey::F1 => NamedKey::F(1),
+        WinitNamedKey::F2 => NamedKey::F(2),
+        WinitNamedKey::F3 => NamedKey::F(3),
+        WinitNamedKey::F4 => NamedKey::F(4),
+        WinitNamedKey::F5 => NamedKey::F(5),
+        WinitNamedKey::F6 => NamedKey::F(6),
+        WinitNamedKey::F7 => NamedKey::F(7),
+        WinitNamedKey::F8 => NamedKey::F(8),
+        WinitNamedKey::F9 => NamedKey::F(9),
+        WinitNamedKey::F10 => NamedKey::F(10),
+        WinitNamedKey::F11 => NamedKey::F(11),
+        WinitNamedKey::F12 => NamedKey::F(12),
+        WinitNamedKey::F13 => NamedKey::F(13),
+        WinitNamedKey::F14 => NamedKey::F(14),
+        WinitNamedKey::F15 => NamedKey::F(15),
+        WinitNamedKey::F16 => NamedKey::F(16),
+        WinitNamedKey::F17 => NamedKey::F(17),
+        WinitNamedKey::F18 => NamedKey::F(18),
+        WinitNamedKey::F19 => NamedKey::F(19),
+        WinitNamedKey::F20 => NamedKey::F(20),
+        WinitNamedKey::F21 => NamedKey::F(21),
+        WinitNamedKey::F22 => NamedKey::F(22),
+        WinitNamedKey::F23 => NamedKey::F(23),
+        WinitNamedKey::F24 => NamedKey::F(24),
+        WinitNamedKey::F25 => NamedKey::F(25),
+        WinitNamedKey::F26 => NamedKey::F(26),
+        WinitNamedKey::F27 => NamedKey::F(27),
+        WinitNamedKey::F28 => NamedKey::F(28),
+        WinitNamedKey::F29 => NamedKey::F(29),
+        WinitNamedKey::F30 => NamedKey::F(30),
+        WinitNamedKey::F31 => NamedKey::F(31),
+        WinitNamedKey::F32 => NamedKey::F(32),
+        WinitNamedKey::F33 => NamedKey::F(33),
+        WinitNamedKey::F34 => NamedKey::F(34),
+        WinitNamedKey::F35 => NamedKey::F(35),
+        _ => NamedKey::Unidentified,
+    })
+}
+
+pub fn translate_physical_key(key: WinitPhysicalKey) -> PhysicalKey {
+    let WinitPhysicalKey::Code(code) = key else {
+        return PhysicalKey::Unidentified;
+    };
+    macro_rules! map_codes { ($($name:ident),* $(,)?) => { match code { $(KeyCode::$name => PhysicalKey::$name,)* _ => PhysicalKey::Unidentified } }; }
+    map_codes!(
+        Backquote,
+        Backslash,
+        BracketLeft,
+        BracketRight,
+        Comma,
+        Digit0,
+        Digit1,
+        Digit2,
+        Digit3,
+        Digit4,
+        Digit5,
+        Digit6,
+        Digit7,
+        Digit8,
+        Digit9,
+        Equal,
+        IntlBackslash,
+        IntlRo,
+        IntlYen,
+        KeyA,
+        KeyB,
+        KeyC,
+        KeyD,
+        KeyE,
+        KeyF,
+        KeyG,
+        KeyH,
+        KeyI,
+        KeyJ,
+        KeyK,
+        KeyL,
+        KeyM,
+        KeyN,
+        KeyO,
+        KeyP,
+        KeyQ,
+        KeyR,
+        KeyS,
+        KeyT,
+        KeyU,
+        KeyV,
+        KeyW,
+        KeyX,
+        KeyY,
+        KeyZ,
+        Minus,
+        Period,
+        Quote,
+        Semicolon,
+        Slash,
+        AltLeft,
+        AltRight,
+        Backspace,
+        CapsLock,
+        ContextMenu,
+        ControlLeft,
+        ControlRight,
+        Enter,
+        SuperLeft,
+        SuperRight,
+        ShiftLeft,
+        ShiftRight,
+        Space,
+        Tab,
+        Convert,
+        KanaMode,
+        Lang1,
+        Lang2,
+        Lang3,
+        Lang4,
+        Lang5,
+        NonConvert,
+        Delete,
+        End,
+        Help,
+        Home,
+        Insert,
+        PageDown,
+        PageUp,
+        ArrowDown,
+        ArrowLeft,
+        ArrowRight,
+        ArrowUp,
+        NumLock,
+        Numpad0,
+        Numpad1,
+        Numpad2,
+        Numpad3,
+        Numpad4,
+        Numpad5,
+        Numpad6,
+        Numpad7,
+        Numpad8,
+        Numpad9,
+        NumpadAdd,
+        NumpadBackspace,
+        NumpadClear,
+        NumpadClearEntry,
+        NumpadComma,
+        NumpadDecimal,
+        NumpadDivide,
+        NumpadEnter,
+        NumpadEqual,
+        NumpadHash,
+        NumpadMemoryAdd,
+        NumpadMemoryClear,
+        NumpadMemoryRecall,
+        NumpadMemoryStore,
+        NumpadMemorySubtract,
+        NumpadMultiply,
+        NumpadParenLeft,
+        NumpadParenRight,
+        NumpadStar,
+        NumpadSubtract,
+        Escape,
+        Fn,
+        FnLock,
+        PrintScreen,
+        ScrollLock,
+        Pause,
+        BrowserBack,
+        BrowserFavorites,
+        BrowserForward,
+        BrowserHome,
+        BrowserRefresh,
+        BrowserSearch,
+        BrowserStop,
+        Eject,
+        LaunchApp1,
+        LaunchApp2,
+        LaunchMail,
+        MediaPlayPause,
+        MediaSelect,
+        MediaStop,
+        MediaTrackNext,
+        MediaTrackPrevious,
+        Power,
+        Sleep,
+        WakeUp,
+        AudioVolumeDown,
+        AudioVolumeMute,
+        AudioVolumeUp,
+        Meta,
+        Hyper,
+        Turbo,
+        Abort,
+        Resume,
+        Suspend,
+        Again,
+        Copy,
+        Cut,
+        Find,
+        Open,
+        Paste,
+        Props,
+        Select,
+        Undo,
+        Hiragana,
+        Katakana,
+        F1,
+        F2,
+        F3,
+        F4,
+        F5,
+        F6,
+        F7,
+        F8,
+        F9,
+        F10,
+        F11,
+        F12,
+        F13,
+        F14,
+        F15,
+        F16,
+        F17,
+        F18,
+        F19,
+        F20,
+        F21,
+        F22,
+        F23,
+        F24,
+        F25,
+        F26,
+        F27,
+        F28,
+        F29,
+        F30,
+        F31,
+        F32,
+        F33,
+        F34,
+        F35
+    )
 }
 
 pub fn translate_mouse_wheel(scale: f32, delta: &MouseScrollDelta) -> ScrollDelta {
@@ -119,44 +373,47 @@ pub fn translate_window_event(
             }))]
         }
         WindowEvent::KeyboardInput { event, .. } => translate_key_event(event),
-        WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
-            vec![RuntimeEvent::Input(RawEvent::TextInput(RawTextInput {
-                text: text.clone(),
-                modifiers: Modifiers::default(),
-                timestamp: std::time::Instant::now(),
-            }))]
-        }
+        WindowEvent::Ime(ime) => translate_ime_event(ime),
         WindowEvent::RedrawRequested => vec![RuntimeEvent::RedrawRequested],
         _ => Vec::new(),
     }
 }
 
-pub fn translate_key_event(event: &KeyEvent) -> Vec<RuntimeEvent> {
-    let key = translate_key(&event.logical_key);
-    let raw = RawKey {
-        key,
+fn translate_ime_event(event: &winit::event::Ime) -> Vec<RuntimeEvent> {
+    let timestamp = std::time::Instant::now();
+    let raw = match event {
+        winit::event::Ime::Commit(text) => RawIme::Commit {
+            text: TextPayload::new(text),
+            timestamp,
+        },
+        winit::event::Ime::Disabled => RawIme::Disabled { timestamp },
+        winit::event::Ime::Enabled => RawIme::Enabled { timestamp },
+        winit::event::Ime::Preedit(a, b) => RawIme::Preedit {
+            text: TextPayload::new(a),
+            cursor: b.as_ref().map(|r| {
+                TextRange::new(TextOffset::byte_offset(r.0), TextOffset::byte_offset(r.1))
+            }),
+            timestamp,
+        },
+    };
+
+    vec![RuntimeEvent::Input(RawEvent::Ime(raw))]
+}
+
+fn translate_key_event(event: &KeyEvent) -> Vec<RuntimeEvent> {
+    let raw = RawKeyboard {
+        physical_key: translate_physical_key(event.physical_key),
+        named_key: translate_named_key(&event.logical_key),
+        state: match event.state {
+            ElementState::Pressed => KeyState::Down,
+            ElementState::Released => KeyState::Up,
+        },
+        text: event.text.as_deref().and_then(KeyText::try_new),
         modifiers: Modifiers::default(),
         timestamp: std::time::Instant::now(),
         is_repeat: event.repeat,
     };
-    let mut events = vec![RuntimeEvent::Input(match event.state {
-        ElementState::Pressed => RawEvent::KeyDown(raw),
-        ElementState::Released => RawEvent::KeyUp(raw),
-    })];
-
-    if event.state == ElementState::Pressed {
-        if let Some(text) = event.text.as_ref() {
-            if !text.is_empty() && text != "\r" && text != "\t" {
-                events.push(RuntimeEvent::Input(RawEvent::TextInput(RawTextInput {
-                    text: text.to_string(),
-                    modifiers: Modifiers::default(),
-                    timestamp: std::time::Instant::now(),
-                })));
-            }
-        }
-    }
-
-    events
+    vec![RuntimeEvent::Input(RawEvent::Keyboard(raw))]
 }
 
 #[cfg(test)]
@@ -187,18 +444,39 @@ mod tests {
     }
 
     #[test]
-    fn maps_named_and_character_keys() {
+    fn maps_named_keys() {
         assert_eq!(
-            translate_key(&WinitKey::Named(NamedKey::Enter)),
-            InputKey::Enter
+            translate_named_key(&WinitKey::Named(NamedKey::Enter)),
+            Some(xui_interface::events::NamedKey::Enter)
+        );
+        assert_eq!(translate_named_key(&WinitKey::Character("x".into())), None);
+        assert_eq!(
+            translate_named_key(&WinitKey::Named(NamedKey::ArrowLeft)),
+            Some(xui_interface::events::NamedKey::ArrowLeft)
         );
         assert_eq!(
-            translate_key(&WinitKey::Named(NamedKey::Tab)),
-            InputKey::Tab
+            translate_named_key(&WinitKey::Named(NamedKey::Delete)),
+            Some(xui_interface::events::NamedKey::Delete)
         );
         assert_eq!(
-            translate_key(&WinitKey::Character("x".into())),
-            InputKey::Character("x".to_owned())
+            translate_named_key(&WinitKey::Named(NamedKey::Backspace)),
+            Some(xui_interface::events::NamedKey::Backspace)
+        );
+    }
+
+    #[test]
+    fn maps_physical_keys() {
+        assert_eq!(
+            translate_physical_key(winit::keyboard::PhysicalKey::Code(KeyCode::KeyA)),
+            PhysicalKey::KeyA
+        );
+        assert_eq!(
+            translate_physical_key(winit::keyboard::PhysicalKey::Code(KeyCode::NumpadEnter)),
+            PhysicalKey::NumpadEnter
+        );
+        assert_eq!(
+            translate_physical_key(winit::keyboard::PhysicalKey::Code(KeyCode::Backspace)),
+            PhysicalKey::Backspace
         );
     }
 

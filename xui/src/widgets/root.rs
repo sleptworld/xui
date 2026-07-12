@@ -1,7 +1,7 @@
-use crate::event_system::callbacks::EventHandlers;
+use crate::event_system::{EventContext, callbacks::EventHandlers};
 use xui_interface::{
-    Color, ComputedStyle, EventContext, EventRef, EventResult, PaintCommand, Rect, Size, Style,
-    Widget, WidgetType, WidgetUpdateFlags, core::Sizing,
+    Color, ComputedStyle, EventRef, EventResult, Key, PaintCommand, Rect, Size, Style, TextContent,
+    TextProps, WidgetType, WidgetUpdateFlags, core::Sizing,
 };
 
 use super::props_hash;
@@ -22,22 +22,22 @@ impl Default for RootWidget {
 }
 
 impl RootWidget {
-    pub fn style(mut self, style: Style) -> Self {
+    pub fn set_style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 }
 
-impl Widget for RootWidget {
-    fn node_type(&self) -> WidgetType {
+impl RootWidget {
+    pub(super) fn node_type(&self) -> WidgetType {
         WidgetType::Container
     }
 
-    fn props_hash(&self) -> u64 {
+    pub(super) fn props_hash(&self) -> u64 {
         props_hash(&self.style)
     }
 
-    fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
+    pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
         if self.style != next.style {
             self.style = next.style.clone();
             WidgetUpdateFlags::STYLE_TARGET
@@ -46,22 +46,43 @@ impl Widget for RootWidget {
         }
     }
 
-    fn default_style(&self) -> Style {
+    pub(super) fn default_style(&self) -> Style {
         Style::new().size(Size::<Sizing>::new(
             Sizing::Percent(1.0.try_into().unwrap()),
             Sizing::Percent(1.0.try_into().unwrap()),
         ))
     }
 
-    fn style(&self) -> &Style {
+    pub(super) fn get_key(&self) -> Option<&Key> {
+        None
+    }
+
+    pub(super) fn current_style(&self) -> &Style {
         &self.style
     }
 
-    fn paint(&self, _rect: Rect, _style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
+    pub(super) fn paint(
+        &self,
+        _rect: Rect,
+        _style: &ComputedStyle,
+        commands: &mut Vec<PaintCommand>,
+    ) {
         commands.push(PaintCommand::Clear(Color::WHITE));
     }
 
-    fn handle_event(&mut self, _event: EventRef<'_>, _cx: &mut EventContext<'_>) -> EventResult {
+    pub(super) fn handle_event(
+        &mut self,
+        _event: EventRef<'_>,
+        _cx: &mut EventContext<'_>,
+    ) -> EventResult {
         EventResult::Ignored
+    }
+
+    pub(super) fn text_content(&self) -> Option<TextContent> {
+        None
+    }
+
+    pub(super) fn text_layout_props(&self, _style: &ComputedStyle) -> Option<TextProps> {
+        None
     }
 }

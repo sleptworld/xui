@@ -1,9 +1,9 @@
-use crate::element::ElementDesc;
 use crate::event_system::callbacks::EventHandlers;
+use crate::{element::ElementDesc, event_system::EventContext};
 use xui_interface::{
-    ComputedStyle, EventContext, EventRef, EventResult, Key, OverflowWrap, PaintCommand,
-    ParagraphStyle, Rect, Style, TextBoxStyle, TextContent, TextOverflow, TextPaintCommand,
-    TextPaintProps, TextPaintStyle, TextProps, Widget, WidgetType, WidgetUpdateFlags,
+    ComputedStyle, EventRef, EventResult, Key, OverflowWrap, PaintCommand, ParagraphStyle, Rect,
+    Style, TextBoxStyle, TextContent, TextOverflow, TextPaintCommand, TextPaintProps,
+    TextPaintStyle, TextProps, WidgetType, WidgetUpdateFlags,
 };
 
 use super::{props_hash, widget_element_desc};
@@ -28,6 +28,11 @@ impl TextWidget {
 
     pub fn props(mut self, props: TextProps) -> Self {
         self.props = props;
+        self
+    }
+
+    pub fn key(mut self, key: impl Into<Key>) -> Self {
+        self.key = Some(key.into());
         self
     }
 
@@ -66,7 +71,7 @@ impl TextWidget {
         self
     }
 
-    pub fn key(mut self, key: impl Into<Key>) -> Self {
+    pub fn set_key(mut self, key: impl Into<Key>) -> Self {
         self.key = Some(key.into());
         self
     }
@@ -78,16 +83,16 @@ impl TextWidget {
     event_handler_methods!();
 }
 
-impl Widget for TextWidget {
-    fn node_type(&self) -> WidgetType {
+impl TextWidget {
+    pub(super) fn node_type(&self) -> WidgetType {
         WidgetType::Text
     }
 
-    fn key(&self) -> Option<&Key> {
+    pub(super) fn get_key(&self) -> Option<&Key> {
         self.key.as_ref()
     }
 
-    fn props_hash(&self) -> u64 {
+    pub(super) fn props_hash(&self) -> u64 {
         props_hash(&(
             &self.props.text,
             &self.props.paragraph,
@@ -96,7 +101,7 @@ impl Widget for TextWidget {
         ))
     }
 
-    fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
+    pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
         let mut flags = WidgetUpdateFlags::empty();
         if self.props.text != next.props.text
             || self.props.paragraph != next.props.paragraph
@@ -112,11 +117,20 @@ impl Widget for TextWidget {
         flags
     }
 
-    fn style(&self) -> &Style {
+    pub(super) fn default_style(&self) -> Style {
+        Style::new()
+    }
+
+    pub(super) fn current_style(&self) -> &Style {
         &self.style
     }
 
-    fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
+    pub(super) fn paint(
+        &self,
+        rect: Rect,
+        style: &ComputedStyle,
+        commands: &mut Vec<PaintCommand>,
+    ) {
         commands.push(PaintCommand::Text(TextPaintCommand {
             node_id: Default::default(),
             rect,
@@ -124,15 +138,19 @@ impl Widget for TextWidget {
         }));
     }
 
-    fn handle_event(&mut self, _event: EventRef, _cx: &mut EventContext<'_>) -> EventResult {
+    pub(super) fn handle_event(
+        &mut self,
+        _event: EventRef,
+        _cx: &mut EventContext<'_>,
+    ) -> EventResult {
         EventResult::Ignored
     }
 
-    fn text(&self) -> Option<TextContent> {
+    pub(super) fn text_content(&self) -> Option<TextContent> {
         Some(self.props.text.clone())
     }
 
-    fn text_layout_props(&self, style: &ComputedStyle) -> Option<TextProps> {
+    pub(super) fn text_layout_props(&self, style: &ComputedStyle) -> Option<TextProps> {
         let mut props = self.props.clone();
         apply_text_style(&mut props, style);
         Some(props)

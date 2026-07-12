@@ -9,6 +9,7 @@ mod wgpu;
 pub use runner::{WinitRunError, WinitRunner, WinitRunnerOptions, runner};
 pub use sdf::UI_SHADER_WGSL;
 pub use translate::{
-    translate_key, translate_mouse_button, translate_mouse_wheel, translate_window_event,
+    translate_mouse_button, translate_mouse_wheel, translate_named_key, translate_physical_key,
+    translate_window_event,
 };
 pub use wgpu::WGPUBackend;

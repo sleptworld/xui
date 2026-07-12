@@ -335,10 +335,28 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for WGPUBackend<T> {
                 multiview_mask: None,
             });
 
-            self.sdf_render.render(&mut pass, &self.ui_bind_group);
-            self.image_render
-                .render(&mut pass, &self.ui_bind_group, &result.image_records);
-            self.glyph_render.render(&mut pass, &self.ui_bind_group);
+            let target_size = (self.config.width, self.config.height);
+            self.sdf_render.render(
+                &mut pass,
+                &self.ui_bind_group,
+                &result.sdf_scissors,
+                self.scale_factor,
+                target_size,
+            );
+            self.image_render.render(
+                &mut pass,
+                &self.ui_bind_group,
+                &result.image_records,
+                &result.image_scissors,
+                self.scale_factor,
+                target_size,
+            );
+            self.glyph_render.render(
+                &mut pass,
+                &self.ui_bind_group,
+                self.scale_factor,
+                target_size,
+            );
         }
 
         self.scene_needs_clear = false;
@@ -488,6 +506,34 @@ impl<T: TextBackend> WGPUBackend<T> {
             .simple_layout(command.node_id)
             .expect("text layout must be prepared before paint");
 
+        let layout_query = text.layout_query(command.node_id);
+
+        if let (Some(selection), Some(query)) = (command.paint.selection, layout_query) {
+            if selection.color.a > 0.0 {
+                for selection_rect in query.selection_rects(selection.range) {
+                    let screen_rect = Rect::new(
+                        rect.x + selection_rect.x,
+                        rect.y + selection_rect.y,
+                        selection_rect.width,
+                        selection_rect.height,
+                    );
+                    records.push_paint_rect_instance(
+                        screen_rect,
+                        0.0,
+                        ComputedColorStyle::Solid(selection.color),
+                        None,
+                        None,
+                        clip,
+                    );
+                }
+            }
+        }
+
+        let caret_rect = command
+            .paint
+            .caret
+            .and_then(|caret| layout_query.and_then(|query| query.caret_rect(caret.char_index)));
+
         let backend = text.backend_mut();
 
         if command.paint.style.color.a > 0.0 {
@@ -532,7 +578,15 @@ impl<T: TextBackend> WGPUBackend<T> {
         }
 
         if let Some(caret) = command.paint.caret {
-            push_text_caret(command, rect, clip, Some(layout.size()), records, caret);
+            push_text_caret(
+                command,
+                rect,
+                clip,
+                Some(layout.size()),
+                records,
+                caret,
+                caret_rect,
+            );
         }
         Ok(())
     }
@@ -562,20 +616,29 @@ fn push_text_caret(
     layout_size: Option<Size<f32>>,
     records: &mut PrepareResult,
     caret: TextCaret,
+    caret_rect: Option<Rect>,
 ) {
     if caret.color.a <= 0.0 || caret.width <= 0.0 {
         return;
     }
 
-    let _ = caret.char_index;
-    let caret_x = rect.x + layout_size.map(|size| size.width).unwrap_or(0.0);
-    let height = line_height_for_caret(
-        command.paint.style.line_height,
-        command.paint.style.font_size,
-    )
-    .min(rect.height)
-    .max(1.0);
-    let top = rect.y + ((rect.height - height) * 0.5).max(0.0);
+    let (caret_x, top, height) = if let Some(caret_rect) = caret_rect {
+        (
+            rect.x + caret_rect.x,
+            rect.y + caret_rect.y,
+            caret_rect.height.min(rect.height).max(1.0),
+        )
+    } else {
+        let caret_x = rect.x + layout_size.map(|size| size.width).unwrap_or(0.0);
+        let height = line_height_for_caret(
+            command.paint.style.line_height,
+            command.paint.style.font_size,
+        )
+        .min(rect.height)
+        .max(1.0);
+        let top = rect.y + ((rect.height - height) * 0.5).max(0.0);
+        (caret_x, top, height)
+    };
     records.push_line_instance(
         Point::new(caret_x, top),
         Point::new(caret_x, top + height),
@@ -596,8 +659,38 @@ fn line_height_for_caret(line_height: LineHeight, font_size: f32) -> f32 {
 #[derive(Default)]
 struct PrepareResult {
     pub sdf_records: Vec<SdfInstance>,
+    pub sdf_scissors: Vec<Rect>,
     pub image_records: Vec<ImageDrawRecord>,
+    pub image_scissors: Vec<Rect>,
     pub glyph_records: Vec<TextGlyphRecord>,
+}
+
+pub(crate) fn physical_scissor(
+    rect: Rect,
+    scale_factor: f32,
+    target_size: (u32, u32),
+) -> Option<(u32, u32, u32, u32)> {
+    let x0 = (rect.x * scale_factor)
+        .floor()
+        .max(0.0)
+        .min(target_size.0 as f32) as u32;
+    let y0 = (rect.y * scale_factor)
+        .floor()
+        .max(0.0)
+        .min(target_size.1 as f32) as u32;
+    let x1 = ((rect.x + rect.width) * scale_factor)
+        .ceil()
+        .max(0.0)
+        .min(target_size.0 as f32) as u32;
+    let y1 = ((rect.y + rect.height) * scale_factor)
+        .ceil()
+        .max(0.0)
+        .min(target_size.1 as f32) as u32;
+    if x1 > x0 && y1 > y0 {
+        Some((x0, y0, x1 - x0, y1 - y0))
+    } else {
+        None
+    }
 }
 
 impl PrepareResult {
@@ -730,6 +823,7 @@ impl PrepareResult {
             projection_params: [offset.x, offset.y, blur.max(0.0), spread],
             extra: [0.0; 4],
         });
+        self.sdf_scissors.push(clip);
     }
 
     fn push_projected_rect_instance(
@@ -796,6 +890,7 @@ impl PrepareResult {
             ],
             extra: color_geometry,
         });
+        self.sdf_scissors.push(clip);
     }
 
     fn push_image_record(&mut self, command: &ImagePaintCommand, rect: Rect, clip: Rect) {
@@ -809,6 +904,7 @@ impl PrepareResult {
             return;
         }
 
+        let scissor = clip;
         let Some(container_clip) = intersect_rect(clip, rect) else {
             return;
         };
@@ -832,6 +928,7 @@ impl PrepareResult {
             opacity: command.opacity.clamp(0.0, 1.0),
             variant,
         });
+        self.image_scissors.push(scissor);
     }
 
     fn push_rect_instance(
@@ -891,6 +988,7 @@ impl PrepareResult {
             projection_params: [0.0; 4],
             extra: [from.x, from.y, to.x, to.y],
         });
+        self.sdf_scissors.push(clip);
     }
 }
 
@@ -1095,6 +1193,18 @@ mod tests {
             Size::new(width, height),
             vec![255; width as usize * height as usize * 4],
         )
+    }
+
+    #[test]
+    fn physical_scissor_scales_expands_and_clamps_to_target() {
+        assert_eq!(
+            physical_scissor(Rect::new(-0.25, 1.25, 10.5, 4.5), 2.0, (20, 20)),
+            Some((0, 2, 20, 10))
+        );
+        assert_eq!(
+            physical_scissor(Rect::new(30.0, 0.0, 5.0, 5.0), 1.0, (20, 20)),
+            None
+        );
     }
 
     fn image_command(data: ImageData, style: ImageStyle) -> ImagePaintCommand {

@@ -6,22 +6,54 @@ use std::rc::Rc;
 
 pub use crate::event_system::callbacks::EventHandlers;
 use xui_animation::Transition;
-use xui_interface::TextContent;
-pub use xui_interface::{PaintCommand, Widget, WidgetType};
+use xui_interface::{EventRef, EventResult, TextContent, TextProps, WidgetUpdateFlags};
+pub use xui_interface::{PaintCommand, Style, WidgetType};
 
 use crate::core::{Rect, Size};
 use crate::element::{ComponentDesc, ElementDesc, WidgetDesc};
 use crate::fiber::{ComponentRender, Key};
 use crate::state::HookContext;
-use crate::style::{ComputedStyle, Style};
+use crate::style::ComputedStyle;
 
 macro_rules! event_handler_methods {
     () => {
+        pub fn shortcut(
+            mut self,
+            shortcut: xui_interface::Shortcut,
+            command: xui_interface::CommandId,
+        ) -> Self {
+            if let Some(binding) = self
+                .event_handlers
+                .shortcuts
+                .iter_mut()
+                .find(|binding| binding.shortcut == shortcut)
+            {
+                binding.command = command;
+            } else {
+                self.event_handlers
+                    .shortcuts
+                    .push(xui_interface::ShortcutBinding { shortcut, command });
+            }
+            self
+        }
+
+        pub fn on_command(
+            mut self,
+            handler: impl for<'a> FnMut(
+                &xui_interface::CommandEvent,
+                &mut crate::event_system::EventContext<'a>,
+            ) -> xui_interface::EventResult
+            + 'static,
+        ) -> Self {
+            self.event_handlers.on_command = Some(Box::new(handler));
+            self
+        }
+
         pub fn on_event(
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::SemanticEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -33,7 +65,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::SemanticEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -45,7 +77,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::ClickEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -57,7 +89,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::ClickEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -69,7 +101,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::ClickEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -81,7 +113,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::ClickEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -93,7 +125,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::ContextMenuEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -105,7 +137,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::ContextMenuEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -117,7 +149,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::HoverEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -129,7 +161,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::HoverEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -141,7 +173,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::HoverChangeEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -153,7 +185,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::PressEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -165,7 +197,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::PressEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -177,7 +209,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::PressEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -189,7 +221,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::PressEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -201,7 +233,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::PressEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -213,7 +245,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::PressEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -225,7 +257,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::FocusEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -237,7 +269,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::FocusEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -249,7 +281,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::FocusEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -261,7 +293,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::FocusEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -273,7 +305,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::FocusEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -285,7 +317,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::FocusEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -297,7 +329,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::DragEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -309,7 +341,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::DragEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -321,7 +353,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::DragEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -333,7 +365,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::DragEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -345,7 +377,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::DragEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -357,7 +389,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::DragEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -369,7 +401,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::DragEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -381,7 +413,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::DragEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -393,7 +425,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::ScrollEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -405,7 +437,7 @@ macro_rules! event_handler_methods {
             mut self,
             handler: impl for<'a> FnMut(
                 &xui_interface::events::ScrollEvent,
-                &mut xui_interface::EventContext<'a>,
+                &mut crate::event_system::EventContext<'a>,
             ) -> xui_interface::EventResult
             + 'static,
         ) -> Self {
@@ -425,7 +457,10 @@ pub use container::ContainerWidget;
 pub use image::ImageWidget;
 pub use root::RootWidget;
 pub use text::TextWidget;
-pub use text_input::{TextController, TextInputChange, TextInputWidget};
+#[doc(hidden)]
+pub use text_input::TextInputWidget;
+pub use text_input::keymap::{TextCommand, TextKeymap};
+pub use text_input::{TextController, TextInputChange};
 
 pub type RootComponentRender = fn(&mut HookContext) -> ElementDesc;
 
@@ -454,10 +489,8 @@ macro_rules! define_widgets {
                     )+
                 }
             }
-        }
 
-        impl Widget for Widgets {
-            fn node_type(&self) -> WidgetType {
+            pub fn node_type(&self) -> WidgetType {
                 match self {
                     $(
                         Self::$name(widget) => widget.node_type(),
@@ -465,15 +498,15 @@ macro_rules! define_widgets {
                 }
             }
 
-            fn key(&self) -> Option<&Key> {
+            pub fn key(&self) -> Option<&Key> {
                 match self {
                     $(
-                        Self::$name(widget) => widget.key(),
+                        Self::$name(widget) => widget.get_key(),
                     )+
                 }
             }
 
-            fn props_hash(&self) -> u64 {
+            pub fn props_hash(&self) -> u64 {
                 match self {
                     $(
                         Self::$name(widget) => widget.props_hash(),
@@ -481,18 +514,16 @@ macro_rules! define_widgets {
                 }
             }
 
-            fn update_from(&mut self, next: &Self) -> xui_interface::WidgetUpdateFlags {
+            pub fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
                 match (self, next) {
                     $(
                         (Self::$name(current), Self::$name(next)) => current.update_from(next),
                     )+
-                    _ => {
-                        xui_interface::WidgetUpdateFlags::TREE
-                    }
+                    _ => WidgetUpdateFlags::TREE,
                 }
             }
 
-            fn default_style(&self) -> Style {
+            pub fn default_style(&self) -> Style {
                 match self {
                     $(
                         Self::$name(widget) => widget.default_style(),
@@ -500,27 +531,23 @@ macro_rules! define_widgets {
                 }
             }
 
-            fn style(&self) -> &Style {
+            pub fn style(&self) -> &Style {
                 match self {
                     $(
-                        Self::$name(widget) => widget.style(),
+                        Self::$name(widget) => widget.current_style(),
                     )+
                 }
             }
 
-            fn style_scope(&self) -> Option<&Style> {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.style_scope(),
-                    )+
-                }
+            pub fn style_scope(&self) -> Option<&Style> {
+                None
             }
 
-            fn paint(
+            pub fn paint(
                 &self,
-                rect: xui_interface::Rect,
+                rect: Rect,
                 style: &ComputedStyle,
-                commands: &mut Vec<xui_interface::PaintCommand>,
+                commands: &mut Vec<PaintCommand>,
             ) {
                 match self {
                     $(
@@ -529,11 +556,11 @@ macro_rules! define_widgets {
                 }
             }
 
-            fn handle_event(
+            pub fn handle_event(
                 &mut self,
-                event: xui_interface::EventRef<'_>,
-                cx: &mut xui_interface::EventContext<'_>,
-            ) -> xui_interface::EventResult {
+                event: EventRef<'_>,
+                cx: &mut crate::event_system::EventContext<'_>,
+            ) -> EventResult {
                 match self {
                     $(
                         Self::$name(widget) => widget.handle_event(event, cx),
@@ -541,23 +568,37 @@ macro_rules! define_widgets {
                 }
             }
 
-            fn on_click(&mut self) {
+            pub fn on_click(&mut self) {}
+
+            pub fn text(&self) -> Option<TextContent> {
                 match self {
                     $(
-                        Self::$name(widget) => widget.on_click(),
+                        Self::$name(widget) => widget.text_content(),
                     )+
                 }
             }
 
-            fn text(&self) -> Option<TextContent> {
+            pub fn text_layout_props(&self, style: &ComputedStyle) -> Option<TextProps> {
                 match self {
                     $(
-                        Self::$name(widget) => widget.text(),
+                        Self::$name(widget) => widget.text_layout_props(style),
                     )+
+                }
+            }
+
+            pub(crate) fn platform_text_input_session(
+                &self,
+                node_rect: Rect,
+                text_layout: &dyn crate::text::TextLayoutQuery,
+            ) -> Option<xui_interface::TextInputSession> {
+                match self {
+                    Self::TextInput(widget) => {
+                        Some(widget.platform_text_input_session(node_rect, text_layout))
+                    }
+                    _ => None,
                 }
             }
         }
-
     };
 }
 
@@ -607,6 +648,14 @@ impl WidgetI {
         self.with_widgets(|widget| widget.text())
     }
 
+    pub(crate) fn platform_text_input_session(
+        &self,
+        node_rect: Rect,
+        text_layout: &dyn crate::text::TextLayoutQuery,
+    ) -> Option<xui_interface::TextInputSession> {
+        self.with_widgets(|widget| widget.platform_text_input_session(node_rect, text_layout))
+    }
+
     pub fn intrinsic_size(&self) -> Option<Size<f32>> {
         self.with_widgets(|widget| match widget {
             Widgets::Image(image) => image.intrinsic_size(),
@@ -632,7 +681,7 @@ impl WidgetI {
     pub fn handle_event(
         &self,
         event: xui_interface::EventRef<'_>,
-        cx: &mut xui_interface::EventContext<'_>,
+        cx: &mut crate::event_system::EventContext<'_>,
     ) -> xui_interface::EventResult {
         self.with_widgets_mut(|widget| widget.handle_event(event, cx))
     }
@@ -703,6 +752,7 @@ pub fn text(text: impl Into<xui_interface::TextContent>) -> TextWidget {
     TextWidget::new(text)
 }
 
+#[doc(hidden)]
 pub fn text_input() -> TextInputWidget {
     TextInputWidget::new()
 }

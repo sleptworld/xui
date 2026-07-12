@@ -37,6 +37,7 @@ struct GlyphBuffer {
     buffer: wgpu::Buffer,
     size: u64,
     len: usize,
+    scissors: Vec<Rect>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -63,6 +64,7 @@ impl GlyphBuffer {
             buffer,
             size,
             len: 0,
+            scissors: Vec::new(),
         }
     }
 
@@ -70,12 +72,14 @@ impl GlyphBuffer {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        glyphs: Vec<GlyphInstance>,
+        glyphs: Vec<(GlyphInstance, Rect)>,
     ) {
         if glyphs.is_empty() {
             self.len = 0;
+            self.scissors.clear();
             return;
         }
+        let (glyphs, scissors): (Vec<_>, Vec<_>) = glyphs.into_iter().unzip();
 
         if glyphs.len() as u64 > self.size {
             let new_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -86,9 +90,11 @@ impl GlyphBuffer {
             self.buffer = new_buffer;
             self.size = glyphs.len() as u64;
             self.len = glyphs.len();
+            self.scissors = scissors;
         } else {
             queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(&glyphs));
             self.len = glyphs.len();
+            self.scissors = scissors;
         }
     }
 
@@ -266,13 +272,13 @@ impl GlyphRender {
             };
             match glyph.ptype {
                 RasterizedGlyphFormat::Mask => {
-                    mask_glyphs.push(glyph_instant);
+                    mask_glyphs.push((glyph_instant, glyph.clip));
                 }
                 RasterizedGlyphFormat::SubpixelMask => {
-                    subpixel_glyphs.push(glyph_instant);
+                    subpixel_glyphs.push((glyph_instant, glyph.clip));
                 }
                 RasterizedGlyphFormat::Color => {
-                    color_glyphs.push(glyph_instant);
+                    color_glyphs.push((glyph_instant, glyph.clip));
                 }
             }
         }
@@ -284,13 +290,19 @@ impl GlyphRender {
             .copy_to_buffer(device, queue, subpixel_glyphs);
     }
 
-    pub fn render(&self, pass: &mut wgpu::RenderPass, tool_bind_group: &BindGroup) {
+    pub fn render(
+        &self,
+        pass: &mut wgpu::RenderPass,
+        tool_bind_group: &BindGroup,
+        scale_factor: f32,
+        target_size: (u32, u32),
+    ) {
         if self.mask_buffer.len() > 0 {
             pass.set_pipeline(&self.mask_pipeline);
             pass.set_bind_group(0, tool_bind_group, &[]);
             pass.set_bind_group(1, &self.glyph_bind_group, &[]);
             pass.set_vertex_buffer(0, self.mask_buffer.buffer.slice(..));
-            pass.draw(0..4, 0..self.mask_buffer.len() as u32);
+            draw_glyph_buffer(pass, &self.mask_buffer, scale_factor, target_size);
         }
 
         if self.subpixel_buffer.len() > 0 {
@@ -299,7 +311,7 @@ impl GlyphRender {
                 pass.set_bind_group(0, tool_bind_group, &[]);
                 pass.set_bind_group(1, &self.glyph_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.subpixel_buffer.buffer.slice(..));
-                pass.draw(0..4, 0..self.subpixel_buffer.len() as u32);
+                draw_glyph_buffer(pass, &self.subpixel_buffer, scale_factor, target_size);
             }
         }
 
@@ -308,8 +320,31 @@ impl GlyphRender {
             pass.set_bind_group(0, tool_bind_group, &[]);
             pass.set_bind_group(1, &self.glyph_bind_group, &[]);
             pass.set_vertex_buffer(0, self.color_buffer.buffer.slice(..));
-            pass.draw(0..4, 0..self.color_buffer.len() as u32);
+            draw_glyph_buffer(pass, &self.color_buffer, scale_factor, target_size);
         }
+    }
+}
+
+fn draw_glyph_buffer(
+    pass: &mut wgpu::RenderPass,
+    buffer: &GlyphBuffer,
+    scale_factor: f32,
+    target_size: (u32, u32),
+) {
+    let mut start = 0;
+    while start < buffer.len() {
+        let scissor = buffer.scissors[start];
+        let mut end = start + 1;
+        while end < buffer.len() && buffer.scissors[end] == scissor {
+            end += 1;
+        }
+        if let Some((x, y, width, height)) =
+            crate::wgpu::physical_scissor(scissor, scale_factor, target_size)
+        {
+            pass.set_scissor_rect(x, y, width, height);
+            pass.draw(0..4, start as u32..end as u32);
+        }
+        start = end;
     }
 }
 

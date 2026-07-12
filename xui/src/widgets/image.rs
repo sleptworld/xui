@@ -1,5 +1,6 @@
 use crate::assets::{AssetId, load_image_asset, load_image_asset_path};
 use crate::element::ElementDesc;
+use crate::event_system::EventContext;
 use crate::event_system::callbacks::EventHandlers;
 use xui_interface::{style::ScrollbarStylePatch, *};
 
@@ -175,16 +176,16 @@ impl Default for ImageWidget {
     }
 }
 
-impl Widget for ImageWidget {
-    fn node_type(&self) -> WidgetType {
+impl ImageWidget {
+    pub(super) fn node_type(&self) -> WidgetType {
         WidgetType::Image
     }
 
-    fn key(&self) -> Option<&Key> {
+    pub(super) fn get_key(&self) -> Option<&Key> {
         self.key.as_ref()
     }
 
-    fn props_hash(&self) -> u64 {
+    pub(super) fn props_hash(&self) -> u64 {
         props_hash(&(
             &self.image_key,
             self.image_data.as_ref().map(|data| data.id().raw()),
@@ -194,7 +195,7 @@ impl Widget for ImageWidget {
         ))
     }
 
-    fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
+    pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
         let mut flags = WidgetUpdateFlags::empty();
         if self.image_key != next.image_key {
             self.image_key = next.image_key.clone();
@@ -231,15 +232,20 @@ impl Widget for ImageWidget {
         }
     }
 
-    fn default_style(&self) -> Style {
+    pub(super) fn default_style(&self) -> Style {
         Style::new()
     }
 
-    fn style(&self) -> &Style {
+    pub(super) fn current_style(&self) -> &Style {
         &self.style
     }
 
-    fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
+    pub(super) fn paint(
+        &self,
+        rect: Rect,
+        style: &ComputedStyle,
+        commands: &mut Vec<PaintCommand>,
+    ) {
         paint_box(rect, style, commands);
 
         if let Some(image_data) = self.image_data.as_ref() {
@@ -257,8 +263,20 @@ impl Widget for ImageWidget {
         }
     }
 
-    fn handle_event(&mut self, _event: EventRef<'_>, _cx: &mut EventContext<'_>) -> EventResult {
+    pub(super) fn handle_event(
+        &mut self,
+        _event: EventRef<'_>,
+        _cx: &mut EventContext<'_>,
+    ) -> EventResult {
         EventResult::Ignored
+    }
+
+    pub(super) fn text_content(&self) -> Option<TextContent> {
+        None
+    }
+
+    pub(super) fn text_layout_props(&self, _style: &ComputedStyle) -> Option<TextProps> {
+        None
     }
 }
 

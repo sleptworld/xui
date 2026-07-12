@@ -1,6 +1,7 @@
 use super::raw::{
     ContextMenuTrigger, Modifiers, PointerButton, PointerSnapshot, RawEvent, ScrollDelta,
 };
+use super::shortcut::{CommandId, Shortcut};
 use crate::core::{Point, Translation};
 use crate::widget::NodeId;
 use std::time::{Duration, Instant};
@@ -33,6 +34,7 @@ pub enum EventSource {
     Keyboard,
     Scroll,
     Programmatic,
+    Window,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -50,6 +52,7 @@ pub struct EventMeta {
 }
 #[derive(Debug, Clone)]
 pub enum SemanticEvent {
+    Command(CommandEvent),
     // Hover
     HoverEnter(HoverEvent),
     HoverLeave(HoverEvent),
@@ -79,6 +82,7 @@ pub enum SemanticEvent {
 impl SemanticEvent {
     pub fn meta(&self) -> &EventMeta {
         match self {
+            SemanticEvent::Command(e) => &e.meta,
             SemanticEvent::HoverEnter(e) => &e.meta,
             SemanticEvent::HoverLeave(e) => &e.meta,
             SemanticEvent::HoverChange(e) => &e.meta,
@@ -107,6 +111,7 @@ impl SemanticEvent {
 
     pub fn meta_mut(&mut self) -> &mut EventMeta {
         match self {
+            SemanticEvent::Command(e) => &mut e.meta,
             SemanticEvent::HoverEnter(e) => &mut e.meta,
             SemanticEvent::HoverLeave(e) => &mut e.meta,
             SemanticEvent::HoverChange(e) => &mut e.meta,
@@ -135,6 +140,7 @@ impl SemanticEvent {
 
     pub fn propagation_mode(&self) -> PropagationMode {
         match self {
+            SemanticEvent::Command(_) => PropagationMode::CaptureTargetBubble,
             SemanticEvent::HoverEnter(_) => PropagationMode::Direct,
             SemanticEvent::HoverLeave(_) => PropagationMode::Direct,
 
@@ -176,6 +182,13 @@ impl SemanticEvent {
             PropagationMode::CaptureTarget | PropagationMode::CaptureTargetBubble
         )
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct CommandEvent {
+    pub meta: EventMeta,
+    pub command: CommandId,
+    pub shortcut: Shortcut,
 }
 
 #[derive(Debug, Clone)]

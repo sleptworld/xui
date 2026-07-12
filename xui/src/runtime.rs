@@ -1,9 +1,10 @@
 use crate::core::Size;
+use crate::shortcut::ShortcutManager;
 use crate::{app::App, text::TextHost};
 use std::collections::VecDeque;
 use std::time::Instant;
 use xui_interface::{
-    EventSource, RenderBackend, TextBackend as TextBackendI,
+    EventSource, PlatformOutput, RenderBackend, TextBackend as TextBackendI,
     events::{EventResult, RawEvent},
 };
 
@@ -12,6 +13,93 @@ pub enum ControlFlow {
     Poll,
     Wait,
     Exit,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ElementDesc;
+    use crate::state::HookContext;
+    use crate::text::testing::ZeroTextBackend;
+    use crate::widgets::{container, text_input};
+    use std::cell::Cell;
+    use std::time::Instant;
+    use xui_interface::{
+        CommandId, FocusReason, KeyState, MockRenderBackend, Modifiers, PhysicalKey, RawKeyboard,
+        RawWindowEvent, Shortcut, Size, Style,
+    };
+
+    thread_local! { static COMMAND_RECEIVED: Cell<bool> = const { Cell::new(false) }; }
+
+    fn command_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        container()
+            .on_command(|event, _| {
+                if event.command == CommandId("save") {
+                    COMMAND_RECEIVED.set(true);
+                }
+                EventResult::Consumed
+            })
+            .into_element_desc(Vec::new())
+    }
+
+    #[test]
+    fn runtime_shortcut_dispatches_command_to_app_root() {
+        COMMAND_RECEIVED.set(false);
+        let app = App::new(command_root);
+        let mut runtime = GuiRuntime::new(app, MockRenderBackend::default(), ZeroTextBackend);
+        let shortcut = Shortcut::physical(PhysicalKey::KeyS);
+        runtime
+            .shortcuts_mut()
+            .register(shortcut, CommandId("save"));
+        let raw = RawKeyboard {
+            physical_key: PhysicalKey::KeyS,
+            named_key: None,
+            state: KeyState::Down,
+            text: None,
+            modifiers: Modifiers::default(),
+            timestamp: Instant::now(),
+            is_repeat: false,
+        };
+        assert_eq!(
+            runtime.handle_event(RuntimeEvent::Input(RawEvent::Keyboard(raw))),
+            vec![EventResult::Consumed]
+        );
+        assert!(COMMAND_RECEIVED.get());
+    }
+
+    fn text_input_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        text_input()
+            .style(Style::new().width(120.0).height(30.0))
+            .into_element_desc()
+    }
+
+    #[test]
+    fn focused_text_input_publishes_platform_ime_session() {
+        let app = App::new(text_input_root);
+        let mut runtime = GuiRuntime::new(app, MockRenderBackend::default(), ZeroTextBackend);
+        runtime.handle_event(RuntimeEvent::Resize(Size::new(200.0, 100.0)));
+        runtime.frame().unwrap();
+
+        let input = runtime.app().arena().children(runtime.app().arena().root())[0];
+        runtime
+            .app_mut()
+            .arena_mut()
+            .focus_manager_mut()
+            .request_focus(Some(input), FocusReason::Programmatic);
+        runtime.handle_event(RuntimeEvent::Input(RawEvent::WindowFocus(RawWindowEvent {
+            timestamp: Instant::now(),
+            modifiers: Modifiers::default(),
+        })));
+
+        let session = runtime
+            .platform_output()
+            .text_input
+            .as_ref()
+            .expect("focused text input should enable the platform IME session");
+        assert!(session.cursor_area.width >= 1.0);
+        assert!(session.cursor_area.height >= 1.0);
+        assert!(!session.multiline);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -63,6 +151,8 @@ pub struct GuiRuntime<B: RenderBackend<TextHost<T>>, T: TextBackendI> {
     control_flow: ControlFlow,
     text_backend: TextHost<T>,
     last_animation_tick: Option<Instant>,
+    shortcuts: ShortcutManager,
+    platform_output: PlatformOutput,
 }
 
 impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
@@ -73,11 +163,20 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
             control_flow: ControlFlow::Poll,
             text_backend: TextHost::new(text_backend),
             last_animation_tick: None,
+            shortcuts: ShortcutManager::default(),
+            platform_output: PlatformOutput::default(),
         }
     }
 
     pub fn app(&self) -> &App {
         &self.app
+    }
+
+    pub fn shortcuts(&self) -> &ShortcutManager {
+        &self.shortcuts
+    }
+    pub fn shortcuts_mut(&mut self) -> &mut ShortcutManager {
+        &mut self.shortcuts
     }
 
     pub fn app_mut(&mut self) -> &mut App {
@@ -100,6 +199,21 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
         self.control_flow = control_flow;
     }
 
+    pub fn platform_output(&self) -> &PlatformOutput {
+        &self.platform_output
+    }
+
+    fn refresh_platform_output(&mut self) {
+        let arena = self.app.arena();
+        let text_input = arena.focus_manager().focused().and_then(|id| {
+            let node = arena.node(id)?;
+            let rect = arena.visual_layout(id)?;
+            let layout = self.text_backend.layout_query(id)?;
+            node.widget.platform_text_input_session(rect, layout)
+        });
+        self.platform_output = PlatformOutput { text_input };
+    }
+
     pub fn handle_event(&mut self, event: RuntimeEvent) -> Vec<EventResult> {
         match event {
             RuntimeEvent::Resize(size) => {
@@ -107,7 +221,33 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
                 Vec::new()
             }
             RuntimeEvent::Input(event) => {
-                vec![self.app.dispatch_event(event, &mut self.text_backend)]
+                let keyboard = match &event {
+                    RawEvent::Keyboard(raw) => Some(*raw),
+                    _ => None,
+                };
+                let mut result = self.app.dispatch_event(event, &mut self.text_backend);
+                if !result.is_consumed() {
+                    if let Some(raw) = keyboard {
+                        let resolved = self.app.resolve_local_shortcut(&raw).or_else(|| {
+                            self.shortcuts
+                                .resolve(&raw)
+                                .map(|binding| (self.app.command_root(), binding))
+                        });
+                        if let Some((target, binding)) = resolved {
+                            result = self.app.dispatch_command(
+                                target,
+                                binding,
+                                &raw,
+                                &mut self.text_backend,
+                            );
+                            if !result.is_consumed() {
+                                result = EventResult::Consumed;
+                            }
+                        }
+                    }
+                }
+                self.refresh_platform_output();
+                vec![result]
             }
             RuntimeEvent::RedrawRequested => Vec::new(),
             RuntimeEvent::Exit => {
@@ -124,6 +264,7 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
         if should_render {
             self.app.render(&mut self.backend, &mut self.text_backend)?;
         }
+        self.refresh_platform_output();
         Ok(FrameReport {
             rendered: should_render,
             event_results: Vec::new(),

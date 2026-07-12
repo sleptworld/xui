@@ -1,6 +1,7 @@
 pub mod core;
 pub mod dirty;
 pub mod events;
+pub mod platform;
 pub mod render;
 pub mod runtime;
 pub mod state;
@@ -11,11 +12,14 @@ pub mod widget;
 pub use core::{Color, EdgeInsets, Point, Rect, Size, Sizing, Translation};
 pub use dirty::{StyleDiffFlags, WidgetUpdateFlags};
 pub use events::{
-    ContextMenuTrigger, Event, EventContext, EventPhase, EventRef, EventRequest, EventRequests,
-    EventResult, Key as InputKey, Modifiers, PointerButton, PointerButtons, PointerCoords,
-    PointerKind, PointerSnapshot, RawContextMenu, RawKey, RawPointerButton, RawPointerCancel,
-    RawPointerMove, RawTextInput, RawWheel, RawWindowEvent, ScrollDelta, XuiDeviceId, XuiPointerId,
+    CommandEvent, CommandId, ContextMenuTrigger, Event, EventPhase, EventRef, EventRequest,
+    EventRequests, EventResult, FocusReason, KeyState, KeyText, Modifiers, NamedKey, PhysicalKey,
+    PointerButton, PointerButtons, PointerCoords, PointerKind, PointerSnapshot, RawContextMenu,
+    RawIme, RawKeyInput, RawKeyboard, RawPointerButton, RawPointerCancel, RawPointerMove, RawWheel,
+    RawWindowEvent, ScrollDelta, Shortcut, ShortcutBinding, ShortcutKey, ShortcutModifiers,
+    TextPayload, XuiDeviceId, XuiPointerId,
 };
+pub use platform::{PlatformOutput, TextInputPurpose, TextInputSession};
 pub use render::*;
 pub use runtime::EventSource;
 pub use style::{
@@ -30,6 +34,6 @@ pub use style::{
     WidgetStateMatcher,
 };
 pub use text::*;
-pub use widget::{Component, Key, NodeId, NodeLifecycleEvent, Widget, WidgetType};
+pub use widget::{Component, Key, NodeId, NodeLifecycleEvent, WidgetType};
 
 pub use state::{WidgetNodeState, WidgetState};

@@ -28,6 +28,7 @@ fn editor() {
             <container size={Size::fill()} background ={Color::BLUE_500} >
                 <column gap={12.0}>
                     <text> {"Hello,World"} </text>
+                    <input width={100.0} background={Color::WHITE} border_color={Color::BLACK} border_radius={5.0} border_width={2.0} />
                     <button text={label.get()} ps = {button_prop}/>
                     <text font_weight={FontWeight::Thin}> {"啊，是关中王来啦"} </text>
                     <image src={"https://i1.hdslb.com/bfs/archive/8b96913b723e39495c0d1f171779faded87fcbc7.jpg"} height={100} fit={ImageFit::ScaleDown} />

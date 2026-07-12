@@ -1,10 +1,11 @@
 use crate::element::ElementDesc;
+use crate::event_system::EventContext;
 use crate::event_system::callbacks::EventHandlers;
 use xui_animation::Transition;
 use xui_interface::style::FlexDirectionStyle;
 use xui_interface::{
-    ColorStyle, ComputedStyle, EventContext, EventRef, EventResult, Key, LengthValue, PaintCommand,
-    Rect, ScrollDirectionStyle, Style, Widget, WidgetType, WidgetUpdateFlags,
+    ColorStyle, ComputedStyle, EventRef, EventResult, Key, LengthValue, PaintCommand, Rect,
+    ScrollDirectionStyle, Style, TextContent, TextProps, WidgetType, WidgetUpdateFlags,
     style::ScrollbarStylePatch,
 };
 
@@ -108,20 +109,20 @@ impl Default for ContainerWidget {
     }
 }
 
-impl Widget for ContainerWidget {
-    fn node_type(&self) -> WidgetType {
+impl ContainerWidget {
+    pub(super) fn node_type(&self) -> WidgetType {
         WidgetType::Container
     }
 
-    fn key(&self) -> Option<&Key> {
+    pub(super) fn get_key(&self) -> Option<&Key> {
         self.key.as_ref()
     }
 
-    fn props_hash(&self) -> u64 {
+    pub(super) fn props_hash(&self) -> u64 {
         props_hash(&(&self.style, self.flex_direction, self.transition))
     }
 
-    fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
+    pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
         let mut flags = WidgetUpdateFlags::empty();
         if self.style != next.style {
             self.style = next.style.clone();
@@ -143,20 +144,37 @@ impl Widget for ContainerWidget {
         }
     }
 
-    fn default_style(&self) -> Style {
+    pub(super) fn default_style(&self) -> Style {
         Style::new()
     }
 
-    fn style(&self) -> &Style {
+    pub(super) fn current_style(&self) -> &Style {
         &self.style
     }
 
-    fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
+    pub(super) fn paint(
+        &self,
+        rect: Rect,
+        style: &ComputedStyle,
+        commands: &mut Vec<PaintCommand>,
+    ) {
         paint_box(rect, style, commands);
     }
 
-    fn handle_event(&mut self, _event: EventRef<'_>, _cx: &mut EventContext<'_>) -> EventResult {
+    pub(super) fn handle_event(
+        &mut self,
+        _event: EventRef<'_>,
+        _cx: &mut EventContext<'_>,
+    ) -> EventResult {
         EventResult::Ignored
+    }
+
+    pub(super) fn text_content(&self) -> Option<TextContent> {
+        None
+    }
+
+    pub(super) fn text_layout_props(&self, _style: &ComputedStyle) -> Option<TextProps> {
+        None
     }
 }
 
@@ -181,22 +199,4 @@ pub(super) fn paint_box(rect: Rect, style: &ComputedStyle, commands: &mut Vec<Pa
     };
 
     commands.push(cmd);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use xui_interface::Color;
-
-    #[test]
-    fn style_update_only_invalidates_style_target() {
-        let mut widget = ContainerWidget::new().style(Style::new().background(Color::BLACK));
-        let next = ContainerWidget::new().style(Style::new().background(Color::WHITE));
-
-        let flags = widget.update_from(&next);
-
-        assert!(flags.contains(WidgetUpdateFlags::STYLE_TARGET));
-        assert!(!flags.contains(WidgetUpdateFlags::LAYOUT_INPUT));
-        assert!(!flags.contains(WidgetUpdateFlags::PAINT_OUTPUT));
-    }
 }

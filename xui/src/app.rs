@@ -35,6 +35,38 @@ pub struct App {
 }
 
 impl App {
+    pub(crate) fn resolve_local_shortcut(
+        &self,
+        event: &xui_interface::RawKeyboard,
+    ) -> Option<(xui_interface::NodeId, xui_interface::ShortcutBinding)> {
+        self.arena.resolve_local_shortcut(event)
+    }
+
+    pub(crate) fn command_root(&self) -> xui_interface::NodeId {
+        self.arena
+            .children(self.arena.root())
+            .first()
+            .copied()
+            .unwrap_or(self.arena.root())
+    }
+
+    pub(crate) fn dispatch_command<T: TextBackend>(
+        &mut self,
+        target: xui_interface::NodeId,
+        binding: xui_interface::ShortcutBinding,
+        raw: &xui_interface::RawKeyboard,
+        text: &mut TextHost<T>,
+    ) -> EventResult {
+        let event =
+            self.event_translator
+                .command_event(target, binding.command, binding.shortcut, raw);
+        let result =
+            crate::event_system::dispatcher::dispatch_semantic(&mut self.arena, text, event).result;
+        if self.scheduler().is_dirty() {
+            self.components.mark_root_dirty();
+        }
+        result
+    }
     pub fn new(root_component: ComponentFn) -> Self {
         let arena = UiArena::new();
         let scheduler = Scheduler::default();
@@ -136,7 +168,8 @@ impl App {
         self.arena.update_tree(self.size, text);
         let lane = event_lane(&event);
         let result = with_update_lane(lane, || {
-            self.arena.dispatch_event(&mut self.event_translator, event)
+            self.arena
+                .dispatch_event(text, &mut self.event_translator, event)
         });
         if self.scheduler().is_dirty() {
             self.components.mark_root_dirty();

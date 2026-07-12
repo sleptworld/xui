@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::sync::Arc;
@@ -149,16 +150,28 @@ impl Hash for TextProps {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum TextContent {
+pub enum TextContent<T: Text = ()> {
     Static(&'static str),
     Shared(Arc<str>),
+    Other(T),
 }
 
-impl TextContent {
+pub trait Text: Debug + Clone + PartialEq + Eq + Hash {
+    fn text(&self) -> &str;
+}
+
+impl Text for () {
+    fn text(&self) -> &str {
+        ""
+    }
+}
+
+impl<T: Text> TextContent<T> {
     pub fn as_str(&self) -> &str {
         match self {
             Self::Static(text) => text,
             Self::Shared(text) => text,
+            Self::Other(text) => text.text(),
         }
     }
 
@@ -433,6 +446,162 @@ impl<K> ParagraphLayout<K> {
             .fold(0.0_f32, f32::max);
         Size::new(width, height)
     }
+
+    pub fn hit_test_point(&self, point: Point) -> Option<TextPosition> {
+        let line = self
+            .lines
+            .iter()
+            .find(|line| point.y >= line.y && point.y <= line.y + line.height)
+            .or_else(|| self.lines.first())?;
+
+        let clusters: Vec<_> = self.clusters[line.cluster_range.clone()].iter().collect();
+        if clusters.is_empty() {
+            return Some(self.x_to_position_from_glyphs(line, point.x));
+        }
+
+        let first = clusters.first()?;
+        let last = clusters.last()?;
+        if point.x <= first.hitbox.x {
+            return Some(TextPosition {
+                offset: first.text_range.start,
+                affinity: Affinity::Before,
+            });
+        }
+        if point.x >= last.hitbox.x + last.hitbox.width {
+            return Some(TextPosition {
+                offset: last.text_range.end,
+                affinity: Affinity::After,
+            });
+        }
+
+        for cluster in clusters {
+            let left = cluster.hitbox.x;
+            let right = cluster.hitbox.x + cluster.hitbox.width;
+            if point.x >= left && point.x <= right {
+                let mid = left + cluster.hitbox.width * 0.5;
+                return Some(if point.x < mid {
+                    TextPosition {
+                        offset: cluster.text_range.start,
+                        affinity: Affinity::Before,
+                    }
+                } else {
+                    TextPosition {
+                        offset: cluster.text_range.end,
+                        affinity: Affinity::After,
+                    }
+                });
+            }
+        }
+
+        Some(TextPosition {
+            offset: line.text_range.end,
+            affinity: Affinity::After,
+        })
+    }
+
+    pub fn caret_rect(&self, position: TextPosition) -> Option<Rect> {
+        let line = self.lines.first()?;
+        let height = line.height.max(1.0);
+        let x = self
+            .caret_x_for_offset(position.offset)
+            .unwrap_or(line.width);
+        Some(Rect::new(x, line.y, 1.0, height))
+    }
+
+    pub fn selection_rects(&self, range: TextRange) -> Vec<Rect> {
+        let Some(line) = self.lines.first() else {
+            return Vec::new();
+        };
+        let start_x = self.caret_x_for_offset(range.start).unwrap_or(0.0);
+        let end_x = self.caret_x_for_offset(range.end).unwrap_or(line.width);
+        let left = start_x.min(end_x);
+        let right = start_x.max(end_x);
+        if right <= left {
+            return Vec::new();
+        }
+        vec![Rect::new(left, line.y, right - left, line.height.max(1.0))]
+    }
+
+    fn caret_x_for_offset(&self, offset: TextOffset) -> Option<f32> {
+        if let Some(x) = self.caret_x_from_clusters(offset) {
+            return Some(x);
+        }
+
+        let line = self.lines.first()?;
+        Some(self.caret_x_from_glyphs(line, offset))
+    }
+
+    fn caret_x_from_clusters(&self, offset: TextOffset) -> Option<f32> {
+        let line = self.lines.first()?;
+        let clusters = &self.clusters[line.cluster_range.clone()];
+        if clusters.is_empty() {
+            return None;
+        }
+
+        for cluster in clusters {
+            let start = comparable_offset(cluster.text_range.start, offset.unit)?;
+            let end = comparable_offset(cluster.text_range.end, offset.unit)?;
+            if offset.raw <= start {
+                return Some(cluster.hitbox.x);
+            }
+            if offset.raw <= end {
+                let right = cluster.hitbox.x + cluster.hitbox.width;
+                return Some(if offset.raw == start {
+                    cluster.hitbox.x
+                } else {
+                    right
+                });
+            }
+        }
+
+        clusters
+            .last()
+            .map(|cluster| cluster.hitbox.x + cluster.hitbox.width)
+    }
+
+    fn caret_x_from_glyphs(&self, line: &LineLayout, offset: TextOffset) -> f32 {
+        let glyph_range = line.glyph_range.clone();
+        let visual_offset = if line.text_range.start.unit == offset.unit {
+            offset.raw.saturating_sub(line.text_range.start.raw)
+        } else {
+            0
+        };
+        let mut x = 0.0_f32;
+        for (visual_index, glyph) in self.glyphs[glyph_range].iter().enumerate() {
+            if visual_index >= visual_offset {
+                return glyph.hitbox.x;
+            }
+            x = glyph.hitbox.x + glyph.hitbox.width;
+        }
+        x
+    }
+
+    fn x_to_position_from_glyphs(&self, line: &LineLayout, x: f32) -> TextPosition {
+        for (visual_index, glyph) in self.glyphs[line.glyph_range.clone()].iter().enumerate() {
+            let mid = glyph.hitbox.x + glyph.hitbox.width * 0.5;
+            if x < mid {
+                return TextPosition {
+                    offset: offset_add(line.text_range.start, visual_index),
+                    affinity: Affinity::Before,
+                };
+            }
+        }
+        TextPosition {
+            offset: line.text_range.end,
+            affinity: Affinity::After,
+        }
+    }
+}
+
+fn comparable_offset(offset: TextOffset, unit: TextOffsetUnit) -> Option<usize> {
+    (offset.unit == unit).then_some(offset.raw)
+}
+
+fn offset_add(offset: TextOffset, delta: usize) -> TextOffset {
+    TextOffset {
+        raw: offset.raw.saturating_add(delta),
+        unit: offset.unit,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -548,6 +717,13 @@ impl TextOffset {
         Self {
             raw: offset,
             unit: TextOffsetUnit::Utf8Byte,
+        }
+    }
+
+    pub fn utf16_offset(offset: usize) -> Self {
+        Self {
+            raw: offset,
+            unit: TextOffsetUnit::Utf16CodeUnit,
         }
     }
 

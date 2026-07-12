@@ -2,9 +2,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use swash::shape::ShapeContext;
 use swash::{
-    scale::{image::Content as SwashContent, Render, ScaleContext, Source, StrikeWith},
-    zeno::{Format, Vector},
     FontRef, GlyphId, NormalizedCoord, Style, Weight,
+    scale::{Render, ScaleContext, Source, StrikeWith, image::Content as SwashContent},
+    zeno::{Format, Vector},
 };
 use xui_interface::{
     ComputedTextStyle, FontDataRef, FontDatabase, FontFamily, FontQuery, FontStyle as XuiFontStyle,

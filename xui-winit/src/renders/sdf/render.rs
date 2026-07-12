@@ -1,6 +1,7 @@
 use wgpu::{include_wgsl, util::DeviceExt};
 
 use crate::wgpu::SCENE_FORMAT;
+use xui_interface::Rect;
 
 const UI_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 10] = wgpu::vertex_attr_array![
     0 => Float32x4,
@@ -137,10 +138,31 @@ impl SdfRenderer {
         queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
     }
 
-    pub fn render(&self, pass: &mut wgpu::RenderPass, ui_bind_group: &wgpu::BindGroup) {
+    pub fn render(
+        &self,
+        pass: &mut wgpu::RenderPass,
+        ui_bind_group: &wgpu::BindGroup,
+        scissors: &[Rect],
+        scale_factor: f32,
+        target_size: (u32, u32),
+    ) {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, ui_bind_group, &[]);
         pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-        pass.draw(0..6, 0..self.instance_count);
+        let mut start = 0;
+        while start < self.instance_count as usize {
+            let scissor = scissors[start];
+            let mut end = start + 1;
+            while end < self.instance_count as usize && scissors[end] == scissor {
+                end += 1;
+            }
+            if let Some((x, y, width, height)) =
+                crate::wgpu::physical_scissor(scissor, scale_factor, target_size)
+            {
+                pass.set_scissor_rect(x, y, width, height);
+                pass.draw(0..6, start as u32..end as u32);
+            }
+            start = end;
+        }
     }
 }

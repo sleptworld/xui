@@ -1,114 +1,22 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-
-use ropey::Rope;
-use xui_interface::events::{Key as InputKey, RawEvent, SemanticEvent};
+use xui_interface::events::{PointerButton, RawEvent, SemanticEvent, XuiPointerId};
 use xui_interface::{
-    ComputedStyle, EventContext, EventRef, EventResult, Key, PaintCommand, Rect, Style, TextCaret,
-    TextContent, TextPaintCommand, TextPaintProps, TextPaintStyle, TextProps, Widget, WidgetType,
-    WidgetUpdateFlags,
+    Color, ComputedStyle, EventRef, EventResult, Key, PaintCommand, Point, RawIme, Rect, Style,
+    TextCaret, TextContent, TextInputPurpose, TextInputSession, TextOffset, TextOffsetUnit,
+    TextPaintCommand, TextPaintProps, TextPaintStyle, TextProps, TextSelectionPaint, Translation,
+    WhiteSpace, WidgetType, WidgetUpdateFlags,
 };
 
 use crate::element::ElementDesc;
+use crate::event_system::EventContext;
 use crate::event_system::callbacks::EventHandlers;
+use crate::widgets::text_input::controller::ImeSession;
 
 use super::text::apply_text_style;
 use super::{props_hash, widget_element_desc};
 pub mod controller;
+pub mod keymap;
 pub mod value;
-
-type TextInputChangeHandler =
-    Rc<RefCell<dyn for<'a> FnMut(&TextInputChange, &mut EventContext<'a>) -> EventResult>>;
-
-#[derive(Clone, Debug)]
-pub struct TextController {
-    inner: Rc<RefCell<TextControllerState>>,
-}
-
-#[derive(Debug)]
-struct TextControllerState {
-    buffer: Rope,
-    cursor_char: usize,
-}
-
-impl TextController {
-    pub fn new() -> Self {
-        Self::with_text("")
-    }
-
-    pub fn with_text(text: impl AsRef<str>) -> Self {
-        let text = text.as_ref();
-        Self {
-            inner: Rc::new(RefCell::new(TextControllerState {
-                buffer: Rope::from_str(text),
-                cursor_char: text.chars().count(),
-            })),
-        }
-    }
-
-    pub fn text(&self) -> String {
-        self.inner.borrow().buffer.to_string()
-    }
-
-    pub fn len_chars(&self) -> usize {
-        self.inner.borrow().buffer.len_chars()
-    }
-
-    pub fn cursor(&self) -> usize {
-        self.inner.borrow().cursor_char
-    }
-
-    pub fn set_cursor_to_end(&self) {
-        let mut inner = self.inner.borrow_mut();
-        inner.cursor_char = inner.buffer.len_chars();
-    }
-
-    pub fn insert_text(&self, text: &str) -> bool {
-        if text.is_empty() {
-            return false;
-        }
-
-        let mut inner = self.inner.borrow_mut();
-        let cursor = inner.cursor_char.min(inner.buffer.len_chars());
-        inner.buffer.insert(cursor, text);
-        inner.cursor_char = cursor + text.chars().count();
-        true
-    }
-
-    pub fn backspace(&self) -> bool {
-        let mut inner = self.inner.borrow_mut();
-        if inner.cursor_char == 0 {
-            return false;
-        }
-
-        let cursor = inner.cursor_char.min(inner.buffer.len_chars());
-        if cursor == 0 {
-            inner.cursor_char = 0;
-            return false;
-        }
-
-        inner.buffer.remove(cursor - 1..cursor);
-        inner.cursor_char = cursor - 1;
-        true
-    }
-
-    pub fn set_text(&self, text: impl AsRef<str>) {
-        let text = text.as_ref();
-        let mut inner = self.inner.borrow_mut();
-        inner.buffer = Rope::from_str(text);
-        inner.cursor_char = inner.buffer.len_chars();
-    }
-
-    fn same_handle(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.inner, &other.inner)
-    }
-}
-
-impl Default for TextController {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub use controller::TextController;
 
 #[derive(Clone, Debug)]
 pub struct TextInputChange {
@@ -121,10 +29,18 @@ pub struct TextInputWidget {
     pub controller: TextController,
     pub style: Style,
     pub event_handlers: EventHandlers,
-    on_changed: Option<TextInputChangeHandler>,
     uses_external_controller: bool,
     last_text: String,
     focused: bool,
+    scroll_x: f32,
+    drag: Option<TextInputDrag>,
+    ime_session: ImeSession,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TextInputDrag {
+    pointer_id: XuiPointerId,
+    base: usize,
 }
 
 impl std::fmt::Debug for TextInputWidget {
@@ -134,10 +50,11 @@ impl std::fmt::Debug for TextInputWidget {
             .field("controller", &self.controller)
             .field("style", &self.style)
             .field("event_handlers", &self.event_handlers)
-            .field("on_changed", &self.on_changed.is_some())
             .field("uses_external_controller", &self.uses_external_controller)
             .field("last_text", &self.last_text)
             .field("focused", &self.focused)
+            .field("scroll_x", &self.scroll_x)
+            .field("drag", &self.drag)
             .finish()
     }
 }
@@ -149,10 +66,12 @@ impl TextInputWidget {
             controller: TextController::new(),
             style: Style::default(),
             event_handlers: EventHandlers::default(),
-            on_changed: None,
             uses_external_controller: false,
             last_text: String::new(),
             focused: false,
+            scroll_x: 0.0,
+            drag: None,
+            ime_session: ImeSession::new(),
         }
     }
 
@@ -182,48 +101,310 @@ impl TextInputWidget {
         self
     }
 
-    pub fn on_changed(
-        mut self,
-        handler: impl for<'a> FnMut(&TextInputChange, &mut EventContext<'a>) -> EventResult + 'static,
-    ) -> Self {
-        self.on_changed = Some(Rc::new(RefCell::new(handler)));
-        self
-    }
-
     pub fn into_element_desc(self) -> ElementDesc {
         widget_element_desc(self, Vec::new())
     }
 
     event_handler_methods!();
 
-    fn emit_changed(&mut self, cx: &mut EventContext<'_>) -> EventResult {
-        let Some(handler) = self.on_changed.as_ref().cloned() else {
-            return EventResult::Consumed;
-        };
+    pub(crate) fn platform_text_input_session(
+        &self,
+        node_rect: Rect,
+        text_layout: &dyn crate::text::TextLayoutQuery,
+    ) -> TextInputSession {
+        let mut cursor_area = text_layout
+            .caret_rect(self.controller.selection().extent)
+            .unwrap_or_else(|| Rect::new(0.0, 0.0, 1.0, node_rect.height.max(1.0)));
+        cursor_area.x += node_rect.x - self.scroll_x;
+        cursor_area.y += node_rect.y;
+        cursor_area.width = cursor_area.width.max(1.0);
+        cursor_area.height = cursor_area.height.max(1.0);
 
-        let change = TextInputChange {
-            text: self.controller.text(),
-            controller: self.controller.clone(),
-        };
-        (handler.borrow_mut())(&change, cx)
+        TextInputSession {
+            cursor_area,
+            purpose: TextInputPurpose::Normal,
+            multiline: false,
+        }
     }
 
     fn apply_text_edit(&mut self, cx: &mut EventContext<'_>) -> EventResult {
+        let previous_len = self.last_text.chars().count();
+        let next_len = self.controller.len_chars();
         self.last_text = self.controller.text();
-        cx.mark_needs_layout();
-        cx.mark_needs_paint();
-        let result = self.emit_changed(cx);
-        if result.is_consumed() {
-            result
-        } else {
-            EventResult::Consumed
+        self.ensure_caret_visible(cx);
+        if next_len > previous_len {
+            self.ensure_pending_caret_visible(cx, previous_len);
         }
+        cx.mark_needs_text_shape();
+        cx.mark_needs_paint();
+        EventResult::Consumed
     }
 
     fn text_props(&self, style: &ComputedStyle) -> TextProps {
         let mut props = TextProps::new(TextContent::from(self.controller.text()));
         apply_text_style(&mut props, style);
+        props.paragraph.white_space = WhiteSpace::NoWrap;
+        props.text_box.max_lines = Some(1);
         props
+    }
+
+    fn viewport_width(&self, cx: &EventContext<'_>) -> f32 {
+        cx.node_ref.layout.width.max(0.0)
+    }
+
+    fn max_scroll_x(&self, cx: &EventContext<'_>) -> f32 {
+        let content_width = cx
+            .text_layout()
+            .map(|layout| layout.size().width)
+            .unwrap_or(0.0);
+        (content_width - self.viewport_width(cx)).max(0.0)
+    }
+
+    fn clamp_scroll_x(&mut self, cx: &EventContext<'_>) -> bool {
+        let old = self.scroll_x;
+        self.scroll_x = self.scroll_x.clamp(0.0, self.max_scroll_x(cx));
+        old != self.scroll_x
+    }
+
+    fn ensure_caret_visible(&mut self, cx: &EventContext<'_>) -> bool {
+        let old = self.scroll_x;
+        let viewport_width = self.viewport_width(cx);
+        if viewport_width <= 0.0 {
+            self.scroll_x = 0.0;
+            return old != self.scroll_x;
+        }
+
+        if let Some(caret) = cx
+            .text_layout()
+            .and_then(|layout| layout.caret_rect(self.controller.selection().extent))
+        {
+            let caret_left = caret.x;
+            let caret_right = caret.x + caret.width.max(1.0);
+            if caret_left < self.scroll_x {
+                self.scroll_x = caret_left;
+            } else if caret_right > self.scroll_x + viewport_width {
+                self.scroll_x = caret_right - viewport_width;
+            }
+
+            let caret_scroll_limit = (caret_right - viewport_width).max(0.0);
+            let scroll_limit = self.max_scroll_x(cx).max(caret_scroll_limit);
+            self.scroll_x = self.scroll_x.clamp(0.0, scroll_limit);
+        } else {
+            self.clamp_scroll_x(cx);
+        }
+        old != self.scroll_x
+    }
+
+    fn ensure_pending_caret_visible(&mut self, cx: &EventContext<'_>, previous_len: usize) -> bool {
+        let viewport_width = self.viewport_width(cx);
+        if viewport_width <= 0.0 {
+            return false;
+        }
+        let Some(layout) = cx.text_layout() else {
+            return false;
+        };
+
+        let average_advance = if previous_len == 0 {
+            8.0
+        } else {
+            (layout.size().width / previous_len as f32).max(1.0)
+        };
+        let caret_x = self.controller.selection().extent as f32 * average_advance;
+        let old = self.scroll_x;
+        if caret_x < self.scroll_x {
+            self.scroll_x = caret_x;
+        } else if caret_x > self.scroll_x + viewport_width {
+            self.scroll_x = caret_x - viewport_width;
+        }
+        self.scroll_x = self.scroll_x.max(0.0);
+        old != self.scroll_x
+    }
+
+    fn event_point_to_text_point(&self, cx: &EventContext<'_>, position: Point) -> Point {
+        Point::new(
+            position.x - cx.node_ref.layout.x + self.scroll_x,
+            position.y - cx.node_ref.layout.y,
+        )
+    }
+
+    fn hit_test_text(&self, cx: &EventContext<'_>, position: Point) -> usize {
+        let point = self.event_point_to_text_point(cx, position);
+        cx.text_layout()
+            .and_then(|layout| layout.hit_test_point(point))
+            .map(|position| match position.offset.unit {
+                TextOffsetUnit::Char => position.offset.raw,
+                TextOffsetUnit::Utf8Byte => self
+                    .controller
+                    .value()
+                    .text
+                    .byte_to_char(position.offset.raw),
+                TextOffsetUnit::Utf16CodeUnit => self
+                    .controller
+                    .value()
+                    .text
+                    .byte_to_char(position.offset.raw),
+            })
+            .unwrap_or_else(|| self.controller.len_chars())
+            .min(self.controller.len_chars())
+    }
+
+    fn set_selection_from_pointer(
+        &mut self,
+        cx: &mut EventContext<'_>,
+        position: Point,
+        shift: bool,
+        drag_base: Option<usize>,
+    ) -> EventResult {
+        let hit = self.hit_test_text(cx, position);
+        let selection = if let Some(base) = drag_base {
+            value::TextSelection::new(base, hit)
+        } else if shift {
+            value::TextSelection::new(self.controller.selection().base, hit)
+        } else {
+            value::TextSelection::collapsed(hit)
+        };
+
+        if self.controller.set_selection(selection).is_ok() {
+            self.ensure_caret_visible(cx);
+            cx.mark_needs_paint();
+            EventResult::Consumed
+        } else {
+            EventResult::Ignored
+        }
+    }
+
+    fn scroll_for_drag(&mut self, cx: &mut EventContext<'_>, position: Point) -> bool {
+        let viewport_width = self.viewport_width(cx);
+        if viewport_width <= 0.0 {
+            return false;
+        }
+        let local_x = position.x - cx.node_ref.layout.x;
+        let old = self.scroll_x;
+        if local_x < 0.0 {
+            self.scroll_x += local_x;
+        } else if local_x > viewport_width {
+            self.scroll_x += local_x - viewport_width;
+        }
+        self.clamp_scroll_x(cx);
+        old != self.scroll_x
+    }
+
+    fn set_cursor(
+        &mut self,
+        cx: &mut EventContext<'_>,
+        offset: usize,
+        extend: bool,
+    ) -> EventResult {
+        let len = self.controller.len_chars();
+        let offset = offset.min(len);
+        let selection = if extend {
+            value::TextSelection::new(self.controller.selection().base, offset)
+        } else {
+            value::TextSelection::collapsed(offset)
+        };
+
+        if self.controller.set_selection(selection).is_ok() {
+            self.ensure_caret_visible(cx);
+            cx.mark_needs_paint();
+            EventResult::Consumed
+        } else {
+            EventResult::Ignored
+        }
+    }
+
+    fn move_left(&mut self, cx: &mut EventContext<'_>, extend: bool) -> EventResult {
+        let selection = self.controller.selection();
+        let offset = if !extend && !selection.is_collapsed() {
+            selection.start()
+        } else {
+            selection.extent.saturating_sub(1)
+        };
+        self.set_cursor(cx, offset, extend)
+    }
+
+    fn move_right(&mut self, cx: &mut EventContext<'_>, extend: bool) -> EventResult {
+        let selection = self.controller.selection();
+        let offset = if !extend && !selection.is_collapsed() {
+            selection.end()
+        } else {
+            selection.extent.saturating_add(1)
+        };
+        self.set_cursor(cx, offset, extend)
+    }
+
+    fn delete_forward(&mut self, cx: &mut EventContext<'_>) -> EventResult {
+        let selection = self.controller.selection();
+        let range = selection.range();
+        let result = if !range.is_empty() {
+            self.controller.delete(range.as_range()).map(Some)
+        } else if selection.extent < self.controller.len_chars() {
+            self.controller
+                .delete(selection.extent..selection.extent + 1)
+                .map(Some)
+        } else {
+            Ok(None)
+        };
+
+        if matches!(result, Ok(Some(_))) {
+            self.apply_text_edit(cx)
+        } else {
+            EventResult::Ignored
+        }
+    }
+
+    fn select_all(&mut self, cx: &mut EventContext<'_>) -> EventResult {
+        let len = self.controller.len_chars();
+        if self
+            .controller
+            .set_selection(value::TextSelection::new(0, len))
+            .is_ok()
+        {
+            self.ensure_caret_visible(cx);
+            cx.mark_needs_paint();
+            EventResult::Consumed
+        } else {
+            EventResult::Ignored
+        }
+    }
+
+    fn handle_key_down(
+        &mut self,
+        key: &xui_interface::events::RawKeyboard,
+        cx: &mut EventContext<'_>,
+    ) -> EventResult {
+        match keymap::TextKeymap::platform_default().resolve(key) {
+            Some(keymap::TextCommand::SelectAll) => self.select_all(cx),
+            Some(command @ (keymap::TextCommand::Undo | keymap::TextCommand::Redo)) => {
+                let changed = if matches!(command, keymap::TextCommand::Redo) {
+                    self.controller.redo().unwrap_or(false)
+                } else {
+                    self.controller.undo().unwrap_or(false)
+                };
+                if changed {
+                    self.apply_text_edit(cx)
+                } else {
+                    EventResult::Ignored
+                }
+            }
+            Some(keymap::TextCommand::MoveLeft { extend }) => self.move_left(cx, extend),
+            Some(keymap::TextCommand::MoveRight { extend }) => self.move_right(cx, extend),
+            Some(keymap::TextCommand::MoveHome { extend }) => self.set_cursor(cx, 0, extend),
+            Some(keymap::TextCommand::MoveEnd { extend }) => {
+                self.set_cursor(cx, self.controller.len_chars(), extend)
+            }
+            Some(keymap::TextCommand::DeleteBackward) => {
+                if matches!(self.controller.backspace(), Ok(Some(_))) {
+                    self.apply_text_edit(cx)
+                } else {
+                    EventResult::Ignored
+                }
+            }
+            Some(keymap::TextCommand::DeleteForward) => self.delete_forward(cx),
+            Some(
+                keymap::TextCommand::Copy | keymap::TextCommand::Cut | keymap::TextCommand::Paste,
+            ) => EventResult::Consumed,
+            None => EventResult::Ignored,
+        }
     }
 }
 
@@ -233,42 +414,51 @@ impl Default for TextInputWidget {
     }
 }
 
-impl Widget for TextInputWidget {
-    fn node_type(&self) -> WidgetType {
+impl TextInputWidget {
+    pub(super) fn node_type(&self) -> WidgetType {
         WidgetType::TextInput
     }
 
-    fn key(&self) -> Option<&Key> {
+    pub(super) fn get_key(&self) -> Option<&Key> {
         self.key.as_ref()
     }
 
-    fn props_hash(&self) -> u64 {
+    pub(super) fn props_hash(&self) -> u64 {
         props_hash(&(
             &self.controller.text(),
             &self.style,
             self.uses_external_controller,
             self.focused,
-            self.on_changed.is_some(),
+            self.controller.selection().base,
+            self.controller.selection().extent,
+            self.scroll_x.to_bits(),
         ))
     }
 
-    fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
+    pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
         let mut flags = WidgetUpdateFlags::empty();
         let next_text = next.controller.text();
 
         if next.uses_external_controller {
+            let mut controller_changed = false;
             if !self.controller.same_handle(&next.controller) {
                 self.controller = next.controller.clone();
+                controller_changed = true;
                 flags |= WidgetUpdateFlags::LAYOUT_INPUT | WidgetUpdateFlags::PAINT_OUTPUT;
             } else if next_text != self.last_text {
+                controller_changed = true;
                 flags |= WidgetUpdateFlags::LAYOUT_INPUT | WidgetUpdateFlags::PAINT_OUTPUT;
             }
             self.last_text = next_text;
             self.uses_external_controller = true;
+            if controller_changed {
+                self.scroll_x = 0.0;
+            }
         } else if self.uses_external_controller {
             self.controller = next.controller.clone();
             self.last_text = self.controller.text();
             self.uses_external_controller = false;
+            self.scroll_x = 0.0;
             flags |= WidgetUpdateFlags::LAYOUT_INPUT | WidgetUpdateFlags::PAINT_OUTPUT;
         } else {
             self.last_text = self.controller.text();
@@ -278,72 +468,175 @@ impl Widget for TextInputWidget {
             self.style = next.style.clone();
             flags |= WidgetUpdateFlags::STYLE_TARGET;
         }
-        self.on_changed = next.on_changed.clone();
 
         flags
     }
 
-    fn default_style(&self) -> Style {
+    pub(super) fn default_style(&self) -> Style {
         Style::new().min_width(40.0).min_height(20.0)
     }
 
-    fn style(&self) -> &Style {
+    pub(super) fn current_style(&self) -> &Style {
         &self.style
     }
 
-    fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
+    pub(super) fn paint(
+        &self,
+        rect: Rect,
+        style: &ComputedStyle,
+        commands: &mut Vec<PaintCommand>,
+    ) {
         let mut paint = TextPaintProps::new(TextPaintStyle::from_computed(&style.text));
         paint.caret = self.focused.then_some(TextCaret {
-            char_index: self.controller.cursor(),
+            char_index: self.controller.selection().extent,
             color: style.text.color,
             width: 1.0,
         });
+        let selection = self.controller.selection().range();
+        if self.focused && !selection.is_empty() {
+            paint.selection = Some(TextSelectionPaint {
+                range: xui_interface::TextRange::new(
+                    TextOffset::char_offset(selection.start),
+                    TextOffset::char_offset(selection.end),
+                ),
+                color: Color::rgba(0.18, 0.42, 0.88, 0.28),
+            });
+        }
+        commands.push(PaintCommand::PushClip(rect));
+        commands.push(PaintCommand::PushTransform {
+            translate: Translation::new(-self.scroll_x, 0.0),
+        });
         commands.push(PaintCommand::Text(TextPaintCommand {
             node_id: Default::default(),
-            rect,
+            rect: Rect::new(rect.x, rect.y, rect.width + self.scroll_x, rect.height),
             paint,
         }));
+        commands.push(PaintCommand::PopTransform);
+        commands.push(PaintCommand::PopClip);
     }
 
-    fn handle_event(&mut self, event: EventRef<'_>, cx: &mut EventContext<'_>) -> EventResult {
+    pub(super) fn handle_event(
+        &mut self,
+        event: EventRef<'_>,
+        cx: &mut EventContext<'_>,
+    ) -> EventResult {
         match event {
-            EventRef::Raw(RawEvent::PointerDown(_)) => {
-                self.controller.set_cursor_to_end();
-                cx.request_focus();
+            EventRef::Raw(RawEvent::PointerDown(pointer))
+                if pointer.button == PointerButton::Primary =>
+            {
+                self.focused = true;
+                let result = self.set_selection_from_pointer(
+                    cx,
+                    pointer.position,
+                    pointer.modifiers.shift,
+                    None,
+                );
+                self.drag = Some(TextInputDrag {
+                    pointer_id: pointer.pointer_id,
+                    base: self.controller.selection().base,
+                });
+                cx.capture_pointer();
                 cx.mark_needs_paint();
-                EventResult::Ignored
+                result
             }
-            EventRef::Raw(RawEvent::TextInput(input)) => {
-                let filtered: String = input
-                    .text
+            EventRef::Raw(RawEvent::PointerMove(pointer)) => {
+                let Some(drag) = self
+                    .drag
+                    .filter(|drag| drag.pointer_id == pointer.pointer_id)
+                else {
+                    return EventResult::Ignored;
+                };
+                if self.scroll_for_drag(cx, pointer.position) {
+                    cx.mark_needs_paint();
+                }
+                self.set_selection_from_pointer(cx, pointer.position, true, Some(drag.base))
+            }
+            EventRef::Raw(RawEvent::PointerUp(pointer))
+                if self
+                    .drag
+                    .is_some_and(|drag| drag.pointer_id == pointer.pointer_id) =>
+            {
+                self.drag = None;
+                cx.release_pointer_capture();
+                EventResult::Consumed
+            }
+            EventRef::Raw(RawEvent::PointerCancel(pointer))
+                if self
+                    .drag
+                    .is_some_and(|drag| drag.pointer_id == pointer.pointer_id) =>
+            {
+                self.drag = None;
+                cx.release_pointer_capture();
+                EventResult::Consumed
+            }
+            EventRef::Raw(RawEvent::Keyboard(input))
+                if input.state == xui_interface::events::KeyState::Down =>
+            {
+                if keymap::TextKeymap::platform_default()
+                    .resolve(input)
+                    .is_some()
+                {
+                    return self.handle_key_down(input, cx);
+                }
+                if input.modifiers.ctrl || input.modifiers.meta {
+                    return self.handle_key_down(input, cx);
+                }
+                let Some(text) = input.text else {
+                    return self.handle_key_down(input, cx);
+                };
+                let filtered: String = text
+                    .as_str()
                     .chars()
-                    .filter(|ch| *ch != '\r' && *ch != '\n')
+                    .filter(|ch| *ch != '\r' && *ch != '\n' && *ch != '\t')
                     .collect();
-                if self.controller.insert_text(&filtered) {
+                if !filtered.is_empty() && self.controller.insert_text(filtered).is_ok() {
                     self.apply_text_edit(cx)
                 } else {
-                    EventResult::Ignored
+                    self.handle_key_down(input, cx)
                 }
             }
-            EventRef::Raw(RawEvent::KeyDown(key)) if key.key == InputKey::Backspace => {
-                if self.controller.backspace() {
-                    self.apply_text_edit(cx)
-                } else {
-                    EventResult::Ignored
+            EventRef::Raw(RawEvent::Ime(e)) => {
+                match e {
+                    RawIme::Enabled { .. } => {}
+                    RawIme::Preedit {
+                        text,
+                        cursor,
+                        timestamp,
+                    } => {
+                        if !self.ime_session.is_active() {
+                            self.ime_session.begin(&mut self.controller).unwrap();
+                        }
+                        if self
+                            .ime_session
+                            .preedit(&self.controller, text, *cursor)
+                            .is_ok()
+                        {
+                            self.apply_text_edit(cx);
+                        }
+                    }
+                    RawIme::Commit { text, timestamp } => {
+                        if self.ime_session.commit(&self.controller, text).is_ok() {
+                            self.apply_text_edit(cx);
+                        }
+                    }
+                    RawIme::Disabled { timestamp } => {
+                        self.ime_session.end(&self.controller);
+                    }
                 }
+                EventResult::Consumed
             }
             EventRef::Semantic(SemanticEvent::Focus(_))
             | EventRef::Semantic(SemanticEvent::FocusIn(_)) => {
                 self.focused = true;
-                self.controller.set_cursor_to_end();
-                cx.request_focus();
+                self.ensure_caret_visible(cx);
                 cx.mark_needs_paint();
                 EventResult::Ignored
             }
             EventRef::Semantic(SemanticEvent::Blur(_))
             | EventRef::Semantic(SemanticEvent::FocusOut(_)) => {
                 self.focused = false;
-                cx.clear_focus();
+                self.drag = None;
+                cx.release_pointer_capture();
                 cx.mark_needs_paint();
                 EventResult::Ignored
             }
@@ -351,117 +644,11 @@ impl Widget for TextInputWidget {
         }
     }
 
-    fn text(&self) -> Option<TextContent> {
+    pub(super) fn text_content(&self) -> Option<TextContent> {
         Some(TextContent::from(self.controller.text()))
     }
 
-    fn text_layout_props(&self, style: &ComputedStyle) -> Option<TextProps> {
+    pub(super) fn text_layout_props(&self, style: &ComputedStyle) -> Option<TextProps> {
         Some(self.text_props(style))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Instant;
-    use xui_interface::events::{EventPhase, EventRequests, Modifiers, RawKey, RawTextInput};
-
-    #[test]
-    fn controller_edits_by_char_index() {
-        let controller = TextController::with_text("a好🙂");
-
-        assert_eq!(controller.len_chars(), 3);
-        assert_eq!(controller.cursor(), 3);
-
-        assert!(controller.backspace());
-        assert_eq!(controller.text(), "a好");
-        assert_eq!(controller.cursor(), 2);
-
-        assert!(controller.insert_text("界🙂"));
-        assert_eq!(controller.text(), "a好界🙂");
-        assert_eq!(controller.len_chars(), 4);
-        assert_eq!(controller.cursor(), 4);
-    }
-
-    #[test]
-    fn internal_controller_survives_update_from_internal_widget() {
-        let mut current = TextInputWidget::with_text("typed");
-        assert!(current.controller.insert_text("!"));
-        let next = TextInputWidget::with_text("initial");
-
-        let flags = current.update_from(&next);
-
-        assert!(flags.is_empty());
-        assert_eq!(current.controller.text(), "typed!");
-        assert!(!current.uses_external_controller);
-    }
-
-    #[test]
-    fn external_controller_replaces_current_controller() {
-        let first = TextController::with_text("first");
-        let second = TextController::with_text("second");
-        let mut current = TextInputWidget::new().controller(first.clone());
-        let next = TextInputWidget::new().controller(second.clone());
-
-        let flags = current.update_from(&next);
-
-        assert!(flags.contains(WidgetUpdateFlags::LAYOUT_INPUT));
-        assert!(flags.contains(WidgetUpdateFlags::PAINT_OUTPUT));
-        assert_eq!(current.controller.text(), "second");
-        assert!(current.controller.same_handle(&second));
-    }
-
-    #[test]
-    fn raw_text_input_filters_newlines_and_marks_dirty() {
-        let mut widget = TextInputWidget::new();
-        let mut update = WidgetUpdateFlags::empty();
-        let mut requests = EventRequests::default();
-        let mut cx = EventContext::new(
-            Default::default(),
-            EventPhase::Target,
-            &mut update,
-            &mut requests,
-        );
-
-        let result = widget.handle_event(
-            EventRef::Raw(&RawEvent::TextInput(RawTextInput {
-                text: "a\n好\r🙂".to_owned(),
-                modifiers: Modifiers::default(),
-                timestamp: Instant::now(),
-            })),
-            &mut cx,
-        );
-
-        assert_eq!(result, EventResult::Consumed);
-        assert_eq!(widget.controller.text(), "a好🙂");
-        assert!(update.contains(WidgetUpdateFlags::LAYOUT_INPUT));
-        assert!(update.contains(WidgetUpdateFlags::PAINT_OUTPUT));
-    }
-
-    #[test]
-    fn backspace_consumes_only_when_text_changes() {
-        let mut widget = TextInputWidget::with_text("a好");
-        let mut update = WidgetUpdateFlags::empty();
-        let mut requests = EventRequests::default();
-        let mut cx = EventContext::new(
-            Default::default(),
-            EventPhase::Target,
-            &mut update,
-            &mut requests,
-        );
-
-        let raw = RawEvent::KeyDown(RawKey {
-            key: InputKey::Backspace,
-            modifiers: Modifiers::default(),
-            timestamp: Instant::now(),
-            is_repeat: false,
-        });
-
-        let result = widget.handle_event(EventRef::Raw(&raw), &mut cx);
-
-        assert_eq!(result, EventResult::Consumed);
-        assert_eq!(widget.controller.text(), "a");
-        assert!(update.contains(WidgetUpdateFlags::LAYOUT_INPUT));
-        assert!(update.contains(WidgetUpdateFlags::PAINT_OUTPUT));
     }
 }

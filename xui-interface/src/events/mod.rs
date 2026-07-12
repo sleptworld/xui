@@ -1,7 +1,9 @@
 pub mod raw;
 pub mod semantic;
+pub mod shortcut;
 pub use raw::*;
 pub use semantic::*;
+pub use shortcut::*;
 
 use crate::{NodeId, WidgetUpdateFlags};
 
@@ -50,61 +52,5 @@ pub enum EventResult {
 impl EventResult {
     pub fn is_consumed(self) -> bool {
         matches!(self, Self::Consumed)
-    }
-}
-
-pub struct EventContext<'a> {
-    pub node_id: NodeId,
-    pub phase: EventPhase,
-    request_update: &'a mut WidgetUpdateFlags,
-    requests: &'a mut EventRequests,
-}
-
-impl<'a> EventContext<'a> {
-    pub fn new(
-        node_id: NodeId,
-        phase: EventPhase,
-        request_update: &'a mut WidgetUpdateFlags,
-        requests: &'a mut EventRequests,
-    ) -> Self {
-        Self {
-            node_id,
-            phase,
-            request_update,
-            requests,
-        }
-    }
-
-    pub fn mark_needs_style(&mut self) {
-        *self.request_update |= WidgetUpdateFlags::STYLE_TARGET;
-    }
-
-    pub fn mark_needs_layout(&mut self) {
-        *self.request_update |= WidgetUpdateFlags::LAYOUT_INPUT;
-    }
-
-    pub fn mark_needs_paint(&mut self) {
-        *self.request_update |= WidgetUpdateFlags::PAINT_OUTPUT;
-    }
-
-    pub fn invalidate(&mut self, flags: WidgetUpdateFlags) {
-        *self.request_update |= flags;
-    }
-
-    pub fn request_focus(&mut self) {
-        self.requests.push(EventRequest::Focus(self.node_id));
-    }
-
-    pub fn clear_focus(&mut self) {
-        self.requests.push(EventRequest::ClearFocus);
-    }
-
-    pub fn capture_pointer(&mut self) {
-        self.requests
-            .push(EventRequest::CapturePointer(self.node_id));
-    }
-
-    pub fn release_pointer_capture(&mut self) {
-        self.requests.push(EventRequest::ReleasePointerCapture);
     }
 }

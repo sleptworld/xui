@@ -2,8 +2,7 @@ use std::time::{Duration, Instant};
 
 use rustc_hash::FxHashMap;
 use xui_interface::{
-    InputKey, NodeId, Point, PointerButton, Translation, WidgetType, WidgetUpdateFlags,
-    XuiPointerId,
+    NodeId, Point, PointerButton, Translation, WidgetType, WidgetUpdateFlags, XuiPointerId,
 };
 
 use crate::tree::UiArena;
@@ -17,7 +16,6 @@ pub struct EventTranslator {
     hover_paths: FxHashMap<XuiPointerId, Vec<NodeId>>,
     active_presses: FxHashMap<(XuiPointerId, PointerButton), ActivePress>,
     active_drags: FxHashMap<XuiPointerId, ActiveDrag>,
-    focused: Option<NodeId>,
     last_click: Option<ClickRecord>,
     pointer_capture: FxHashMap<XuiPointerId, NodeId>,
     config: EventTranslatorConfig,
@@ -80,6 +78,53 @@ impl Default for EventTranslator {
 }
 
 impl EventTranslator {
+    pub(crate) fn apply_focus_request(
+        &mut self,
+        arena: &mut UiArena,
+        request: crate::focus::FocusRequest,
+        timestamp: Instant,
+        modifiers: Modifiers,
+    ) -> Vec<SemanticEvent> {
+        let source = match request.reason {
+            FocusReason::Pointer => EventSource::Pointer,
+            FocusReason::Keyboard => EventSource::Keyboard,
+            FocusReason::Window => EventSource::Window,
+            FocusReason::Programmatic | FocusReason::NodeRemoved | FocusReason::Disabled => {
+                EventSource::Programmatic
+            }
+        };
+        let mut out = Vec::new();
+        self.change_focus(
+            arena,
+            request.target,
+            request.reason,
+            source,
+            timestamp,
+            modifiers,
+            &mut out,
+        );
+        out
+    }
+    pub(crate) fn command_event(
+        &mut self,
+        target: NodeId,
+        command: xui_interface::CommandId,
+        shortcut: xui_interface::Shortcut,
+        raw: &xui_interface::RawKeyboard,
+    ) -> SemanticEvent {
+        SemanticEvent::Command(xui_interface::CommandEvent {
+            meta: self.make_meta(
+                raw.timestamp,
+                target,
+                target,
+                EventPhase::Target,
+                EventSource::Keyboard,
+                raw.modifiers,
+            ),
+            command,
+            shortcut,
+        })
+    }
     pub fn new(config: EventTranslatorConfig) -> Self {
         Self {
             next_event_id: 1,
@@ -88,15 +133,10 @@ impl EventTranslator {
             hover_paths: FxHashMap::default(),
             active_presses: FxHashMap::default(),
             active_drags: FxHashMap::default(),
-            focused: None,
             last_click: None,
             pointer_capture: FxHashMap::default(),
             config,
         }
-    }
-
-    pub fn focused(&self) -> Option<NodeId> {
-        self.focused
     }
 
     pub fn set_pointer_capture(&mut self, pointer_id: XuiPointerId, target: NodeId) {
@@ -118,12 +158,14 @@ impl EventTranslator {
             RawEvent::PointerUp(raw) => self.translate_pointer_up(raw, arena),
             RawEvent::PointerCancel(raw) => self.translate_pointer_cancel(raw, arena),
             RawEvent::Wheel(raw) => self.translate_wheel(raw, arena),
-            RawEvent::KeyDown(raw) => self.translate_key_down(raw, arena),
-            RawEvent::KeyUp(_) => Vec::new(),
+            RawEvent::Keyboard(raw) if raw.state == xui_interface::events::KeyState::Down => {
+                self.translate_key_down(&raw, arena)
+            }
+            RawEvent::Keyboard(_) => Vec::new(),
             RawEvent::WindowBlur(raw) => self.translate_window_blur(raw, arena),
             RawEvent::WindowFocus(_) => Vec::new(),
             RawEvent::ContextMenu(raw) => self.translate_context_menu(raw, arena),
-            RawEvent::TextInput(_) => Vec::new(),
+            RawEvent::Ime(_) => Vec::new(),
         }
     }
 
@@ -204,8 +246,10 @@ impl EventTranslator {
 
         if let Some(focus_target) = nearest_focusable_ancestor(arena, target) {
             self.change_focus(
+                arena,
                 Some(focus_target),
                 FocusReason::Pointer,
+                EventSource::Pointer,
                 raw.timestamp,
                 raw.modifiers,
                 &mut out,
@@ -519,24 +563,27 @@ impl EventTranslator {
         out
     }
 
-    fn translate_key_down(&mut self, raw: &RawKey, arena: &mut UiArena) -> Vec<SemanticEvent> {
+    fn translate_key_down(&mut self, raw: &RawKeyboard, arena: &mut UiArena) -> Vec<SemanticEvent> {
         let mut out = Vec::new();
 
-        match &raw.key {
-            InputKey::Tab => {
-                let next = next_focusable(arena, self.focused, raw.modifiers.shift);
+        match raw.named_key {
+            Some(NamedKey::Tab) => {
+                let next = next_focusable(arena, arena.focused_node(), raw.modifiers.shift);
                 self.change_focus(
+                    arena,
                     next,
                     FocusReason::Keyboard,
+                    EventSource::Keyboard,
                     raw.timestamp,
                     raw.modifiers,
                     &mut out,
                 );
             }
-            InputKey::Enter => self.push_keyboard_click(raw, &mut out),
-            InputKey::Character(text) if text == " " => self.push_keyboard_click(raw, &mut out),
-            InputKey::Other(text) if text == "ContextMenu" => {
-                if let Some(target) = self.focused {
+            Some(NamedKey::Enter) | Some(NamedKey::Space) => {
+                self.push_keyboard_click(arena.focused_node(), raw, &mut out)
+            }
+            Some(NamedKey::ContextMenu) => {
+                if let Some(target) = arena.focused_node() {
                     let position = node_center(arena, target);
                     let meta = self.make_meta(
                         raw.timestamp,
@@ -555,7 +602,7 @@ impl EventTranslator {
                     }));
                 }
             }
-            InputKey::Escape => {
+            Some(NamedKey::Escape) => {
                 self.cancel_active_drags(
                     DragCancelReason::EscapePressed,
                     raw.timestamp,
@@ -577,7 +624,7 @@ impl EventTranslator {
     ) -> Vec<SemanticEvent> {
         let target = match raw.position {
             Some(position) => arena.hit_test(position),
-            None => self.focused,
+            None => arena.focused_node(),
         };
 
         let Some(target) = target else {
@@ -645,8 +692,10 @@ impl EventTranslator {
         }
 
         self.change_focus(
+            arena,
             None,
             FocusReason::Window,
+            EventSource::Window,
             raw.timestamp,
             raw.modifiers,
             &mut out,
@@ -926,28 +975,26 @@ impl EventTranslator {
 
     fn change_focus(
         &mut self,
+        arena: &mut UiArena,
         new_focused: Option<NodeId>,
         reason: FocusReason,
+        source: EventSource,
         timestamp: Instant,
         modifiers: Modifiers,
         out: &mut Vec<SemanticEvent>,
     ) {
-        let old_focused = self.focused;
-        if old_focused == new_focused {
+        if new_focused.is_some_and(|target| !is_focusable(arena, target)) {
             return;
         }
-
-        self.focused = new_focused;
+        let Some(transition) = arena.focus_manager_mut().commit(new_focused, reason) else {
+            return;
+        };
+        let old_focused = transition.old;
+        let new_focused = transition.new;
 
         if let Some(old) = old_focused {
-            let blur_meta = self.make_meta(
-                timestamp,
-                old,
-                old,
-                EventPhase::Target,
-                EventSource::Pointer,
-                modifiers,
-            );
+            let blur_meta =
+                self.make_meta(timestamp, old, old, EventPhase::Target, source, modifiers);
             out.push(SemanticEvent::Blur(FocusEvent {
                 meta: blur_meta,
                 old_focused,
@@ -956,14 +1003,8 @@ impl EventTranslator {
                 reason,
             }));
 
-            let focus_out_meta = self.make_meta(
-                timestamp,
-                old,
-                old,
-                EventPhase::Target,
-                EventSource::Pointer,
-                modifiers,
-            );
+            let focus_out_meta =
+                self.make_meta(timestamp, old, old, EventPhase::Target, source, modifiers);
             out.push(SemanticEvent::FocusOut(FocusEvent {
                 meta: focus_out_meta,
                 old_focused,
@@ -974,14 +1015,8 @@ impl EventTranslator {
         }
 
         if let Some(new) = new_focused {
-            let focus_in_meta = self.make_meta(
-                timestamp,
-                new,
-                new,
-                EventPhase::Target,
-                EventSource::Pointer,
-                modifiers,
-            );
+            let focus_in_meta =
+                self.make_meta(timestamp, new, new, EventPhase::Target, source, modifiers);
             out.push(SemanticEvent::FocusIn(FocusEvent {
                 meta: focus_in_meta,
                 old_focused,
@@ -990,14 +1025,8 @@ impl EventTranslator {
                 reason,
             }));
 
-            let focus_meta = self.make_meta(
-                timestamp,
-                new,
-                new,
-                EventPhase::Target,
-                EventSource::Pointer,
-                modifiers,
-            );
+            let focus_meta =
+                self.make_meta(timestamp, new, new, EventPhase::Target, source, modifiers);
             out.push(SemanticEvent::Focus(FocusEvent {
                 meta: focus_meta,
                 old_focused,
@@ -1008,8 +1037,13 @@ impl EventTranslator {
         }
     }
 
-    fn push_keyboard_click(&mut self, raw: &RawKey, out: &mut Vec<SemanticEvent>) {
-        if let Some(target) = self.focused {
+    fn push_keyboard_click(
+        &mut self,
+        focused: Option<NodeId>,
+        raw: &RawKeyboard,
+        out: &mut Vec<SemanticEvent>,
+    ) {
+        if let Some(target) = focused {
             let meta = self.make_meta(
                 raw.timestamp,
                 target,

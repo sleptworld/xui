@@ -9,7 +9,7 @@ pub enum ComponentLength {
 }
 
 impl ComponentLength {
-    fn apply(self, style: Style, f: impl FnOnce(Style, LengthValue) -> Style) -> Style {
+    pub(crate) fn apply(self, style: Style, f: impl FnOnce(Style, LengthValue) -> Style) -> Style {
         match self {
             Self::Auto => style,
             Self::Value(value) => f(style, value),
@@ -55,7 +55,7 @@ pub enum ComponentSizing {
 }
 
 impl ComponentSizing {
-    fn apply(self, style: Style, f: impl FnOnce(Style, Sizing) -> Style) -> Style {
+    pub(crate) fn apply(self, style: Style, f: impl FnOnce(Style, Sizing) -> Style) -> Style {
         match self {
             Self::Auto => style,
             Self::Value(value) => f(style, value),
@@ -121,7 +121,7 @@ pub enum ComponentInsets {
 }
 
 impl ComponentInsets {
-    fn apply(self, style: Style, f: impl FnOnce(Style, EdgeInsets) -> Style) -> Style {
+    pub(crate) fn apply(self, style: Style, f: impl FnOnce(Style, EdgeInsets) -> Style) -> Style {
         match self {
             Self::Auto => style,
             Self::Value(value) => f(style, value),
@@ -149,7 +149,7 @@ pub enum ComponentColor {
 }
 
 impl ComponentColor {
-    fn apply(self, style: Style, f: impl FnOnce(Style, ColorStyle) -> Style) -> Style {
+    pub(crate) fn apply(self, style: Style, f: impl FnOnce(Style, ColorStyle) -> Style) -> Style {
         match self {
             Self::Auto => style,
             Self::Value(value) => f(style, value),

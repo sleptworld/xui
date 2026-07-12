@@ -859,7 +859,6 @@ mod tests {
 
     use crate::fiber::FiberArena;
     use crate::lanes::{SYNC_LANE, with_update_lane};
-    use xui_interface::{EventPhase, EventRequests, WidgetUpdateFlags};
 
     use super::*;
 
@@ -1106,39 +1105,5 @@ mod tests {
         assert_eq!(*builds.borrow(), 2);
         assert_eq!(first.call_mut(|callback| callback()), 9);
         assert_eq!(second.call_mut(|callback| callback()), 9);
-    }
-
-    #[test]
-    fn use_callback_can_store_event_handlers() {
-        let mut storage = HookStorage::default();
-        let scheduler = Scheduler::default();
-        let owner = FiberArena::new().root();
-        scheduler.set_root(owner);
-        let mut cx = HookContext::new(&mut storage, owner, scheduler, SYNC_LANE);
-
-        let callback = cx.use_callback((), || {
-            Box::new(|cx: &mut xui_interface::events::EventContext<'_>| {
-                cx.mark_needs_paint();
-                xui_interface::events::EventResult::Consumed
-            })
-                as Box<
-                    dyn for<'a> FnMut(
-                        &mut xui_interface::events::EventContext<'a>,
-                    ) -> xui_interface::events::EventResult,
-                >
-        });
-
-        let mut update = WidgetUpdateFlags::empty();
-        let mut requests = EventRequests::default();
-        let mut event_cx = xui_interface::events::EventContext::new(
-            Default::default(),
-            EventPhase::Target,
-            &mut update,
-            &mut requests,
-        );
-        let result = callback.call_mut(|handler| handler(&mut event_cx));
-
-        assert_eq!(result, xui_interface::events::EventResult::Consumed);
-        assert!(update.contains(WidgetUpdateFlags::PAINT_OUTPUT));
     }
 }

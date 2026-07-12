@@ -1,10 +1,10 @@
-use slotmap::{new_key_type, Key as SlotMapKey, SlotMap};
-use xui_interface::{EventContext, EventPhase, EventResult};
-
+use super::EventContext;
+use slotmap::{Key as SlotMapKey, SlotMap, new_key_type};
 use xui_interface::events::semantic::{
-    ClickEvent, ContextMenuEvent, DragEvent, FocusEvent, HoverChangeEvent, HoverEvent, PressEvent,
-    ScrollEvent, SemanticEvent,
+    ClickEvent, CommandEvent, ContextMenuEvent, DragEvent, FocusEvent, HoverChangeEvent,
+    HoverEvent, PressEvent, ScrollEvent, SemanticEvent,
 };
+use xui_interface::{EventPhase, EventResult};
 
 pub type TypedEventHandler<E> = Box<dyn for<'a> FnMut(&E, &mut EventContext<'a>) -> EventResult>;
 
@@ -17,6 +17,7 @@ pub type ContextMenuEventHandler = TypedEventHandler<ContextMenuEvent>;
 pub type FocusEventHandler = TypedEventHandler<FocusEvent>;
 pub type DragEventHandler = TypedEventHandler<DragEvent>;
 pub type ScrollEventHandler = TypedEventHandler<ScrollEvent>;
+pub type CommandEventHandler = TypedEventHandler<CommandEvent>;
 
 new_key_type! {
     pub struct SemanticEventHandlerId;
@@ -28,10 +29,13 @@ new_key_type! {
     pub struct FocusEventHandlerId;
     pub struct DragEventHandlerId;
     pub struct ScrollEventHandlerId;
+    pub struct CommandEventHandlerId;
 }
 
 #[derive(Default)]
 pub struct EventHandlers {
+    pub shortcuts: Vec<xui_interface::ShortcutBinding>,
+    pub on_command: Option<CommandEventHandler>,
     pub on_event: Option<SemanticEventHandler>,
     pub on_event_capture: Option<SemanticEventHandler>,
     pub on_hover_enter: Option<HoverEventHandler>,
@@ -70,6 +74,8 @@ pub struct EventHandlers {
 impl std::fmt::Debug for EventHandlers {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EventHandlers")
+            .field("shortcuts", &self.shortcuts)
+            .field("on_command", &self.on_command.is_some())
             .field("on_event", &self.on_event.is_some())
             .field("on_event_capture", &self.on_event_capture.is_some())
             .field("on_hover_enter", &self.on_hover_enter.is_some())
@@ -127,6 +133,7 @@ impl std::fmt::Debug for EventHandlers {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CallbackHandleSet {
+    pub on_command: Option<CommandEventHandlerId>,
     pub on_event: Option<SemanticEventHandlerId>,
     pub on_event_capture: Option<SemanticEventHandlerId>,
     pub on_hover_enter: Option<HoverEventHandlerId>,
@@ -186,6 +193,7 @@ impl CallbackHandleSet {
 
 #[derive(Default)]
 pub(crate) struct CallbackStore {
+    on_command: SlotMap<CommandEventHandlerId, CommandEventHandler>,
     on_event: SlotMap<SemanticEventHandlerId, SemanticEventHandler>,
     on_event_capture: SlotMap<SemanticEventHandlerId, SemanticEventHandler>,
     on_hover_enter: SlotMap<HoverEventHandlerId, HoverEventHandler>,
@@ -228,6 +236,11 @@ impl CallbackStore {
         handlers: EventHandlers,
     ) -> CallbackHandleSet {
         CallbackHandleSet {
+            on_command: update_handler(
+                &mut self.on_command,
+                current.on_command,
+                handlers.on_command,
+            ),
             on_event: update_handler(&mut self.on_event, current.on_event, handlers.on_event),
             on_event_capture: update_handler(
                 &mut self.on_event_capture,
@@ -377,6 +390,7 @@ impl CallbackStore {
     }
 
     pub(crate) fn clear_set(&mut self, handlers: CallbackHandleSet) {
+        remove_handler(&mut self.on_command, handlers.on_command);
         remove_handler(&mut self.on_event, handlers.on_event);
         remove_handler(&mut self.on_event_capture, handlers.on_event_capture);
         remove_handler(&mut self.on_hover_enter, handlers.on_hover_enter);
@@ -461,6 +475,9 @@ impl CallbackStore {
         }
 
         match event {
+            SemanticEvent::Command(event) => {
+                dispatch_handler(&mut self.on_command, handlers.on_command, event, cx)
+            }
             SemanticEvent::HoverEnter(event) => {
                 dispatch_handler(&mut self.on_hover_enter, handlers.on_hover_enter, event, cx)
             }

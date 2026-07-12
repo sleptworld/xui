@@ -9,7 +9,7 @@ use xui_interface::{
     ComputedColorStyle, ComputedScrollStyle, ComputedScrollbarStyle, ComputedStyle, DamageRegion,
     EventResult, NodeId, NodeLifecycleEvent, PaintCommand, ScrollbarVisibilityStyle,
     StyleDiffFlags, TextBackend, TextLayoutConstraints, TextLayoutInput, Theme, Translation,
-    Widget, WidgetState, WidgetUpdateFlags,
+    WidgetState, WidgetUpdateFlags,
 };
 
 use crate::animation::AnimableStyle;
@@ -17,6 +17,7 @@ use crate::core::{Point, Rect, Size};
 use crate::event_system::callbacks::{CallbackHandleSet, CallbackStore, EventHandlers};
 use crate::event_system::{self, EventState, translator::EventTranslator};
 use crate::fiber::Key;
+use crate::focus::FocusManager;
 use crate::layout::{computed_style_for_widget, taffy_style_for_widget};
 use crate::text::TextHost;
 use crate::widgets::{WidgetI, WidgetType};
@@ -33,8 +34,9 @@ bitflags::bitflags! {
         const RECALC_STYLE_SUBTREE = 1 << 1;
         const RECALC_LAYOUT = 1 << 2;
         const REBUILD_PAINT = 1 << 3;
-        const SYNC_TREE = 1 << 4;
-        const SYNC_STATE_CHANGE = 1 << 5;
+        const SHAPE_CHANGE = 1 << 4;
+        const SYNC_TREE = 1 << 5;
+        const SYNC_STATE_CHANGE = 1 << 6;
     }
 }
 
@@ -53,6 +55,10 @@ impl HostWorkFlags {
         if flags.intersects(WidgetUpdateFlags::TREE) {
             work |=
                 Self::SYNC_TREE | Self::RECALC_STYLE | Self::RECALC_LAYOUT | Self::REBUILD_PAINT;
+        }
+
+        if flags.intersects(WidgetUpdateFlags::TEXT_SHAPE) {
+            work |= Self::SHAPE_CHANGE;
         }
 
         if flags.intersects(WidgetUpdateFlags::STATE_CHANGE) {
@@ -146,6 +152,7 @@ pub struct Node {
     pub paint_cache: Vec<PaintCommand>,
     pub widget: WidgetI,
     pub event_callbacks: CallbackHandleSet,
+    pub shortcut_bindings: Vec<xui_interface::ShortcutBinding>,
 }
 
 impl Node {
@@ -157,6 +164,7 @@ impl Node {
         target_style: ComputedStyle,
         widget: WidgetI,
         event_callbacks: CallbackHandleSet,
+        shortcut_bindings: Vec<xui_interface::ShortcutBinding>,
         taffy_node: tf::NodeId,
     ) -> Self {
         let node_type = widget.node_type();
@@ -186,6 +194,7 @@ impl Node {
             paint_cache: Vec::new(),
             widget,
             event_callbacks,
+            shortcut_bindings,
         }
     }
 
@@ -199,6 +208,7 @@ impl Node {
 struct UiState {
     animation_driver: AnimationDriver,
     layout_dirty_list: Vec<NodeId>,
+    shape_dirty_list: Vec<NodeId>,
     style_subtree_dirty_list: Vec<NodeId>,
     style_dirty_list: Vec<NodeId>,
     state_change_dirty_list: Vec<NodeId>,
@@ -237,6 +247,11 @@ impl UiState {
         self.style_dirty_list.push(id);
     }
 
+    #[inline]
+    fn mark_shape_dirty(&mut self, id: NodeId) {
+        self.shape_dirty_list.push(id);
+    }
+
     fn drain_subtree_dirty_list(&mut self) -> Vec<NodeId> {
         let mut list = std::mem::take(&mut self.style_subtree_dirty_list);
         list.sort();
@@ -253,6 +268,13 @@ impl UiState {
 
     fn drain_state_change_dirty_list(&mut self) -> Vec<NodeId> {
         let mut list = std::mem::take(&mut self.state_change_dirty_list);
+        list.sort();
+        list.dedup();
+        list
+    }
+
+    fn drain_shape_dirty_list(&mut self) -> Vec<NodeId> {
+        let mut list = std::mem::take(&mut self.shape_dirty_list);
         list.sort();
         list.dedup();
         list
@@ -300,14 +322,15 @@ impl AnimationDriver {
 }
 
 pub struct UiArena {
-    nodes: SlotMap<NodeId, Node>,
+    pub(crate) nodes: SlotMap<NodeId, Node>,
     taffy: tf::TaffyTree<WidgetContext>,
     root: NodeId,
     damage: DamageRegion,
     damage_nodes: Vec<NodeId>,
     node_lifecycle_events: Vec<NodeLifecycleEvent>,
     pub event_state: EventState,
-    event_callbacks: CallbackStore,
+    focus_manager: FocusManager,
+    pub(crate) event_callbacks: CallbackStore,
     theme: Theme,
     pub update_visits: usize,
     pub layout_passes: usize,
@@ -348,6 +371,7 @@ impl UiArena {
                 root_computed_style,
                 root_widget,
                 CallbackHandleSet::default(),
+                Vec::new(),
                 taffy_root,
             )
         });
@@ -361,6 +385,7 @@ impl UiArena {
             damage_nodes: vec![],
             node_lifecycle_events: Vec::new(),
             event_state: EventState::default(),
+            focus_manager: FocusManager::default(),
             event_callbacks: CallbackStore::default(),
             theme,
             update_visits: 0,
@@ -392,7 +417,37 @@ impl UiArena {
     }
 
     pub fn focused_node(&self) -> Option<NodeId> {
-        self.event_state.focused()
+        self.focus_manager.focused()
+    }
+
+    pub fn focus_manager(&self) -> &FocusManager {
+        &self.focus_manager
+    }
+    pub(crate) fn focus_manager_mut(&mut self) -> &mut FocusManager {
+        &mut self.focus_manager
+    }
+
+    pub(crate) fn resolve_local_shortcut(
+        &self,
+        event: &xui_interface::RawKeyboard,
+    ) -> Option<(NodeId, xui_interface::ShortcutBinding)> {
+        let mut current = self
+            .focused_node()
+            .or_else(|| self.children(self.root).first().copied())
+            .or(Some(self.root));
+        while let Some(id) = current {
+            let node = self.nodes.get(id)?;
+            if let Some(binding) = node
+                .shortcut_bindings
+                .iter()
+                .rev()
+                .find(|binding| binding.shortcut.matches(event))
+            {
+                return Some((id, *binding));
+            }
+            current = node.parent;
+        }
+        None
     }
 
     pub fn hovered_node(&self) -> Option<NodeId> {
@@ -433,13 +488,15 @@ impl UiArena {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_event_handlers(&mut self, id: NodeId, event_handlers: EventHandlers) {
+    pub(crate) fn set_event_handlers(&mut self, id: NodeId, mut event_handlers: EventHandlers) {
         let Some(current) = self.nodes.get(id).map(|node| node.event_callbacks) else {
             return;
         };
+        let shortcut_bindings = std::mem::take(&mut event_handlers.shortcuts);
         let event_callbacks = self.event_callbacks.update_set(current, event_handlers);
         if let Some(node) = self.nodes.get_mut(id) {
             node.event_callbacks = event_callbacks;
+            node.shortcut_bindings = shortcut_bindings;
         }
     }
 
@@ -448,12 +505,13 @@ impl UiArena {
         key: Option<Key>,
         props_hash: u64,
         widget: WidgetI,
-        event_handlers: EventHandlers,
+        mut event_handlers: EventHandlers,
     ) -> NodeId {
         let taffy_node = self
             .taffy
             .new_leaf(tf::Style::default())
             .expect("failed to create taffy node");
+        let shortcut_bindings = std::mem::take(&mut event_handlers.shortcuts);
         let event_callbacks = self
             .event_callbacks
             .update_set(CallbackHandleSet::default(), event_handlers);
@@ -467,6 +525,7 @@ impl UiArena {
                 self.default_style.clone(),
                 widget,
                 event_callbacks,
+                shortcut_bindings,
                 taffy_node,
             )
         });
@@ -703,6 +762,7 @@ impl UiArena {
         }
 
         self.event_state.clear_node(id);
+        self.focus_manager.clear_node(id);
         self.event_callbacks
             .clear_set(self.nodes[id].event_callbacks);
         self.ui_state.animation_driver.remove_node(id);
@@ -744,6 +804,10 @@ impl UiArena {
 
         if flags.intersects(HostWorkFlags::SYNC_STATE_CHANGE) {
             self.ui_state.mark_state_change_dirty(id);
+        }
+
+        if flags.intersects(HostWorkFlags::SHAPE_CHANGE) {
+            self.ui_state.mark_shape_dirty(id);
         }
 
         let mut current = id;
@@ -836,6 +900,23 @@ impl UiArena {
     #[inline(always)]
     pub fn hit_test(&self, point: crate::core::Point) -> Option<NodeId> {
         self.hit_test_from(self.root, point, Point::zero())
+    }
+
+    /// Returns a node's layout rectangle in window logical coordinates after
+    /// applying scroll offsets from its ancestors.
+    pub fn visual_layout(&self, id: NodeId) -> Option<Rect> {
+        let node = self.nodes.get(id)?;
+        let mut rect = node.layout;
+        let mut cursor = node.parent;
+        while let Some(parent) = cursor {
+            let ancestor = self.nodes.get(parent)?;
+            if ancestor.scroll_style().direction.is_scrollable() {
+                rect.x -= ancestor.scroll_offset.x;
+                rect.y -= ancestor.scroll_offset.y;
+            }
+            cursor = ancestor.parent;
+        }
+        Some(rect)
     }
 
     fn hit_test_from(
@@ -955,12 +1036,13 @@ impl UiArena {
     }
 
     #[inline(always)]
-    pub fn dispatch_event(
+    pub fn dispatch_event<T: TextBackend>(
         &mut self,
+        text: &TextHost<T>,
         translator: &mut EventTranslator,
         event: RawEvent,
     ) -> EventResult {
-        event_system::dispatch_event(self, translator, event)
+        event_system::dispatch_event(self, text, translator, event)
     }
 
     pub fn tick_style_animations(&mut self, delta: Duration) -> bool {
@@ -1000,6 +1082,10 @@ impl UiArena {
     pub fn update_tree<T: TextBackend>(&mut self, size: Size<f32>, measurer: &mut TextHost<T>) {
         for node_id in self.ui_state.drain_state_change_dirty_list() {
             self.recompute_node_state(node_id);
+        }
+
+        for node_id in self.ui_state.drain_shape_dirty_list() {
+            self.recompute_node_text_shape(node_id, measurer);
         }
 
         // Fiber-style bailout: skip the whole branch when neither this node nor
@@ -1482,10 +1568,11 @@ impl UiArena {
         key: Option<Key>,
         props_hash: u64,
         widget: WidgetI,
-        event_handlers: EventHandlers,
+        mut event_handlers: EventHandlers,
     ) -> WidgetI {
         let mut flags = WidgetUpdateFlags::empty();
         let current_widget;
+        let shortcut_bindings = std::mem::take(&mut event_handlers.shortcuts);
         let event_callbacks = {
             let current = self
                 .nodes
@@ -1508,6 +1595,7 @@ impl UiArena {
 
             flags |= widget_flags;
             node.event_callbacks = event_callbacks;
+            node.shortcut_bindings = shortcut_bindings;
             current_widget = node.widget.clone();
         }
 
@@ -1637,6 +1725,37 @@ impl UiArena {
             .set_node_context(node.taffy_node, context)
             .expect("failed to update taffy context");
     }
+    fn recompute_node_text_shape<T: TextBackend>(
+        &mut self,
+        node_id: NodeId,
+        measurer: &mut TextHost<T>,
+    ) {
+        let node = self.nodes.get_mut(node_id).unwrap();
+        match node.node_type {
+            WidgetType::TextInput => {
+                let style = &node.effective_style;
+                let props = node
+                    .widget
+                    .with_widgets(|w| w.text_layout_props(style))
+                    .expect("C");
+
+                let constraints = TextLayoutConstraints::default();
+                let font_context = measurer.backend().epoch();
+
+                let input = TextLayoutInput::new(
+                    props.text,
+                    constraints,
+                    props.style.into(),
+                    props.paragraph,
+                    font_context,
+                );
+                measurer.simple_doc(node.id, input);
+            }
+            _ => {
+                return;
+            }
+        }
+    }
 }
 
 impl Default for UiArena {
@@ -1651,7 +1770,7 @@ mod tests {
     use crate::event_system::callbacks::EventHandlers;
     use crate::event_system::translator::EventTranslator;
     use crate::text::testing::ZeroTextBackend;
-    use crate::widgets::{WidgetI, container};
+    use crate::widgets::{WidgetI, container, text_input};
     use std::time::{Duration, Instant};
     use xui_animation::{Easing, Transition};
     use xui_interface::events::{
@@ -1796,12 +1915,180 @@ mod tests {
         arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
         let mut translator = EventTranslator::default();
-        arena.dispatch_event(&mut translator, pointer_move(Point::new(1.0, 1.0)));
+        arena.dispatch_event(
+            &measurer,
+            &mut translator,
+            pointer_move(Point::new(1.0, 1.0)),
+        );
         arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
         assert!(arena.nodes[id].state.contains(WidgetState::HOVERED));
         assert_background_near(&arena.nodes[id].target_style, Color::WHITE);
         assert_background_near(&arena.nodes[id].effective_style, Color::WHITE);
+    }
+
+    #[test]
+    fn nearest_local_shortcut_binding_wins() {
+        use xui_interface::{
+            CommandId, KeyState, PhysicalKey, RawKeyboard, Shortcut, ShortcutBinding,
+        };
+        let mut arena = UiArena::new();
+        let parent = create_host(&mut arena, WidgetI::new(container()));
+        let child = arena.create_node(None, 0, WidgetI::new(container()), EventHandlers::default());
+        arena.append_child(parent, child);
+        let shortcut = Shortcut::physical(PhysicalKey::KeyS);
+        arena.nodes[parent].shortcut_bindings.push(ShortcutBinding {
+            shortcut,
+            command: CommandId("parent"),
+        });
+        arena.nodes[child].shortcut_bindings.push(ShortcutBinding {
+            shortcut,
+            command: CommandId("child"),
+        });
+        arena
+            .focus_manager
+            .commit(Some(child), xui_interface::FocusReason::Programmatic);
+        let raw = RawKeyboard {
+            physical_key: PhysicalKey::KeyS,
+            named_key: None,
+            state: KeyState::Down,
+            text: None,
+            modifiers: Modifiers::default(),
+            timestamp: Instant::now(),
+            is_repeat: false,
+        };
+        let (target, binding) = arena.resolve_local_shortcut(&raw).unwrap();
+        assert_eq!(target, child);
+        assert_eq!(binding.command, CommandId("child"));
+        arena.nodes[child].shortcut_bindings.clear();
+        assert_eq!(
+            arena.resolve_local_shortcut(&raw).unwrap().1.command,
+            CommandId("parent")
+        );
+    }
+
+    #[test]
+    fn focus_manager_emits_ordered_transition_events() {
+        use crate::focus::FocusRequest;
+        use xui_interface::FocusReason;
+        use xui_interface::events::{EventSource as SemanticEventSource, SemanticEvent};
+        let mut arena = UiArena::new();
+        let first = create_host(&mut arena, WidgetI::new(text_input()));
+        let second = create_host(&mut arena, WidgetI::new(text_input()));
+        let mut translator = EventTranslator::default();
+        let now = Instant::now();
+
+        let initial = translator.apply_focus_request(
+            &mut arena,
+            FocusRequest {
+                target: Some(first),
+                reason: FocusReason::Programmatic,
+            },
+            now,
+            Modifiers::default(),
+        );
+        assert!(matches!(
+            &initial[..],
+            [SemanticEvent::FocusIn(_), SemanticEvent::Focus(_)]
+        ));
+        assert_eq!(arena.focused_node(), Some(first));
+
+        let events = translator.apply_focus_request(
+            &mut arena,
+            FocusRequest {
+                target: Some(second),
+                reason: FocusReason::Keyboard,
+            },
+            now,
+            Modifiers::default(),
+        );
+        assert!(matches!(
+            &events[..],
+            [
+                SemanticEvent::Blur(_),
+                SemanticEvent::FocusOut(_),
+                SemanticEvent::FocusIn(_),
+                SemanticEvent::Focus(_)
+            ]
+        ));
+        let SemanticEvent::Blur(blur) = &events[0] else {
+            unreachable!()
+        };
+        assert_eq!(
+            (blur.old_focused, blur.new_focused, blur.related_target),
+            (Some(first), Some(second), Some(second))
+        );
+        assert_eq!(blur.meta.source, SemanticEventSource::Keyboard);
+        assert_eq!(arena.focus_manager().focused(), Some(second));
+    }
+
+    #[test]
+    fn invalid_focus_target_is_rejected_and_window_blur_clears_focus() {
+        use crate::focus::FocusRequest;
+        use xui_interface::{FocusReason, RawWindowEvent};
+        let mut arena = UiArena::new();
+        let focusable = create_host(&mut arena, WidgetI::new(text_input()));
+        let invalid = create_host(&mut arena, WidgetI::new(container()));
+        let mut translator = EventTranslator::default();
+        let now = Instant::now();
+        assert!(
+            translator
+                .apply_focus_request(
+                    &mut arena,
+                    FocusRequest {
+                        target: Some(invalid),
+                        reason: FocusReason::Programmatic
+                    },
+                    now,
+                    Modifiers::default()
+                )
+                .is_empty()
+        );
+        translator.apply_focus_request(
+            &mut arena,
+            FocusRequest {
+                target: Some(focusable),
+                reason: FocusReason::Programmatic,
+            },
+            now,
+            Modifiers::default(),
+        );
+        translator.translate_raw_event(
+            &RawEvent::WindowBlur(RawWindowEvent {
+                timestamp: now,
+                modifiers: Modifiers::default(),
+            }),
+            &mut arena,
+        );
+        assert_eq!(arena.focused_node(), None);
+    }
+
+    #[test]
+    fn tab_navigation_and_node_removal_use_focus_manager() {
+        use xui_interface::{KeyState, NamedKey, PhysicalKey, RawKeyboard};
+        let mut arena = UiArena::new();
+        let first = create_host(&mut arena, WidgetI::new(text_input()));
+        let second = create_host(&mut arena, WidgetI::new(text_input()));
+        let measurer = TextHost::new(ZeroTextBackend);
+        let mut translator = EventTranslator::default();
+        let tab = || {
+            RawEvent::Keyboard(RawKeyboard {
+                physical_key: PhysicalKey::Tab,
+                named_key: Some(NamedKey::Tab),
+                state: KeyState::Down,
+                text: None,
+                modifiers: Modifiers::default(),
+                timestamp: Instant::now(),
+                is_repeat: false,
+            })
+        };
+
+        arena.dispatch_event(&measurer, &mut translator, tab());
+        assert_eq!(arena.focused_node(), Some(first));
+        arena.dispatch_event(&measurer, &mut translator, tab());
+        assert_eq!(arena.focus_manager().focused(), Some(second));
+        arena.remove_subtree(second);
+        assert_eq!(arena.focused_node(), None);
     }
 
     #[test]
@@ -1823,9 +2110,17 @@ mod tests {
         arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
         let mut translator = EventTranslator::default();
-        arena.dispatch_event(&mut translator, pointer_move(Point::new(1.0, 1.0)));
+        arena.dispatch_event(
+            &measurer,
+            &mut translator,
+            pointer_move(Point::new(1.0, 1.0)),
+        );
         arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-        arena.dispatch_event(&mut translator, pointer_move(Point::new(80.0, 80.0)));
+        arena.dispatch_event(
+            &measurer,
+            &mut translator,
+            pointer_move(Point::new(80.0, 80.0)),
+        );
         arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
         assert!(!arena.nodes[id].state.contains(WidgetState::HOVERED));
@@ -1936,18 +2231,23 @@ fn measure_layout_context<T: TextBackend>(
                 .widget
                 .with_widgets(|w| w.text_layout_props(&node.effective_style))
             {
-                let constraints = match known_dimensions.width {
-                    Some(width) => TextLayoutConstraints::max_width(width),
-                    None => match available_space.width {
-                        tf::AvailableSpace::MaxContent => TextLayoutConstraints::UNBOUNDED,
-                        tf::AvailableSpace::MinContent => TextLayoutConstraints::MIN_SIZE,
-                        tf::AvailableSpace::Definite(width) => {
-                            TextLayoutConstraints::max_width(width)
-                        }
-                    },
+                let constraints = if node.node_type == WidgetType::TextInput {
+                    TextLayoutConstraints::UNBOUNDED
+                } else {
+                    match known_dimensions.width {
+                        Some(width) => TextLayoutConstraints::max_width(width),
+                        None => match available_space.width {
+                            tf::AvailableSpace::MaxContent => TextLayoutConstraints::UNBOUNDED,
+                            tf::AvailableSpace::MinContent => TextLayoutConstraints::MIN_SIZE,
+                            tf::AvailableSpace::Definite(width) => {
+                                TextLayoutConstraints::max_width(width)
+                            }
+                        },
+                    }
                 };
 
                 let font_context = measurer.backend().epoch();
+                let t = &props.text.as_str();
                 let input = TextLayoutInput::new(
                     props.text,
                     constraints,

@@ -7,9 +7,9 @@ pub use crate::core::{Color, EdgeInsets, Point, Rect, Size};
 pub use crate::element::{ComponentDesc, ElementDesc, WidgetDesc};
 pub use xui_animation::{Easing, Transition};
 pub use xui_interface::events::{
-    ClickEvent, ContextMenuEvent, DragEvent, Event, EventContext, EventPhase, EventRequest,
-    EventRequests, EventResult, FocusEvent, HoverChangeEvent, HoverEvent, Key, PointerButton,
-    PressEvent, ScrollEvent, SemanticEvent,
+    ClickEvent, ContextMenuEvent, DragEvent, Event, EventPhase, EventRequest, EventRequests,
+    EventResult, FocusEvent, HoverChangeEvent, HoverEvent, PointerButton, PressEvent, ScrollEvent,
+    SemanticEvent,
 };
 
 pub use crate::event_system::EventState;
@@ -18,7 +18,9 @@ pub use crate::event_system::callbacks::{
     HoverChangeEventHandler, HoverEventHandler, PressEventHandler, ScrollEventHandler,
 };
 pub use crate::fiber::{ComponentCall, ComponentRender, ComponentType, ErasedPropsRef};
+pub use crate::focus::{FocusManager, FocusRequest, FocusTransition};
 pub use crate::runtime::{ControlFlow, FrameReport, GuiRuntime, QueueEventSource, RuntimeEvent};
+pub use crate::shortcut::{ShortcutManager, ShortcutRegistrationId};
 pub use crate::state::{
     AsyncStateSetter, AsyncValue, Callback, HookContext, Resource, ResourceContext, TaskContext,
 };
@@ -34,15 +36,16 @@ pub use crate::style::{
 };
 pub use crate::tree::UiArena;
 pub use crate::widgets::{
-    ContainerWidget, ImageWidget, TextController, TextInputChange, TextInputWidget, TextWidget,
-    Widget, WidgetI, WithChildren, component, container, image, text, text_input,
+    ContainerWidget, ImageWidget, TextCommand, TextController, TextInputChange, TextKeymap,
+    TextWidget, WidgetI, WithChildren, component, container, image, text,
 };
 pub use xui_interface::{
-    Alignment, ColorSpace, FontFamily, FontStyle, FontWeight, ImageData, ImageDataId, ImageFit,
-    ImageFormat, ImageKey, ImageRepeat, ImageRotation, ImageStyle, ImageTransform, ImageVariant,
-    LineHeight, NodeId, OverflowWrap, ParagraphStyle, Sampling, Sizing, StyleDiffFlags, TextAlign,
-    TextBoxStyle, TextContent, TextDecoration, TextOverflow, TextProps, TextStyle,
-    TextVerticalAlign, WhiteSpace, WidgetUpdateFlags,
+    Alignment, ColorSpace, CommandEvent, CommandId, FontFamily, FontStyle, FontWeight, ImageData,
+    ImageDataId, ImageFit, ImageFormat, ImageKey, ImageRepeat, ImageRotation, ImageStyle,
+    ImageTransform, ImageVariant, LineHeight, NamedKey, NodeId, OverflowWrap, ParagraphStyle,
+    PhysicalKey, Sampling, Shortcut, ShortcutBinding, ShortcutKey, ShortcutModifiers, Sizing,
+    StyleDiffFlags, TextAlign, TextBoxStyle, TextContent, TextDecoration, TextOverflow, TextProps,
+    TextStyle, TextVerticalAlign, WhiteSpace, WidgetUpdateFlags,
 };
 pub use xui_macros::{component, component_fn, defaults, style, xui};
 pub use xui_text::engine::Engine;

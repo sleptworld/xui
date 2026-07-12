@@ -232,6 +232,9 @@ impl ImageRender {
         pass: &mut wgpu::RenderPass<'_>,
         tool_bind_group: &wgpu::BindGroup,
         records: &[ImageDrawRecord],
+        scissors: &[Rect],
+        scale_factor: f32,
+        target_size: (u32, u32),
     ) {
         if records.is_empty() {
             return;
@@ -249,6 +252,12 @@ impl ImageRender {
                 Sampling::Linear | Sampling::Cubic => &texture.linear_bind_group,
             };
             pass.set_bind_group(1, bind_group, &[]);
+            let Some((x, y, width, height)) =
+                crate::wgpu::physical_scissor(scissors[index], scale_factor, target_size)
+            else {
+                continue;
+            };
+            pass.set_scissor_rect(x, y, width, height);
             pass.draw(0..6, index as u32..index as u32 + 1);
         }
     }
