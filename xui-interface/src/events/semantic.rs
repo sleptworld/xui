@@ -249,7 +249,6 @@ pub struct ClickEvent {
     pub activation: ActivationKind,
     pub pointer: Option<PointerSnapshot>,
     pub button: Option<PointerButton>,
-    /// 单击为 1，双击为 2，三击可为 3。
     pub click_count: u8,
     pub press_target: Option<NodeId>,
     pub release_target: Option<NodeId>,

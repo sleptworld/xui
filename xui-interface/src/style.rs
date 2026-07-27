@@ -145,7 +145,7 @@ impl ColorStyle {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Stroke {
-    pub edge: EdgeInsets,
+    pub width: f32,
     pub color: ComputedColorStyle,
     pub line_style: StrokeLineStyle,
 }
@@ -156,6 +156,12 @@ pub struct Shadow {
     pub offset: Point,
     pub blur: f32,
     pub spread: f32,
+}
+
+impl Shadow {
+    pub fn visual_expansion(&self) -> f32 {
+        self.offset.x.abs().max(self.offset.y.abs()) + self.blur * 3.0 + self.spread.max(0.0)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -438,6 +444,13 @@ pub enum JustifyStyle {
     SpaceEvenly,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum PositionStyle {
+    #[default]
+    Relative,
+    Absolute,
+}
+
 /// Patches
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TextStylePatch {
@@ -465,6 +478,8 @@ pub struct LayoutStylePatch {
     pub padding: StyleValue<EdgeInsets>,
     pub align: StyleValue<AlignStyle>,
     pub justify: StyleValue<JustifyStyle>,
+    pub position: StyleValue<PositionStyle>,
+    pub inset: StyleValue<EdgeInsets>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -629,6 +644,22 @@ impl Style {
 
     pub fn justify(self, justify: JustifyStyle) -> Self {
         self.map_base(|base| base.justify(justify))
+    }
+
+    pub fn position_type(self, position: PositionStyle) -> Self {
+        self.map_base(|base| base.position_type(position))
+    }
+
+    pub fn absolute(self) -> Self {
+        self.position_type(PositionStyle::Absolute)
+    }
+
+    pub fn relative(self) -> Self {
+        self.position_type(PositionStyle::Relative)
+    }
+
+    pub fn inset(self, inset: EdgeInsets) -> Self {
+        self.map_base(|base| base.inset(inset))
     }
 
     pub fn background(self, color: impl Into<ColorStyle>) -> Self {
@@ -972,6 +1003,24 @@ impl StylePatch {
         self
     }
 
+    pub fn position_type(mut self, position: PositionStyle) -> Self {
+        self.layout.position = StyleValue::Value(position);
+        self
+    }
+
+    pub fn absolute(self) -> Self {
+        self.position_type(PositionStyle::Absolute)
+    }
+
+    pub fn relative(self) -> Self {
+        self.position_type(PositionStyle::Relative)
+    }
+
+    pub fn inset(mut self, inset: EdgeInsets) -> Self {
+        self.layout.inset = StyleValue::Value(inset);
+        self
+    }
+
     pub fn background(mut self, color: impl Into<ColorStyle>) -> Self {
         self.paint.background = StyleValue::Value(color.into());
         self
@@ -1211,6 +1260,10 @@ pub struct ComputedLayoutStyle {
     pub padding: EdgeInsets,
     pub align: AlignStyle,
     pub justify: JustifyStyle,
+    pub position: PositionStyle,
+    /// Explicit positioning offsets. `None` maps to Taffy's `auto` inset on
+    /// every edge, which preserves the intrinsic size of absolute children.
+    pub inset: Option<EdgeInsets>,
 }
 
 impl ComputedLayoutStyle {
@@ -1242,6 +1295,12 @@ pub struct ComputedPaintStyle {
 pub struct ComputedScrollStyle {
     pub direction: ScrollDirectionStyle,
     pub scrollbar: ComputedScrollbarStyle,
+}
+
+impl ComputedScrollStyle {
+    pub fn is_scrollable(&self) -> bool {
+        self.direction != ScrollDirectionStyle::None
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1348,6 +1407,8 @@ impl ComputedStyle {
                 padding: EdgeInsets::zero(),
                 align: AlignStyle::Start,
                 justify: JustifyStyle::Start,
+                position: PositionStyle::Relative,
+                inset: None,
             },
             paint: ComputedPaintStyle {
                 background: ComputedColorStyle::Solid(Color::TRANSPARENT),
@@ -1536,6 +1597,8 @@ fn merge_layout(target: &mut LayoutStylePatch, other: &LayoutStylePatch) {
     merge_value(&mut target.padding, &other.padding);
     merge_value(&mut target.align, &other.align);
     merge_value(&mut target.justify, &other.justify);
+    merge_value(&mut target.position, &other.position);
+    merge_value(&mut target.inset, &other.inset);
 }
 
 fn merge_paint(target: &mut PaintStylePatch, other: &PaintStylePatch) {
@@ -1646,6 +1709,8 @@ fn apply_layout(target: &mut ComputedLayoutStyle, patch: &LayoutStylePatch, them
     target.padding = resolve_copy_no_inherit(patch.padding, target.padding, initial.padding);
     target.align = resolve_copy_no_inherit(patch.align, target.align, initial.align);
     target.justify = resolve_copy_no_inherit(patch.justify, target.justify, initial.justify);
+    target.position = resolve_copy_no_inherit(patch.position, target.position, initial.position);
+    target.inset = resolve_optional_copy_no_inherit(patch.inset, target.inset, initial.inset);
 }
 
 fn apply_paint(target: &mut ComputedPaintStyle, patch: &PaintStylePatch, theme: &Theme) {
@@ -2036,8 +2101,10 @@ impl Hash for LayoutStylePatch {
         self.max_width.hash(state);
         self.align.hash(state);
         self.justify.hash(state);
+        self.position.hash(state);
         hash_style_value_edge_insets(&self.margin, state);
         hash_style_value_edge_insets(&self.padding, state);
+        hash_style_value_edge_insets(&self.inset, state);
     }
 }
 

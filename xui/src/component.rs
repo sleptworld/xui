@@ -1022,7 +1022,6 @@ impl ComponentRuntime {
             computed_style: arena_node.target_style.clone(),
             layout: arena_node.layout,
             previous_layout: arena_node.previous_layout,
-            paint_cache: arena_node.paint_cache.clone(),
             props_hash,
         })
     }

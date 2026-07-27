@@ -3,9 +3,11 @@ use crate::component::ComponentRuntime;
 use crate::core::Size;
 use crate::event_system::translator::EventTranslator;
 use crate::lanes::{event_lane, with_update_lane};
+use crate::render::RenderBackend;
 use crate::state::{AsyncDispatcher, AsyncMessage, HookContext, Scheduler};
 use crate::style::Theme;
 use crate::text::TextHost;
+use crate::tree::RenderFrameError;
 use crate::tree::UiArena;
 use std::future::Future;
 use std::sync::mpsc;
@@ -14,11 +16,27 @@ use tokio::runtime::{
     Builder as TokioRuntimeBuilder, Handle as TokioHandle, Runtime as TokioRuntime,
 };
 use tokio::task::JoinHandle;
+use xui_interface::TextBackend;
 use xui_interface::events::{EventResult, RawEvent};
-use xui_interface::render::Damage;
-use xui_interface::{RenderBackend, TextBackend};
 
 pub type ComponentFn = for<'a, 'b> fn(&'a mut HookContext<'b>) -> ElementDesc;
+
+#[derive(Debug)]
+pub enum AppRenderError<E> {
+    Frame(RenderFrameError),
+    Backend(E),
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for AppRenderError<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Frame(error) => write!(formatter, "render frame compilation failed: {error}"),
+            Self::Backend(error) => write!(formatter, "render backend failed: {error}"),
+        }
+    }
+}
+
+impl<E> std::error::Error for AppRenderError<E> where E: std::error::Error + 'static {}
 
 thread_local! {
     pub(crate) static TOKIO_RUNTIME: TokioRuntime = App::create_tokio_runtime();
@@ -151,7 +169,6 @@ impl App {
         if self.size != size {
             self.size = size;
             self.arena.mark_subtree_layout_dirty(self.arena.root());
-            self.arena.add_damage(Damage::full(self.size));
         }
     }
 
@@ -191,7 +208,7 @@ impl App {
         &mut self,
         backend: &mut B,
         text: &mut TextHost<T>,
-    ) -> Result<(), B::Error> {
+    ) -> Result<(), AppRenderError<B::Error>> {
         self.drain_async_messages();
 
         if self.rebuild_slice_if_needed() {
@@ -200,16 +217,23 @@ impl App {
 
         self.arena.update_tree(self.size, text);
 
-        let frame = self.arena.collect_paint_commands();
-        if frame.damage.is_empty() {
+        let Some(frame) = self
+            .arena
+            .build_render_frame()
+            .map_err(AppRenderError::Frame)?
+        else {
             return Ok(());
-        }
+        };
 
-        backend.begin_frame(self.size)?;
-        backend.paint(&frame.commands, &frame.damage, text)?;
-        backend.end_frame()?;
+        backend
+            .begin_frame(self.size)
+            .map_err(AppRenderError::Backend)?;
+        backend
+            .submit(&frame.built, text)
+            .map_err(AppRenderError::Backend)?;
+        backend.end_frame().map_err(AppRenderError::Backend)?;
         if backend.did_present() {
-            self.arena.finish_paint();
+            self.arena.finish_render_frame(&frame);
         }
         Ok(())
     }
@@ -221,7 +245,6 @@ impl App {
     #[inline]
     pub fn mark_needs_rebuild(&mut self) {
         self.components.mark_root_dirty();
-        self.arena.add_damage(Damage::full(self.size));
     }
 
     #[inline]
@@ -251,10 +274,40 @@ mod tests {
     use super::*;
     use crate::lanes::{DEFAULT_LANE, NO_LANES};
     use crate::prelude::container;
+    use crate::render::{BuiltFrame, MockRenderBackend, RenderBackend};
     use crate::state::State;
     use crate::text::{TextHost, testing::ZeroTextBackend};
+    use core::convert::Infallible;
     use std::cell::RefCell;
-    use xui_interface::{Color, ComputedColorStyle, MockRenderBackend, Style};
+    use xui_interface::{Color, ComputedColorStyle, Style};
+
+    #[derive(Default)]
+    struct NoPresentBackend {
+        inner: MockRenderBackend,
+    }
+
+    impl<T> RenderBackend<T> for NoPresentBackend {
+        type Error = Infallible;
+
+        fn begin_frame(&mut self, size: Size<f32>) -> Result<(), Self::Error> {
+            self.inner.frame_size = Some(size);
+            Ok(())
+        }
+
+        fn submit(&mut self, frame: &BuiltFrame, _text: &mut T) -> Result<(), Self::Error> {
+            self.inner.last_frame = Some(frame.clone());
+            Ok(())
+        }
+
+        fn end_frame(&mut self) -> Result<(), Self::Error> {
+            self.inner.frames += 1;
+            Ok(())
+        }
+
+        fn did_present(&self) -> bool {
+            false
+        }
+    }
 
     thread_local! {
         static STATE_SLOT: RefCell<Option<State<bool>>> = const { RefCell::new(None) };
@@ -287,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn render_submits_damage_and_commands_to_mock_backend() {
+    fn render_submits_built_frame_to_mock_backend() {
         let mut app = App::new(static_root);
         let mut backend = MockRenderBackend::default();
         let mut measurer = TextHost::new(ZeroTextBackend);
@@ -296,8 +349,34 @@ mod tests {
         app.render(&mut backend, &mut measurer).unwrap();
 
         assert_eq!(backend.frames, 1);
-        assert!(!backend.last_damage.is_empty());
-        assert!(!backend.last_commands.is_empty());
+        assert!(
+            backend
+                .last_frame
+                .as_ref()
+                .is_some_and(|frame| !frame.layers.is_empty())
+        );
+        assert!(!app.arena().is_dirty());
+    }
+
+    #[test]
+    fn frame_state_is_retained_until_backend_presents() {
+        let mut app = App::new(static_root);
+        let mut backend = NoPresentBackend::default();
+        let mut measurer = TextHost::new(ZeroTextBackend);
+
+        app.resize(Size::new(100.0, 100.0));
+        app.render(&mut backend, &mut measurer).unwrap();
+
+        assert_eq!(backend.inner.frames, 1);
+        assert!(backend.inner.last_frame.is_some());
+        assert!(app.arena().is_dirty());
+
+        app.render(&mut backend, &mut measurer).unwrap();
+        assert_eq!(backend.inner.frames, 2);
+        assert!(app.arena().is_dirty());
+
+        let mut presenting_backend = MockRenderBackend::default();
+        app.render(&mut presenting_backend, &mut measurer).unwrap();
         assert!(!app.arena().is_dirty());
     }
 

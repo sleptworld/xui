@@ -1,10 +1,14 @@
 use crate::core::Size;
+use crate::render::RenderBackend;
 use crate::shortcut::ShortcutManager;
-use crate::{app::App, text::TextHost};
+use crate::{
+    app::{App, AppRenderError},
+    text::TextHost,
+};
 use std::collections::VecDeque;
 use std::time::Instant;
 use xui_interface::{
-    EventSource, PlatformOutput, RenderBackend, TextBackend as TextBackendI,
+    EventSource, PlatformOutput, TextBackend as TextBackendI,
     events::{EventResult, RawEvent},
 };
 
@@ -19,14 +23,15 @@ pub enum ControlFlow {
 mod tests {
     use super::*;
     use crate::ElementDesc;
+    use crate::render::MockRenderBackend;
     use crate::state::HookContext;
     use crate::text::testing::ZeroTextBackend;
     use crate::widgets::{container, text_input};
     use std::cell::Cell;
     use std::time::Instant;
     use xui_interface::{
-        CommandId, FocusReason, KeyState, MockRenderBackend, Modifiers, PhysicalKey, RawKeyboard,
-        RawWindowEvent, Shortcut, Size, Style,
+        CommandId, FocusReason, KeyState, Modifiers, PhysicalKey, RawKeyboard, RawWindowEvent,
+        Shortcut, Size, Style,
     };
 
     thread_local! { static COMMAND_RECEIVED: Cell<bool> = const { Cell::new(false) }; }
@@ -257,7 +262,7 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
         }
     }
 
-    pub fn frame(&mut self) -> Result<FrameReport, B::Error> {
+    pub fn frame(&mut self) -> Result<FrameReport, AppRenderError<B::Error>> {
         self.app.drain_async_messages();
         self.tick_style_animations();
         let should_render = self.app.is_dirty();
@@ -297,7 +302,7 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
     pub fn tick(
         &mut self,
         event_source: &mut impl EventSource<Event = RuntimeEvent>,
-    ) -> Result<FrameReport, B::Error> {
+    ) -> Result<FrameReport, AppRenderError<B::Error>> {
         let mut event_results = Vec::new();
         while let Some(event) = event_source.poll_event() {
             event_results.extend(self.handle_event(event));
@@ -317,7 +322,7 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
     pub fn run_until_idle(
         &mut self,
         event_source: &mut impl EventSource<Event = RuntimeEvent>,
-    ) -> Result<FrameReport, B::Error> {
+    ) -> Result<FrameReport, AppRenderError<B::Error>> {
         let mut merged = FrameReport {
             rendered: false,
             event_results: Vec::new(),

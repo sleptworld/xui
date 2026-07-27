@@ -4,6 +4,7 @@ pub mod assets;
 pub mod component;
 pub mod core;
 pub mod element;
+pub mod render;
 pub mod transition;
 // pub mod event;
 pub mod event_system;

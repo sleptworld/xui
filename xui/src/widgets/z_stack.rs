@@ -1,0 +1,139 @@
+use crate::element::ElementDesc;
+use crate::event_system::EventContext;
+use crate::event_system::callbacks::EventHandlers;
+use crate::render::RenderTreeWriter;
+use xui_animation::Transition;
+use xui_interface::{
+    Alignment, ComputedStyle, EventRef, EventResult, Key, Rect, Style, TextContent, TextProps,
+    WidgetType, WidgetUpdateFlags,
+};
+
+use super::container::render_box;
+use super::{props_hash, widget_element_desc};
+
+/// A SwiftUI-style overlay container. Children share one Taffy grid cell and
+/// are painted in declaration order, so later children appear on top.
+pub struct ZStackWidget {
+    pub key: Option<Key>,
+    pub style: Style,
+    pub alignment: Alignment,
+    pub transition: Option<Transition>,
+    pub event_handlers: EventHandlers,
+}
+
+impl std::fmt::Debug for ZStackWidget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ZStackWidget")
+            .field("key", &self.key)
+            .field("alignment", &self.alignment)
+            .field("transition", &self.transition)
+            .finish()
+    }
+}
+
+impl ZStackWidget {
+    pub fn new() -> Self {
+        Self {
+            key: None,
+            style: Style::default(),
+            alignment: Alignment::CENTER,
+            transition: None,
+            event_handlers: EventHandlers::default(),
+        }
+    }
+
+    pub fn style(mut self, style: Style) -> Self {
+        self.style = style;
+        self
+    }
+
+    pub fn alignment(mut self, alignment: Alignment) -> Self {
+        self.alignment = alignment;
+        self
+    }
+
+    pub fn transition(mut self, transition: Transition) -> Self {
+        self.transition = Some(transition);
+        self
+    }
+
+    pub fn key(mut self, key: impl Into<Key>) -> Self {
+        self.key = Some(key.into());
+        self
+    }
+
+    pub fn into_element_desc(self, children: Vec<ElementDesc>) -> ElementDesc {
+        widget_element_desc(self, children)
+    }
+
+    event_handler_methods!();
+
+    pub(super) fn node_type(&self) -> WidgetType {
+        WidgetType::ZStack
+    }
+
+    pub(super) fn get_key(&self) -> Option<&Key> {
+        self.key.as_ref()
+    }
+
+    pub(super) fn props_hash(&self) -> u64 {
+        props_hash(&(&self.style, self.alignment, self.transition))
+    }
+
+    pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
+        let mut flags = WidgetUpdateFlags::empty();
+        if self.style != next.style {
+            self.style = next.style.clone();
+            flags |= WidgetUpdateFlags::STYLE_TARGET;
+        }
+        if self.alignment != next.alignment {
+            self.alignment = next.alignment;
+            flags |= WidgetUpdateFlags::LAYOUT_INPUT;
+        }
+        if self.transition != next.transition {
+            self.transition = next.transition;
+            flags |= WidgetUpdateFlags::STYLE_TARGET;
+        }
+        flags
+    }
+
+    pub(super) fn default_style(&self) -> Style {
+        Style::new()
+    }
+
+    pub(super) fn current_style(&self) -> &Style {
+        &self.style
+    }
+
+    pub(super) fn render(
+        &self,
+        _node_id: xui_interface::NodeId,
+        rect: Rect,
+        style: &ComputedStyle,
+        writer: &mut RenderTreeWriter<'_>,
+    ) {
+        render_box(rect, style, writer);
+    }
+
+    pub(super) fn handle_event(
+        &mut self,
+        _event: EventRef<'_>,
+        _cx: &mut EventContext<'_>,
+    ) -> EventResult {
+        EventResult::Ignored
+    }
+
+    pub(super) fn text_content(&self) -> Option<TextContent> {
+        None
+    }
+
+    pub(super) fn text_layout_props(&self, _style: &ComputedStyle) -> Option<TextProps> {
+        None
+    }
+}
+
+impl Default for ZStackWidget {
+    fn default() -> Self {
+        Self::new()
+    }
+}

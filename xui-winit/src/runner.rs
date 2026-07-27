@@ -17,14 +17,16 @@ use winit::window::{Window, WindowAttributes, WindowId};
 use xui::App;
 use xui::app::ComponentFn;
 use xui::text::TextHost;
-use xui::{runtime::ControlFlow as XuiControlFlow, runtime::GuiRuntime, runtime::RuntimeEvent};
+use xui::{
+    app::AppRenderError, render::RenderBackend, runtime::ControlFlow as XuiControlFlow,
+    runtime::GuiRuntime, runtime::RuntimeEvent,
+};
 use xui_interface::events::{
     KeyState, KeyText, RawEvent, RawIme, RawKeyboard, TextPayload, XuiPointerId,
 };
 use xui_interface::{
     Event, Modifiers, PlatformOutput, Point, PointerButtons, PointerKind, RawPointerButton,
-    RawPointerMove, RawWheel, RawWindowEvent, RenderBackend, Size, TextBackend, TextOffset,
-    TextRange,
+    RawPointerMove, RawWheel, RawWindowEvent, Size, TextBackend, TextOffset, TextRange,
 };
 use xui_text_engine::CosmicEngine;
 
@@ -108,7 +110,7 @@ where
     modifiers: Modifiers,
     pointer_buttons: PointerButtons,
     window_error: Option<OsError>,
-    render_error: Option<B::Error>,
+    render_error: Option<AppRenderError<B::Error>>,
     device_registry: WinitDeviceRegistry,
     event_proxy: Option<EventLoopProxy<WinitUserEvent>>,
     last_platform_output: PlatformOutput,
@@ -152,7 +154,7 @@ where
         self.window.as_deref()
     }
 
-    pub fn run(mut self) -> Result<(), WinitRunError<B::Error>> {
+    pub fn run(mut self) -> Result<(), WinitRunError<AppRenderError<B::Error>>> {
         let event_loop = EventLoop::<WinitUserEvent>::with_user_event().build()?;
         self.event_proxy = Some(event_loop.create_proxy());
         event_loop.run_app(&mut self)?;

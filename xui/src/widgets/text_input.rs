@@ -1,9 +1,9 @@
 use xui_interface::events::{PointerButton, RawEvent, SemanticEvent, XuiPointerId};
 use xui_interface::{
-    Color, ComputedStyle, EventRef, EventResult, Key, PaintCommand, Point, RawIme, Rect, Style,
+    Affine, Color, ComputedStyle, EventRef, EventResult, Key, Point, RawIme, Rect, Style,
     TextCaret, TextContent, TextInputPurpose, TextInputSession, TextOffset, TextOffsetUnit,
-    TextPaintCommand, TextPaintProps, TextPaintStyle, TextProps, TextSelectionPaint, Translation,
-    WhiteSpace, WidgetType, WidgetUpdateFlags,
+    TextPaintProps, TextPaintStyle, TextProps, TextSelectionPaint, WhiteSpace, WidgetType,
+    WidgetUpdateFlags,
 };
 
 use crate::element::ElementDesc;
@@ -13,6 +13,7 @@ use crate::widgets::text_input::controller::ImeSession;
 
 use super::text::apply_text_style;
 use super::{props_hash, widget_element_desc};
+use crate::render::{ClipShape, Primitive, RenderTreeWriter, TextPrimitive};
 pub mod controller;
 pub mod keymap;
 pub mod value;
@@ -222,8 +223,8 @@ impl TextInputWidget {
 
     fn event_point_to_text_point(&self, cx: &EventContext<'_>, position: Point) -> Point {
         Point::new(
-            position.x - cx.node_ref.layout.x + self.scroll_x,
-            position.y - cx.node_ref.layout.y,
+            position.x - cx.node_ref.world_origin.x + self.scroll_x,
+            position.y - cx.node_ref.world_origin.y,
         )
     }
 
@@ -480,11 +481,12 @@ impl TextInputWidget {
         &self.style
     }
 
-    pub(super) fn paint(
+    pub(super) fn render(
         &self,
+        node_id: xui_interface::NodeId,
         rect: Rect,
         style: &ComputedStyle,
-        commands: &mut Vec<PaintCommand>,
+        writer: &mut RenderTreeWriter<'_>,
     ) {
         let mut paint = TextPaintProps::new(TextPaintStyle::from_computed(&style.text));
         paint.caret = self.focused.then_some(TextCaret {
@@ -502,17 +504,19 @@ impl TextInputWidget {
                 color: Color::rgba(0.18, 0.42, 0.88, 0.28),
             });
         }
-        commands.push(PaintCommand::PushClip(rect));
-        commands.push(PaintCommand::PushTransform {
-            translate: Translation::new(-self.scroll_x, 0.0),
-        });
-        commands.push(PaintCommand::Text(TextPaintCommand {
-            node_id: Default::default(),
-            rect: Rect::new(rect.x, rect.y, rect.width + self.scroll_x, rect.height),
-            paint,
-        }));
-        commands.push(PaintCommand::PopTransform);
-        commands.push(PaintCommand::PopClip);
+        writer
+            .clip(ClipShape::Rect(rect), |writer| {
+                writer.transform(Affine::translate(-self.scroll_x, 0.0), |writer| {
+                    writer.primitive(Primitive::Text(TextPrimitive {
+                        node_id,
+                        bounds: Rect::new(rect.x, rect.y, rect.width + self.scroll_x, rect.height),
+                        paint,
+                    }))?;
+                    Ok(())
+                })?;
+                Ok(())
+            })
+            .expect("widget render tree must remain valid");
     }
 
     pub(super) fn handle_event(

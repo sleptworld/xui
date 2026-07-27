@@ -29,6 +29,19 @@ impl From<f32> for ComponentLength {
     }
 }
 
+#[component]
+#[defaults(
+    children = Vec::new(),
+    style = Style::new(),
+    alignment = Alignment::CENTER,
+)]
+pub fn z_stack(children: &Vec<ElementDesc>, style: &Style, alignment: &Alignment) {
+    ZStackWidget::new()
+        .style(style.clone())
+        .alignment(*alignment)
+        .into_element_desc(children.to_vec())
+}
+
 impl From<u32> for ComponentLength {
     fn from(value: u32) -> Self {
         Self::Value((value as f32).into())

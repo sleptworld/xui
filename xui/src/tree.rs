@@ -4,12 +4,10 @@ use std::time::Duration;
 use taffy::prelude as tf;
 use xui_animation::{Animatable, Timeline, Transition};
 use xui_interface::events::RawEvent;
-use xui_interface::render::Damage;
 use xui_interface::{
-    ComputedColorStyle, ComputedScrollStyle, ComputedScrollbarStyle, ComputedStyle, DamageRegion,
-    EventResult, NodeId, NodeLifecycleEvent, PaintCommand, ScrollbarVisibilityStyle,
-    StyleDiffFlags, TextBackend, TextLayoutConstraints, TextLayoutInput, Theme, Translation,
-    WidgetState, WidgetUpdateFlags,
+    Affine, ComputedColorStyle, ComputedScrollStyle, ComputedScrollbarStyle, ComputedStyle,
+    EventResult, NodeId, NodeLifecycleEvent, ScrollbarVisibilityStyle, StyleDiffFlags, TextBackend,
+    TextLayoutConstraints, TextLayoutInput, Theme, WidgetState, WidgetUpdateFlags,
 };
 
 use crate::animation::AnimableStyle;
@@ -19,6 +17,11 @@ use crate::event_system::{self, EventState, translator::EventTranslator};
 use crate::fiber::Key;
 use crate::focus::FocusManager;
 use crate::layout::{computed_style_for_widget, taffy_style_for_widget};
+use crate::render::{
+    BuiltFrame, ClipShape, DirtySnapshot, FrameBuildError, FrameBuilder, FrameProperties,
+    FramePropertiesSnapshot, HostRenderBinding, Primitive, RenderScene, RenderTreeWriter,
+    SceneCompileError, SceneCompiler, SceneError, Shape, ShapePrimitive,
+};
 use crate::text::TextHost;
 use crate::widgets::{WidgetI, WidgetType};
 
@@ -37,6 +40,7 @@ bitflags::bitflags! {
         const SHAPE_CHANGE = 1 << 4;
         const SYNC_TREE = 1 << 5;
         const SYNC_STATE_CHANGE = 1 << 6;
+        const SYNC_RENDER = 1 << 7;
     }
 }
 
@@ -133,8 +137,13 @@ pub struct Node {
     // Layout
     pub taffy_node: tf::NodeId,
     pub position: usize,
+    // Local
     pub layout: Rect,
     pub previous_layout: Rect,
+
+    // World Bound
+    pub world_origin: Point,
+
     pub content_size: Size<f32>,
     pub scroll_offset: Point,
     work: HostWorkFlags,
@@ -148,8 +157,7 @@ pub struct Node {
     // State
     pub state: WidgetState,
     pub(crate) state_before_change: Option<WidgetState>,
-    // Paint
-    pub paint_cache: Vec<PaintCommand>,
+    // Rendering is retained by UiArena::render_scene.
     pub widget: WidgetI,
     pub event_callbacks: CallbackHandleSet,
     pub shortcut_bindings: Vec<xui_interface::ShortcutBinding>,
@@ -191,7 +199,7 @@ impl Node {
             // state
             state: WidgetState::default(),
             state_before_change: None,
-            paint_cache: Vec::new(),
+            world_origin: Point::zero(),
             widget,
             event_callbacks,
             shortcut_bindings,
@@ -201,6 +209,16 @@ impl Node {
     #[inline(always)]
     fn scroll_style(&self) -> &ComputedScrollStyle {
         &self.target_style.scroll
+    }
+
+    #[inline(always)]
+    fn visual_bounds(&self) -> Rect {
+        Rect::new(
+            self.world_origin.x - self.scroll_offset.x,
+            self.world_origin.y - self.scroll_offset.y,
+            self.layout.width,
+            self.layout.height,
+        )
     }
 }
 
@@ -325,8 +343,6 @@ pub struct UiArena {
     pub(crate) nodes: SlotMap<NodeId, Node>,
     taffy: tf::TaffyTree<WidgetContext>,
     root: NodeId,
-    damage: DamageRegion,
-    damage_nodes: Vec<NodeId>,
     node_lifecycle_events: Vec<NodeLifecycleEvent>,
     pub event_state: EventState,
     focus_manager: FocusManager,
@@ -337,11 +353,47 @@ pub struct UiArena {
     pub repaint_passes: usize,
     default_style: ComputedStyle,
     ui_state: UiState,
+    render_scene: RenderScene,
+    scene_compiler: SceneCompiler,
+    frame_builder: FrameBuilder,
+    frame_properties: FrameProperties,
+    last_presented_viewport: Option<Rect>,
 }
 
-pub struct PaintFrame {
-    pub damage: DamageRegion,
-    pub commands: Vec<PaintCommand>,
+pub struct RenderFrame {
+    pub built: BuiltFrame,
+    pub dirty_snapshot: DirtySnapshot,
+    pub properties_snapshot: FramePropertiesSnapshot,
+    pub viewport: Rect,
+}
+
+#[derive(Debug)]
+pub enum RenderFrameError {
+    Compile(SceneCompileError),
+    Build(FrameBuildError),
+}
+
+impl std::fmt::Display for RenderFrameError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Compile(error) => error.fmt(formatter),
+            Self::Build(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for RenderFrameError {}
+
+impl From<SceneCompileError> for RenderFrameError {
+    fn from(value: SceneCompileError) -> Self {
+        Self::Compile(value)
+    }
+}
+
+impl From<FrameBuildError> for RenderFrameError {
+    fn from(value: FrameBuildError) -> Self {
+        Self::Build(value)
+    }
 }
 
 impl UiArena {
@@ -356,8 +408,12 @@ impl UiArena {
             &theme,
             WidgetState::empty(),
         );
-        let root_taffy_style =
-            taffy_style_for_widget(&root_widget, &root_parent_style, &root_computed_style);
+        let root_taffy_style = taffy_style_for_widget(
+            &root_widget,
+            &root_parent_style,
+            &root_computed_style,
+            false,
+        );
         let taffy_root = taffy
             .new_leaf(root_taffy_style)
             .expect("failed to create taffy root");
@@ -377,12 +433,10 @@ impl UiArena {
         });
         nodes[root].style_initialized = true;
         let default_style = ComputedStyle::initial(&theme);
-        Self {
+        let mut arena = Self {
             nodes,
             taffy,
             root,
-            damage: DamageRegion::new(),
-            damage_nodes: vec![],
             node_lifecycle_events: Vec::new(),
             event_state: EventState::default(),
             focus_manager: FocusManager::default(),
@@ -392,8 +446,17 @@ impl UiArena {
             layout_passes: 0,
             repaint_passes: 0,
             ui_state: UiState::default(),
+            render_scene: RenderScene::new(),
+            scene_compiler: SceneCompiler::new(),
+            frame_builder: FrameBuilder::new(),
+            frame_properties: FrameProperties::default(),
+            last_presented_viewport: None,
             default_style,
-        }
+        };
+        arena
+            .create_host_render_binding(root)
+            .expect("failed to create root render binding");
+        arena
     }
 
     pub fn root(&self) -> NodeId {
@@ -414,6 +477,194 @@ impl UiArena {
 
     pub fn children(&self, id: NodeId) -> &[NodeId] {
         &self.nodes[id].children
+    }
+
+    pub fn render_scene(&self) -> &RenderScene {
+        &self.render_scene
+    }
+
+    pub fn compiled_scene(&self) -> Option<&crate::render::CompiledScene> {
+        self.scene_compiler.compiled_scene()
+    }
+
+    pub fn frame_properties(&self) -> &FrameProperties {
+        &self.frame_properties
+    }
+
+    pub fn frame_properties_mut(&mut self) -> &mut FrameProperties {
+        &mut self.frame_properties
+    }
+
+    fn create_host_render_binding(&mut self, host: NodeId) -> Result<(), SceneError> {
+        let root = self.render_scene.insert_transform(Affine::IDENTITY);
+        let contents = self.render_scene.insert_group();
+        let paint = self.render_scene.insert_group();
+        self.render_scene.append_child(contents, paint)?;
+
+        self.render_scene.set_child(root, Some(contents))?;
+        self.render_scene.bind_host(
+            host,
+            HostRenderBinding::scaffold(root, contents, paint, None, None, None),
+        )?;
+        if host == self.root {
+            self.render_scene
+                .append_child(self.render_scene.root(), root)?;
+        }
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn sync_render_scene(&mut self) -> Result<(), SceneError> {
+        self.sync_render_dirty_subtree(self.root)
+    }
+
+    fn sync_render_dirty_subtree(&mut self, id: NodeId) -> Result<(), SceneError> {
+        let relevant =
+            HostWorkFlags::SYNC_RENDER | HostWorkFlags::SYNC_TREE | HostWorkFlags::REBUILD_PAINT;
+        let work = self.nodes[id].work;
+        let subtree_work = self.nodes[id].subtree_work;
+        if !work.intersects(relevant) && !subtree_work.intersects(relevant) {
+            return Ok(());
+        }
+        if work.intersects(relevant) {
+            self.sync_host_render_node(id)?;
+        }
+        let children = self.nodes[id].children.clone();
+        for child in children {
+            self.sync_render_dirty_subtree(child)?;
+        }
+        Ok(())
+    }
+
+    fn sync_host_render_node(&mut self, id: NodeId) -> Result<(), SceneError> {
+        let mut binding = self
+            .render_scene
+            .host_binding(id)
+            .cloned()
+            .expect("host render binding missing");
+        let node = &self.nodes[id];
+        let local_origin = node.layout.origin();
+        let viewport = Rect::new(0.0, 0.0, node.layout.width, node.layout.height);
+        let scroll = node.scroll_offset;
+        let host_children = node.children.clone();
+
+        let needs_scroll = node.scroll_style().is_scrollable();
+        let needs_overlay = needs_scrollbar_overlay(node);
+        let needs_clip = node.target_style.paint.clip || needs_scroll;
+
+        self.render_scene.update_transform(
+            binding.transform,
+            Affine::translate(local_origin.x, local_origin.y),
+        )?;
+
+        match (needs_clip, binding.clip) {
+            (true, Some(clip)) => {
+                self.render_scene
+                    .update_clip(clip, ClipShape::Rect(viewport))?;
+            }
+            (true, None) => {
+                self.render_scene.set_child(binding.root, None)?;
+                let clip = self.render_scene.insert_clip(ClipShape::Rect(viewport));
+                self.render_scene.set_child(clip, Some(binding.contents))?;
+                self.render_scene.set_child(binding.root, Some(clip))?;
+                self.render_scene
+                    .host_binding_mut(id)
+                    .expect("binding disappeared")
+                    .clip = Some(clip);
+                binding.clip = Some(clip);
+            }
+            (false, Some(clip)) => {
+                self.render_scene.set_child(clip, None)?;
+                self.render_scene
+                    .set_child(binding.root, Some(binding.contents))?;
+                self.render_scene
+                    .host_binding_mut(id)
+                    .expect("binding disappeared")
+                    .clip = None;
+                binding.clip = None;
+                self.render_scene.remove_subtree(clip)?;
+            }
+            (false, None) => {}
+        }
+
+        if !node.children.is_empty() && binding.children.is_none() {
+            let children = self.render_scene.insert_group();
+            // `paint` is always at index 0. Insert the child branch at index 1
+            // so an existing sticky overlay remains last.
+            self.render_scene
+                .insert_child(binding.contents, 1, children)?;
+            binding.children = Some(children);
+            self.render_scene
+                .host_binding_mut(id)
+                .expect("binding disappeared")
+                .children = Some(children);
+        }
+
+        if needs_scroll && binding.scroll_transform.is_none() {
+            if let Some(children) = binding.children {
+                self.render_scene.detach(children)?;
+                let scroll_transform = self.render_scene.insert_transform(Affine::IDENTITY);
+                self.render_scene
+                    .set_child(scroll_transform, Some(children))?;
+                self.render_scene
+                    .insert_child(binding.contents, 1, scroll_transform)?;
+                binding.scroll_transform = Some(scroll_transform);
+                self.render_scene
+                    .host_binding_mut(id)
+                    .expect("binding disappeared")
+                    .scroll_transform = Some(scroll_transform);
+            }
+        }
+
+        if let Some(scroll_transform) = binding.scroll_transform {
+            let transform = if needs_scroll {
+                Affine::translate(-scroll.x, -scroll.y)
+            } else {
+                Affine::IDENTITY
+            };
+            self.frame_properties
+                .set_transform(scroll_transform, transform);
+        }
+
+        if let Some(children_binding) = binding.children {
+            let expected: Vec<_> = host_children
+                .iter()
+                .filter_map(|child| {
+                    self.render_scene
+                        .host_binding(*child)
+                        .map(|binding| binding.root)
+                })
+                .collect();
+            let current = self.render_scene.children(children_binding)?.to_vec();
+            if current != expected {
+                for child in current {
+                    self.render_scene.detach(child)?;
+                }
+                for child in expected {
+                    self.render_scene.detach(child)?;
+                    self.render_scene.append_child(children_binding, child)?;
+                }
+            }
+        }
+
+        if needs_overlay && binding.overlay.is_none() {
+            let overlay = self.render_scene.insert_group();
+            self.render_scene.append_child(binding.contents, overlay)?;
+            binding.overlay = Some(overlay);
+            self.render_scene
+                .host_binding_mut(id)
+                .expect("binding disappeared")
+                .overlay = Some(overlay);
+        }
+
+        if let Some(overlay) = binding.overlay {
+            let node = &self.nodes[id];
+            let mut writer = RenderTreeWriter::new(&mut self.render_scene, overlay);
+            render_scrollbars_in_rect(node, viewport, &mut writer);
+            writer.finish()?;
+        }
+
+        Ok(())
     }
 
     pub fn focused_node(&self) -> Option<NodeId> {
@@ -531,6 +782,8 @@ impl UiArena {
         });
         self.node_lifecycle_events
             .push(NodeLifecycleEvent::Created(id));
+        self.create_host_render_binding(id)
+            .expect("failed to create host render binding");
         self.refresh_taffy_context(id);
         self.mark_work(
             id,
@@ -592,6 +845,10 @@ impl UiArena {
         let parent_taffy = self.nodes[parent].taffy_node;
         let child_taffy = self.nodes[child].taffy_node;
         self.nodes[child].parent = Some(parent);
+        self.mark_work(
+            child,
+            HostWorkFlags::RECALC_STYLE_SUBTREE | HostWorkFlags::RECALC_LAYOUT,
+        );
         if !self.nodes[parent].children.contains(&child) {
             self.nodes[parent].children.push(child);
         }
@@ -610,7 +867,6 @@ impl UiArena {
             parent,
             HostWorkFlags::SYNC_TREE | HostWorkFlags::RECALC_LAYOUT,
         );
-        self.add_node_damage(child, self.nodes[child].layout);
         let _ = child_taffy;
     }
 
@@ -630,6 +886,12 @@ impl UiArena {
             self.nodes[parent].children.push(child);
         }
         self.nodes[child].parent = Some(parent);
+        if old_parent != Some(parent) {
+            self.mark_work(
+                child,
+                HostWorkFlags::RECALC_STYLE_SUBTREE | HostWorkFlags::RECALC_LAYOUT,
+            );
+        }
         self.sync_taffy_children(parent);
         self.reindex_children(parent);
 
@@ -639,7 +901,6 @@ impl UiArena {
             parent,
             HostWorkFlags::SYNC_TREE | HostWorkFlags::RECALC_LAYOUT,
         );
-        self.add_node_damage(child, self.nodes[child].layout);
     }
 
     pub fn insert_before(&mut self, parent: NodeId, child: NodeId, before: NodeId) {
@@ -673,6 +934,12 @@ impl UiArena {
 
         self.nodes[parent].children.insert(index, child);
         self.nodes[child].parent = Some(parent);
+        if old_parent != Some(parent) {
+            self.mark_work(
+                child,
+                HostWorkFlags::RECALC_STYLE_SUBTREE | HostWorkFlags::RECALC_LAYOUT,
+            );
+        }
         self.sync_taffy_children(parent);
         self.reindex_children(parent);
 
@@ -682,7 +949,6 @@ impl UiArena {
             parent,
             HostWorkFlags::SYNC_TREE | HostWorkFlags::RECALC_LAYOUT,
         );
-        self.add_node_damage(child, self.nodes[child].layout);
     }
 
     pub fn remove_child(&mut self, parent: NodeId, child: NodeId) {
@@ -698,6 +964,10 @@ impl UiArena {
             .children
             .retain(|candidate| *candidate != child);
         self.nodes[child].parent = None;
+        self.mark_work(
+            child,
+            HostWorkFlags::RECALC_STYLE_SUBTREE | HostWorkFlags::RECALC_LAYOUT,
+        );
         self.nodes[child].position = 0;
         self.sync_taffy_children(parent);
         self.reindex_children(parent);
@@ -706,7 +976,6 @@ impl UiArena {
             parent,
             HostWorkFlags::SYNC_TREE | HostWorkFlags::RECALC_LAYOUT,
         );
-        self.add_node_damage(child, self.nodes[child].layout);
     }
 
     pub fn remove_from_parent(&mut self, child: NodeId) {
@@ -742,9 +1011,6 @@ impl UiArena {
             self.remove_subtree(child);
         }
 
-        let old_layout = self.nodes[id].layout;
-        self.add_node_damage(id, old_layout);
-
         if let Some(parent) = self.nodes[id].parent {
             self.nodes[parent].children.retain(|child| *child != id);
             let parent_taffy = self.nodes[parent].taffy_node;
@@ -768,6 +1034,11 @@ impl UiArena {
         self.ui_state.animation_driver.remove_node(id);
 
         let _ = self.taffy.remove(self.nodes[id].taffy_node);
+        if let Some(binding) = self.render_scene.host_binding(id).cloned() {
+            self.render_scene
+                .remove_subtree(binding.root)
+                .expect("failed to remove host render subtree");
+        }
         self.nodes.remove(id);
         self.node_lifecycle_events
             .push(NodeLifecycleEvent::Removed(id));
@@ -815,67 +1086,6 @@ impl UiArena {
             self.nodes[parent].subtree_work |= flags;
             current = parent;
         }
-    }
-
-    pub fn add_damage(&mut self, damage: Damage) {
-        self.damage.add(damage);
-    }
-
-    fn add_node_damage(&mut self, id: NodeId, rect: Rect) {
-        if let Some(vis) = self.visual_damage_rect_for_node(id, rect) {
-            self.damage.add(Damage::new(rect, vis));
-        }
-    }
-
-    fn visual_damage_rect_for_node(&self, id: NodeId, mut rect: Rect) -> Option<Rect> {
-        if !self.nodes.contains_key(id) {
-            return None;
-        }
-
-        let mut ancestors = Vec::new();
-        let mut cursor = self.nodes[id].parent;
-        while let Some(parent) = cursor {
-            ancestors.push(parent);
-            cursor = self.nodes[parent].parent;
-        }
-
-        let mut total_scroll_offset = Point::zero();
-        for ancestor in &ancestors {
-            let node = &self.nodes[*ancestor];
-            let scroll_style = node.scroll_style();
-            if scroll_style.direction.is_scrollable() {
-                total_scroll_offset.x += node.scroll_offset.x;
-                total_scroll_offset.y += node.scroll_offset.y;
-            }
-        }
-        rect.x -= total_scroll_offset.x;
-        rect.y -= total_scroll_offset.y;
-
-        let mut clip_scroll_offset = Point::zero();
-        for ancestor in ancestors.into_iter().rev() {
-            let node = &self.nodes[ancestor];
-            let scroll_style = node.scroll_style();
-            let scrollable = scroll_style.direction.is_scrollable();
-
-            let node_style = &node.target_style;
-
-            if node_style.paint.clip || scrollable {
-                let clip = Rect::new(
-                    node.layout.x - clip_scroll_offset.x,
-                    node.layout.y - clip_scroll_offset.y,
-                    node.layout.width,
-                    node.layout.height,
-                );
-                rect = intersect_rect(rect, clip)?;
-            }
-
-            if scrollable {
-                clip_scroll_offset.x += node.scroll_offset.x;
-                clip_scroll_offset.y += node.scroll_offset.y;
-            }
-        }
-
-        Some(rect)
     }
 
     pub fn clear_work(&mut self, id: NodeId) {
@@ -926,12 +1136,7 @@ impl UiArena {
         scroll_offset: Point,
     ) -> Option<NodeId> {
         let node = self.nodes.get(id)?;
-        let visual_layout = Rect::new(
-            node.layout.x - scroll_offset.x,
-            node.layout.y - scroll_offset.y,
-            node.layout.width,
-            node.layout.height,
-        );
+        let visual_layout = node.visual_bounds();
         if !visual_layout.contains(point) {
             return None;
         }
@@ -999,29 +1204,10 @@ impl UiArena {
             return false;
         }
 
-        let old_layout = node.layout;
         let node = self.nodes.get_mut(id).expect("checked node existence");
         node.scroll_offset = next;
-        self.add_scroll_damage(id, old_layout);
-        self.mark_work(id, HostWorkFlags::REBUILD_PAINT);
+        self.mark_work(id, HostWorkFlags::SYNC_RENDER);
         true
-    }
-
-    fn add_scroll_damage(&mut self, id: NodeId, rect: Rect) {
-        self.add_node_damage(id, rect);
-
-        let mut cursor = self.nodes.get(id).and_then(|node| node.parent);
-        while let Some(parent) = cursor {
-            let node = &self.nodes[parent];
-            let layout = node.layout;
-            let next_parent = node.parent;
-            let node_style = &node.target_style;
-            let needs_damage = node_style.paint.clip || node_style.scroll.direction.is_scrollable();
-            if needs_damage {
-                self.add_node_damage(parent, layout);
-            }
-            cursor = next_parent;
-        }
     }
 
     pub fn event_path(&self, target: NodeId) -> Vec<NodeId> {
@@ -1106,6 +1292,8 @@ impl UiArena {
         self.ui_state.layout_dirty_list.clear();
         self.rebuild_subtree_dirty(self.root);
         self.repaint_dirty_subtree(self.root);
+        self.sync_render_scene()
+            .expect("host tree must produce a valid render scene");
         self.clear_work_subtree(self.root, HostWorkFlags::all());
     }
 
@@ -1144,6 +1332,11 @@ impl UiArena {
 
         let widget = self.nodes[id].widget.clone();
         let state = self.nodes[id].state;
+        let parent_is_z_stack = self.nodes[id].parent.is_some_and(|parent| {
+            self.nodes[parent]
+                .widget
+                .with_widgets(|widget| matches!(widget, crate::widgets::Widgets::ZStack(_)))
+        });
         let parent_style = self.nodes[id]
             .parent
             .and_then(|p| self.node(p))
@@ -1151,7 +1344,8 @@ impl UiArena {
             .unwrap_or(&self.default_style);
 
         let computed_style = computed_style_for_widget(&widget, parent_style, &self.theme, state);
-        let taffy_style = taffy_style_for_widget(&widget, parent_style, &computed_style);
+        let taffy_style =
+            taffy_style_for_widget(&widget, parent_style, &computed_style, parent_is_z_stack);
 
         let node = self.node(id).unwrap();
         let current_taffy_style = self
@@ -1254,22 +1448,23 @@ impl UiArena {
         }
 
         self.repaint_passes += 1;
-        let rect = self.nodes[id].layout;
+        let layout = self.nodes[id].layout;
+        let rect = Rect::new(0.0, 0.0, layout.width, layout.height);
         let style = self
             .effective_style(id)
-            .expect("checked node existence before repaint");
-        let mut cache = Vec::new();
-        self.nodes[id].widget.paint(rect, style, &mut cache);
-        for command in &mut cache {
-            if let PaintCommand::Text(command) = command {
-                command.node_id = id;
-            }
-        }
-        self.nodes[id].paint_cache = cache;
-        if !self.damage_nodes.contains(&id) {
-            self.damage_nodes.push(id);
-        }
-        self.add_node_damage(id, rect);
+            .expect("checked node existence before repaint")
+            .clone();
+        let widget = self.nodes[id].widget.clone();
+        let paint = self
+            .render_scene
+            .host_binding(id)
+            .expect("host render binding missing")
+            .paint;
+        let mut writer = RenderTreeWriter::new(&mut self.render_scene, paint);
+        widget.render(id, rect, &style, &mut writer);
+        writer
+            .finish()
+            .expect("widget emitted an invalid retained render tree");
     }
 
     pub fn compute_layout<T: TextBackend>(&mut self, size: Size<f32>, measurer: &mut TextHost<T>) {
@@ -1297,10 +1492,6 @@ impl UiArena {
     }
 
     fn sync_layout(&mut self, id: NodeId, offset_x: f32, offset_y: f32) -> HostWorkFlags {
-        if !self.nodes.contains_key(id) {
-            return HostWorkFlags::empty();
-        }
-
         let taffy_node = self.nodes[id].taffy_node;
         let layout = self
             .taffy
@@ -1308,20 +1499,19 @@ impl UiArena {
             .expect("missing taffy layout result");
         let taffy_content_size =
             Size::<f32>::new(layout.content_size.width, layout.content_size.height);
+
         let rect = Rect::new(
-            offset_x + layout.location.x,
-            offset_y + layout.location.y,
+            layout.location.x,
+            layout.location.y,
             layout.size.width,
             layout.size.height,
         );
 
-        let old_rect = self.nodes[id].layout;
-        let layout_changed = old_rect != rect;
-        if layout_changed {
-            self.add_node_damage(id, old_rect);
-            self.add_node_damage(id, rect);
-        }
+        let world_origin = Point::new(offset_x + layout.location.x, offset_y + layout.location.y);
 
+        let old_rect = self.nodes[id].layout;
+        let layout_changed = old_rect != rect || self.nodes[id].world_origin != world_origin;
+        let size_changed = old_rect.width != rect.width || old_rect.height != rect.height;
         let (children, mut subtree_work) = {
             let node = &mut self.nodes[id];
             let should_sync_children = layout_changed
@@ -1330,8 +1520,12 @@ impl UiArena {
 
             node.previous_layout = node.layout;
             node.layout = rect;
+            node.world_origin = world_origin;
             node.work.remove(HostWorkFlags::RECALC_LAYOUT);
             if layout_changed {
+                node.work.insert(HostWorkFlags::SYNC_RENDER);
+            }
+            if size_changed {
                 node.work.insert(HostWorkFlags::REBUILD_PAINT);
             }
 
@@ -1343,26 +1537,22 @@ impl UiArena {
         };
 
         for child in children {
-            subtree_work |= self.sync_layout(child, rect.x, rect.y);
+            subtree_work |= self.sync_layout(child, world_origin.x, world_origin.y);
         }
 
         let content_size = self.content_size_from_children(id, taffy_content_size);
-        let (scroll_dirty, rect) = {
+        let scroll_dirty = {
             let node = self.nodes.get_mut(id).expect("node removed during layout");
             let content_size_changed = node.content_size != content_size;
             let scroll_offset_before_clamp = node.scroll_offset;
             node.content_size = content_size;
             clamp_scroll_offset(node);
-            (
-                node.target_style.scroll.direction.is_scrollable()
-                    && (content_size_changed || node.scroll_offset != scroll_offset_before_clamp),
-                node.layout,
-            )
+            node.target_style.scroll.direction.is_scrollable()
+                && (content_size_changed || node.scroll_offset != scroll_offset_before_clamp)
         };
         if scroll_dirty {
-            self.add_node_damage(id, rect);
             let node = self.nodes.get_mut(id).expect("node removed during layout");
-            node.work.insert(HostWorkFlags::REBUILD_PAINT);
+            node.work.insert(HostWorkFlags::SYNC_RENDER);
         }
         let node = self.nodes.get_mut(id).expect("node removed during layout");
         node.subtree_work = subtree_work;
@@ -1396,10 +1586,6 @@ impl UiArena {
     }
 
     fn repaint_dirty_subtree(&mut self, id: NodeId) {
-        if !self.nodes.contains_key(id) {
-            return;
-        }
-
         let work = self.nodes[id].work;
         let subtree_work = self.nodes[id].subtree_work;
         if !work.intersects(Self::paint_work_flags())
@@ -1452,106 +1638,46 @@ impl UiArena {
         node.work | node.subtree_work
     }
 
-    // pub fn collect_paint_commands(&mut self) -> (DamageRegion, Vec<PaintCommand>) {
-    //     let (damage, cmds) = self.prepare_paint_commands();
-    //     self.finish_paint();
-    //     (damage, cmds)
-    // }
-
-    pub fn collect_paint_commands(&self) -> PaintFrame {
-        let damage = self.damage.clone();
-        let mut commands = Vec::new();
-        if !damage.is_empty() {
-            self.paint_node(self.root, &damage, &mut commands);
+    pub fn build_render_frame(&mut self) -> Result<Option<RenderFrame>, RenderFrameError> {
+        let dirty_snapshot = self.render_scene.dirty_snapshot();
+        let properties_snapshot = self.frame_properties.snapshot();
+        let root = self.nodes[self.root].layout;
+        let viewport = Rect::new(0.0, 0.0, root.width, root.height);
+        let viewport_changed = self.last_presented_viewport != Some(viewport);
+        let needs_scene_compile =
+            self.scene_compiler.compiled_scene().is_none() || !dirty_snapshot.nodes.is_empty();
+        if !needs_scene_compile && !self.frame_properties.is_dirty() && !viewport_changed {
+            return Ok(None);
         }
-
-        PaintFrame { damage, commands }
+        if needs_scene_compile {
+            self.scene_compiler
+                .compile(&self.render_scene, &dirty_snapshot)?;
+        }
+        let compiled = self
+            .scene_compiler
+            .compiled_scene()
+            .expect("scene compiler is initialized before frame building");
+        let built = self
+            .frame_builder
+            .build(compiled, viewport, &self.frame_properties)?;
+        Ok(Some(RenderFrame {
+            built,
+            dirty_snapshot,
+            properties_snapshot,
+            viewport,
+        }))
     }
 
-    pub fn prepare_paint_commands(&self) -> (&DamageRegion, Vec<PaintCommand>) {
-        let damage = &self.damage;
-        let mut commands = Vec::new();
-        if damage.is_empty() {
-            return (damage, commands);
-        }
-
-        self.paint_node(self.root, &damage, &mut commands);
-        (damage, commands)
-    }
-
-    pub fn finish_paint(&mut self) {
-        // println!("CLEAR DAMAGE");
-        self.damage.clear();
-        self.damage_nodes.clear();
+    pub fn finish_render_frame(&mut self, frame: &RenderFrame) {
         self.clear_work_subtree(self.root, HostWorkFlags::REBUILD_PAINT);
-    }
-
-    #[inline(always)]
-    fn paint_node(&self, id: NodeId, damage: &DamageRegion, commands: &mut Vec<PaintCommand>) {
-        let _ = self.paint_node_inner(id, damage, commands, false, Point::zero());
-    }
-
-    fn paint_node_inner(
-        &self,
-        id: NodeId,
-        damage: &DamageRegion,
-        commands: &mut Vec<PaintCommand>,
-        force: bool,
-        scroll_offset: Point,
-    ) -> Option<()> {
-        let node = self.node(id)?;
-        let visual_layout = node
-            .layout
-            .translate(Translation::new(-scroll_offset.x, -scroll_offset.y));
-
-        // println!("DAMAGE : {damage:?}");
-        // println!("VIS: {visual_layout:?}");
-
-        if force || damage.intersects(visual_layout) {
-            // println!("{id:?} NEED REPAINT");
-            let scrollable = node.target_style.scroll.direction.is_scrollable();
-            if node.target_style.paint.clip || scrollable {
-                commands.push(PaintCommand::PushClip(node.layout));
-            }
-            if node.paint_cache.is_empty() {
-                node.widget
-                    .paint(node.layout, &node.effective_style, commands);
-            } else {
-                commands.extend_from_slice(&node.paint_cache);
-            }
-            if scrollable {
-                commands.push(PaintCommand::PushTransform {
-                    translate: Translation::new(-node.scroll_offset.x, -node.scroll_offset.y),
-                });
-            }
-            let child_scroll_offset = if scrollable {
-                scroll_offset + node.scroll_offset
-            } else {
-                scroll_offset
-            };
-            for child in &node.children {
-                self.paint_node_inner(
-                    *child,
-                    damage,
-                    commands,
-                    force || scrollable,
-                    child_scroll_offset,
-                );
-            }
-            if scrollable {
-                commands.push(PaintCommand::PopTransform);
-                paint_scrollbars(node, commands);
-            }
-            if node.target_style.paint.clip || scrollable {
-                commands.push(PaintCommand::PopClip);
-            }
-        }
-
-        Some(())
+        self.render_scene.acknowledge(&frame.dirty_snapshot);
+        self.frame_properties.acknowledge(frame.properties_snapshot);
+        self.last_presented_viewport = Some(frame.viewport);
     }
 
     pub fn is_dirty(&self) -> bool {
-        !self.damage.is_empty()
+        self.render_scene.is_dirty()
+            || self.frame_properties.is_dirty()
             || self.has_running_style_animations()
             || !self.ui_state.style_dirty_list.is_empty()
             || !self.ui_state.style_subtree_dirty_list.is_empty()
@@ -1644,6 +1770,10 @@ impl UiArena {
                 && self.nodes[child].parent == Some(parent)
             {
                 self.nodes[child].parent = None;
+                self.mark_work(
+                    child,
+                    HostWorkFlags::RECALC_STYLE_SUBTREE | HostWorkFlags::RECALC_LAYOUT,
+                );
                 self.nodes[child].position = 0;
                 self.record_node_move(child, Some(parent), None, old_position, 0);
             }
@@ -1667,6 +1797,12 @@ impl UiArena {
                     );
                 }
                 self.nodes[child].parent = Some(parent);
+                if old_parent != Some(parent) {
+                    self.mark_work(
+                        child,
+                        HostWorkFlags::RECALC_STYLE_SUBTREE | HostWorkFlags::RECALC_LAYOUT,
+                    );
+                }
                 self.nodes[child].position = new_position;
                 self.record_node_move(child, old_parent, Some(parent), old_position, new_position);
             }
@@ -1823,6 +1959,29 @@ mod tests {
         );
     }
 
+    fn last_shape_fill(frame: &crate::render::BuiltFrame) -> Option<ComputedColorStyle> {
+        fn visit(
+            frame: &crate::render::BuiltFrame,
+            layer: crate::render::BuiltLayerId,
+            found: &mut Option<ComputedColorStyle>,
+        ) {
+            for item in &frame.layers[layer.0].items {
+                match item {
+                    crate::render::BuiltItem::Draw(crate::render::BuiltDraw::Shape(shape)) => {
+                        *found = shape.primitive.fill;
+                    }
+                    crate::render::BuiltItem::Layer(instance) => {
+                        visit(frame, instance.layer, found);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut found = None;
+        visit(frame, frame.root_layer, &mut found);
+        found
+    }
+
     #[test]
     fn style_diff_domains_map_to_host_work_without_mixing_public_flags() {
         let text = HostWorkFlags::from_style_diff(StyleDiffFlags::TEXT);
@@ -1881,10 +2040,8 @@ mod tests {
         arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
         assert_background_near(&arena.nodes[id].effective_style, Color::rgb(0.5, 0.5, 0.5));
-        let PaintCommand::Rect { color, .. } = arena.nodes[id].paint_cache.first().unwrap() else {
-            panic!("expected rect paint command");
-        };
-        let ComputedColorStyle::Solid(color) = *color else {
+        let frame = arena.build_render_frame().unwrap().unwrap();
+        let ComputedColorStyle::Solid(color) = last_shape_fill(&frame.built).unwrap() else {
             panic!("expected solid painted background");
         };
         assert_near(color.r, 0.5);
@@ -2129,7 +2286,7 @@ mod tests {
     }
 
     #[test]
-    fn target_layout_change_marks_layout_and_damage() {
+    fn target_layout_change_marks_compiled_scene_dirty() {
         let mut arena = UiArena::new();
         let mut measurer = TextHost::new(ZeroTextBackend);
         let id = create_host(
@@ -2137,7 +2294,10 @@ mod tests {
             WidgetI::new(container().style(Style::new().width(10.0).height(10.0))),
         );
         arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-        arena.finish_paint();
+
+        // if let Some(frame) = arena.build_render_frame().unwrap() {
+        //     arena.finish_render_frame(&frame);
+        // }
 
         update_host(
             &mut arena,
@@ -2147,12 +2307,12 @@ mod tests {
         arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
         assert_near(arena.nodes[id].layout.width, 20.0);
-        let frame = arena.collect_paint_commands();
-        assert!(!frame.damage.is_empty());
+        let frame = arena.build_render_frame().unwrap().unwrap();
+        assert!(!frame.dirty_snapshot.nodes.is_empty());
     }
 
     #[test]
-    fn damage_generates_paint_commands_and_finish_clears_frame_damage() {
+    fn scene_changes_generate_built_frame_and_finish_acknowledges_both_snapshots() {
         let mut arena = UiArena::new();
         let mut measurer = TextHost::new(ZeroTextBackend);
         create_host(
@@ -2168,18 +2328,111 @@ mod tests {
         );
         arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
-        let frame = arena.collect_paint_commands();
-        assert!(!frame.damage.is_empty());
-        assert!(!frame.commands.is_empty());
+        let frame = arena.build_render_frame().unwrap().unwrap();
+        assert!(!frame.dirty_snapshot.nodes.is_empty());
+        assert!(
+            !frame.built.layers[frame.built.root_layer.0]
+                .items
+                .is_empty()
+        );
 
-        arena.finish_paint();
-        let frame = arena.collect_paint_commands();
-        assert!(frame.damage.is_empty());
-        assert!(frame.commands.is_empty());
+        arena.finish_render_frame(&frame);
+        assert!(arena.build_render_frame().unwrap().is_none());
     }
 
     #[test]
-    fn mark_dirty_schedules_work_without_collecting_damage() {
+    fn scroll_uses_frame_properties_without_recompiling_the_scene() {
+        let mut arena = UiArena::new();
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        let parent = create_host(
+            &mut arena,
+            WidgetI::new(
+                container().style(
+                    Style::new()
+                        .width(50.0)
+                        .height(50.0)
+                        .scroll_vertical()
+                        .scrollbar_visibility(ScrollbarVisibilityStyle::Hidden),
+                ),
+            ),
+        );
+        let child = create_host(
+            &mut arena,
+            WidgetI::new(
+                container().style(
+                    Style::new()
+                        .width(40.0)
+                        .height(100.0)
+                        .background(Color::BLACK),
+                ),
+            ),
+        );
+        arena.append_child(parent, child);
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+
+        let initial = arena.build_render_frame().unwrap().unwrap();
+        let scene_revision = initial.built.scene_revision;
+        let initial_properties_revision = initial.built.properties_revision;
+        // arena.finish_render_frame(&initial);
+        let binding = arena.render_scene.host_binding(parent).unwrap().clone();
+        let scroll_transform = binding
+            .scroll_transform
+            .expect("scrollable host must have a dynamic spatial node");
+
+        arena.nodes[parent].scroll_offset = Point::new(0.0, 10.0);
+        arena.sync_host_render_node(parent).unwrap();
+        assert!(arena.render_scene.dirty_snapshot().nodes.is_empty());
+        assert!(
+            arena
+                .render_scene
+                .node(scroll_transform)
+                .unwrap()
+                .dirty
+                .is_empty()
+        );
+        assert!(arena.frame_properties.is_dirty());
+
+        let pending = arena.build_render_frame().unwrap().unwrap();
+        assert_eq!(pending.built.scene_revision, scene_revision);
+        assert!(pending.built.properties_revision > initial_properties_revision);
+        let repeated = arena.build_render_frame().unwrap().unwrap();
+        assert_eq!(
+            repeated.built.properties_revision,
+            pending.built.properties_revision
+        );
+        assert!(arena.frame_properties.is_dirty());
+
+        arena.finish_render_frame(&pending);
+        assert!(!arena.frame_properties.is_dirty());
+        assert!(arena.build_render_frame().unwrap().is_none());
+    }
+
+    #[test]
+    fn viewport_change_remains_pending_until_present() {
+        let mut arena = UiArena::new();
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        create_host(
+            &mut arena,
+            WidgetI::new(container().style(Style::new().width(10.0).height(10.0))),
+        );
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        let initial = arena.build_render_frame().unwrap().unwrap();
+        let scene_revision = initial.built.scene_revision;
+        arena.finish_render_frame(&initial);
+
+        let root = arena.root;
+        arena.nodes[root].layout.width = 120.0;
+        let pending = arena.build_render_frame().unwrap().unwrap();
+        assert_eq!(pending.built.scene_revision, scene_revision);
+        assert_eq!(pending.viewport.width, 120.0);
+        assert!(arena.build_render_frame().unwrap().is_some());
+
+        arena.finish_render_frame(&pending);
+        assert!(arena.build_render_frame().unwrap().is_none());
+    }
+
+    #[test]
+    fn identical_repaint_output_does_not_dirty_render_scene() {
         let mut arena = UiArena::new();
         let mut measurer = TextHost::new(ZeroTextBackend);
         let id = create_host(
@@ -2194,17 +2447,179 @@ mod tests {
             ),
         );
         arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-        arena.finish_paint();
+        // arena.finish_paint();
 
         arena.mark_dirty(id, WidgetUpdateFlags::PAINT_OUTPUT);
 
-        assert!(arena.damage.is_empty());
+        assert!(!arena.render_scene.is_dirty());
 
         arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-        let frame = arena.collect_paint_commands();
-        assert!(!frame.damage.is_empty());
-        assert!(!frame.commands.is_empty());
+        assert!(arena.build_render_frame().unwrap().is_none());
+        assert!(!arena.is_dirty());
     }
+
+    #[test]
+    fn host_render_children_follow_host_order_without_recreating_roots() {
+        let mut arena = UiArena::new();
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        let parent = create_host(&mut arena, WidgetI::new(container()));
+        let a = arena.create_node(None, 0, WidgetI::new(container()), EventHandlers::default());
+        let b = arena.create_node(None, 0, WidgetI::new(container()), EventHandlers::default());
+        arena.append_child(parent, a);
+        arena.append_child(parent, b);
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+
+        let parent_binding = arena.render_scene.host_binding(parent).unwrap().clone();
+        let children = parent_binding
+            .children
+            .expect("parent children branch was not created");
+        let a_root = arena.render_scene.host_binding(a).unwrap().root;
+        let b_root = arena.render_scene.host_binding(b).unwrap().root;
+        assert_eq!(
+            arena.render_scene.children(children).unwrap(),
+            &[a_root, b_root]
+        );
+
+        arena.set_children(parent, vec![b, a]);
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        assert_eq!(
+            arena.render_scene.children(children).unwrap(),
+            &[b_root, a_root]
+        );
+        assert_eq!(arena.render_scene.host_binding(a).unwrap().root, a_root);
+        assert_eq!(arena.render_scene.host_binding(b).unwrap().root, b_root);
+    }
+
+    #[test]
+    fn host_render_scaffold_lazily_creates_and_retains_optional_branches() {
+        use crate::render::RenderNodeKind;
+
+        let mut arena = UiArena::new();
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        let base_style = Style::new().width(50.0).height(50.0);
+        let parent = create_host(
+            &mut arena,
+            WidgetI::new(container().style(base_style.clone())),
+        );
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+
+        let leaf_binding = arena.render_scene.host_binding(parent).unwrap().clone();
+        assert_eq!(leaf_binding.children, None);
+        assert_eq!(leaf_binding.scroll_transform, None);
+        assert_eq!(leaf_binding.overlay, None);
+        assert_eq!(
+            arena.render_scene.children(leaf_binding.contents).unwrap(),
+            &[leaf_binding.paint]
+        );
+
+        let child = create_host(
+            &mut arena,
+            WidgetI::new(container().style(Style::new().width(40.0).height(100.0))),
+        );
+        arena.append_child(parent, child);
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+
+        let child_binding = arena.render_scene.host_binding(parent).unwrap().clone();
+        let children = child_binding
+            .children
+            .expect("children branch was not created");
+        assert_eq!(child_binding.scroll_transform, None);
+        assert_eq!(child_binding.overlay, None);
+        assert_eq!(
+            arena.render_scene.children(child_binding.contents).unwrap(),
+            &[child_binding.paint, children]
+        );
+
+        update_host(
+            &mut arena,
+            parent,
+            WidgetI::new(
+                container().style(
+                    base_style
+                        .clone()
+                        .scroll_vertical()
+                        .scrollbar_visibility(ScrollbarVisibilityStyle::Always),
+                ),
+            ),
+        );
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+
+        let scrolling = arena.render_scene.host_binding(parent).unwrap().clone();
+        let scroll_transform = scrolling
+            .scroll_transform
+            .expect("scroll transform was not created");
+        let overlay = scrolling.overlay.expect("overlay was not created");
+        assert_eq!(scrolling.children, Some(children));
+        assert_eq!(
+            arena.render_scene.children(scrolling.contents).unwrap(),
+            &[scrolling.paint, scroll_transform, overlay]
+        );
+        assert_eq!(
+            arena.render_scene.children(scroll_transform).unwrap(),
+            &[children]
+        );
+        assert!(!arena.render_scene.children(overlay).unwrap().is_empty());
+
+        update_host(
+            &mut arena,
+            parent,
+            WidgetI::new(container().style(base_style)),
+        );
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+
+        let disabled = arena.render_scene.host_binding(parent).unwrap();
+        assert_eq!(disabled.children, Some(children));
+        assert_eq!(disabled.scroll_transform, Some(scroll_transform));
+        assert_eq!(disabled.overlay, Some(overlay));
+        let RenderNodeKind::Transform(transform) =
+            &arena.render_scene.node(scroll_transform).unwrap().kind
+        else {
+            panic!("expected sticky scroll transform");
+        };
+        assert_eq!(transform.transform, Affine::IDENTITY);
+        assert!(arena.render_scene.children(overlay).unwrap().is_empty());
+
+        arena.set_children(parent, Vec::new());
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+        let empty = arena.render_scene.host_binding(parent).unwrap();
+        assert_eq!(empty.children, Some(children));
+        assert_eq!(empty.scroll_transform, Some(scroll_transform));
+        assert_eq!(empty.overlay, Some(overlay));
+        assert!(arena.render_scene.children(children).unwrap().is_empty());
+    }
+
+    // #[test]
+    // fn host_position_updates_only_touch_the_static_spatial_node() {
+    //     use crate::render::RenderDirty;
+
+    //     let mut arena = UiArena::new();
+    //     let mut measurer = TextHost::new(ZeroTextBackend);
+    //     let id = create_host(
+    //         &mut arena,
+    //         WidgetI::new(
+    //             container().style(
+    //                 Style::new()
+    //                     .width(40.0)
+    //                     .height(20.0)
+    //                     .background(Color::BLACK),
+    //             ),
+    //         ),
+    //     );
+    //     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    //     let snapshot = arena.render_scene.dirty_snapshot();
+    //     arena.render_scene.acknowledge(&snapshot);
+    //     let binding = arena.render_scene.host_binding(id).unwrap().clone();
+
+    //     arena.nodes[id].layout.x += 10.0;
+    //     arena.sync_host_render_node(id).unwrap();
+    //     assert_eq!(
+    //         arena.render_scene.node(binding.transform).unwrap().dirty,
+    //         RenderDirty::GEOMETRY
+    //     );
+    //     for (_, node) in arena.render_scene.depth_first(binding.paint).unwrap() {
+    //         assert!(node.dirty.is_empty());
+    //     }
+    // }
 }
 
 fn measure_layout_context<T: TextBackend>(
@@ -2326,7 +2741,23 @@ fn clamp_scroll_offset(node: &mut Node) {
     node.scroll_offset.y = node.scroll_offset.y.clamp(0.0, max_y);
 }
 
-fn paint_scrollbars(node: &Node, commands: &mut Vec<PaintCommand>) {
+fn needs_scrollbar_overlay(node: &Node) -> bool {
+    let direction = node.target_style.scroll.direction;
+    let scrollbar = node.target_style.scroll.scrollbar;
+    if scrollbar.visibility == ScrollbarVisibilityStyle::Hidden
+        || scrollbar.width <= 0.0
+        || !scrollbar.thumb_color.is_visible()
+    {
+        return false;
+    }
+
+    let max_x = (node.content_size.width - node.layout.width).max(0.0);
+    let max_y = (node.content_size.height - node.layout.height).max(0.0);
+    (direction.allows_vertical() && should_paint_scrollbar(scrollbar, max_y))
+        || (direction.allows_horizontal() && should_paint_scrollbar(scrollbar, max_x))
+}
+
+fn render_scrollbars_in_rect(node: &Node, rect: Rect, writer: &mut RenderTreeWriter<'_>) {
     let direction = node.target_style.scroll.direction;
     let scrollbar = node.target_style.scroll.scrollbar;
     if scrollbar.visibility == ScrollbarVisibilityStyle::Hidden || scrollbar.width <= 0.0 {
@@ -2340,8 +2771,8 @@ fn paint_scrollbars(node: &Node, commands: &mut Vec<PaintCommand>) {
         && should_paint_scrollbar(scrollbar, max_y)
         && scrollbar.thumb_color.is_visible()
     {
-        let track = vertical_scrollbar_track(node.layout, scrollbar.width);
-        paint_scrollbar_part(track, scrollbar.track_color, scrollbar.radius, commands);
+        let track = vertical_scrollbar_track(rect, scrollbar.width);
+        render_scrollbar_part(track, scrollbar.track_color, scrollbar.radius, writer);
 
         if max_y > 0.0 {
             let ratio = (node.layout.height / node.content_size.height).clamp(0.0, 1.0);
@@ -2350,11 +2781,11 @@ fn paint_scrollbars(node: &Node, commands: &mut Vec<PaintCommand>) {
                 .min(track.height);
             let travel = (track.height - thumb_height).max(0.0);
             let top = track.y + travel * (node.scroll_offset.y / max_y);
-            paint_scrollbar_part(
+            render_scrollbar_part(
                 Rect::new(track.x, top, track.width, thumb_height),
                 scrollbar.thumb_color,
                 scrollbar.radius,
-                commands,
+                writer,
             );
         }
     }
@@ -2363,8 +2794,8 @@ fn paint_scrollbars(node: &Node, commands: &mut Vec<PaintCommand>) {
         && should_paint_scrollbar(scrollbar, max_x)
         && scrollbar.thumb_color.is_visible()
     {
-        let track = horizontal_scrollbar_track(node.layout, scrollbar.width);
-        paint_scrollbar_part(track, scrollbar.track_color, scrollbar.radius, commands);
+        let track = horizontal_scrollbar_track(rect, scrollbar.width);
+        render_scrollbar_part(track, scrollbar.track_color, scrollbar.radius, writer);
 
         if max_x > 0.0 {
             let ratio = (node.layout.width / node.content_size.width).clamp(0.0, 1.0);
@@ -2373,11 +2804,11 @@ fn paint_scrollbars(node: &Node, commands: &mut Vec<PaintCommand>) {
                 .min(track.width);
             let travel = (track.width - thumb_width).max(0.0);
             let left = track.x + travel * (node.scroll_offset.x / max_x);
-            paint_scrollbar_part(
+            render_scrollbar_part(
                 Rect::new(left, track.y, thumb_width, track.height),
                 scrollbar.thumb_color,
                 scrollbar.radius,
-                commands,
+                writer,
             );
         }
     }
@@ -2409,188 +2840,31 @@ fn horizontal_scrollbar_track(rect: Rect, width: f32) -> Rect {
     )
 }
 
-fn intersect_rect(a: Rect, b: Rect) -> Option<Rect> {
-    let x0 = a.x.max(b.x);
-    let y0 = a.y.max(b.y);
-    let x1 = (a.x + a.width).min(b.x + b.width);
-    let y1 = (a.y + a.height).min(b.y + b.height);
-
-    (x1 > x0 && y1 > y0).then(|| Rect::new(x0, y0, x1 - x0, y1 - y0))
-}
-
-fn paint_scrollbar_part(
+fn render_scrollbar_part(
     rect: Rect,
     color: ComputedColorStyle,
     radius: f32,
-    commands: &mut Vec<PaintCommand>,
+    writer: &mut RenderTreeWriter<'_>,
 ) {
     if rect.width <= 0.0 || rect.height <= 0.0 || !color.is_visible() {
         return;
     }
 
-    if radius > 0.0 {
-        commands.push(PaintCommand::RoundedRect {
-            rect,
-            radius,
-            color,
-            stroke: None,
-            shadow: None,
-        });
+    let shape = if radius > 0.0 {
+        Shape::RoundedRect(radius)
     } else {
-        commands.push(PaintCommand::Rect {
-            rect,
-            color,
+        Shape::Rect
+    };
+    writer
+        .primitive(Primitive::Shape(ShapePrimitive {
+            bounds: rect,
+            shape,
+            fill: Some(color),
             stroke: None,
             shadow: None,
-        });
-    }
+        }))
+        .expect("scrollbar render tree must remain valid");
 }
-
-// #[cfg(test)]
-// mod scroll_behavior_tests {
-//     use taffy::prelude as tf;
-
-//     use super::*;
-//     use crate::{Style, widgets::ContainerWidget};
-
-//     #[test]
-//     fn scroll_acceleration_preserves_small_deltas_and_boosts_fast_deltas() {
-//         assert_eq!(
-//             ergonomic_scroll_delta(Point::new(0.0, -8.0)),
-//             Point::new(0.0, -8.0)
-//         );
-
-//         let accelerated = ergonomic_scroll_delta(Point::new(0.0, -96.0));
-//         assert!(accelerated.y < -96.0);
-//         assert!(accelerated.y > -264.0);
-//     }
-
-//     #[test]
-//     fn scroll_node_by_applies_ergonomic_delta() {
-//         let mut arena = UiArena::new();
-//         let root = arena.root();
-//         let scroller = arena.insert(
-//             root,
-//             ContainerWidget::new().style(Style::new().scroll_vertical()),
-//             tf::Style::default(),
-//         );
-//         let node = arena.node_mut(scroller).unwrap();
-//         node.layout = Rect::new(0.0, 0.0, 100.0, 100.0);
-//         node.content_size = Size::<f32>::new(100.0, 1_000.0);
-
-//         assert!(arena.scroll_node_by(scroller, Point::new(0.0, -48.0)));
-//         assert_eq!(arena.node(scroller).unwrap().scroll_offset.y, 48.0);
-//     }
-
-//     #[test]
-//     fn dirty_scroll_container_damage_uses_viewport_rect() {
-//         let mut arena = UiArena::new();
-//         let root = arena.root();
-//         let scroller = arena.insert(
-//             root,
-//             ContainerWidget::new().style(Style::new().scroll_vertical()),
-//             tf::Style::default(),
-//         );
-
-//         arena.node_mut(root).unwrap().layout = Rect::new(0.0, 0.0, 200.0, 200.0);
-//         arena.node_mut(scroller).unwrap().layout = Rect::new(10.0, 20.0, 80.0, 40.0);
-//         arena.node_mut(scroller).unwrap().scroll_offset = Point::new(0.0, 30.0);
-//         arena.finish_paint();
-
-//         arena.mark_dirty(scroller, WidgetUpdateFlags::PAINT_OUTPUT);
-
-//         assert_eq!(
-//             arena.prepare_paint_commands().0.rects(),
-//             &[Rect::new(10.0, 20.0, 80.0, 40.0)]
-//         );
-//     }
-
-//     #[test]
-//     fn dirty_nested_child_damage_uses_all_ancestor_scroll_offsets() {
-//         let mut arena = UiArena::new();
-//         let root = arena.root();
-//         let outer = arena.insert(
-//             root,
-//             ContainerWidget::new().style(Style::new().scroll_vertical()),
-//             tf::Style::default(),
-//         );
-//         let inner = arena.insert(
-//             outer,
-//             ContainerWidget::new().style(Style::new().scroll_vertical()),
-//             tf::Style::default(),
-//         );
-//         let child = arena.insert(inner, ContainerWidget::new(), tf::Style::default());
-
-//         arena.node_mut(root).unwrap().layout = Rect::new(0.0, 0.0, 200.0, 200.0);
-//         arena.node_mut(outer).unwrap().layout = Rect::new(0.0, 20.0, 100.0, 100.0);
-//         arena.node_mut(outer).unwrap().scroll_offset = Point::new(0.0, 30.0);
-//         arena.node_mut(inner).unwrap().layout = Rect::new(0.0, 70.0, 80.0, 80.0);
-//         arena.node_mut(inner).unwrap().scroll_offset = Point::new(0.0, 10.0);
-//         arena.node_mut(child).unwrap().layout = Rect::new(0.0, 90.0, 40.0, 40.0);
-//         arena.finish_paint();
-
-//         arena.mark_dirty(child, WidgetUpdateFlags::PAINT_OUTPUT);
-
-//         assert_eq!(
-//             arena.prepare_paint_commands().0.rects(),
-//             &[Rect::new(0.0, 50.0, 40.0, 40.0)]
-//         );
-//     }
-
-//     #[test]
-//     fn dirty_child_visible_after_inner_scroll_is_not_clipped_by_root_layout_position() {
-//         let mut arena = UiArena::new();
-//         let root = arena.root();
-//         let scroller = arena.insert(
-//             root,
-//             ContainerWidget::new().style(Style::new().scroll_vertical()),
-//             tf::Style::default(),
-//         );
-//         let child = arena.insert(scroller, ContainerWidget::new(), tf::Style::default());
-
-//         arena.node_mut(root).unwrap().layout = Rect::new(0.0, 0.0, 200.0, 100.0);
-//         arena.node_mut(scroller).unwrap().layout = Rect::new(0.0, 0.0, 180.0, 90.0);
-//         arena.node_mut(scroller).unwrap().scroll_offset = Point::new(0.0, 80.0);
-//         arena.node_mut(child).unwrap().layout = Rect::new(0.0, 132.0, 80.0, 40.0);
-//         arena.finish_paint();
-
-//         arena.mark_dirty(child, WidgetUpdateFlags::PAINT_OUTPUT);
-
-//         assert_eq!(
-//             arena.prepare_paint_commands().0.rects(),
-//             &[Rect::new(0.0, 52.0, 80.0, 38.0)]
-//         );
-//     }
-
-//     #[test]
-//     fn nested_scroll_invalidates_scrollable_ancestor_gutters() {
-//         let mut arena = UiArena::new();
-//         let root = arena.root();
-//         let scroller = arena.insert(
-//             root,
-//             ContainerWidget::new().style(Style::new().scroll_vertical()),
-//             tf::Style::default(),
-//         );
-//         let child = arena.insert(scroller, ContainerWidget::new(), tf::Style::default());
-
-//         arena.node_mut(root).unwrap().layout = Rect::new(0.0, 0.0, 200.0, 100.0);
-//         arena
-//             .node_mut(root)
-//             .unwrap()
-//             .computed_style
-//             .scroll
-//             .direction = xui_interface::ScrollDirectionStyle::Both;
-//         arena.node_mut(scroller).unwrap().layout = Rect::new(0.0, 0.0, 192.0, 92.0);
-//         arena.node_mut(scroller).unwrap().content_size = Size::<f32>::new(192.0, 200.0);
-//         arena.node_mut(child).unwrap().layout = Rect::new(0.0, 0.0, 100.0, 200.0);
-//         arena.finish_paint();
-
-//         assert!(arena.scroll_node_by(child, Point::new(0.0, -48.0)));
-
-//         let (damage, _commands) = arena.prepare_paint_commands();
-//         assert!(damage.rects().contains(&Rect::new(0.0, 0.0, 200.0, 100.0)));
-//     }
-// }
 
 // let max_width = match known_dimensions.width {
 //     Some(width) => Some(width),

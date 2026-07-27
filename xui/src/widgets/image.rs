@@ -5,6 +5,7 @@ use crate::event_system::callbacks::EventHandlers;
 use xui_interface::{style::ScrollbarStylePatch, *};
 
 use super::{props_hash, widget_element_desc};
+use crate::render::{ImagePrimitive, Primitive, RenderTreeWriter, Shape, ShapePrimitive};
 
 pub struct ImageWidget {
     pub key: Option<Key>,
@@ -240,26 +241,29 @@ impl ImageWidget {
         &self.style
     }
 
-    pub(super) fn paint(
+    pub(super) fn render(
         &self,
+        _node_id: NodeId,
         rect: Rect,
         style: &ComputedStyle,
-        commands: &mut Vec<PaintCommand>,
+        writer: &mut RenderTreeWriter<'_>,
     ) {
-        paint_box(rect, style, commands);
+        render_box(rect, style, writer);
 
         if let Some(image_data) = self.image_data.as_ref() {
-            commands.push(PaintCommand::Image(ImagePaintCommand {
-                variant: ImageVariant {
-                    sampling: self.image_style.sampling,
-                    ..ImageVariant::default()
-                },
-                style: self.image_style,
-                data: image_data.clone(),
-                key: self.image_key.clone(),
-                rect,
-                opacity: self.opacity,
-            }));
+            writer
+                .primitive(Primitive::Image(ImagePrimitive {
+                    variant: ImageVariant {
+                        sampling: self.image_style.sampling,
+                        ..ImageVariant::default()
+                    },
+                    style: self.image_style,
+                    data: image_data.clone(),
+                    image: self.image_key.clone(),
+                    bounds: rect,
+                    opacity: self.opacity,
+                }))
+                .expect("widget render tree must remain valid");
         }
     }
 
@@ -280,27 +284,22 @@ impl ImageWidget {
     }
 }
 
-pub(super) fn paint_box(rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
+pub(super) fn render_box(rect: Rect, style: &ComputedStyle, writer: &mut RenderTreeWriter<'_>) {
     let paint = style.paint;
-
-    let cmd = if paint.border_radius > 0.0 {
-        PaintCommand::RoundedRect {
-            rect,
-            radius: paint.border_radius,
-            color: paint.background,
-            stroke: paint.stroke,
-            shadow: paint.shadow,
-        }
+    let shape = if paint.border_radius > 0.0 {
+        Shape::RoundedRect(paint.border_radius)
     } else {
-        PaintCommand::Rect {
-            rect,
-            color: paint.background,
+        Shape::Rect
+    };
+    writer
+        .primitive(Primitive::Shape(ShapePrimitive {
+            bounds: rect,
+            shape,
+            fill: Some(paint.background),
             stroke: paint.stroke,
             shadow: paint.shadow,
-        }
-    };
-
-    commands.push(cmd);
+        }))
+        .expect("widget render tree must remain valid");
 }
 
 #[cfg(test)]
@@ -314,11 +313,25 @@ mod tests {
         )
     }
 
-    fn image_commands(commands: &[PaintCommand]) -> Vec<&ImagePaintCommand> {
-        commands
+    fn rendered_images(
+        widget: &ImageWidget,
+        rect: Rect,
+        style: &ComputedStyle,
+    ) -> Vec<ImagePrimitive> {
+        let mut scene = crate::render::RenderScene::new();
+        let parent = scene.insert_group();
+        let mut writer = RenderTreeWriter::new(&mut scene, parent);
+        widget.render(NodeId::default(), rect, style, &mut writer);
+        writer.finish().unwrap();
+        scene
+            .children(parent)
+            .unwrap()
             .iter()
-            .filter_map(|command| match command {
-                PaintCommand::Image(command) => Some(command),
+            .filter_map(|id| match &scene.node(*id).unwrap().kind {
+                crate::render::RenderNodeKind::Primitive(node) => match &node.primitive {
+                    Primitive::Image(image) => Some(image.clone()),
+                    _ => None,
+                },
                 _ => None,
             })
             .collect()
@@ -332,14 +345,10 @@ mod tests {
 
         let style = ComputedStyle::initial(&Theme::default());
         let rect = Rect::new(1.0, 2.0, 30.0, 20.0);
-        let mut commands = Vec::new();
-        widget.paint(rect, &style, &mut commands);
-
-        let PaintCommand::Image(command) = commands.last().unwrap() else {
-            panic!("expected image paint command");
-        };
-        assert_eq!(command.rect, rect);
-        assert_eq!(command.key, ImageKey::UserProvided(7));
+        let images = rendered_images(&widget, rect, &style);
+        let command = images.last().unwrap();
+        assert_eq!(command.bounds, rect);
+        assert_eq!(command.image, ImageKey::UserProvided(7));
         assert_eq!(&command.data, &data);
         assert_eq!(command.style, ImageStyle::default());
         assert_eq!(command.variant.sampling, Sampling::Linear);
@@ -380,68 +389,53 @@ mod tests {
             .fit(ImageFit::Contain)
             .sampling(Sampling::Nearest);
         let style = ComputedStyle::initial(&Theme::default());
-        let mut commands = Vec::new();
-
-        widget.paint(Rect::new(0.0, 0.0, 100.0, 100.0), &style, &mut commands);
-
-        let images = image_commands(&commands);
+        let images = rendered_images(&widget, Rect::new(0.0, 0.0, 100.0, 100.0), &style);
         assert_eq!(images.len(), 1);
-        assert_eq!(images[0].rect, Rect::new(0.0, 0.0, 100.0, 100.0));
+        assert_eq!(images[0].bounds, Rect::new(0.0, 0.0, 100.0, 100.0));
         assert_eq!(images[0].style.fit, ImageFit::Contain);
         assert_eq!(images[0].variant.sampling, Sampling::Nearest);
         assert_eq!(images[0].style.sampling, Sampling::Nearest);
     }
 
     #[test]
-    fn cover_fit_is_carried_in_paint_command_style() {
+    fn cover_fit_is_carried_in_retained_image_style() {
         let widget = ImageWidget::new()
             .image_data("image", pixels(2, 1, 1))
             .fit(ImageFit::Cover);
         let style = ComputedStyle::initial(&Theme::default());
         let rect = Rect::new(0.0, 0.0, 100.0, 100.0);
-        let mut commands = Vec::new();
-
-        widget.paint(rect, &style, &mut commands);
-
-        let images = image_commands(&commands);
+        let images = rendered_images(&widget, rect, &style);
         assert_eq!(images.len(), 1);
-        assert_eq!(images[0].rect, rect);
+        assert_eq!(images[0].bounds, rect);
         assert_eq!(images[0].style.fit, ImageFit::Cover);
     }
 
     #[test]
-    fn repeat_x_is_carried_in_paint_command_style() {
+    fn repeat_x_is_carried_in_retained_image_style() {
         let widget = ImageWidget::new()
             .image_data("image", pixels(10, 10, 1))
             .fit(ImageFit::None)
             .alignment(Alignment::START)
             .repeat(ImageRepeat::RepeatX);
         let style = ComputedStyle::initial(&Theme::default());
-        let mut commands = Vec::new();
-
-        widget.paint(Rect::new(0.0, 0.0, 25.0, 10.0), &style, &mut commands);
-
-        let images = image_commands(&commands);
+        let images = rendered_images(&widget, Rect::new(0.0, 0.0, 25.0, 10.0), &style);
         assert_eq!(images.len(), 1);
-        assert_eq!(images[0].rect, Rect::new(0.0, 0.0, 25.0, 10.0));
+        assert_eq!(images[0].bounds, Rect::new(0.0, 0.0, 25.0, 10.0));
         assert_eq!(images[0].style.fit, ImageFit::None);
         assert_eq!(images[0].style.alignment, Alignment::START);
         assert_eq!(images[0].style.repeat, ImageRepeat::RepeatX);
     }
 
     #[test]
-    fn scale_down_is_carried_in_paint_command_style() {
+    fn scale_down_is_carried_in_retained_image_style() {
         let style = ComputedStyle::initial(&Theme::default());
-        let mut commands = Vec::new();
         let widget = ImageWidget::new()
             .image_data("image", pixels(20, 10, 1))
             .fit(ImageFit::ScaleDown);
 
-        widget.paint(Rect::new(0.0, 0.0, 100.0, 100.0), &style, &mut commands);
-
-        let images = image_commands(&commands);
+        let images = rendered_images(&widget, Rect::new(0.0, 0.0, 100.0, 100.0), &style);
         assert_eq!(images.len(), 1);
-        assert_eq!(images[0].rect, Rect::new(0.0, 0.0, 100.0, 100.0));
+        assert_eq!(images[0].bounds, Rect::new(0.0, 0.0, 100.0, 100.0));
         assert_eq!(images[0].style.fit, ImageFit::ScaleDown);
     }
 }

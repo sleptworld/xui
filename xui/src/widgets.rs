@@ -7,11 +7,12 @@ use std::rc::Rc;
 pub use crate::event_system::callbacks::EventHandlers;
 use xui_animation::Transition;
 use xui_interface::{EventRef, EventResult, TextContent, TextProps, WidgetUpdateFlags};
-pub use xui_interface::{PaintCommand, Style, WidgetType};
+pub use xui_interface::{Style, WidgetType};
 
 use crate::core::{Rect, Size};
 use crate::element::{ComponentDesc, ElementDesc, WidgetDesc};
 use crate::fiber::{ComponentRender, Key};
+use crate::render::RenderTreeWriter;
 use crate::state::HookContext;
 use crate::style::ComputedStyle;
 
@@ -448,12 +449,15 @@ macro_rules! event_handler_methods {
 }
 
 mod container;
+mod icon;
 mod image;
 mod root;
 mod text;
 mod text_input;
+mod z_stack;
 
 pub use container::ContainerWidget;
+pub use icon::{IconData, IconLayer, IconStroke, IconWidget, SvgIconError};
 pub use image::ImageWidget;
 pub use root::RootWidget;
 pub use text::TextWidget;
@@ -461,6 +465,7 @@ pub use text::TextWidget;
 pub use text_input::TextInputWidget;
 pub use text_input::keymap::{TextCommand, TextKeymap};
 pub use text_input::{TextController, TextInputChange};
+pub use z_stack::ZStackWidget;
 
 pub type RootComponentRender = fn(&mut HookContext) -> ElementDesc;
 
@@ -543,15 +548,16 @@ macro_rules! define_widgets {
                 None
             }
 
-            pub fn paint(
+            pub(crate) fn render(
                 &self,
+                node_id: xui_interface::NodeId,
                 rect: Rect,
                 style: &ComputedStyle,
-                commands: &mut Vec<PaintCommand>,
+                writer: &mut RenderTreeWriter<'_>,
             ) {
                 match self {
                     $(
-                        Self::$name(widget) => widget.paint(rect, style, commands),
+                        Self::$name(widget) => widget.render(node_id, rect, style, writer),
                     )+
                 }
             }
@@ -604,9 +610,11 @@ macro_rules! define_widgets {
 
 define_widgets! {
     Container => ContainerWidget,
+    ZStack => ZStackWidget,
     Text => TextWidget,
     TextInput => TextInputWidget,
     Image => ImageWidget,
+    Icon => IconWidget,
     Root => RootWidget,
 }
 
@@ -666,6 +674,7 @@ impl WidgetI {
     pub(crate) fn transition(&self) -> Option<Transition> {
         self.with_widgets(|w| match w {
             Widgets::Container(c) => c.transition,
+            Widgets::ZStack(stack) => stack.transition,
             _ => None,
         })
     }
@@ -674,8 +683,14 @@ impl WidgetI {
         self.with_widgets_mut(|widget| std::mem::take(widget.event_handlers_mut()))
     }
 
-    pub fn paint(&self, rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
-        self.with_widgets(|widget| widget.paint(rect, style, commands));
+    pub(crate) fn render(
+        &self,
+        node_id: xui_interface::NodeId,
+        rect: Rect,
+        style: &ComputedStyle,
+        writer: &mut RenderTreeWriter<'_>,
+    ) {
+        self.with_widgets(|widget| widget.render(node_id, rect, style, writer));
     }
 
     pub fn handle_event(
@@ -769,8 +784,16 @@ pub fn container() -> ContainerWidget {
     ContainerWidget::new()
 }
 
+pub fn z_stack() -> ZStackWidget {
+    ZStackWidget::new()
+}
+
 pub fn image() -> ImageWidget {
     ImageWidget::new()
+}
+
+pub fn icon(data: IconData) -> IconWidget {
+    IconWidget::new(data)
 }
 
 // pub fn style_scope(style: Style) -> StyleScopeWidget {

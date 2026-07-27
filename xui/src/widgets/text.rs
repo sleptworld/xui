@@ -1,12 +1,13 @@
 use crate::event_system::callbacks::EventHandlers;
 use crate::{element::ElementDesc, event_system::EventContext};
 use xui_interface::{
-    ComputedStyle, EventRef, EventResult, Key, OverflowWrap, PaintCommand, ParagraphStyle, Rect,
-    Style, TextBoxStyle, TextContent, TextOverflow, TextPaintCommand, TextPaintProps,
-    TextPaintStyle, TextProps, WidgetType, WidgetUpdateFlags,
+    Affine, ComputedStyle, EventRef, EventResult, Key, OverflowWrap, ParagraphStyle, Rect, Style,
+    TextBoxStyle, TextContent, TextOverflow, TextPaintProps, TextPaintStyle, TextProps, WidgetType,
+    WidgetUpdateFlags,
 };
 
 use super::{props_hash, widget_element_desc};
+use crate::render::{Primitive, RenderTreeWriter, TextPrimitive};
 
 #[derive(Debug)]
 pub struct TextWidget {
@@ -125,17 +126,20 @@ impl TextWidget {
         &self.style
     }
 
-    pub(super) fn paint(
+    pub(super) fn render(
         &self,
+        node_id: xui_interface::NodeId,
         rect: Rect,
         style: &ComputedStyle,
-        commands: &mut Vec<PaintCommand>,
+        writer: &mut RenderTreeWriter<'_>,
     ) {
-        commands.push(PaintCommand::Text(TextPaintCommand {
-            node_id: Default::default(),
-            rect,
-            paint: TextPaintProps::new(TextPaintStyle::from_computed(&style.text)),
-        }));
+        writer
+            .primitive(Primitive::Text(TextPrimitive {
+                node_id,
+                bounds: rect,
+                paint: TextPaintProps::new(TextPaintStyle::from_computed(&style.text)),
+            }))
+            .expect("widget render tree must remain valid");
     }
 
     pub(super) fn handle_event(

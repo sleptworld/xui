@@ -4,12 +4,12 @@ use crate::event_system::callbacks::EventHandlers;
 use xui_animation::Transition;
 use xui_interface::style::FlexDirectionStyle;
 use xui_interface::{
-    ColorStyle, ComputedStyle, EventRef, EventResult, Key, LengthValue, PaintCommand, Rect,
-    ScrollDirectionStyle, Style, TextContent, TextProps, WidgetType, WidgetUpdateFlags,
-    style::ScrollbarStylePatch,
+    ColorStyle, ComputedStyle, EventRef, EventResult, Key, LengthValue, Rect, ScrollDirectionStyle,
+    Style, TextContent, TextProps, WidgetType, WidgetUpdateFlags, style::ScrollbarStylePatch,
 };
 
 use super::{props_hash, widget_element_desc};
+use crate::render::{Primitive, RenderTreeWriter, Shape, ShapePrimitive};
 
 pub struct ContainerWidget {
     pub key: Option<Key>,
@@ -152,13 +152,14 @@ impl ContainerWidget {
         &self.style
     }
 
-    pub(super) fn paint(
+    pub(super) fn render(
         &self,
+        _node_id: xui_interface::NodeId,
         rect: Rect,
         style: &ComputedStyle,
-        commands: &mut Vec<PaintCommand>,
+        writer: &mut RenderTreeWriter<'_>,
     ) {
-        paint_box(rect, style, commands);
+        render_box(rect, style, writer);
     }
 
     pub(super) fn handle_event(
@@ -178,25 +179,20 @@ impl ContainerWidget {
     }
 }
 
-pub(super) fn paint_box(rect: Rect, style: &ComputedStyle, commands: &mut Vec<PaintCommand>) {
+pub(super) fn render_box(rect: Rect, style: &ComputedStyle, writer: &mut RenderTreeWriter<'_>) {
     let paint = style.paint;
-
-    let cmd = if paint.border_radius > 0.0 {
-        PaintCommand::RoundedRect {
-            rect,
-            radius: paint.border_radius,
-            color: paint.background,
-            stroke: paint.stroke,
-            shadow: paint.shadow,
-        }
+    let shape = if paint.border_radius > 0.0 {
+        Shape::RoundedRect(paint.border_radius)
     } else {
-        PaintCommand::Rect {
-            rect,
-            color: paint.background,
+        Shape::Rect
+    };
+    writer
+        .primitive(Primitive::Shape(ShapePrimitive {
+            bounds: rect,
+            shape,
+            fill: Some(paint.background),
             stroke: paint.stroke,
             shadow: paint.shadow,
-        }
-    };
-
-    commands.push(cmd);
+        }))
+        .expect("widget render tree must remain valid");
 }

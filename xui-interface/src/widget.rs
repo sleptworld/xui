@@ -1,5 +1,4 @@
 use slotmap::new_key_type;
-use smallstr::SmallString;
 
 new_key_type! {
     pub struct NodeId;
@@ -14,9 +13,11 @@ pub enum WidgetType {
     Column,
     Row,
     Container,
+    ZStack,
     StyleScope,
     ScrollScope,
     Image,
+    Icon,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

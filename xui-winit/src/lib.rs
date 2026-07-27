@@ -12,4 +12,4 @@ pub use translate::{
     translate_mouse_button, translate_mouse_wheel, translate_named_key, translate_physical_key,
     translate_window_event,
 };
-pub use wgpu::WGPUBackend;
+pub use wgpu::{LayerCacheStats, WGPUBackend, WgpuBackendOptions};

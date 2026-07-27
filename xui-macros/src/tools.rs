@@ -100,6 +100,12 @@ pub fn parse_layout_style_attr<T: quote::ToTokens + ?Sized>(
         "justify" => Some(quote! {
             __xui_style =  __xui_style.justify(#value);
         }),
+        "position" => Some(quote! {
+            __xui_style = __xui_style.position_type(#value);
+        }),
+        "inset" => Some(quote! {
+            __xui_style = __xui_style.inset(#value);
+        }),
         "width" => Some(quote! {
             __xui_style = __xui_style.width(#value);
 

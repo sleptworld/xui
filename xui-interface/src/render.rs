@@ -1,8 +1,4 @@
-use crate::{
-    Color, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, ComputedTextStyle,
-    LineHeight, NodeId, NodeLifecycleEvent, Point, Rect, Size, TextDecoration, TextRange,
-    Translation,
-};
+use crate::{Color, ComputedTextStyle, LineHeight, Point, Rect, Size, TextDecoration, TextRange};
 use std::{
     hash::{Hash, Hasher},
     path::PathBuf,
@@ -12,57 +8,357 @@ use std::{
     },
 };
 
-pub trait Painter {
-    fn push(&mut self, command: PaintCommand);
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Affine {
+    pub xx: f32,
+    pub yx: f32,
+    pub xy: f32,
+    pub yy: f32,
+    pub dx: f32,
+    pub dy: f32,
 }
 
-impl Painter for Vec<PaintCommand> {
-    fn push(&mut self, command: PaintCommand) {
-        Vec::push(self, command);
+impl Affine {
+    pub const IDENTITY: Self = Self {
+        xx: 1.0,
+        yx: 0.0,
+        xy: 0.0,
+        yy: 1.0,
+        dx: 0.0,
+        dy: 0.0,
+    };
+
+    pub const fn new(xx: f32, yx: f32, xy: f32, yy: f32, dx: f32, dy: f32) -> Self {
+        Self {
+            xx,
+            yx,
+            xy,
+            yy,
+            dx,
+            dy,
+        }
+    }
+
+    pub const fn translate(x: f32, y: f32) -> Self {
+        Self::new(1.0, 0.0, 0.0, 1.0, x, y)
+    }
+
+    pub const fn scale(x: f32, y: f32) -> Self {
+        Self::new(x, 0.0, 0.0, y, 0.0, 0.0)
+    }
+
+    pub fn then(self, next: Self) -> Self {
+        Self::new(
+            next.xx * self.xx + next.xy * self.yx,
+            next.yx * self.xx + next.yy * self.yx,
+            next.xx * self.xy + next.xy * self.yy,
+            next.yx * self.xy + next.yy * self.yy,
+            next.xx * self.dx + next.xy * self.dy + next.dx,
+            next.yx * self.dx + next.yy * self.dy + next.dy,
+        )
+    }
+
+    pub fn transform_point(self, point: Point) -> Point {
+        Point::new(
+            self.xx * point.x + self.xy * point.y + self.dx,
+            self.yx * point.x + self.yy * point.y + self.dy,
+        )
+    }
+
+    pub fn transform_rect(self, rect: Rect) -> Rect {
+        let points = [
+            self.transform_point(Point::new(rect.x, rect.y)),
+            self.transform_point(Point::new(rect.x + rect.width, rect.y)),
+            self.transform_point(Point::new(rect.x, rect.y + rect.height)),
+            self.transform_point(Point::new(rect.x + rect.width, rect.y + rect.height)),
+        ];
+        let min_x = points
+            .iter()
+            .map(|point| point.x)
+            .fold(f32::INFINITY, f32::min);
+        let min_y = points
+            .iter()
+            .map(|point| point.y)
+            .fold(f32::INFINITY, f32::min);
+        let max_x = points
+            .iter()
+            .map(|point| point.x)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let max_y = points
+            .iter()
+            .map(|point| point.y)
+            .fold(f32::NEG_INFINITY, f32::max);
+        Rect::new(min_x, min_y, max_x - min_x, max_y - min_y)
+    }
+
+    pub fn is_translation(self) -> bool {
+        self.xx == 1.0 && self.xy == 0.0 && self.yx == 0.0 && self.yy == 1.0
+    }
+
+    pub fn is_axis_aligned(self) -> bool {
+        self.xy == 0.0 && self.yx == 0.0
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum PaintCommand {
-    Rect {
-        rect: Rect,
-        color: ComputedColorStyle,
-        stroke: Option<ComputedStrokeStyle>,
-        shadow: Option<ComputedShadowStyle>,
-    },
-    RoundedRect {
-        rect: Rect,
-        radius: f32,
-        color: ComputedColorStyle,
-        stroke: Option<ComputedStrokeStyle>,
-        shadow: Option<ComputedShadowStyle>,
-    },
-    Line {
-        from: Point,
-        to: Point,
-        color: Color,
-        width: f32,
-    },
-    Text(TextPaintCommand),
-    Image(ImagePaintCommand),
-    // Clip
-    PushClip(Rect),
-    PopClip,
-
-    // Transform
-    PushTransform {
-        translate: Translation,
-    },
-    PopTransform,
-
-    Clear(Color),
+impl Default for Affine {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct TextPaintCommand {
-    pub node_id: NodeId,
-    pub rect: Rect,
-    pub paint: TextPaintProps,
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PathSegment {
+    MoveTo(Point),
+    LineTo(Point),
+    QuadraticTo {
+        control: Point,
+        to: Point,
+    },
+    CubicTo {
+        control1: Point,
+        control2: Point,
+        to: Point,
+    },
+    Close,
+}
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub struct PathDataId(u64);
+
+impl PathDataId {
+    fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PathData {
+    id: PathDataId,
+    segments: Arc<[PathSegment]>,
+    bounds: Rect,
+}
+
+impl PathData {
+    pub fn id(&self) -> PathDataId {
+        self.id
+    }
+    pub fn segments(&self) -> &[PathSegment] {
+        &self.segments
+    }
+    pub fn is_empty(&self) -> bool {
+        self.segments.is_empty()
+    }
+
+    /// Conservative control-hull bounds. Curves may occupy less space, never
+    /// more, which makes this suitable for culling and conservative visual bounds.
+    pub fn bounds(&self) -> Rect {
+        self.bounds
+    }
+}
+
+impl PartialEq for PathData {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct PathBuilder {
+    segments: Vec<PathSegment>,
+}
+
+impl PathBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn move_to(&mut self, point: Point) -> &mut Self {
+        self.segments.push(PathSegment::MoveTo(point));
+        self
+    }
+    pub fn line_to(&mut self, point: Point) -> &mut Self {
+        self.segments.push(PathSegment::LineTo(point));
+        self
+    }
+    pub fn quadratic_to(&mut self, control: Point, to: Point) -> &mut Self {
+        self.segments.push(PathSegment::QuadraticTo { control, to });
+        self
+    }
+    pub fn cubic_to(&mut self, control1: Point, control2: Point, to: Point) -> &mut Self {
+        self.segments.push(PathSegment::CubicTo {
+            control1,
+            control2,
+            to,
+        });
+        self
+    }
+    pub fn close(&mut self) -> &mut Self {
+        self.segments.push(PathSegment::Close);
+        self
+    }
+    pub fn build(self) -> PathData {
+        let bounds = path_segment_bounds(&self.segments);
+        PathData {
+            id: PathDataId::next(),
+            segments: self.segments.into(),
+            bounds,
+        }
+    }
+}
+
+fn path_segment_bounds(segments: &[PathSegment]) -> Rect {
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    let mut include = |point: Point| {
+        min_x = min_x.min(point.x);
+        min_y = min_y.min(point.y);
+        max_x = max_x.max(point.x);
+        max_y = max_y.max(point.y);
+    };
+    for segment in segments {
+        match *segment {
+            PathSegment::MoveTo(point) | PathSegment::LineTo(point) => include(point),
+            PathSegment::QuadraticTo { control, to } => {
+                include(control);
+                include(to);
+            }
+            PathSegment::CubicTo {
+                control1,
+                control2,
+                to,
+            } => {
+                include(control1);
+                include(control2);
+                include(to);
+            }
+            PathSegment::Close => {}
+        }
+    }
+    if min_x.is_finite() {
+        Rect::new(min_x, min_y, max_x - min_x, max_y - min_y)
+    } else {
+        Rect::ZERO
+    }
+}
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum FillRule {
+    NonZero,
+    EvenOdd,
+}
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum LineCap {
+    Butt,
+    Square,
+    Round,
+}
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum LineJoin {
+    Miter,
+    Bevel,
+    Round,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PathFill {
+    pub color: Color,
+    pub rule: FillRule,
+}
+
+impl PathFill {
+    pub const fn new(color: Color) -> Self {
+        Self {
+            color,
+            rule: FillRule::NonZero,
+        }
+    }
+    pub const fn rule(mut self, rule: FillRule) -> Self {
+        self.rule = rule;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PathStroke {
+    pub color: Color,
+    pub width: f32,
+    pub cap: LineCap,
+    pub join: LineJoin,
+}
+
+impl PathStroke {
+    pub const fn new(color: Color, width: f32) -> Self {
+        Self {
+            color,
+            width,
+            cap: LineCap::Butt,
+            join: LineJoin::Miter,
+        }
+    }
+    pub const fn cap(mut self, cap: LineCap) -> Self {
+        self.cap = cap;
+        self
+    }
+    pub const fn join(mut self, join: LineJoin) -> Self {
+        self.join = join;
+        self
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn path_builder_records_all_segments_and_clone_preserves_identity() {
+        let mut builder = PathBuilder::new();
+        builder
+            .move_to(Point::new(1.0, 2.0))
+            .line_to(Point::new(3.0, 4.0))
+            .quadratic_to(Point::new(5.0, 6.0), Point::new(7.0, 8.0))
+            .cubic_to(
+                Point::new(9.0, 10.0),
+                Point::new(11.0, 12.0),
+                Point::new(13.0, 14.0),
+            )
+            .close();
+        let path = builder.build();
+        assert_eq!(path.segments().len(), 5);
+        assert_eq!(path, path.clone());
+        assert_ne!(path, PathBuilder::new().build());
+    }
+
+    #[test]
+    fn affine_composition_applies_in_call_order() {
+        let transform = Affine::translate(-1.0, -2.0)
+            .then(Affine::scale(2.0, 3.0))
+            .then(Affine::translate(10.0, 20.0));
+        assert_eq!(
+            transform.transform_point(Point::new(1.0, 2.0)),
+            Point::new(10.0, 20.0)
+        );
+    }
+
+    #[test]
+    fn path_bounds_are_conservative_and_affine_transforms_rectangles() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(Point::new(1.0, 2.0)).cubic_to(
+            Point::new(-4.0, 8.0),
+            Point::new(12.0, -3.0),
+            Point::new(6.0, 5.0),
+        );
+        assert_eq!(builder.build().bounds(), Rect::new(-4.0, -3.0, 16.0, 11.0));
+        assert_eq!(
+            Affine::scale(2.0, 3.0)
+                .then(Affine::translate(10.0, 20.0))
+                .transform_rect(Rect::new(1.0, 2.0, 4.0, 5.0)),
+            Rect::new(12.0, 26.0, 8.0, 15.0)
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -123,38 +419,12 @@ pub struct TextImePaint {
     pub underline_width: f32,
 }
 
-/// A paint command for drawing an image.
-///
-/// Carries both:
-/// - an [`ImageKey`] identifying the image (used by the backend as a stable
-///   cache key for the uploaded GPU texture), and
-/// - an [`Arc<ImageData>`] containing the actual decoded pixel data, so the
-///   backend never has to look outside the command to know what to draw.
-///
-/// The [`ImageStyle`] describes widget-level presentation such as fit,
-/// alignment, repeat, and sampling. The [`ImageVariant`] carries lower-level
-/// renderer options such as transform, target size, and color space. Both are
-/// intentionally part of the command rather than the key, so that the same
-/// source image can be drawn with different presentation options without
-/// duplicating the underlying pixel data.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ImagePaintCommand {
-    pub key: ImageKey,
-    pub data: ImageData,
-    /// Image widget bounds. Backends use this as the style container for fit,
-    /// alignment, repeat, and clipping.
-    pub rect: Rect,
-    pub opacity: f32,
-    pub variant: ImageVariant,
-    pub style: ImageStyle,
-}
-
 /// Stable identifier for an image source.
 ///
 /// `ImageKey` is intentionally a pure identity: it answers the question
 /// "which image is this?" but says nothing about how to display it.
 /// Display-time options (sampling, rotation, target size, ...) live on
-/// [`ImageVariant`] inside [`ImagePaintCommand`].
+/// [`ImageVariant`] on the retained image primitive.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum ImageKey {
     AssetId([u8; 16]),
@@ -298,6 +568,14 @@ impl Alignment {
     pub const START: Self = Self::new(0.0, 0.0);
     pub const CENTER: Self = Self::new(0.5, 0.5);
     pub const END: Self = Self::new(1.0, 1.0);
+    pub const TOP_LEADING: Self = Self::new(0.0, 0.0);
+    pub const TOP: Self = Self::new(0.5, 0.0);
+    pub const TOP_TRAILING: Self = Self::new(1.0, 0.0);
+    pub const LEADING: Self = Self::new(0.0, 0.5);
+    pub const TRAILING: Self = Self::new(1.0, 0.5);
+    pub const BOTTOM_LEADING: Self = Self::new(0.0, 1.0);
+    pub const BOTTOM: Self = Self::new(0.5, 1.0);
+    pub const BOTTOM_TRAILING: Self = Self::new(1.0, 1.0);
 
     pub const fn new(x: f32, y: f32) -> Self {
         Self { x, y }
@@ -359,7 +637,7 @@ pub enum ImageRotation {
 /// Decoded pixel data for an image.
 ///
 /// This is the runtime payload carried inside an `Arc` so that widgets, the
-/// `UiArena` shared image pool, and `ImagePaintCommand`s can all reference
+/// `UiArena` shared image pool, and retained image primitives can all reference
 /// the same pixels without copying.
 ///
 /// Every `ImageData` carries a process-unique [`ImageDataId`] assigned at
@@ -434,148 +712,6 @@ fn hash_f32_canonical<H: Hasher>(value: f32, state: &mut H) {
         value.to_bits()
     };
     bits.hash(state);
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Damage {
-    visual_rect: Rect,
-    rect: Rect,
-}
-
-impl Damage {
-    pub fn new(rect: Rect, visual_rect: Rect) -> Self {
-        Self { rect, visual_rect }
-    }
-
-    pub fn full(size: Size<f32>) -> Self {
-        Self {
-            visual_rect: Rect::new(0., 0., size.width, size.height),
-            rect: Rect::new(0., 0., size.width, size.height),
-        }
-    }
-
-    pub fn rect(self) -> Rect {
-        self.rect
-    }
-
-    pub fn visual_rect(self) -> Rect {
-        self.visual_rect
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct DamageRegion {
-    rects: Vec<Damage>,
-}
-
-impl DamageRegion {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn add(&mut self, damage: Damage) {
-        if damage.visual_rect.width > 0.0 && damage.visual_rect.height > 0.0 {
-            self.rects.push(damage);
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.rects.is_empty()
-    }
-
-    pub fn clear(&mut self) {
-        self.rects.clear();
-    }
-
-    pub fn take(&mut self) -> Self {
-        Self {
-            rects: std::mem::take(&mut self.rects),
-        }
-    }
-
-    pub fn damages(&self) -> &[Damage] {
-        &self.rects
-    }
-
-    pub fn rects(&self) -> impl Iterator<Item = Rect> + '_ {
-        self.rects.iter().map(|damage| damage.rect)
-    }
-
-    pub fn visual_rects(&self) -> impl Iterator<Item = Rect> + '_ {
-        self.rects.iter().map(|damage| damage.visual_rect)
-    }
-
-    pub fn bounds(&self) -> Option<Rect> {
-        self.rects.iter().map(|r| r.visual_rect).reduce(Rect::union)
-    }
-
-    pub fn intersects(&self, rect: Rect) -> bool {
-        self.rects.iter().any(|d| d.visual_rect.intersects(rect))
-    }
-}
-
-pub trait RenderBackend<T> {
-    type Error;
-
-    fn begin_frame(&mut self, size: Size<f32>) -> Result<(), Self::Error>;
-    fn paint(
-        &mut self,
-        commands: &[PaintCommand],
-        damage: &DamageRegion,
-        text: &mut T,
-    ) -> Result<(), Self::Error>;
-    fn end_frame(&mut self) -> Result<(), Self::Error>;
-
-    fn did_present(&self) -> bool {
-        true
-    }
-
-    fn resize(&mut self, _size: Size<f32>) -> Result<(), Self::Error> {
-        Ok(())
-    }
-
-    fn set_factor(&mut self, _factor: f32) -> Result<(), Self::Error> {
-        Ok(())
-    }
-
-    fn handle_node_lifecycle(&mut self, _event: &NodeLifecycleEvent) {}
-}
-
-pub trait DrawBackend<T>: RenderBackend<T> {}
-
-impl<T, B: RenderBackend<T>> DrawBackend<T> for B {}
-
-#[derive(Debug, Clone, Default)]
-pub struct MockRenderBackend {
-    pub frame_size: Option<Size<f32>>,
-    pub frames: usize,
-    pub last_damage: DamageRegion,
-    pub last_commands: Vec<PaintCommand>,
-}
-
-impl<T> RenderBackend<T> for MockRenderBackend {
-    type Error = core::convert::Infallible;
-
-    fn begin_frame(&mut self, size: Size<f32>) -> Result<(), Self::Error> {
-        self.frame_size = Some(size);
-        Ok(())
-    }
-
-    fn paint(
-        &mut self,
-        commands: &[PaintCommand],
-        damage: &DamageRegion,
-        _text: &mut T,
-    ) -> Result<(), Self::Error> {
-        self.last_commands = commands.to_vec();
-        self.last_damage = damage.clone();
-        Ok(())
-    }
-
-    fn end_frame(&mut self) -> Result<(), Self::Error> {
-        self.frames += 1;
-        Ok(())
-    }
 }
 
 pub trait FontRenderBackend {

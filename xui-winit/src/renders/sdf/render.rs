@@ -1,6 +1,6 @@
 use wgpu::{include_wgsl, util::DeviceExt};
 
-use crate::wgpu::SCENE_FORMAT;
+use crate::wgpu::{SCENE_FORMAT, SCENE_SAMPLE_COUNT};
 use xui_interface::Rect;
 
 const UI_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 10] = wgpu::vertex_attr_array![
@@ -91,7 +91,10 @@ impl SdfRenderer {
             },
 
             depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: SCENE_SAMPLE_COUNT,
+                ..Default::default()
+            },
             multiview_mask: None,
             cache: None,
         });
@@ -146,14 +149,36 @@ impl SdfRenderer {
         scale_factor: f32,
         target_size: (u32, u32),
     ) {
+        self.render_range(
+            pass,
+            ui_bind_group,
+            scissors,
+            0..self.instance_count as usize,
+            scale_factor,
+            target_size,
+        );
+    }
+
+    pub fn render_range(
+        &self,
+        pass: &mut wgpu::RenderPass,
+        ui_bind_group: &wgpu::BindGroup,
+        scissors: &[Rect],
+        range: std::ops::Range<usize>,
+        scale_factor: f32,
+        target_size: (u32, u32),
+    ) {
+        if range.is_empty() {
+            return;
+        }
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, ui_bind_group, &[]);
         pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-        let mut start = 0;
-        while start < self.instance_count as usize {
+        let mut start = range.start;
+        while start < range.end {
             let scissor = scissors[start];
             let mut end = start + 1;
-            while end < self.instance_count as usize && scissors[end] == scissor {
+            while end < range.end && scissors[end] == scissor {
                 end += 1;
             }
             if let Some((x, y, width, height)) =

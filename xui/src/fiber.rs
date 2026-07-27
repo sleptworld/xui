@@ -6,7 +6,7 @@ use std::rc::Rc;
 use taffy::prelude as tf;
 pub use xui_interface::Key;
 use xui_interface::widget::WidgetType;
-use xui_interface::{ComputedStyle, NodeId, PaintCommand};
+use xui_interface::{ComputedStyle, NodeId};
 
 use crate::HookContext;
 use crate::core::Rect;
@@ -114,7 +114,6 @@ pub struct HostState {
     pub computed_style: ComputedStyle,
     pub layout: Rect,
     pub previous_layout: Rect,
-    pub paint_cache: Vec<PaintCommand>,
     pub props_hash: u64,
 }
 

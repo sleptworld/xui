@@ -1,6 +1,7 @@
 use super::atlas::Atlas;
 use crate::wgpu::SCENE_FORMAT;
 use glam::{Vec2, Vec3};
+use std::ops::Range;
 use wgpu::{BindGroup, BindGroupLayout, util::DeviceExt, wgc::device};
 use xui::{Color, Rect};
 use xui_interface::RasterizedGlyphFormat;
@@ -115,8 +116,16 @@ pub struct GlyphRender {
     subpixel_buffer: GlyphBuffer,
     mask_buffer: GlyphBuffer,
     color_buffer: GlyphBuffer,
+    record_ranges: Vec<GlyphRecordRanges>,
     // Atlas
     atlas: Atlas,
+}
+
+#[derive(Clone, Default)]
+struct GlyphRecordRanges {
+    mask: Range<usize>,
+    subpixel: Range<usize>,
+    color: Range<usize>,
 }
 
 impl GlyphRender {
@@ -232,6 +241,7 @@ impl GlyphRender {
             subpixel_buffer,
             mask_buffer,
             color_buffer,
+            record_ranges: Vec::new(),
             atlas,
         }
     }
@@ -245,7 +255,9 @@ impl GlyphRender {
         let mut subpixel_glyphs = Vec::new();
         let mut mask_glyphs = Vec::new();
         let mut color_glyphs = Vec::new();
+        let mut record_ranges = Vec::with_capacity(glyphs.len());
         for glyph in glyphs {
+            let before = [mask_glyphs.len(), subpixel_glyphs.len(), color_glyphs.len()];
             if glyph.screen_rect.width <= 0.0
                 || glyph.screen_rect.height <= 0.0
                 || glyph.clip.width <= 0.0
@@ -255,6 +267,11 @@ impl GlyphRender {
                 || glyph.atlas_size.y <= 0.0
                 || glyph.atlas_size.z <= 0.0
             {
+                record_ranges.push(GlyphRecordRanges {
+                    mask: before[0]..before[0],
+                    subpixel: before[1]..before[1],
+                    color: before[2]..before[2],
+                });
                 continue;
             }
 
@@ -281,7 +298,13 @@ impl GlyphRender {
                     color_glyphs.push((glyph_instant, glyph.clip));
                 }
             }
+            record_ranges.push(GlyphRecordRanges {
+                mask: before[0]..mask_glyphs.len(),
+                subpixel: before[1]..subpixel_glyphs.len(),
+                color: before[2]..color_glyphs.len(),
+            });
         }
+        self.record_ranges = record_ranges;
 
         self.mask_buffer.copy_to_buffer(device, queue, mask_glyphs);
         self.color_buffer
@@ -297,45 +320,89 @@ impl GlyphRender {
         scale_factor: f32,
         target_size: (u32, u32),
     ) {
-        if self.mask_buffer.len() > 0 {
+        self.render_range(
+            pass,
+            tool_bind_group,
+            0..self.record_ranges.len(),
+            scale_factor,
+            target_size,
+        );
+    }
+
+    pub fn render_range(
+        &self,
+        pass: &mut wgpu::RenderPass,
+        tool_bind_group: &BindGroup,
+        records: Range<usize>,
+        scale_factor: f32,
+        target_size: (u32, u32),
+    ) {
+        let mask = self.buffer_range(records.clone(), |ranges| &ranges.mask);
+        let subpixel = self.buffer_range(records.clone(), |ranges| &ranges.subpixel);
+        let color = self.buffer_range(records, |ranges| &ranges.color);
+        if !mask.is_empty() {
             pass.set_pipeline(&self.mask_pipeline);
             pass.set_bind_group(0, tool_bind_group, &[]);
             pass.set_bind_group(1, &self.glyph_bind_group, &[]);
             pass.set_vertex_buffer(0, self.mask_buffer.buffer.slice(..));
-            draw_glyph_buffer(pass, &self.mask_buffer, scale_factor, target_size);
+            draw_glyph_buffer(pass, &self.mask_buffer, mask, scale_factor, target_size);
         }
 
-        if self.subpixel_buffer.len() > 0 {
+        if !subpixel.is_empty() {
             for c in &self.subpixel_pipelines {
                 pass.set_pipeline(c);
                 pass.set_bind_group(0, tool_bind_group, &[]);
                 pass.set_bind_group(1, &self.glyph_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.subpixel_buffer.buffer.slice(..));
-                draw_glyph_buffer(pass, &self.subpixel_buffer, scale_factor, target_size);
+                draw_glyph_buffer(
+                    pass,
+                    &self.subpixel_buffer,
+                    subpixel.clone(),
+                    scale_factor,
+                    target_size,
+                );
             }
         }
 
-        if self.color_buffer.len() > 0 {
+        if !color.is_empty() {
             pass.set_pipeline(&self.color_pipeline);
             pass.set_bind_group(0, tool_bind_group, &[]);
             pass.set_bind_group(1, &self.glyph_bind_group, &[]);
             pass.set_vertex_buffer(0, self.color_buffer.buffer.slice(..));
-            draw_glyph_buffer(pass, &self.color_buffer, scale_factor, target_size);
+            draw_glyph_buffer(pass, &self.color_buffer, color, scale_factor, target_size);
         }
+    }
+
+    fn buffer_range(
+        &self,
+        records: Range<usize>,
+        select: impl Fn(&GlyphRecordRanges) -> &Range<usize>,
+    ) -> Range<usize> {
+        let start = records
+            .clone()
+            .next()
+            .map(|i| select(&self.record_ranges[i]).start)
+            .unwrap_or(0);
+        let end = records
+            .last()
+            .map(|i| select(&self.record_ranges[i]).end)
+            .unwrap_or(start);
+        start..end
     }
 }
 
 fn draw_glyph_buffer(
     pass: &mut wgpu::RenderPass,
     buffer: &GlyphBuffer,
+    range: Range<usize>,
     scale_factor: f32,
     target_size: (u32, u32),
 ) {
-    let mut start = 0;
-    while start < buffer.len() {
+    let mut start = range.start;
+    while start < range.end {
         let scissor = buffer.scissors[start];
         let mut end = start + 1;
-        while end < buffer.len() && buffer.scissors[end] == scissor {
+        while end < range.end && buffer.scissors[end] == scissor {
             end += 1;
         }
         if let Some((x, y, width, height)) =
@@ -392,7 +459,10 @@ fn create_glyph_pipeline(
         },
 
         depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
+        multisample: wgpu::MultisampleState {
+            count: crate::wgpu::SCENE_SAMPLE_COUNT,
+            ..Default::default()
+        },
         multiview_mask: None,
         cache: None,
     })
@@ -433,7 +503,10 @@ fn create_mask_glyph_pipeline(
         },
 
         depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
+        multisample: wgpu::MultisampleState {
+            count: crate::wgpu::SCENE_SAMPLE_COUNT,
+            ..Default::default()
+        },
         multiview_mask: None,
         cache: None,
     })

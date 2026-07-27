@@ -40,7 +40,7 @@ pub fn input(
     // input only owns the editable content area, but it still needs an explicit
     // size so layout, hit testing, clipping, and IME positioning all agree on
     // the same rectangle.
-    let mut container_style = style.clone();
+    let mut container_style = style.clone().line_height(LineHeight::Normal);
     container_style = padding.apply(container_style, |style, value| style.padding(value));
     container_style = width.apply(container_style, |style, value| style.width(value));
     container_style = height.apply(container_style, |style, value| style.height(value));

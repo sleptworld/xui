@@ -1,4 +1,4 @@
-use crate::wgpu::{SCENE_FORMAT, WgpuBackendError};
+use crate::wgpu::{SCENE_FORMAT, SCENE_SAMPLE_COUNT, WgpuBackendError};
 use moka::sync::Cache;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -150,7 +150,10 @@ impl ImageRender {
             },
 
             depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: SCENE_SAMPLE_COUNT,
+                ..Default::default()
+            },
             multiview_mask: None,
             cache: None,
         });
@@ -236,14 +239,36 @@ impl ImageRender {
         scale_factor: f32,
         target_size: (u32, u32),
     ) {
-        if records.is_empty() {
+        self.render_range(
+            pass,
+            tool_bind_group,
+            records,
+            scissors,
+            0..records.len(),
+            scale_factor,
+            target_size,
+        );
+    }
+
+    pub fn render_range(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        tool_bind_group: &wgpu::BindGroup,
+        records: &[ImageDrawRecord],
+        scissors: &[Rect],
+        range: std::ops::Range<usize>,
+        scale_factor: f32,
+        target_size: (u32, u32),
+    ) {
+        if range.is_empty() {
             return;
         }
 
         pass.set_pipeline(&self.image_pipeline);
         pass.set_bind_group(0, tool_bind_group, &[]);
         pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-        for (index, record) in records.iter().enumerate() {
+        for index in range {
+            let record = &records[index];
             let Some(texture) = self.image_textures.get(&record.key) else {
                 continue;
             };

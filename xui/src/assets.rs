@@ -13,6 +13,8 @@ use zune_image::{errors::ImageErrors, image::Image};
 
 pub use xui_assets::*;
 
+use crate::{IconData, SvgIconError};
+
 #[derive(Default)]
 struct AssetRuntime {
     manager: Option<AssetManager>,
@@ -110,6 +112,17 @@ impl AssetFormat for ImageAsset {
             .next()
             .ok_or(ImageErrors::NoImageBuffer)?;
         Ok(ImageData::rgba8(Size::new(width, height), pixels))
+    }
+}
+
+pub struct SvgAsset;
+
+impl AssetFormat for SvgAsset {
+    type Output = IconData;
+    type Error = SvgIconError;
+
+    fn parse(data: AssetData) -> Result<Self::Output, Self::Error> {
+        IconData::from_svg_bytes(&data.bytes)
     }
 }
 

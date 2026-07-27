@@ -1,8 +1,8 @@
 use taffy::{LengthPercentage, prelude as tf};
 use taffy::{Overflow, Point as TaffyPoint};
-use xui_interface::WidgetState;
 use xui_interface::core::Sizing;
 use xui_interface::style::{AlignStyle, JustifyStyle};
+use xui_interface::{PositionStyle, WidgetState};
 
 use crate::core::EdgeInsets;
 use crate::style::{ComputedStyle, FlexDirectionStyle, ScrollDirectionStyle, Theme};
@@ -41,14 +41,29 @@ pub fn taffy_style_for_widget(
     widget: &WidgetI,
     parent: &ComputedStyle,
     computed: &ComputedStyle,
+    parent_is_z_stack: bool,
 ) -> tf::Style {
-    computed_layout_style(widget, parent.layout.flex_direction, computed)
+    computed_layout_style_for_parent(
+        widget,
+        parent.layout.flex_direction,
+        computed,
+        parent_is_z_stack,
+    )
 }
 
 pub fn computed_layout_style(
     widget: &WidgetI,
     parent_dire: FlexDirectionStyle,
     computed: &ComputedStyle,
+) -> tf::Style {
+    computed_layout_style_for_parent(widget, parent_dire, computed, false)
+}
+
+fn computed_layout_style_for_parent(
+    widget: &WidgetI,
+    parent_dire: FlexDirectionStyle,
+    computed: &ComputedStyle,
+    parent_is_z_stack: bool,
 ) -> tf::Style {
     let layout = computed.layout;
     // let is_root = widget.with_widgets(|w| matches!(w, Widgets::Root(_)));
@@ -68,6 +83,12 @@ pub fn computed_layout_style(
                 width: tf::Dimension::percent(1.0),
                 height: tf::Dimension::percent(1.0),
             },
+            ..Default::default()
+        },
+        Widgets::ZStack(stack) => tf::Style {
+            display: tf::Display::Grid,
+            justify_items: Some(stack_alignment(stack.alignment.x)),
+            align_items: Some(stack_alignment(stack.alignment.y)),
             ..Default::default()
         },
 
@@ -92,6 +113,15 @@ pub fn computed_layout_style(
     style.padding = edge_insets(layout.padding);
     style.overflow = scroll_overflow(computed.scroll.direction);
     style.scrollbar_width = computed.scroll.scrollbar.width.max(0.0);
+    style.position = match layout.position {
+        PositionStyle::Relative => tf::Position::Relative,
+        PositionStyle::Absolute => tf::Position::Absolute,
+    };
+    style.inset = optional_edge_insets(layout.inset);
+    if parent_is_z_stack {
+        style.grid_row = tf::line(1);
+        style.grid_column = tf::line(1);
+    }
 
     let size = layout.size();
     style.size = tf::Size {
@@ -144,6 +174,16 @@ pub fn computed_layout_style(
     };
 
     style
+}
+
+fn stack_alignment(value: f32) -> tf::AlignItems {
+    if value <= 0.25 {
+        tf::AlignItems::Start
+    } else if value >= 0.75 {
+        tf::AlignItems::End
+    } else {
+        tf::AlignItems::Center
+    }
 }
 
 fn flex_style(
@@ -230,6 +270,18 @@ fn edge_insets_auto(value: EdgeInsets) -> tf::Rect<tf::LengthPercentageAuto> {
     }
 }
 
+fn optional_edge_insets(value: Option<EdgeInsets>) -> tf::Rect<tf::LengthPercentageAuto> {
+    value.map_or(
+        tf::Rect {
+            left: tf::LengthPercentageAuto::auto(),
+            right: tf::LengthPercentageAuto::auto(),
+            top: tf::LengthPercentageAuto::auto(),
+            bottom: tf::LengthPercentageAuto::auto(),
+        },
+        edge_insets_auto,
+    )
+}
+
 fn dimension_for_axis(value: Sizing, axis: Axis, parent_dire: FlexDirectionStyle) -> tf::Dimension {
     match value {
         Sizing::Fill if !is_main_axis(axis, parent_dire) => tf::Dimension::percent(1.0),
@@ -259,4 +311,163 @@ fn scroll_overflow(direction: ScrollDirectionStyle) -> TaffyPoint<Overflow> {
         Overflow::Visible
     };
     TaffyPoint { x, y }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widgets::{WidgetI, ZStackWidget, container};
+
+    fn fixed_grid_child(width: f32, height: f32) -> tf::Style {
+        tf::Style {
+            size: tf::Size {
+                width: tf::Dimension::length(width),
+                height: tf::Dimension::length(height),
+            },
+            grid_row: tf::line(1),
+            grid_column: tf::line(1),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn z_stack_grid_uses_largest_child_and_centers_all_children() {
+        let mut taffy = tf::TaffyTree::<()>::new();
+        let small = taffy.new_leaf(fixed_grid_child(20.0, 10.0)).unwrap();
+        let large = taffy.new_leaf(fixed_grid_child(40.0, 30.0)).unwrap();
+        let stack = taffy
+            .new_with_children(
+                tf::Style {
+                    display: tf::Display::Grid,
+                    align_items: Some(tf::AlignItems::Center),
+                    justify_items: Some(tf::AlignItems::Center),
+                    ..Default::default()
+                },
+                &[small, large],
+            )
+            .unwrap();
+        taffy
+            .compute_layout(
+                stack,
+                tf::Size {
+                    width: tf::AvailableSpace::MaxContent,
+                    height: tf::AvailableSpace::MaxContent,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(taffy.layout(stack).unwrap().size.width, 40.0);
+        assert_eq!(taffy.layout(stack).unwrap().size.height, 30.0);
+        assert_eq!(taffy.layout(small).unwrap().location.x, 10.0);
+        assert_eq!(taffy.layout(small).unwrap().location.y, 10.0);
+        assert_eq!(taffy.layout(large).unwrap().location.x, 0.0);
+        assert_eq!(taffy.layout(large).unwrap().location.y, 0.0);
+    }
+
+    #[test]
+    fn z_stack_host_and_its_children_map_to_one_grid_cell() {
+        let theme = Theme::default();
+        let parent = ComputedStyle::initial(&theme);
+        let stack = WidgetI::new(ZStackWidget::new().alignment(xui_interface::Alignment::END));
+        let stack_computed =
+            computed_style_for_widget(&stack, &parent, &theme, xui_interface::WidgetState::empty());
+        let stack_style = taffy_style_for_widget(&stack, &parent, &stack_computed, false);
+        assert_eq!(stack_style.display, tf::Display::Grid);
+        assert_eq!(stack_style.align_items, Some(tf::AlignItems::End));
+        assert_eq!(stack_style.justify_items, Some(tf::AlignItems::End));
+
+        let child = WidgetI::new(container());
+        let child_computed = computed_style_for_widget(
+            &child,
+            &stack_computed,
+            &theme,
+            xui_interface::WidgetState::empty(),
+        );
+        let child_style = taffy_style_for_widget(&child, &stack_computed, &child_computed, true);
+        assert_eq!(child_style.grid_row, tf::line(1));
+        assert_eq!(child_style.grid_column, tf::line(1));
+    }
+
+    #[test]
+    fn absolute_child_does_not_expand_parent_intrinsic_size() {
+        let mut taffy = tf::TaffyTree::<()>::new();
+        let normal = taffy
+            .new_leaf(tf::Style {
+                size: tf::Size {
+                    width: tf::Dimension::length(40.0),
+                    height: tf::Dimension::length(30.0),
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        let absolute = taffy
+            .new_leaf(tf::Style {
+                position: tf::Position::Absolute,
+                size: tf::Size {
+                    width: tf::Dimension::length(100.0),
+                    height: tf::Dimension::length(100.0),
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        let parent = taffy
+            .new_with_children(tf::Style::default(), &[normal, absolute])
+            .unwrap();
+        taffy
+            .compute_layout(
+                parent,
+                tf::Size {
+                    width: tf::AvailableSpace::MaxContent,
+                    height: tf::AvailableSpace::MaxContent,
+                },
+            )
+            .unwrap();
+        assert_eq!(taffy.layout(parent).unwrap().size.width, 40.0);
+        assert_eq!(taffy.layout(parent).unwrap().size.height, 30.0);
+    }
+
+    #[test]
+    fn absolute_and_inset_style_are_forwarded_to_taffy() {
+        let theme = Theme::default();
+        let parent = ComputedStyle::initial(&theme);
+        let widget = WidgetI::new(
+            container().style(
+                xui_interface::Style::new()
+                    .absolute()
+                    .inset(EdgeInsets::new(3.0, 4.0, 5.0, 6.0)),
+            ),
+        );
+        let computed = computed_style_for_widget(
+            &widget,
+            &parent,
+            &theme,
+            xui_interface::WidgetState::empty(),
+        );
+        let style = taffy_style_for_widget(&widget, &parent, &computed, false);
+        assert_eq!(style.position, tf::Position::Absolute);
+        assert_eq!(style.inset.left, tf::LengthPercentageAuto::length(3.0));
+        assert_eq!(style.inset.right, tf::LengthPercentageAuto::length(4.0));
+        assert_eq!(style.inset.top, tf::LengthPercentageAuto::length(5.0));
+        assert_eq!(style.inset.bottom, tf::LengthPercentageAuto::length(6.0));
+    }
+
+    #[test]
+    fn absolute_without_inset_keeps_taffy_auto_offsets() {
+        let theme = Theme::default();
+        let parent = ComputedStyle::initial(&theme);
+        let widget = WidgetI::new(container().style(xui_interface::Style::new().absolute()));
+        let computed = computed_style_for_widget(
+            &widget,
+            &parent,
+            &theme,
+            xui_interface::WidgetState::empty(),
+        );
+        let style = taffy_style_for_widget(&widget, &parent, &computed, false);
+
+        assert_eq!(style.position, tf::Position::Absolute);
+        assert_eq!(style.inset.left, tf::LengthPercentageAuto::auto());
+        assert_eq!(style.inset.right, tf::LengthPercentageAuto::auto());
+        assert_eq!(style.inset.top, tf::LengthPercentageAuto::auto());
+        assert_eq!(style.inset.bottom, tf::LengthPercentageAuto::auto());
+    }
 }

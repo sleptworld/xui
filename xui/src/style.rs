@@ -5,11 +5,11 @@ pub use xui_interface::{
     ComputedLinearGradientStyle, ComputedPaintStyle, ComputedRadialGradientStyle,
     ComputedScrollStyle, ComputedScrollbarStyle, ComputedShadowStyle, ComputedStrokeStyle,
     ComputedStyle, ComputedTextStyle, FlexDirectionStyle, FontSizeToken, JustifyStyle,
-    LayoutStylePatch, LengthValue, LinearGradientStyle, PaintStylePatch, RadialGradientStyle,
-    RadiusToken, ScrollDirectionStyle, ScrollStylePatch, ScrollbarStyle, ScrollbarStylePatch,
-    ScrollbarVisibilityStyle, ShadowStyle, SpacingToken, StateStyleRule, Stroke, StrokeLineStyle,
-    StrokeStyle, Style, StyleMerge, StylePatch, StyleValue, TextStylePatch, Theme, WidgetState,
-    WidgetStateMatcher,
+    LayoutStylePatch, LengthValue, LinearGradientStyle, PaintStylePatch, PositionStyle,
+    RadialGradientStyle, RadiusToken, ScrollDirectionStyle, ScrollStylePatch, ScrollbarStyle,
+    ScrollbarStylePatch, ScrollbarVisibilityStyle, ShadowStyle, SpacingToken, StateStyleRule,
+    Stroke, StrokeLineStyle, StrokeStyle, Style, StyleMerge, StylePatch, StyleValue,
+    TextStylePatch, Theme, WidgetState, WidgetStateMatcher,
 };
 
 use crate::animation::AnimableStyle;

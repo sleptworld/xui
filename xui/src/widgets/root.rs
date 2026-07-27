@@ -1,10 +1,11 @@
 use crate::event_system::{EventContext, callbacks::EventHandlers};
 use xui_interface::{
-    Color, ComputedStyle, EventRef, EventResult, Key, PaintCommand, Rect, Size, Style, TextContent,
-    TextProps, WidgetType, WidgetUpdateFlags, core::Sizing,
+    Color, ComputedStyle, EventRef, EventResult, Key, Rect, Size, Style, TextContent, TextProps,
+    WidgetType, WidgetUpdateFlags, core::Sizing,
 };
 
 use super::props_hash;
+use crate::render::{Primitive, RenderTreeWriter, Shape, ShapePrimitive};
 
 #[derive(Debug)]
 pub struct RootWidget {
@@ -61,13 +62,22 @@ impl RootWidget {
         &self.style
     }
 
-    pub(super) fn paint(
+    pub(super) fn render(
         &self,
-        _rect: Rect,
+        _node_id: xui_interface::NodeId,
+        rect: Rect,
         _style: &ComputedStyle,
-        commands: &mut Vec<PaintCommand>,
+        writer: &mut RenderTreeWriter<'_>,
     ) {
-        commands.push(PaintCommand::Clear(Color::WHITE));
+        writer
+            .primitive(Primitive::Shape(ShapePrimitive {
+                bounds: rect,
+                shape: Shape::Rect,
+                fill: Some(xui_interface::ComputedColorStyle::Solid(Color::WHITE)),
+                stroke: None,
+                shadow: None,
+            }))
+            .expect("widget render tree must remain valid");
     }
 
     pub(super) fn handle_event(

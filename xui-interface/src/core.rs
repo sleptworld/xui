@@ -220,6 +220,15 @@ impl Rect {
         )
     }
 
+    pub fn expand(self, amount: f32) -> Self {
+        Self::new(
+            self.x - amount,
+            self.y - amount,
+            self.width + amount * 2.0,
+            self.height + amount * 2.0,
+        )
+    }
+
     pub fn scale(self, factor: f32) -> Self {
         Self::new(
             self.x * factor,
@@ -237,6 +246,26 @@ impl Rect {
             self.width,
             self.height,
         )
+    }
+
+    pub fn origin(&self) -> Point {
+        Point::new(self.x, self.y)
+    }
+
+    pub fn min_x(&self) -> f32 {
+        self.x
+    }
+
+    pub fn min_y(&self) -> f32 {
+        self.y
+    }
+
+    pub fn max_x(&self) -> f32 {
+        self.x + self.width
+    }
+
+    pub fn max_y(&self) -> f32 {
+        self.y + self.height
     }
 }
 
