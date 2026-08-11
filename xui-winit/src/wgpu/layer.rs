@@ -17,7 +17,7 @@ pub(super) fn diff_layer(
     next: &LayerSnapshot,
     child_dirty: &HashMap<RenderNodeId, BackendDirtyRegion>,
 ) -> BackendDirtyRegion {
-    if previous.render_bounds != next.render_bounds || previous.effects != next.effects {
+    if previous.render_bounds != next.render_bounds {
         let mut dirty = BackendDirtyRegion::full(previous.render_bounds);
         dirty.add(next.render_bounds);
         return dirty;
@@ -103,13 +103,13 @@ fn diff_ordered_items(
         let mut item_dirty = diff_item(item, next_item, child_dirty);
 
         if let LayerItemKind::Layer {
-            backdrop_expansion: Some(expansion),
-            ..
-        } = next_item.kind
+            backdrop_expansion, ..
+        } = &next_item.kind
         {
             // A backdrop samples only items painted before it. Map only the
             // accumulated prefix damage into this backdrop's output bounds.
-            item_dirty.extend(accumulated_dirty.backdrop_damage(next_item.bounds, expansion));
+            item_dirty
+                .extend(accumulated_dirty.backdrop_damage(next_item.bounds, *backdrop_expansion));
         }
 
         accumulated_dirty.extend(item_dirty);
@@ -129,12 +129,12 @@ fn diff_item(
         && item.bounds == next_item.bounds
         && item.kind == next_item.kind
     {
-        match next_item.kind {
+        match &next_item.kind {
             LayerItemKind::Layer {
                 source, transform, ..
             } => {
-                if let Some(child) = child_dirty.get(&source) {
-                    dirty.add_transformed(child, transform, next_item.bounds);
+                if let Some(child) = child_dirty.get(source) {
+                    dirty.add_transformed(child, *transform, next_item.bounds);
                 } else if item.version.content != next_item.version.content {
                     dirty.add(next_item.bounds);
                 }
@@ -160,16 +160,20 @@ fn diff_item(
 mod tests {
     use super::*;
     use crate::wgpu::snapshot::{LayerItemKind, LayerItemSnapshot};
-    use std::sync::Arc;
     use xui::Affine;
     use xui::render::RenderScene;
     use xui_interface::Rect;
+    use xui_render_graph::{LayerGraphDescriptor, SampleExpansion, compile_layer};
+
+    fn program_fingerprint() -> xui_render_graph::ProgramFingerprint {
+        compile_layer(&LayerGraphDescriptor::default())
+            .unwrap()
+            .fingerprint()
+    }
 
     fn test_snapshot(items: Vec<LayerItemSnapshot>) -> LayerSnapshot {
         LayerSnapshot {
-            content_version: ContentVersion::default(),
             render_bounds: Rect::new(0.0, 0.0, 100.0, 100.0),
-            effects: Arc::from([]),
             items,
         }
     }
@@ -200,7 +204,8 @@ mod tests {
             kind: LayerItemKind::Layer {
                 source,
                 transform: Affine::IDENTITY,
-                backdrop_expansion: Some(expansion),
+                program: program_fingerprint(),
+                backdrop_expansion: SampleExpansion::symmetric(expansion, expansion),
             },
         }
     }
@@ -213,12 +218,7 @@ mod tests {
             ..ContentVersion::default()
         };
         let snapshot = |dynamic, bounds| LayerSnapshot {
-            content_version: ContentVersion {
-                dynamic,
-                ..ContentVersion::default()
-            },
             render_bounds: Rect::new(0.0, 0.0, 100.0, 100.0),
-            effects: Arc::from([]),
             items: vec![LayerItemSnapshot {
                 source,
                 version: LayerItemVersion {
@@ -229,7 +229,8 @@ mod tests {
                 kind: LayerItemKind::Layer {
                     source,
                     transform: Affine::IDENTITY,
-                    backdrop_expansion: None,
+                    program: program_fingerprint(),
+                    backdrop_expansion: SampleExpansion::ZERO,
                 },
             }],
         };
@@ -304,6 +305,21 @@ mod tests {
         assert_eq!(
             dirty.tiles(1.0, 10),
             [(0, 0), (1, 0), (2, 0)].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn backdrop_effect_sequence_change_invalidates_its_output_bounds() {
+        let mut scene = RenderScene::new();
+        let backdrop = scene.insert_group();
+        let bounds = Rect::new(20.0, 10.0, 20.0, 20.0);
+        let previous = test_snapshot(vec![backdrop_item(backdrop, bounds, 6.0)]);
+        let next = test_snapshot(vec![backdrop_item(backdrop, bounds, 18.0)]);
+
+        let dirty = diff_layer(&previous, &next, &HashMap::new());
+        assert_eq!(
+            dirty.tiles(1.0, 10),
+            [(2, 1), (3, 1), (2, 2), (3, 2)].into_iter().collect()
         );
     }
 }

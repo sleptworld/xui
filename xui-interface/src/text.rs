@@ -769,6 +769,7 @@ pub struct TextLayoutInput {
     pub constraints: TextLayoutConstraints,
     pub default_style: ComputedTextStyle,
     pub paragraph_style: ParagraphStyle,
+    pub text_box_style: TextBoxStyle,
     pub font_context_revision: u64,
     // pub scale_factor: f32,
 }
@@ -779,6 +780,7 @@ impl TextLayoutInput {
         constraints: TextLayoutConstraints,
         default_style: ComputedTextStyle,
         paragraph_style: ParagraphStyle,
+        text_box_style: TextBoxStyle,
         font_context_revision: u64,
         // scale_factor: f32,
     ) -> Self {
@@ -787,6 +789,7 @@ impl TextLayoutInput {
             constraints,
             default_style,
             paragraph_style,
+            text_box_style,
             font_context_revision,
             // scale_factor,
         }
@@ -801,7 +804,7 @@ pub struct TextSpan {
     pub style_id: TextStyleId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TextLayoutKey {
     pub text_revision: u64,
     pub style_revision: u64,

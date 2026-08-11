@@ -8,6 +8,7 @@ new_key_type! {
 pub enum WidgetType {
     Text,
     TextInput,
+    Canvas,
     Label,
     Button,
     Column,

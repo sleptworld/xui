@@ -510,6 +510,9 @@ impl TextInputWidget {
                     writer.primitive(Primitive::Text(TextPrimitive {
                         node_id,
                         bounds: Rect::new(rect.x, rect.y, rect.width + self.scroll_x, rect.height),
+                        slot: crate::text::TextLayoutSlot::PRIMARY,
+                        layout_revision: self.controller.revision(),
+                        vertical_align: xui_interface::TextVerticalAlign::Baseline,
                         paint,
                     }))?;
                     Ok(())

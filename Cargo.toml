@@ -15,6 +15,7 @@ members = [
     "xui-cli",
     "xui-animation",
     "slot", "xui-text-engine",
+    "xui-render-graph",
 ]
 
 

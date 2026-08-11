@@ -1,17 +1,15 @@
-use std::sync::Arc;
 use xui::{
     Affine,
-    render::{BackdropEffect, BuiltFrame, BuiltItem, ContentVersion, LayerEffect, RenderNodeId},
+    render::{BuiltFrame, BuiltItem, RenderNodeId},
 };
 use xui_interface::Rect;
+use xui_render_graph::{ProgramFingerprint, SampleExpansion};
 
 use crate::wgpu::layer::LayerItemVersion;
 
 #[derive(Debug, Clone)]
 pub(super) struct LayerSnapshot {
-    pub content_version: ContentVersion,
     pub render_bounds: Rect,
-    pub effects: Arc<[LayerEffect]>,
     pub items: Vec<LayerItemSnapshot>,
 }
 
@@ -32,30 +30,31 @@ pub(super) fn layer_snapshot(frame: &BuiltFrame, layer: &xui::render::BuiltLayer
                     kind: LayerItemKind::Draw,
                 }
             }
-            BuiltItem::Layer(instance) => LayerItemSnapshot {
-                source: instance.source,
-                version: LayerItemVersion {
-                    content: frame.layers[instance.layer.0].content_version,
-                    placement: instance.placement_version,
-                },
-                bounds: instance.world_bounds,
-                kind: LayerItemKind::Layer {
-                    source: frame.layers[instance.layer.0].source,
-                    transform: instance.composite.transform,
-                    backdrop_expansion: instance
-                        .backdrop_effects
-                        .iter()
-                        .map(BackdropEffect::sampling_expansion)
-                        .reduce(f32::max),
-                },
-            },
+            BuiltItem::Layer(instance_id) => {
+                let instance = frame.layer_instance(*instance_id).expect("built instance");
+                LayerItemSnapshot {
+                    source: instance.source,
+                    version: LayerItemVersion {
+                        content: frame.layers[instance.layer.0].content_version,
+                        placement: instance.placement_version,
+                    },
+                    bounds: instance.world_bounds,
+                    kind: LayerItemKind::Layer {
+                        source: frame.layers[instance.layer.0].source,
+                        transform: instance.composite.transform,
+                        program: instance.render_program.program().fingerprint(),
+                        backdrop_expansion: instance
+                            .render_program
+                            .program()
+                            .backdrop_input_expansion(),
+                    },
+                }
+            }
         })
         .collect();
 
     LayerSnapshot {
-        content_version: layer.content_version,
         render_bounds: layer.render_bounds,
-        effects: Arc::clone(&layer.effects),
         items,
     }
 }
@@ -68,12 +67,13 @@ pub(super) struct LayerItemSnapshot {
     pub kind: LayerItemKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum LayerItemKind {
     Draw,
     Layer {
         source: RenderNodeId,
         transform: Affine,
-        backdrop_expansion: Option<f32>,
+        program: ProgramFingerprint,
+        backdrop_expansion: SampleExpansion,
     },
 }

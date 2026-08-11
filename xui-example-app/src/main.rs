@@ -61,6 +61,129 @@ fn svg_icon() -> IconData {
     .clone()
 }
 
+fn demo_canvas_scene(highlighted: bool) -> VectorScene {
+    let mut scene = VectorSceneBuilder::new();
+    let area_color = if highlighted {
+        Color::rgba(0.74, 0.32, 0.96, 0.3)
+    } else {
+        Color::rgba(0.18, 0.42, 0.88, 0.28)
+    };
+    let line_color = if highlighted {
+        Color::rgb(0.88, 0.55, 1.0)
+    } else {
+        Color::rgb(0.35, 0.72, 1.0)
+    };
+
+    let mut background = PathBuilder::new();
+    background
+        .move_to(Point::new(0.0, 0.0))
+        .line_to(Point::new(440.0, 0.0))
+        .line_to(Point::new(440.0, 220.0))
+        .line_to(Point::new(0.0, 220.0))
+        .close();
+    let background_color = if highlighted {
+        Color::rgb(0.16, 0.055, 0.22)
+    } else {
+        Color::rgb(0.04, 0.06, 0.11)
+    };
+    scene.fill_path(
+        background.build(),
+        Affine::IDENTITY,
+        PathFill::new(background_color),
+    );
+
+    let mut grid = PathBuilder::new();
+    for x in [40.0, 120.0, 200.0, 280.0, 360.0, 420.0] {
+        grid.move_to(Point::new(x, 24.0))
+            .line_to(Point::new(x, 192.0));
+    }
+    for y in [32.0, 72.0, 112.0, 152.0, 192.0] {
+        grid.move_to(Point::new(24.0, y))
+            .line_to(Point::new(420.0, y));
+    }
+    scene.stroke_path(
+        grid.build(),
+        Affine::IDENTITY,
+        PathStroke::new(Color::rgba(0.55, 0.67, 0.86, 0.18), 1.0),
+    );
+
+    let mut area = PathBuilder::new();
+    area.move_to(Point::new(24.0, 192.0))
+        .line_to(Point::new(24.0, 158.0))
+        .cubic_to(
+            Point::new(76.0, 154.0),
+            Point::new(92.0, 110.0),
+            Point::new(136.0, 118.0),
+        )
+        .cubic_to(
+            Point::new(188.0, 128.0),
+            Point::new(202.0, 66.0),
+            Point::new(252.0, 78.0),
+        )
+        .cubic_to(
+            Point::new(302.0, 90.0),
+            Point::new(326.0, 42.0),
+            Point::new(368.0, 54.0),
+        )
+        .cubic_to(
+            Point::new(392.0, 60.0),
+            Point::new(406.0, 38.0),
+            Point::new(420.0, 32.0),
+        )
+        .line_to(Point::new(420.0, 192.0))
+        .close();
+    scene.fill_path(area.build(), Affine::IDENTITY, PathFill::new(area_color));
+
+    let mut caption = TextProps::new(if highlighted {
+        "Stable CanvasTextId\nshapes only when text changes"
+    } else {
+        "Canvas text box\nshares the TextHost cache"
+    });
+    caption.style.color = Color::rgb(0.92, 0.96, 1.0);
+    caption.style.font_size = 15.0;
+    caption.style.font_weight = FontWeight::Medium;
+    caption.paragraph.vertical_align = TextVerticalAlign::Middle;
+    caption.text_box.max_lines = Some(2);
+    caption.text_box.overflow = TextOverflow::Ellipsis;
+    scene.text_box(
+        CanvasTextId::new(1),
+        Rect::new(38.0, 36.0, 190.0, 58.0),
+        caption,
+    );
+
+    let mut line = PathBuilder::new();
+    line.move_to(Point::new(24.0, 158.0))
+        .cubic_to(
+            Point::new(76.0, 154.0),
+            Point::new(92.0, 110.0),
+            Point::new(136.0, 118.0),
+        )
+        .cubic_to(
+            Point::new(188.0, 128.0),
+            Point::new(202.0, 66.0),
+            Point::new(252.0, 78.0),
+        )
+        .cubic_to(
+            Point::new(302.0, 90.0),
+            Point::new(326.0, 42.0),
+            Point::new(368.0, 54.0),
+        )
+        .cubic_to(
+            Point::new(392.0, 60.0),
+            Point::new(406.0, 38.0),
+            Point::new(420.0, 32.0),
+        );
+    scene.stroke_path(
+        line.build(),
+        Affine::IDENTITY,
+        PathStroke::new(line_color, 4.0)
+            .cap(LineCap::Round)
+            .join(LineJoin::Round),
+    );
+
+    scene.build()
+}
+
 #[component]
 fn test_page() {
     xui! {
@@ -76,12 +199,16 @@ fn test_page() {
 #[component]
 fn editor() {
     let label = cx.use_state(|| "Hello,World".to_string());
+    let canvas_highlighted = cx.use_state(|| false);
+    let canvas_controller = cx.use_ref(|| CanvasController::with_scene(demo_canvas_scene(false)));
+    let canvas_handle = canvas_controller.get().clone();
+    let canvas_click_handle = canvas_handle.clone();
     let mut button_prop = ButtonProp::default();
     button_prop.text_color = Color::BLUE_500.into();
     xui! {
         <row size={Size::fill()}>
             <container width={Sizing::percent(0.3)} height={Sizing::fill()} background ={Color::rgb(1.0,0.0,0.0)} />
-            <container size={Size::fill()} background ={Color::BLUE_500} >
+            <container size={Size::fill()} background ={Color::hex("#171717")} >
                 <column gap={12.0}>
                     <text> {"Hello,World"} </text>
                     <input width={100.0} background={Color::WHITE} border_color={Color::BLACK} border_radius={5.0} border_width={2.0} />
@@ -93,6 +220,36 @@ fn editor() {
                     <button text={label.get()} ps = {button_prop}/>
                     <text font_weight={FontWeight::Thin}> {"啊，是关中王来啦"} </text>
                     <image src={"https://i1.hdslb.com/bfs/archive/8b96913b723e39495c0d1f171779faded87fcbc7.jpg"} height={100} fit={ImageFit::ScaleDown} />
+                    <text font_weight={FontWeight::Medium}> {"Backdrop blur · click the glass card"} </text>
+                    <z_stack style={Style::new().size(Size::fix(440.0, 220.0))}>
+                        <canvas controller={canvas_handle} width={440.0} height={220.0} />
+                        <container
+                            style={Style::new()
+                                .size(Size::fix(310.0, 118.0))
+                                .padding(EdgeInsets::all(22.0))
+                                .background(Color::rgba(0.92, 0.96, 1.0, 0.16))
+                                .border_color(Color::rgba(1.0, 1.0, 1.0, 0.48))
+                                .border_width(1.0)
+                                .border_radius(20.0)
+                                .clip(true)}
+                            backdrop_blur={18.0}
+                            on_click={move |_, _| {
+                                let highlighted = !*canvas_highlighted.get();
+                                canvas_click_handle.set_scene(demo_canvas_scene(highlighted));
+                                canvas_highlighted.set(highlighted);
+                                EventResult::Consumed
+                            }}
+                        >
+                            <column gap={7.0}>
+                                <text color={Color::WHITE} font_size={20.0} font_weight={FontWeight::Medium}>
+                                    {"GPU Backdrop Blur"}
+                                </text>
+                                <text color={Color::rgba(0.92, 0.96, 1.0, 0.82)} font_size={13.0}>
+                                    {"The live Canvas remains visible through an 18 px frosted layer."}
+                                </text>
+                            </column>
+                        </container>
+                    </z_stack>
                 </column>
             </container>
         </row>

@@ -1,11 +1,10 @@
-use std::collections::{HashMap, HashSet};
-
-use slotmap::SlotMap;
-
 use super::{
     ClipShape, CompiledClipId, ContentVersion, LayerDescriptor, PictureId, Primitive, PrimitiveId,
     RenderNodeId, SpatialNodeId,
 };
+use crate::render::render_graph::BuiltLayerProgram;
+use slotmap::SlotMap;
+use std::collections::{HashMap, HashSet};
 use xui_interface::Affine;
 
 #[derive(Debug, Clone)]
@@ -84,6 +83,9 @@ pub struct CompiledPicture {
     pub source: RenderNodeId,
     pub items: Vec<CompiledPictureItem>,
     pub descriptor: LayerDescriptor,
+    /// Static render-graph IR and scene-owned mask bindings. Root pictures do
+    /// not need a layer composite.
+    pub render_program: Option<BuiltLayerProgram>,
     pub placement_spatial: SpatialNodeId,
     pub placement_clip: Option<CompiledClipId>,
     pub content_version: ContentVersion,

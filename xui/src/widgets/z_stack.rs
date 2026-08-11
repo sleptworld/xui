@@ -12,7 +12,7 @@ use super::container::render_box;
 use super::{props_hash, widget_element_desc};
 
 /// A SwiftUI-style overlay container. Children share one Taffy grid cell and
-/// are painted in declaration order, so later children appear on top.
+/// are painted in declaration order, with later children appearing on top.
 pub struct ZStackWidget {
     pub key: Option<Key>,
     pub style: Style,

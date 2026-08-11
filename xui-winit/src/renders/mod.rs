@@ -1,9 +1,9 @@
 pub mod compositor;
 pub mod image;
-pub mod layer;
-pub mod path;
+pub mod render_graph;
 pub mod sdf;
 pub mod text;
+pub mod vector;
 
 pub use sdf::render::{SdfInstance, SdfRenderer};
 pub use text::{
@@ -11,7 +11,7 @@ pub use text::{
     render::{GlyphRender, TextGlyphRecord},
 };
 
-pub use compositor::Compositor;
+pub use compositor::{CompositeTile, Compositor, SceneBlitBlend, SceneBlitSource};
 pub use image::{ImageDrawRecord, ImageRender};
-pub use layer::{LayerEffectRenderer, LayerTileDrawRecord, LayerTileRenderer};
-pub use path::{PathDrawRecord, PathRenderer};
+pub use render_graph::{GraphTarget, GraphTexture, RenderGraphRenderer};
+pub use vector::{VectorDrawRecord, VectorRenderer};

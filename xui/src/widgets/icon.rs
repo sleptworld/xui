@@ -7,11 +7,12 @@ use crate::event_system::EventContext;
 use crate::event_system::callbacks::EventHandlers;
 use xui_interface::{
     Affine, Color, ComputedStyle, EventRef, EventResult, FillRule, Key, PathData, PathFill,
-    PathStroke, Rect, Size, Sizing, Style, TextContent, TextProps, WidgetType, WidgetUpdateFlags,
+    PathStroke, Rect, Size, Sizing, Style, TextContent, TextProps, VectorSceneBuilder, WidgetType,
+    WidgetUpdateFlags,
 };
 
 use super::{props_hash, widget_element_desc};
-use crate::render::{PathPrimitive, Primitive, RenderTreeWriter};
+use crate::render::{Primitive, RenderTreeWriter, VectorPrimitive};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IconStroke {
@@ -306,21 +307,31 @@ impl IconWidget {
             .then(Affine::translate(x, y));
         let color = self.color.unwrap_or(style.text.color);
 
+        let mut scene = VectorSceneBuilder::new();
         for layer in self.data.layers.iter() {
-            writer
-                .primitive(Primitive::Path(PathPrimitive {
-                    bounds: layer.path.bounds(),
-                    path: layer.path.clone(),
-                    transform: layer.transform.then(transform),
-                    fill: layer.fill.map(|rule| PathFill::new(color).rule(rule)),
-                    stroke: layer.stroke.map(|stroke| {
-                        PathStroke::new(color, stroke.width)
-                            .cap(stroke.cap)
-                            .join(stroke.join)
-                    }),
-                }))
-                .expect("widget render tree must remain valid");
+            if let Some(rule) = layer.fill {
+                scene.fill_path(
+                    layer.path.clone(),
+                    layer.transform,
+                    PathFill::new(color).rule(rule),
+                );
+            }
+            if let Some(stroke) = layer.stroke {
+                scene.stroke_path(
+                    layer.path.clone(),
+                    layer.transform,
+                    PathStroke::new(color, stroke.width)
+                        .cap(stroke.cap)
+                        .join(stroke.join),
+                );
+            }
         }
+        writer
+            .primitive(Primitive::Vector(VectorPrimitive {
+                scene: scene.build(),
+                transform,
+            }))
+            .expect("widget render tree must remain valid");
     }
 
     pub(super) fn handle_event(
@@ -488,16 +499,19 @@ mod tests {
         let crate::render::RenderNodeKind::Primitive(node) = &node.kind else {
             panic!("expected primitive")
         };
-        let Primitive::Path(command) = &node.primitive else {
-            panic!("expected path")
+        let Primitive::Vector(vector) = &node.primitive else {
+            panic!("expected vector")
         };
-        assert_eq!(command.fill.unwrap().color, color);
+        let [xui_interface::VectorCommand::FillPath { fill, .. }] = vector.scene.commands() else {
+            panic!("expected one fill command")
+        };
+        assert_eq!(fill.color, color);
         assert_eq!(
-            command.transform.transform_point(Point::new(0.0, 0.0)),
+            vector.transform.transform_point(Point::new(0.0, 0.0)),
             Point::new(10.0, 0.0)
         );
         assert_eq!(
-            command.transform.transform_point(Point::new(10.0, 20.0)),
+            vector.transform.transform_point(Point::new(10.0, 20.0)),
             Point::new(30.0, 40.0)
         );
     }

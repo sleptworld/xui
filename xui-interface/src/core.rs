@@ -331,6 +331,11 @@ impl Color {
             panic!("Invalid hex color: {}", hex);
         }
     }
+
+    pub fn alpha(mut self, alpha: f32) -> Self {
+        self.a = alpha;
+        self
+    }
 }
 
 impl Default for Color {

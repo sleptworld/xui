@@ -1,12 +1,13 @@
 use crate::{
-    Color, EdgeInsets, FontFamily, FontStyle, FontWeight, LineHeight, Point, Size, StyleDiffFlags,
-    TextDecoration, WidgetState, core::Sizing, text::TextStyle,
+    Affine, Color, EdgeInsets, FontFamily, FontStyle, FontWeight, ImageData, ImageKey, LineHeight,
+    Point, Rect, Size, StyleDiffFlags, TextDecoration, WidgetState, core::Sizing, text::TextStyle,
 };
 use std::{
     cell::RefCell,
     fmt,
     hash::{Hash, Hasher},
     ops::{Deref, DerefMut},
+    sync::Arc,
 };
 
 thread_local! {
@@ -259,6 +260,295 @@ pub enum LengthValue {
     FontSize(FontSizeToken),
 }
 
+/// A row-major 4x5 affine RGBA color matrix.
+pub type ColorMatrix = [f32; 20];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum FilterQuality {
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+impl FilterQuality {
+    pub const fn gaussian_support(self) -> f32 {
+        match self {
+            Self::Low => 2.0,
+            Self::Medium => 3.0,
+            Self::High => 4.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum BlendMode {
+    #[default]
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
+}
+
+impl BlendMode {
+    pub const fn requires_destination_snapshot(self) -> bool {
+        !matches!(self, Self::Normal)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MaskShape {
+    Rect,
+    RoundedRect(LengthValue),
+    Circle,
+    Ellipse,
+    Line { from: Point, to: Point },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ComputedMaskShape {
+    Rect,
+    RoundedRect(f32),
+    Circle,
+    Ellipse,
+    Line { from: Point, to: Point },
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum BackdropMask {
+    #[default]
+    None,
+    Shape {
+        shape: MaskShape,
+        transform: Affine,
+    },
+    AlphaTexture {
+        texture: ImageKey,
+        transform: Affine,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum ComputedBackdropMask {
+    #[default]
+    None,
+    Shape {
+        shape: ComputedMaskShape,
+        transform: Affine,
+    },
+    AlphaTexture {
+        texture: ImageKey,
+        transform: Affine,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackdropFilter {
+    Blur {
+        sigma_x: LengthValue,
+        sigma_y: LengthValue,
+        quality: FilterQuality,
+    },
+    Saturate(f32),
+    Brightness(f32),
+    Contrast(f32),
+    Grayscale(f32),
+    Sepia(f32),
+    HueRotate(f32),
+    Invert(f32),
+    ColorMatrix(ColorMatrix),
+    Pixelate {
+        size: Size<LengthValue>,
+    },
+    Refraction {
+        strength: LengthValue,
+        chromatic_aberration: LengthValue,
+    },
+    ChromaticAberration {
+        offset_x: LengthValue,
+        offset_y: LengthValue,
+    },
+}
+
+impl BackdropFilter {
+    pub fn blur(sigma: impl Into<LengthValue>) -> Self {
+        let sigma = sigma.into();
+        Self::Blur {
+            sigma_x: sigma,
+            sigma_y: sigma,
+            quality: FilterQuality::Medium,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ComputedBackdropFilter {
+    Blur {
+        sigma_x: f32,
+        sigma_y: f32,
+        quality: FilterQuality,
+    },
+    Saturate(f32),
+    Brightness(f32),
+    Contrast(f32),
+    Grayscale(f32),
+    Sepia(f32),
+    HueRotate(f32),
+    Invert(f32),
+    ColorMatrix(ColorMatrix),
+    Pixelate {
+        size: Size<f32>,
+    },
+    Refraction {
+        strength: f32,
+        chromatic_aberration: f32,
+    },
+    ChromaticAberration {
+        offset: [f32; 2],
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackdropStyle {
+    pub filters: Arc<[BackdropFilter]>,
+    pub opacity: f32,
+    pub blend_mode: BlendMode,
+    pub mask: BackdropMask,
+}
+
+impl Default for BackdropStyle {
+    fn default() -> Self {
+        Self {
+            filters: Arc::from([]),
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+            mask: BackdropMask::None,
+        }
+    }
+}
+
+impl BackdropStyle {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn blur(sigma: impl Into<LengthValue>) -> Self {
+        Self {
+            filters: Arc::from([BackdropFilter::blur(sigma)]),
+            ..Self::default()
+        }
+    }
+
+    pub fn with_filters(mut self, filters: impl Into<Arc<[BackdropFilter]>>) -> Self {
+        self.filters = filters.into();
+        self
+    }
+
+    pub fn opacity(mut self, opacity: f32) -> Self {
+        self.opacity = opacity;
+        self
+    }
+
+    pub fn blend_mode(mut self, blend_mode: BlendMode) -> Self {
+        self.blend_mode = blend_mode;
+        self
+    }
+
+    pub fn mask(mut self, mask: BackdropMask) -> Self {
+        self.mask = mask;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComputedBackdropStyle {
+    pub filters: Arc<[ComputedBackdropFilter]>,
+    pub opacity: f32,
+    pub blend_mode: BlendMode,
+    pub mask: ComputedBackdropMask,
+}
+
+impl Default for ComputedBackdropStyle {
+    fn default() -> Self {
+        Self {
+            filters: Arc::from([]),
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+            mask: ComputedBackdropMask::None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Effect {
+    Blur {
+        sigma_x: LengthValue,
+        sigma_y: LengthValue,
+        quality: FilterQuality,
+    },
+    DropShadow {
+        color: ColorValue,
+        offset_x: LengthValue,
+        offset_y: LengthValue,
+        sigma_x: LengthValue,
+        sigma_y: LengthValue,
+        spread: LengthValue,
+        quality: FilterQuality,
+    },
+    ColorMatrix(ColorMatrix),
+    ImageMask {
+        image: ImageKey,
+        data: ImageData,
+        bounds: Rect,
+    },
+}
+
+impl Effect {
+    pub fn blur(sigma: impl Into<LengthValue>) -> Self {
+        let sigma = sigma.into();
+        Self::Blur {
+            sigma_x: sigma,
+            sigma_y: sigma,
+            quality: FilterQuality::Medium,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ComputedEffect {
+    Blur {
+        sigma_x: f32,
+        sigma_y: f32,
+        quality: FilterQuality,
+    },
+    DropShadow {
+        color: Color,
+        offset: Point,
+        sigma_x: f32,
+        sigma_y: f32,
+        spread: f32,
+        quality: FilterQuality,
+    },
+    ColorMatrix(ColorMatrix),
+    ImageMask {
+        image: ImageKey,
+        data: ImageData,
+        bounds: Rect,
+    },
+}
+
 impl From<f32> for LengthValue {
     fn from(value: f32) -> Self {
         Self::Px(value)
@@ -494,6 +784,12 @@ pub struct PaintStylePatch {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
+pub struct EffectStylePatch {
+    pub backdrop: StyleValue<BackdropStyle>,
+    pub effects: StyleValue<Arc<[Effect]>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ScrollStylePatch {
     pub direction: StyleValue<ScrollDirectionStyle>,
     pub scrollbar: ScrollbarStylePatch,
@@ -717,6 +1013,27 @@ impl Style {
         self.map_base(|base| base.clip(clip))
     }
 
+    /// Blurs the content already painted behind this widget.
+    pub fn backdrop_blur(self, sigma: impl Into<LengthValue>) -> Self {
+        self.map_base(|base| base.backdrop_blur(sigma))
+    }
+
+    pub fn backdrop_style(self, backdrop: BackdropStyle) -> Self {
+        self.map_base(|base| base.backdrop_style(backdrop))
+    }
+
+    pub fn no_backdrop(self) -> Self {
+        self.map_base(StylePatch::no_backdrop)
+    }
+
+    pub fn effects(self, effects: impl Into<Arc<[Effect]>>) -> Self {
+        self.map_base(|base| base.effects(effects))
+    }
+
+    pub fn no_effects(self) -> Self {
+        self.map_base(StylePatch::no_effects)
+    }
+
     pub fn scroll_direction(self, direction: ScrollDirectionStyle) -> Self {
         self.map_base(|base| base.scroll_direction(direction))
     }
@@ -880,6 +1197,7 @@ pub struct StylePatch {
     pub text: TextStylePatch,
     pub layout: LayoutStylePatch,
     pub paint: PaintStylePatch,
+    pub effect: EffectStylePatch,
     pub scroll: ScrollStylePatch,
 }
 
@@ -1094,6 +1412,32 @@ impl StylePatch {
         self
     }
 
+    /// Blurs the content already painted behind this widget.
+    pub fn backdrop_blur(mut self, sigma: impl Into<LengthValue>) -> Self {
+        self.effect.backdrop = StyleValue::Value(BackdropStyle::blur(sigma));
+        self
+    }
+
+    pub fn backdrop_style(mut self, backdrop: BackdropStyle) -> Self {
+        self.effect.backdrop = StyleValue::Value(backdrop);
+        self
+    }
+
+    pub fn no_backdrop(mut self) -> Self {
+        self.effect.backdrop = StyleValue::Initial;
+        self
+    }
+
+    pub fn effects(mut self, effects: impl Into<Arc<[Effect]>>) -> Self {
+        self.effect.effects = StyleValue::Value(effects.into());
+        self
+    }
+
+    pub fn no_effects(mut self) -> Self {
+        self.effect.effects = StyleValue::Initial;
+        self
+    }
+
     pub fn scroll_direction(mut self, direction: ScrollDirectionStyle) -> Self {
         self.scroll.direction = StyleValue::Value(direction);
         self
@@ -1158,6 +1502,7 @@ impl StylePatch {
         merge_text(&mut self.text, &other.text);
         merge_layout(&mut self.layout, &other.layout);
         merge_paint(&mut self.paint, &other.paint);
+        merge_effect(&mut self.effect, &other.effect);
         merge_scroll(&mut self.scroll, &other.scroll);
     }
 }
@@ -1291,6 +1636,12 @@ pub struct ComputedPaintStyle {
     pub clip: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ComputedEffectStyle {
+    pub backdrop: Option<ComputedBackdropStyle>,
+    pub effects: Arc<[ComputedEffect]>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ComputedScrollStyle {
     pub direction: ScrollDirectionStyle,
@@ -1378,6 +1729,7 @@ pub struct ComputedStyle {
     pub text: ComputedTextStyle,
     pub layout: ComputedLayoutStyle,
     pub paint: ComputedPaintStyle,
+    pub effect: ComputedEffectStyle,
     pub scroll: ComputedScrollStyle,
 }
 
@@ -1419,6 +1771,10 @@ impl ComputedStyle {
                 shadow: None,
                 clip: false,
             },
+            effect: ComputedEffectStyle {
+                backdrop: None,
+                effects: Arc::from([]),
+            },
             scroll: ComputedScrollStyle {
                 direction: ScrollDirectionStyle::None,
                 scrollbar: ComputedScrollbarStyle {
@@ -1442,6 +1798,7 @@ impl ComputedStyle {
         apply_text(&mut self.text, &parent.text, &patch.text, theme);
         apply_layout(&mut self.layout, &patch.layout, theme);
         apply_paint(&mut self.paint, &patch.paint, theme);
+        apply_effect(&mut self.effect, &patch.effect, theme);
         apply_scroll(&mut self.scroll, &patch.scroll, theme);
     }
 
@@ -1458,6 +1815,10 @@ impl ComputedStyle {
 
         if self.paint != other.paint {
             flags |= StyleDiffFlags::PAINT;
+        }
+
+        if self.effect != other.effect {
+            flags |= StyleDiffFlags::EFFECT;
         }
 
         if self.scroll != other.scroll {
@@ -1611,6 +1972,11 @@ fn merge_paint(target: &mut PaintStylePatch, other: &PaintStylePatch) {
     merge_value(&mut target.clip, &other.clip);
 }
 
+fn merge_effect(target: &mut EffectStylePatch, other: &EffectStylePatch) {
+    merge_value(&mut target.backdrop, &other.backdrop);
+    merge_value(&mut target.effects, &other.effects);
+}
+
 fn merge_scroll(target: &mut ScrollStylePatch, other: &ScrollStylePatch) {
     merge_value(&mut target.direction, &other.direction);
     merge_scrollbar(&mut target.scrollbar, &other.scrollbar);
@@ -1749,6 +2115,177 @@ fn apply_paint(target: &mut ComputedPaintStyle, patch: &PaintStylePatch, theme: 
     );
     target.shadow = resolve_shadow_no_inherit(patch.shadow, target.shadow, initial.shadow, theme);
     target.clip = resolve_copy_no_inherit(patch.clip, target.clip, initial.clip);
+}
+
+fn apply_effect(target: &mut ComputedEffectStyle, patch: &EffectStylePatch, theme: &Theme) {
+    match &patch.backdrop {
+        StyleValue::Unset | StyleValue::Inherit => {}
+        StyleValue::Initial => target.backdrop = None,
+        StyleValue::Value(backdrop) => {
+            target.backdrop = Some(compute_backdrop_style(backdrop, theme));
+        }
+    }
+
+    match &patch.effects {
+        StyleValue::Unset | StyleValue::Inherit => {}
+        StyleValue::Initial => target.effects = Arc::from([]),
+        StyleValue::Value(effects) => {
+            target.effects = effects
+                .iter()
+                .map(|effect| compute_effect(effect, theme))
+                .collect::<Vec<_>>()
+                .into();
+        }
+    }
+}
+
+fn compute_backdrop_style(style: &BackdropStyle, theme: &Theme) -> ComputedBackdropStyle {
+    ComputedBackdropStyle {
+        filters: style
+            .filters
+            .iter()
+            .map(|filter| compute_backdrop_filter(filter, theme))
+            .collect::<Vec<_>>()
+            .into(),
+        opacity: style.opacity.clamp(0.0, 1.0),
+        blend_mode: style.blend_mode,
+        mask: compute_backdrop_mask(&style.mask, theme),
+    }
+}
+
+fn compute_backdrop_filter(filter: &BackdropFilter, theme: &Theme) -> ComputedBackdropFilter {
+    match filter {
+        BackdropFilter::Blur {
+            sigma_x,
+            sigma_y,
+            quality,
+        } => ComputedBackdropFilter::Blur {
+            sigma_x: non_negative(length_value(*sigma_x, theme)),
+            sigma_y: non_negative(length_value(*sigma_y, theme)),
+            quality: *quality,
+        },
+        BackdropFilter::Saturate(value) => ComputedBackdropFilter::Saturate(non_negative(*value)),
+        BackdropFilter::Brightness(value) => {
+            ComputedBackdropFilter::Brightness(non_negative(*value))
+        }
+        BackdropFilter::Contrast(value) => ComputedBackdropFilter::Contrast(non_negative(*value)),
+        BackdropFilter::Grayscale(value) => {
+            ComputedBackdropFilter::Grayscale(value.clamp(0.0, 1.0))
+        }
+        BackdropFilter::Sepia(value) => ComputedBackdropFilter::Sepia(value.clamp(0.0, 1.0)),
+        BackdropFilter::HueRotate(value) => {
+            ComputedBackdropFilter::HueRotate(normalize_radians(*value))
+        }
+        BackdropFilter::Invert(value) => ComputedBackdropFilter::Invert(value.clamp(0.0, 1.0)),
+        BackdropFilter::ColorMatrix(matrix) => ComputedBackdropFilter::ColorMatrix(*matrix),
+        BackdropFilter::Pixelate { size } => ComputedBackdropFilter::Pixelate {
+            size: Size::new(
+                non_negative(length_value(size.width, theme)),
+                non_negative(length_value(size.height, theme)),
+            ),
+        },
+        BackdropFilter::Refraction {
+            strength,
+            chromatic_aberration,
+        } => ComputedBackdropFilter::Refraction {
+            strength: length_value(*strength, theme),
+            chromatic_aberration: length_value(*chromatic_aberration, theme).abs(),
+        },
+        BackdropFilter::ChromaticAberration { offset_x, offset_y } => {
+            ComputedBackdropFilter::ChromaticAberration {
+                offset: [
+                    length_value(*offset_x, theme),
+                    length_value(*offset_y, theme),
+                ],
+            }
+        }
+    }
+}
+
+fn compute_backdrop_mask(mask: &BackdropMask, theme: &Theme) -> ComputedBackdropMask {
+    match mask {
+        BackdropMask::None => ComputedBackdropMask::None,
+        BackdropMask::Shape { shape, transform } => ComputedBackdropMask::Shape {
+            shape: match shape {
+                MaskShape::Rect => ComputedMaskShape::Rect,
+                MaskShape::RoundedRect(radius) => {
+                    ComputedMaskShape::RoundedRect(non_negative(length_value(*radius, theme)))
+                }
+                MaskShape::Circle => ComputedMaskShape::Circle,
+                MaskShape::Ellipse => ComputedMaskShape::Ellipse,
+                MaskShape::Line { from, to } => ComputedMaskShape::Line {
+                    from: *from,
+                    to: *to,
+                },
+            },
+            transform: *transform,
+        },
+        BackdropMask::AlphaTexture { texture, transform } => ComputedBackdropMask::AlphaTexture {
+            texture: texture.clone(),
+            transform: *transform,
+        },
+    }
+}
+
+fn compute_effect(effect: &Effect, theme: &Theme) -> ComputedEffect {
+    match effect {
+        Effect::Blur {
+            sigma_x,
+            sigma_y,
+            quality,
+        } => ComputedEffect::Blur {
+            sigma_x: non_negative(length_value(*sigma_x, theme)),
+            sigma_y: non_negative(length_value(*sigma_y, theme)),
+            quality: *quality,
+        },
+        Effect::DropShadow {
+            color,
+            offset_x,
+            offset_y,
+            sigma_x,
+            sigma_y,
+            spread,
+            quality,
+        } => ComputedEffect::DropShadow {
+            color: color_value(*color, theme),
+            offset: Point::new(
+                length_value(*offset_x, theme),
+                length_value(*offset_y, theme),
+            ),
+            sigma_x: non_negative(length_value(*sigma_x, theme)),
+            sigma_y: non_negative(length_value(*sigma_y, theme)),
+            spread: non_negative(length_value(*spread, theme)),
+            quality: *quality,
+        },
+        Effect::ColorMatrix(matrix) => ComputedEffect::ColorMatrix(*matrix),
+        Effect::ImageMask {
+            image,
+            data,
+            bounds,
+        } => ComputedEffect::ImageMask {
+            image: image.clone(),
+            data: data.clone(),
+            bounds: *bounds,
+        },
+    }
+}
+
+fn non_negative(value: f32) -> f32 {
+    if value < 0.0 { 0.0 } else { value }
+}
+
+fn normalize_radians(value: f32) -> f32 {
+    if value.is_finite() {
+        let normalized =
+            (value + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+        if normalized.abs() <= 1.0e-6 {
+            0.0
+        } else {
+            normalized
+        }
+    } else {
+        value
+    }
 }
 
 fn apply_scroll(target: &mut ComputedScrollStyle, patch: &ScrollStylePatch, theme: &Theme) {
@@ -1993,6 +2530,33 @@ fn hash_color<H: Hasher>(color: Color, state: &mut H) {
     color.a.to_bits().hash(state);
 }
 
+fn hash_f32<H: Hasher>(value: f32, state: &mut H) {
+    let bits = if value == 0.0 {
+        0.0f32.to_bits()
+    } else {
+        value.to_bits()
+    };
+    bits.hash(state);
+}
+
+fn hash_affine<H: Hasher>(value: Affine, state: &mut H) {
+    for component in [value.xx, value.yx, value.xy, value.yy, value.dx, value.dy] {
+        hash_f32(component, state);
+    }
+}
+
+fn hash_rect<H: Hasher>(value: Rect, state: &mut H) {
+    for component in [value.x, value.y, value.width, value.height] {
+        hash_f32(component, state);
+    }
+}
+
+fn hash_color_matrix<H: Hasher>(matrix: &ColorMatrix, state: &mut H) {
+    for value in matrix {
+        hash_f32(*value, state);
+    }
+}
+
 fn hash_edge_insets<H: Hasher>(value: EdgeInsets, state: &mut H) {
     value.left.to_bits().hash(state);
     value.right.to_bits().hash(state);
@@ -2006,8 +2570,8 @@ fn hash_size<H: Hasher>(value: Size<Sizing>, state: &mut H) {
 }
 
 fn hash_point<H: Hasher>(value: Point, state: &mut H) {
-    value.x.to_bits().hash(state);
-    value.y.to_bits().hash(state);
+    hash_f32(value.x, state);
+    hash_f32(value.y, state);
 }
 
 impl Hash for ColorValue {
@@ -2061,6 +2625,130 @@ impl Hash for LengthValue {
     }
 }
 
+impl Hash for MaskShape {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        core::mem::discriminant(self).hash(state);
+        match self {
+            Self::RoundedRect(radius) => radius.hash(state),
+            Self::Line { from, to } => {
+                hash_point(*from, state);
+                hash_point(*to, state);
+            }
+            Self::Rect | Self::Circle | Self::Ellipse => {}
+        }
+    }
+}
+
+impl Hash for BackdropMask {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        core::mem::discriminant(self).hash(state);
+        match self {
+            Self::None => {}
+            Self::Shape { shape, transform } => {
+                shape.hash(state);
+                hash_affine(*transform, state);
+            }
+            Self::AlphaTexture { texture, transform } => {
+                texture.hash(state);
+                hash_affine(*transform, state);
+            }
+        }
+    }
+}
+
+impl Hash for BackdropFilter {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        core::mem::discriminant(self).hash(state);
+        match self {
+            Self::Blur {
+                sigma_x,
+                sigma_y,
+                quality,
+            } => {
+                sigma_x.hash(state);
+                sigma_y.hash(state);
+                quality.hash(state);
+            }
+            Self::Saturate(value)
+            | Self::Brightness(value)
+            | Self::Contrast(value)
+            | Self::Grayscale(value)
+            | Self::Sepia(value)
+            | Self::HueRotate(value)
+            | Self::Invert(value) => hash_f32(*value, state),
+            Self::ColorMatrix(matrix) => hash_color_matrix(matrix, state),
+            Self::Pixelate { size } => {
+                size.width.hash(state);
+                size.height.hash(state);
+            }
+            Self::Refraction {
+                strength,
+                chromatic_aberration,
+            } => {
+                strength.hash(state);
+                chromatic_aberration.hash(state);
+            }
+            Self::ChromaticAberration { offset_x, offset_y } => {
+                offset_x.hash(state);
+                offset_y.hash(state);
+            }
+        }
+    }
+}
+
+impl Hash for BackdropStyle {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.filters.hash(state);
+        hash_f32(self.opacity, state);
+        self.blend_mode.hash(state);
+        self.mask.hash(state);
+    }
+}
+
+impl Hash for Effect {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        core::mem::discriminant(self).hash(state);
+        match self {
+            Self::Blur {
+                sigma_x,
+                sigma_y,
+                quality,
+            } => {
+                sigma_x.hash(state);
+                sigma_y.hash(state);
+                quality.hash(state);
+            }
+            Self::DropShadow {
+                color,
+                offset_x,
+                offset_y,
+                sigma_x,
+                sigma_y,
+                spread,
+                quality,
+            } => {
+                color.hash(state);
+                offset_x.hash(state);
+                offset_y.hash(state);
+                sigma_x.hash(state);
+                sigma_y.hash(state);
+                spread.hash(state);
+                quality.hash(state);
+            }
+            Self::ColorMatrix(matrix) => hash_color_matrix(matrix, state),
+            Self::ImageMask {
+                image,
+                data,
+                bounds,
+            } => {
+                image.hash(state);
+                data.id().hash(state);
+                hash_rect(*bounds, state);
+            }
+        }
+    }
+}
+
 impl Hash for Style {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.base.hash(state);
@@ -2073,6 +2761,7 @@ impl Hash for StylePatch {
         self.text.hash(state);
         self.layout.hash(state);
         self.paint.hash(state);
+        self.effect.hash(state);
         self.scroll.hash(state);
     }
 }
@@ -2120,6 +2809,13 @@ impl Hash for PaintStylePatch {
     }
 }
 
+impl Hash for EffectStylePatch {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        hash_style_value_backdrop(&self.backdrop, state);
+        hash_style_value_effects(&self.effects, state);
+    }
+}
+
 impl Hash for ScrollStylePatch {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.direction.hash(state);
@@ -2138,6 +2834,20 @@ fn hash_style_value_edge_insets<H: Hasher>(value: &StyleValue<EdgeInsets>, state
     core::mem::discriminant(value).hash(state);
     if let StyleValue::Value(value) = value {
         hash_edge_insets(*value, state);
+    }
+}
+
+fn hash_style_value_backdrop<H: Hasher>(value: &StyleValue<BackdropStyle>, state: &mut H) {
+    core::mem::discriminant(value).hash(state);
+    if let StyleValue::Value(value) = value {
+        value.hash(state);
+    }
+}
+
+fn hash_style_value_effects<H: Hasher>(value: &StyleValue<Arc<[Effect]>>, state: &mut H) {
+    core::mem::discriminant(value).hash(state);
+    if let StyleValue::Value(value) = value {
+        value.hash(state);
     }
 }
 
@@ -2173,6 +2883,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn backdrop_defaults_to_an_empty_unmasked_style() {
+        let authored = BackdropStyle::default();
+        let computed = ComputedBackdropStyle::default();
+
+        assert!(authored.filters.is_empty());
+        assert_eq!(authored.opacity, 1.0);
+        assert_eq!(authored.blend_mode, BlendMode::Normal);
+        assert_eq!(authored.mask, BackdropMask::None);
+        assert!(computed.filters.is_empty());
+        assert_eq!(computed.opacity, 1.0);
+        assert_eq!(computed.mask, ComputedBackdropMask::None);
+        assert!(ComputedEffectStyle::default().effects.is_empty());
+    }
+
+    #[test]
     fn computed_style_diff_is_empty_when_styles_match() {
         let theme = Theme::default();
         let style = ComputedStyle::initial(&theme);
@@ -2192,6 +2917,248 @@ mod tests {
         assert!(flags.contains(StyleDiffFlags::PAINT));
         assert!(!flags.contains(StyleDiffFlags::LAYOUT));
         assert!(!flags.contains(StyleDiffFlags::TEXT));
+    }
+
+    #[test]
+    fn backdrop_blur_defaults_to_zero_clamps_and_does_not_inherit() {
+        let theme = Theme::default();
+        let initial = ComputedStyle::initial(&theme);
+        let parent =
+            ComputedStyle::compute(&initial, &StylePatch::new().backdrop_blur(18.0), &theme);
+        let child = ComputedStyle::compute(&parent, &StylePatch::new(), &theme);
+        let clamped =
+            ComputedStyle::compute(&initial, &StylePatch::new().backdrop_blur(-4.0), &theme);
+
+        let blur_sigma = |style: &ComputedStyle| {
+            style
+                .effect
+                .backdrop
+                .as_ref()
+                .and_then(|backdrop| backdrop.filters.first())
+                .and_then(|filter| match filter {
+                    ComputedBackdropFilter::Blur { sigma_x, .. } => Some(*sigma_x),
+                    _ => None,
+                })
+        };
+
+        assert_eq!(initial.effect.backdrop, None);
+        assert_eq!(blur_sigma(&parent), Some(18.0));
+        assert_eq!(child.effect.backdrop, None);
+        assert_eq!(blur_sigma(&clamped), Some(0.0));
+    }
+
+    #[test]
+    fn backdrop_blur_diff_is_effect_only() {
+        let theme = Theme::default();
+        let initial = ComputedStyle::initial(&theme);
+        let blurred =
+            ComputedStyle::compute(&initial, &StylePatch::new().backdrop_blur(12.0), &theme);
+
+        assert_eq!(initial.diff(&blurred), StyleDiffFlags::EFFECT);
+    }
+
+    #[test]
+    fn backdrop_blur_participates_in_state_merge_and_hash() {
+        let style = Style::new()
+            .backdrop_blur(4.0)
+            .when(WidgetState::HOVERED, |style| style.backdrop_blur(16.0));
+        let normal = style.patch_for_state(WidgetState::empty());
+        let hovered = style.patch_for_state(WidgetState::HOVERED);
+
+        assert_eq!(
+            normal.effect.backdrop,
+            StyleValue::Value(BackdropStyle::blur(4.0))
+        );
+        assert_eq!(
+            hovered.effect.backdrop,
+            StyleValue::Value(BackdropStyle::blur(16.0))
+        );
+
+        let hash = |patch: &StylePatch| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            patch.hash(&mut hasher);
+            hasher.finish()
+        };
+        assert_ne!(hash(&normal), hash(&hovered));
+    }
+
+    #[test]
+    fn backdrop_blur_shortcut_matches_full_backdrop_style() {
+        let theme = Theme::default();
+        let initial = ComputedStyle::initial(&theme);
+        let shortcut =
+            ComputedStyle::compute(&initial, &StylePatch::new().backdrop_blur(12.0), &theme);
+        let full = ComputedStyle::compute(
+            &initial,
+            &StylePatch::new().backdrop_style(BackdropStyle::new().with_filters(Arc::from([
+                BackdropFilter::Blur {
+                    sigma_x: LengthValue::Px(12.0),
+                    sigma_y: LengthValue::Px(12.0),
+                    quality: FilterQuality::Medium,
+                },
+            ]))),
+            &theme,
+        );
+
+        assert_eq!(shortcut.effect.backdrop, full.effect.backdrop);
+    }
+
+    #[test]
+    fn backdrop_and_effects_are_non_inherited_and_initial_clears_them() {
+        let theme = Theme::default();
+        let initial = ComputedStyle::initial(&theme);
+        let parent = ComputedStyle::compute(
+            &initial,
+            &StylePatch::new()
+                .backdrop_style(BackdropStyle::blur(8.0))
+                .effects(Arc::from([Effect::blur(3.0)])),
+            &theme,
+        );
+
+        let child = ComputedStyle::compute(&parent, &StylePatch::new(), &theme);
+        assert_eq!(child.effect, initial.effect);
+
+        let mut reset = parent.clone();
+        reset.apply(
+            &parent,
+            &StylePatch::new().no_backdrop().no_effects(),
+            &theme,
+        );
+        assert_eq!(reset.effect, initial.effect);
+    }
+
+    #[test]
+    fn effect_compute_resolves_tokens_and_normalizes_ranges() {
+        let mut theme = Theme::default();
+        theme.spacing_lg = 21.0;
+        theme.radius_md = 7.0;
+        theme.primary = Color::rgba(0.1, 0.2, 0.3, 0.4);
+        let initial = ComputedStyle::initial(&theme);
+        let style = BackdropStyle::new()
+            .with_filters(Arc::from([
+                BackdropFilter::Blur {
+                    sigma_x: LengthValue::Spacing(SpacingToken::Lg),
+                    sigma_y: LengthValue::Px(-2.0),
+                    quality: FilterQuality::High,
+                },
+                BackdropFilter::Grayscale(2.0),
+                BackdropFilter::HueRotate(std::f32::consts::TAU),
+                BackdropFilter::Pixelate {
+                    size: Size::new(
+                        LengthValue::Px(-4.0),
+                        LengthValue::Spacing(SpacingToken::Lg),
+                    ),
+                },
+            ]))
+            .opacity(4.0)
+            .mask(BackdropMask::Shape {
+                shape: MaskShape::RoundedRect(LengthValue::Radius(RadiusToken::Md)),
+                transform: Affine::IDENTITY,
+            });
+        let computed = ComputedStyle::compute(
+            &initial,
+            &StylePatch::new()
+                .backdrop_style(style)
+                .effects(Arc::from([Effect::DropShadow {
+                    color: ColorValue::Token(ColorToken::Primary),
+                    offset_x: LengthValue::Spacing(SpacingToken::Lg),
+                    offset_y: LengthValue::Px(3.0),
+                    sigma_x: LengthValue::Px(-1.0),
+                    sigma_y: LengthValue::Spacing(SpacingToken::Lg),
+                    spread: LengthValue::Px(-5.0),
+                    quality: FilterQuality::Low,
+                }])),
+            &theme,
+        );
+
+        let backdrop = computed.effect.backdrop.unwrap();
+        assert_eq!(backdrop.opacity, 1.0);
+        assert_eq!(
+            backdrop.filters.as_ref(),
+            [
+                ComputedBackdropFilter::Blur {
+                    sigma_x: 21.0,
+                    sigma_y: 0.0,
+                    quality: FilterQuality::High,
+                },
+                ComputedBackdropFilter::Grayscale(1.0),
+                ComputedBackdropFilter::HueRotate(0.0),
+                ComputedBackdropFilter::Pixelate {
+                    size: Size::new(0.0, 21.0),
+                },
+            ]
+        );
+        assert_eq!(
+            backdrop.mask,
+            ComputedBackdropMask::Shape {
+                shape: ComputedMaskShape::RoundedRect(7.0),
+                transform: Affine::IDENTITY,
+            }
+        );
+        assert!(matches!(
+            &computed.effect.effects[0],
+            ComputedEffect::DropShadow {
+                color,
+                offset: Point { x: 21.0, y: 3.0 },
+                sigma_x: 0.0,
+                sigma_y: 21.0,
+                spread: 0.0,
+                ..
+            } if *color == theme.primary
+        ));
+    }
+
+    #[test]
+    fn effect_chain_order_is_preserved_by_state_hash_and_diff() {
+        let matrix = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+        ];
+        let first: Arc<[Effect]> = Arc::from([Effect::blur(2.0), Effect::ColorMatrix(matrix)]);
+        let second: Arc<[Effect]> = Arc::from([Effect::ColorMatrix(matrix), Effect::blur(2.0)]);
+        let first_backdrop = BackdropStyle::new().with_filters(Arc::from([
+            BackdropFilter::Blur {
+                sigma_x: LengthValue::Px(1.0),
+                sigma_y: LengthValue::Px(1.0),
+                quality: FilterQuality::Medium,
+            },
+            BackdropFilter::Brightness(0.8),
+        ]));
+        let second_backdrop = BackdropStyle::new().with_filters(Arc::from([
+            BackdropFilter::Brightness(0.8),
+            BackdropFilter::Blur {
+                sigma_x: LengthValue::Px(1.0),
+                sigma_y: LengthValue::Px(1.0),
+                quality: FilterQuality::Medium,
+            },
+        ]));
+        let style = Style::new()
+            .backdrop_style(first_backdrop.clone())
+            .effects(first.clone())
+            .when(WidgetState::HOVERED, |patch| {
+                patch
+                    .backdrop_style(second_backdrop.clone())
+                    .effects(second.clone())
+            });
+        let normal = style.patch_for_state(WidgetState::empty());
+        let hovered = style.patch_for_state(WidgetState::HOVERED);
+        assert_eq!(normal.effect.backdrop, StyleValue::Value(first_backdrop));
+        assert_eq!(hovered.effect.backdrop, StyleValue::Value(second_backdrop));
+        assert_eq!(normal.effect.effects, StyleValue::Value(first));
+        assert_eq!(hovered.effect.effects, StyleValue::Value(second));
+
+        let hash = |patch: &StylePatch| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            patch.hash(&mut hasher);
+            hasher.finish()
+        };
+        assert_ne!(hash(&normal), hash(&hovered));
+
+        let theme = Theme::default();
+        let initial = ComputedStyle::initial(&theme);
+        let normal = ComputedStyle::compute(&initial, &normal, &theme);
+        let hovered = ComputedStyle::compute(&initial, &hovered, &theme);
+        assert_eq!(normal.diff(&hovered), StyleDiffFlags::EFFECT);
     }
 
     #[test]

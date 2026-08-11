@@ -23,5 +23,6 @@ bitflags::bitflags! {
         const LAYOUT = 1 << 1;
         const PAINT = 1 << 2;
         const SCROLL = 1 << 3;
+        const EFFECT = 1 << 4;
     }
 }

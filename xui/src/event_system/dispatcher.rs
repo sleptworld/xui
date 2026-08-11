@@ -1,5 +1,5 @@
 use crate::event_system::EventContext;
-use crate::text::{TextHost, TextLayoutQuery};
+use crate::text::{TextHost, TextLayoutQuery, TextLayoutSlot};
 use crate::tree::UiArena;
 use xui_interface::events::semantic::SemanticEvent;
 use xui_interface::events::{EventPhase, PropagationMode, RawEvent};
@@ -199,9 +199,7 @@ fn dispatch_semantic_to_node<B: TextBackend>(
     let mut requests = EventRequests::default();
     let result = {
         let node = arena.nodes.get(node).unwrap();
-        let text_layout = host_text_cache
-            .get(node.id)
-            .map(|n| n as &dyn TextLayoutQuery);
+        let text_layout = primary_text_query(host_text_cache, node.id);
         let mut cx =
             EventContext::new(node, text_layout, phase, &mut request_update, &mut requests);
         let callbacks = &mut arena.event_callbacks;
@@ -275,9 +273,7 @@ fn dispatch_builtin_event<B: TextBackend>(
             .nodes
             .get_mut(node_id)
             .map(|node| {
-                let text_layout = host_text_cache
-                    .get(node_id)
-                    .map(|n| n as &dyn TextLayoutQuery);
+                let text_layout = primary_text_query(host_text_cache, node_id);
                 let mut cx =
                     EventContext::new(&node, text_layout, phase, &mut update, &mut requests);
                 node.widget.handle_event(event, &mut cx)
@@ -287,6 +283,14 @@ fn dispatch_builtin_event<B: TextBackend>(
 
     apply_event_context(arena, node_id, update, &requests);
     result
+}
+
+fn primary_text_query<B: TextBackend>(
+    host: &TextHost<B>,
+    owner: NodeId,
+) -> Option<&dyn TextLayoutQuery> {
+    let handle = host.active_slot(owner, TextLayoutSlot::PRIMARY)?;
+    host.query(handle)
 }
 
 fn apply_event_context(

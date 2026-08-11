@@ -14,7 +14,7 @@ use std::fmt;
 use std::ops::RangeBounds;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Handle as TokioHandle;
-use xui_interface::NodeId;
+use xui_interface::{NodeId, WidgetType};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct WipId(usize);
@@ -153,14 +153,17 @@ impl WorkNode {
         }
     }
 
-    fn needs_work(&self, render_lanes: Lanes) -> bool {
-        !self.effect.is_empty()
-            || self.is_uncommited()
-            || self
-                .host_work
-                .as_ref()
-                .is_some_and(|h| !h.pending_children.is_empty())
+    fn needs_begin_work(&self, render_lanes: Lanes) -> bool {
+        self.is_uncommited()
+            || self.host_work.is_some()
+            || self.component_work.is_some()
             || includes_some_lane(self.lanes | self.child_lanes, render_lanes)
+    }
+
+    fn should_render_component(&self, render_lanes: Lanes) -> bool {
+        self.is_uncommited()
+            || self.component_work.is_some()
+            || includes_some_lane(self.lanes, render_lanes)
     }
 
     fn take_work_nodes(&mut self) -> Option<Vec<ElementDesc>> {
@@ -483,19 +486,14 @@ impl ComponentRuntime {
     }
 
     fn begin_work(&mut self, id: WipId) -> Option<WipId> {
-        let (fiber_id, tag, should_render, should_reconcile_pending, render_lanes) = {
+        let (fiber_id, tag, should_render, render_lanes) = {
             let work = self.work_in_progress.as_ref().expect("work missing");
             let node = self.wip_nodes.get(id).expect("work node missing");
-            let should_reconcile_pending = node
-                .host_work
-                .as_ref()
-                .is_some_and(|h| !h.pending_children.is_empty());
 
             (
                 node.fiber_id,
                 node.tag,
-                node.needs_work(work.render_lanes),
-                should_reconcile_pending,
+                node.should_render_component(work.render_lanes),
                 work.render_lanes,
             )
         };
@@ -538,12 +536,12 @@ impl ComponentRuntime {
                 }
             }
             FiberTag::Host(_) => {
-                if should_reconcile_pending {
-                    let children = self
-                        .wip_nodes
-                        .get_mut(id)
-                        .and_then(|n| n.take_work_nodes())
-                        .unwrap_or_default();
+                let pending_children = self
+                    .wip_nodes
+                    .get_mut(id)
+                    .and_then(WorkNode::take_work_nodes);
+
+                if let Some(children) = pending_children {
                     self.reconcile_children(id, children);
                 } else {
                     self.clone_current_children(id);
@@ -771,10 +769,10 @@ impl ComponentRuntime {
         if effect.intersects(EffectTag::PLACEMENT.union(EffectTag::MOVE)) {
             let before = self.find_host_sibling_for_wip(wip_id);
             self.commit_placement_subtree(wip_id, parent_host, before, arena);
-        } else {
-            if effect.contains(EffectTag::UPDATE) {
-                self.commit_update_if_host(wip_id, arena);
-            }
+        }
+
+        if effect.contains(EffectTag::UPDATE) {
+            self.commit_update_if_host(wip_id, arena);
         }
 
         let child_parent_host = if matches!(tag, FiberTag::Host(_)) {
@@ -1098,7 +1096,7 @@ impl ComponentRuntime {
             .find(|child| {
                 self.wip_nodes
                     .get(*child)
-                    .is_some_and(|node| node.needs_work(work.render_lanes))
+                    .is_some_and(|node| node.needs_begin_work(work.render_lanes))
             })
     }
 
@@ -1124,7 +1122,6 @@ impl ComponentRuntime {
     }
 
     fn create_work_in_progress(&mut self, render_lanes: Lanes) -> WorkInProgress {
-        println!("REBUILD WORK IN PROGRESS, lanes: {}", render_lanes);
         let (lanes, child_lanes) = self.collect_lane_marks(self.root_node(), render_lanes);
         self.wip_nodes.clear();
         let root_node = {
@@ -1178,7 +1175,7 @@ impl ComponentRuntime {
         siblings.iter().copied().skip(index + 1).find(|sibling| {
             self.wip_nodes
                 .get(*sibling)
-                .is_some_and(|node| node.needs_work(work.render_lanes))
+                .is_some_and(|node| node.needs_begin_work(work.render_lanes))
         })
     }
 

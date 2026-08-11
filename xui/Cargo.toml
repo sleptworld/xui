@@ -22,3 +22,5 @@ zune-image = { workspace = true }
 tokio.workspace = true
 num-traits = "0.2.19"
 usvg = { version = "0.47.0", default-features = false }
+quick_cache = { version = "0.7.0", default-features = false }
+xui-render-graph = { path = "../xui-render-graph" }

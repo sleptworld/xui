@@ -117,6 +117,104 @@ pub struct State<T: 'static> {
     inner: Pointer<Slot, StateSlot<T>>,
 }
 
+/// A stable mutable value owned by the current hook slot.
+///
+/// Mutations are applied synchronously and do not schedule a component rebuild.
+pub struct HookRef<T: 'static> {
+    inner: Pointer<Slot, T>,
+}
+
+impl<T: 'static> Copy for HookRef<T> {}
+
+impl<T: 'static> Clone for HookRef<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: 'static> fmt::Debug for HookRef<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HookRef")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+impl<T: 'static> PartialEq for HookRef<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+
+impl<T: 'static> Eq for HookRef<T> {}
+
+impl<T: 'static> Hash for HookRef<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.inner.hash(state);
+    }
+}
+
+impl<T: 'static> HookRef<T> {
+    pub fn get(&self) -> &T {
+        read_slot(self.inner)
+    }
+
+    pub fn set(&self, value: T) {
+        self.update(|current| *current = value);
+    }
+
+    pub fn update(&self, update: impl FnOnce(&mut T)) {
+        write_slot(self.inner, update);
+    }
+}
+
+struct MemoSlot<T> {
+    value: T,
+}
+
+struct MemoDepsSlot<D> {
+    value: D,
+}
+
+/// A stable read-only handle to a value cached in the current hook slot.
+pub struct Memo<T: 'static> {
+    inner: Pointer<Slot, MemoSlot<T>>,
+}
+
+impl<T: 'static> Copy for Memo<T> {}
+
+impl<T: 'static> Clone for Memo<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: 'static> fmt::Debug for Memo<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Memo").field("inner", &self.inner).finish()
+    }
+}
+
+impl<T: 'static> PartialEq for Memo<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+
+impl<T: 'static> Eq for Memo<T> {}
+
+impl<T: 'static> Hash for Memo<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.inner.hash(state);
+    }
+}
+
+impl<T: 'static> Memo<T> {
+    pub fn get(&self) -> &T {
+        &read_slot(self.inner).value
+    }
+}
+
 impl<T: 'static> Copy for State<T> {}
 
 impl<T: 'static> Clone for State<T> {
@@ -339,6 +437,65 @@ impl<'a> HookContext<'a> {
         self.scheduler
             .apply_hook_updates(self.owner, hook_index, self.render_lanes, &state);
         State { inner: state }
+    }
+
+    pub fn use_ref<T: 'static>(&mut self, init: impl FnOnce() -> T) -> HookRef<T> {
+        let (_, value) = self.storage.next_slot(|_| init());
+        HookRef { inner: value }
+    }
+
+    pub fn use_memo<T: 'static>(&mut self, init: impl FnOnce() -> T) -> Memo<T> {
+        let (_, value) = self.storage.next_slot(|_| MemoSlot { value: init() });
+        Memo { inner: value }
+    }
+
+    pub fn use_memo_with<D, T>(&mut self, deps: D, init: impl FnOnce() -> T) -> Memo<T>
+    where
+        D: PartialEq + 'static,
+        T: 'static,
+    {
+        let mut next_deps = Some(deps);
+        let mut deps_initialized = false;
+        let (_, deps_slot) = self.storage.next_slot(|_| {
+            deps_initialized = true;
+            MemoDepsSlot {
+                value: next_deps
+                    .take()
+                    .expect("memo dependencies should be available for a new hook slot"),
+            }
+        });
+
+        let deps_changed = if deps_initialized {
+            false
+        } else {
+            read_slot(deps_slot).value
+                != *next_deps
+                    .as_ref()
+                    .expect("memo dependencies should be available for comparison")
+        };
+        if deps_changed {
+            let deps = next_deps
+                .take()
+                .expect("changed memo dependencies should be available");
+            write_slot(deps_slot, |current| current.value = deps);
+        }
+
+        let mut next_init = Some(init);
+        let (_, value) = self.storage.next_slot(|_| {
+            let init = next_init
+                .take()
+                .expect("memo initializer should be available for a new hook slot");
+            MemoSlot { value: init() }
+        });
+        if deps_changed {
+            let init = next_init
+                .take()
+                .expect("memo initializer should be available when dependencies change");
+            let next = init();
+            write_slot(value, |current| current.value = next);
+        }
+
+        Memo { inner: value }
     }
 
     pub fn use_callback<D, T>(&mut self, deps: D, init: impl FnOnce() -> T) -> Callback<T>
@@ -886,6 +1043,41 @@ mod tests {
         cx.use_state(init)
     }
 
+    fn render_ref<T: 'static>(
+        storage: &mut HookStorage,
+        owner: FiberId,
+        scheduler: Scheduler,
+        init: impl FnOnce() -> T,
+    ) -> HookRef<T> {
+        let mut cx = HookContext::new(storage, owner, scheduler, SYNC_LANE);
+        cx.use_ref(init)
+    }
+
+    fn render_memo<T: 'static>(
+        storage: &mut HookStorage,
+        owner: FiberId,
+        scheduler: Scheduler,
+        init: impl FnOnce() -> T,
+    ) -> Memo<T> {
+        let mut cx = HookContext::new(storage, owner, scheduler, SYNC_LANE);
+        cx.use_memo(init)
+    }
+
+    fn render_memo_with<D, T>(
+        storage: &mut HookStorage,
+        owner: FiberId,
+        scheduler: Scheduler,
+        deps: D,
+        init: impl FnOnce() -> T,
+    ) -> Memo<T>
+    where
+        D: PartialEq + 'static,
+        T: 'static,
+    {
+        let mut cx = HookContext::new(storage, owner, scheduler, SYNC_LANE);
+        cx.use_memo_with(deps, init)
+    }
+
     fn render_two_states(
         storage: &mut HookStorage,
         owner: FiberId,
@@ -977,6 +1169,110 @@ mod tests {
 
         assert_eq!(*next_count.get(), 5);
         assert_eq!(*next_label.get(), "second");
+    }
+
+    #[test]
+    fn use_ref_reuses_handle_and_mutates_without_scheduling() {
+        let mut storage = HookStorage::default();
+        let scheduler = Scheduler::default();
+        let owner = FiberArena::new().root();
+        scheduler.set_root(owner);
+        let builds = Rc::new(RefCell::new(0));
+
+        let first = render_ref(&mut storage, owner, scheduler.clone(), {
+            let builds = builds.clone();
+            move || {
+                *builds.borrow_mut() += 1;
+                7
+            }
+        });
+        first.update(|value| *value += 2);
+        assert_eq!(*first.get(), 9);
+        assert!(!scheduler.is_dirty());
+
+        first.set(11);
+        assert_eq!(*first.get(), 11);
+        assert!(!scheduler.is_dirty());
+
+        let second = render_ref(&mut storage, owner, scheduler, {
+            let builds = builds.clone();
+            move || {
+                *builds.borrow_mut() += 1;
+                99
+            }
+        });
+        assert_eq!(first, second);
+        assert_eq!(*second.get(), 11);
+        assert_eq!(*builds.borrow(), 1);
+    }
+
+    #[test]
+    fn use_memo_initializes_once_and_reuses_handle() {
+        let mut storage = HookStorage::default();
+        let scheduler = Scheduler::default();
+        let owner = FiberArena::new().root();
+        scheduler.set_root(owner);
+        let builds = Rc::new(RefCell::new(0));
+
+        let first = render_memo(&mut storage, owner, scheduler.clone(), {
+            let builds = builds.clone();
+            move || {
+                *builds.borrow_mut() += 1;
+                String::from("first")
+            }
+        });
+        let second = render_memo(&mut storage, owner, scheduler, {
+            let builds = builds.clone();
+            move || {
+                *builds.borrow_mut() += 1;
+                String::from("second")
+            }
+        });
+
+        assert_eq!(first, second);
+        assert_eq!(first.get(), "first");
+        assert_eq!(second.get(), "first");
+        assert_eq!(*builds.borrow(), 1);
+    }
+
+    #[test]
+    fn use_memo_with_recomputes_only_when_dependencies_change() {
+        let mut storage = HookStorage::default();
+        let scheduler = Scheduler::default();
+        let owner = FiberArena::new().root();
+        scheduler.set_root(owner);
+        let builds = Rc::new(RefCell::new(0));
+
+        let first = render_memo_with(&mut storage, owner, scheduler.clone(), 7, {
+            let builds = builds.clone();
+            move || {
+                *builds.borrow_mut() += 1;
+                70
+            }
+        });
+        let equal = render_memo_with(&mut storage, owner, scheduler.clone(), 7, {
+            let builds = builds.clone();
+            move || {
+                *builds.borrow_mut() += 1;
+                700
+            }
+        });
+        assert_eq!(*builds.borrow(), 1);
+        assert_eq!(*equal.get(), 70);
+
+        let changed = render_memo_with(&mut storage, owner, scheduler, 9, {
+            let builds = builds.clone();
+            move || {
+                *builds.borrow_mut() += 1;
+                90
+            }
+        });
+
+        assert_eq!(first, equal);
+        assert_eq!(equal, changed);
+        assert_eq!(*builds.borrow(), 2);
+        assert_eq!(*first.get(), 90);
+        assert_eq!(*changed.get(), 90);
     }
 
     #[test]

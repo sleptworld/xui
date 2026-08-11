@@ -47,9 +47,10 @@ impl ImageInstance {
     }
 }
 
-struct CachedImageTexture {
+pub(crate) struct CachedImageTexture {
     _texture: wgpu::Texture,
-    _view: wgpu::TextureView,
+    pub(crate) view: wgpu::TextureView,
+    pub(crate) extent: (u32, u32),
     linear_bind_group: wgpu::BindGroup,
     nearest_bind_group: wgpu::BindGroup,
     data_id: ImageDataId,
@@ -68,6 +69,10 @@ pub struct ImageDrawRecord {
 }
 
 impl ImageRender {
+    pub(crate) fn cached_texture(&self, key: &ImageKey) -> Option<Arc<CachedImageTexture>> {
+        self.image_textures.get(key)
+    }
+
     pub fn new(device: &wgpu::Device, tool_layout: &wgpu::BindGroupLayout) -> Self {
         let image_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("xui image shader"),
@@ -384,7 +389,8 @@ fn create_cached_image_texture(
 
     Ok(CachedImageTexture {
         _texture: texture,
-        _view: view,
+        view,
+        extent: (data.size.width, data.size.height),
         linear_bind_group,
         nearest_bind_group,
         data_id: data.id(),

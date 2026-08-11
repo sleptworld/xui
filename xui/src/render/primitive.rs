@@ -1,7 +1,9 @@
 use xui_interface::{
     Affine, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, ImageData, ImageKey,
-    ImageStyle, ImageVariant, NodeId, PathData, PathFill, PathStroke, Point, Rect, TextPaintProps,
+    ImageStyle, ImageVariant, NodeId, Point, Rect, TextPaintProps, TextVerticalAlign, VectorScene,
 };
+
+use crate::text::TextLayoutSlot;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PrimitiveChange {
@@ -12,7 +14,7 @@ pub struct PrimitiveChange {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Primitive {
     Shape(ShapePrimitive),
-    Path(PathPrimitive),
+    Vector(VectorPrimitive),
     Image(ImagePrimitive),
     Text(TextPrimitive),
 }
@@ -21,7 +23,7 @@ impl Primitive {
     pub fn local_bounds(&self) -> Rect {
         match self {
             Self::Shape(value) => value.bounds,
-            Self::Path(value) => value.transform.transform_rect(value.bounds),
+            Self::Vector(value) => value.transform.transform_rect(value.scene.bounds()),
             Self::Image(value) => value.bounds,
             Self::Text(value) => value.bounds,
         }
@@ -30,16 +32,7 @@ impl Primitive {
     pub fn paint_bounds(&self) -> Rect {
         match self {
             Self::Shape(value) => shape_paint_bounds(value),
-            Self::Path(value) => {
-                let bounds = value.transform.transform_rect(value.bounds);
-                bounds.expand(
-                    value
-                        .stroke
-                        .as_ref()
-                        .map(|stroke| stroke.width * 0.5)
-                        .unwrap_or(0.0),
-                )
-            }
+            Self::Vector(value) => value.transform.transform_rect(value.scene.bounds()),
             Self::Image(value) => value.bounds,
             Self::Text(value) => value.bounds,
         }
@@ -54,10 +47,13 @@ impl Primitive {
                 geometry: a.bounds != b.bounds || a.shape != b.shape,
                 paint: a.fill != b.fill || a.stroke != b.stroke || a.shadow != b.shadow,
             },
-            (Self::Path(a), Self::Path(b)) => PrimitiveChange {
-                geometry: a.bounds != b.bounds || a.transform != b.transform,
-                paint: a.path != b.path || a.fill != b.fill || a.stroke != b.stroke,
-            },
+            (Self::Vector(a), Self::Vector(b)) => {
+                let scene = a.scene.diff(&b.scene);
+                PrimitiveChange {
+                    geometry: a.transform != b.transform || scene.geometry,
+                    paint: scene.paint,
+                }
+            }
             (Self::Image(a), Self::Image(b)) => PrimitiveChange {
                 geometry: a.bounds != b.bounds,
                 paint: a.image != b.image
@@ -67,8 +63,14 @@ impl Primitive {
                     || a.opacity != b.opacity,
             },
             (Self::Text(a), Self::Text(b)) => PrimitiveChange {
-                geometry: a.bounds != b.bounds,
-                paint: a.node_id != b.node_id || a.paint != b.paint,
+                geometry: a.bounds != b.bounds
+                    || a.slot != b.slot
+                    || a.layout_revision != b.layout_revision
+                    || a.vertical_align != b.vertical_align,
+                paint: a.node_id != b.node_id
+                    || a.slot != b.slot
+                    || a.layout_revision != b.layout_revision
+                    || a.paint != b.paint,
             },
             _ => PrimitiveChange {
                 geometry: true,
@@ -115,12 +117,9 @@ pub enum Shape {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct PathPrimitive {
-    pub bounds: Rect,
-    pub path: PathData,
+pub struct VectorPrimitive {
+    pub scene: VectorScene,
     pub transform: Affine,
-    pub fill: Option<PathFill>,
-    pub stroke: Option<PathStroke>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -137,6 +136,9 @@ pub struct ImagePrimitive {
 pub struct TextPrimitive {
     pub bounds: Rect,
     pub node_id: NodeId,
+    pub slot: TextLayoutSlot,
+    pub layout_revision: u64,
+    pub vertical_align: TextVerticalAlign,
     pub paint: TextPaintProps,
 }
 

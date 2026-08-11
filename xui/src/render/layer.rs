@@ -1,16 +1,7 @@
+use super::{BlendMode, LayerCacheKey};
+use crate::render::CompositeOperator;
 use std::sync::Arc;
-
-use super::{BackdropEffect, LayerCacheKey, LayerEffect};
-use xui_interface::{Affine, Rect};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum BlendMode {
-    #[default]
-    Normal,
-    Multiply,
-    Screen,
-    Overlay,
-}
+use xui_interface::{Affine, ComputedBackdropStyle, ComputedEffect, Rect};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CompositeStyle {
@@ -19,6 +10,7 @@ pub struct CompositeStyle {
     /// It never changes the world transform of draws inside the layer.
     pub transform: Affine,
     pub blend_mode: BlendMode,
+    pub operator: CompositeOperator,
 }
 
 impl Default for CompositeStyle {
@@ -26,7 +18,8 @@ impl Default for CompositeStyle {
         Self {
             opacity: 1.0,
             transform: Affine::IDENTITY,
-            blend_mode: BlendMode::Normal,
+            blend_mode: BlendMode::default(),
+            operator: CompositeOperator::SrcOver,
         }
     }
 }
@@ -39,14 +32,26 @@ pub enum CachePolicy {
     Always,
 }
 
+/// Controls whether descendants may observe destination history outside this layer.
+///
+/// This does not affect the backdrop input of the layer itself. An isolated layer may
+/// still sample the destination that existed before it was composited into its parent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum BackdropIsolation {
+    #[default]
+    Passthrough,
+    Isolate,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LayerDescriptor {
     pub bounds: Option<Rect>,
     pub cache_key: Option<LayerCacheKey>,
     pub cache_policy: CachePolicy,
     pub composite: CompositeStyle,
-    pub effects: Arc<[LayerEffect]>,
-    pub backdrop_effects: Arc<[BackdropEffect]>,
+    pub backdrop_style: Option<ComputedBackdropStyle>,
+    pub backdrop_isolation: BackdropIsolation,
+    pub effects: Arc<[ComputedEffect]>,
     pub force_offscreen: bool,
 }
 
@@ -58,7 +63,9 @@ impl Default for LayerDescriptor {
             cache_policy: CachePolicy::None,
             composite: CompositeStyle::default(),
             effects: Arc::from([]),
-            backdrop_effects: Arc::from([]),
+            backdrop_style: None,
+            backdrop_isolation: BackdropIsolation::Passthrough,
+            // backdrop_effects: Arc::from([]),
             force_offscreen: false,
         }
     }
@@ -69,32 +76,13 @@ impl LayerDescriptor {
     /// into a single primitive when it can prove that doing so is equivalent.
     pub fn requires_isolation(&self) -> bool {
         self.force_offscreen
+            || self.backdrop_isolation == BackdropIsolation::Isolate
             || !self.effects.is_empty()
-            || !self.backdrop_effects.is_empty()
+            || self.backdrop_style.is_some()
             || self.cache_policy != CachePolicy::None
             || self.composite.blend_mode != BlendMode::Normal
+            || self.composite.operator != CompositeOperator::SrcOver
             || self.composite.opacity != 1.0
             || self.composite.transform != Affine::IDENTITY
-    }
-
-    pub fn effect_expansion(&self) -> f32 {
-        self.effects.iter().map(LayerEffect::visual_expansion).sum()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sequential_effects_accumulate_required_padding() {
-        let descriptor = LayerDescriptor {
-            effects: Arc::from([
-                LayerEffect::Blur { sigma: 2.0 },
-                LayerEffect::Blur { sigma: 3.0 },
-            ]),
-            ..LayerDescriptor::default()
-        };
-        assert_eq!(descriptor.effect_expansion(), 15.0);
     }
 }

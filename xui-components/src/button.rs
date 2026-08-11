@@ -12,8 +12,8 @@ pub struct ButtonProp {
 impl Default for ButtonProp {
     fn default() -> Self {
         Self {
-            text_color: ColorValue::Color(Color::WHITE),
-            background: Color::BLACK.into(),
+            text_color: ColorValue::Color(Color::BLACK),
+            background: Color::hex("#f5f5f5").into(),
             border_radius: 4,
             padding: EdgeInsets::symmetric(12.0, 4.0),
         }
@@ -30,9 +30,10 @@ pub fn button(text: &String, ps: &ButtonProp) {
             background={ps.background}
             border_radius = {ps.border_radius as f32}
             padding = {ps.padding}
-            color = {ps.text_color}
-            style={Style::new().when(WidgetState::HOVERED, |s| s.background(Color::WHITE))}
-            transition={Transition::new(Duration::from_millis(200))}
+            font_color = {px.text_color}
+            font_weight= {FontWeight::Bold}
+            style={Style::new().when(WidgetState::HOVERED, |s| s.background(Color::hex("#f5f5f5").alpha(0.8)))}
+            transition={Transition::new(Duration::from_millis(100))}
             on_click={|_, _| {
                 println!("HEllo");
                 EventResult::Ignored

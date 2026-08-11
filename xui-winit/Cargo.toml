@@ -10,6 +10,7 @@ pollster = "0.4.0"
 wgpu = "29.0.3"
 winit = "0.30.12"
 xui = { path = "../xui" }
+xui-render-graph = { path = "../xui-render-graph" }
 xui-interface = { path = "../xui-interface" }
 xui-text-engine = { path = "../xui-text-engine" }
 
@@ -17,9 +18,8 @@ glam = { workspace = true }
 thiserror = "2.0.18"
 log = "0.4.29"
 moka = { version = "0.12.15", features = ["sync"] }
-lyon_path = "1.0.16"
-lyon_tessellation = "1.0.20"
 rustc-hash = "2.1.3"
+vello = { version = "0.9.0", default-features = false, features = ["wgpu"] }
 
 [dev-dependencies]
 naga = { version = "29.0.3", features = ["wgsl-in"] }

@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 
 use super::{
-    BuiltClipChain, BuiltClipChainId, BuiltDraw, BuiltDrawData, BuiltFrame, BuiltImage, BuiltItem,
-    BuiltLayer, BuiltLayerId, BuiltLayerInstance, BuiltPath, BuiltShape, BuiltText, CompiledClipId,
-    CompiledPictureItem, CompiledScene, ContentVersion, FrameProperties, LayerCacheId, PictureId,
-    PlacementVersion, Primitive, RenderNodeId, SpatialNodeId,
+    BackdropIsolation, BuiltClipChain, BuiltClipChainId, BuiltDraw, BuiltDrawData, BuiltFrame,
+    BuiltImage, BuiltItem, BuiltLayer, BuiltLayerId, BuiltLayerInstance, BuiltLayerInstanceId,
+    BuiltShape, BuiltText, BuiltVector, CompiledClipId, CompiledPictureItem, CompiledScene,
+    ContentVersion, FrameProperties, LayerCacheId, PictureId, PlacementVersion, Primitive,
+    RenderNodeId, SpatialNodeId,
 };
 use xui_interface::{Affine, Rect};
 
@@ -14,6 +15,7 @@ pub enum FrameBuildError {
     MissingPrimitive(super::PrimitiveId),
     MissingSpatialNode(SpatialNodeId),
     MissingClip(CompiledClipId),
+    MissingRenderProgram(PictureId),
     DynamicTransformOnNonSpatialNode(RenderNodeId),
     DynamicCompositeOnNonIsolatedLayer(RenderNodeId),
 }
@@ -25,6 +27,9 @@ impl std::fmt::Display for FrameBuildError {
             Self::MissingPrimitive(id) => write!(f, "compiled primitive {id:?} is missing"),
             Self::MissingSpatialNode(id) => write!(f, "compiled spatial node {id:?} is missing"),
             Self::MissingClip(id) => write!(f, "compiled clip {id:?} is missing"),
+            Self::MissingRenderProgram(id) => {
+                write!(f, "compiled picture {id:?} has no render-graph program")
+            }
             Self::DynamicTransformOnNonSpatialNode(source) => write!(
                 f,
                 "dynamic transform target {source:?} is not a compiled spatial node"
@@ -80,9 +85,11 @@ impl FrameBuilder {
                 content_version: ContentVersion::default(),
                 cache_id: None,
                 cache_policy: super::CachePolicy::None,
+                backdrop_isolation: BackdropIsolation::Isolate,
                 items: Vec::new(),
-                effects: std::sync::Arc::from([]),
             }],
+            layer_instances: Vec::new(),
+            composite_prefixes: Vec::new(),
             clip_chains: Vec::new(),
             live_layer_caches: Vec::new(),
             scene_revision: scene.scene_revision(),
@@ -100,6 +107,7 @@ impl FrameBuilder {
         let root = &mut context.frame.layers[root_layer.0];
         root.content_bounds = result.world_bounds.unwrap_or(Rect::ZERO);
         root.content_version = result.content_version;
+        super::destination::build_destination_history(&mut context.frame);
         Ok(context.frame)
     }
 }
@@ -196,7 +204,7 @@ impl BuildContext<'_> {
                     common,
                     primitive: *primitive,
                 }),
-                Primitive::Path(primitive) => BuiltDraw::Path(BuiltPath {
+                Primitive::Vector(primitive) => BuiltDraw::Vector(BuiltVector {
                     common,
                     primitive: primitive.clone(),
                 }),
@@ -228,6 +236,10 @@ impl BuildContext<'_> {
             .scene
             .picture(picture_id)
             .ok_or(FrameBuildError::MissingPicture(picture_id))?;
+        let render_program = picture
+            .render_program
+            .clone()
+            .ok_or(FrameBuildError::MissingRenderProgram(picture_id))?;
         let cache_id = Some(match picture.descriptor.cache_key {
             Some(key) => LayerCacheId::Explicit(key),
             None => LayerCacheId::Scene(picture.source),
@@ -240,8 +252,8 @@ impl BuildContext<'_> {
             content_version: ContentVersion::default(),
             cache_id,
             cache_policy: picture.descriptor.cache_policy,
+            backdrop_isolation: picture.descriptor.backdrop_isolation,
             items: Vec::new(),
-            effects: picture.descriptor.effects.clone(),
         });
         if picture.descriptor.cache_policy != super::CachePolicy::None {
             self.frame
@@ -258,7 +270,10 @@ impl BuildContext<'_> {
         let content_bounds = descriptor_bounds
             .or(child.world_bounds)
             .unwrap_or(Rect::ZERO);
-        let render_bounds = content_bounds.expand(picture.descriptor.effect_expansion());
+        let render_bounds = expand_by_sample_expansion(
+            content_bounds,
+            render_program.program().layer_visual_expansion(),
+        );
         let mut composite = picture.descriptor.composite;
         let mut placement_version = PlacementVersion {
             scene: picture.composite_version,
@@ -273,6 +288,7 @@ impl BuildContext<'_> {
             }
             placement_version.dynamic = dynamic.revision;
         }
+        let composite = composite.render_graph_instance();
         let transformed_bounds = composite.transform.transform_rect(render_bounds);
         let placement_clip = picture
             .placement_clip
@@ -291,18 +307,24 @@ impl BuildContext<'_> {
         layer.render_bounds = render_bounds;
         layer.content_version = content_version;
 
-        if placement_bounds.is_some_and(|bounds| bounds.intersects(self.viewport)) {
+        // Preserve every non-empty isolated placement in the frame. The GPU
+        // planner owns viewport/guard-tile culling because backdrop prefix
+        // materialization may demand an otherwise off-screen ancestor layer.
+        if placement_bounds.is_some() {
+            let instance_id = BuiltLayerInstanceId(self.frame.layer_instances.len());
+            self.frame.layer_instances.push(BuiltLayerInstance {
+                source: picture.source,
+                layer: layer_id,
+                composite,
+                render_program,
+                clip_chain: placement_clip.map(|clip| clip.id),
+                world_bounds: placement_bounds.unwrap_or(Rect::ZERO),
+                placement_version,
+                destination_prefix: None,
+            });
             self.frame.layers[parent_layer.0]
                 .items
-                .push(BuiltItem::Layer(BuiltLayerInstance {
-                    source: picture.source,
-                    layer: layer_id,
-                    composite,
-                    backdrop_effects: picture.descriptor.backdrop_effects.clone(),
-                    clip_chain: placement_clip.map(|clip| clip.id),
-                    world_bounds: placement_bounds.unwrap_or(Rect::ZERO),
-                    placement_version,
-                }));
+                .push(BuiltItem::Layer(instance_id));
         }
         let mut parent_version = content_version;
         parent_version.paint = parent_version.paint.max(placement_version.scene);
@@ -405,11 +427,24 @@ pub(crate) fn intersect_rect(a: Rect, b: Rect) -> Option<Rect> {
     (right > x && bottom > y).then(|| Rect::new(x, y, right - x, bottom - y))
 }
 
+fn expand_by_sample_expansion(bounds: Rect, expansion: xui_render_graph::SampleExpansion) -> Rect {
+    Rect::new(
+        bounds.x - expansion.left,
+        bounds.y - expansion.top,
+        bounds.width + expansion.left + expansion.right,
+        bounds.height + expansion.top + expansion.bottom,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::render::{ClipShape, LayerDescriptor, SceneCompiler, Shape, ShapePrimitive};
-    use xui_interface::{Color, ComputedColorStyle, Point};
+    use std::sync::Arc;
+    use xui_interface::{
+        BlendMode, Color, ComputedBackdropMask, ComputedBackdropStyle, ComputedColorStyle,
+        ComputedEffect, ComputedMaskShape, FilterQuality, ImageData, ImageKey, Point, Size,
+    };
 
     fn shape(rect: Rect, color: Color) -> Primitive {
         Primitive::Shape(ShapePrimitive {
@@ -427,6 +462,234 @@ mod tests {
             .compile(source, &source.dirty_snapshot())
             .unwrap()
             .clone()
+    }
+
+    fn glass_descriptor() -> LayerDescriptor {
+        LayerDescriptor {
+            backdrop_style: Some(ComputedBackdropStyle {
+                filters: Arc::from([]),
+                opacity: 1.0,
+                blend_mode: BlendMode::Normal,
+                mask: ComputedBackdropMask::Shape {
+                    shape: ComputedMaskShape::Rect,
+                    transform: Affine::IDENTITY,
+                },
+            }),
+            ..LayerDescriptor::default()
+        }
+    }
+
+    fn append_shape(source: &mut super::super::RenderScene, parent: RenderNodeId) -> RenderNodeId {
+        let primitive =
+            source.insert_primitive(shape(Rect::new(0.0, 0.0, 10.0, 10.0), Color::BLACK));
+        source.append_child(parent, primitive).unwrap();
+        primitive
+    }
+
+    fn append_layer(
+        source: &mut super::super::RenderScene,
+        parent: RenderNodeId,
+        descriptor: LayerDescriptor,
+    ) -> (RenderNodeId, RenderNodeId) {
+        let layer = source.insert_layer(descriptor);
+        let contents = source.insert_group();
+        source.append_child(parent, layer).unwrap();
+        source.set_child(layer, Some(contents)).unwrap();
+        (layer, contents)
+    }
+
+    fn instance_for_source(frame: &BuiltFrame, source: RenderNodeId) -> &BuiltLayerInstance {
+        frame
+            .layer_instances
+            .iter()
+            .find(|instance| instance.source == source)
+            .expect("layer instance")
+    }
+
+    fn prefix_chain(
+        frame: &BuiltFrame,
+        tail: super::super::CompositePrefixId,
+    ) -> Vec<super::super::CompositePrefix> {
+        let mut result = Vec::new();
+        let mut current = Some(tail);
+        while let Some(id) = current {
+            let node = *frame.composite_prefix(id).expect("composite prefix");
+            result.push(node);
+            current = node.parent;
+        }
+        result.reverse();
+        result
+    }
+
+    #[test]
+    fn sibling_backdrop_binds_prefix_before_current_child() {
+        let mut source = super::super::RenderScene::new();
+        let root = source.root();
+        append_shape(&mut source, root);
+        append_shape(&mut source, root);
+        let (glass, contents) = append_layer(&mut source, root, glass_descriptor());
+        append_shape(&mut source, contents);
+
+        let frame = FrameBuilder::new()
+            .build(
+                &compile(&source),
+                Rect::new(0.0, 0.0, 100.0, 100.0),
+                &FrameProperties::default(),
+            )
+            .unwrap();
+        let prefix = instance_for_source(&frame, glass)
+            .destination_prefix
+            .unwrap();
+        let chain = prefix_chain(&frame, prefix);
+        assert_eq!(chain.len(), 1);
+        assert_eq!(
+            chain[0].local,
+            super::super::SurfacePrefix {
+                layer: frame.root_layer,
+                item_count: 2,
+            }
+        );
+        assert_eq!(chain[0].placement, None);
+        assert_eq!(frame.composite_prefixes.len(), 1);
+        assert_eq!(frame.surface_prefix_items(chain[0].local).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn first_backdrop_observes_the_empty_surface_prefix() {
+        let mut source = super::super::RenderScene::new();
+        let root = source.root();
+        let (glass, contents) = append_layer(&mut source, root, glass_descriptor());
+        append_shape(&mut source, contents);
+
+        let frame = FrameBuilder::new()
+            .build(
+                &compile(&source),
+                Rect::new(0.0, 0.0, 100.0, 100.0),
+                &FrameProperties::default(),
+            )
+            .unwrap();
+        let prefix = instance_for_source(&frame, glass)
+            .destination_prefix
+            .unwrap();
+        assert_eq!(frame.composite_prefix(prefix).unwrap().local.item_count, 0);
+    }
+
+    #[test]
+    fn multiple_backdrops_observe_distinct_ordered_prefixes() {
+        let mut source = super::super::RenderScene::new();
+        let root = source.root();
+        append_shape(&mut source, root);
+        let (glass1, contents1) = append_layer(&mut source, root, glass_descriptor());
+        append_shape(&mut source, contents1);
+        append_shape(&mut source, root);
+        let (glass2, contents2) = append_layer(&mut source, root, glass_descriptor());
+        append_shape(&mut source, contents2);
+
+        let frame = FrameBuilder::new()
+            .build(
+                &compile(&source),
+                Rect::new(0.0, 0.0, 100.0, 100.0),
+                &FrameProperties::default(),
+            )
+            .unwrap();
+        let first = prefix_chain(
+            &frame,
+            instance_for_source(&frame, glass1)
+                .destination_prefix
+                .unwrap(),
+        );
+        let second = prefix_chain(
+            &frame,
+            instance_for_source(&frame, glass2)
+                .destination_prefix
+                .unwrap(),
+        );
+        assert_eq!(first[0].local.item_count, 1);
+        assert_eq!(second[0].local.item_count, 3);
+    }
+
+    #[test]
+    fn passthrough_and_isolation_control_composite_prefix_ancestry() {
+        fn build(
+            isolation: BackdropIsolation,
+        ) -> (BuiltFrame, RenderNodeId, RenderNodeId, RenderNodeId) {
+            let mut source = super::super::RenderScene::new();
+            let root = source.root();
+            append_shape(&mut source, root);
+            let mut a_descriptor = glass_descriptor();
+            a_descriptor.force_offscreen = true;
+            a_descriptor.backdrop_isolation = isolation;
+            let (a, a_contents) = append_layer(&mut source, root, a_descriptor);
+            append_shape(&mut source, a_contents);
+            let (b, b_contents) = append_layer(
+                &mut source,
+                a_contents,
+                LayerDescriptor {
+                    force_offscreen: true,
+                    ..LayerDescriptor::default()
+                },
+            );
+            append_shape(&mut source, b_contents);
+            let (glass, glass_contents) = append_layer(&mut source, b_contents, glass_descriptor());
+            append_shape(&mut source, glass_contents);
+            let frame = FrameBuilder::new()
+                .build(
+                    &compile(&source),
+                    Rect::new(0.0, 0.0, 100.0, 100.0),
+                    &FrameProperties::default(),
+                )
+                .unwrap();
+            (frame, a, b, glass)
+        }
+
+        let (passthrough, a, b, glass) = build(BackdropIsolation::Passthrough);
+        let chain = prefix_chain(
+            &passthrough,
+            instance_for_source(&passthrough, glass)
+                .destination_prefix
+                .unwrap(),
+        );
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain[0].local.layer, passthrough.root_layer);
+        assert_eq!(
+            chain[1].placement,
+            Some(BuiltLayerInstanceId(
+                passthrough
+                    .layer_instances
+                    .iter()
+                    .position(|instance| instance.source == a)
+                    .unwrap(),
+            ))
+        );
+        assert_eq!(
+            chain[2].placement,
+            Some(BuiltLayerInstanceId(
+                passthrough
+                    .layer_instances
+                    .iter()
+                    .position(|instance| instance.source == b)
+                    .unwrap(),
+            ))
+        );
+
+        let (isolated, a, _, glass) = build(BackdropIsolation::Isolate);
+        let a_chain = prefix_chain(
+            &isolated,
+            instance_for_source(&isolated, a)
+                .destination_prefix
+                .unwrap(),
+        );
+        assert_eq!(a_chain.len(), 1);
+        assert_eq!(a_chain[0].local.layer, isolated.root_layer);
+        let chain = prefix_chain(
+            &isolated,
+            instance_for_source(&isolated, glass)
+                .destination_prefix
+                .unwrap(),
+        );
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0].placement, None);
+        assert_ne!(chain[0].local.layer, isolated.root_layer);
     }
 
     #[test]
@@ -467,6 +730,32 @@ mod tests {
                 .world_transform
                 .transform_point(Point::new(1.0, 1.0)),
             Point::new(11.0, 21.0)
+        );
+    }
+
+    #[test]
+    fn isolated_layers_outside_viewport_remain_available_to_gpu_planner() {
+        let mut source = super::super::RenderScene::new();
+        let root = source.root();
+        let (layer, contents) = append_layer(&mut source, root, glass_descriptor());
+        let primitive =
+            source.insert_primitive(shape(Rect::new(500.0, 500.0, 10.0, 10.0), Color::WHITE));
+        source.append_child(contents, primitive).unwrap();
+
+        let frame = FrameBuilder::new()
+            .build(
+                &compile(&source),
+                Rect::new(0.0, 0.0, 100.0, 100.0),
+                &FrameProperties::default(),
+            )
+            .unwrap();
+        let instance = instance_for_source(&frame, layer);
+        assert_eq!(instance.world_bounds, Rect::new(500.0, 500.0, 10.0, 10.0));
+        assert!(
+            frame.layers[frame.root_layer.0]
+                .items
+                .iter()
+                .any(|item| matches!(item, BuiltItem::Layer(_)))
         );
     }
 
@@ -522,9 +811,10 @@ mod tests {
         let first = builder
             .build(&scene, Rect::new(0.0, 0.0, 100.0, 100.0), &properties)
             .unwrap();
-        let BuiltItem::Layer(first_instance) = &first.layers[0].items[0] else {
+        let BuiltItem::Layer(first_instance_id) = &first.layers[0].items[0] else {
             panic!()
         };
+        let first_instance = first.layer_instance(*first_instance_id).unwrap();
         let first_layer_version = first.layers[first_instance.layer.0].content_version;
 
         properties.set_composite(
@@ -537,9 +827,10 @@ mod tests {
         let second = builder
             .build(&scene, Rect::new(0.0, 0.0, 100.0, 100.0), &properties)
             .unwrap();
-        let BuiltItem::Layer(second_instance) = &second.layers[0].items[0] else {
+        let BuiltItem::Layer(second_instance_id) = &second.layers[0].items[0] else {
             panic!()
         };
+        let second_instance = second.layer_instance(*second_instance_id).unwrap();
         assert_eq!(
             second.layers[second_instance.layer.0].content_version,
             first_layer_version
@@ -553,6 +844,10 @@ mod tests {
         );
         assert_eq!(second_instance.composite.opacity, 0.5);
         assert_eq!(second_instance.world_bounds.x, 5.0);
+        assert_eq!(
+            first_instance.render_program.program().fingerprint(),
+            second_instance.render_program.program().fingerprint()
+        );
     }
 
     #[test]
@@ -617,14 +912,101 @@ mod tests {
                 &FrameProperties::default(),
             )
             .unwrap();
-        let BuiltItem::Layer(instance) = &frame.layers[0].items[0] else {
+        let BuiltItem::Layer(instance_id) = &frame.layers[0].items[0] else {
             panic!()
         };
+        let instance = frame.layer_instance(*instance_id).unwrap();
         assert!(instance.clip_chain.is_some());
         let BuiltItem::Draw(draw) = &frame.layers[instance.layer.0].items[0] else {
             panic!()
         };
         assert_eq!(draw.common().clip_chain, None);
         assert_eq!(instance.world_bounds, Rect::new(0.0, 0.0, 25.0, 25.0));
+    }
+
+    #[test]
+    fn built_instance_reuses_compiled_program_and_graph_expansion() {
+        let mut source = super::super::RenderScene::new();
+        let layer = source.insert_layer(LayerDescriptor {
+            effects: Arc::from([
+                ComputedEffect::DropShadow {
+                    color: Color::BLACK,
+                    offset: Point::new(5.0, -3.0),
+                    sigma_x: 2.0,
+                    sigma_y: 2.0,
+                    spread: 1.0,
+                    quality: FilterQuality::Medium,
+                },
+                ComputedEffect::ImageMask {
+                    image: ImageKey::UserProvided(42),
+                    data: ImageData::rgba8(Size::new(1, 1), vec![255; 4]),
+                    bounds: Rect::new(20.0, 30.0, 40.0, 30.0),
+                },
+            ]),
+            force_offscreen: true,
+            ..LayerDescriptor::default()
+        });
+        let primitive =
+            source.insert_primitive(shape(Rect::new(20.0, 30.0, 40.0, 30.0), Color::BLACK));
+        source.append_child(source.root(), layer).unwrap();
+        source.set_child(layer, Some(primitive)).unwrap();
+        let scene = compile(&source);
+        let picture_id = scene.picture_for_source(layer).unwrap();
+        let compiled_program = scene
+            .picture(picture_id)
+            .unwrap()
+            .render_program
+            .as_ref()
+            .unwrap()
+            .clone();
+        let frame = FrameBuilder::new()
+            .build(
+                &scene,
+                Rect::new(0.0, 0.0, 200.0, 200.0),
+                &FrameProperties::default(),
+            )
+            .unwrap();
+        let BuiltItem::Layer(instance_id) = &frame.layers[0].items[0] else {
+            panic!()
+        };
+        let instance = frame.layer_instance(*instance_id).unwrap();
+        assert!(Arc::ptr_eq(
+            compiled_program.program(),
+            instance.render_program.program()
+        ));
+        assert!(matches!(
+            instance
+                .render_program
+                .handle(xui_render_graph::ExternalResourceKind::LayerMask(0)),
+            Some(super::super::render_graph::ImageResource::Data {
+                key: ImageKey::UserProvided(42),
+                ..
+            })
+        ));
+        assert_eq!(
+            frame.layers[instance.layer.0].render_bounds,
+            Rect::new(18.0, 20.0, 54.0, 44.0)
+        );
+        let plan = instance
+            .render_program
+            .program()
+            .instantiate(&xui_render_graph::LayerPlanContext {
+                backdrop_source_bounds: Rect::new(0.0, 0.0, 200.0, 200.0),
+                parent_destination_bounds: Rect::new(0.0, 0.0, 200.0, 200.0),
+                composite_clip_bounds: None,
+                layer_content_bounds: frame.layers[instance.layer.0].content_bounds,
+                backdrop_bounds: None,
+                composite: instance.composite,
+                scale_factor: 1.0,
+                color_texture_class: xui_render_graph::TextureClass::LINEAR_COLOR,
+                external_aliasing: xui_render_graph::ExternalAliasing::Distinct,
+                limits: xui_render_graph::PlanLimits::default(),
+            })
+            .unwrap();
+        assert!(
+            plan.passes()
+                .iter()
+                .any(|pass| matches!(pass.op, xui_render_graph::PassOp::ShadowComposite { .. }))
+        );
     }
 }

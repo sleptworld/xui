@@ -1692,6 +1692,7 @@ fn expand_node(node: &ElementNode) -> Result<TokenStream2> {
     match node.name.to_string().as_str() {
         "text" => expand_text(node),
         "container" => expand_container(node),
+        "canvas" => expand_canvas(node),
         _ => expand_function_component(node),
     }
 }
@@ -1790,6 +1791,53 @@ fn expand_container(node: &ElementNode) -> Result<TokenStream2> {
         #(#attr_stmts)*
         __xui_element = __xui_element.style(__xui_style);
         __xui_element.into_element_desc(::std::vec![#(#children),*])
+    }})
+}
+
+fn expand_canvas(node: &ElementNode) -> Result<TokenStream2> {
+    let mut controllers = node.attrs.iter().filter(|attr| attr.name == "controller");
+    let controller = controllers
+        .next()
+        .map(|attr| attr.value.clone())
+        .ok_or_else(|| Error::new(node.name.span(), "canvas requires a `controller` attribute"))?;
+    if let Some(duplicate) = controllers.next() {
+        return Err(Error::new(
+            duplicate.name.span(),
+            "canvas accepts only one `controller` attribute",
+        ));
+    }
+
+    let mut attr_stmts = Vec::new();
+    parse_attrs_helper(
+        node,
+        |name, value| {
+            match name {
+                "controller" => Some(quote! {}),
+                _ => None,
+            }
+            .or(parse_base_attr(name, value))
+            .or(parse_text_style_attr(name, value)
+                .or(parse_layout_style_attr(name, value))
+                .or(parse_paint_style_attr(name, value))
+                .or(parse_scroll_style_attr(name, value))
+                .or(parse_event_attr(name, value)))
+        },
+        &mut attr_stmts,
+    )?;
+
+    if !node.children.is_empty() {
+        return Err(Error::new(
+            node.name.span(),
+            "canvas does not support children",
+        ));
+    }
+
+    Ok(quote! {{
+        let mut __xui_element = ::xui::canvas(#controller);
+        let mut __xui_style = ::xui::Style::new();
+        #(#attr_stmts)*
+        __xui_element = __xui_element.style(__xui_style);
+        __xui_element.into_element_desc()
     }})
 }
 
@@ -1904,7 +1952,6 @@ fn expand_function_component(node: &ElementNode) -> Result<TokenStream2> {
             );
             ::xui::component(#component_handle_name())
                 .props(__xui_props)
-                .with_children(__xui_children)
         }};
         if let Some(key) = key {
             element_expr = quote! {{
@@ -1969,21 +2016,21 @@ mod tests {
     use super::*;
     use quote::quote;
 
-    fn expand(tokens: TokenStream2) -> String {
+    fn expand_image_tokens(tokens: TokenStream2) -> String {
         let node = syn::parse2::<ElementNode>(tokens).unwrap();
         expand_image(&node).unwrap().to_string()
     }
 
     #[test]
     fn image_asset_literal_expands_as_path() {
-        let expanded = expand(quote!(<image asset="images/demo.png" />));
+        let expanded = expand_image_tokens(quote!(<image asset="images/demo.png" />));
         assert!(expanded.contains("asset_path"));
         assert!(expanded.contains("images/demo.png"));
     }
 
     #[test]
     fn image_asset_expression_expands_as_asset_id() {
-        let expanded = expand(quote!(
+        let expanded = expand_image_tokens(quote!(
             <image asset={xui_assets::refs::images::DEMO_PNG} />
         ));
         assert!(expanded.contains("asset (xui_assets :: refs :: images :: DEMO_PNG)"));
@@ -2001,6 +2048,69 @@ mod tests {
             error
                 .to_string()
                 .contains("cannot use `asset` and `image_key`")
+        );
+    }
+
+    #[test]
+    fn canvas_expands_as_host_widget() {
+        let node = syn::parse2::<ElementNode>(quote!(
+            <canvas
+                controller={controller.clone()}
+                key="plot"
+                width={320.0}
+                height={180.0}
+                on_click={handle_click}
+            />
+        ))
+        .unwrap();
+        let expanded = expand_node(&node).unwrap().to_string();
+
+        assert!(expanded.contains("xui :: canvas (controller . clone ())"));
+        assert!(expanded.contains("key (\"plot\")"));
+        assert!(expanded.contains("width (320.0)"));
+        assert!(expanded.contains("height (180.0)"));
+        assert!(expanded.contains("on_click (handle_click)"));
+        assert!(expanded.contains("into_element_desc ()"));
+        assert!(!expanded.contains("canvas_component_render"));
+    }
+
+    #[test]
+    fn canvas_requires_controller() {
+        let node = syn::parse2::<ElementNode>(quote!(<canvas width={320.0} />)).unwrap();
+        let error = expand_node(&node).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("requires a `controller` attribute")
+        );
+    }
+
+    #[test]
+    fn canvas_rejects_children() {
+        let node = syn::parse2::<ElementNode>(quote!(
+            <canvas controller={controller}>
+                <text text="unsupported" />
+            </canvas>
+        ))
+        .unwrap();
+        let error = expand_node(&node).unwrap_err();
+
+        assert!(error.to_string().contains("does not support children"));
+    }
+
+    #[test]
+    fn canvas_rejects_duplicate_controller() {
+        let node = syn::parse2::<ElementNode>(quote!(
+            <canvas controller={first} controller={second} />
+        ))
+        .unwrap();
+        let error = expand_node(&node).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("accepts only one `controller` attribute")
         );
     }
 

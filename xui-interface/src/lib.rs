@@ -23,15 +23,18 @@ pub use platform::{PlatformOutput, TextInputPurpose, TextInputSession};
 pub use render::*;
 pub use runtime::EventSource;
 pub use style::{
-    AlignStyle, ColorStyle, ColorToken, ColorValue, ComputedColorStyle, ComputedLayoutStyle,
-    ComputedLinearGradientStyle, ComputedPaintStyle, ComputedRadialGradientStyle,
-    ComputedScrollStyle, ComputedScrollbarStyle, ComputedShadowStyle, ComputedStrokeStyle,
-    ComputedStyle, ComputedTextStyle, FlexDirectionStyle, FontSizeToken, JustifyStyle,
-    LayoutStylePatch, LengthValue, LinearGradientStyle, PaintStylePatch, PositionStyle,
-    RadialGradientStyle, RadiusToken, ScrollDirectionStyle, ScrollStylePatch, ScrollbarStyle,
-    ScrollbarStylePatch, ScrollbarVisibilityStyle, ShadowStyle, SpacingToken, StateStyleRule,
-    Stroke, StrokeLineStyle, StrokeStyle, Style, StyleMerge, StylePatch, StyleValue,
-    TextStylePatch, Theme, WidgetStateMatcher,
+    AlignStyle, BackdropFilter, BackdropMask, BackdropStyle, BlendMode, ColorMatrix, ColorStyle,
+    ColorToken, ColorValue, ComputedBackdropFilter, ComputedBackdropMask, ComputedBackdropStyle,
+    ComputedColorStyle, ComputedEffect, ComputedEffectStyle, ComputedLayoutStyle,
+    ComputedLinearGradientStyle, ComputedMaskShape, ComputedPaintStyle,
+    ComputedRadialGradientStyle, ComputedScrollStyle, ComputedScrollbarStyle, ComputedShadowStyle,
+    ComputedStrokeStyle, ComputedStyle, ComputedTextStyle, Effect, EffectStylePatch, FilterQuality,
+    FlexDirectionStyle, FontSizeToken, JustifyStyle, LayoutStylePatch, LengthValue,
+    LinearGradientStyle, MaskShape, PaintStylePatch, PositionStyle, RadialGradientStyle,
+    RadiusToken, ScrollDirectionStyle, ScrollStylePatch, ScrollbarStyle, ScrollbarStylePatch,
+    ScrollbarVisibilityStyle, ShadowStyle, SpacingToken, StateStyleRule, Stroke, StrokeLineStyle,
+    StrokeStyle, Style, StyleMerge, StylePatch, StyleValue, TextStylePatch, Theme,
+    WidgetStateMatcher,
 };
 pub use text::*;
 pub use widget::{Component, Key, NodeId, NodeLifecycleEvent, WidgetType};

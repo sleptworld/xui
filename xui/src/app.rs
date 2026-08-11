@@ -273,13 +273,20 @@ impl App {
 mod tests {
     use super::*;
     use crate::lanes::{DEFAULT_LANE, NO_LANES};
-    use crate::prelude::container;
-    use crate::render::{BuiltFrame, MockRenderBackend, RenderBackend};
+    use crate::prelude::{CanvasController, canvas, container};
+    use crate::render::{BuiltDraw, BuiltFrame, BuiltItem, MockRenderBackend, RenderBackend};
     use crate::state::State;
     use crate::text::{TextHost, testing::ZeroTextBackend};
     use core::convert::Infallible;
     use std::cell::RefCell;
-    use xui_interface::{Color, ComputedColorStyle, Style};
+    use std::time::Instant;
+    use xui_interface::events::{
+        Modifiers, PointerButton, PointerButtons, PointerKind, RawPointerButton, XuiPointerId,
+    };
+    use xui_interface::{
+        Affine, Color, ComputedColorStyle, PathBuilder, PathFill, Point, Style, VectorScene,
+        VectorSceneBuilder,
+    };
 
     #[derive(Default)]
     struct NoPresentBackend {
@@ -311,6 +318,42 @@ mod tests {
 
     thread_local! {
         static STATE_SLOT: RefCell<Option<State<bool>>> = const { RefCell::new(None) };
+        static CANVAS_SLOT: RefCell<Option<CanvasController>> = const { RefCell::new(None) };
+    }
+
+    fn canvas_scene(color: Color) -> VectorScene {
+        let mut path = PathBuilder::new();
+        path.move_to(Point::new(0.0, 0.0))
+            .line_to(Point::new(40.0, 0.0))
+            .line_to(Point::new(40.0, 20.0))
+            .line_to(Point::new(0.0, 20.0))
+            .close();
+        let mut scene = VectorSceneBuilder::new();
+        scene.fill_path(path.build(), Affine::IDENTITY, PathFill::new(color));
+        scene.build()
+    }
+
+    fn clickable_canvas_root(cx: &mut HookContext<'_>) -> ElementDesc {
+        let highlighted = cx.use_state(|| false);
+        let controller = cx.use_ref(|| CanvasController::with_scene(canvas_scene(Color::BLACK)));
+        let canvas_handle = controller.get().clone();
+        let click_handle = canvas_handle.clone();
+        CANVAS_SLOT.with(|slot| {
+            *slot.borrow_mut() = Some(canvas_handle.clone());
+        });
+        canvas(canvas_handle)
+            .style(Style::new().width(40.0).height(20.0))
+            .on_click(move |_, _| {
+                let next = !*highlighted.get();
+                click_handle.set_scene(canvas_scene(if next {
+                    Color::WHITE
+                } else {
+                    Color::BLACK
+                }));
+                highlighted.set(next);
+                EventResult::Consumed
+            })
+            .into_element_desc()
     }
 
     fn static_root(_cx: &mut HookContext<'_>) -> ElementDesc {
@@ -407,6 +450,62 @@ mod tests {
             panic!("expected solid background");
         };
         assert_eq!(color, Color::WHITE);
+    }
+
+    #[test]
+    fn canvas_click_commits_the_controller_scene_to_the_next_frame() {
+        CANVAS_SLOT.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
+        let mut app = App::new(clickable_canvas_root);
+        let mut backend = MockRenderBackend::default();
+        let mut measurer = TextHost::new(ZeroTextBackend);
+
+        app.resize(Size::new(100.0, 100.0));
+        app.render(&mut backend, &mut measurer).unwrap();
+
+        let position = Point::new(10.0, 10.0);
+        let pointer_id = XuiPointerId::new(0);
+        let down = RawPointerButton {
+            position,
+            pointer_id,
+            device_id: None,
+            kind: PointerKind::Mouse,
+            button: PointerButton::Primary,
+            buttons: PointerButtons::from_button(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            timestamp: Instant::now(),
+        };
+        let mut up = down.clone();
+        up.buttons = PointerButtons::default();
+        up.timestamp = Instant::now();
+
+        app.dispatch_event(RawEvent::PointerDown(down), &mut measurer);
+        assert_eq!(
+            app.dispatch_event(RawEvent::PointerUp(up), &mut measurer),
+            EventResult::Consumed
+        );
+        app.render(&mut backend, &mut measurer).unwrap();
+
+        let controller = CANVAS_SLOT.with(|slot| slot.borrow().clone().unwrap());
+        assert_eq!(controller.revision(), 1);
+        let rendered = backend
+            .last_frame
+            .as_ref()
+            .unwrap()
+            .layers
+            .iter()
+            .flat_map(|layer| &layer.items)
+            .find_map(|item| match item {
+                BuiltItem::Draw(BuiltDraw::Vector(vector)) => Some(vector.primitive.scene.clone()),
+                _ => None,
+            })
+            .expect("canvas should emit a vector draw");
+        let Some(xui_interface::VectorCommand::FillPath { fill, .. }) = rendered.commands().first()
+        else {
+            panic!("canvas should render its fill command");
+        };
+        assert_eq!(fill.color, Color::WHITE);
     }
 }
 

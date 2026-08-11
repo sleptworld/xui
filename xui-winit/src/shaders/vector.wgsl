@@ -6,20 +6,18 @@ struct UiUniforms {
 @group(0) @binding(0)
 var<uniform> ui: UiUniforms;
 @group(1) @binding(0)
-var tile_texture: texture_2d<f32>;
+var vector_texture: texture_2d<f32>;
 @group(1) @binding(1)
-var tile_sampler: sampler;
+var vector_sampler: sampler;
 
 struct VertexInput {
     @location(0) position: vec2f,
     @location(1) uv: vec2f,
-    @location(2) opacity: f32,
 }
 
 struct VertexOutput {
     @builtin(position) position: vec4f,
     @location(0) uv: vec2f,
-    @location(1) opacity: f32,
 }
 
 @vertex
@@ -29,12 +27,14 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
     output.position = vec4f(ndc, 0.0, 1.0);
     output.uv = input.uv;
-    output.opacity = input.opacity;
     return output;
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
-    let color = textureSample(tile_texture, tile_sampler, input.uv);
-    return vec4f(color.rgb, color.a * input.opacity);
+    let color = textureSample(vector_texture, vector_sampler, input.uv);
+    let cutoff = color.rgb / vec3f(12.92);
+    let power = pow((color.rgb + vec3f(0.055)) / vec3f(1.055), vec3f(2.4));
+    let linear = select(power, cutoff, color.rgb <= vec3f(0.04045));
+    return vec4f(linear, color.a);
 }

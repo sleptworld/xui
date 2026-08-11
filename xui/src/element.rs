@@ -26,7 +26,6 @@ pub struct ComponentDesc {
     pub render: ComponentRender,
     pub props: Option<ErasedProps>,
     pub props_hash: u64,
-    pub children: Vec<ElementDesc>,
 }
 
 impl WidgetDesc {
@@ -50,29 +49,13 @@ impl WidgetDesc {
 }
 
 impl ComponentDesc {
-    pub fn new(
-        render: ComponentRender,
-        props: Option<ErasedProps>,
-        props_hash: u64,
-        children: Vec<ElementDesc>,
-    ) -> Self {
+    pub fn new(render: ComponentRender, props: Option<ErasedProps>, props_hash: u64) -> Self {
         Self {
             key: None,
             render,
             props,
             props_hash,
-            children,
         }
-    }
-
-    pub fn child(mut self, child: impl Into<ElementDesc>) -> Self {
-        self.children.push(child.into());
-        self
-    }
-
-    pub fn with_children(mut self, children: Vec<ElementDesc>) -> Self {
-        self.children = children;
-        self
     }
 }
 

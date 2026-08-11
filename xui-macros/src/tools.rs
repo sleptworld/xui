@@ -178,6 +178,9 @@ pub fn parse_paint_style_attr<T: quote::ToTokens + ?Sized>(
         "clip" => Some(quote! {
             __xui_style =  __xui_style.clip(#value);
         }),
+        "backdrop_blur" => Some(quote! {
+            __xui_style = __xui_style.backdrop_blur(#value);
+        }),
         _ => None,
     }
 }

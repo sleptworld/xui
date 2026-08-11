@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use slotmap::SlotMap;
 
@@ -6,7 +6,7 @@ use super::{
     CompiledClip, CompiledClipId, CompiledPicture, CompiledPictureItem, CompiledPrimitive,
     CompiledScene, CompiledSpatialNode, ContentVersion, DirtySnapshot, LayerCacheKey,
     LayerDescriptor, PictureId, PrimitiveId, RenderDirty, RenderNodeId, RenderNodeKind,
-    RenderScene, SceneError, SpatialNodeId,
+    RenderScene, SceneError, SpatialNodeId, render_graph::BuiltLayerProgram,
 };
 use xui_interface::Affine;
 
@@ -14,6 +14,14 @@ use xui_interface::Affine;
 pub enum SceneCompileError {
     Scene(SceneError),
     DuplicateLayerCacheKey(LayerCacheKey),
+    RenderGraph {
+        source: RenderNodeId,
+        error: xui_render_graph::CompileError,
+    },
+    RenderGraphBinding {
+        source: RenderNodeId,
+        error: xui_render_graph::BindingError,
+    },
 }
 
 impl std::fmt::Display for SceneCompileError {
@@ -26,11 +34,32 @@ impl std::fmt::Display for SceneCompileError {
                     "layer cache key {key:?} is used more than once in one scene"
                 )
             }
+            Self::RenderGraph { source, error } => {
+                write!(
+                    f,
+                    "failed to compile render graph for layer {source:?}: {error}"
+                )
+            }
+            Self::RenderGraphBinding { source, error } => {
+                write!(
+                    f,
+                    "failed to bind render graph for layer {source:?}: {error}"
+                )
+            }
         }
     }
 }
 
-impl std::error::Error for SceneCompileError {}
+impl std::error::Error for SceneCompileError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Scene(error) => Some(error),
+            Self::RenderGraph { error, .. } => Some(error),
+            Self::RenderGraphBinding { error, .. } => Some(error),
+            Self::DuplicateLayerCacheKey(_) => None,
+        }
+    }
+}
 
 impl From<SceneError> for SceneCompileError {
     fn from(value: SceneError) -> Self {
@@ -195,12 +224,15 @@ fn apply_non_structural_updates(
                 }
             }
             RenderNodeKind::Layer(value) => {
-                if let Some(picture) = compiled
-                    .picture_by_source
-                    .get(id)
-                    .and_then(|key| compiled.pictures.get_mut(*key))
-                {
+                if let Some(picture_id) = compiled.picture_by_source.get(id).copied() {
+                    let render_program =
+                        reusable_render_program(compiled, picture_id, *id, &value.descriptor)?;
+                    let picture = compiled
+                        .pictures
+                        .get_mut(picture_id)
+                        .ok_or(SceneError::MissingNode(*id))?;
                     picture.descriptor = value.descriptor.clone();
+                    picture.render_program = Some(render_program);
                     picture.content_version = node.epochs.content_version();
                     picture.composite_version = node.epochs.composite;
                 }
@@ -223,6 +255,7 @@ fn empty_compiled_scene(source: &RenderScene) -> CompiledScene {
         source: source.root(),
         items: Vec::new(),
         descriptor: LayerDescriptor::default(),
+        render_program: None,
         placement_spatial: root_spatial,
         placement_clip: None,
         content_version: ContentVersion::default(),
@@ -289,6 +322,7 @@ fn rebuild_structure(
         source: source.root(),
         items: Vec::new(),
         descriptor: LayerDescriptor::default(),
+        render_program: None,
         placement_spatial: compiled.root_spatial,
         placement_clip: None,
         content_version: root_node.epochs.content_version(),
@@ -438,12 +472,15 @@ fn rebuild_picture_contents(
         }
         .into());
     };
+    let render_program =
+        reusable_render_program(compiled, picture_id, source_id, &layer.descriptor)?;
     let picture = compiled
         .pictures
         .get_mut(picture_id)
         .ok_or(SceneError::MissingNode(source_id))?;
     picture.items.clear();
     picture.descriptor = layer.descriptor.clone();
+    picture.render_program = Some(render_program);
     picture.content_version = node.epochs.content_version();
     picture.composite_version = node.epochs.composite;
     let context = WalkContext {
@@ -587,6 +624,12 @@ fn walk_node(
             }
         }
         RenderNodeKind::Layer(value) => {
+            let render_program = match compiled.picture_by_source.get(&id).copied() {
+                Some(picture_id) => {
+                    reusable_render_program(compiled, picture_id, id, &value.descriptor)?
+                }
+                None => compile_render_program(id, &value.descriptor)?,
+            };
             let picture_id = match compiled.picture_by_source.get(&id).copied() {
                 Some(key) if compiled.pictures.contains_key(key) => key,
                 _ => {
@@ -594,6 +637,7 @@ fn walk_node(
                         source: id,
                         items: Vec::new(),
                         descriptor: value.descriptor.clone(),
+                        render_program: Some(render_program.clone()),
                         placement_spatial: context.spatial,
                         placement_clip: context.clip,
                         content_version: node.epochs.content_version(),
@@ -611,6 +655,7 @@ fn walk_node(
                 source: id,
                 items: Vec::new(),
                 descriptor: value.descriptor.clone(),
+                render_program: Some(render_program),
                 placement_spatial: context.spatial,
                 placement_clip: context.clip,
                 content_version: node.epochs.content_version(),
@@ -637,6 +682,41 @@ fn walk_node(
         }
     }
     Ok(())
+}
+
+fn compile_render_program(
+    source: RenderNodeId,
+    descriptor: &LayerDescriptor,
+) -> Result<BuiltLayerProgram, SceneCompileError> {
+    let program = descriptor
+        .compile_render_program()
+        .map(Arc::new)
+        .map_err(|error| SceneCompileError::RenderGraph { source, error })?;
+    descriptor
+        .bind_render_program(program)
+        .map_err(|error| SceneCompileError::RenderGraphBinding { source, error })
+}
+
+fn reusable_render_program(
+    compiled: &CompiledScene,
+    picture: PictureId,
+    source: RenderNodeId,
+    descriptor: &LayerDescriptor,
+) -> Result<BuiltLayerProgram, SceneCompileError> {
+    if let Some(existing) = compiled.pictures.get(picture)
+        && existing.descriptor.has_same_render_graph_style(descriptor)
+        && let Some(program) = &existing.render_program
+    {
+        let bindings = descriptor
+            .render_graph_bindings()
+            .map_err(|error| SceneCompileError::RenderGraphBinding { source, error })?;
+        if program.bindings() == &bindings {
+            return Ok(program.clone());
+        }
+        return xui_render_graph::BoundLayerProgram::new(Arc::clone(program.program()), bindings)
+            .map_err(|error| SceneCompileError::RenderGraphBinding { source, error });
+    }
+    compile_render_program(source, descriptor)
 }
 
 fn retain_live(compiled: &mut CompiledScene, live: &LiveCompiledIds) {
@@ -797,8 +877,14 @@ fn validate_explicit_cache_keys(source: &RenderScene) -> Result<(), SceneCompile
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::{CachePolicy, ClipShape, CompositeStyle, Primitive, Shape, ShapePrimitive};
-    use xui_interface::{Color, ComputedColorStyle, Rect};
+    use crate::render::{
+        BlendMode, CachePolicy, ClipShape, CompositeOperator, CompositeStyle, Primitive, Shape,
+        ShapePrimitive,
+    };
+    use std::sync::Arc;
+    use xui_interface::{
+        Color, ComputedColorStyle, ComputedEffect, FilterQuality, ImageData, ImageKey, Rect, Size,
+    };
 
     fn shape(rect: Rect, color: Color) -> Primitive {
         Primitive::Shape(ShapePrimitive {
@@ -1060,5 +1146,177 @@ mod tests {
             compiler.compiled_scene().unwrap().scene_revision(),
             revision
         );
+    }
+
+    #[test]
+    fn isolated_picture_compiles_and_refreshes_static_render_program() {
+        let mut source = RenderScene::new();
+        let effects: Arc<[ComputedEffect]> = Arc::from([ComputedEffect::Blur {
+            sigma_x: 2.0,
+            sigma_y: 2.0,
+            quality: FilterQuality::Medium,
+        }]);
+        let layer = source.insert_layer(LayerDescriptor {
+            effects: effects.clone(),
+            force_offscreen: true,
+            ..LayerDescriptor::default()
+        });
+        let contents = source.insert_group();
+        source.append_child(source.root(), layer).unwrap();
+        source.set_child(layer, Some(contents)).unwrap();
+        let mut compiler = SceneCompiler::new();
+        let first = compiler.compile(&source, &source.dirty_snapshot()).unwrap();
+        let picture_id = first.picture_for_source(layer).unwrap();
+        let first_program = first
+            .picture(picture_id)
+            .unwrap()
+            .render_program
+            .as_ref()
+            .unwrap()
+            .clone();
+        let first_fingerprint = first_program.program().fingerprint();
+
+        let primitive =
+            source.insert_primitive(shape(Rect::new(0.0, 0.0, 10.0, 10.0), Color::BLACK));
+        source.append_child(contents, primitive).unwrap();
+        let topology_update = compiler.compile(&source, &source.dirty_snapshot()).unwrap();
+        assert!(Arc::ptr_eq(
+            first_program.program(),
+            topology_update
+                .picture(picture_id)
+                .unwrap()
+                .render_program
+                .as_ref()
+                .unwrap()
+                .program()
+        ));
+
+        source
+            .update_layer_composite(
+                layer,
+                CompositeStyle {
+                    opacity: 0.5,
+                    transform: Affine::translate(5.0, 0.0),
+                    ..CompositeStyle::default()
+                },
+            )
+            .unwrap();
+        let dynamic_style_update = compiler.compile(&source, &source.dirty_snapshot()).unwrap();
+        assert!(Arc::ptr_eq(
+            first_program.program(),
+            dynamic_style_update
+                .picture(picture_id)
+                .unwrap()
+                .render_program
+                .as_ref()
+                .unwrap()
+                .program()
+        ));
+
+        source
+            .update_layer_descriptor(
+                layer,
+                LayerDescriptor {
+                    effects,
+                    force_offscreen: true,
+                    composite: CompositeStyle {
+                        blend_mode: BlendMode::Multiply,
+                        operator: CompositeOperator::SrcOver,
+                        ..CompositeStyle::default()
+                    },
+                    ..LayerDescriptor::default()
+                },
+            )
+            .unwrap();
+        let second = compiler.compile(&source, &source.dirty_snapshot()).unwrap();
+        let second_program = second
+            .picture(picture_id)
+            .unwrap()
+            .render_program
+            .as_ref()
+            .unwrap();
+        assert_ne!(first_fingerprint, second_program.program().fingerprint());
+        assert!(second_program.program().nodes().iter().any(|node| matches!(
+            node.op,
+            xui_render_graph::ProgramOp::LayerComposite {
+                blend_mode: BlendMode::Multiply,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn mask_resource_changes_rebind_without_recompiling_ir() {
+        fn mask(key: u64, value: u8) -> ComputedEffect {
+            ComputedEffect::ImageMask {
+                image: ImageKey::UserProvided(key),
+                data: ImageData::rgba8(Size::new(1, 1), vec![value; 4]),
+                bounds: Rect::new(0.0, 0.0, 10.0, 10.0),
+            }
+        }
+
+        let mut source = RenderScene::new();
+        let layer = source.insert_layer(LayerDescriptor {
+            effects: Arc::from([mask(1, 1)]),
+            force_offscreen: true,
+            ..LayerDescriptor::default()
+        });
+        source.append_child(source.root(), layer).unwrap();
+        let mut compiler = SceneCompiler::new();
+        let first = compiler.compile(&source, &source.dirty_snapshot()).unwrap();
+        let picture_id = first.picture_for_source(layer).unwrap();
+        let first = first
+            .picture(picture_id)
+            .unwrap()
+            .render_program
+            .clone()
+            .unwrap();
+
+        source
+            .update_layer_descriptor(
+                layer,
+                LayerDescriptor {
+                    effects: Arc::from([mask(2, 2)]),
+                    force_offscreen: true,
+                    ..LayerDescriptor::default()
+                },
+            )
+            .unwrap();
+        let second = compiler.compile(&source, &source.dirty_snapshot()).unwrap();
+        let second = second
+            .picture(picture_id)
+            .unwrap()
+            .render_program
+            .as_ref()
+            .unwrap();
+
+        assert!(Arc::ptr_eq(first.program(), second.program()));
+        assert!(matches!(
+            second.handle(xui_render_graph::ExternalResourceKind::LayerMask(0)),
+            Some(crate::render::render_graph::ImageResource::Data {
+                key: ImageKey::UserProvided(2),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn invalid_layer_style_reports_source_from_scene_compiler() {
+        let mut source = RenderScene::new();
+        let layer = source.insert_layer(LayerDescriptor {
+            effects: Arc::from([ComputedEffect::Blur {
+                sigma_x: f32::NAN,
+                sigma_y: f32::NAN,
+                quality: FilterQuality::Medium,
+            }]),
+            force_offscreen: true,
+            ..LayerDescriptor::default()
+        });
+        source.append_child(source.root(), layer).unwrap();
+        let mut compiler = SceneCompiler::new();
+        assert!(matches!(
+            compiler.compile(&source, &source.dirty_snapshot()),
+            Err(SceneCompileError::RenderGraph { source, .. }) if source == layer
+        ));
     }
 }

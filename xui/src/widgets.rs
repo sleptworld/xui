@@ -448,6 +448,7 @@ macro_rules! event_handler_methods {
     };
 }
 
+mod canvas;
 mod container;
 mod icon;
 mod image;
@@ -456,6 +457,8 @@ mod text;
 mod text_input;
 mod z_stack;
 
+pub(crate) use canvas::canvas_text_slot;
+pub use canvas::{CanvasController, CanvasWidget};
 pub use container::ContainerWidget;
 pub use icon::{IconData, IconLayer, IconStroke, IconWidget, SvgIconError};
 pub use image::ImageWidget;
@@ -613,6 +616,7 @@ define_widgets! {
     ZStack => ZStackWidget,
     Text => TextWidget,
     TextInput => TextInputWidget,
+    Canvas => CanvasWidget,
     Image => ImageWidget,
     Icon => IconWidget,
     Root => RootWidget,
@@ -788,6 +792,10 @@ pub fn z_stack() -> ZStackWidget {
     ZStackWidget::new()
 }
 
+pub fn canvas(controller: CanvasController) -> CanvasWidget {
+    CanvasWidget::new(controller)
+}
+
 pub fn image() -> ImageWidget {
     ImageWidget::new()
 }
@@ -809,7 +817,7 @@ pub fn root_widget() -> WidgetI {
 }
 
 pub fn component(render: ComponentRender) -> ComponentDesc {
-    ComponentDesc::new(render, None, 0, Vec::new())
+    ComponentDesc::new(render, None, 0)
 }
 
 pub(super) fn props_hash<T: Hash>(props: &T) -> u64 {

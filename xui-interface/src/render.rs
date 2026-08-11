@@ -1,5 +1,8 @@
-use crate::{Color, ComputedTextStyle, LineHeight, Point, Rect, Size, TextDecoration, TextRange};
+use crate::{
+    Color, ComputedTextStyle, LineHeight, Point, Rect, Size, TextDecoration, TextProps, TextRange,
+};
 use std::{
+    collections::HashSet,
     hash::{Hash, Hasher},
     path::PathBuf,
     sync::{
@@ -7,6 +10,20 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
+
+/// Stable owner-local identity of one text box in a retained canvas scene.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CanvasTextId(u32);
+
+impl CanvasTextId {
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Affine {
@@ -309,6 +326,234 @@ impl PathStroke {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum VectorCommand {
+    FillPath {
+        path: PathData,
+        transform: Affine,
+        fill: PathFill,
+    },
+    StrokePath {
+        path: PathData,
+        transform: Affine,
+        stroke: PathStroke,
+    },
+    TextBox {
+        id: CanvasTextId,
+        bounds: Rect,
+        props: TextProps,
+    },
+}
+
+impl VectorCommand {
+    fn bounds(&self) -> Rect {
+        match self {
+            Self::FillPath {
+                path, transform, ..
+            } => transform.transform_rect(path.bounds()),
+            Self::StrokePath {
+                path,
+                transform,
+                stroke,
+            } => transform.transform_rect(path.bounds().expand(stroke.width.max(0.0) * 0.5)),
+            Self::TextBox { bounds, .. } => *bounds,
+        }
+    }
+
+    fn diff(&self, next: &Self) -> VectorSceneChange {
+        match (self, next) {
+            (
+                Self::FillPath {
+                    path: a_path,
+                    transform: a_transform,
+                    fill: a_fill,
+                },
+                Self::FillPath {
+                    path: b_path,
+                    transform: b_transform,
+                    fill: b_fill,
+                },
+            ) => VectorSceneChange {
+                geometry: a_path != b_path
+                    || a_transform != b_transform
+                    || a_fill.rule != b_fill.rule,
+                paint: a_fill.color != b_fill.color,
+            },
+            (
+                Self::StrokePath {
+                    path: a_path,
+                    transform: a_transform,
+                    stroke: a_stroke,
+                },
+                Self::StrokePath {
+                    path: b_path,
+                    transform: b_transform,
+                    stroke: b_stroke,
+                },
+            ) => VectorSceneChange {
+                geometry: a_path != b_path
+                    || a_transform != b_transform
+                    || a_stroke.width != b_stroke.width
+                    || a_stroke.cap != b_stroke.cap
+                    || a_stroke.join != b_stroke.join,
+                paint: a_stroke.color != b_stroke.color,
+            },
+            (
+                Self::TextBox {
+                    id: a_id,
+                    bounds: a_bounds,
+                    props: a_props,
+                },
+                Self::TextBox {
+                    id: b_id,
+                    bounds: b_bounds,
+                    props: b_props,
+                },
+            ) => VectorSceneChange {
+                geometry: a_id != b_id
+                    || a_bounds != b_bounds
+                    || text_layout_props_differ(a_props, b_props),
+                paint: a_id != b_id
+                    || a_props.style.color != b_props.style.color
+                    || a_props.style.decoration != b_props.style.decoration,
+            },
+            _ => VectorSceneChange {
+                geometry: true,
+                paint: true,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct VectorSceneChange {
+    pub geometry: bool,
+    pub paint: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VectorScene {
+    commands: Arc<[VectorCommand]>,
+    bounds: Rect,
+}
+
+impl VectorScene {
+    pub fn new(commands: impl Into<Arc<[VectorCommand]>>) -> Self {
+        let commands = commands.into();
+        let mut text_ids = HashSet::new();
+        for command in commands.iter() {
+            if let VectorCommand::TextBox { id, .. } = command {
+                assert!(
+                    text_ids.insert(*id),
+                    "duplicate CanvasTextId {} in one VectorScene",
+                    id.get()
+                );
+            }
+        }
+        let bounds = commands
+            .iter()
+            .map(VectorCommand::bounds)
+            .reduce(Rect::union)
+            .unwrap_or(Rect::ZERO);
+        Self { commands, bounds }
+    }
+
+    pub fn commands(&self) -> &[VectorCommand] {
+        &self.commands
+    }
+
+    pub fn bounds(&self) -> Rect {
+        self.bounds
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.commands.is_empty()
+    }
+
+    pub fn diff(&self, next: &Self) -> VectorSceneChange {
+        if self == next {
+            return VectorSceneChange::default();
+        }
+        if self.commands.len() != next.commands.len() {
+            return VectorSceneChange {
+                geometry: true,
+                paint: true,
+            };
+        }
+        self.commands.iter().zip(next.commands.iter()).fold(
+            VectorSceneChange::default(),
+            |mut change, (current, next)| {
+                let command_change = current.diff(next);
+                change.geometry |= command_change.geometry;
+                change.paint |= command_change.paint;
+                change
+            },
+        )
+    }
+}
+
+impl Default for VectorScene {
+    fn default() -> Self {
+        Self::new(Arc::<[VectorCommand]>::from([]))
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct VectorSceneBuilder {
+    commands: Vec<VectorCommand>,
+}
+
+impl VectorSceneBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn fill_path(&mut self, path: PathData, transform: Affine, fill: PathFill) -> &mut Self {
+        self.commands.push(VectorCommand::FillPath {
+            path,
+            transform,
+            fill,
+        });
+        self
+    }
+
+    pub fn stroke_path(
+        &mut self,
+        path: PathData,
+        transform: Affine,
+        stroke: PathStroke,
+    ) -> &mut Self {
+        self.commands.push(VectorCommand::StrokePath {
+            path,
+            transform,
+            stroke,
+        });
+        self
+    }
+
+    pub fn text_box(&mut self, id: CanvasTextId, bounds: Rect, props: TextProps) -> &mut Self {
+        self.commands
+            .push(VectorCommand::TextBox { id, bounds, props });
+        self
+    }
+
+    pub fn build(self) -> VectorScene {
+        VectorScene::new(Arc::<[VectorCommand]>::from(self.commands))
+    }
+}
+
+fn text_layout_props_differ(current: &TextProps, next: &TextProps) -> bool {
+    current.text != next.text
+        || current.style.font_family != next.style.font_family
+        || current.style.font_size != next.style.font_size
+        || current.style.font_weight != next.style.font_weight
+        || current.style.font_style != next.style.font_style
+        || current.style.line_height != next.style.line_height
+        || current.style.letter_spacing != next.style.letter_spacing
+        || current.paragraph != next.paragraph
+        || current.text_box != next.text_box
+}
+
 #[cfg(test)]
 mod path_tests {
     use super::*;
@@ -358,6 +603,139 @@ mod path_tests {
                 .transform_rect(Rect::new(1.0, 2.0, 4.0, 5.0)),
             Rect::new(12.0, 26.0, 8.0, 15.0)
         );
+    }
+
+    #[test]
+    fn vector_scene_preserves_order_and_includes_transformed_stroke_bounds() {
+        let mut path = PathBuilder::new();
+        path.move_to(Point::new(0.0, 0.0))
+            .line_to(Point::new(10.0, 10.0));
+        let path = path.build();
+        let mut scene = VectorSceneBuilder::new();
+        scene
+            .fill_path(
+                path.clone(),
+                Affine::translate(5.0, 7.0),
+                PathFill::new(Color::BLACK),
+            )
+            .stroke_path(
+                path,
+                Affine::scale(2.0, 3.0).then(Affine::translate(5.0, 7.0)),
+                PathStroke::new(Color::WHITE, 4.0),
+            );
+        let scene = scene.build();
+        assert!(matches!(
+            scene.commands(),
+            [
+                VectorCommand::FillPath { .. },
+                VectorCommand::StrokePath { .. }
+            ]
+        ));
+        assert_eq!(scene.bounds(), Rect::new(1.0, 1.0, 28.0, 42.0));
+    }
+
+    #[test]
+    fn vector_scene_diff_separates_geometry_and_paint() {
+        let mut path = PathBuilder::new();
+        path.move_to(Point::new(0.0, 0.0))
+            .line_to(Point::new(10.0, 10.0));
+        let path = path.build();
+        let make = |color, transform| {
+            let mut scene = VectorSceneBuilder::new();
+            scene.fill_path(path.clone(), transform, PathFill::new(color));
+            scene.build()
+        };
+        let original = make(Color::BLACK, Affine::IDENTITY);
+        assert_eq!(
+            original.diff(&make(Color::WHITE, Affine::IDENTITY)),
+            VectorSceneChange {
+                geometry: false,
+                paint: true,
+            }
+        );
+        assert_eq!(
+            original.diff(&make(Color::BLACK, Affine::translate(1.0, 0.0))),
+            VectorSceneChange {
+                geometry: true,
+                paint: false,
+            }
+        );
+    }
+
+    #[test]
+    fn vector_scene_text_boxes_preserve_order_bounds_and_diff_kind() {
+        let mut path = PathBuilder::new();
+        path.move_to(Point::new(0.0, 0.0))
+            .line_to(Point::new(10.0, 10.0));
+        let path = path.build();
+        let mut props = TextProps::new("canvas");
+        props.style.color = Color::BLACK;
+
+        let build = |props: TextProps| {
+            let mut scene = VectorSceneBuilder::new();
+            scene
+                .fill_path(path.clone(), Affine::IDENTITY, PathFill::new(Color::BLACK))
+                .text_box(
+                    CanvasTextId::new(7),
+                    Rect::new(20.0, 5.0, 80.0, 30.0),
+                    props,
+                )
+                .stroke_path(
+                    path.clone(),
+                    Affine::IDENTITY,
+                    PathStroke::new(Color::WHITE, 2.0),
+                );
+            scene.build()
+        };
+
+        let original = build(props.clone());
+        assert!(matches!(
+            original.commands(),
+            [
+                VectorCommand::FillPath { .. },
+                VectorCommand::TextBox { id, .. },
+                VectorCommand::StrokePath { .. }
+            ] if *id == CanvasTextId::new(7)
+        ));
+        assert_eq!(original.bounds(), Rect::new(-1.0, -1.0, 101.0, 36.0));
+
+        let mut recolored = props.clone();
+        recolored.style.color = Color::WHITE;
+        assert_eq!(
+            original.diff(&build(recolored)),
+            VectorSceneChange {
+                geometry: false,
+                paint: true,
+            }
+        );
+
+        let mut resized = props;
+        resized.style.font_size += 1.0;
+        assert_eq!(
+            original.diff(&build(resized)),
+            VectorSceneChange {
+                geometry: true,
+                paint: false,
+            }
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate CanvasTextId 1")]
+    fn vector_scene_rejects_duplicate_text_ids() {
+        let mut scene = VectorSceneBuilder::new();
+        scene
+            .text_box(
+                CanvasTextId::new(1),
+                Rect::new(0.0, 0.0, 10.0, 10.0),
+                TextProps::new("first"),
+            )
+            .text_box(
+                CanvasTextId::new(1),
+                Rect::new(0.0, 0.0, 10.0, 10.0),
+                TextProps::new("second"),
+            );
+        let _ = scene.build();
     }
 }
 

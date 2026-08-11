@@ -8,6 +8,7 @@ use xui_interface::{
 
 use super::{props_hash, widget_element_desc};
 use crate::render::{Primitive, RenderTreeWriter, TextPrimitive};
+use crate::text::TextLayoutSlot;
 
 #[derive(Debug)]
 pub struct TextWidget {
@@ -137,6 +138,9 @@ impl TextWidget {
             .primitive(Primitive::Text(TextPrimitive {
                 node_id,
                 bounds: rect,
+                slot: TextLayoutSlot::PRIMARY,
+                layout_revision: self.props_hash(),
+                vertical_align: self.props.paragraph.vertical_align,
                 paint: TextPaintProps::new(TextPaintStyle::from_computed(&style.text)),
             }))
             .expect("widget render tree must remain valid");

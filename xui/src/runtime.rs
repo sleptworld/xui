@@ -3,7 +3,7 @@ use crate::render::RenderBackend;
 use crate::shortcut::ShortcutManager;
 use crate::{
     app::{App, AppRenderError},
-    text::TextHost,
+    text::{TextHost, TextLayoutSlot},
 };
 use std::collections::VecDeque;
 use std::time::Instant;
@@ -213,7 +213,8 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
         let text_input = arena.focus_manager().focused().and_then(|id| {
             let node = arena.node(id)?;
             let rect = arena.visual_layout(id)?;
-            let layout = self.text_backend.layout_query(id)?;
+            let handle = self.text_backend.active_slot(id, TextLayoutSlot::PRIMARY)?;
+            let layout = self.text_backend.query(handle)?;
             node.widget.platform_text_input_session(rect, layout)
         });
         self.platform_output = PlatformOutput { text_input };

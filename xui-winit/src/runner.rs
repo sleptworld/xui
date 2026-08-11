@@ -6,7 +6,7 @@ use crate::device::WinitDeviceRegistry;
 use crate::translate::{
     translate_mouse_button, translate_mouse_wheel, translate_named_key, translate_physical_key,
 };
-use crate::wgpu::WGPUBackend;
+use crate::wgpu::{WGPUBackend, WgpuBackendInitError};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
 use winit::error::{EventLoopError, OsError};
@@ -50,8 +50,11 @@ impl Default for WinitRunnerOptions {
 pub enum WinitRunError<E> {
     EventLoop(EventLoopError),
     Window(OsError),
+    BackendInit(WinitBackendInitError),
     Render(E),
 }
+
+pub type WinitBackendInitError = Box<dyn std::error::Error + Send + Sync>;
 
 #[derive(Debug, Clone, Copy)]
 pub enum WinitUserEvent {
@@ -63,6 +66,7 @@ impl<E: fmt::Debug> fmt::Debug for WinitRunError<E> {
         match self {
             Self::EventLoop(error) => f.debug_tuple("EventLoop").field(error).finish(),
             Self::Window(error) => f.debug_tuple("Window").field(error).finish(),
+            Self::BackendInit(error) => f.debug_tuple("BackendInit").field(error).finish(),
             Self::Render(error) => f.debug_tuple("Render").field(error).finish(),
         }
     }
@@ -73,6 +77,7 @@ impl<E: fmt::Display> fmt::Display for WinitRunError<E> {
         match self {
             Self::EventLoop(error) => write!(f, "winit event loop error: {error}"),
             Self::Window(error) => write!(f, "winit window error: {error}"),
+            Self::BackendInit(error) => write!(f, "render backend initialization error: {error}"),
             Self::Render(error) => write!(f, "render backend error: {error}"),
         }
     }
@@ -86,6 +91,7 @@ where
         match self {
             Self::EventLoop(error) => Some(error),
             Self::Window(error) => Some(error),
+            Self::BackendInit(error) => Some(error.as_ref()),
             Self::Render(error) => Some(error),
         }
     }
@@ -97,11 +103,10 @@ impl<E> From<EventLoopError> for WinitRunError<E> {
     }
 }
 
-pub struct WinitRunner<B: RenderBackend<TextHost<T>>, T: TextBackend, F>
-where
-    F: FnOnce(Arc<Window>) -> (App, T, B),
-{
-    f_init: Option<F>,
+pub struct WinitRunner<B: RenderBackend<TextHost<T>>, T: TextBackend> {
+    f_init: Option<
+        Box<dyn FnOnce(Arc<Window>) -> Result<(App, T, B), WinitBackendInitError> + 'static>,
+    >,
     runtime: Option<GuiRuntime<B, T>>,
     options: WinitRunnerOptions,
     window: Option<Arc<Window>>,
@@ -110,23 +115,51 @@ where
     modifiers: Modifiers,
     pointer_buttons: PointerButtons,
     window_error: Option<OsError>,
+    backend_init_error: Option<WinitBackendInitError>,
     render_error: Option<AppRenderError<B::Error>>,
     device_registry: WinitDeviceRegistry,
     event_proxy: Option<EventLoopProxy<WinitUserEvent>>,
     last_platform_output: PlatformOutput,
 }
 
-impl<B: RenderBackend<TextHost<T>>, T: TextBackend, F> WinitRunner<B, T, F>
-where
-    F: FnOnce(Arc<Window>) -> (App, T, B),
-{
-    pub fn with_backend_factory(factory: F, option: Option<WinitRunnerOptions>) -> Self {
+impl<B: RenderBackend<TextHost<T>>, T: TextBackend> WinitRunner<B, T> {
+    pub fn with_backend_factory<F>(factory: F, option: Option<WinitRunnerOptions>) -> Self
+    where
+        F: FnOnce(Arc<Window>) -> (App, T, B) + 'static,
+    {
         Self::with_options(factory, option.unwrap_or_default())
     }
 
-    pub fn with_options(factory: F, options: WinitRunnerOptions) -> Self {
+    pub fn with_options<F>(factory: F, options: WinitRunnerOptions) -> Self
+    where
+        F: FnOnce(Arc<Window>) -> (App, T, B) + 'static,
+    {
+        Self::with_fallible_options(
+            move |window| Ok::<(App, T, B), std::convert::Infallible>(factory(window)),
+            options,
+        )
+    }
+
+    pub fn with_fallible_backend_factory<F, E>(
+        factory: F,
+        option: Option<WinitRunnerOptions>,
+    ) -> Self
+    where
+        F: FnOnce(Arc<Window>) -> Result<(App, T, B), E> + 'static,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        Self::with_fallible_options(factory, option.unwrap_or_default())
+    }
+
+    pub fn with_fallible_options<F, E>(factory: F, options: WinitRunnerOptions) -> Self
+    where
+        F: FnOnce(Arc<Window>) -> Result<(App, T, B), E> + 'static,
+        E: std::error::Error + Send + Sync + 'static,
+    {
         Self {
-            f_init: Some(factory),
+            f_init: Some(Box::new(move |window| {
+                factory(window).map_err(|error| Box::new(error) as WinitBackendInitError)
+            })),
             runtime: None,
             options,
             window: None,
@@ -135,6 +168,7 @@ where
             modifiers: Modifiers::default(),
             pointer_buttons: PointerButtons::default(),
             window_error: None,
+            backend_init_error: None,
             render_error: None,
             device_registry: WinitDeviceRegistry::default(),
             event_proxy: None,
@@ -161,6 +195,9 @@ where
 
         if let Some(error) = self.window_error {
             return Err(WinitRunError::Window(error));
+        }
+        if let Some(error) = self.backend_init_error {
+            return Err(WinitRunError::BackendInit(error));
         }
         if let Some(error) = self.render_error {
             return Err(WinitRunError::Render(error));
@@ -395,19 +432,15 @@ where
 pub fn runner(
     app: ComponentFn,
     options: Option<WinitRunnerOptions>,
-) -> WinitRunner<
-    WGPUBackend,
-    CosmicEngine,
-    impl FnOnce(Arc<Window>) -> (App, CosmicEngine, WGPUBackend),
-> {
+) -> WinitRunner<WGPUBackend, CosmicEngine> {
     let app = App::new(app);
-    WinitRunner::with_backend_factory(
-        |w| {
-            (
+    WinitRunner::with_fallible_backend_factory(
+        |w| -> Result<_, WgpuBackendInitError> {
+            Ok((
                 app,
                 CosmicEngine::new(w.scale_factor() as f32),
-                WGPUBackend::new(w),
-            )
+                WGPUBackend::new(w)?,
+            ))
         },
         options,
     )
@@ -422,10 +455,8 @@ fn translate_modifiers(modifiers: ModifiersState) -> Modifiers {
     }
 }
 
-impl<B: RenderBackend<TextHost<T>>, T: TextBackend, F> ApplicationHandler<WinitUserEvent>
-    for WinitRunner<B, T, F>
-where
-    F: FnOnce(Arc<Window>) -> (App, T, B),
+impl<B: RenderBackend<TextHost<T>>, T: TextBackend> ApplicationHandler<WinitUserEvent>
+    for WinitRunner<B, T>
 {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -436,7 +467,14 @@ where
             Ok(window) => {
                 self.window_id = Some(window.id());
                 let window = Arc::new(window);
-                let (app, text, backend) = (self.f_init.take().unwrap())(window.clone());
+                let (app, text, backend) = match (self.f_init.take().unwrap())(window.clone()) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        self.backend_init_error = Some(error);
+                        event_loop.exit();
+                        return;
+                    }
+                };
                 if let Some(proxy) = self.event_proxy.clone() {
                     app.set_async_wake_callback(move || {
                         let _ = proxy.send_event(WinitUserEvent::Wake);
@@ -464,7 +502,7 @@ where
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        if self.window_id != Some(window_id) {
+        if self.window_id != Some(window_id) || self.runtime.is_none() {
             return;
         }
 
@@ -495,6 +533,9 @@ where
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.runtime.is_none() {
+            return;
+        }
         match self.runtime().control_flow() {
             XuiControlFlow::Exit => event_loop.exit(),
             XuiControlFlow::Poll => self.request_redraw_if_dirty(),
@@ -503,6 +544,9 @@ where
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: WinitUserEvent) {
+        if self.runtime.is_none() {
+            return;
+        }
         match event {
             WinitUserEvent::Wake => {
                 if let Some(runtime) = self.runtime.as_mut() {

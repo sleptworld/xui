@@ -1,21 +1,125 @@
-use crate::{
-    renders::LayerTileRenderer,
-    wgpu::{
-        LayerSnapshot, LayerTileStorageVersion, ResidentLayer, ResidentTile, SCENE_FORMAT,
-        SCENE_SAMPLE_COUNT, UiUniforms, intersect_rect, layer::diff_layer,
-        layer_effect_final_index, snapshot::layer_snapshot,
-    },
+use crate::wgpu::{
+    LayerSnapshot, TexturePool, TexturePoolError, intersect_rect,
+    layer::diff_layer,
+    snapshot::layer_snapshot,
+    tex::{SurfaceGeometry, SurfaceKey, TileCoord, TiledSurface},
 };
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
-use wgpu::util::DeviceExt;
+use rustc_hash::FxHashMap;
+use std::collections::{HashMap, HashSet};
 use xui::render::{
-    BuiltFrame, CachePolicy, ContentVersion, LayerCacheId, LayerEffect, RenderNodeId,
+    BuiltFrame, BuiltItem, BuiltLayerId, CachePolicy, ContentVersion, LayerCacheId, RenderNodeId,
 };
-use xui_interface::Point;
 use xui_interface::{Affine, Rect};
+use xui_render_graph::SampleExpansion;
+
+fn layer_effect_expansions(frame: &BuiltFrame) -> HashMap<RenderNodeId, SampleExpansion> {
+    let mut expansions = HashMap::<RenderNodeId, SampleExpansion>::new();
+    for parent in &frame.layers {
+        for item in &parent.items {
+            let BuiltItem::Layer(instance_id) = item else {
+                continue;
+            };
+            let instance = frame.layer_instance(*instance_id).expect("built instance");
+            let child = &frame.layers[instance.layer.0];
+            let expansion = instance.render_program.program().layer_visual_expansion();
+            expansions
+                .entry(child.source)
+                .and_modify(|current| {
+                    current.left = current.left.max(expansion.left);
+                    current.top = current.top.max(expansion.top);
+                    current.right = current.right.max(expansion.right);
+                    current.bottom = current.bottom.max(expansion.bottom);
+                })
+                .or_insert(expansion);
+        }
+    }
+    expansions
+}
+
+fn propagate_composite_prefix_damage(
+    frame: &BuiltFrame,
+    dirty_by_layer: &mut HashMap<RenderNodeId, BackendDirtyRegion>,
+) {
+    let mut additions = Vec::new();
+    for parent in &frame.layers {
+        for item in &parent.items {
+            let BuiltItem::Layer(instance_id) = item else {
+                continue;
+            };
+            let instance = frame.layer_instance(*instance_id).expect("built instance");
+            let Some(mut prefix) = instance.destination_prefix else {
+                continue;
+            };
+            let mut chain = Vec::new();
+            while let Some(node) = frame.composite_prefix(prefix).copied() {
+                chain.push(node);
+                let Some(parent_prefix) = node.parent else {
+                    break;
+                };
+                prefix = parent_prefix;
+            }
+            chain.reverse();
+
+            let target_expansion = instance.render_program.program().backdrop_input_expansion();
+            for ancestor_index in 0..chain.len().saturating_sub(1) {
+                let ancestor = frame.layers[chain[ancestor_index].local.layer.0].source;
+                let Some(mut dirty) = dirty_by_layer.get(&ancestor).cloned() else {
+                    continue;
+                };
+                for node in &chain[ancestor_index + 1..] {
+                    let Some(placement_id) = node.placement else {
+                        dirty = BackendDirtyRegion::default();
+                        break;
+                    };
+                    let placement = frame
+                        .layer_instance(placement_id)
+                        .expect("prefix placement exists");
+                    dirty = dirty.through_prefix_placement(
+                        placement.composite.transform,
+                        placement.world_bounds,
+                        placement
+                            .render_program
+                            .program()
+                            .backdrop_input_expansion(),
+                        frame.layers[node.local.layer.0].render_bounds,
+                    );
+                }
+                let affected = dirty.backdrop_damage(instance.world_bounds, target_expansion);
+                if !affected.rects.is_empty() {
+                    additions.push((parent.source, affected));
+                }
+            }
+        }
+    }
+    for (source, damage) in additions {
+        dirty_by_layer.entry(source).or_default().extend(damage);
+    }
+
+    // Cross-surface backdrop damage becomes ordinary child output damage from
+    // this point upward. Re-run the hierarchy in child-to-parent order so the
+    // newly added regions reach the root in the same frame.
+    for parent in frame.layers.iter().rev() {
+        let mut propagated = BackendDirtyRegion::default();
+        for item in &parent.items {
+            let BuiltItem::Layer(instance_id) = item else {
+                continue;
+            };
+            let instance = frame.layer_instance(*instance_id).expect("built instance");
+            let child = &frame.layers[instance.layer.0];
+            if let Some(dirty) = dirty_by_layer.get(&child.source) {
+                propagated.add_transformed(
+                    dirty,
+                    instance.composite.transform,
+                    instance.world_bounds,
+                );
+            }
+        }
+        dirty_by_layer
+            .entry(parent.source)
+            .or_default()
+            .extend(propagated);
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LayerCacheVersion {
@@ -57,10 +161,16 @@ impl BackendDirtyRegion {
         self.rects.extend(other.rects);
     }
 
-    pub fn backdrop_damage(&self, output_bounds: Rect, expansion: f32) -> Self {
+    pub fn backdrop_damage(&self, output_bounds: Rect, expansion: SampleExpansion) -> Self {
         let mut damage = Self::default();
         for rect in &self.rects {
-            if let Some(affected) = intersect_rect(rect.expand(expansion), output_bounds) {
+            let expanded = Rect::new(
+                rect.x - expansion.left,
+                rect.y - expansion.top,
+                rect.width + expansion.left + expansion.right,
+                rect.height + expansion.top + expansion.bottom,
+            );
+            if let Some(affected) = intersect_rect(expanded, output_bounds) {
                 damage.add(affected);
             }
         }
@@ -71,11 +181,18 @@ impl BackendDirtyRegion {
         self.rects.iter().copied().reduce(Rect::union)
     }
 
-    pub fn expand(&mut self, amount: f32) {
-        if amount > 0.0 {
-            for rect in &mut self.rects {
-                *rect = rect.expand(amount);
-            }
+    pub fn intersects(&self, bounds: Rect) -> bool {
+        self.rects.iter().any(|rect| rect.intersects(bounds))
+    }
+
+    pub fn expand_sample(&mut self, expansion: SampleExpansion) {
+        for rect in &mut self.rects {
+            *rect = Rect::new(
+                rect.x - expansion.left,
+                rect.y - expansion.top,
+                rect.width + expansion.left + expansion.right,
+                rect.height + expansion.top + expansion.bottom,
+            );
         }
     }
 
@@ -86,6 +203,35 @@ impl BackendDirtyRegion {
                 self.add(clipped);
             }
         }
+    }
+
+    fn through_prefix_placement(
+        &self,
+        child_to_parent: Affine,
+        parent_clip: Rect,
+        expansion: SampleExpansion,
+        child_clip: Rect,
+    ) -> Self {
+        let Some(parent_to_child) = inverse_affine(child_to_parent) else {
+            return Self::default();
+        };
+        let mut result = Self::default();
+        for rect in &self.rects {
+            let expanded = Rect::new(
+                rect.x - expansion.left,
+                rect.y - expansion.top,
+                rect.width + expansion.left + expansion.right,
+                rect.height + expansion.top + expansion.bottom,
+            );
+            let Some(parent_visible) = intersect_rect(expanded, parent_clip) else {
+                continue;
+            };
+            let child = parent_to_child.transform_rect(parent_visible);
+            if let Some(child) = intersect_rect(child, child_clip) {
+                result.add(child);
+            }
+        }
+        result
     }
 
     pub fn tiles(&self, scale: f32, tile_size: u32) -> HashSet<(i32, i32)> {
@@ -111,6 +257,21 @@ impl BackendDirtyRegion {
         }
         tiles
     }
+}
+
+fn inverse_affine(value: Affine) -> Option<Affine> {
+    let determinant = value.xx * value.yy - value.xy * value.yx;
+    if !determinant.is_finite() || determinant.abs() <= f32::EPSILON {
+        return None;
+    }
+    let inverse = determinant.recip();
+    let xx = value.yy * inverse;
+    let yx = -value.yx * inverse;
+    let xy = -value.xy * inverse;
+    let yy = value.xx * inverse;
+    let dx = -(xx * value.dx + xy * value.dy);
+    let dy = -(yx * value.dx + yy * value.dy);
+    Some(Affine::new(xx, yx, xy, yy, dx, dy))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -160,6 +321,7 @@ impl LayerCacheBook {
 
         let mut next_snapshots = HashMap::new();
         let mut dirty_by_layer = HashMap::new();
+        let effect_expansions = layer_effect_expansions(frame);
 
         for layer in frame.layers.iter().rev() {
             let next_snapshot = layer_snapshot(frame, layer);
@@ -172,21 +334,23 @@ impl LayerCacheBook {
                 None => BackendDirtyRegion::full(layer.render_bounds),
             };
 
-            let expansion = layer
-                .effects
-                .iter()
-                .map(LayerEffect::visual_expansion)
-                .sum();
-            dirty.expand(expansion);
-            if !dirty.rects.is_empty() {
-                self.dirty_regions += dirty.rects.len();
-                self.dirty_tiles += dirty.tiles(scale, tile_size).len();
-                if self.snapshots.contains_key(&layer.source) {
-                    self.partial_updates += 1;
-                }
+            dirty.expand_sample(
+                effect_expansions
+                    .get(&layer.source)
+                    .copied()
+                    .unwrap_or(SampleExpansion::ZERO),
+            );
+            if !dirty.rects.is_empty() && self.snapshots.contains_key(&layer.source) {
+                self.partial_updates += 1;
             }
             dirty_by_layer.insert(layer.source, dirty);
         }
+        propagate_composite_prefix_damage(frame, &mut dirty_by_layer);
+        self.dirty_regions = dirty_by_layer.values().map(|dirty| dirty.rects.len()).sum();
+        self.dirty_tiles = dirty_by_layer
+            .values()
+            .map(|dirty| dirty.tiles(scale, tile_size).len())
+            .sum();
         self.snapshots = next_snapshots;
         self.last_dirty = dirty_by_layer.clone();
 
@@ -264,216 +428,177 @@ impl LayerCacheBook {
 }
 
 #[derive(Default)]
-pub(super) struct LayerTileCache {
-    pub(super) layers: HashMap<LayerCacheId, ResidentLayer>,
+pub(super) struct SurfaceCache {
+    pub(super) surfaces: FxHashMap<SurfaceKey, TiledSurface>,
     frame: u64,
 }
 
-impl LayerTileCache {
+impl SurfaceCache {
     pub fn clear(&mut self) {
-        self.layers.clear();
+        self.surfaces.clear();
     }
 
-    pub fn begin_frame(&mut self, frame: &BuiltFrame) {
+    pub fn begin_frame(&mut self, frame: &BuiltFrame, scale_factor: f32, tile_size: u32) {
         self.frame = self.frame.wrapping_add(1).max(1);
-        self.layers.retain(|key, layer| {
-            layer.policy == CachePolicy::None || frame.live_layer_caches.contains(key)
-        });
+        let live: HashSet<_> = frame
+            .layers
+            .iter()
+            .filter_map(|layer| layer.cache_id.map(SurfaceKey::Layer))
+            .chain([SurfaceKey::Root])
+            .collect();
+        self.surfaces.retain(|key, _| live.contains(key));
+
+        for (index, layer) in frame.layers.iter().enumerate() {
+            let layer_id = BuiltLayerId(index);
+            let key = if layer_id == frame.root_layer {
+                SurfaceKey::Root
+            } else {
+                SurfaceKey::Layer(
+                    layer
+                        .cache_id
+                        .expect("every isolated built layer has a cache identity"),
+                )
+            };
+            let Some(geometry) = SurfaceGeometry::new(layer.render_bounds, scale_factor, tile_size)
+            else {
+                self.surfaces.remove(&key);
+                continue;
+            };
+            let policy = if key == SurfaceKey::Root {
+                CachePolicy::None
+            } else {
+                layer.cache_policy
+            };
+            match self.surfaces.get_mut(&key) {
+                Some(surface) if surface.source == layer.source && surface.geometry == geometry => {
+                    surface.layer = layer_id;
+                    surface.policy = policy;
+                }
+                _ => {
+                    self.surfaces.insert(
+                        key,
+                        TiledSurface::new(layer_id, layer.source, policy, geometry),
+                    );
+                }
+            }
+        }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn ensure_tile(
         &mut self,
         device: &wgpu::Device,
-        ui_layout: &wgpu::BindGroupLayout,
-        tile_renderer: &LayerTileRenderer,
-        layer: &xui::render::BuiltLayer,
-        coord: (i32, i32),
-        scale_factor: f32,
-        tile_size: u32,
-    ) -> bool {
-        let key = layer
-            .cache_id
-            .expect("every isolated built layer has a cache identity");
-        let storage = LayerTileStorageVersion {
-            render_bounds: layer.render_bounds,
-            effects: Arc::clone(&layer.effects),
-            scale_bits: scale_factor.to_bits(),
-            tile_size,
-        };
-        let resident = self.layers.entry(key).or_insert_with(|| ResidentLayer {
-            source: layer.source,
-            policy: layer.cache_policy,
-            storage: storage.clone(),
-            tiles: HashMap::new(),
-        });
-        if resident.storage != storage || resident.source != layer.source {
-            resident.tiles.clear();
-            resident.storage = storage;
-            resident.source = layer.source;
-        }
-        resident.policy = layer.cache_policy;
-        if let Some(tile) = resident.tiles.get_mut(&coord) {
-            tile.last_used = self.frame;
-            return false;
-        }
+        pool: &TexturePool,
+        key: SurfaceKey,
+        coord: TileCoord,
+        keepalive: bool,
+    ) -> Result<bool, TexturePoolError> {
+        self.surfaces
+            .get_mut(&key)
+            .expect("surface cache initialized from BuiltFrame")
+            .ensure_tile(device, pool, coord, self.frame, keepalive)
+    }
 
-        let logical_tile_size = tile_size.max(1) as f32 / scale_factor;
-        let grid_bounds = Rect::new(
-            coord.0 as f32 * logical_tile_size,
-            coord.1 as f32 * logical_tile_size,
-            logical_tile_size,
-            logical_tile_size,
-        );
-        let Some(inner_bounds) = intersect_rect(grid_bounds, layer.render_bounds) else {
+    pub fn can_allocate_guard(&self, key: SurfaceKey, auto_budget: u64) -> bool {
+        let Some(surface) = self.surfaces.get(&key) else {
             return false;
         };
-        let padding = layer
-            .effects
+        if surface.policy != CachePolicy::Auto {
+            return true;
+        }
+        let tile_bytes = surface
+            .tiles
+            .values()
+            .next()
+            .map(|tile| tile.bytes())
+            .unwrap_or_else(|| {
+                let side = u64::from(surface.geometry.tile_size);
+                side.saturating_mul(side).saturating_mul(8)
+            });
+        self.auto_bytes().saturating_add(tile_bytes) <= auto_budget
+    }
+
+    pub fn evict_lru_auto_unpinned(&mut self) -> bool {
+        let now = self.frame;
+        let candidate = self
+            .surfaces
             .iter()
-            .map(LayerEffect::visual_expansion)
-            .sum::<f32>();
-        let padding_px = (padding * scale_factor).ceil().max(0.0) as u32;
-        let inner_width = (inner_bounds.width * scale_factor).ceil().max(1.0) as u32;
-        let inner_height = (inner_bounds.height * scale_factor).ceil().max(1.0) as u32;
-        let target_size = (
-            inner_width.saturating_add(padding_px.saturating_mul(2)),
-            inner_height.saturating_add(padding_px.saturating_mul(2)),
-        );
-        let logical_padding = padding_px as f32 / scale_factor;
-        let target_origin = Point::new(
-            inner_bounds.x - logical_padding,
-            inner_bounds.y - logical_padding,
-        );
-        let texture = |label: &'static str, sample_count, usage| {
-            device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d {
-                    width: target_size.0,
-                    height: target_size.1,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count,
-                dimension: wgpu::TextureDimension::D2,
-                format: SCENE_FORMAT,
-                usage,
-                view_formats: &[],
+            .filter(|(_, surface)| surface.policy == CachePolicy::Auto)
+            .flat_map(|(key, surface)| {
+                surface
+                    .tiles
+                    .iter()
+                    .filter(move |(_, tile)| tile.keepalive_frame != now)
+                    .map(move |(coord, tile)| (*key, *coord, tile.last_used))
             })
+            .min_by_key(|(_, _, last_used)| *last_used);
+        let Some((key, coord, _)) = candidate else {
+            return false;
         };
-        let textures = [
-            texture(
-                "xui layer tile ping",
-                1,
-                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            ),
-            texture(
-                "xui layer tile pong",
-                1,
-                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            ),
-        ];
-        let views = [
-            textures[0].create_view(&wgpu::TextureViewDescriptor::default()),
-            textures[1].create_view(&wgpu::TextureViewDescriptor::default()),
-        ];
-        let msaa_texture = texture(
-            "xui layer tile msaa",
-            SCENE_SAMPLE_COUNT,
-            wgpu::TextureUsages::RENDER_ATTACHMENT,
-        );
-        let msaa_view = msaa_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let ui_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("xui layer tile ui uniforms"),
-            contents: bytemuck::bytes_of(&UiUniforms {
-                viewport_size: [target_size.0 as f32, target_size.1 as f32, 0.0, 0.0],
-                scale_factor: [scale_factor; 4],
-            }),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-        let ui_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("xui layer tile ui bind group"),
-            layout: ui_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: ui_uniform_buffer.as_entire_binding(),
-            }],
-        });
-        let final_index = layer_effect_final_index(&layer.effects);
-        let composite_bind_group = tile_renderer.create_bind_group(device, &views[final_index]);
-        let inner_uv = Rect::new(
-            padding_px as f32 / target_size.0 as f32,
-            padding_px as f32 / target_size.1 as f32,
-            inner_width as f32 / target_size.0 as f32,
-            inner_height as f32 / target_size.1 as f32,
-        );
-        let pixels = target_size.0 as u64 * target_size.1 as u64;
-        resident.tiles.insert(
-            coord,
-            ResidentTile {
-                _textures: textures,
-                views,
-                _msaa_texture: msaa_texture,
-                msaa_view,
-                _ui_uniform_buffer: ui_uniform_buffer,
-                ui_bind_group,
-                composite_bind_group,
-                inner_bounds,
-                target_origin,
-                target_size,
-                inner_uv,
-                final_index,
-                bytes: pixels * 8 * (2 + SCENE_SAMPLE_COUNT as u64),
-                last_used: self.frame,
-                valid: false,
-            },
-        );
-        true
+        self.surfaces
+            .get_mut(&key)
+            .and_then(|surface| surface.tiles.remove(&coord))
+            .is_some()
     }
 
     pub(super) fn finish_frame(&mut self, auto_budget: u64) {
-        self.layers
-            .retain(|_, layer| layer.policy != CachePolicy::None);
         while self.auto_bytes() > auto_budget {
-            let candidate = self
-                .layers
-                .iter()
-                .filter(|(_, layer)| layer.policy == CachePolicy::Auto)
-                .flat_map(|(key, layer)| {
-                    layer
-                        .tiles
-                        .iter()
-                        .map(move |(coord, tile)| (*key, *coord, tile.last_used))
-                })
-                .min_by_key(|(_, _, last_used)| *last_used);
-            let Some((key, coord, _)) = candidate else {
+            if !self.evict_lru_auto_unpinned() {
                 break;
-            };
-            if let Some(layer) = self.layers.get_mut(&key) {
-                layer.tiles.remove(&coord);
             }
         }
-        self.layers.retain(|_, layer| !layer.tiles.is_empty());
+
+        let now = self.frame;
+        for (key, surface) in &mut self.surfaces {
+            if *key == SurfaceKey::Root || surface.policy != CachePolicy::None {
+                continue;
+            }
+            surface.tiles.retain(|_, tile| tile.keepalive_frame == now);
+        }
     }
 
     fn auto_bytes(&self) -> u64 {
-        self.layers
+        self.surfaces
             .values()
-            .filter(|layer| layer.policy == CachePolicy::Auto)
-            .flat_map(|layer| layer.tiles.values())
-            .map(|tile| tile.bytes)
+            .filter(|surface| surface.policy == CachePolicy::Auto)
+            .flat_map(|surface| surface.tiles.values())
+            .map(|tile| tile.bytes())
             .sum()
     }
 
     pub(super) fn resident_bytes(&self) -> u64 {
-        self.layers
+        self.surfaces
             .values()
-            .flat_map(|layer| layer.tiles.values())
-            .map(|tile| tile.bytes)
+            .flat_map(|surface| surface.tiles.values())
+            .map(|tile| tile.bytes())
             .sum()
     }
 
     pub(super) fn tile_count(&self) -> usize {
-        self.layers.values().map(|layer| layer.tiles.len()).sum()
+        self.surfaces
+            .values()
+            .map(|surface| surface.tiles.len())
+            .sum()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefix_damage_is_expanded_then_mapped_into_child_space() {
+        let dirty = BackendDirtyRegion::full(Rect::new(14.0, 20.0, 4.0, 6.0));
+        let mapped = dirty.through_prefix_placement(
+            Affine::new(2.0, 0.0, 0.0, 2.0, 10.0, 10.0),
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            SampleExpansion {
+                left: 2.0,
+                top: 4.0,
+                right: 6.0,
+                bottom: 8.0,
+            },
+            Rect::new(-100.0, -100.0, 200.0, 200.0),
+        );
+        assert_eq!(mapped.rects, vec![Rect::new(1.0, 3.0, 6.0, 9.0)]);
     }
 }

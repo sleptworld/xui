@@ -509,8 +509,7 @@ impl RenderScene {
         if old.bounds != descriptor.bounds {
             dirty |= RenderDirty::GEOMETRY;
         }
-        if old.composite != descriptor.composite
-            || old.backdrop_effects != descriptor.backdrop_effects
+        if old.composite != descriptor.composite || old.backdrop_style != descriptor.backdrop_style
         {
             dirty |= RenderDirty::COMPOSITE;
         }
@@ -518,6 +517,7 @@ impl RenderScene {
             || old.force_offscreen != descriptor.force_offscreen
             || old.cache_policy != descriptor.cache_policy
             || old.cache_key != descriptor.cache_key
+            || old.backdrop_isolation != descriptor.backdrop_isolation
         {
             dirty |= RenderDirty::EFFECT;
         }
@@ -933,7 +933,7 @@ impl RenderNode {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct HostRenderBinding {
     pub root: RenderNodeId,
     pub transform: RenderNodeId,
@@ -1283,6 +1283,7 @@ mod tests {
                     opacity: 0.5,
                     transform: Affine::translate(3.0, 0.0),
                     blend_mode: BlendMode::Normal,
+                    operator: crate::render::CompositeOperator::SrcOver,
                 },
             )
             .unwrap();
@@ -1319,6 +1320,7 @@ mod tests {
                     opacity: 0.8,
                     transform: Affine::translate(20.0, 0.0),
                     blend_mode: BlendMode::Normal,
+                    operator: crate::render::CompositeOperator::SrcOver,
                 },
             )
             .unwrap();

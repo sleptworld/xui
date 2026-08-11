@@ -1,15 +1,3 @@
-use slotmap::SlotMap;
-use std::collections::HashMap;
-use std::time::Duration;
-use taffy::prelude as tf;
-use xui_animation::{Animatable, Timeline, Transition};
-use xui_interface::events::RawEvent;
-use xui_interface::{
-    Affine, ComputedColorStyle, ComputedScrollStyle, ComputedScrollbarStyle, ComputedStyle,
-    EventResult, NodeId, NodeLifecycleEvent, ScrollbarVisibilityStyle, StyleDiffFlags, TextBackend,
-    TextLayoutConstraints, TextLayoutInput, Theme, WidgetState, WidgetUpdateFlags,
-};
-
 use crate::animation::AnimableStyle;
 use crate::core::{Point, Rect, Size};
 use crate::event_system::callbacks::{CallbackHandleSet, CallbackStore, EventHandlers};
@@ -19,11 +7,23 @@ use crate::focus::FocusManager;
 use crate::layout::{computed_style_for_widget, taffy_style_for_widget};
 use crate::render::{
     BuiltFrame, ClipShape, DirtySnapshot, FrameBuildError, FrameBuilder, FrameProperties,
-    FramePropertiesSnapshot, HostRenderBinding, Primitive, RenderScene, RenderTreeWriter,
-    SceneCompileError, SceneCompiler, SceneError, Shape, ShapePrimitive,
+    FramePropertiesSnapshot, HostRenderBinding, LayerDescriptor, Primitive, RenderNodeId,
+    RenderScene, RenderTreeWriter, SceneCompileError, SceneCompiler, SceneError, Shape,
+    ShapePrimitive,
 };
-use crate::text::TextHost;
-use crate::widgets::{WidgetI, WidgetType};
+use crate::text::{TextHost, TextLayoutSlot};
+use crate::widgets::{WidgetI, WidgetType, Widgets, canvas_text_slot};
+use slotmap::SlotMap;
+use std::collections::HashMap;
+use std::time::Duration;
+use taffy::prelude as tf;
+use xui_animation::{Animatable, Timeline, Transition};
+use xui_interface::events::RawEvent;
+use xui_interface::{
+    Affine, ComputedColorStyle, ComputedScrollStyle, ComputedScrollbarStyle, ComputedStyle,
+    EventResult, NodeId, NodeLifecycleEvent, ScrollbarVisibilityStyle, StyleDiffFlags, TextBackend,
+    TextLayoutConstraints, TextLayoutInput, Theme, VectorCommand, WidgetState, WidgetUpdateFlags,
+};
 
 pub enum WidgetContext {
     Text(NodeId),
@@ -84,6 +84,9 @@ impl HostWorkFlags {
         }
         if flags.intersects(StyleDiffFlags::SCROLL) {
             work |= Self::RECALC_LAYOUT | Self::REBUILD_PAINT;
+        }
+        if flags.intersects(StyleDiffFlags::EFFECT) {
+            work |= Self::SYNC_RENDER;
         }
         work
     }
@@ -540,121 +543,158 @@ impl UiArena {
         let mut binding = self
             .render_scene
             .host_binding(id)
-            .cloned()
+            .copied()
             .expect("host render binding missing");
-        let node = &self.nodes[id];
-        let local_origin = node.layout.origin();
-        let viewport = Rect::new(0.0, 0.0, node.layout.width, node.layout.height);
-        let scroll = node.scroll_offset;
-        let host_children = node.children.clone();
 
-        let needs_scroll = node.scroll_style().is_scrollable();
-        let needs_overlay = needs_scrollbar_overlay(node);
-        let needs_clip = node.target_style.paint.clip || needs_scroll;
+        let (
+            local_origin,
+            viewport,
+            scroll,
+            host_children,
+            needs_scroll,
+            needs_overlay,
+            clip_shape,
+            layer_descriptor,
+        ) = {
+            let node = &self.nodes[id];
+            let viewport = Rect::new(0.0, 0.0, node.layout.width, node.layout.height);
+            let needs_scroll = node.scroll_style().is_scrollable();
+            let needs_clip = node.target_style.paint.clip || needs_scroll;
+            let clip_shape = needs_clip.then(|| {
+                if node.target_style.paint.border_radius > 0.0 {
+                    ClipShape::RoundedRect {
+                        rect: viewport,
+                        radius: node.target_style.paint.border_radius,
+                    }
+                } else {
+                    ClipShape::Rect(viewport)
+                }
+            });
 
+            (
+                node.layout.origin(),
+                viewport,
+                node.scroll_offset,
+                node.children.clone(),
+                needs_scroll,
+                needs_scrollbar_overlay(node),
+                clip_shape,
+                layer_descriptor_from_style(&node.target_style, viewport),
+            )
+        };
+
+        // Reconcile the fixed host scaffold.
         self.render_scene.update_transform(
             binding.transform,
             Affine::translate(local_origin.x, local_origin.y),
         )?;
 
-        match (needs_clip, binding.clip) {
-            (true, Some(clip)) => {
-                self.render_scene
-                    .update_clip(clip, ClipShape::Rect(viewport))?;
-            }
-            (true, None) => {
-                self.render_scene.set_child(binding.root, None)?;
-                let clip = self.render_scene.insert_clip(ClipShape::Rect(viewport));
-                self.render_scene.set_child(clip, Some(binding.contents))?;
-                self.render_scene.set_child(binding.root, Some(clip))?;
-                self.render_scene
-                    .host_binding_mut(id)
-                    .expect("binding disappeared")
-                    .clip = Some(clip);
-                binding.clip = Some(clip);
-            }
-            (false, Some(clip)) => {
-                self.render_scene.set_child(clip, None)?;
-                self.render_scene
-                    .set_child(binding.root, Some(binding.contents))?;
-                self.render_scene
-                    .host_binding_mut(id)
-                    .expect("binding disappeared")
-                    .clip = None;
-                binding.clip = None;
-                self.render_scene.remove_subtree(clip)?;
-            }
-            (false, None) => {}
-        }
+        self.update_wrappers(id, &mut binding, clip_shape, layer_descriptor)?;
 
-        if !node.children.is_empty() && binding.children.is_none() {
+        // The children group is a stable container once it has been created.
+        if !host_children.is_empty() && binding.children.is_none() {
             let children = self.render_scene.insert_group();
             // `paint` is always at index 0. Insert the child branch at index 1
-            // so an existing sticky overlay remains last.
+            // so a scrollbar overlay remains last.
             self.render_scene
                 .insert_child(binding.contents, 1, children)?;
             binding.children = Some(children);
-            self.render_scene
-                .host_binding_mut(id)
-                .expect("binding disappeared")
-                .children = Some(children);
         }
 
-        if needs_scroll && binding.scroll_transform.is_none() {
-            if let Some(children) = binding.children {
-                self.render_scene.detach(children)?;
-                let scroll_transform = self.render_scene.insert_transform(Affine::IDENTITY);
-                self.render_scene
-                    .set_child(scroll_transform, Some(children))?;
-                self.render_scene
-                    .insert_child(binding.contents, 1, scroll_transform)?;
-                binding.scroll_transform = Some(scroll_transform);
-                self.render_scene
-                    .host_binding_mut(id)
-                    .expect("binding disappeared")
-                    .scroll_transform = Some(scroll_transform);
-            }
-        }
-
-        if let Some(scroll_transform) = binding.scroll_transform {
-            let transform = if needs_scroll {
-                Affine::translate(-scroll.x, -scroll.y)
-            } else {
-                Affine::IDENTITY
-            };
-            self.frame_properties
-                .set_transform(scroll_transform, transform);
-        }
-
-        if let Some(children_binding) = binding.children {
-            let expected: Vec<_> = host_children
-                .iter()
-                .filter_map(|child| {
+        // Scroll transforms are transient and exist only while scrolling is enabled.
+        let removed_scroll_transform = if needs_scroll {
+            if binding.scroll_transform.is_none() {
+                if let Some(children) = binding.children {
+                    self.render_scene.detach(children)?;
+                    let scroll_transform = self.render_scene.insert_transform(Affine::IDENTITY);
                     self.render_scene
-                        .host_binding(*child)
-                        .map(|binding| binding.root)
-                })
-                .collect();
-            let current = self.render_scene.children(children_binding)?.to_vec();
-            if current != expected {
-                for child in current {
-                    self.render_scene.detach(child)?;
-                }
-                for child in expected {
-                    self.render_scene.detach(child)?;
-                    self.render_scene.append_child(children_binding, child)?;
+                        .set_child(scroll_transform, Some(children))?;
+                    self.render_scene
+                        .insert_child(binding.contents, 1, scroll_transform)?;
+                    binding.scroll_transform = Some(scroll_transform);
                 }
             }
+            None
+        } else if let Some(scroll_transform) = binding.scroll_transform.take() {
+            if let Some(children) = binding.children {
+                self.render_scene.set_child(scroll_transform, None)?;
+                self.render_scene.detach(scroll_transform)?;
+                self.render_scene
+                    .insert_child(binding.contents, 1, children)?;
+            }
+            self.frame_properties.remove_source(scroll_transform);
+            Some(scroll_transform)
+        } else {
+            None
+        };
+
+        // Scrollbar overlays are also transient.
+        let removed_overlay = if needs_overlay {
+            if binding.overlay.is_none() {
+                let overlay = self.render_scene.insert_group();
+                self.render_scene.append_child(binding.contents, overlay)?;
+                binding.overlay = Some(overlay);
+            }
+            None
+        } else if let Some(overlay) = binding.overlay.take() {
+            self.render_scene.detach(overlay)?;
+            Some(overlay)
+        } else {
+            None
+        };
+
+        // Remove transient nodes only after the host binding stops referencing them.
+        *self
+            .render_scene
+            .host_binding_mut(id)
+            .expect("binding disappeared") = binding;
+
+        if let Some(scroll_transform) = removed_scroll_transform {
+            self.render_scene.remove_subtree(scroll_transform)?;
+        }
+        if let Some(overlay) = removed_overlay {
+            self.render_scene.remove_subtree(overlay)?;
         }
 
-        if needs_overlay && binding.overlay.is_none() {
-            let overlay = self.render_scene.insert_group();
-            self.render_scene.append_child(binding.contents, overlay)?;
-            binding.overlay = Some(overlay);
-            self.render_scene
-                .host_binding_mut(id)
-                .expect("binding disappeared")
-                .overlay = Some(overlay);
+        // Scroll offsets remain dynamic frame properties while scrolling is active.
+        if let Some(scroll_transform) = binding.scroll_transform {
+            self.frame_properties
+                .set_transform(scroll_transform, Affine::translate(-scroll.x, -scroll.y));
+        }
+
+        // Reconcile host children in declaration/paint order.
+        if let Some(children_binding) = binding.children {
+            let children_match = self
+                .render_scene
+                .children(children_binding)?
+                .iter()
+                .copied()
+                .eq(host_children.iter().map(|host_child| {
+                    self.render_scene
+                        .host_binding(*host_child)
+                        .expect("child host render binding missing")
+                        .root
+                }));
+
+            if !children_match {
+                let current = self.render_scene.children(children_binding)?.to_vec();
+
+                for child_root in current {
+                    self.render_scene.detach(child_root)?;
+                }
+
+                for host_child in &host_children {
+                    let child_root = self
+                        .render_scene
+                        .host_binding(*host_child)
+                        .expect("child host render binding missing")
+                        .root;
+
+                    self.render_scene.detach(child_root)?;
+                    self.render_scene
+                        .append_child(children_binding, child_root)?;
+                }
+            }
         }
 
         if let Some(overlay) = binding.overlay {
@@ -662,6 +702,90 @@ impl UiArena {
             let mut writer = RenderTreeWriter::new(&mut self.render_scene, overlay);
             render_scrollbars_in_rect(node, viewport, &mut writer);
             writer.finish()?;
+        }
+
+        Ok(())
+    }
+
+    fn update_wrappers(
+        &mut self,
+        id: NodeId,
+        binding: &mut HostRenderBinding,
+        clip_shape: Option<ClipShape>,
+        layer_descriptor: Option<LayerDescriptor>,
+    ) -> Result<(), SceneError> {
+        let topology_changed = clip_shape.is_some() != binding.clip.is_some()
+            || layer_descriptor.is_some() != binding.layer.is_some();
+
+        let old_clip = binding.clip;
+        let old_layer = binding.layer;
+
+        // Reuse existing wrappers and update their descriptors in place.
+        let removed_clip = match clip_shape {
+            Some(shape) => {
+                if let Some(clip) = binding.clip {
+                    self.render_scene.update_clip(clip, shape)?;
+                } else {
+                    binding.clip = Some(self.render_scene.insert_clip(shape));
+                }
+                None
+            }
+            None => binding.clip.take(),
+        };
+
+        let removed_layer = match layer_descriptor {
+            Some(descriptor) => {
+                if let Some(layer) = binding.layer {
+                    self.render_scene
+                        .update_layer_descriptor(layer, descriptor)?;
+                } else {
+                    binding.layer = Some(self.render_scene.insert_layer(descriptor));
+                }
+                None
+            }
+            None => binding.layer.take(),
+        };
+
+        if !topology_changed {
+            return Ok(());
+        }
+
+        // Break the old root -> clip -> layer -> contents chain.
+        self.render_scene.set_child(binding.root, None)?;
+        if let Some(clip) = old_clip {
+            self.render_scene.set_child(clip, None)?;
+        }
+        if let Some(layer) = old_layer {
+            self.render_scene.set_child(layer, None)?;
+        }
+
+        // Rebuild the wrapper chain from inside out.
+        let mut child = binding.contents;
+        if let Some(layer) = binding.layer {
+            self.render_scene.set_child(layer, Some(child))?;
+            child = layer;
+        }
+        if let Some(clip) = binding.clip {
+            self.render_scene.set_child(clip, Some(child))?;
+            child = clip;
+        }
+        self.render_scene.set_child(binding.root, Some(child))?;
+
+        // Drop binding references before removing obsolete wrapper subtrees.
+        let stored = self
+            .render_scene
+            .host_binding_mut(id)
+            .expect("binding disappeared before wrapper removal");
+
+        stored.clip = binding.clip;
+        stored.layer = binding.layer;
+
+        if let Some(clip) = removed_clip {
+            self.render_scene.remove_subtree(clip)?;
+        }
+
+        if let Some(layer) = removed_layer {
+            self.render_scene.remove_subtree(layer)?;
         }
 
         Ok(())
@@ -785,12 +909,13 @@ impl UiArena {
         self.create_host_render_binding(id)
             .expect("failed to create host render binding");
         self.refresh_taffy_context(id);
-        self.mark_work(
-            id,
-            HostWorkFlags::RECALC_STYLE
-                | HostWorkFlags::RECALC_LAYOUT
-                | HostWorkFlags::REBUILD_PAINT,
-        );
+        let mut work = HostWorkFlags::RECALC_STYLE
+            | HostWorkFlags::RECALC_LAYOUT
+            | HostWorkFlags::REBUILD_PAINT;
+        if self.nodes[id].node_type == WidgetType::Canvas {
+            work |= HostWorkFlags::SHAPE_CHANGE;
+        }
+        self.mark_work(id, work);
 
         id
     }
@@ -1710,12 +1835,9 @@ impl UiArena {
 
         {
             let node = self.nodes.get_mut(id).expect("reused node missing");
+
             node.key = key;
             node.new_props_hash = props_hash;
-
-            if node.node_type != widget.node_type() {
-                flags |= WidgetUpdateFlags::TREE;
-            }
 
             let widget_flags = node.widget.update_from(&widget);
 
@@ -1883,9 +2005,39 @@ impl UiArena {
                     constraints,
                     props.style.into(),
                     props.paragraph,
+                    props.text_box,
                     font_context,
                 );
-                measurer.simple_doc(node.id, input);
+                measurer.get_or_shape_slot(node.id, TextLayoutSlot::PRIMARY, input);
+            }
+            WidgetType::Canvas => {
+                let commands = node.widget.with_widgets(|widget| match widget {
+                    Widgets::Canvas(canvas) => canvas.controller.scene(),
+                    _ => unreachable!("Canvas node must hold a CanvasWidget"),
+                });
+                let requests: Vec<_> = commands
+                    .commands()
+                    .iter()
+                    .filter_map(|command| match command {
+                        VectorCommand::TextBox { id, bounds, props } => {
+                            Some((canvas_text_slot(*id), *bounds, props.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                measurer.retain_direct_slots(node.id, requests.iter().map(|(slot, _, _)| *slot));
+                let font_context = measurer.backend().epoch();
+                for (slot, bounds, props) in requests {
+                    let input = TextLayoutInput::new(
+                        props.text,
+                        TextLayoutConstraints::max_width(bounds.width.max(0.0)),
+                        props.style.into(),
+                        props.paragraph,
+                        props.text_box,
+                        font_context,
+                    );
+                    measurer.get_or_shape_slot(node.id, slot, input);
+                }
             }
             _ => {
                 return;
@@ -1900,19 +2052,34 @@ impl Default for UiArena {
     }
 }
 
+fn layer_descriptor_from_style(style: &ComputedStyle, bounds: Rect) -> Option<LayerDescriptor> {
+    let descriptor = LayerDescriptor {
+        bounds: Some(bounds),
+        backdrop_style: style.effect.backdrop.clone(),
+        effects: style.effect.effects.clone(),
+        ..Default::default()
+    };
+
+    descriptor.requires_isolation().then_some(descriptor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::event_system::callbacks::EventHandlers;
     use crate::event_system::translator::EventTranslator;
+    use crate::render::RenderNodeKind;
     use crate::text::testing::ZeroTextBackend;
-    use crate::widgets::{WidgetI, container, text_input};
+    use crate::widgets::{CanvasController, WidgetI, canvas, container, text_input, z_stack};
     use std::time::{Duration, Instant};
     use xui_animation::{Easing, Transition};
     use xui_interface::events::{
         Modifiers, PointerButtons, PointerKind, RawPointerMove, XuiPointerId,
     };
-    use xui_interface::{Color, ComputedColorStyle, Style, WidgetState};
+    use xui_interface::{
+        Affine, CanvasTextId, Color, ComputedColorStyle, PathBuilder, PathFill, Style, TextProps,
+        VectorSceneBuilder, WidgetState,
+    };
 
     fn create_host(arena: &mut UiArena, widget: WidgetI) -> NodeId {
         let parent = arena.root();
@@ -1940,6 +2107,52 @@ mod tests {
             modifiers: Modifiers::default(),
             timestamp: Instant::now(),
         })
+    }
+
+    #[test]
+    fn canvas_text_slots_shape_on_mount_reuse_by_id_and_remove_when_stale() {
+        let text_id = CanvasTextId::new(9);
+        let text_bounds = Rect::new(4.0, 5.0, 80.0, 30.0);
+        let mut initial_scene = VectorSceneBuilder::new();
+        initial_scene.text_box(text_id, text_bounds, TextProps::new("stable"));
+        let controller = CanvasController::with_scene(initial_scene.build());
+        let mut arena = UiArena::new();
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        let node = create_host(
+            &mut arena,
+            WidgetI::new(canvas(controller.clone()).style(Style::new().width(100.0).height(50.0))),
+        );
+
+        arena.update_tree(Size::new(200.0, 100.0), &mut measurer);
+        let slot = canvas_text_slot(text_id);
+        let first = measurer
+            .active_slot(node, slot)
+            .expect("canvas text should shape during initial mount");
+
+        let mut path = PathBuilder::new();
+        path.move_to(Point::new(0.0, 0.0))
+            .line_to(Point::new(10.0, 10.0));
+        let mut reordered = VectorSceneBuilder::new();
+        reordered
+            .fill_path(path.build(), Affine::IDENTITY, PathFill::new(Color::BLACK))
+            .text_box(text_id, text_bounds, TextProps::new("stable"));
+        controller.set_scene(reordered.build());
+        update_host(
+            &mut arena,
+            node,
+            WidgetI::new(canvas(controller.clone()).style(Style::new().width(100.0).height(50.0))),
+        );
+        arena.update_tree(Size::new(200.0, 100.0), &mut measurer);
+        assert_eq!(measurer.active_slot(node, slot), Some(first));
+
+        controller.clear();
+        update_host(
+            &mut arena,
+            node,
+            WidgetI::new(canvas(controller).style(Style::new().width(100.0).height(50.0))),
+        );
+        arena.update_tree(Size::new(200.0, 100.0), &mut measurer);
+        assert!(measurer.direct_unit(node, slot).is_none());
     }
 
     fn assert_background_near(style: &ComputedStyle, expected: Color) {
@@ -1970,7 +2183,8 @@ mod tests {
                     crate::render::BuiltItem::Draw(crate::render::BuiltDraw::Shape(shape)) => {
                         *found = shape.primitive.fill;
                     }
-                    crate::render::BuiltItem::Layer(instance) => {
+                    crate::render::BuiltItem::Layer(instance_id) => {
+                        let instance = frame.layer_instance(*instance_id).expect("built instance");
                         visit(frame, instance.layer, found);
                     }
                     _ => {}
@@ -2000,6 +2214,9 @@ mod tests {
         let scroll = HostWorkFlags::from_style_diff(StyleDiffFlags::SCROLL);
         assert!(scroll.contains(HostWorkFlags::RECALC_LAYOUT));
         assert!(scroll.contains(HostWorkFlags::REBUILD_PAINT));
+
+        let effect = HostWorkFlags::from_style_diff(StyleDiffFlags::EFFECT);
+        assert_eq!(effect, HostWorkFlags::SYNC_RENDER);
     }
 
     #[test]
@@ -2491,9 +2708,133 @@ mod tests {
     }
 
     #[test]
-    fn host_render_scaffold_lazily_creates_and_retains_optional_branches() {
-        use crate::render::RenderNodeKind;
+    fn z_stack_uses_declaration_order_for_paint_and_reverse_order_for_hit_testing() {
+        let mut arena = UiArena::new();
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        let stack = create_host(
+            &mut arena,
+            WidgetI::new(z_stack().style(Style::new().width(100.0).height(100.0))),
+        );
+        let child = |arena: &mut UiArena| {
+            let widget = WidgetI::new(container().style(Style::new().width(100.0).height(100.0)));
+            let id = arena.create_node(
+                widget.key(),
+                widget.props_hash(),
+                widget,
+                EventHandlers::default(),
+            );
+            arena.append_child(stack, id);
+            id
+        };
+        let back = child(&mut arena);
+        let front = child(&mut arena);
 
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+        let branch = arena
+            .render_scene
+            .host_binding(stack)
+            .unwrap()
+            .children
+            .unwrap();
+        assert_eq!(
+            arena.render_scene.children(branch).unwrap(),
+            &[
+                arena.render_scene.host_binding(back).unwrap().root,
+                arena.render_scene.host_binding(front).unwrap().root,
+            ]
+        );
+        assert_eq!(arena.hit_test(Point::new(10.0, 10.0)), Some(front));
+    }
+
+    #[test]
+    fn backdrop_style_maintains_stable_clip_and_layer_scaffold() {
+        let mut arena = UiArena::new();
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        let widget = |sigma, clip| {
+            let style = Style::new()
+                .width(80.0)
+                .height(40.0)
+                .border_radius(12.0)
+                .clip(clip);
+            let style = if sigma > 0.0 {
+                style.backdrop_blur(sigma)
+            } else {
+                style.no_backdrop()
+            };
+            WidgetI::new(container().style(style))
+        };
+        let id = create_host(&mut arena, widget(18.0, true));
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+
+        let first = arena.render_scene.host_binding(id).unwrap().clone();
+        let clip = first.clip.expect("clip wrapper must be created");
+        let layer = first.layer.expect("backdrop layer must be created");
+        let RenderNodeKind::Clip(clip_node) = &arena.render_scene.node(clip).unwrap().kind else {
+            panic!("clip binding must reference a clip node");
+        };
+        assert!(matches!(
+            clip_node.clip,
+            ClipShape::RoundedRect { radius: 12.0, .. }
+        ));
+        assert_eq!(clip_node.child, Some(layer));
+        let RenderNodeKind::Layer(layer_node) = &arena.render_scene.node(layer).unwrap().kind
+        else {
+            panic!("layer binding must reference a layer node");
+        };
+        assert_eq!(
+            layer_node.descriptor.bounds,
+            Some(Rect::new(0.0, 0.0, 80.0, 40.0))
+        );
+        let backdrop = layer_node.descriptor.backdrop_style.as_ref().unwrap();
+        assert_eq!(backdrop.mask, xui_interface::ComputedBackdropMask::None);
+        assert!(matches!(
+            backdrop.filters.as_ref(),
+            [xui_interface::ComputedBackdropFilter::Blur {
+                sigma_x: 18.0,
+                sigma_y: 18.0,
+                ..
+            }]
+        ));
+
+        update_host(&mut arena, id, widget(9.0, true));
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        let updated = arena.render_scene.host_binding(id).unwrap().clone();
+        assert_eq!(updated.clip, Some(clip));
+        assert_eq!(updated.layer, Some(layer));
+        let RenderNodeKind::Layer(layer_node) = &arena.render_scene.node(layer).unwrap().kind
+        else {
+            unreachable!();
+        };
+        assert!(matches!(
+            layer_node
+                .descriptor
+                .backdrop_style
+                .as_ref()
+                .unwrap()
+                .filters
+                .as_ref(),
+            [xui_interface::ComputedBackdropFilter::Blur {
+                sigma_x: 9.0,
+                sigma_y: 9.0,
+                ..
+            }]
+        ));
+
+        update_host(&mut arena, id, widget(9.0, false));
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        let unclipped = arena.render_scene.host_binding(id).unwrap().clone();
+        assert_eq!(unclipped.clip, None);
+        assert_eq!(unclipped.layer, Some(layer));
+
+        update_host(&mut arena, id, widget(0.0, false));
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        let disabled = arena.render_scene.host_binding(id).unwrap();
+        assert_eq!(disabled.clip, None);
+        assert_eq!(disabled.layer, None);
+    }
+
+    #[test]
+    fn host_render_scaffold_retains_children_and_releases_transient_branches() {
         let mut arena = UiArena::new();
         let mut measurer = TextHost::new(ZeroTextBackend);
         let base_style = Style::new().width(50.0).height(50.0);
@@ -2563,29 +2904,87 @@ mod tests {
         update_host(
             &mut arena,
             parent,
-            WidgetI::new(container().style(base_style)),
+            WidgetI::new(
+                container().style(
+                    base_style
+                        .clone()
+                        .scroll_vertical()
+                        .scrollbar_visibility(ScrollbarVisibilityStyle::Hidden),
+                ),
+            ),
+        );
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+
+        let hidden = arena.render_scene.host_binding(parent).unwrap();
+        assert_eq!(hidden.children, Some(children));
+        assert_eq!(hidden.scroll_transform, Some(scroll_transform));
+        assert_eq!(hidden.overlay, None);
+        assert!(arena.render_scene.contains(scroll_transform));
+        assert!(!arena.render_scene.contains(overlay));
+        assert_eq!(
+            arena.render_scene.children(hidden.contents).unwrap(),
+            &[hidden.paint, scroll_transform]
+        );
+
+        update_host(
+            &mut arena,
+            parent,
+            WidgetI::new(container().style(base_style.clone())),
         );
         arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
 
         let disabled = arena.render_scene.host_binding(parent).unwrap();
         assert_eq!(disabled.children, Some(children));
-        assert_eq!(disabled.scroll_transform, Some(scroll_transform));
-        assert_eq!(disabled.overlay, Some(overlay));
-        let RenderNodeKind::Transform(transform) =
-            &arena.render_scene.node(scroll_transform).unwrap().kind
-        else {
-            panic!("expected sticky scroll transform");
-        };
-        assert_eq!(transform.transform, Affine::IDENTITY);
-        assert!(arena.render_scene.children(overlay).unwrap().is_empty());
+        assert_eq!(disabled.scroll_transform, None);
+        assert_eq!(disabled.overlay, None);
+        assert_eq!(
+            arena.render_scene.children(disabled.contents).unwrap(),
+            &[disabled.paint, children]
+        );
+        assert!(!arena.render_scene.contains(scroll_transform));
+        assert!(!arena.render_scene.contains(overlay));
+        assert!(arena.frame_properties.transform(scroll_transform).is_none());
 
         arena.set_children(parent, Vec::new());
         arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
         let empty = arena.render_scene.host_binding(parent).unwrap();
         assert_eq!(empty.children, Some(children));
-        assert_eq!(empty.scroll_transform, Some(scroll_transform));
-        assert_eq!(empty.overlay, Some(overlay));
+        assert_eq!(empty.scroll_transform, None);
+        assert_eq!(empty.overlay, None);
         assert!(arena.render_scene.children(children).unwrap().is_empty());
+
+        update_host(
+            &mut arena,
+            parent,
+            WidgetI::new(
+                container().style(
+                    base_style
+                        .scroll_vertical()
+                        .scrollbar_visibility(ScrollbarVisibilityStyle::Always),
+                ),
+            ),
+        );
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+
+        let restored = arena.render_scene.host_binding(parent).unwrap();
+        let restored_scroll_transform = restored
+            .scroll_transform
+            .expect("scroll transform was recreated");
+        let restored_overlay = restored.overlay.expect("overlay was recreated");
+        assert_ne!(restored_scroll_transform, scroll_transform);
+        assert_ne!(restored_overlay, overlay);
+        assert_eq!(restored.children, Some(children));
+        assert_eq!(
+            arena.render_scene.children(restored.contents).unwrap(),
+            &[restored.paint, restored_scroll_transform, restored_overlay]
+        );
+        assert_eq!(
+            arena
+                .render_scene
+                .children(restored_scroll_transform)
+                .unwrap(),
+            &[children]
+        );
     }
 
     // #[test]
@@ -2662,16 +3061,19 @@ fn measure_layout_context<T: TextBackend>(
                 };
 
                 let font_context = measurer.backend().epoch();
-                let t = &props.text.as_str();
                 let input = TextLayoutInput::new(
                     props.text,
                     constraints,
                     props.style.into(),
                     props.paragraph,
+                    props.text_box,
                     font_context,
                 );
-                let layout = measurer.simple_doc(*node_id, input);
-                let size = layout.kind.size();
+                let handle = measurer.get_or_shape_slot(*node_id, TextLayoutSlot::PRIMARY, input);
+                let size = measurer
+                    .layout(handle)
+                    .expect("freshly shaped text layout must be resident")
+                    .size();
                 return tf::Size {
                     width: known_dimensions.width.unwrap_or(size.width),
                     height: known_dimensions.height.unwrap_or(size.height),
@@ -2865,17 +3267,3 @@ fn render_scrollbar_part(
         }))
         .expect("scrollbar render tree must remain valid");
 }
-
-// let max_width = match known_dimensions.width {
-//     Some(width) => Some(width),
-//     None => match available_space.width {
-//         tf::AvailableSpace::Definite(width) => Some(width),
-//         tf::AvailableSpace::MinContent => Some(0.0),
-//         tf::AvailableSpace::MaxContent => None,
-//     },
-// };
-
-// let constraints = match max_width {
-//     Some(width) => TextLayoutConstraints::max_width(width),
-//     None => TextLayoutConstraints::UNBOUNDED,
-// };

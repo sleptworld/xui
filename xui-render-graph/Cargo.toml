@@ -1,0 +1,14 @@
+[package]
+name = "xui-render-graph"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+# xui-adapter = ["dep:xui"]
+
+[dependencies]
+blake3 = { workspace = true }
+thiserror = { workspace = true }
+xui-interface = { path = "../xui-interface" }
+# xui = { path = "../xui", optional = true }

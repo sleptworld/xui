@@ -1,6 +1,6 @@
 use cosmic_text::{
-    Attrs, Buffer, CacheKey, Family, FontSystem, Metrics, Shaping, Style as CosmicStyle,
-    SwashCache, Weight, fontdb,
+    Align, Attrs, Buffer, CacheKey, Ellipsize, EllipsizeHeightLimit, Family, FontSystem, Metrics,
+    Shaping, Style as CosmicStyle, SwashCache, Weight, Wrap, fontdb,
 };
 use std::sync::Arc;
 use xui_interface::{ComputedTextStyle, Point, Rect, text::*};
@@ -65,6 +65,14 @@ impl CosmicEngine {
         buffer: &mut Buffer,
         input: TextLayoutInput,
     ) -> ParagraphLayout<CacheKey> {
+        if input.text_box_style.max_lines == Some(0) {
+            return ParagraphLayout {
+                lines: Vec::new(),
+                runs: Vec::new(),
+                glyphs: Vec::new(),
+                clusters: Vec::new(),
+            };
+        }
         let metrics = Metrics::new(
             input.default_style.font_size,
             line_height(
@@ -72,14 +80,49 @@ impl CosmicEngine {
                 input.default_style.font_size,
             ),
         );
-        buffer.set_metrics_and_size(metrics, width_for_constraints(input.constraints), None);
+        let width = width_for_constraints(input.constraints);
+        let wrap = wrap_for_paragraph(&input.paragraph_style);
+        let max_lines = input.text_box_style.max_lines;
+        let height = match (input.text_box_style.overflow, max_lines) {
+            (TextOverflow::Clip, Some(lines)) => Some(metrics.line_height * lines as f32),
+            _ => None,
+        };
+        let ellipsize = match (input.text_box_style.overflow, max_lines, wrap, width) {
+            (TextOverflow::Ellipsis, Some(lines), _, _) => {
+                Ellipsize::End(EllipsizeHeightLimit::Lines(lines))
+            }
+            (TextOverflow::Ellipsis, None, Wrap::None, Some(_)) => {
+                Ellipsize::End(EllipsizeHeightLimit::Lines(1))
+            }
+            _ => Ellipsize::None,
+        };
+        buffer.set_wrap(wrap);
+        buffer.set_ellipsize(ellipsize);
+        buffer.set_metrics_and_size(metrics, width, height);
 
         let attrs = attrs_for_style(&input.default_style);
-        buffer.set_text(input.text.as_str(), &attrs, Shaping::Advanced, None);
+        let text_len = input.text.as_str().len();
+        buffer.set_text(
+            input.text.as_str(),
+            &attrs,
+            Shaping::Advanced,
+            align_for_paragraph(input.paragraph_style.align),
+        );
         buffer.shape_until_scroll(&mut self.font_system, false);
 
         let line_bases = compute_line_base_byte_offsets(input.text.as_str());
-        self.layout_paragraph_from_buffer(buffer, &line_bases)
+        let mut layout = self.layout_paragraph_from_buffer(buffer, &line_bases);
+        if input.text_box_style.overflow == TextOverflow::Clip {
+            if let Some(max_lines) = input.text_box_style.max_lines {
+                truncate_layout_lines(&mut layout, max_lines);
+            }
+        }
+        if ellipsize != Ellipsize::None {
+            if let Some(last) = layout.lines.last_mut() {
+                last.ellipsized = last.text_range.end.raw < text_len;
+            }
+        }
+        layout
     }
 
     fn layout_paragraph_from_buffer(
@@ -291,6 +334,47 @@ impl CosmicEngine {
 
         Some(SystemFontHandle(raw))
     }
+}
+
+fn align_for_paragraph(align: TextAlign) -> Option<Align> {
+    match align {
+        TextAlign::Start => None,
+        TextAlign::Center => Some(Align::Center),
+        TextAlign::End => Some(Align::End),
+        TextAlign::Justify => Some(Align::Justified),
+    }
+}
+
+fn wrap_for_paragraph(style: &ParagraphStyle) -> Wrap {
+    match style.white_space {
+        WhiteSpace::NoWrap | WhiteSpace::Pre => Wrap::None,
+        WhiteSpace::Normal | WhiteSpace::PreWrap => match style.overflow_wrap {
+            OverflowWrap::Normal => Wrap::Word,
+            OverflowWrap::Anywhere => Wrap::Glyph,
+            OverflowWrap::BreakWord => Wrap::WordOrGlyph,
+        },
+    }
+}
+
+fn truncate_layout_lines<K>(layout: &mut ParagraphLayout<K>, max_lines: usize) {
+    if layout.lines.len() <= max_lines {
+        return;
+    }
+    let (run_end, glyph_end, cluster_end) = layout
+        .lines
+        .get(max_lines.wrapping_sub(1))
+        .map(|line| {
+            (
+                line.run_range.end,
+                line.glyph_range.end,
+                line.cluster_range.end,
+            )
+        })
+        .unwrap_or((0, 0, 0));
+    layout.lines.truncate(max_lines);
+    layout.runs.truncate(run_end);
+    layout.glyphs.truncate(glyph_end);
+    layout.clusters.truncate(cluster_end);
 }
 
 impl Default for CosmicEngine {
@@ -555,4 +639,110 @@ fn compute_line_base_byte_offsets(text: &str) -> Vec<usize> {
     }
 
     bases
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn layout(
+        text: &'static str,
+        width: f32,
+        paragraph: ParagraphStyle,
+        text_box: TextBoxStyle,
+    ) -> ParagraphLayout<CacheKey> {
+        let mut engine = CosmicEngine::default();
+        let mut state = engine.create_state();
+        let epoch = engine.epoch();
+        engine.layout_paragraph(
+            &mut state,
+            TextLayoutInput::new(
+                text.into(),
+                TextLayoutConstraints::max_width(width),
+                TextStyle::default().into(),
+                paragraph,
+                text_box,
+                epoch,
+            ),
+        )
+    }
+
+    #[test]
+    fn paragraph_options_map_to_cosmic_layout_modes() {
+        assert_eq!(align_for_paragraph(TextAlign::Start), None);
+        assert_eq!(
+            align_for_paragraph(TextAlign::Center),
+            Some(cosmic_text::Align::Center)
+        );
+        assert_eq!(
+            align_for_paragraph(TextAlign::End),
+            Some(cosmic_text::Align::End)
+        );
+        assert_eq!(
+            align_for_paragraph(TextAlign::Justify),
+            Some(cosmic_text::Align::Justified)
+        );
+
+        let mut paragraph = ParagraphStyle::default();
+        paragraph.white_space = WhiteSpace::NoWrap;
+        assert_eq!(wrap_for_paragraph(&paragraph), Wrap::None);
+        paragraph.white_space = WhiteSpace::Normal;
+        paragraph.overflow_wrap = OverflowWrap::Normal;
+        assert_eq!(wrap_for_paragraph(&paragraph), Wrap::Word);
+        paragraph.overflow_wrap = OverflowWrap::Anywhere;
+        assert_eq!(wrap_for_paragraph(&paragraph), Wrap::Glyph);
+        paragraph.overflow_wrap = OverflowWrap::BreakWord;
+        assert_eq!(wrap_for_paragraph(&paragraph), Wrap::WordOrGlyph);
+    }
+
+    #[test]
+    fn max_lines_zero_produces_an_empty_layout() {
+        let mut text_box = TextBoxStyle::default();
+        text_box.max_lines = Some(0);
+        let layout = layout(
+            "this text must not be shaped",
+            80.0,
+            ParagraphStyle::default(),
+            text_box,
+        );
+        assert!(layout.lines.is_empty());
+        assert!(layout.glyphs.is_empty());
+    }
+
+    #[test]
+    fn wrapping_clip_and_ellipsis_limit_visible_lines() {
+        let text = "one two three four five six seven eight nine ten";
+        let wrapped = layout(
+            text,
+            55.0,
+            ParagraphStyle::default(),
+            TextBoxStyle::default(),
+        );
+        assert!(wrapped.lines.len() > 2);
+
+        let mut clipped_box = TextBoxStyle::default();
+        clipped_box.max_lines = Some(2);
+        let clipped = layout(text, 55.0, ParagraphStyle::default(), clipped_box);
+        assert_eq!(clipped.lines.len(), 2);
+        assert!(!clipped.lines.last().unwrap().ellipsized);
+
+        let mut ellipsis_box = TextBoxStyle::default();
+        ellipsis_box.max_lines = Some(2);
+        ellipsis_box.overflow = TextOverflow::Ellipsis;
+        let ellipsized = layout(text, 55.0, ParagraphStyle::default(), ellipsis_box);
+        assert_eq!(ellipsized.lines.len(), 2);
+        assert!(ellipsized.lines.last().unwrap().ellipsized);
+    }
+
+    #[test]
+    fn no_wrap_ellipsis_stays_on_one_line() {
+        let mut paragraph = ParagraphStyle::default();
+        paragraph.white_space = WhiteSpace::NoWrap;
+        let mut text_box = TextBoxStyle::default();
+        text_box.overflow = TextOverflow::Ellipsis;
+        let value = layout("a deliberately long single line", 45.0, paragraph, text_box);
+        assert_eq!(value.lines.len(), 1);
+        assert!(value.lines[0].ellipsized);
+        assert!(value.lines[0].width <= 45.0);
+    }
 }
