@@ -18,6 +18,69 @@ use crate::style::ComputedStyle;
 
 macro_rules! event_handler_methods {
     () => {
+        pub fn focusable(mut self, focusable: bool) -> Self {
+            self.event_handlers.focus = self.event_handlers.focus.focusable(focusable);
+            self
+        }
+
+        pub fn tab_index(mut self, tab_index: i32) -> Self {
+            self.event_handlers.focus = self.event_handlers.focus.tab_index(tab_index);
+            self
+        }
+
+        pub fn focus_handle(mut self, handle: crate::focus::FocusHandle) -> Self {
+            self.event_handlers.focus_handle = Some(handle);
+            self
+        }
+
+        pub fn accessibility(
+            mut self,
+            accessibility: xui_interface::AccessibilityProperties,
+        ) -> Self {
+            self.event_handlers.accessibility = accessibility;
+            self
+        }
+
+        pub fn accessibility_role(mut self, role: xui_interface::AccessibilityRole) -> Self {
+            self.event_handlers.accessibility.role = Some(role);
+            self
+        }
+
+        pub fn accessibility_id(mut self, id: impl Into<String>) -> Self {
+            self.event_handlers.accessibility.id = Some(id.into());
+            self
+        }
+
+        pub fn accessibility_label(mut self, label: impl Into<String>) -> Self {
+            self.event_handlers.accessibility.label = Some(label.into());
+            self
+        }
+
+        pub fn accessibility_description(mut self, description: impl Into<String>) -> Self {
+            self.event_handlers.accessibility.description = Some(description.into());
+            self
+        }
+
+        pub fn accessibility_selected(mut self, selected: bool) -> Self {
+            self.event_handlers.accessibility.selected = Some(selected);
+            self
+        }
+
+        pub fn accessibility_disabled(mut self, disabled: bool) -> Self {
+            self.event_handlers.accessibility.disabled = Some(disabled);
+            self
+        }
+
+        pub fn accessibility_controls(mut self, id: impl Into<String>) -> Self {
+            self.event_handlers.accessibility.controls = Some(id.into());
+            self
+        }
+
+        pub fn accessibility_labelled_by(mut self, id: impl Into<String>) -> Self {
+            self.event_handlers.accessibility.labelled_by = Some(id.into());
+            self
+        }
+
         pub fn shortcut(
             mut self,
             shortcut: xui_interface::Shortcut,
@@ -490,6 +553,14 @@ macro_rules! define_widgets {
         )+
 
         impl Widgets {
+            pub fn event_handlers(&self) -> &EventHandlers {
+                match self {
+                    $(
+                        Self::$name(widget) => &widget.event_handlers,
+                    )+
+                }
+            }
+
             pub fn event_handlers_mut(&mut self) -> &mut EventHandlers {
                 match self {
                     $(
@@ -653,7 +724,15 @@ impl WidgetI {
     }
 
     pub fn props_hash(&self) -> u64 {
-        self.with_widgets(|widget| widget.props_hash())
+        self.with_widgets(|widget| {
+            let handlers = widget.event_handlers();
+            props_hash(&(
+                widget.props_hash(),
+                handlers.focus,
+                &handlers.focus_handle,
+                &handlers.accessibility,
+            ))
+        })
     }
 
     pub fn text(&self) -> Option<TextContent> {

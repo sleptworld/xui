@@ -178,11 +178,11 @@ fn computed_layout_style_for_parent(
 
 fn stack_alignment(value: f32) -> tf::AlignItems {
     if value <= 0.25 {
-        tf::AlignItems::Start
+        tf::AlignItems::START
     } else if value >= 0.75 {
-        tf::AlignItems::End
+        tf::AlignItems::END
     } else {
-        tf::AlignItems::Center
+        tf::AlignItems::CENTER
     }
 }
 
@@ -233,22 +233,22 @@ fn is_main_axis(axis: Axis, parent_dire: FlexDirectionStyle) -> bool {
 #[inline]
 fn align_items(value: AlignStyle) -> tf::AlignItems {
     match value {
-        AlignStyle::Start => tf::AlignItems::Start,
-        AlignStyle::Center => tf::AlignItems::Center,
-        AlignStyle::End => tf::AlignItems::End,
-        AlignStyle::Stretch => tf::AlignItems::Stretch,
+        AlignStyle::Start => tf::AlignItems::START,
+        AlignStyle::Center => tf::AlignItems::CENTER,
+        AlignStyle::End => tf::AlignItems::END,
+        AlignStyle::Stretch => tf::AlignItems::STRETCH,
     }
 }
 
 #[inline]
 fn justify_content(value: JustifyStyle) -> tf::JustifyContent {
     match value {
-        JustifyStyle::Start => tf::JustifyContent::Start,
-        JustifyStyle::Center => tf::JustifyContent::Center,
-        JustifyStyle::End => tf::JustifyContent::End,
-        JustifyStyle::SpaceBetween => tf::JustifyContent::SpaceBetween,
-        JustifyStyle::SpaceAround => tf::JustifyContent::SpaceAround,
-        JustifyStyle::SpaceEvenly => tf::JustifyContent::SpaceEvenly,
+        JustifyStyle::Start => tf::JustifyContent::START,
+        JustifyStyle::Center => tf::JustifyContent::CENTER,
+        JustifyStyle::End => tf::JustifyContent::END,
+        JustifyStyle::SpaceBetween => tf::JustifyContent::SPACE_BETWEEN,
+        JustifyStyle::SpaceAround => tf::JustifyContent::SPACE_AROUND,
+        JustifyStyle::SpaceEvenly => tf::JustifyContent::SPACE_EVENLY,
     }
 }
 
@@ -339,8 +339,8 @@ mod tests {
             .new_with_children(
                 tf::Style {
                     display: tf::Display::Grid,
-                    align_items: Some(tf::AlignItems::Center),
-                    justify_items: Some(tf::AlignItems::Center),
+                    align_items: Some(tf::AlignItems::CENTER),
+                    justify_items: Some(tf::AlignItems::CENTER),
                     ..Default::default()
                 },
                 &[small, large],
@@ -373,8 +373,8 @@ mod tests {
             computed_style_for_widget(&stack, &parent, &theme, xui_interface::WidgetState::empty());
         let stack_style = taffy_style_for_widget(&stack, &parent, &stack_computed, false);
         assert_eq!(stack_style.display, tf::Display::Grid);
-        assert_eq!(stack_style.align_items, Some(tf::AlignItems::End));
-        assert_eq!(stack_style.justify_items, Some(tf::AlignItems::End));
+        assert_eq!(stack_style.align_items, Some(tf::AlignItems::END));
+        assert_eq!(stack_style.justify_items, Some(tf::AlignItems::END));
 
         let child = WidgetI::new(container());
         let child_computed = computed_style_for_widget(

@@ -6,6 +6,8 @@ pub mod sdf;
 mod translate;
 mod wgpu;
 
+#[cfg(feature = "skia")]
+pub use runner::skia_runner;
 pub use runner::{WinitBackendInitError, WinitRunError, WinitRunner, WinitRunnerOptions, runner};
 pub use sdf::UI_SHADER_WGSL;
 pub use translate::{
@@ -15,4 +17,9 @@ pub use translate::{
 pub use wgpu::{
     LayerCacheStats, TextureLease, TexturePool, TexturePoolError, TexturePoolOptions,
     TexturePoolStats, TextureRequest, WGPUBackend, WgpuBackendInitError, WgpuBackendOptions,
+};
+#[cfg(feature = "skia")]
+pub use xui_skia::{
+    SkiaBackend, SkiaBackendError, SkiaBackendOptions, SkiaFontId, SkiaGlyphKey,
+    SkiaLayerCacheStats, SkiaParagraphState, SkiaTextBackend,
 };

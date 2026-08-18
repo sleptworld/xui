@@ -1,9 +1,7 @@
 use std::time::{Duration, Instant};
 
 use rustc_hash::FxHashMap;
-use xui_interface::{
-    NodeId, Point, PointerButton, Translation, WidgetType, WidgetUpdateFlags, XuiPointerId,
-};
+use xui_interface::{NodeId, Point, PointerButton, Translation, WidgetUpdateFlags, XuiPointerId};
 
 use crate::tree::UiArena;
 use xui_interface::events::*;
@@ -1217,12 +1215,7 @@ fn nearest_focusable_ancestor(arena: &UiArena, target: NodeId) -> Option<NodeId>
 }
 
 fn is_focusable(arena: &UiArena, node_id: NodeId) -> bool {
-    let Some(node) = arena.node(node_id) else {
-        return false;
-    };
-
-    matches!(node.node_type, WidgetType::Button | WidgetType::TextInput)
-        || node.event_callbacks.has_focus_callbacks()
+    arena.node(node_id).is_some_and(|node| node.is_focusable())
 }
 
 fn is_draggable(arena: &UiArena, node_id: NodeId) -> bool {
@@ -1247,10 +1240,13 @@ fn next_focusable(arena: &UiArena, focused: Option<NodeId>, reverse: bool) -> Op
         };
     };
 
-    let current = focusables
-        .iter()
-        .position(|node| *node == focused)
-        .unwrap_or(0);
+    let Some(current) = focusables.iter().position(|node| *node == focused) else {
+        return if reverse {
+            focusables.last().copied()
+        } else {
+            focusables.first().copied()
+        };
+    };
     let next = if reverse {
         current
             .checked_sub(1)
@@ -1265,18 +1261,27 @@ fn next_focusable(arena: &UiArena, focused: Option<NodeId>, reverse: bool) -> Op
 fn focusable_nodes(arena: &UiArena) -> Vec<NodeId> {
     let mut out = Vec::new();
     let mut stack = vec![arena.root()];
+    let mut document_order = 0usize;
 
     while let Some(node_id) = stack.pop() {
-        if is_focusable(arena, node_id) {
-            out.push(node_id);
-        }
-
         if let Some(node) = arena.node(node_id) {
+            if node.is_sequentially_focusable() {
+                out.push((node_id, node.focus.tab_index.unwrap_or(0), document_order));
+            }
+            document_order += 1;
+
             stack.extend(node.children.iter().rev().copied());
         }
     }
 
-    out
+    out.sort_by_key(|(_, tab_index, order)| {
+        if *tab_index > 0 {
+            (0u8, *tab_index, *order)
+        } else {
+            (1u8, 0, *order)
+        }
+    });
+    out.into_iter().map(|(node, _, _)| node).collect()
 }
 
 fn node_center(arena: &UiArena, node_id: NodeId) -> Option<Point> {
@@ -1355,4 +1360,50 @@ fn scroll_acceleration_factor(magnitude: f32) -> f32 {
         / (FULL_ACCELERATION_MAGNITUDE - MIN_ACCELERATION_MAGNITUDE))
         .clamp(0.0, 1.0);
     1.0 + (MAX_ACCELERATION - 1.0) * progress
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widgets::{WidgetI, container};
+
+    fn append(arena: &mut UiArena, widget: crate::widgets::ContainerWidget) -> NodeId {
+        let widget = WidgetI::new(widget);
+        let props_hash = widget.props_hash();
+        let handlers = widget.take_event_handlers();
+        let node = arena.create_node(None, props_hash, widget, handlers);
+        arena.append_child(arena.root(), node);
+        node
+    }
+
+    #[test]
+    fn sequential_focus_uses_tab_index_and_skips_negative_values() {
+        let mut arena = UiArena::new();
+        let zero = append(&mut arena, container().tab_index(0));
+        let second = append(&mut arena, container().tab_index(2));
+        let first = append(&mut arena, container().tab_index(1));
+        let negative = append(&mut arena, container().tab_index(-1));
+        let disabled = append(&mut arena, container().focusable(false).tab_index(0));
+
+        assert_eq!(focusable_nodes(&arena), vec![first, second, zero]);
+        assert!(is_focusable(&arena, negative));
+        assert!(!is_focusable(&arena, disabled));
+    }
+
+    #[test]
+    fn tab_from_programmatic_only_focus_enters_at_order_boundary() {
+        let mut arena = UiArena::new();
+        let first = append(&mut arena, container().tab_index(0));
+        let second = append(&mut arena, container().tab_index(0));
+        let programmatic = append(&mut arena, container().tab_index(-1));
+
+        assert_eq!(
+            next_focusable(&arena, Some(programmatic), false),
+            Some(first)
+        );
+        assert_eq!(
+            next_focusable(&arena, Some(programmatic), true),
+            Some(second)
+        );
+    }
 }

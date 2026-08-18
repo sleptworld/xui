@@ -219,6 +219,7 @@ impl TextLayouter for Engine {
 
 impl Shaper for Engine {
     type State = ();
+    type FontId = u32;
     type GlyphKey = NativeGlyphKey;
 
     fn create_state(&mut self) -> Self::State {}
@@ -227,7 +228,7 @@ impl Shaper for Engine {
         &mut self,
         _state: &mut Self::State,
         input: TextLayoutInput,
-    ) -> ParagraphLayout<Self::GlyphKey> {
+    ) -> ParagraphLayout<Self::FontId, Self::GlyphKey> {
         let par =
             self.layout_text_uncached(input.text.as_str(), &input.default_style, input.constraints);
         paragraph_layout_from_par(&par, 1.0)
@@ -291,7 +292,7 @@ fn size_for_par(par: &Par) -> Size<f32> {
     Size::<f32>::new(width, height)
 }
 
-fn paragraph_layout_from_par(par: &Par, scale_factor: f32) -> ParagraphLayout<NativeGlyphKey> {
+fn paragraph_layout_from_par(par: &Par, scale_factor: f32) -> ParagraphLayout<u32, NativeGlyphKey> {
     let mut lines = Vec::new();
     let mut glyphs = Vec::new();
     let mut line_y = 0.0;

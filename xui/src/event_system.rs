@@ -98,7 +98,11 @@ impl<'a> EventContext<'a> {
     }
 
     pub fn request_focus(&mut self) {
-        self.requests.push(EventRequest::Focus(self.node_id()));
+        self.request_focus_node(self.node_id());
+    }
+
+    pub(crate) fn request_focus_node(&mut self, node: NodeId) {
+        self.requests.push(EventRequest::Focus(node));
     }
 
     pub fn clear_focus(&mut self) {

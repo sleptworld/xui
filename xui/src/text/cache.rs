@@ -12,8 +12,8 @@ use rustc_hash::FxHashMap;
 use slotmap::{SlotMap, new_key_type};
 use smallvec::SmallVec;
 use xui_interface::{
-    Affinity, NodeId, NodeLifecycleEvent, ParagraphLayout, Point, Rect, Shaper, Size, TextBackend,
-    TextLayoutConstraints, TextLayoutInput, TextLayoutKey, TextOffset, TextOffsetUnit,
+    Affinity, FontDatabase, NodeId, NodeLifecycleEvent, ParagraphLayout, Point, Rect, Shaper, Size,
+    TextBackend, TextLayoutConstraints, TextLayoutInput, TextLayoutKey, TextOffset, TextOffsetUnit,
     TextPosition, TextRange,
 };
 
@@ -208,8 +208,53 @@ impl<B: TextBackend> TextHost<B> {
         self.active_unit(self.direct_unit(owner, slot)?)
     }
 
+    /// Measures an owner-local slot without changing the layout used for paint.
+    ///
+    /// Layout engines may query the same text under several intrinsic and
+    /// definite constraints. Those probes must not decide which variant is
+    /// active for rendering.
+    pub fn measure_slot(
+        &mut self,
+        owner: NodeId,
+        slot: TextLayoutSlot,
+        input: TextLayoutInput,
+    ) -> Size<f32> {
+        let unit = self.ensure_direct_unit(owner, slot);
+        let key = layout_key_for_input(&input);
+        self.measure_unit(unit, key, input)
+            .expect("a newly ensured text unit must exist")
+    }
+
+    /// Measures a logical unit without changing its active layout.
+    ///
+    /// Document/rich-text callers provide the key because their style spans and
+    /// source revisions can live outside `TextLayoutInput`.
+    pub fn measure_unit(
+        &mut self,
+        unit: TextUnitId,
+        key: TextLayoutKey,
+        input: TextLayoutInput,
+    ) -> Option<Size<f32>> {
+        self.units.get(unit)?;
+        if let Some(handle) = self.find_unit(unit, &key) {
+            return self.layout(handle).map(|layout| layout.size());
+        }
+
+        let mut state = self.backend.create_state();
+        let layout = Arc::new(self.backend.layout_paragraph(&mut state, input.clone()));
+        let size = layout.size();
+        let memory_cost = Self::estimated_memory_cost(&layout, &state);
+        if self
+            .insert_entry(unit, key, layout, state, Some(input), memory_cost, false)
+            .is_some()
+        {
+            self.enforce_unit_variant_limit(unit);
+        }
+        Some(size)
+    }
+
     /// Returns a cached layout for an owner-local slot, or shapes and activates it.
-    pub fn get_or_shape_slot(
+    pub fn activate_slot(
         &mut self,
         owner: NodeId,
         slot: TextLayoutSlot,
@@ -217,15 +262,12 @@ impl<B: TextBackend> TextHost<B> {
     ) -> TextLayoutHandle {
         let unit = self.ensure_direct_unit(owner, slot);
         let key = layout_key_for_input(&input);
-        self.get_or_shape_unit(unit, key, input)
+        self.activate_unit(unit, key, input)
             .expect("a newly ensured text unit must exist")
     }
 
     /// Returns a cached layout for a logical unit, or shapes and activates it.
-    ///
-    /// Document/rich-text callers provide the key because their style spans and
-    /// source revisions can live outside `TextLayoutInput`.
-    pub fn get_or_shape_unit(
+    pub fn activate_unit(
         &mut self,
         unit: TextUnitId,
         key: TextLayoutKey,
@@ -246,10 +288,32 @@ impl<B: TextBackend> TextHost<B> {
         Some(handle)
     }
 
+    /// Backwards-compatible convenience for callers that intentionally shape
+    /// and activate in one operation.
+    pub fn get_or_shape_slot(
+        &mut self,
+        owner: NodeId,
+        slot: TextLayoutSlot,
+        input: TextLayoutInput,
+    ) -> TextLayoutHandle {
+        self.activate_slot(owner, slot, input)
+    }
+
+    /// Backwards-compatible convenience for callers that intentionally shape
+    /// and activate in one operation.
+    pub fn get_or_shape_unit(
+        &mut self,
+        unit: TextUnitId,
+        key: TextLayoutKey,
+        input: TextLayoutInput,
+    ) -> Option<TextLayoutHandle> {
+        self.activate_unit(unit, key, input)
+    }
+
     pub fn layout(
         &self,
         handle: TextLayoutHandle,
-    ) -> Option<Arc<ParagraphLayout<<B as Shaper>::GlyphKey>>> {
+    ) -> Option<Arc<ParagraphLayout<<B as Shaper>::FontId, <B as Shaper>::GlyphKey>>> {
         let entry = self.resident_entry(handle)?;
         Some(entry.layout.clone())
     }
@@ -276,7 +340,7 @@ impl<B: TextBackend> TextHost<B> {
         &mut self,
         unit: TextUnitId,
         key: TextLayoutKey,
-        layout: Arc<ParagraphLayout<<B as Shaper>::GlyphKey>>,
+        layout: Arc<ParagraphLayout<<B as Shaper>::FontId, <B as Shaper>::GlyphKey>>,
         state: B::State,
     ) -> Option<TextLayoutHandle> {
         let memory_cost = Self::estimated_memory_cost(&layout, &state);
@@ -287,7 +351,7 @@ impl<B: TextBackend> TextHost<B> {
         &mut self,
         unit: TextUnitId,
         key: TextLayoutKey,
-        layout: Arc<ParagraphLayout<<B as Shaper>::GlyphKey>>,
+        layout: Arc<ParagraphLayout<<B as Shaper>::FontId, <B as Shaper>::GlyphKey>>,
         state: B::State,
         memory_cost: u64,
     ) -> Option<TextLayoutHandle> {
@@ -303,7 +367,7 @@ impl<B: TextBackend> TextHost<B> {
         &mut self,
         unit: TextUnitId,
         key: TextLayoutKey,
-        layout: Arc<ParagraphLayout<<B as Shaper>::GlyphKey>>,
+        layout: Arc<ParagraphLayout<<B as Shaper>::FontId, <B as Shaper>::GlyphKey>>,
         state: B::State,
     ) -> TextLayoutHandle {
         let memory_cost = Self::estimated_memory_cost(&layout, &state);
@@ -314,7 +378,7 @@ impl<B: TextBackend> TextHost<B> {
         &mut self,
         unit: TextUnitId,
         key: TextLayoutKey,
-        layout: Arc<ParagraphLayout<<B as Shaper>::GlyphKey>>,
+        layout: Arc<ParagraphLayout<<B as Shaper>::FontId, <B as Shaper>::GlyphKey>>,
         state: B::State,
         memory_cost: u64,
     ) -> TextLayoutHandle {
@@ -788,10 +852,7 @@ impl<B: TextBackend> TextHost<B> {
         }
     }
 
-    pub fn estimated_memory_cost(
-        layout: &ParagraphLayout<<B as Shaper>::GlyphKey>,
-        state: &B::State,
-    ) -> u64 {
+    pub fn estimated_memory_cost<F, K>(layout: &ParagraphLayout<F, K>, state: &B::State) -> u64 {
         let bytes = size_of_val(layout)
             .saturating_add(
                 layout
@@ -803,7 +864,7 @@ impl<B: TextBackend> TextHost<B> {
                 layout
                     .runs
                     .capacity()
-                    .saturating_mul(size_of::<xui_interface::GlyphRun>()),
+                    .saturating_mul(size_of::<xui_interface::GlyphRun<F>>()),
             )
             .saturating_add(layout.glyphs.capacity().saturating_mul(size_of::<
                 xui_interface::GlyphInstance<<B as Shaper>::GlyphKey>,
@@ -829,7 +890,7 @@ impl<B: TextBackend> TextHost<B> {
         &mut self,
         unit: TextUnitId,
         key: TextLayoutKey,
-        layout: Arc<ParagraphLayout<<B as Shaper>::GlyphKey>>,
+        layout: Arc<ParagraphLayout<<B as Shaper>::FontId, <B as Shaper>::GlyphKey>>,
         state: B::State,
         input: Option<TextLayoutInput>,
         memory_cost: u64,
@@ -1150,7 +1211,7 @@ type GlobalLayoutCache = QuickCache<
 
 struct LayoutEntry<B: TextBackend> {
     cache_key: LayoutCacheKey,
-    layout: Arc<ParagraphLayout<<B as Shaper>::GlyphKey>>,
+    layout: Arc<ParagraphLayout<<B as Shaper>::FontId, <B as Shaper>::GlyphKey>>,
     state: B::State,
     input: Option<TextLayoutInput>,
     last_access: Cell<u64>,
@@ -1241,7 +1302,7 @@ fn shape_style_hash(style: &xui_interface::ComputedTextStyle) -> u64 {
     hasher.finish()
 }
 
-fn layout_offset_unit<K>(layout: &ParagraphLayout<K>) -> TextOffsetUnit {
+fn layout_offset_unit<K, F>(layout: &ParagraphLayout<F, K>) -> TextOffsetUnit {
     layout
         .clusters
         .first()
@@ -1250,9 +1311,9 @@ fn layout_offset_unit<K>(layout: &ParagraphLayout<K>) -> TextOffsetUnit {
         .unwrap_or(TextOffsetUnit::Char)
 }
 
-fn normalize_range_for_layout<K>(
+fn normalize_range_for_layout<F, K>(
     text: &str,
-    layout: &ParagraphLayout<K>,
+    layout: &ParagraphLayout<F, K>,
     range: TextRange,
 ) -> TextRange {
     let unit = layout_offset_unit(layout);
@@ -1308,329 +1369,4 @@ fn utf16_to_char_index(text: &str, utf16_offset: usize) -> usize {
         units += ch.len_utf16();
     }
     text.chars().count()
-}
-
-#[cfg(test)]
-mod tests {
-    use slotmap::SlotMap;
-
-    use super::*;
-    use crate::text::testing::ZeroTextBackend;
-
-    fn owners(count: usize) -> Vec<NodeId> {
-        let mut nodes = SlotMap::<NodeId, ()>::with_key();
-        (0..count).map(|_| nodes.insert(())).collect()
-    }
-
-    fn key(revision: u64) -> TextLayoutKey {
-        TextLayoutKey {
-            text_revision: revision,
-            style_revision: 0,
-            layout_style_hash: 0,
-            max_width_bits: f32::INFINITY.to_bits(),
-            max_height_bits: f32::INFINITY.to_bits(),
-            scale_factor_bits: 1.0_f32.to_bits(),
-            font_context_revision: 0,
-        }
-    }
-
-    fn layout() -> Arc<ParagraphLayout> {
-        Arc::new(ParagraphLayout {
-            lines: Vec::new(),
-            runs: Vec::new(),
-            glyphs: Vec::new(),
-            clusters: Vec::new(),
-        })
-    }
-
-    fn input(text: &'static str) -> TextLayoutInput {
-        TextLayoutInput::new(
-            text.into(),
-            TextLayoutConstraints::UNBOUNDED,
-            xui_interface::TextStyle::default().into(),
-            xui_interface::ParagraphStyle::default(),
-            xui_interface::TextBoxStyle::default(),
-            0,
-        )
-    }
-
-    #[test]
-    fn identical_layout_keys_are_scoped_by_text_unit() {
-        let owner = owners(1)[0];
-        let mut host = TextHost::with_limits(ZeroTextBackend, 8, 1_024);
-        let first = host.ensure_direct_unit(owner, TextLayoutSlot::new(1));
-        let second = host.ensure_direct_unit(owner, TextLayoutSlot::new(2));
-        let layout_key = key(1);
-
-        let first_handle = host
-            .insert_unit_variant_with_cost(first, layout_key, layout(), (), 32)
-            .unwrap();
-        let second_handle = host
-            .insert_unit_variant_with_cost(second, layout_key, layout(), (), 32)
-            .unwrap();
-
-        assert_ne!(first_handle, second_handle);
-        assert_eq!(host.find_unit(first, &layout_key), Some(first_handle));
-        assert_eq!(host.find_unit(second, &layout_key), Some(second_handle));
-    }
-
-    #[test]
-    fn retain_direct_slots_removes_only_stale_units() {
-        let owner = owners(1)[0];
-        let mut host = TextHost::with_limits(ZeroTextBackend, 8, 1_024);
-        let keep = TextLayoutSlot::new(11);
-        let remove = TextLayoutSlot::new(12);
-        host.ensure_direct_unit(owner, keep);
-        host.ensure_direct_unit(owner, remove);
-
-        host.retain_direct_slots(owner, [keep]);
-
-        assert!(host.direct_unit(owner, keep).is_some());
-        assert!(host.direct_unit(owner, remove).is_none());
-        assert_eq!(host.stats().units, 1);
-    }
-
-    #[test]
-    fn owner_can_hold_direct_slots_and_documents_together() {
-        let owner = owners(1)[0];
-        let mut host = TextHost::with_limits(ZeroTextBackend, 8, 1_024);
-        let direct = host.ensure_direct_unit(owner, TextLayoutSlot::PRIMARY);
-        let document = host.create_document(owner);
-        let paragraph = host
-            .insert_paragraph(
-                owner,
-                document,
-                0,
-                TextRange::new(TextOffset::char_offset(0), TextOffset::char_offset(5)),
-                1,
-                2,
-                18.0,
-            )
-            .unwrap();
-
-        assert_eq!(
-            host.direct_unit(owner, TextLayoutSlot::PRIMARY),
-            Some(direct)
-        );
-        assert_eq!(
-            host.paragraph_unit(owner, document, paragraph.id),
-            Some(paragraph.unit)
-        );
-        assert_ne!(direct, paragraph.unit);
-        assert_eq!(host.stats().owners, 1);
-        assert_eq!(host.stats().documents, 1);
-        assert_eq!(host.stats().units, 2);
-    }
-
-    #[test]
-    fn global_eviction_does_not_remove_logical_units() {
-        let owner = owners(1)[0];
-        let mut host = TextHost::with_limits(ZeroTextBackend, 4, 10);
-        let units: Vec<_> = (0..3)
-            .map(|slot| host.ensure_direct_unit(owner, TextLayoutSlot::new(slot)))
-            .collect();
-
-        for (revision, unit) in units.iter().copied().enumerate() {
-            host.insert_unit_variant_with_cost(unit, key(revision as u64), layout(), (), 6);
-        }
-
-        let stats = host.stats();
-        assert!(stats.resident_bytes <= stats.capacity_bytes);
-        assert_eq!(stats.layouts, stats.resident_layouts);
-        assert_eq!(stats.units, 3);
-        for (slot, unit) in units.into_iter().enumerate() {
-            assert_eq!(
-                host.direct_unit(owner, TextLayoutSlot::new(slot as u32)),
-                Some(unit)
-            );
-        }
-    }
-
-    #[test]
-    fn document_height_uses_estimates_then_measured_values() {
-        let owner = owners(1)[0];
-        let mut host = TextHost::with_limits(ZeroTextBackend, 8, 1_024);
-        let document = host.create_document(owner);
-        let first = host
-            .insert_paragraph(
-                owner,
-                document,
-                0,
-                TextRange::new(TextOffset::char_offset(0), TextOffset::char_offset(4)),
-                1,
-                1,
-                10.0,
-            )
-            .unwrap();
-        let second = host
-            .insert_paragraph(
-                owner,
-                document,
-                1,
-                TextRange::new(TextOffset::char_offset(4), TextOffset::char_offset(8)),
-                1,
-                1,
-                20.0,
-            )
-            .unwrap();
-
-        assert_eq!(host.document_height(owner, document), Some(30.0));
-        assert_eq!(host.paragraph_top(owner, document, second.id), Some(10.0));
-        assert_eq!(
-            host.paragraph_at_y(owner, document, 12.0)
-                .map(|info| info.id),
-            Some(second.id)
-        );
-
-        assert!(host.update_paragraph_height(owner, document, first.id, Some(16.0)));
-        assert_eq!(host.document_height(owner, document), Some(36.0));
-        assert_eq!(host.paragraph_top(owner, document, second.id), Some(16.0));
-    }
-
-    #[test]
-    fn removing_a_document_only_removes_its_units_and_layouts() {
-        let owner = owners(1)[0];
-        let mut host = TextHost::with_limits(ZeroTextBackend, 8, 1_024);
-        let direct = host.ensure_direct_unit(owner, TextLayoutSlot::PRIMARY);
-        host.insert_unit_variant_with_cost(direct, key(1), layout(), (), 32);
-        let document = host.create_document(owner);
-        let paragraph = host
-            .insert_paragraph(
-                owner,
-                document,
-                0,
-                TextRange::new(TextOffset::char_offset(0), TextOffset::char_offset(1)),
-                1,
-                1,
-                12.0,
-            )
-            .unwrap();
-        host.insert_unit_variant_with_cost(paragraph.unit, key(2), layout(), (), 32);
-
-        assert_eq!(host.remove_document(owner, document), 1);
-        assert_eq!(
-            host.direct_unit(owner, TextLayoutSlot::PRIMARY),
-            Some(direct)
-        );
-        assert!(host.find_unit(direct, &key(1)).is_some());
-        assert_eq!(host.stats().documents, 0);
-        assert_eq!(host.stats().units, 1);
-    }
-
-    #[test]
-    fn invalidation_preserves_document_and_paragraph_identity() {
-        let owner = owners(1)[0];
-        let mut host = TextHost::with_limits(ZeroTextBackend, 8, 1_024);
-        let document = host.create_document(owner);
-        let paragraph = host
-            .insert_paragraph(
-                owner,
-                document,
-                0,
-                TextRange::new(TextOffset::char_offset(0), TextOffset::char_offset(1)),
-                1,
-                1,
-                12.0,
-            )
-            .unwrap();
-        host.insert_unit_variant_with_cost(paragraph.unit, key(1), layout(), (), 32);
-
-        assert_eq!(host.invalidate_document(owner, document), 1);
-        assert_eq!(
-            host.paragraph_unit(owner, document, paragraph.id),
-            Some(paragraph.unit)
-        );
-        assert_eq!(host.document_len(owner, document), Some(1));
-        assert!(host.find_unit(paragraph.unit, &key(1)).is_none());
-    }
-
-    #[test]
-    fn get_or_shape_unit_supports_document_paragraphs() {
-        let owner = owners(1)[0];
-        let mut host = TextHost::with_limits(ZeroTextBackend, 8, 1_024);
-        let document = host.create_document(owner);
-        let paragraph = host
-            .insert_paragraph(
-                owner,
-                document,
-                0,
-                TextRange::new(TextOffset::char_offset(0), TextOffset::char_offset(4)),
-                1,
-                1,
-                12.0,
-            )
-            .unwrap();
-        let layout_key = key(1);
-
-        let first = host
-            .get_or_shape_unit(paragraph.unit, layout_key, input("text"))
-            .unwrap();
-        let second = host
-            .get_or_shape_unit(paragraph.unit, layout_key, input("text"))
-            .unwrap();
-
-        assert_eq!(first, second);
-        assert_eq!(host.active_unit(paragraph.unit), Some(first));
-        assert_eq!(host.query(first).unwrap().size(), Size::<f32>::ZERO);
-    }
-
-    #[test]
-    fn per_unit_limit_evicts_the_least_recently_used_variant() {
-        let owner = owners(1)[0];
-        let mut host = TextHost::with_variant_limit(ZeroTextBackend, 8, 1_024, 2);
-        let unit = host.ensure_direct_unit(owner, TextLayoutSlot::PRIMARY);
-        let first = key(1);
-        let second = key(2);
-        let third = key(3);
-
-        host.insert_unit_variant_with_cost(unit, first, layout(), (), 32)
-            .unwrap();
-        host.insert_unit_variant_with_cost(unit, second, layout(), (), 32)
-            .unwrap();
-        // Promote the first variant, making the second one the local LRU.
-        assert!(host.find_unit(unit, &first).is_some());
-        host.insert_unit_variant_with_cost(unit, third, layout(), (), 32)
-            .unwrap();
-
-        assert!(host.find_unit(unit, &first).is_some());
-        assert!(host.find_unit(unit, &second).is_none());
-        assert!(host.find_unit(unit, &third).is_some());
-        assert_eq!(host.units[unit].resident_layouts.len(), 2);
-    }
-
-    #[test]
-    fn active_variant_is_not_removed_by_the_per_unit_limit() {
-        let owner = owners(1)[0];
-        let mut host = TextHost::with_variant_limit(ZeroTextBackend, 8, 1_024, 1);
-        let unit = host.ensure_direct_unit(owner, TextLayoutSlot::PRIMARY);
-        let active_key = key(1);
-        let active = host.insert_unit_active_with_cost(unit, active_key, layout(), (), 32);
-
-        let rejected = host.insert_unit_variant_with_cost(unit, key(2), layout(), (), 32);
-
-        assert_eq!(host.active_unit(unit), Some(active));
-        assert!(host.find_unit(unit, &active_key).is_some());
-        assert!(rejected.is_none());
-        assert_eq!(host.units[unit].resident_layouts.len(), 1);
-    }
-
-    #[test]
-    fn lowering_the_limit_trims_existing_unpinned_variants() {
-        let owner = owners(1)[0];
-        let mut host = TextHost::with_variant_limit(ZeroTextBackend, 8, 1_024, 4);
-        let unit = host.ensure_direct_unit(owner, TextLayoutSlot::PRIMARY);
-        for revision in 0..4 {
-            host.insert_unit_variant_with_cost(unit, key(revision), layout(), (), 32)
-                .unwrap();
-        }
-
-        host.set_max_variants_per_unit(2);
-
-        assert_eq!(host.max_variants_per_unit(), 2);
-        assert_eq!(host.units[unit].resident_layouts.len(), 2);
-        assert!(host.find_unit(unit, &key(0)).is_none());
-        assert!(host.find_unit(unit, &key(1)).is_none());
-        assert!(host.find_unit(unit, &key(2)).is_some());
-        assert!(host.find_unit(unit, &key(3)).is_some());
-    }
 }

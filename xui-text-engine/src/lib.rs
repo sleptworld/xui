@@ -2,14 +2,17 @@ use cosmic_text::{
     Align, Attrs, Buffer, CacheKey, Ellipsize, EllipsizeHeightLimit, Family, FontSystem, Metrics,
     Shaping, Style as CosmicStyle, SwashCache, Weight, Wrap, fontdb,
 };
-use std::sync::Arc;
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+    sync::Arc,
+};
 use xui_interface::{ComputedTextStyle, Point, Rect, text::*};
 
 pub struct CosmicEngine {
     font_system: FontSystem,
     swash_cache: SwashCache,
     font_epoch: u64,
-    xui_font_id: Vec<fontdb::ID>,
     scale: f32,
 }
 
@@ -24,7 +27,6 @@ impl CosmicEngine {
             font_system: FontSystem::new(),
             swash_cache: SwashCache::new(),
             font_epoch: 0,
-            xui_font_id: Vec::new(),
             scale: init_scale_factor,
         }
     }
@@ -64,7 +66,7 @@ impl CosmicEngine {
         &mut self,
         buffer: &mut Buffer,
         input: TextLayoutInput,
-    ) -> ParagraphLayout<CacheKey> {
+    ) -> ParagraphLayout<fontdb::ID, CacheKey> {
         if input.text_box_style.max_lines == Some(0) {
             return ParagraphLayout {
                 lines: Vec::new(),
@@ -129,7 +131,7 @@ impl CosmicEngine {
         &mut self,
         buffer: &cosmic_text::Buffer,
         line_base_byte_offsets: &[usize],
-    ) -> ParagraphLayout<CacheKey> {
+    ) -> ParagraphLayout<fontdb::ID, CacheKey> {
         let mut lines = Vec::new();
         let mut runs = Vec::new();
         let mut glyphs = Vec::new();
@@ -296,7 +298,7 @@ impl CosmicEngine {
         let bidi_level = glyph.level.number();
 
         RunKey {
-            font_id: self.map_cosmic_font_id(glyph.font_id),
+            font_id: glyph.font_id,
             font_size_bits: glyph.font_size.to_bits(),
             font_weight: map_cosmic_weight(glyph.font_weight),
             style_id: glyph.metadata as u32,
@@ -310,29 +312,13 @@ impl CosmicEngine {
         }
     }
 
-    fn map_cosmic_font_id(&mut self, id: fontdb::ID) -> xui_interface::FontId {
-        if let Some(index) = self.xui_font_id.iter().position(|existing| *existing == id) {
-            index as xui_interface::FontId
-        } else {
-            self.xui_font_id.push(id);
-            (self.xui_font_id.len() - 1) as xui_interface::FontId
-        }
-    }
-
     fn font_handle(&self, id: fontdb::ID) -> Option<SystemFontHandle> {
         if self.font_system.db().face(id).is_none() {
             return None;
         }
-
-        let raw = self
-            .xui_font_id
-            .iter()
-            .position(|existing| *existing == id)
-            .map(|index| index as u64)
-            .or_else(|| id.to_string().parse::<u64>().ok())
-            .unwrap_or(0);
-
-        Some(SystemFontHandle(raw))
+        let mut hasher = DefaultHasher::new();
+        id.hash(&mut hasher);
+        Some(SystemFontHandle(hasher.finish()))
     }
 }
 
@@ -356,7 +342,7 @@ fn wrap_for_paragraph(style: &ParagraphStyle) -> Wrap {
     }
 }
 
-fn truncate_layout_lines<K>(layout: &mut ParagraphLayout<K>, max_lines: usize) {
+fn truncate_layout_lines<K>(layout: &mut ParagraphLayout<fontdb::ID, K>, max_lines: usize) {
     if layout.lines.len() <= max_lines {
         return;
     }
@@ -386,6 +372,7 @@ impl Default for CosmicEngine {
 impl Shaper for CosmicEngine {
     type State = CosmicParagraphState;
     type GlyphKey = CacheKey;
+    type FontId = fontdb::ID;
 
     fn create_state(&mut self) -> Self::State {
         CosmicParagraphState::default()
@@ -395,7 +382,7 @@ impl Shaper for CosmicEngine {
         &mut self,
         state: &mut Self::State,
         input: TextLayoutInput,
-    ) -> ParagraphLayout<Self::GlyphKey> {
+    ) -> ParagraphLayout<Self::FontId, Self::GlyphKey> {
         let mut buffer = state
             .buffer
             .take()
@@ -416,7 +403,6 @@ impl FontDatabase for CosmicEngine {
     fn load_system_fonts(&mut self) {
         self.font_system = FontSystem::new();
         self.font_epoch = self.font_epoch.wrapping_add(1);
-        self.xui_font_id.clear();
     }
 
     fn load_font_bytes(&mut self, bytes: Arc<[u8]>) -> Self::FontId {
@@ -441,10 +427,24 @@ impl FontDatabase for CosmicEngine {
 
     fn font_data(&self, id: Self::FontId) -> Option<FontDataRef<'_>> {
         let face = self.font_system.db().face(id)?;
+        let system_font = |path| {
+            Some(FontDataRef::System {
+                handle: self.font_handle(id)?,
+                path,
+                index: face.index,
+                family: face.families.first()?.0.as_str(),
+                postscript_name: face.post_script_name.as_str(),
+                weight: map_cosmic_weight(face.weight),
+                style: map_cosmic_style(face.style),
+                stretch: map_cosmic_stretch(face.stretch),
+            })
+        };
         match &face.source {
-            fontdb::Source::Binary(data) => Some(FontDataRef::Bytes(data.as_ref().as_ref())),
-            fontdb::Source::SharedFile(_, data) => Some(FontDataRef::Bytes(data.as_ref().as_ref())),
-            fontdb::Source::File(_) => self.font_handle(id).map(FontDataRef::System),
+            fontdb::Source::Binary(data) => Some(FontDataRef::Bytes {
+                bytes: data.as_ref().as_ref(),
+                index: face.index,
+            }),
+            fontdb::Source::SharedFile(path, _) | fontdb::Source::File(path) => system_font(path),
         }
     }
 }
@@ -574,6 +574,28 @@ fn map_cosmic_weight(weight: Weight) -> FontWeight {
     }
 }
 
+fn map_cosmic_style(style: CosmicStyle) -> FontStyle {
+    match style {
+        CosmicStyle::Normal => FontStyle::Normal,
+        CosmicStyle::Italic => FontStyle::Italic,
+        CosmicStyle::Oblique => FontStyle::Oblique,
+    }
+}
+
+fn map_cosmic_stretch(stretch: fontdb::Stretch) -> FontStretch {
+    match stretch {
+        fontdb::Stretch::UltraCondensed => FontStretch::UltraCondensed,
+        fontdb::Stretch::ExtraCondensed => FontStretch::ExtraCondensed,
+        fontdb::Stretch::Condensed => FontStretch::Condensed,
+        fontdb::Stretch::SemiCondensed => FontStretch::SemiCondensed,
+        fontdb::Stretch::Normal => FontStretch::Normal,
+        fontdb::Stretch::SemiExpanded => FontStretch::SemiExpanded,
+        fontdb::Stretch::Expanded => FontStretch::Expanded,
+        fontdb::Stretch::ExtraExpanded => FontStretch::ExtraExpanded,
+        fontdb::Stretch::UltraExpanded => FontStretch::UltraExpanded,
+    }
+}
+
 fn width_for_constraints(constraints: TextLayoutConstraints) -> Option<f32> {
     match constraints {
         TextLayoutConstraints::Definate(width) if width.is_finite() => Some(width.max(0.0)),
@@ -619,7 +641,7 @@ struct ClusterKey {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RunKey {
-    font_id: xui_interface::FontId,
+    font_id: fontdb::ID,
     font_size_bits: u32,
     font_weight: FontWeight,
     style_id: TextStyleId,
@@ -650,7 +672,7 @@ mod tests {
         width: f32,
         paragraph: ParagraphStyle,
         text_box: TextBoxStyle,
-    ) -> ParagraphLayout<CacheKey> {
+    ) -> ParagraphLayout<fontdb::ID, CacheKey> {
         let mut engine = CosmicEngine::default();
         let mut state = engine.create_state();
         let epoch = engine.epoch();
@@ -745,4 +767,5 @@ mod tests {
         assert!(value.lines[0].ellipsized);
         assert!(value.lines[0].width <= 45.0);
     }
+
 }

@@ -1,0 +1,25 @@
+[package]
+name = "xui-skia"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+memmap2.workspace = true
+skia-safe = { version = "0.99.0", features = ["gpu", "textlayout"] }
+softbuffer = "0.4.8"
+thiserror = "2.0.18"
+winit = "0.30.12"
+xui = { path = "../xui" }
+xui-interface = { path = "../xui-interface" }
+xui-render-graph = { path = "../xui-render-graph" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-core-foundation = "0.3.2"
+objc2-metal = { version = "0.3.2", features = ["MTLCommandBuffer", "MTLCommandQueue", "MTLDevice", "MTLDrawable", "MTLTexture"] }
+objc2-quartz-core = { version = "0.3.2", features = ["CALayer", "CAMetalLayer"] }
+raw-window-metal = "1.1.0"
+skia-safe = { version = "0.99.0", features = ["gpu", "metal", "textlayout"] }
+
+[dev-dependencies]
+xui-text-engine = { path = "../xui-text-engine" }

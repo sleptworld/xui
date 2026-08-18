@@ -18,7 +18,7 @@ pub use crate::event_system::callbacks::{
     HoverChangeEventHandler, HoverEventHandler, PressEventHandler, ScrollEventHandler,
 };
 pub use crate::fiber::{ComponentCall, ComponentRender, ComponentType, ErasedPropsRef};
-pub use crate::focus::{FocusManager, FocusRequest, FocusTransition};
+pub use crate::focus::{FocusHandle, FocusManager, FocusRequest, FocusTransition};
 pub use crate::render::{MockRenderBackend, RenderBackend};
 pub use crate::runtime::{ControlFlow, FrameReport, GuiRuntime, QueueEventSource, RuntimeEvent};
 pub use crate::shortcut::{ShortcutManager, ShortcutRegistrationId};
@@ -47,8 +47,9 @@ pub use crate::widgets::{
     text, z_stack,
 };
 pub use xui_interface::{
-    Affine, Alignment, CanvasTextId, ColorSpace, CommandEvent, CommandId, FillRule, FontFamily,
-    FontStyle, FontWeight, ImageData, ImageDataId, ImageFit, ImageFormat, ImageKey, ImageRepeat,
+    AccessibilityProperties, AccessibilityRole, Affine, Alignment, CanvasTextId, ColorSpace,
+    CommandEvent, CommandId, FillRule, FocusProperties, Focusability, FontFamily, FontStyle,
+    FontWeight, ImageData, ImageDataId, ImageFit, ImageFormat, ImageKey, ImageRepeat,
     ImageRotation, ImageStyle, ImageTransform, ImageVariant, LineCap, LineHeight, LineJoin,
     NamedKey, NodeId, OverflowWrap, ParagraphStyle, PathBuilder, PathData, PathFill, PathSegment,
     PathStroke, PhysicalKey, Sampling, Shortcut, ShortcutBinding, ShortcutKey, ShortcutModifiers,

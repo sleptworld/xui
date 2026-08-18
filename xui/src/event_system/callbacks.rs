@@ -1,10 +1,11 @@
 use super::EventContext;
+use crate::focus::FocusHandle;
 use slotmap::{Key as SlotMapKey, SlotMap, new_key_type};
 use xui_interface::events::semantic::{
     ClickEvent, CommandEvent, ContextMenuEvent, DragEvent, FocusEvent, HoverChangeEvent,
     HoverEvent, PressEvent, ScrollEvent, SemanticEvent,
 };
-use xui_interface::{EventPhase, EventResult};
+use xui_interface::{AccessibilityProperties, EventPhase, EventResult, FocusProperties};
 
 pub type TypedEventHandler<E> = Box<dyn for<'a> FnMut(&E, &mut EventContext<'a>) -> EventResult>;
 
@@ -34,6 +35,9 @@ new_key_type! {
 
 #[derive(Default)]
 pub struct EventHandlers {
+    pub focus: FocusProperties,
+    pub focus_handle: Option<FocusHandle>,
+    pub accessibility: AccessibilityProperties,
     pub shortcuts: Vec<xui_interface::ShortcutBinding>,
     pub on_command: Option<CommandEventHandler>,
     pub on_event: Option<SemanticEventHandler>,
@@ -74,6 +78,9 @@ pub struct EventHandlers {
 impl std::fmt::Debug for EventHandlers {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EventHandlers")
+            .field("focus", &self.focus)
+            .field("focus_handle", &self.focus_handle)
+            .field("accessibility", &self.accessibility)
             .field("shortcuts", &self.shortcuts)
             .field("on_command", &self.on_command.is_some())
             .field("on_event", &self.on_event.is_some())

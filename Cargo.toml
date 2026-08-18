@@ -16,6 +16,7 @@ members = [
     "xui-animation",
     "slot", "xui-text-engine",
     "xui-render-graph",
+    "xui-skia",
 ]
 
 

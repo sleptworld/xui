@@ -409,6 +409,11 @@ impl EdgeInsets {
     pub fn bottom(&self) -> f32 {
         self.bottom.into_inner()
     }
+
+    pub fn set_top(mut self, top: f32) -> Self {
+        self.top = NotNan::new(top).unwrap();
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

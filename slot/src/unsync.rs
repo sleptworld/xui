@@ -152,6 +152,7 @@ impl SlotImp for Slot {
 
 impl<T: 'static> Storage<T> for Slot {
     unsafe fn try_read(pointer: Pointer<Self, T>) -> Result<&'static T> {
+        #[cfg(debug_assertions)]
         Runtime::debug_assert_slot_read();
 
         // SAFETY: the caller guarantees that the slot pointer came from a live
@@ -170,6 +171,7 @@ impl<T: 'static> Storage<T> for Slot {
     }
 
     unsafe fn try_write(pointer: Pointer<Self, T>) -> Result<&'static mut T> {
+        #[cfg(debug_assertions)]
         Runtime::debug_assert_slot_write();
 
         // SAFETY: the caller guarantees that the slot pointer came from a live

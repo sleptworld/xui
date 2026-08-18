@@ -37,6 +37,9 @@ pub use style::{
     WidgetStateMatcher,
 };
 pub use text::*;
-pub use widget::{Component, Key, NodeId, NodeLifecycleEvent, WidgetType};
+pub use widget::{
+    AccessibilityProperties, AccessibilityRole, Component, FocusProperties, Focusability, Key,
+    NodeId, NodeLifecycleEvent, WidgetType,
+};
 
 pub use state::{WidgetNodeState, WidgetState};

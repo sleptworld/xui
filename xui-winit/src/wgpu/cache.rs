@@ -4,7 +4,7 @@ use crate::wgpu::{
     snapshot::layer_snapshot,
     tex::{SurfaceGeometry, SurfaceKey, TileCoord, TiledSurface},
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{HashMap, HashSet};
 use xui::render::{
     BuiltFrame, BuiltItem, BuiltLayerId, CachePolicy, ContentVersion, LayerCacheId, RenderNodeId,
@@ -440,7 +440,7 @@ impl SurfaceCache {
 
     pub fn begin_frame(&mut self, frame: &BuiltFrame, scale_factor: f32, tile_size: u32) {
         self.frame = self.frame.wrapping_add(1).max(1);
-        let live: HashSet<_> = frame
+        let live: FxHashSet<_> = frame
             .layers
             .iter()
             .filter_map(|layer| layer.cache_id.map(SurfaceKey::Layer))

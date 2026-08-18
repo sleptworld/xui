@@ -1,9 +1,15 @@
 mod components;
+mod flight_icing;
 use winit::dpi::PhysicalSize;
+use winit::platform::macos::WindowAttributesExtMacOS;
 use winit::window::Window;
 use xui::prelude::*;
 use xui_components::*;
-use xui_winit::{WinitRunnerOptions, runner};
+use xui_winit::WinitRunnerOptions;
+#[cfg(not(feature = "skia"))]
+use xui_winit::runner;
+#[cfg(feature = "skia")]
+use xui_winit::skia_runner as runner;
 
 fn filled_icon() -> IconData {
     static ICON: std::sync::OnceLock<IconData> = std::sync::OnceLock::new();
@@ -184,6 +190,64 @@ fn demo_canvas_scene(highlighted: bool) -> VectorScene {
     scene.build()
 }
 
+fn tab_panel(title: &str, description: &str) -> ElementDesc {
+    ContainerWidget::new()
+        .style(Style::new().gap(6.0))
+        .flex_direction(FlexDirectionStyle::Column)
+        .into_element_desc(vec![
+            text(title.to_string())
+                .style(
+                    Style::new()
+                        .color(Color::WHITE)
+                        .font_size(16.0)
+                        .font_weight(FontWeight::Medium),
+                )
+                .into_element_desc(),
+            text(description.to_string())
+                .style(
+                    Style::new()
+                        .color(Color::rgba(0.92, 0.96, 1.0, 0.68))
+                        .font_size(13.0),
+                )
+                .into_element_desc(),
+        ])
+}
+
+fn demo_tab_items() -> Vec<TabItem> {
+    vec![
+        TabItem::new(
+            "overview",
+            "Overview",
+            tab_panel(
+                "Tabs in xui-components",
+                "Click a tab, or focus it and use Left/Right/Home/End.",
+            ),
+        ),
+        TabItem::new(
+            "keyboard",
+            "Keyboard",
+            tab_panel(
+                "Roving keyboard focus",
+                "Only the selected tab is in the Tab order; arrow keys wrap around.",
+            ),
+        ),
+        TabItem::new(
+            "accessibility",
+            "A11y",
+            tab_panel(
+                "Accessible relationships",
+                "TabList, Tab and TabPanel roles carry selected and labelled-by metadata.",
+            ),
+        ),
+        TabItem::new(
+            "disabled",
+            "Disabled",
+            tab_panel("Disabled", "Keyboard navigation skips this tab."),
+        )
+        .disabled(true),
+    ]
+}
+
 #[component]
 fn test_page() {
     xui! {
@@ -199,6 +263,13 @@ fn test_page() {
 #[component]
 fn editor() {
     let label = cx.use_state(|| "Hello,World".to_string());
+    let selected_tab = cx.use_state(|| 0usize);
+    let on_tab_change = cx.use_callback(selected_tab, move || {
+        Box::new(move |index| selected_tab.set(index)) as TabChangeHandler
+    });
+    let tab_items = demo_tab_items();
+    let mut tabs_style = TabsStyle::default();
+    tabs_style.root = tabs_style.root.width(440.0);
     let canvas_highlighted = cx.use_state(|| false);
     let canvas_controller = cx.use_ref(|| CanvasController::with_scene(demo_canvas_scene(false)));
     let canvas_handle = canvas_controller.get().clone();
@@ -211,6 +282,16 @@ fn editor() {
             <container size={Size::fill()} background ={Color::hex("#171717")} >
                 <column gap={12.0}>
                     <text> {"Hello,World"} </text>
+                    <text color={Color::rgba(0.92, 0.96, 1.0, 0.78)} font_weight={FontWeight::Medium}>
+                        {"Tabs · click or use the arrow keys"}
+                    </text>
+                    <tabs
+                        items={tab_items}
+                        selected={Some(*selected_tab.get())}
+                        on_change={Some(on_tab_change)}
+                        style={tabs_style}
+                        id_prefix={"example-tabs".to_string()}
+                    />
                     <input width={100.0} background={Color::WHITE} border_color={Color::BLACK} border_radius={5.0} border_width={2.0} />
                     <row gap={12.0}>
                         {icon(filled_icon()).color(Color::BLUE_500).into_element_desc()}
@@ -260,11 +341,19 @@ fn editor() {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let options = WinitRunnerOptions {
         window_attributes: Window::default_attributes()
-            .with_title("XUI Example App")
-            .with_inner_size(PhysicalSize::new(800, 600)),
+            .with_title("飞机积冰协同态势监测与预测系统")
+            .with_title_hidden(true)
+            .with_fullsize_content_view(true)
+            .with_titlebar_transparent(true)
+            .with_inner_size(PhysicalSize::new(1600, 900)),
         ..Default::default()
     };
 
-    runner(editor_component, Some(options)).run().unwrap();
+    runner(
+        flight_icing::flight_icing_dashboard_component,
+        Some(options),
+    )
+    .run()
+    .unwrap();
     Ok(())
 }

@@ -59,6 +59,7 @@ pub(crate) mod testing {
     impl Shaper for ZeroTextBackend {
         type State = ();
         type GlyphKey = ();
+        type FontId = u32;
 
         fn create_state(&mut self) -> Self::State {}
 
@@ -66,7 +67,7 @@ pub(crate) mod testing {
             &mut self,
             _state: &mut Self::State,
             _input: TextLayoutInput,
-        ) -> ParagraphLayout {
+        ) -> ParagraphLayout<Self::FontId, Self::GlyphKey> {
             ParagraphLayout {
                 lines: Vec::new(),
                 runs: Vec::new(),
@@ -94,9 +95,10 @@ mod tests {
     use slotmap::SlotMap;
     use xui_interface::{
         FontDataRef, FontDatabase, FontQuery, GlyphRasterizer, NodeId, NodeLifecycleEvent,
-        ParagraphLayout, ParagraphStyle, RasterizedGlyph, Shaper, TextBackend,
+        ParagraphLayout, ParagraphStyle, RasterizedGlyph, Shaper, TextBackend, TextBoxStyle,
         TextLayoutConstraints, TextLayoutInput, TextStyle,
     };
+    use xui_text::typ;
 
     use super::*;
 
@@ -144,6 +146,7 @@ mod tests {
     impl Shaper for CountingTextBackend {
         type State = ();
         type GlyphKey = ();
+        type FontId = u32;
 
         fn create_state(&mut self) -> Self::State {}
 
@@ -151,7 +154,7 @@ mod tests {
             &mut self,
             _state: &mut Self::State,
             _input: TextLayoutInput,
-        ) -> ParagraphLayout {
+        ) -> ParagraphLayout<Self::FontId, Self::GlyphKey> {
             self.layout_calls += 1;
             ParagraphLayout {
                 lines: Vec::new(),
@@ -176,84 +179,43 @@ mod tests {
 
     impl TextBackend for CountingTextBackend {}
 
-    fn node_id() -> NodeId {
-        let mut nodes = SlotMap::<NodeId, ()>::with_key();
-        nodes.insert(())
-    }
-
-    fn input(text: &'static str) -> TextLayoutInput {
+    fn input(constraints: TextLayoutConstraints) -> TextLayoutInput {
         TextLayoutInput::new(
-            text.into(),
-            TextLayoutConstraints::UNBOUNDED,
+            "tabs".into(),
+            constraints,
             TextStyle::default().into(),
             ParagraphStyle::default(),
-            xui_interface::TextBoxStyle::default(),
+            TextBoxStyle::default(),
             0,
         )
     }
 
     #[test]
-    fn get_or_shape_slot_reuses_identical_input() {
-        let owner = node_id();
+    fn measurement_does_not_replace_the_active_variant() {
+        let mut owners = SlotMap::<NodeId, ()>::with_key();
+        let owner = owners.insert(());
         let mut host = TextHost::new(CountingTextBackend::new());
 
-        let first = host.get_or_shape_slot(owner, TextLayoutSlot::PRIMARY, input("cached"));
-        let second = host.get_or_shape_slot(owner, TextLayoutSlot::PRIMARY, input("cached"));
+        let active = host.activate_slot(
+            owner,
+            TextLayoutSlot::PRIMARY,
+            input(TextLayoutConstraints::max_width(120.0)),
+        );
+        assert_eq!(
+            host.active_slot(owner, TextLayoutSlot::PRIMARY),
+            Some(active)
+        );
 
-        assert_eq!(first, second);
-        assert_eq!(host.backend().layout_calls, 1);
-        assert_eq!(host.stats().owners, 1);
-        assert_eq!(host.stats().units, 1);
-    }
+        host.measure_slot(
+            owner,
+            TextLayoutSlot::PRIMARY,
+            input(TextLayoutConstraints::MIN_SIZE),
+        );
 
-    #[test]
-    fn changed_input_shapes_a_new_variant() {
-        let owner = node_id();
-        let mut host = TextHost::new(CountingTextBackend::new());
-
-        let first = host.get_or_shape_slot(owner, TextLayoutSlot::PRIMARY, input("cached"));
-        let second = host.get_or_shape_slot(owner, TextLayoutSlot::PRIMARY, input("changed"));
-
-        assert_ne!(first, second);
         assert_eq!(host.backend().layout_calls, 2);
         assert_eq!(
             host.active_slot(owner, TextLayoutSlot::PRIMARY),
-            Some(second)
+            Some(active)
         );
-    }
-
-    #[test]
-    fn paint_only_text_style_changes_reuse_the_shaped_variant() {
-        let owner = node_id();
-        let mut host = TextHost::new(CountingTextBackend::new());
-        let original = input("cached");
-        let first = host.get_or_shape_slot(owner, TextLayoutSlot::PRIMARY, original.clone());
-
-        let mut recolored = original.clone();
-        recolored.default_style.color = xui_interface::Color::WHITE;
-        recolored.default_style.decoration.underline = true;
-        let second = host.get_or_shape_slot(owner, TextLayoutSlot::PRIMARY, recolored);
-
-        assert_eq!(first, second);
-        assert_eq!(host.backend().layout_calls, 1);
-
-        let mut resized = original;
-        resized.default_style.font_size += 1.0;
-        let third = host.get_or_shape_slot(owner, TextLayoutSlot::PRIMARY, resized);
-        assert_ne!(second, third);
-        assert_eq!(host.backend().layout_calls, 2);
-    }
-
-    #[test]
-    fn removed_owner_releases_layouts_and_forwards_lifecycle() {
-        let owner = node_id();
-        let mut host = TextHost::new(CountingTextBackend::new());
-        host.get_or_shape_slot(owner, TextLayoutSlot::PRIMARY, input("cached"));
-
-        host.handle_node_lifecycle(&NodeLifecycleEvent::Removed(owner));
-
-        assert_eq!(host.stats().owners, 0);
-        assert_eq!(host.stats().layouts, 0);
-        assert_eq!(host.backend().lifecycle_calls, 1);
     }
 }

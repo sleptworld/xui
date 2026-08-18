@@ -360,9 +360,16 @@ struct CallbackState<D, T> {
     callback: Rc<RefCell<T>>,
 }
 
-#[derive(Clone)]
 pub struct Callback<T> {
     callback: Rc<RefCell<T>>,
+}
+
+impl<T> Clone for Callback<T> {
+    fn clone(&self) -> Self {
+        Self {
+            callback: self.callback.clone(),
+        }
+    }
 }
 
 impl<T> Callback<T> {
@@ -373,6 +380,26 @@ impl<T> Callback<T> {
 
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.callback, &other.callback)
+    }
+}
+
+impl<T> PartialEq for Callback<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.ptr_eq(other)
+    }
+}
+
+impl<T> Eq for Callback<T> {}
+
+impl<T> Hash for Callback<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Rc::as_ptr(&self.callback).hash(state);
+    }
+}
+
+impl<T> fmt::Debug for Callback<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Callback").finish_non_exhaustive()
     }
 }
 
@@ -1398,6 +1425,12 @@ mod tests {
         let second = render_callback(&mut storage, owner, scheduler, 9, builds.clone());
 
         assert!(first.ptr_eq(&second));
+        let hash = |callback: &Callback<Box<dyn FnMut() -> usize>>| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            callback.hash(&mut hasher);
+            hasher.finish()
+        };
+        assert_eq!(hash(&first), hash(&second));
         assert_eq!(*builds.borrow(), 2);
         assert_eq!(first.call_mut(|callback| callback()), 9);
         assert_eq!(second.call_mut(|callback| callback()), 9);

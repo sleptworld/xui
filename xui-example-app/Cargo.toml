@@ -13,3 +13,12 @@ xui = { path = "../xui" }
 xui-winit = { path = "../xui-winit" }
 xui-components = { path = "../xui-components" }
 leanplot = { git = "https://github.com/sleptworld/LeanPlot.git" }
+
+[features]
+default = ["skia"]
+skia = ["xui-winit/skia"]
+
+[dev-dependencies]
+png = "0.18.1"
+xui-skia = { path = "../xui-skia" }
+xui-text-engine = { path = "../xui-text-engine" }

@@ -446,6 +446,26 @@ pub fn runner(
     )
 }
 
+#[cfg(feature = "skia")]
+pub fn skia_runner(
+    app: ComponentFn,
+    options: Option<WinitRunnerOptions>,
+) -> WinitRunner<xui_skia::SkiaBackend<CosmicEngine>, CosmicEngine> {
+    let app = App::new(app);
+    WinitRunner::with_fallible_backend_factory(
+        |window| -> Result<_, std::io::Error> {
+            let backend = xui_skia::SkiaBackend::<CosmicEngine>::new(window.clone())
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            Ok((
+                app,
+                CosmicEngine::new(window.scale_factor() as f32),
+                backend,
+            ))
+        },
+        options,
+    )
+}
+
 fn translate_modifiers(modifiers: ModifiersState) -> Modifiers {
     Modifiers {
         shift: modifiers.shift_key(),
@@ -522,6 +542,9 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackend> ApplicationHandler<WinitUser
                 .runtime_mut()
                 .backend_mut()
                 .set_factor(*scale_factor as f32);
+            self.runtime_mut()
+                .text_backend_mut()
+                .set_scale_factor(*scale_factor as f32);
             if let Some(window) = self.window.as_ref() {
                 let size = Self::logical_size_at_scale(window.inner_size(), *scale_factor as f32);
                 self.runtime_mut().handle_event(RuntimeEvent::Resize(size));

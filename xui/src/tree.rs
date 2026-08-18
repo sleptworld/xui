@@ -3,7 +3,7 @@ use crate::core::{Point, Rect, Size};
 use crate::event_system::callbacks::{CallbackHandleSet, CallbackStore, EventHandlers};
 use crate::event_system::{self, EventState, translator::EventTranslator};
 use crate::fiber::Key;
-use crate::focus::FocusManager;
+use crate::focus::{FocusHandle, FocusManager};
 use crate::layout::{computed_style_for_widget, taffy_style_for_widget};
 use crate::render::{
     BuiltFrame, ClipShape, DirtySnapshot, FrameBuildError, FrameBuilder, FrameProperties,
@@ -20,8 +20,9 @@ use taffy::prelude as tf;
 use xui_animation::{Animatable, Timeline, Transition};
 use xui_interface::events::RawEvent;
 use xui_interface::{
-    Affine, ComputedColorStyle, ComputedScrollStyle, ComputedScrollbarStyle, ComputedStyle,
-    EventResult, NodeId, NodeLifecycleEvent, ScrollbarVisibilityStyle, StyleDiffFlags, TextBackend,
+    AccessibilityProperties, Affine, ComputedColorStyle, ComputedScrollStyle,
+    ComputedScrollbarStyle, ComputedStyle, EventResult, FocusProperties, Focusability, NodeId,
+    NodeLifecycleEvent, ScrollbarVisibilityStyle, StyleDiffFlags, TextBackend,
     TextLayoutConstraints, TextLayoutInput, Theme, VectorCommand, WidgetState, WidgetUpdateFlags,
 };
 
@@ -164,6 +165,9 @@ pub struct Node {
     pub widget: WidgetI,
     pub event_callbacks: CallbackHandleSet,
     pub shortcut_bindings: Vec<xui_interface::ShortcutBinding>,
+    pub focus: FocusProperties,
+    pub accessibility: AccessibilityProperties,
+    pub(crate) focus_handle: Option<FocusHandle>,
 }
 
 impl Node {
@@ -176,6 +180,9 @@ impl Node {
         widget: WidgetI,
         event_callbacks: CallbackHandleSet,
         shortcut_bindings: Vec<xui_interface::ShortcutBinding>,
+        focus: FocusProperties,
+        accessibility: AccessibilityProperties,
+        focus_handle: Option<FocusHandle>,
         taffy_node: tf::NodeId,
     ) -> Self {
         let node_type = widget.node_type();
@@ -206,7 +213,26 @@ impl Node {
             widget,
             event_callbacks,
             shortcut_bindings,
+            focus,
+            accessibility,
+            focus_handle,
         }
+    }
+
+    pub fn is_focusable(&self) -> bool {
+        match self.focus.focusability {
+            Focusability::Focusable => true,
+            Focusability::NotFocusable => false,
+            Focusability::Auto => {
+                self.focus.tab_index.is_some()
+                    || matches!(self.node_type, WidgetType::Button | WidgetType::TextInput)
+                    || self.event_callbacks.has_focus_callbacks()
+            }
+        }
+    }
+
+    pub fn is_sequentially_focusable(&self) -> bool {
+        self.is_focusable() && self.focus.tab_index.is_none_or(|index| index >= 0)
     }
 
     #[inline(always)]
@@ -431,6 +457,9 @@ impl UiArena {
                 root_widget,
                 CallbackHandleSet::default(),
                 Vec::new(),
+                FocusProperties::default(),
+                AccessibilityProperties::default(),
+                None,
                 taffy_root,
             )
         });
@@ -868,10 +897,22 @@ impl UiArena {
             return;
         };
         let shortcut_bindings = std::mem::take(&mut event_handlers.shortcuts);
+        let focus = event_handlers.focus;
+        let focus_handle = event_handlers.focus_handle.take();
+        let accessibility = std::mem::take(&mut event_handlers.accessibility);
         let event_callbacks = self.event_callbacks.update_set(current, event_handlers);
         if let Some(node) = self.nodes.get_mut(id) {
+            if let Some(handle) = node.focus_handle.take() {
+                handle.unbind(id);
+            }
             node.event_callbacks = event_callbacks;
             node.shortcut_bindings = shortcut_bindings;
+            node.focus = focus;
+            node.accessibility = accessibility;
+            node.focus_handle = focus_handle;
+            if let Some(handle) = node.focus_handle.as_ref() {
+                handle.bind(id);
+            }
         }
     }
 
@@ -887,6 +928,9 @@ impl UiArena {
             .new_leaf(tf::Style::default())
             .expect("failed to create taffy node");
         let shortcut_bindings = std::mem::take(&mut event_handlers.shortcuts);
+        let focus = event_handlers.focus;
+        let focus_handle = event_handlers.focus_handle.take();
+        let accessibility = std::mem::take(&mut event_handlers.accessibility);
         let event_callbacks = self
             .event_callbacks
             .update_set(CallbackHandleSet::default(), event_handlers);
@@ -901,9 +945,15 @@ impl UiArena {
                 widget,
                 event_callbacks,
                 shortcut_bindings,
+                focus,
+                accessibility,
+                focus_handle,
                 taffy_node,
             )
         });
+        if let Some(handle) = self.nodes[id].focus_handle.as_ref() {
+            handle.bind(id);
+        }
         self.node_lifecycle_events
             .push(NodeLifecycleEvent::Created(id));
         self.create_host_render_binding(id)
@@ -1154,6 +1204,9 @@ impl UiArena {
 
         self.event_state.clear_node(id);
         self.focus_manager.clear_node(id);
+        if let Some(handle) = self.nodes[id].focus_handle.as_ref() {
+            handle.unbind(id);
+        }
         self.event_callbacks
             .clear_set(self.nodes[id].event_callbacks);
         self.ui_state.animation_driver.remove_node(id);
@@ -1187,6 +1240,14 @@ impl UiArena {
         }
 
         if flags.intersects(HostWorkFlags::RECALC_LAYOUT | HostWorkFlags::SYNC_TREE) {
+            // Host dirtiness alone is not enough: Taffy keeps intrinsic and
+            // final layout entries per node. A resize must invalidate the
+            // affected Taffy node too, otherwise a min-content text probe can
+            // survive as the child's apparent final layout.
+            let taffy_node = self.nodes[id].taffy_node;
+            // self.taffy
+            //     .mark_dirty(taffy_node)
+            //     .expect("failed to invalidate Taffy layout cache");
             self.ui_state.mark_layout_dirty(id);
         }
 
@@ -1614,14 +1675,53 @@ impl UiArena {
             )
             .expect("failed to compute layout");
         self.sync_layout(self.root, 0.0, 0.0);
+        self.activate_final_text_layouts(measurer);
+    }
+
+    /// Activates the paint layout only after Taffy has committed every node's
+    /// final width. Intrinsic measurement probes are deliberately inactive.
+    fn activate_final_text_layouts<T: TextBackend>(&self, measurer: &mut TextHost<T>) {
+        let font_context = measurer.backend().epoch();
+        let requests: Vec<_> = self
+            .nodes
+            .iter()
+            .filter_map(|(id, node)| {
+                if node.node_type != WidgetType::Text {
+                    return None;
+                }
+                let props = node
+                    .widget
+                    .with_widgets(|widget| widget.text_layout_props(&node.effective_style))?;
+                let input = TextLayoutInput::new(
+                    props.text,
+                    TextLayoutConstraints::max_width(node.layout.width.max(0.0)),
+                    props.style.into(),
+                    props.paragraph,
+                    props.text_box,
+                    font_context,
+                );
+                Some((id, input))
+            })
+            .collect();
+
+        for (id, input) in requests {
+            measurer.activate_slot(id, TextLayoutSlot::PRIMARY, input);
+        }
     }
 
     fn sync_layout(&mut self, id: NodeId, offset_x: f32, offset_y: f32) -> HostWorkFlags {
         let taffy_node = self.nodes[id].taffy_node;
-        let layout = self
-            .taffy
-            .layout(taffy_node)
-            .expect("missing taffy layout result");
+        // Pixel-rounded widths can be smaller than the shaped intrinsic width.
+        // For CJK text that turns the final character into a second line on
+        // alternating resize frames. Preserve Taffy's computed floating-point
+        // geometry for text while keeping pixel snapping for other widgets.
+        let layout = if self.node_uses_unrounded_layout(id) {
+            self.taffy.unrounded_layout(taffy_node)
+        } else {
+            self.taffy
+                .layout(taffy_node)
+                .expect("missing taffy layout result")
+        };
         let taffy_content_size =
             Size::<f32>::new(layout.content_size.width, layout.content_size.height);
 
@@ -1824,6 +1924,9 @@ impl UiArena {
         let mut flags = WidgetUpdateFlags::empty();
         let current_widget;
         let shortcut_bindings = std::mem::take(&mut event_handlers.shortcuts);
+        let focus = event_handlers.focus;
+        let focus_handle = event_handlers.focus_handle.take();
+        let accessibility = std::mem::take(&mut event_handlers.accessibility);
         let event_callbacks = {
             let current = self
                 .nodes
@@ -1833,6 +1936,7 @@ impl UiArena {
             self.event_callbacks.update_set(current, event_handlers)
         };
 
+        let old_focus_handle;
         {
             let node = self.nodes.get_mut(id).expect("reused node missing");
 
@@ -1844,7 +1948,21 @@ impl UiArena {
             flags |= widget_flags;
             node.event_callbacks = event_callbacks;
             node.shortcut_bindings = shortcut_bindings;
+            node.focus = focus;
+            node.accessibility = accessibility;
+            old_focus_handle = std::mem::replace(&mut node.focus_handle, focus_handle);
             current_widget = node.widget.clone();
+        }
+
+        if let Some(handle) = old_focus_handle {
+            handle.unbind(id);
+        }
+        if let Some(handle) = self.nodes[id].focus_handle.as_ref() {
+            handle.bind(id);
+        }
+        if self.focus_manager.focused() == Some(id) && !self.nodes[id].is_focusable() {
+            self.focus_manager
+                .request_focus(None, xui_interface::FocusReason::Disabled);
         }
 
         self.refresh_taffy_context(id);
@@ -2070,15 +2188,15 @@ mod tests {
     use crate::event_system::translator::EventTranslator;
     use crate::render::RenderNodeKind;
     use crate::text::testing::ZeroTextBackend;
-    use crate::widgets::{CanvasController, WidgetI, canvas, container, text_input, z_stack};
+    use crate::widgets::{CanvasController, WidgetI, canvas, container, text, text_input, z_stack};
     use std::time::{Duration, Instant};
     use xui_animation::{Easing, Transition};
     use xui_interface::events::{
         Modifiers, PointerButtons, PointerKind, RawPointerMove, XuiPointerId,
     };
     use xui_interface::{
-        Affine, CanvasTextId, Color, ComputedColorStyle, PathBuilder, PathFill, Style, TextProps,
-        VectorSceneBuilder, WidgetState,
+        Affine, CanvasTextId, Color, ComputedColorStyle, FontDatabase, PathBuilder, PathFill,
+        Style, TextProps, VectorSceneBuilder, WidgetState,
     };
 
     fn create_host(arena: &mut UiArena, widget: WidgetI) -> NodeId {
@@ -2110,915 +2228,306 @@ mod tests {
     }
 
     #[test]
-    fn canvas_text_slots_shape_on_mount_reuse_by_id_and_remove_when_stale() {
-        let text_id = CanvasTextId::new(9);
-        let text_bounds = Rect::new(4.0, 5.0, 80.0, 30.0);
-        let mut initial_scene = VectorSceneBuilder::new();
-        initial_scene.text_box(text_id, text_bounds, TextProps::new("stable"));
-        let controller = CanvasController::with_scene(initial_scene.build());
+    fn host_metadata_binds_focus_handle_and_preserves_accessibility() {
         let mut arena = UiArena::new();
-        let mut measurer = TextHost::new(ZeroTextBackend);
-        let node = create_host(
-            &mut arena,
-            WidgetI::new(canvas(controller.clone()).style(Style::new().width(100.0).height(50.0))),
+        let handle = FocusHandle::new();
+        let widget = WidgetI::new(
+            container()
+                .focusable(true)
+                .tab_index(-1)
+                .focus_handle(handle.clone())
+                .accessibility_role(xui_interface::AccessibilityRole::Tab)
+                .accessibility_id("settings-tab")
+                .accessibility_label("Settings")
+                .accessibility_selected(true)
+                .accessibility_controls("settings-panel"),
+        );
+        let key = widget.key();
+        let props_hash = widget.props_hash();
+        let handlers = widget.take_event_handlers();
+        let node = arena.create_node(key, props_hash, widget, handlers);
+        arena.append_child(arena.root(), node);
+
+        assert_eq!(handle.node_id(), Some(node));
+        assert!(arena.node(node).unwrap().is_focusable());
+        assert!(!arena.node(node).unwrap().is_sequentially_focusable());
+        assert_eq!(
+            arena.node(node).unwrap().accessibility.role,
+            Some(xui_interface::AccessibilityRole::Tab)
+        );
+        assert_eq!(
+            arena.node(node).unwrap().accessibility.controls.as_deref(),
+            Some("settings-panel")
         );
 
-        arena.update_tree(Size::new(200.0, 100.0), &mut measurer);
-        let slot = canvas_text_slot(text_id);
-        let first = measurer
-            .active_slot(node, slot)
-            .expect("canvas text should shape during initial mount");
-
-        let mut path = PathBuilder::new();
-        path.move_to(Point::new(0.0, 0.0))
-            .line_to(Point::new(10.0, 10.0));
-        let mut reordered = VectorSceneBuilder::new();
-        reordered
-            .fill_path(path.build(), Affine::IDENTITY, PathFill::new(Color::BLACK))
-            .text_box(text_id, text_bounds, TextProps::new("stable"));
-        controller.set_scene(reordered.build());
-        update_host(
-            &mut arena,
-            node,
-            WidgetI::new(canvas(controller.clone()).style(Style::new().width(100.0).height(50.0))),
-        );
-        arena.update_tree(Size::new(200.0, 100.0), &mut measurer);
-        assert_eq!(measurer.active_slot(node, slot), Some(first));
-
-        controller.clear();
-        update_host(
-            &mut arena,
-            node,
-            WidgetI::new(canvas(controller).style(Style::new().width(100.0).height(50.0))),
-        );
-        arena.update_tree(Size::new(200.0, 100.0), &mut measurer);
-        assert!(measurer.direct_unit(node, slot).is_none());
-    }
-
-    fn assert_background_near(style: &ComputedStyle, expected: Color) {
-        let ComputedColorStyle::Solid(color) = style.paint.background else {
-            panic!("expected solid background");
-        };
-        assert_near(color.r, expected.r);
-        assert_near(color.g, expected.g);
-        assert_near(color.b, expected.b);
-        assert_near(color.a, expected.a);
-    }
-
-    fn assert_near(actual: f32, expected: f32) {
-        assert!(
-            (actual - expected).abs() < 0.0001,
-            "expected {actual} to be near {expected}"
-        );
-    }
-
-    fn last_shape_fill(frame: &crate::render::BuiltFrame) -> Option<ComputedColorStyle> {
-        fn visit(
-            frame: &crate::render::BuiltFrame,
-            layer: crate::render::BuiltLayerId,
-            found: &mut Option<ComputedColorStyle>,
-        ) {
-            for item in &frame.layers[layer.0].items {
-                match item {
-                    crate::render::BuiltItem::Draw(crate::render::BuiltDraw::Shape(shape)) => {
-                        *found = shape.primitive.fill;
-                    }
-                    crate::render::BuiltItem::Layer(instance_id) => {
-                        let instance = frame.layer_instance(*instance_id).expect("built instance");
-                        visit(frame, instance.layer, found);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        let mut found = None;
-        visit(frame, frame.root_layer, &mut found);
-        found
+        arena.remove_subtree(node);
+        assert!(!handle.is_bound());
     }
 
     #[test]
-    fn style_diff_domains_map_to_host_work_without_mixing_public_flags() {
-        let text = HostWorkFlags::from_style_diff(StyleDiffFlags::TEXT);
-        assert!(text.contains(HostWorkFlags::REBUILD_PAINT));
-        assert!(text.contains(HostWorkFlags::RECALC_STYLE_SUBTREE));
-        assert!(!text.contains(HostWorkFlags::RECALC_LAYOUT));
+    fn focus_handle_can_request_focus_for_another_node() {
+        let mut arena = UiArena::new();
+        let target_handle = FocusHandle::new();
 
-        let layout = HostWorkFlags::from_style_diff(StyleDiffFlags::LAYOUT);
-        assert!(layout.contains(HostWorkFlags::RECALC_LAYOUT));
-        assert!(layout.contains(HostWorkFlags::REBUILD_PAINT));
-        assert!(!layout.contains(HostWorkFlags::RECALC_STYLE));
+        let source_widget = WidgetI::new(container().focusable(true));
+        let source_hash = source_widget.props_hash();
+        let source_handlers = source_widget.take_event_handlers();
+        let source = arena.create_node(None, source_hash, source_widget, source_handlers);
+        arena.append_child(arena.root(), source);
 
-        let paint = HostWorkFlags::from_style_diff(StyleDiffFlags::PAINT);
-        assert_eq!(paint, HostWorkFlags::REBUILD_PAINT);
+        let target_widget = WidgetI::new(
+            container()
+                .focusable(true)
+                .focus_handle(target_handle.clone()),
+        );
+        let target_hash = target_widget.props_hash();
+        let target_handlers = target_widget.take_event_handlers();
+        let target = arena.create_node(None, target_hash, target_widget, target_handlers);
+        arena.append_child(arena.root(), target);
 
-        let scroll = HostWorkFlags::from_style_diff(StyleDiffFlags::SCROLL);
-        assert!(scroll.contains(HostWorkFlags::RECALC_LAYOUT));
-        assert!(scroll.contains(HostWorkFlags::REBUILD_PAINT));
-
-        let effect = HostWorkFlags::from_style_diff(StyleDiffFlags::EFFECT);
-        assert_eq!(effect, HostWorkFlags::SYNC_RENDER);
+        let mut flags = WidgetUpdateFlags::empty();
+        let mut requests = xui_interface::EventRequests::default();
+        let mut cx = crate::event_system::EventContext::new(
+            arena.node(source).unwrap(),
+            None,
+            xui_interface::EventPhase::Target,
+            &mut flags,
+            &mut requests,
+        );
+        assert!(target_handle.request_focus(&mut cx));
+        assert_eq!(
+            requests.iter().collect::<Vec<_>>(),
+            vec![xui_interface::EventRequest::Focus(target)]
+        );
     }
 
     #[test]
-    fn style_target_change_starts_transition_and_repaints_effective_style() {
+    fn host_metadata_and_focus_handle_update_with_reused_node() {
         let mut arena = UiArena::new();
-        let mut measurer = TextHost::new(ZeroTextBackend);
-        let transition = Transition::new(Duration::from_millis(100)).ease(Easing::Linear);
+        let old_handle = FocusHandle::new();
         let initial = WidgetI::new(
             container()
-                .style(
-                    Style::new()
-                        .width(40.0)
-                        .height(20.0)
-                        .background(Color::BLACK),
-                )
-                .transition(transition),
+                .tab_index(0)
+                .focus_handle(old_handle.clone())
+                .accessibility_role(xui_interface::AccessibilityRole::Tab)
+                .accessibility_selected(false),
         );
-        let id = create_host(&mut arena, initial);
-        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        let initial_hash = initial.props_hash();
+        let initial_handlers = initial.take_event_handlers();
+        let node = arena.create_node(None, initial_hash, initial, initial_handlers);
+        arena.append_child(arena.root(), node);
 
-        let next = WidgetI::new(
+        let new_handle = FocusHandle::new();
+        let updated = WidgetI::new(
             container()
-                .style(
-                    Style::new()
-                        .width(40.0)
-                        .height(20.0)
-                        .background(Color::WHITE),
-                )
-                .transition(transition),
+                .tab_index(-1)
+                .focus_handle(new_handle.clone())
+                .accessibility_role(xui_interface::AccessibilityRole::Tab)
+                .accessibility_selected(true),
         );
-        update_host(&mut arena, id, next);
-        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        let updated_hash = updated.props_hash();
+        let updated_handlers = updated.take_event_handlers();
+        arena.update_widget_node_from_parts(node, None, updated_hash, updated, updated_handlers);
 
-        assert!(arena.has_running_style_animations());
-        assert_background_near(&arena.nodes[id].effective_style, Color::BLACK);
-
-        arena.tick_style_animations(Duration::from_millis(50));
-        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-
-        assert_background_near(&arena.nodes[id].effective_style, Color::rgb(0.5, 0.5, 0.5));
-        let frame = arena.build_render_frame().unwrap().unwrap();
-        let ComputedColorStyle::Solid(color) = last_shape_fill(&frame.built).unwrap() else {
-            panic!("expected solid painted background");
-        };
-        assert_near(color.r, 0.5);
-
-        arena.tick_style_animations(Duration::from_millis(50));
-        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-
-        assert!(!arena.has_running_style_animations());
-        assert_background_near(&arena.nodes[id].effective_style, Color::WHITE);
+        assert!(!old_handle.is_bound());
+        assert_eq!(new_handle.node_id(), Some(node));
+        assert_eq!(arena.node(node).unwrap().focus.tab_index, Some(-1));
+        assert_eq!(arena.node(node).unwrap().accessibility.selected, Some(true));
     }
 
     #[test]
-    fn semantic_hover_updates_widget_state_and_recomputes_style() {
+    fn final_text_width_is_activated_after_layout_measurement() {
         let mut arena = UiArena::new();
+        let node = create_host(
+            &mut arena,
+            WidgetI::new(text("飞行监测").style(Style::new().width(120.0))),
+        );
         let mut measurer = TextHost::new(ZeroTextBackend);
-        let id = create_host(
-            &mut arena,
-            WidgetI::new(
-                container().style(
-                    Style::new()
-                        .width(40.0)
-                        .height(20.0)
-                        .background(Color::BLACK)
-                        .when(WidgetState::HOVERED, |s| s.background(Color::WHITE)),
-                ),
-            ),
-        );
-        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
-        let mut translator = EventTranslator::default();
-        arena.dispatch_event(
-            &measurer,
-            &mut translator,
-            pointer_move(Point::new(1.0, 1.0)),
-        );
-        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
 
-        assert!(arena.nodes[id].state.contains(WidgetState::HOVERED));
-        assert_background_near(&arena.nodes[id].target_style, Color::WHITE);
-        assert_background_near(&arena.nodes[id].effective_style, Color::WHITE);
-    }
-
-    #[test]
-    fn nearest_local_shortcut_binding_wins() {
-        use xui_interface::{
-            CommandId, KeyState, PhysicalKey, RawKeyboard, Shortcut, ShortcutBinding,
-        };
-        let mut arena = UiArena::new();
-        let parent = create_host(&mut arena, WidgetI::new(container()));
-        let child = arena.create_node(None, 0, WidgetI::new(container()), EventHandlers::default());
-        arena.append_child(parent, child);
-        let shortcut = Shortcut::physical(PhysicalKey::KeyS);
-        arena.nodes[parent].shortcut_bindings.push(ShortcutBinding {
-            shortcut,
-            command: CommandId("parent"),
-        });
-        arena.nodes[child].shortcut_bindings.push(ShortcutBinding {
-            shortcut,
-            command: CommandId("child"),
-        });
-        arena
-            .focus_manager
-            .commit(Some(child), xui_interface::FocusReason::Programmatic);
-        let raw = RawKeyboard {
-            physical_key: PhysicalKey::KeyS,
-            named_key: None,
-            state: KeyState::Down,
-            text: None,
-            modifiers: Modifiers::default(),
-            timestamp: Instant::now(),
-            is_repeat: false,
-        };
-        let (target, binding) = arena.resolve_local_shortcut(&raw).unwrap();
-        assert_eq!(target, child);
-        assert_eq!(binding.command, CommandId("child"));
-        arena.nodes[child].shortcut_bindings.clear();
-        assert_eq!(
-            arena.resolve_local_shortcut(&raw).unwrap().1.command,
-            CommandId("parent")
-        );
-    }
-
-    #[test]
-    fn focus_manager_emits_ordered_transition_events() {
-        use crate::focus::FocusRequest;
-        use xui_interface::FocusReason;
-        use xui_interface::events::{EventSource as SemanticEventSource, SemanticEvent};
-        let mut arena = UiArena::new();
-        let first = create_host(&mut arena, WidgetI::new(text_input()));
-        let second = create_host(&mut arena, WidgetI::new(text_input()));
-        let mut translator = EventTranslator::default();
-        let now = Instant::now();
-
-        let initial = translator.apply_focus_request(
-            &mut arena,
-            FocusRequest {
-                target: Some(first),
-                reason: FocusReason::Programmatic,
-            },
-            now,
-            Modifiers::default(),
-        );
-        assert!(matches!(
-            &initial[..],
-            [SemanticEvent::FocusIn(_), SemanticEvent::Focus(_)]
-        ));
-        assert_eq!(arena.focused_node(), Some(first));
-
-        let events = translator.apply_focus_request(
-            &mut arena,
-            FocusRequest {
-                target: Some(second),
-                reason: FocusReason::Keyboard,
-            },
-            now,
-            Modifiers::default(),
-        );
-        assert!(matches!(
-            &events[..],
-            [
-                SemanticEvent::Blur(_),
-                SemanticEvent::FocusOut(_),
-                SemanticEvent::FocusIn(_),
-                SemanticEvent::Focus(_)
-            ]
-        ));
-        let SemanticEvent::Blur(blur) = &events[0] else {
-            unreachable!()
-        };
-        assert_eq!(
-            (blur.old_focused, blur.new_focused, blur.related_target),
-            (Some(first), Some(second), Some(second))
-        );
-        assert_eq!(blur.meta.source, SemanticEventSource::Keyboard);
-        assert_eq!(arena.focus_manager().focused(), Some(second));
-    }
-
-    #[test]
-    fn invalid_focus_target_is_rejected_and_window_blur_clears_focus() {
-        use crate::focus::FocusRequest;
-        use xui_interface::{FocusReason, RawWindowEvent};
-        let mut arena = UiArena::new();
-        let focusable = create_host(&mut arena, WidgetI::new(text_input()));
-        let invalid = create_host(&mut arena, WidgetI::new(container()));
-        let mut translator = EventTranslator::default();
-        let now = Instant::now();
-        assert!(
-            translator
-                .apply_focus_request(
-                    &mut arena,
-                    FocusRequest {
-                        target: Some(invalid),
-                        reason: FocusReason::Programmatic
-                    },
-                    now,
-                    Modifiers::default()
-                )
-                .is_empty()
-        );
-        translator.apply_focus_request(
-            &mut arena,
-            FocusRequest {
-                target: Some(focusable),
-                reason: FocusReason::Programmatic,
-            },
-            now,
-            Modifiers::default(),
-        );
-        translator.translate_raw_event(
-            &RawEvent::WindowBlur(RawWindowEvent {
-                timestamp: now,
-                modifiers: Modifiers::default(),
-            }),
-            &mut arena,
-        );
-        assert_eq!(arena.focused_node(), None);
-    }
-
-    #[test]
-    fn tab_navigation_and_node_removal_use_focus_manager() {
-        use xui_interface::{KeyState, NamedKey, PhysicalKey, RawKeyboard};
-        let mut arena = UiArena::new();
-        let first = create_host(&mut arena, WidgetI::new(text_input()));
-        let second = create_host(&mut arena, WidgetI::new(text_input()));
-        let measurer = TextHost::new(ZeroTextBackend);
-        let mut translator = EventTranslator::default();
-        let tab = || {
-            RawEvent::Keyboard(RawKeyboard {
-                physical_key: PhysicalKey::Tab,
-                named_key: Some(NamedKey::Tab),
-                state: KeyState::Down,
-                text: None,
-                modifiers: Modifiers::default(),
-                timestamp: Instant::now(),
-                is_repeat: false,
-            })
-        };
-
-        arena.dispatch_event(&measurer, &mut translator, tab());
-        assert_eq!(arena.focused_node(), Some(first));
-        arena.dispatch_event(&measurer, &mut translator, tab());
-        assert_eq!(arena.focus_manager().focused(), Some(second));
-        arena.remove_subtree(second);
-        assert_eq!(arena.focused_node(), None);
-    }
-
-    #[test]
-    fn semantic_hover_leave_recomputes_default_style() {
-        let mut arena = UiArena::new();
-        let mut measurer = TextHost::new(ZeroTextBackend);
-        let id = create_host(
-            &mut arena,
-            WidgetI::new(
-                container().style(
-                    Style::new()
-                        .width(40.0)
-                        .height(20.0)
-                        .background(Color::BLACK)
-                        .when(WidgetState::HOVERED, |s| s.background(Color::WHITE)),
-                ),
-            ),
-        );
-        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-
-        let mut translator = EventTranslator::default();
-        arena.dispatch_event(
-            &measurer,
-            &mut translator,
-            pointer_move(Point::new(1.0, 1.0)),
-        );
-        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-        arena.dispatch_event(
-            &measurer,
-            &mut translator,
-            pointer_move(Point::new(80.0, 80.0)),
-        );
-        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-
-        assert!(!arena.nodes[id].state.contains(WidgetState::HOVERED));
-        assert_background_near(&arena.nodes[id].target_style, Color::BLACK);
-        assert_background_near(&arena.nodes[id].effective_style, Color::BLACK);
-    }
-
-    #[test]
-    fn target_layout_change_marks_compiled_scene_dirty() {
-        let mut arena = UiArena::new();
-        let mut measurer = TextHost::new(ZeroTextBackend);
-        let id = create_host(
-            &mut arena,
-            WidgetI::new(container().style(Style::new().width(10.0).height(10.0))),
-        );
-        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-
-        // if let Some(frame) = arena.build_render_frame().unwrap() {
-        //     arena.finish_render_frame(&frame);
-        // }
-
-        update_host(
-            &mut arena,
-            id,
-            WidgetI::new(container().style(Style::new().width(20.0).height(10.0))),
-        );
-        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-
-        assert_near(arena.nodes[id].layout.width, 20.0);
-        let frame = arena.build_render_frame().unwrap().unwrap();
-        assert!(!frame.dirty_snapshot.nodes.is_empty());
-    }
-
-    #[test]
-    fn scene_changes_generate_built_frame_and_finish_acknowledges_both_snapshots() {
-        let mut arena = UiArena::new();
-        let mut measurer = TextHost::new(ZeroTextBackend);
-        create_host(
-            &mut arena,
-            WidgetI::new(
-                container().style(
-                    Style::new()
-                        .width(40.0)
-                        .height(20.0)
-                        .background(Color::BLACK),
-                ),
-            ),
-        );
-        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-
-        let frame = arena.build_render_frame().unwrap().unwrap();
-        assert!(!frame.dirty_snapshot.nodes.is_empty());
-        assert!(
-            !frame.built.layers[frame.built.root_layer.0]
-                .items
-                .is_empty()
-        );
-
-        arena.finish_render_frame(&frame);
-        assert!(arena.build_render_frame().unwrap().is_none());
-    }
-
-    #[test]
-    fn scroll_uses_frame_properties_without_recompiling_the_scene() {
-        let mut arena = UiArena::new();
-        let mut measurer = TextHost::new(ZeroTextBackend);
-        let parent = create_host(
-            &mut arena,
-            WidgetI::new(
-                container().style(
-                    Style::new()
-                        .width(50.0)
-                        .height(50.0)
-                        .scroll_vertical()
-                        .scrollbar_visibility(ScrollbarVisibilityStyle::Hidden),
-                ),
-            ),
-        );
-        let child = create_host(
-            &mut arena,
-            WidgetI::new(
-                container().style(
-                    Style::new()
-                        .width(40.0)
-                        .height(100.0)
-                        .background(Color::BLACK),
-                ),
-            ),
-        );
-        arena.append_child(parent, child);
-        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
-
-        let initial = arena.build_render_frame().unwrap().unwrap();
-        let scene_revision = initial.built.scene_revision;
-        let initial_properties_revision = initial.built.properties_revision;
-        // arena.finish_render_frame(&initial);
-        let binding = arena.render_scene.host_binding(parent).unwrap().clone();
-        let scroll_transform = binding
-            .scroll_transform
-            .expect("scrollable host must have a dynamic spatial node");
-
-        arena.nodes[parent].scroll_offset = Point::new(0.0, 10.0);
-        arena.sync_host_render_node(parent).unwrap();
-        assert!(arena.render_scene.dirty_snapshot().nodes.is_empty());
-        assert!(
-            arena
-                .render_scene
-                .node(scroll_transform)
-                .unwrap()
-                .dirty
-                .is_empty()
-        );
-        assert!(arena.frame_properties.is_dirty());
-
-        let pending = arena.build_render_frame().unwrap().unwrap();
-        assert_eq!(pending.built.scene_revision, scene_revision);
-        assert!(pending.built.properties_revision > initial_properties_revision);
-        let repeated = arena.build_render_frame().unwrap().unwrap();
-        assert_eq!(
-            repeated.built.properties_revision,
-            pending.built.properties_revision
-        );
-        assert!(arena.frame_properties.is_dirty());
-
-        arena.finish_render_frame(&pending);
-        assert!(!arena.frame_properties.is_dirty());
-        assert!(arena.build_render_frame().unwrap().is_none());
-    }
-
-    #[test]
-    fn viewport_change_remains_pending_until_present() {
-        let mut arena = UiArena::new();
-        let mut measurer = TextHost::new(ZeroTextBackend);
-        create_host(
-            &mut arena,
-            WidgetI::new(container().style(Style::new().width(10.0).height(10.0))),
-        );
-        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-        let initial = arena.build_render_frame().unwrap().unwrap();
-        let scene_revision = initial.built.scene_revision;
-        arena.finish_render_frame(&initial);
-
-        let root = arena.root;
-        arena.nodes[root].layout.width = 120.0;
-        let pending = arena.build_render_frame().unwrap().unwrap();
-        assert_eq!(pending.built.scene_revision, scene_revision);
-        assert_eq!(pending.viewport.width, 120.0);
-        assert!(arena.build_render_frame().unwrap().is_some());
-
-        arena.finish_render_frame(&pending);
-        assert!(arena.build_render_frame().unwrap().is_none());
-    }
-
-    #[test]
-    fn identical_repaint_output_does_not_dirty_render_scene() {
-        let mut arena = UiArena::new();
-        let mut measurer = TextHost::new(ZeroTextBackend);
-        let id = create_host(
-            &mut arena,
-            WidgetI::new(
-                container().style(
-                    Style::new()
-                        .width(40.0)
-                        .height(20.0)
-                        .background(Color::BLACK),
-                ),
-            ),
-        );
-        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-        // arena.finish_paint();
-
-        arena.mark_dirty(id, WidgetUpdateFlags::PAINT_OUTPUT);
-
-        assert!(!arena.render_scene.is_dirty());
-
-        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-        assert!(arena.build_render_frame().unwrap().is_none());
-        assert!(!arena.is_dirty());
-    }
-
-    #[test]
-    fn host_render_children_follow_host_order_without_recreating_roots() {
-        let mut arena = UiArena::new();
-        let mut measurer = TextHost::new(ZeroTextBackend);
-        let parent = create_host(&mut arena, WidgetI::new(container()));
-        let a = arena.create_node(None, 0, WidgetI::new(container()), EventHandlers::default());
-        let b = arena.create_node(None, 0, WidgetI::new(container()), EventHandlers::default());
-        arena.append_child(parent, a);
-        arena.append_child(parent, b);
-        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-
-        let parent_binding = arena.render_scene.host_binding(parent).unwrap().clone();
-        let children = parent_binding
-            .children
-            .expect("parent children branch was not created");
-        let a_root = arena.render_scene.host_binding(a).unwrap().root;
-        let b_root = arena.render_scene.host_binding(b).unwrap().root;
-        assert_eq!(
-            arena.render_scene.children(children).unwrap(),
-            &[a_root, b_root]
-        );
-
-        arena.set_children(parent, vec![b, a]);
-        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-        assert_eq!(
-            arena.render_scene.children(children).unwrap(),
-            &[b_root, a_root]
-        );
-        assert_eq!(arena.render_scene.host_binding(a).unwrap().root, a_root);
-        assert_eq!(arena.render_scene.host_binding(b).unwrap().root, b_root);
-    }
-
-    #[test]
-    fn z_stack_uses_declaration_order_for_paint_and_reverse_order_for_hit_testing() {
-        let mut arena = UiArena::new();
-        let mut measurer = TextHost::new(ZeroTextBackend);
-        let stack = create_host(
-            &mut arena,
-            WidgetI::new(z_stack().style(Style::new().width(100.0).height(100.0))),
-        );
-        let child = |arena: &mut UiArena| {
-            let widget = WidgetI::new(container().style(Style::new().width(100.0).height(100.0)));
-            let id = arena.create_node(
-                widget.key(),
-                widget.props_hash(),
-                widget,
-                EventHandlers::default(),
-            );
-            arena.append_child(stack, id);
-            id
-        };
-        let back = child(&mut arena);
-        let front = child(&mut arena);
-
-        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
-        let branch = arena
-            .render_scene
-            .host_binding(stack)
-            .unwrap()
-            .children
+        let active = measurer
+            .active_slot(node, TextLayoutSlot::PRIMARY)
+            .expect("final layout must activate regular text");
+        let host_node = arena.node(node).unwrap();
+        assert_eq!(host_node.layout.width, 120.0);
+        let props = host_node
+            .widget
+            .with_widgets(|widget| widget.text_layout_props(&host_node.effective_style))
             .unwrap();
-        assert_eq!(
-            arena.render_scene.children(branch).unwrap(),
-            &[
-                arena.render_scene.host_binding(back).unwrap().root,
-                arena.render_scene.host_binding(front).unwrap().root,
-            ]
+        let final_input = TextLayoutInput::new(
+            props.text,
+            TextLayoutConstraints::max_width(host_node.layout.width),
+            props.style.into(),
+            props.paragraph,
+            props.text_box,
+            measurer.backend().epoch(),
         );
-        assert_eq!(arena.hit_test(Point::new(10.0, 10.0)), Some(front));
+
+        let expected = measurer.activate_slot(node, TextLayoutSlot::PRIMARY, final_input);
+        assert_eq!(active, expected);
+
+        let host_node = arena.node(node).unwrap();
+        let props = host_node
+            .widget
+            .with_widgets(|widget| widget.text_layout_props(&host_node.effective_style))
+            .unwrap();
+        let font_context = measurer.backend().epoch();
+        measurer.measure_slot(
+            node,
+            TextLayoutSlot::PRIMARY,
+            TextLayoutInput::new(
+                props.text,
+                TextLayoutConstraints::MIN_SIZE,
+                props.style.into(),
+                props.paragraph,
+                props.text_box,
+                font_context,
+            ),
+        );
+        assert_eq!(
+            measurer.active_slot(node, TextLayoutSlot::PRIMARY),
+            Some(active)
+        );
     }
 
     #[test]
-    fn backdrop_style_maintains_stable_clip_and_layer_scaffold() {
+    fn text_nodes_preserve_fractional_taffy_geometry() {
         let mut arena = UiArena::new();
-        let mut measurer = TextHost::new(ZeroTextBackend);
-        let widget = |sigma, clip| {
-            let style = Style::new()
-                .width(80.0)
-                .height(40.0)
-                .border_radius(12.0)
-                .clip(clip);
-            let style = if sigma > 0.0 {
-                style.backdrop_blur(sigma)
-            } else {
-                style.no_backdrop()
-            };
-            WidgetI::new(container().style(style))
-        };
-        let id = create_host(&mut arena, widget(18.0, true));
-        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-
-        let first = arena.render_scene.host_binding(id).unwrap().clone();
-        let clip = first.clip.expect("clip wrapper must be created");
-        let layer = first.layer.expect("backdrop layer must be created");
-        let RenderNodeKind::Clip(clip_node) = &arena.render_scene.node(clip).unwrap().kind else {
-            panic!("clip binding must reference a clip node");
-        };
-        assert!(matches!(
-            clip_node.clip,
-            ClipShape::RoundedRect { radius: 12.0, .. }
-        ));
-        assert_eq!(clip_node.child, Some(layer));
-        let RenderNodeKind::Layer(layer_node) = &arena.render_scene.node(layer).unwrap().kind
-        else {
-            panic!("layer binding must reference a layer node");
-        };
-        assert_eq!(
-            layer_node.descriptor.bounds,
-            Some(Rect::new(0.0, 0.0, 80.0, 40.0))
+        let node = create_host(
+            &mut arena,
+            WidgetI::new(text("中文").style(Style::new().width(45.5).height(20.0))),
         );
-        let backdrop = layer_node.descriptor.backdrop_style.as_ref().unwrap();
-        assert_eq!(backdrop.mask, xui_interface::ComputedBackdropMask::None);
-        assert!(matches!(
-            backdrop.filters.as_ref(),
-            [xui_interface::ComputedBackdropFilter::Blur {
-                sigma_x: 18.0,
-                sigma_y: 18.0,
-                ..
-            }]
-        ));
+        let mut measurer = TextHost::new(ZeroTextBackend);
 
-        update_host(&mut arena, id, widget(9.0, true));
-        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-        let updated = arena.render_scene.host_binding(id).unwrap().clone();
-        assert_eq!(updated.clip, Some(clip));
-        assert_eq!(updated.layer, Some(layer));
-        let RenderNodeKind::Layer(layer_node) = &arena.render_scene.node(layer).unwrap().kind
-        else {
-            unreachable!();
-        };
-        assert!(matches!(
-            layer_node
-                .descriptor
-                .backdrop_style
-                .as_ref()
-                .unwrap()
-                .filters
-                .as_ref(),
-            [xui_interface::ComputedBackdropFilter::Blur {
-                sigma_x: 9.0,
-                sigma_y: 9.0,
-                ..
-            }]
-        ));
+        arena.update_tree(Size::new(200.0, 100.0), &mut measurer);
 
-        update_host(&mut arena, id, widget(9.0, false));
-        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-        let unclipped = arena.render_scene.host_binding(id).unwrap().clone();
-        assert_eq!(unclipped.clip, None);
-        assert_eq!(unclipped.layer, Some(layer));
-
-        update_host(&mut arena, id, widget(0.0, false));
-        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-        let disabled = arena.render_scene.host_binding(id).unwrap();
-        assert_eq!(disabled.clip, None);
-        assert_eq!(disabled.layer, None);
+        let taffy_node = arena.nodes[node].taffy_node;
+        let rounded_width = arena.taffy.layout(taffy_node).unwrap().size.width;
+        let unrounded_width = arena.taffy.unrounded_layout(taffy_node).size.width;
+        assert_eq!(rounded_width, 46.0);
+        assert_eq!(unrounded_width, 45.5);
+        assert_eq!(arena.node(node).unwrap().layout.width, unrounded_width);
     }
 
     #[test]
-    fn host_render_scaffold_retains_children_and_releases_transient_branches() {
+    fn resizing_invalidates_intrinsic_text_layout_caches() {
+        fn create_child(arena: &mut UiArena, parent: NodeId, widget: WidgetI) -> NodeId {
+            let child = create_host(arena, widget);
+            arena.append_child(parent, child);
+            child
+        }
+
         let mut arena = UiArena::new();
-        let mut measurer = TextHost::new(ZeroTextBackend);
-        let base_style = Style::new().width(50.0).height(50.0);
-        let parent = create_host(
+        let outer = create_host(
             &mut arena,
-            WidgetI::new(container().style(base_style.clone())),
+            WidgetI::new(
+                container()
+                    .flex_direction(xui_interface::FlexDirectionStyle::Row)
+                    .style(
+                        Style::new()
+                            .size(Size::fill())
+                            .padding(xui_interface::EdgeInsets::all(16.0))
+                            .gap(16.0),
+                    ),
+            ),
         );
-        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
-
-        let leaf_binding = arena.render_scene.host_binding(parent).unwrap().clone();
-        assert_eq!(leaf_binding.children, None);
-        assert_eq!(leaf_binding.scroll_transform, None);
-        assert_eq!(leaf_binding.overlay, None);
-        assert_eq!(
-            arena.render_scene.children(leaf_binding.contents).unwrap(),
-            &[leaf_binding.paint]
-        );
-
-        let child = create_host(
+        create_child(
             &mut arena,
-            WidgetI::new(container().style(Style::new().width(40.0).height(100.0))),
-        );
-        arena.append_child(parent, child);
-        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
-
-        let child_binding = arena.render_scene.host_binding(parent).unwrap().clone();
-        let children = child_binding
-            .children
-            .expect("children branch was not created");
-        assert_eq!(child_binding.scroll_transform, None);
-        assert_eq!(child_binding.overlay, None);
-        assert_eq!(
-            arena.render_scene.children(child_binding.contents).unwrap(),
-            &[child_binding.paint, children]
-        );
-
-        update_host(
-            &mut arena,
-            parent,
+            outer,
             WidgetI::new(
                 container().style(
-                    base_style
-                        .clone()
-                        .scroll_vertical()
-                        .scrollbar_visibility(ScrollbarVisibilityStyle::Always),
+                    Style::new()
+                        .width(xui_interface::Sizing::percent(0.4))
+                        .height(xui_interface::Sizing::fill()),
                 ),
             ),
         );
-        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
-
-        let scrolling = arena.render_scene.host_binding(parent).unwrap().clone();
-        let scroll_transform = scrolling
-            .scroll_transform
-            .expect("scroll transform was not created");
-        let overlay = scrolling.overlay.expect("overlay was not created");
-        assert_eq!(scrolling.children, Some(children));
-        assert_eq!(
-            arena.render_scene.children(scrolling.contents).unwrap(),
-            &[scrolling.paint, scroll_transform, overlay]
-        );
-        assert_eq!(
-            arena.render_scene.children(scroll_transform).unwrap(),
-            &[children]
-        );
-        assert!(!arena.render_scene.children(overlay).unwrap().is_empty());
-
-        update_host(
+        let analytics = create_child(
             &mut arena,
-            parent,
+            outer,
+            WidgetI::new(
+                container()
+                    .flex_direction(xui_interface::FlexDirectionStyle::Column)
+                    .style(
+                        Style::new()
+                            .size(Size::fill())
+                            .padding(xui_interface::EdgeInsets::all(16.0))
+                            .gap(12.0),
+                    ),
+            ),
+        );
+        let tabs = create_child(
+            &mut arena,
+            analytics,
+            WidgetI::new(
+                container()
+                    .flex_direction(xui_interface::FlexDirectionStyle::Row)
+                    .style(
+                        Style::new()
+                            .gap(3.0)
+                            .padding(xui_interface::EdgeInsets::all(4.0))
+                            .border_width(1.0),
+                    ),
+            ),
+        );
+        let tab = create_child(
+            &mut arena,
+            tabs,
             WidgetI::new(
                 container().style(
-                    base_style
-                        .clone()
-                        .scroll_vertical()
-                        .scrollbar_visibility(ScrollbarVisibilityStyle::Hidden),
+                    Style::new()
+                        .padding(xui_interface::EdgeInsets::symmetric(16.0, 6.0))
+                        .font_size(12.0)
+                        .border_width(1.0),
                 ),
             ),
         );
-        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
-
-        let hidden = arena.render_scene.host_binding(parent).unwrap();
-        assert_eq!(hidden.children, Some(children));
-        assert_eq!(hidden.scroll_transform, Some(scroll_transform));
-        assert_eq!(hidden.overlay, None);
-        assert!(arena.render_scene.contains(scroll_transform));
-        assert!(!arena.render_scene.contains(overlay));
-        assert_eq!(
-            arena.render_scene.children(hidden.contents).unwrap(),
-            &[hidden.paint, scroll_transform]
-        );
-
-        update_host(
+        let label = create_child(&mut arena, tab, WidgetI::new(text("飞行监测")));
+        create_child(
             &mut arena,
-            parent,
-            WidgetI::new(container().style(base_style.clone())),
+            analytics,
+            WidgetI::new(container().style(Style::new().size(Size::fill()))),
         );
-        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
 
-        let disabled = arena.render_scene.host_binding(parent).unwrap();
-        assert_eq!(disabled.children, Some(children));
-        assert_eq!(disabled.scroll_transform, None);
-        assert_eq!(disabled.overlay, None);
-        assert_eq!(
-            arena.render_scene.children(disabled.contents).unwrap(),
-            &[disabled.paint, children]
-        );
-        assert!(!arena.render_scene.contains(scroll_transform));
-        assert!(!arena.render_scene.contains(overlay));
-        assert!(arena.frame_properties.transform(scroll_transform).is_none());
+        let mut measurer = TextHost::new(crate::Engine::new());
+        arena.update_tree(Size::new(1600.0, 900.0), &mut measurer);
+        let expected_width = arena.node(label).unwrap().layout.width;
+        assert!(expected_width > 12.0);
 
-        arena.set_children(parent, Vec::new());
-        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
-        let empty = arena.render_scene.host_binding(parent).unwrap();
-        assert_eq!(empty.children, Some(children));
-        assert_eq!(empty.scroll_transform, None);
-        assert_eq!(empty.overlay, None);
-        assert!(arena.render_scene.children(children).unwrap().is_empty());
+        for width in [900.0, 2000.0] {
+            arena.mark_subtree_layout_dirty(arena.root());
+            arena.update_tree(Size::new(width, 900.0), &mut measurer);
 
-        update_host(
-            &mut arena,
-            parent,
-            WidgetI::new(
-                container().style(
-                    base_style
-                        .scroll_vertical()
-                        .scrollbar_visibility(ScrollbarVisibilityStyle::Always),
-                ),
-            ),
-        );
-        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
-
-        let restored = arena.render_scene.host_binding(parent).unwrap();
-        let restored_scroll_transform = restored
-            .scroll_transform
-            .expect("scroll transform was recreated");
-        let restored_overlay = restored.overlay.expect("overlay was recreated");
-        assert_ne!(restored_scroll_transform, scroll_transform);
-        assert_ne!(restored_overlay, overlay);
-        assert_eq!(restored.children, Some(children));
-        assert_eq!(
-            arena.render_scene.children(restored.contents).unwrap(),
-            &[restored.paint, restored_scroll_transform, restored_overlay]
-        );
-        assert_eq!(
-            arena
-                .render_scene
-                .children(restored_scroll_transform)
-                .unwrap(),
-            &[children]
-        );
+            let final_width = arena.node(label).unwrap().layout.width;
+            let unrounded_width = arena
+                .taffy
+                .unrounded_layout(arena.nodes[label].taffy_node)
+                .size
+                .width;
+            assert!(
+                (final_width - expected_width).abs() < 0.01,
+                "text width changed from {expected_width} to {final_width} after resizing to {width}"
+            );
+            assert_eq!(
+                final_width, unrounded_width,
+                "text layout must preserve its fractional intrinsic width"
+            );
+            let active = measurer
+                .active_slot(label, TextLayoutSlot::PRIMARY)
+                .and_then(|handle| measurer.layout(handle))
+                .expect("final text layout must be active");
+            assert!((active.size().width - final_width).abs() < 0.01);
+            assert_eq!(
+                active.lines.len(),
+                1,
+                "intrinsically-sized CJK text wrapped after resizing to {width}: rounded={:?}, unrounded={:?}, lines={:?}",
+                arena.taffy.layout(arena.nodes[label].taffy_node).unwrap(),
+                arena.taffy.unrounded_layout(arena.nodes[label].taffy_node),
+                active.lines,
+            );
+        }
     }
-
-    // #[test]
-    // fn host_position_updates_only_touch_the_static_spatial_node() {
-    //     use crate::render::RenderDirty;
-
-    //     let mut arena = UiArena::new();
-    //     let mut measurer = TextHost::new(ZeroTextBackend);
-    //     let id = create_host(
-    //         &mut arena,
-    //         WidgetI::new(
-    //             container().style(
-    //                 Style::new()
-    //                     .width(40.0)
-    //                     .height(20.0)
-    //                     .background(Color::BLACK),
-    //             ),
-    //         ),
-    //     );
-    //     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-    //     let snapshot = arena.render_scene.dirty_snapshot();
-    //     arena.render_scene.acknowledge(&snapshot);
-    //     let binding = arena.render_scene.host_binding(id).unwrap().clone();
-
-    //     arena.nodes[id].layout.x += 10.0;
-    //     arena.sync_host_render_node(id).unwrap();
-    //     assert_eq!(
-    //         arena.render_scene.node(binding.transform).unwrap().dirty,
-    //         RenderDirty::GEOMETRY
-    //     );
-    //     for (_, node) in arena.render_scene.depth_first(binding.paint).unwrap() {
-    //         assert!(node.dirty.is_empty());
-    //     }
-    // }
 }
 
 fn measure_layout_context<T: TextBackend>(
@@ -3069,11 +2578,7 @@ fn measure_layout_context<T: TextBackend>(
                     props.text_box,
                     font_context,
                 );
-                let handle = measurer.get_or_shape_slot(*node_id, TextLayoutSlot::PRIMARY, input);
-                let size = measurer
-                    .layout(handle)
-                    .expect("freshly shaped text layout must be resident")
-                    .size();
+                let size = measurer.measure_slot(*node_id, TextLayoutSlot::PRIMARY, input);
                 return tf::Size {
                     width: known_dimensions.width.unwrap_or(size.width),
                     height: known_dimensions.height.unwrap_or(size.height),

@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::{Color, ComputedTextStyle, NodeLifecycleEvent, Point, Rect, Size};
@@ -8,13 +9,14 @@ use crate::{Color, ComputedTextStyle, NodeLifecycleEvent, Point, Rect, Size};
 pub trait Shaper {
     type State;
     type GlyphKey: Clone + Eq + Hash;
+    type FontId: Clone + Copy + Eq + Hash;
 
     fn create_state(&mut self) -> Self::State;
     fn layout_paragraph(
         &mut self,
         state: &mut Self::State,
         input: TextLayoutInput,
-    ) -> ParagraphLayout<Self::GlyphKey>;
+    ) -> ParagraphLayout<Self::FontId, Self::GlyphKey>;
 
     fn handle_node_lifecycle(&mut self, _event: &NodeLifecycleEvent) {}
 }
@@ -25,6 +27,10 @@ pub trait FontDatabase {
     fn load_system_fonts(&mut self);
     fn load_font_bytes(&mut self, bytes: Arc<[u8]>) -> Self::FontId;
     fn query(&self, query: &FontQuery) -> Option<Self::FontId>;
+    /// Returns the source data for a shaped font.
+    ///
+    /// `index` is the face index in a font collection and must be preserved by
+    /// renderers when constructing their native font object.
     fn font_data(&self, id: Self::FontId) -> Option<FontDataRef<'_>>;
 }
 
@@ -49,10 +55,24 @@ pub enum FontStretch {
     UltraExpanded,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FontDataRef<'a> {
-    Bytes(&'a [u8]),
-    System(SystemFontHandle),
+    Bytes {
+        bytes: &'a [u8],
+        index: u32,
+    },
+    System {
+        handle: SystemFontHandle,
+        path: &'a Path,
+        index: u32,
+        /// Family name used by the platform font manager. Some system font
+        /// collections cannot be reconstructed reliably from their raw bytes.
+        family: &'a str,
+        postscript_name: &'a str,
+        weight: FontWeight,
+        style: FontStyle,
+        stretch: FontStretch,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -92,8 +112,12 @@ pub trait GlyphRasterizer {
 }
 
 pub trait TextBackend:
-    FontDatabase + Shaper + GlyphRasterizer<GlyphKey = <Self as Shaper>::GlyphKey>
+    FontDatabase
+    + Shaper<FontId = <Self as FontDatabase>::FontId>
+    + GlyphRasterizer<GlyphKey = <Self as Shaper>::GlyphKey>
 {
+    /// Notify backends whose glyph cache keys depend on physical pixel scale.
+    fn set_scale_factor(&mut self, _scale_factor: f32) {}
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -425,14 +449,14 @@ fn hash_color<H: Hasher>(color: Color, state: &mut H) {
 }
 
 #[derive(Debug, Clone)]
-pub struct ParagraphLayout<K = ()> {
+pub struct ParagraphLayout<F, K = ()> {
     pub lines: Vec<LineLayout>,
-    pub runs: Vec<GlyphRun>,
+    pub runs: Vec<GlyphRun<F>>,
     pub glyphs: Vec<GlyphInstance<K>>,
     pub clusters: Vec<TextCluster>,
 }
 
-impl<K> ParagraphLayout<K> {
+impl<F, K> ParagraphLayout<F, K> {
     pub fn size(&self) -> Size<f32> {
         let width = self
             .lines
@@ -448,30 +472,11 @@ impl<K> ParagraphLayout<K> {
     }
 
     pub fn hit_test_point(&self, point: Point) -> Option<TextPosition> {
-        let line = self
-            .lines
-            .iter()
-            .find(|line| point.y >= line.y && point.y <= line.y + line.height)
-            .or_else(|| self.lines.first())?;
+        let line = self.line_at_y(point.y)?;
 
-        let clusters: Vec<_> = self.clusters[line.cluster_range.clone()].iter().collect();
+        let clusters = self.clusters.get(line.cluster_range.clone())?;
         if clusters.is_empty() {
             return Some(self.x_to_position_from_glyphs(line, point.x));
-        }
-
-        let first = clusters.first()?;
-        let last = clusters.last()?;
-        if point.x <= first.hitbox.x {
-            return Some(TextPosition {
-                offset: first.text_range.start,
-                affinity: Affinity::Before,
-            });
-        }
-        if point.x >= last.hitbox.x + last.hitbox.width {
-            return Some(TextPosition {
-                offset: last.text_range.end,
-                affinity: Affinity::After,
-            });
         }
 
         for cluster in clusters {
@@ -479,7 +484,8 @@ impl<K> ParagraphLayout<K> {
             let right = cluster.hitbox.x + cluster.hitbox.width;
             if point.x >= left && point.x <= right {
                 let mid = left + cluster.hitbox.width * 0.5;
-                return Some(if point.x < mid {
+                let rtl = self.cluster_is_rtl(cluster);
+                return Some(if (point.x < mid) != rtl {
                     TextPosition {
                         offset: cluster.text_range.start,
                         affinity: Affinity::Before,
@@ -493,70 +499,148 @@ impl<K> ParagraphLayout<K> {
             }
         }
 
-        Some(TextPosition {
-            offset: line.text_range.end,
-            affinity: Affinity::After,
+        let nearest = clusters.iter().min_by(|left, right| {
+            distance_to_rect_x(point.x, left.hitbox)
+                .total_cmp(&distance_to_rect_x(point.x, right.hitbox))
+        })?;
+        let rtl = self.cluster_is_rtl(nearest);
+        let before = point.x < nearest.hitbox.x;
+        Some(if before != rtl {
+            TextPosition {
+                offset: nearest.text_range.start,
+                affinity: Affinity::Before,
+            }
+        } else {
+            TextPosition {
+                offset: nearest.text_range.end,
+                affinity: Affinity::After,
+            }
         })
     }
 
     pub fn caret_rect(&self, position: TextPosition) -> Option<Rect> {
-        let line = self.lines.first()?;
+        let line = self.line_for_position(position)?;
         let height = line.height.max(1.0);
-        let x = self
-            .caret_x_for_offset(position.offset)
-            .unwrap_or(line.width);
+        let x = self.caret_x_for_offset(line, position.offset);
         Some(Rect::new(x, line.y, 1.0, height))
     }
 
     pub fn selection_rects(&self, range: TextRange) -> Vec<Rect> {
-        let Some(line) = self.lines.first() else {
+        if range.start.unit != range.end.unit || range.start.raw == range.end.raw {
             return Vec::new();
+        }
+        let (start, end) = if range.start.raw <= range.end.raw {
+            (range.start, range.end)
+        } else {
+            (range.end, range.start)
         };
-        let start_x = self.caret_x_for_offset(range.start).unwrap_or(0.0);
-        let end_x = self.caret_x_for_offset(range.end).unwrap_or(line.width);
-        let left = start_x.min(end_x);
-        let right = start_x.max(end_x);
-        if right <= left {
-            return Vec::new();
-        }
-        vec![Rect::new(left, line.y, right - left, line.height.max(1.0))]
-    }
 
-    fn caret_x_for_offset(&self, offset: TextOffset) -> Option<f32> {
-        if let Some(x) = self.caret_x_from_clusters(offset) {
-            return Some(x);
-        }
-
-        let line = self.lines.first()?;
-        Some(self.caret_x_from_glyphs(line, offset))
-    }
-
-    fn caret_x_from_clusters(&self, offset: TextOffset) -> Option<f32> {
-        let line = self.lines.first()?;
-        let clusters = &self.clusters[line.cluster_range.clone()];
-        if clusters.is_empty() {
-            return None;
-        }
-
-        for cluster in clusters {
-            let start = comparable_offset(cluster.text_range.start, offset.unit)?;
-            let end = comparable_offset(cluster.text_range.end, offset.unit)?;
-            if offset.raw <= start {
-                return Some(cluster.hitbox.x);
-            }
-            if offset.raw <= end {
-                let right = cluster.hitbox.x + cluster.hitbox.width;
-                return Some(if offset.raw == start {
-                    cluster.hitbox.x
+        self.lines
+            .iter()
+            .filter_map(|line| {
+                let line_start = comparable_offset(line.text_range.start, start.unit)?;
+                let line_end = comparable_offset(line.text_range.end, start.unit)?;
+                if end.raw <= line_start || start.raw >= line_end {
+                    return None;
+                }
+                let start_x = if start.raw <= line_start {
+                    line.x
                 } else {
-                    right
-                });
+                    self.caret_x_for_offset(line, start)
+                };
+                let end_x = if end.raw >= line_end {
+                    line.x + line.width
+                } else {
+                    self.caret_x_for_offset(line, end)
+                };
+                let left = start_x.min(end_x);
+                let right = start_x.max(end_x);
+                (right > left).then(|| Rect::new(left, line.y, right - left, line.height.max(1.0)))
+            })
+            .collect()
+    }
+
+    fn line_at_y(&self, y: f32) -> Option<&LineLayout> {
+        if let Some(line) = self
+            .lines
+            .iter()
+            .find(|line| y >= line.y && y <= line.y + line.height)
+        {
+            return Some(line);
+        }
+        self.lines.iter().min_by(|left, right| {
+            distance_to_range(y, left.y, left.y + left.height).total_cmp(&distance_to_range(
+                y,
+                right.y,
+                right.y + right.height,
+            ))
+        })
+    }
+
+    fn line_for_position(&self, position: TextPosition) -> Option<&LineLayout> {
+        let unit = position.offset.unit;
+        let raw = position.offset.raw;
+        let mut boundary_match = None;
+        for line in &self.lines {
+            let Some(start) = comparable_offset(line.text_range.start, unit) else {
+                continue;
+            };
+            let Some(end) = comparable_offset(line.text_range.end, unit) else {
+                continue;
+            };
+            if raw > start && raw < end {
+                return Some(line);
+            }
+            if raw == start && position.affinity == Affinity::Before {
+                return Some(line);
+            }
+            if raw == end && position.affinity == Affinity::After {
+                return Some(line);
+            }
+            if raw == start || raw == end {
+                boundary_match = Some(line);
             }
         }
+        boundary_match.or_else(|| {
+            self.lines.iter().min_by_key(|line| {
+                let start = comparable_offset(line.text_range.start, unit).unwrap_or(0);
+                let end = comparable_offset(line.text_range.end, unit).unwrap_or(start);
+                raw.abs_diff(raw.clamp(start, end))
+            })
+        })
+    }
 
-        clusters
-            .last()
-            .map(|cluster| cluster.hitbox.x + cluster.hitbox.width)
+    fn caret_x_for_offset(&self, line: &LineLayout, offset: TextOffset) -> f32 {
+        if let Some(clusters) = self.clusters.get(line.cluster_range.clone()) {
+            for cluster in clusters {
+                let Some(start) = comparable_offset(cluster.text_range.start, offset.unit) else {
+                    continue;
+                };
+                let Some(end) = comparable_offset(cluster.text_range.end, offset.unit) else {
+                    continue;
+                };
+                if offset.raw >= start && offset.raw <= end {
+                    let left = cluster.hitbox.x;
+                    let right = left + cluster.hitbox.width;
+                    let rtl = self.cluster_is_rtl(cluster);
+                    return if offset.raw == start {
+                        if rtl { right } else { left }
+                    } else if rtl {
+                        left
+                    } else {
+                        right
+                    };
+                }
+            }
+        }
+        self.caret_x_from_glyphs(line, offset)
+    }
+
+    fn cluster_is_rtl(&self, cluster: &TextCluster) -> bool {
+        self.runs
+            .iter()
+            .find(|run| ranges_overlap(&run.glyph_range, &cluster.glyph_range))
+            .is_some_and(|run| run.bidi_level % 2 == 1)
     }
 
     fn caret_x_from_glyphs(&self, line: &LineLayout, offset: TextOffset) -> f32 {
@@ -566,8 +650,11 @@ impl<K> ParagraphLayout<K> {
         } else {
             0
         };
-        let mut x = 0.0_f32;
-        for (visual_index, glyph) in self.glyphs[glyph_range].iter().enumerate() {
+        let mut x = line.x;
+        let Some(glyphs) = self.glyphs.get(glyph_range) else {
+            return x;
+        };
+        for (visual_index, glyph) in glyphs.iter().enumerate() {
             if visual_index >= visual_offset {
                 return glyph.hitbox.x;
             }
@@ -577,7 +664,13 @@ impl<K> ParagraphLayout<K> {
     }
 
     fn x_to_position_from_glyphs(&self, line: &LineLayout, x: f32) -> TextPosition {
-        for (visual_index, glyph) in self.glyphs[line.glyph_range.clone()].iter().enumerate() {
+        let Some(glyphs) = self.glyphs.get(line.glyph_range.clone()) else {
+            return TextPosition {
+                offset: line.text_range.start,
+                affinity: Affinity::Before,
+            };
+        };
+        for (visual_index, glyph) in glyphs.iter().enumerate() {
             let mid = glyph.hitbox.x + glyph.hitbox.width * 0.5;
             if x < mid {
                 return TextPosition {
@@ -591,6 +684,24 @@ impl<K> ParagraphLayout<K> {
             affinity: Affinity::After,
         }
     }
+}
+
+fn distance_to_range(value: f32, start: f32, end: f32) -> f32 {
+    if value < start {
+        start - value
+    } else if value > end {
+        value - end
+    } else {
+        0.0
+    }
+}
+
+fn distance_to_rect_x(x: f32, rect: Rect) -> f32 {
+    distance_to_range(x, rect.x, rect.x + rect.width)
+}
+
+fn ranges_overlap(left: &Range<usize>, right: &Range<usize>) -> bool {
+    left.start < right.end && right.start < left.end
 }
 
 fn comparable_offset(offset: TextOffset, unit: TextOffsetUnit) -> Option<usize> {
@@ -613,12 +724,14 @@ pub struct LineLayout {
     pub glyph_range: std::ops::Range<usize>,
     pub cluster_range: std::ops::Range<usize>,
 
+    /// Top-left of the line box in paragraph-local logical coordinates.
     pub x: f32,
     pub y: f32,
 
     pub width: f32,
     pub height: f32,
 
+    /// Baseline Y in paragraph-local logical coordinates.
     pub baseline: f32,
     pub hard_break: bool,
     pub ellipsized: bool,
@@ -650,11 +763,13 @@ pub enum Script {
 }
 
 #[derive(Debug, Clone)]
-pub struct GlyphRun {
+pub struct GlyphRun<F> {
     pub text_range: TextRange,
     pub glyph_range: Range<usize>,
 
-    pub font_id: FontId,
+    pub font_id: F,
+    /// Font size in logical pixels. Renderers apply the output scale through
+    /// their canvas/device transform, not by modifying this value.
     pub font_size: f32,
     pub font_weight: FontWeight,
     pub style_id: TextStyleId,
@@ -665,7 +780,12 @@ pub struct GlyphRun {
 pub struct GlyphInstance<K = ()> {
     pub key: K,
     pub glyph_id: GlyphId,
+    /// Glyph origin (the point on the baseline) in paragraph-local logical
+    /// coordinates. A renderer can pass these positions directly to its native
+    /// positioned-glyph API and add only the paragraph origin.
     pub draw_pos: Point,
+    /// Logical layout/hit-test box, also paragraph-local. This is an advance
+    /// box and does not need to match the glyph's ink bounds.
     pub hitbox: Rect,
     pub cluster: usize,
     pub flags: GlyphFlags,
@@ -815,4 +935,104 @@ pub struct TextLayoutKey {
 
     pub scale_factor_bits: u32,
     pub font_context_revision: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn multiline_layout() -> ParagraphLayout<u32> {
+        let lines = vec![
+            LineLayout {
+                source_line: 0,
+                text_range: TextRange::new(TextOffset::byte_offset(0), TextOffset::byte_offset(3)),
+                run_range: 0..0,
+                glyph_range: 0..0,
+                cluster_range: 0..3,
+                x: 0.0,
+                y: 0.0,
+                width: 30.0,
+                height: 20.0,
+                baseline: 15.0,
+                hard_break: true,
+                ellipsized: false,
+            },
+            LineLayout {
+                source_line: 1,
+                text_range: TextRange::new(TextOffset::byte_offset(3), TextOffset::byte_offset(6)),
+                run_range: 0..0,
+                glyph_range: 0..0,
+                cluster_range: 3..6,
+                x: 0.0,
+                y: 20.0,
+                width: 30.0,
+                height: 20.0,
+                baseline: 35.0,
+                hard_break: false,
+                ellipsized: false,
+            },
+        ];
+        let clusters = (0..6)
+            .map(|offset| TextCluster {
+                source_line: offset / 3,
+                local_text_range: offset % 3..offset % 3 + 1,
+                text_range: TextRange::new(
+                    TextOffset::byte_offset(offset),
+                    TextOffset::byte_offset(offset + 1),
+                ),
+                glyph_range: 0..0,
+                hitbox: Rect::new(
+                    (offset % 3) as f32 * 10.0,
+                    (offset / 3) as f32 * 20.0,
+                    10.0,
+                    20.0,
+                ),
+            })
+            .collect();
+        ParagraphLayout {
+            lines,
+            runs: Vec::new(),
+            glyphs: Vec::new(),
+            clusters,
+        }
+    }
+
+    #[test]
+    fn caret_uses_the_line_containing_the_position() {
+        let layout = multiline_layout();
+        let caret = layout
+            .caret_rect(TextPosition {
+                offset: TextOffset::byte_offset(4),
+                affinity: Affinity::Before,
+            })
+            .unwrap();
+        assert_eq!(caret, Rect::new(10.0, 20.0, 1.0, 20.0));
+    }
+
+    #[test]
+    fn selection_produces_one_rect_per_covered_line() {
+        let layout = multiline_layout();
+        assert_eq!(
+            layout.selection_rects(TextRange::new(
+                TextOffset::byte_offset(1),
+                TextOffset::byte_offset(5),
+            )),
+            vec![
+                Rect::new(10.0, 0.0, 20.0, 20.0),
+                Rect::new(0.0, 20.0, 20.0, 20.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn hit_testing_below_the_paragraph_uses_the_last_line() {
+        let layout = multiline_layout();
+        assert_eq!(
+            layout.hit_test_point(Point::new(1.0, 100.0)),
+            Some(TextPosition {
+                offset: TextOffset::byte_offset(3),
+                affinity: Affinity::Before,
+            })
+        );
+    }
 }

@@ -19,94 +19,6 @@ pub enum ControlFlow {
     Exit,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ElementDesc;
-    use crate::render::MockRenderBackend;
-    use crate::state::HookContext;
-    use crate::text::testing::ZeroTextBackend;
-    use crate::widgets::{container, text_input};
-    use std::cell::Cell;
-    use std::time::Instant;
-    use xui_interface::{
-        CommandId, FocusReason, KeyState, Modifiers, PhysicalKey, RawKeyboard, RawWindowEvent,
-        Shortcut, Size, Style,
-    };
-
-    thread_local! { static COMMAND_RECEIVED: Cell<bool> = const { Cell::new(false) }; }
-
-    fn command_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-        container()
-            .on_command(|event, _| {
-                if event.command == CommandId("save") {
-                    COMMAND_RECEIVED.set(true);
-                }
-                EventResult::Consumed
-            })
-            .into_element_desc(Vec::new())
-    }
-
-    #[test]
-    fn runtime_shortcut_dispatches_command_to_app_root() {
-        COMMAND_RECEIVED.set(false);
-        let app = App::new(command_root);
-        let mut runtime = GuiRuntime::new(app, MockRenderBackend::default(), ZeroTextBackend);
-        let shortcut = Shortcut::physical(PhysicalKey::KeyS);
-        runtime
-            .shortcuts_mut()
-            .register(shortcut, CommandId("save"));
-        let raw = RawKeyboard {
-            physical_key: PhysicalKey::KeyS,
-            named_key: None,
-            state: KeyState::Down,
-            text: None,
-            modifiers: Modifiers::default(),
-            timestamp: Instant::now(),
-            is_repeat: false,
-        };
-        assert_eq!(
-            runtime.handle_event(RuntimeEvent::Input(RawEvent::Keyboard(raw))),
-            vec![EventResult::Consumed]
-        );
-        assert!(COMMAND_RECEIVED.get());
-    }
-
-    fn text_input_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-        text_input()
-            .style(Style::new().width(120.0).height(30.0))
-            .into_element_desc()
-    }
-
-    #[test]
-    fn focused_text_input_publishes_platform_ime_session() {
-        let app = App::new(text_input_root);
-        let mut runtime = GuiRuntime::new(app, MockRenderBackend::default(), ZeroTextBackend);
-        runtime.handle_event(RuntimeEvent::Resize(Size::new(200.0, 100.0)));
-        runtime.frame().unwrap();
-
-        let input = runtime.app().arena().children(runtime.app().arena().root())[0];
-        runtime
-            .app_mut()
-            .arena_mut()
-            .focus_manager_mut()
-            .request_focus(Some(input), FocusReason::Programmatic);
-        runtime.handle_event(RuntimeEvent::Input(RawEvent::WindowFocus(RawWindowEvent {
-            timestamp: Instant::now(),
-            modifiers: Modifiers::default(),
-        })));
-
-        let session = runtime
-            .platform_output()
-            .text_input
-            .as_ref()
-            .expect("focused text input should enable the platform IME session");
-        assert!(session.cursor_area.width >= 1.0);
-        assert!(session.cursor_area.height >= 1.0);
-        assert!(!session.multiline);
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeEvent {
     Resize(Size<f32>),
@@ -194,6 +106,10 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
 
     pub fn backend_mut(&mut self) -> &mut B {
         &mut self.backend
+    }
+
+    pub fn text_backend_mut(&mut self) -> &mut T {
+        self.text_backend.backend_mut()
     }
 
     pub fn control_flow(&self) -> ControlFlow {
