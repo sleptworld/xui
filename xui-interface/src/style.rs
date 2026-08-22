@@ -1,6 +1,7 @@
 use crate::{
-    Affine, Color, EdgeInsets, FontFamily, FontStyle, FontWeight, ImageData, ImageKey, LineHeight,
-    Point, Rect, Size, StyleDiffFlags, TextDecoration, WidgetState, core::Sizing, text::TextStyle,
+    Affine, Bounds, Color, EdgeInsets, FontFamily, FontStyle, FontWeight, ImageData, ImageKey,
+    LineHeight, Point, Rect, Size, StyleDiffFlags, TextDecoration, WidgetState, core::Sizing,
+    text::TextStyle,
 };
 use std::{
     cell::RefCell,
@@ -511,7 +512,7 @@ pub enum Effect {
     ImageMask {
         image: ImageKey,
         data: ImageData,
-        bounds: Rect,
+        bounds: Bounds,
     },
 }
 
@@ -545,7 +546,7 @@ pub enum ComputedEffect {
     ImageMask {
         image: ImageKey,
         data: ImageData,
-        bounds: Rect,
+        bounds: Bounds,
     },
 }
 
@@ -2545,8 +2546,8 @@ fn hash_affine<H: Hasher>(value: Affine, state: &mut H) {
     }
 }
 
-fn hash_rect<H: Hasher>(value: Rect, state: &mut H) {
-    for component in [value.x, value.y, value.width, value.height] {
+fn hash_rect<H: Hasher>(value: Bounds, state: &mut H) {
+    for component in [value.min.x, value.min.y, value.max.x, value.max.y] {
         hash_f32(component, state);
     }
 }

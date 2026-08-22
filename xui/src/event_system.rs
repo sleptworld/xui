@@ -1,11 +1,13 @@
 pub mod callbacks;
 pub mod dispatcher;
+pub mod interaction;
 pub mod translator;
 
 use crate::event_system::dispatcher::DispatchReport;
 use crate::event_system::translator::EventTranslator;
 use crate::text::{TextHost, TextLayoutQuery};
-use crate::tree::{Node, UiArena};
+use crate::ui_runtime::NodeView;
+use crate::ui_runtime::UiRuntime;
 use xui_interface::events::{EventResult, RawEvent};
 use xui_interface::{
     EventPhase, EventRequest, EventRequests, NodeId, TextBackend, WidgetUpdateFlags,
@@ -46,7 +48,7 @@ impl EventState {
 
 pub struct EventContext<'a> {
     pub phase: EventPhase,
-    pub node_ref: &'a Node,
+    pub node_ref: NodeView<'a>,
     text_layout: Option<&'a dyn TextLayoutQuery>,
     request_update: &'a mut WidgetUpdateFlags,
     requests: &'a mut EventRequests,
@@ -54,7 +56,7 @@ pub struct EventContext<'a> {
 
 impl<'a> EventContext<'a> {
     pub fn new(
-        node_ref: &'a Node,
+        node_ref: NodeView<'a>,
         text_layout: Option<&'a dyn TextLayoutQuery>,
         phase: EventPhase,
         request_update: &'a mut WidgetUpdateFlags,
@@ -121,7 +123,7 @@ impl<'a> EventContext<'a> {
 
 #[inline(always)]
 pub fn dispatch_event<B: TextBackend>(
-    arena: &mut UiArena,
+    arena: &mut UiRuntime,
     host_text_cache: &TextHost<B>,
     event_translator: &mut EventTranslator,
     event: RawEvent,
@@ -151,7 +153,7 @@ impl EventDispatchReport {
 }
 
 pub fn dispatch_event_pipeline<B: TextBackend>(
-    arena: &mut UiArena,
+    arena: &mut UiRuntime,
     host_text_cache: &TextHost<B>,
     translator: &mut EventTranslator,
     event: RawEvent,
@@ -186,7 +188,7 @@ pub fn dispatch_event_pipeline<B: TextBackend>(
 }
 
 fn drain_focus_requests<B: TextBackend>(
-    arena: &mut UiArena,
+    arena: &mut UiRuntime,
     host_text_cache: &TextHost<B>,
     translator: &mut EventTranslator,
     timestamp: std::time::Instant,

@@ -1,11 +1,13 @@
-use crate::event_system::callbacks::EventHandlers;
+use crate::element::PortalDesc;
+use crate::event_system::interaction::HostInteraction;
 use crate::fiber::{
     ComponentRender, ComponentState, EffectTag, ErasedProps, FiberArena, FiberId, FiberTag,
-    HostState, Key, Node,
+    HostState, Key, Node, PortalState,
 };
 use crate::lanes::{Lanes, NO_LANES, current_update_lane, includes_some_lane, should_interrupt};
 use crate::state::{AsyncDispatcher, HookContext, HookStorage, Scheduler};
-use crate::tree::UiArena;
+use crate::ui_runtime::UiRuntime;
+use crate::widgets::{OverlayEntryOptions, OverlayScopeId};
 use crate::widgets::{RootComponentRender, WidgetI};
 use crate::{ComponentDesc, ElementDesc, ErasedPropsRef};
 use rustc_hash::FxHashMap;
@@ -34,12 +36,13 @@ pub struct WorkNode {
     // Host Widget
     host_work: Option<HostWork>,
     component_work: Option<ComponentWork>,
+    portal_work: Option<PortalWork>,
     host_node: Option<NodeId>,
 }
 
 struct HostWork {
     widget: Option<WidgetI>,
-    event_handlers: Option<EventHandlers>,
+    interaction: Option<HostInteraction>,
     props_hash: u64,
     pending_children: Vec<ElementDesc>,
 }
@@ -49,6 +52,14 @@ struct ComponentWork {
     key: Option<Key>,
     props_hash: u64,
     props: Option<ErasedProps>,
+}
+
+struct PortalWork {
+    scope: Option<OverlayScopeId>,
+    options: OverlayEntryOptions,
+    pending_children: Vec<ElementDesc>,
+    entry: Option<crate::widgets::OverlayEntryId>,
+    visual_root: Option<NodeId>,
 }
 
 impl Into<ComponentState> for ComponentWork {
@@ -85,6 +96,7 @@ impl WorkNode {
             host_node: current.host.as_ref().and_then(|host| host.node_id),
             host_work: None,
             component_work: None,
+            portal_work: None,
         }
     }
 
@@ -104,19 +116,20 @@ impl WorkNode {
             .and_then(|node| node.host.as_ref())
             .and_then(|host| host.node_id);
 
-        let (host_work, component_work) = match prepared.pending {
+        let (host_work, component_work, portal_work) = match prepared.pending {
             PreparedPending::Host {
                 widget,
-                event_handlers,
+                interaction,
                 props_hash,
                 children,
             } => (
                 Some(HostWork {
                     widget: Some(widget),
-                    event_handlers: Some(event_handlers),
+                    interaction,
                     props_hash,
                     pending_children: children,
                 }),
+                None,
                 None,
             ),
             PreparedPending::Component {
@@ -131,6 +144,28 @@ impl WorkNode {
                     key,
                     props_hash,
                     props,
+                }),
+                None,
+            ),
+            PreparedPending::Portal {
+                scope,
+                options,
+                children,
+            } => (
+                None,
+                None,
+                Some(PortalWork {
+                    scope,
+                    options,
+                    pending_children: children,
+                    entry: current
+                        .and_then(|id| nodes.node(id))
+                        .and_then(|node| node.portal.as_ref())
+                        .and_then(|portal| portal.entry),
+                    visual_root: current
+                        .and_then(|id| nodes.node(id))
+                        .and_then(|node| node.portal.as_ref())
+                        .and_then(|portal| portal.visual_root),
                 }),
             ),
         };
@@ -150,6 +185,7 @@ impl WorkNode {
             host_work,
             host_node,
             component_work,
+            portal_work,
         }
     }
 
@@ -157,6 +193,7 @@ impl WorkNode {
         self.is_uncommited()
             || self.host_work.is_some()
             || self.component_work.is_some()
+            || self.portal_work.is_some()
             || includes_some_lane(self.lanes | self.child_lanes, render_lanes)
     }
 
@@ -167,9 +204,17 @@ impl WorkNode {
     }
 
     fn take_work_nodes(&mut self) -> Option<Vec<ElementDesc>> {
-        self.host_work
-            .as_mut()
-            .map(|h| std::mem::take(&mut h.pending_children))
+        match self.tag {
+            FiberTag::Host(_) => self
+                .host_work
+                .as_mut()
+                .map(|work| std::mem::take(&mut work.pending_children)),
+            FiberTag::Portal => self
+                .portal_work
+                .as_mut()
+                .map(|work| std::mem::take(&mut work.pending_children)),
+            _ => None,
+        }
     }
 
     #[inline(always)]
@@ -222,7 +267,7 @@ struct PreparedElement {
 enum PreparedPending {
     Host {
         widget: WidgetI,
-        event_handlers: EventHandlers,
+        interaction: Option<HostInteraction>,
         props_hash: u64,
         children: Vec<ElementDesc>,
     },
@@ -231,6 +276,11 @@ enum PreparedPending {
         render: ComponentRender,
         props_hash: u64,
         props: Option<ErasedProps>,
+    },
+    Portal {
+        scope: Option<OverlayScopeId>,
+        options: OverlayEntryOptions,
+        children: Vec<ElementDesc>,
     },
 }
 
@@ -394,13 +444,13 @@ impl ComponentRuntime {
         self.scheduler.mark_root_dirty(current_update_lane());
     }
 
-    pub fn rebuild_sync_if_needed(&mut self, arena: &mut UiArena) {
+    pub fn rebuild_sync_if_needed(&mut self, arena: &mut UiRuntime) {
         if self.is_dirty() {
             self.flush_sync(arena);
         }
     }
 
-    pub fn rebuild_slice_if_needed(&mut self, arena: &mut UiArena) -> bool {
+    pub fn rebuild_slice_if_needed(&mut self, arena: &mut UiRuntime) -> bool {
         if !self.is_dirty() {
             return true;
         }
@@ -408,11 +458,11 @@ impl ComponentRuntime {
         self.work_loop(arena, Some(Instant::now() + self.budget))
     }
 
-    pub fn flush_sync(&mut self, arena: &mut UiArena) {
+    pub fn flush_sync(&mut self, arena: &mut UiRuntime) {
         self.work_loop(arena, None);
     }
 
-    fn work_loop(&mut self, arena: &mut UiArena, deadline: Option<Instant>) -> bool {
+    fn work_loop(&mut self, arena: &mut UiRuntime, deadline: Option<Instant>) -> bool {
         self.scheduler.mark_starved_lanes_as_expired(now_ms());
         loop {
             if self.scheduler.pending_lanes() == NO_LANES && self.work_in_progress.is_none() {
@@ -547,6 +597,17 @@ impl ComponentRuntime {
                     self.clone_current_children(id);
                 }
             }
+            FiberTag::Portal => {
+                let pending_children = self
+                    .wip_nodes
+                    .get_mut(id)
+                    .and_then(WorkNode::take_work_nodes);
+                if let Some(children) = pending_children {
+                    self.reconcile_children(id, children);
+                } else {
+                    self.clone_current_children(id);
+                }
+            }
         }
 
         self.first_child_needing_work(id)
@@ -675,18 +736,31 @@ impl ComponentRuntime {
                 let props_hash = widget.props_hash();
                 let tag = FiberTag::Host(widget.node_type());
 
-                let event_handlers = widget.take_event_handlers();
+                let interaction = widget.take_host_interaction();
                 PreparedElement {
                     key,
                     tag,
                     pending: PreparedPending::Host {
                         widget,
-                        event_handlers,
+                        interaction,
                         props_hash,
                         children: host.children,
                     },
                 }
             }
+            ElementDesc::Portal(portal) => self.prepare_portal_element(portal, key),
+        }
+    }
+
+    fn prepare_portal_element(&self, portal: PortalDesc, key: Option<Key>) -> PreparedElement {
+        PreparedElement {
+            key,
+            tag: FiberTag::Portal,
+            pending: PreparedPending::Portal {
+                scope: portal.scope,
+                options: portal.options,
+                children: portal.children,
+            },
         }
     }
 
@@ -707,7 +781,7 @@ impl ComponentRuntime {
         }
     }
 
-    fn commit_finished_work(&mut self, arena: &mut UiArena) {
+    fn commit_finished_work(&mut self, arena: &mut UiRuntime) {
         let Some(mut work) = self.work_in_progress.take() else {
             return;
         };
@@ -730,15 +804,24 @@ impl ComponentRuntime {
         self.scheduler.mark_render_finished(render_lanes);
     }
 
-    fn commit_deletion(&mut self, id: FiberId, arena: &mut UiArena, remove_host: bool) {
+    fn commit_deletion(&mut self, id: FiberId, arena: &mut UiRuntime, remove_host: bool) {
         let children = self.nodes.children(id);
         let host_node = self
             .nodes
             .node(id)
             .and_then(|node| node.host.as_ref())
             .and_then(|host| host.node_id);
+        let portal_entry = self
+            .nodes
+            .node(id)
+            .and_then(|node| node.portal.as_ref())
+            .and_then(|portal| portal.entry);
         self.scheduler.mark_unmounted(id);
         self.hooks.remove(&id);
+
+        if let Some(entry) = portal_entry {
+            let _ = arena.unmount_overlay_entry(entry);
+        }
 
         if remove_host {
             if let Some(host_node) = host_node {
@@ -757,7 +840,12 @@ impl ComponentRuntime {
         self.nodes.remove_node(id);
     }
 
-    fn commit_mutation_effects(&mut self, wip_id: WipId, parent_host: NodeId, arena: &mut UiArena) {
+    fn commit_mutation_effects(
+        &mut self,
+        wip_id: WipId,
+        parent_host: NodeId,
+        arena: &mut UiRuntime,
+    ) {
         let Some((effect, tag, children)) = self
             .wip_nodes
             .get(wip_id)
@@ -773,17 +861,23 @@ impl ComponentRuntime {
 
         if effect.contains(EffectTag::UPDATE) {
             self.commit_update_if_host(wip_id, arena);
+            self.commit_update_if_portal(wip_id, arena);
         }
 
-        let child_parent_host = if matches!(tag, FiberTag::Host(_)) {
-            self.host_node_for_wip(wip_id)
-                .expect("host fiber missing host node after mutation")
-        } else {
-            parent_host
+        let child_parent_host = match tag {
+            FiberTag::Host(_) => self
+                .host_node_for_wip(wip_id)
+                .expect("host fiber missing host node after mutation"),
+            FiberTag::Portal => arena.root_overlayer(),
+            _ => parent_host,
         };
 
         for child in children {
             self.commit_mutation_effects(child, child_parent_host, arena);
+        }
+
+        if matches!(tag, FiberTag::Portal) {
+            self.sync_portal_visual_root(wip_id, arena);
         }
     }
 
@@ -800,21 +894,21 @@ impl ComponentRuntime {
             .and_then(|host| host.node_id)
     }
 
-    fn ensure_host_created(&mut self, wip_id: WipId, arena: &mut UiArena) -> Option<NodeId> {
+    fn ensure_host_created(&mut self, wip_id: WipId, arena: &mut UiRuntime) -> Option<NodeId> {
         if let Some(node_id) = self.wip_nodes.get(wip_id).and_then(|node| node.host_node) {
             return Some(node_id);
         }
 
-        let (key, props_hash, widget, event_handlers) = {
+        let (key, props_hash, widget, interaction) = {
             let wip = self.wip_nodes.get_mut(wip_id)?;
             let key = wip.key;
             let host_work = wip.host_work.as_mut()?;
             let widget = host_work.widget.take()?;
-            let event_handlers = host_work.event_handlers.take()?;
-            (key, host_work.props_hash, widget, event_handlers)
+            let interaction = host_work.interaction.take();
+            (key, host_work.props_hash, widget, interaction)
         };
 
-        let node_id = arena.create_node(key, props_hash, widget, event_handlers);
+        let node_id = arena.create_node(key, props_hash, widget, interaction);
         self.wip_nodes.get_mut(wip_id)?.host_node = Some(node_id);
         Some(node_id)
     }
@@ -824,7 +918,7 @@ impl ComponentRuntime {
         wip_id: WipId,
         parent_host: NodeId,
         before: Option<NodeId>,
-        arena: &mut UiArena,
+        arena: &mut UiRuntime,
     ) {
         let Some((tag, children)) = self
             .wip_nodes
@@ -848,12 +942,50 @@ impl ComponentRuntime {
             return;
         }
 
+        if matches!(tag, FiberTag::Portal) {
+            for child in children {
+                self.commit_placement_subtree(child, arena.root_overlayer(), None, arena);
+            }
+            let visual_root = self.first_host_in_wip_subtree(wip_id);
+            let (scope, options, existing_entry) = self
+                .wip_nodes
+                .get_mut(wip_id)
+                .and_then(|node| node.portal_work.as_mut())
+                .map(|portal| (portal.scope, portal.options, portal.entry))
+                .expect("Portal placement is missing its model");
+            let entry = if let Some(entry) = existing_entry {
+                arena
+                    .update_overlay_entry(entry, scope, options)
+                    .expect("Portal entry could not be moved");
+                Some(entry)
+            } else if let Some(visual_root) = visual_root {
+                Some(
+                    arena
+                        .mount_overlay_entry(visual_root, scope, options)
+                        .expect("Portal entry could not be mounted"),
+                )
+            } else {
+                None
+            };
+            let portal = self
+                .wip_nodes
+                .get_mut(wip_id)
+                .and_then(|node| node.portal_work.as_mut())
+                .expect("Portal placement model disappeared");
+            portal.entry = entry;
+            portal.visual_root = visual_root;
+            if let Some(node) = self.wip_nodes.get_mut(wip_id) {
+                node.effect.remove(EffectTag::PLACEMENT | EffectTag::MOVE);
+            }
+            return;
+        }
+
         for child in children {
             self.commit_placement_subtree(child, parent_host, before, arena);
         }
     }
 
-    fn commit_update_if_host(&mut self, wip_id: WipId, arena: &mut UiArena) {
+    fn commit_update_if_host(&mut self, wip_id: WipId, arena: &mut UiRuntime) {
         if !self
             .wip_nodes
             .get(wip_id)
@@ -875,19 +1007,83 @@ impl ComponentRuntime {
             .as_mut()
             .expect("host update missing host work");
         let widget = host_work.widget.take().expect("host update missing widget");
-        let event_handlers = host_work
-            .event_handlers
-            .take()
-            .expect("host update missing event handlers");
+        let interaction = host_work.interaction.take();
 
         arena.update_widget_node_from_parts(
             node_id,
             key,
             host_work.props_hash,
             widget,
-            event_handlers,
+            interaction,
         );
         wip.host_node = Some(node_id);
+    }
+
+    fn commit_update_if_portal(&mut self, wip_id: WipId, arena: &mut UiRuntime) {
+        let Some(portal) = self
+            .wip_nodes
+            .get_mut(wip_id)
+            .filter(|node| matches!(node.tag, FiberTag::Portal))
+            .and_then(|node| node.portal_work.as_mut())
+        else {
+            return;
+        };
+        if let Some(entry) = portal.entry {
+            arena
+                .update_overlay_entry(entry, portal.scope, portal.options)
+                .expect("Portal entry update failed");
+        }
+    }
+
+    fn sync_portal_visual_root(&mut self, wip_id: WipId, arena: &mut UiRuntime) {
+        let next_visual_root = self.first_host_in_wip_subtree(wip_id);
+        let Some((scope, options, current_entry, current_visual_root)) = self
+            .wip_nodes
+            .get(wip_id)
+            // .filter(|node| matches!(node.tag, FiberTag::Portal))
+            .and_then(|node| node.portal_work.as_ref())
+            .map(|portal| {
+                (
+                    portal.scope,
+                    portal.options,
+                    portal.entry,
+                    portal.visual_root,
+                )
+            })
+        else {
+            return;
+        };
+        if current_visual_root == next_visual_root {
+            return;
+        }
+
+        if let Some(entry) = current_entry {
+            arena
+                .unmount_overlay_entry(entry)
+                .expect("Portal's previous entry could not be unmounted");
+        }
+        let next_entry = next_visual_root.map(|visual_root| {
+            arena
+                .mount_overlay_entry(visual_root, scope, options)
+                .expect("Portal's replacement entry could not be mounted")
+        });
+        let portal = self
+            .wip_nodes
+            .get_mut(wip_id)
+            .and_then(|node| node.portal_work.as_mut())
+            .expect("Portal model disappeared while synchronizing its visual root");
+        portal.entry = next_entry;
+        portal.visual_root = next_visual_root;
+    }
+
+    fn first_host_in_wip_subtree(&self, wip_id: WipId) -> Option<NodeId> {
+        let node = self.wip_nodes.get(wip_id)?;
+        if let Some(host) = self.host_node_for_wip(wip_id) {
+            return Some(host);
+        }
+        node.children
+            .iter()
+            .find_map(|child| self.first_host_in_wip_subtree(*child))
     }
 
     fn find_host_sibling_for_wip(&self, wip_id: WipId) -> Option<NodeId> {
@@ -940,7 +1136,7 @@ impl ComponentRuntime {
         wip_id: WipId,
         parent_fiber: Option<FiberId>,
         work: &mut WorkInProgress,
-        arena: &UiArena,
+        arena: &UiRuntime,
     ) -> FiberId {
         let mut wip = work
             .live(&mut self.wip_nodes)
@@ -959,6 +1155,7 @@ impl ComponentRuntime {
 
         let host = self.freeze_host_state(&mut wip, arena);
         let component = self.freeze_component_state(&mut wip);
+        let portal = self.freeze_portal_state(&mut wip);
         let frozen = crate::fiber::Node {
             id: fiber_id,
             parent: parent_fiber,
@@ -969,6 +1166,7 @@ impl ComponentRuntime {
             effect: EffectTag::empty(),
             host,
             component,
+            portal,
             position: wip.position,
         };
 
@@ -986,7 +1184,7 @@ impl ComponentRuntime {
             .unwrap_or_default()
     }
 
-    fn freeze_host_state(&mut self, wip: &mut WorkNode, arena: &UiArena) -> Option<HostState> {
+    fn freeze_host_state(&mut self, wip: &mut WorkNode, arena: &UiRuntime) -> Option<HostState> {
         if !matches!(wip.tag, FiberTag::Host(_)) {
             return None;
         }
@@ -1012,7 +1210,7 @@ impl ComponentRuntime {
         Some(HostState {
             node_id: Some(node_id),
             widget: Some(arena_node.widget.clone()),
-            taffy_node: Some(arena_node.taffy_node),
+            taffy_node: Some(arena.layout_node_id(node_id)),
             style: current_host
                 .as_ref()
                 .map(|host| host.style.clone())
@@ -1036,6 +1234,23 @@ impl ComponentRuntime {
         wip.current
             .and_then(|id| self.nodes.node_mut(id))
             .and_then(|node| node.component.take())
+    }
+
+    fn freeze_portal_state(&mut self, wip: &mut WorkNode) -> Option<PortalState> {
+        if !matches!(wip.tag, FiberTag::Portal) {
+            return None;
+        }
+        if let Some(portal) = wip.portal_work.take() {
+            return Some(PortalState {
+                scope: portal.scope,
+                options: portal.options,
+                entry: portal.entry,
+                visual_root: portal.visual_root,
+            });
+        }
+        wip.current
+            .and_then(|id| self.nodes.node_mut(id))
+            .and_then(|node| node.portal.take())
     }
 
     fn trace_commit_work_node(&self, depth: usize, event: fmt::Arguments<'_>) {
@@ -1179,11 +1394,11 @@ impl ComponentRuntime {
         })
     }
 
-    fn sync_host_children(&self, arena: &mut UiArena) {
+    fn sync_host_children(&self, arena: &mut UiRuntime) {
         self.sync_host_children_at(self.current, arena);
     }
 
-    fn sync_host_children_at(&self, id: FiberId, arena: &mut UiArena) {
+    fn sync_host_children_at(&self, id: FiberId, arena: &mut UiRuntime) {
         let Some(node) = self.nodes.node(id) else {
             return;
         };
@@ -1329,6 +1544,7 @@ fn can_reuse_prepared(old: &Node, prepared: &PreparedElement) -> bool {
             .as_ref()
             .is_some_and(|component| component.render == *render),
         PreparedPending::Host { .. } => true,
+        PreparedPending::Portal { .. } => true,
     }
 }
 
@@ -1355,6 +1571,10 @@ fn prepared_needs_update(current: &Node, prepared: &PreparedElement) -> bool {
                 || component.key != *key
                 || component.props_hash != *props_hash
         }
+        (_, _, PreparedPending::Portal { scope, options, .. }) => current
+            .portal
+            .as_ref()
+            .is_none_or(|portal| portal.scope != *scope || portal.options != *options),
         _ => true,
     }
 }
@@ -1371,6 +1591,71 @@ fn child_tree_lanes(
         lanes |= child_tree_lanes(nodes, child, scheduler, render_lanes);
     }
     lanes
+}
+
+#[cfg(test)]
+mod portal_tests {
+    use super::*;
+    use crate::element::portal;
+    use crate::widgets::container;
+    use std::sync::atomic::{AtomicU8, Ordering};
+
+    static PORTAL_MODE: AtomicU8 = AtomicU8::new(0);
+
+    fn portal_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        let mode = PORTAL_MODE.load(Ordering::SeqCst);
+        if mode < 2 {
+            portal(vec![
+                container()
+                    .key(if mode == 0 {
+                        "portal-visual-root"
+                    } else {
+                        "portal-replacement-root"
+                    })
+                    .into_element_desc(Vec::new()),
+            ])
+            .key("portal")
+            .z_index(100)
+            .into()
+        } else {
+            container().key("content").into_element_desc(Vec::new())
+        }
+    }
+
+    #[test]
+    fn portal_keeps_logical_fiber_but_mounts_and_unmounts_under_overlayer() {
+        PORTAL_MODE.store(0, Ordering::SeqCst);
+        let mut arena = UiRuntime::new();
+        let mut runtime = ComponentRuntime::new(arena.root(), Scheduler::default(), portal_root);
+        runtime.flush_sync(&mut arena);
+
+        let portal_fiber = runtime.nodes.children(runtime.root())[0];
+        assert_eq!(
+            runtime.nodes.node(portal_fiber).unwrap().tag,
+            FiberTag::Portal
+        );
+        let visual_children = arena.children(arena.root_overlayer()).collect::<Vec<_>>();
+        assert_eq!(visual_children.len(), 1);
+        assert_eq!(
+            arena.node(visual_children[0]).unwrap().key,
+            Some(&Key::from("portal-visual-root"))
+        );
+
+        PORTAL_MODE.store(1, Ordering::SeqCst);
+        runtime.mark_root_dirty();
+        runtime.flush_sync(&mut arena);
+        let replacement_children = arena.children(arena.root_overlayer()).collect::<Vec<_>>();
+        assert_eq!(replacement_children.len(), 1);
+        assert_eq!(
+            arena.node(replacement_children[0]).unwrap().key,
+            Some(&Key::from("portal-replacement-root"))
+        );
+
+        PORTAL_MODE.store(2, Ordering::SeqCst);
+        runtime.mark_root_dirty();
+        runtime.flush_sync(&mut arena);
+        assert!(arena.children(arena.root_overlayer()).next().is_none());
+    }
 }
 
 // #[cfg(test)]
@@ -1420,13 +1705,13 @@ fn child_tree_lanes(
 //         column().into_element_desc(children)
 //     }
 
-//     fn runtime(root: RootComponentRender) -> (UiArena, ComponentRuntime) {
-//         let arena = UiArena::new();
+//     fn runtime(root: RootComponentRender) -> (UiRuntime, ComponentRuntime) {
+//         let arena = UiRuntime::new();
 //         let runtime = ComponentRuntime::new(arena.root(), Scheduler::default(), root);
 //         (arena, runtime)
 //     }
 
-//     fn rerender(runtime: &mut ComponentRuntime, arena: &mut UiArena) {
+//     fn rerender(runtime: &mut ComponentRuntime, arena: &mut UiRuntime) {
 //         runtime.mark_root_dirty();
 //         runtime.flush_sync(arena);
 //     }
@@ -1455,7 +1740,7 @@ fn child_tree_lanes(
 //             .collect()
 //     }
 
-//     fn host_text_order(arena: &UiArena, parent: NodeId) -> Vec<String> {
+//     fn host_text_order(arena: &UiRuntime, parent: NodeId) -> Vec<String> {
 //         arena
 //             .children(parent)
 //             .iter()

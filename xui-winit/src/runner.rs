@@ -6,6 +6,7 @@ use crate::device::WinitDeviceRegistry;
 use crate::translate::{
     translate_mouse_button, translate_mouse_wheel, translate_named_key, translate_physical_key,
 };
+#[cfg(feature = "wgpu")]
 use crate::wgpu::{WGPUBackend, WgpuBackendInitError};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
@@ -429,6 +430,7 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackend> WinitRunner<B, T> {
     }
 }
 
+#[cfg(feature = "wgpu")]
 pub fn runner(
     app: ComponentFn,
     options: Option<WinitRunnerOptions>,
@@ -447,7 +449,7 @@ pub fn runner(
 }
 
 #[cfg(feature = "skia")]
-pub fn skia_runner(
+pub fn runner(
     app: ComponentFn,
     options: Option<WinitRunnerOptions>,
 ) -> WinitRunner<xui_skia::SkiaBackend<CosmicEngine>, CosmicEngine> {

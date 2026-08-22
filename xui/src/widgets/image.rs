@@ -1,7 +1,9 @@
-use crate::assets::{AssetId, load_image_asset, load_image_asset_path};
+use crate::assets::{load_image_asset, load_image_asset_path, AssetId};
 use crate::element::ElementDesc;
-use crate::event_system::EventContext;
 use crate::event_system::callbacks::EventHandlers;
+use crate::event_system::interaction::InteractionProperties;
+use crate::event_system::EventContext;
+use crate::widgets::utils::render_box;
 use xui_interface::{style::ScrollbarStylePatch, *};
 
 use super::{props_hash, widget_element_desc};
@@ -15,6 +17,7 @@ pub struct ImageWidget {
     pub opacity: f32,
     pub style: Style,
     pub event_handlers: EventHandlers,
+    pub interaction: InteractionProperties,
 }
 
 impl std::fmt::Debug for ImageWidget {
@@ -38,6 +41,7 @@ impl ImageWidget {
             opacity: 1.0,
             style: Style::new(),
             event_handlers: EventHandlers::default(),
+            interaction: InteractionProperties::default(),
             image_data: None,
         }
     }
@@ -244,7 +248,7 @@ impl ImageWidget {
     pub(super) fn render(
         &self,
         _node_id: NodeId,
-        rect: Rect,
+        rect: Bounds,
         style: &ComputedStyle,
         writer: &mut RenderTreeWriter<'_>,
     ) {
@@ -284,24 +288,6 @@ impl ImageWidget {
     }
 }
 
-pub(super) fn render_box(rect: Rect, style: &ComputedStyle, writer: &mut RenderTreeWriter<'_>) {
-    let paint = style.paint;
-    let shape = if paint.border_radius > 0.0 {
-        Shape::RoundedRect(paint.border_radius)
-    } else {
-        Shape::Rect
-    };
-    writer
-        .primitive(Primitive::Shape(ShapePrimitive {
-            bounds: rect,
-            shape,
-            fill: Some(paint.background),
-            stroke: paint.stroke,
-            shadow: paint.shadow,
-        }))
-        .expect("widget render tree must remain valid");
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,7 +301,7 @@ mod tests {
 
     fn rendered_images(
         widget: &ImageWidget,
-        rect: Rect,
+        rect: Bounds,
         style: &ComputedStyle,
     ) -> Vec<ImagePrimitive> {
         let mut scene = crate::render::RenderScene::new();
@@ -344,7 +330,7 @@ mod tests {
         assert_eq!(widget.intrinsic_size(), Some(Size::new(3.0, 2.0)));
 
         let style = ComputedStyle::initial(&Theme::default());
-        let rect = Rect::new(1.0, 2.0, 30.0, 20.0);
+        let rect = Bounds::from_origin_size((1.0, 2.0), (30.0, 20.0));
         let images = rendered_images(&widget, rect, &style);
         let command = images.last().unwrap();
         assert_eq!(command.bounds, rect);
@@ -389,9 +375,16 @@ mod tests {
             .fit(ImageFit::Contain)
             .sampling(Sampling::Nearest);
         let style = ComputedStyle::initial(&Theme::default());
-        let images = rendered_images(&widget, Rect::new(0.0, 0.0, 100.0, 100.0), &style);
+        let images = rendered_images(
+            &widget,
+            Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
+            &style,
+        );
         assert_eq!(images.len(), 1);
-        assert_eq!(images[0].bounds, Rect::new(0.0, 0.0, 100.0, 100.0));
+        assert_eq!(
+            images[0].bounds,
+            Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0))
+        );
         assert_eq!(images[0].style.fit, ImageFit::Contain);
         assert_eq!(images[0].variant.sampling, Sampling::Nearest);
         assert_eq!(images[0].style.sampling, Sampling::Nearest);
@@ -403,7 +396,7 @@ mod tests {
             .image_data("image", pixels(2, 1, 1))
             .fit(ImageFit::Cover);
         let style = ComputedStyle::initial(&Theme::default());
-        let rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let rect = Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0));
         let images = rendered_images(&widget, rect, &style);
         assert_eq!(images.len(), 1);
         assert_eq!(images[0].bounds, rect);
@@ -418,9 +411,16 @@ mod tests {
             .alignment(Alignment::START)
             .repeat(ImageRepeat::RepeatX);
         let style = ComputedStyle::initial(&Theme::default());
-        let images = rendered_images(&widget, Rect::new(0.0, 0.0, 25.0, 10.0), &style);
+        let images = rendered_images(
+            &widget,
+            Bounds::from_origin_size((0.0, 0.0), (25.0, 10.0)),
+            &style,
+        );
         assert_eq!(images.len(), 1);
-        assert_eq!(images[0].bounds, Rect::new(0.0, 0.0, 25.0, 10.0));
+        assert_eq!(
+            images[0].bounds,
+            Bounds::from_origin_size((0.0, 0.0), (25.0, 10.0))
+        );
         assert_eq!(images[0].style.fit, ImageFit::None);
         assert_eq!(images[0].style.alignment, Alignment::START);
         assert_eq!(images[0].style.repeat, ImageRepeat::RepeatX);
@@ -433,9 +433,16 @@ mod tests {
             .image_data("image", pixels(20, 10, 1))
             .fit(ImageFit::ScaleDown);
 
-        let images = rendered_images(&widget, Rect::new(0.0, 0.0, 100.0, 100.0), &style);
+        let images = rendered_images(
+            &widget,
+            Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
+            &style,
+        );
         assert_eq!(images.len(), 1);
-        assert_eq!(images[0].bounds, Rect::new(0.0, 0.0, 100.0, 100.0));
+        assert_eq!(
+            images[0].bounds,
+            Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0))
+        );
         assert_eq!(images[0].style.fit, ImageFit::ScaleDown);
     }
 }

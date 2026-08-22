@@ -3,7 +3,7 @@ use crate::{
     LayerProgram, MaskProgram, MaskShape, PlanError, ProgramOp, ProgramResourceKind,
     SampleExpansion,
 };
-use xui_interface::{Affine, Color, Rect};
+use xui_interface::{Affine, Bounds, Color, Point, Rect};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PassId(u32);
@@ -84,13 +84,13 @@ impl Default for PlanLimits {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayerPlanContext {
-    pub backdrop_source_bounds: Rect,
+    pub backdrop_source_bounds: Bounds,
     /// Complete logical domain represented by the parent attachment.
-    pub parent_destination_bounds: Rect,
+    pub parent_destination_bounds: Bounds,
     /// Optional placement/clip restriction inside the parent attachment.
-    pub composite_clip_bounds: Option<Rect>,
-    pub layer_content_bounds: Rect,
-    pub backdrop_bounds: Option<Rect>,
+    pub composite_clip_bounds: Option<Bounds>,
+    pub layer_content_bounds: Bounds,
+    pub backdrop_bounds: Option<Bounds>,
     pub composite: CompositeInstance,
     pub scale_factor: f32,
     pub color_texture_class: TextureClass,
@@ -174,14 +174,14 @@ pub enum PassOp {
         opacity: f32,
         blend_mode: BlendMode,
         mask: PlanMask,
-        bounds: Rect,
+        bounds: Bounds,
     },
     LayerComposite {
         opacity: f32,
         transform: Affine,
         blend_mode: BlendMode,
         operator: CompositeOperator,
-        bounds: Rect,
+        bounds: Bounds,
     },
 }
 
@@ -228,7 +228,7 @@ pub struct ResourceBindings {
 /// specific values remain strongly typed in [`PassOp`].
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PassUniforms {
-    pub output_logical_bounds: Rect,
+    pub output_logical_bounds: Bounds,
     pub output_physical_bounds: PixelRect,
     pub scale_factor: f32,
 }
@@ -273,7 +273,7 @@ pub enum PlanResourceKind {
 pub struct PlanResource {
     pub kind: PlanResourceKind,
     pub coordinate_space: CoordinateSpace,
-    pub logical_bounds: Rect,
+    pub logical_bounds: Bounds,
     pub physical_bounds: PixelRect,
     pub texture_class: TextureClass,
     pub producer: Option<PassId>,
@@ -365,7 +365,7 @@ impl LayerProgram {
 struct DraftResource {
     kind: PlanResourceKind,
     space: CoordinateSpace,
-    full_bounds: Rect,
+    full_bounds: Bounds,
     class: TextureClass,
 }
 
@@ -417,7 +417,7 @@ impl LoweredGraph {
                 ),
                 ExternalResourceKind::LayerMask(_) => (
                     CoordinateSpace::LayerLocal,
-                    expand_rect(context.layer_content_bounds, program.layer_expansion),
+                    expand_bounds(context.layer_content_bounds, program.layer_expansion),
                     TextureClass::MASK,
                 ),
             };
@@ -441,25 +441,27 @@ impl LoweredGraph {
             .iter()
             .rposition(|node| matches!(node.op, ProgramOp::BackdropComposite { .. }))
             .map_or(0, |index| index + 1);
-        let layer_full_bounds = expand_rect(context.layer_content_bounds, program.layer_expansion);
+        let layer_full_bounds =
+            expand_bounds(context.layer_content_bounds, program.layer_expansion);
         let composite_inverse = inverse_affine(context.composite.transform);
         let transformed_layer_bounds = composite_inverse.map(|_| {
             context
                 .composite
                 .transform
-                .transform_rect(layer_full_bounds)
+                .transform_bounds(layer_full_bounds)
         });
-        if transformed_layer_bounds.is_some_and(|bounds| !rect_is_finite(bounds)) {
+        if transformed_layer_bounds.is_some_and(|bounds| !bounds_is_finite(bounds)) {
             return Err(PlanError::CoordinateOverflow);
         }
         let layer_visible = transformed_layer_bounds.is_some_and(|bounds| {
             context.composite.opacity.clamp(0.0, 1.0) > 0.0
-                && !is_empty(intersect_rect(
-                    intersect_rect(bounds, context.parent_destination_bounds),
-                    context
-                        .composite_clip_bounds
-                        .unwrap_or(context.parent_destination_bounds),
-                ))
+                && (bounds & context.parent_destination_bounds)
+                    .and_then(|b| {
+                        b & context
+                            .composite_clip_bounds
+                            .unwrap_or(context.parent_destination_bounds)
+                    })
+                    .is_some()
         });
 
         for (node_index, node) in program.nodes.iter().enumerate() {
@@ -493,7 +495,7 @@ impl LoweredGraph {
                             Axis::X,
                             scaled(*sigma_x, context.scale_factor)?,
                             quality.gaussian_support(),
-                            expand_rect(
+                            expand_bounds(
                                 self.full_bounds(current),
                                 SampleExpansion::symmetric(
                                     *sigma_x * quality.gaussian_support(),
@@ -510,7 +512,7 @@ impl LoweredGraph {
                             Axis::Y,
                             scaled(*sigma_y, context.scale_factor)?,
                             quality.gaussian_support(),
-                            expand_rect(
+                            expand_bounds(
                                 self.full_bounds(current),
                                 SampleExpansion::symmetric(
                                     0.0,
@@ -581,7 +583,7 @@ impl LoweredGraph {
                         alpha = self.add_spread_passes(
                             alpha,
                             scaled(*spread, context.scale_factor)?,
-                            expand_rect(
+                            expand_bounds(
                                 self.full_bounds(alpha),
                                 SampleExpansion::symmetric(*spread, *spread),
                             ),
@@ -595,7 +597,7 @@ impl LoweredGraph {
                             Axis::X,
                             scaled(*sigma_x, context.scale_factor)?,
                             quality.gaussian_support(),
-                            expand_rect(
+                            expand_bounds(
                                 self.full_bounds(alpha),
                                 SampleExpansion::symmetric(
                                     *sigma_x * quality.gaussian_support(),
@@ -612,7 +614,7 @@ impl LoweredGraph {
                             Axis::Y,
                             scaled(*sigma_y, context.scale_factor)?,
                             quality.gaussian_support(),
-                            expand_rect(
+                            expand_bounds(
                                 self.full_bounds(alpha),
                                 SampleExpansion::symmetric(
                                     0.0,
@@ -623,8 +625,9 @@ impl LoweredGraph {
                             TextureClass::MASK,
                         )?;
                     }
-                    let shadow_bounds = translate_rect(self.full_bounds(alpha), offset.x, offset.y);
-                    let output_bounds = self.full_bounds(original).union(shadow_bounds);
+                    // let shadow_bounds = translate_rect(self.full_bounds(alpha), offset.x, offset.y);
+                    let shadow_bounds = self.full_bounds(alpha).translate((offset.x, offset.y));
+                    let output_bounds = self.full_bounds(original) | shadow_bounds;
                     let output = self.add_transient(
                         CoordinateSpace::LayerLocal,
                         output_bounds,
@@ -670,18 +673,22 @@ impl LoweredGraph {
                     let requested = context
                         .backdrop_bounds
                         .unwrap_or(context.parent_destination_bounds);
-                    let bounds = intersect_rect(
-                        intersect_rect(requested, context.parent_destination_bounds),
-                        self.full_bounds(filtered),
-                    );
-                    if is_empty(bounds) {
+
+                    let bounds = (requested & context.parent_destination_bounds)
+                        .and_then(|b| b & self.full_bounds(filtered));
+
+                    if bounds.is_none() {
                         self.map(node.output, self.parent_destination);
                         continue;
                     }
                     let mut inputs = vec![filtered];
                     if blend_mode.requires_destination_snapshot() {
-                        inputs
-                            .push(self.snapshot_destination(bounds, context.color_texture_class)?);
+                        inputs.push(
+                            self.snapshot_destination(
+                                bounds.unwrap(),
+                                context.color_texture_class,
+                            )?,
+                        );
                     }
                     let plan_mask = self.lower_mask(mask)?;
                     if let PlanMask::Texture { resource, .. } = plan_mask {
@@ -692,7 +699,7 @@ impl LoweredGraph {
                             opacity: *opacity,
                             blend_mode: *blend_mode,
                             mask: plan_mask,
-                            bounds,
+                            bounds: bounds.unwrap(),
                         },
                         inputs,
                         self.parent_destination,
@@ -716,20 +723,22 @@ impl LoweredGraph {
                     let transformed = context
                         .composite
                         .transform
-                        .transform_rect(self.full_bounds(layer));
-                    let bounds = intersect_rect(
-                        intersect_rect(transformed, context.parent_destination_bounds),
-                        context
-                            .composite_clip_bounds
-                            .unwrap_or(context.parent_destination_bounds),
-                    );
-                    if is_empty(bounds) {
+                        .transform_bounds(self.full_bounds(layer));
+
+                    let Some(bounds) =
+                        (transformed & context.parent_destination_bounds).and_then(|b| {
+                            b & context
+                                .composite_clip_bounds
+                                .unwrap_or(context.parent_destination_bounds)
+                        })
+                    else {
                         self.map(node.output, self.parent_destination);
                         continue;
-                    }
+                    };
                     // Computing it here proves the reverse transform is finite for this demand.
-                    let local_demand = inverse.transform_rect(bounds);
-                    if !rect_is_finite(local_demand) {
+                    let local_demand = inverse.transform_bounds(bounds);
+
+                    if !bounds_is_finite(local_demand) {
                         return Err(PlanError::CoordinateOverflow);
                     }
                     let mut inputs = vec![layer];
@@ -778,7 +787,7 @@ impl LoweredGraph {
         let output = self.add_filter_pass(
             op,
             input,
-            expand_rect(self.full_bounds(input), expansion),
+            expand_bounds(self.full_bounds(input), expansion),
             self.space(input),
             self.class(input),
         )?;
@@ -790,7 +799,7 @@ impl LoweredGraph {
         &mut self,
         op: PassOp,
         input: PlanResourceId,
-        bounds: Rect,
+        bounds: Bounds,
         space: CoordinateSpace,
         class: TextureClass,
     ) -> Result<PlanResourceId, PlanError> {
@@ -805,7 +814,7 @@ impl LoweredGraph {
         axis: Axis,
         sigma_px: f32,
         support: f32,
-        bounds: Rect,
+        bounds: Bounds,
         space: CoordinateSpace,
         class: TextureClass,
     ) -> Result<PlanResourceId, PlanError> {
@@ -831,7 +840,7 @@ impl LoweredGraph {
         &mut self,
         mut input: PlanResourceId,
         radius_px: f32,
-        bounds: Rect,
+        bounds: Bounds,
         space: CoordinateSpace,
         class: TextureClass,
     ) -> Result<PlanResourceId, PlanError> {
@@ -860,7 +869,7 @@ impl LoweredGraph {
 
     fn snapshot_destination(
         &mut self,
-        bounds: Rect,
+        bounds: Bounds,
         class: TextureClass,
     ) -> Result<PlanResourceId, PlanError> {
         let output = self.add_transient(CoordinateSpace::Parent, bounds, class)?;
@@ -900,10 +909,11 @@ impl LoweredGraph {
                     None => continue,
                 },
             };
-            let output_demand = intersect_rect(
-                output_demand,
-                self.resources[pass.output.index()].full_bounds,
-            );
+            let Some(output_demands) =
+                output_demand & self.resources[pass.output.index()].full_bounds
+            else {
+                continue;
+            };
             propagate_inputs(
                 pass,
                 output_demand,
@@ -917,10 +927,7 @@ impl LoweredGraph {
         // Externals represent supplied texture domains, while transient bounds are demand-cropped.
         for (index, resource) in self.resources.iter().enumerate() {
             if matches!(resource.kind, PlanResourceKind::External(_)) && demanded[index].is_some() {
-                demanded[index] = Some(intersect_rect(
-                    demanded[index].expect("checked"),
-                    resource.full_bounds,
-                ));
+                demanded[index] = demanded[index].expect("checked") & resource.full_bounds;
             }
         }
         if self
@@ -933,7 +940,7 @@ impl LoweredGraph {
 
         let mut resources = Vec::with_capacity(self.resources.len());
         for (index, draft) in self.resources.iter().enumerate() {
-            let logical = demanded[index].unwrap_or(Rect::ZERO);
+            let logical = demanded[index].unwrap_or(Bounds::ZERO);
             let physical = physical_rect(logical, context.scale_factor)?;
             check_extent(physical.extent(), context.limits)?;
             resources.push(PlanResource {
@@ -984,7 +991,7 @@ impl LoweredGraph {
         &mut self,
         kind: PlanResourceKind,
         space: CoordinateSpace,
-        bounds: Rect,
+        bounds: Bounds,
         class: TextureClass,
     ) -> Result<PlanResourceId, PlanError> {
         let id = plan_resource_id(self.resources.len())?;
@@ -999,7 +1006,7 @@ impl LoweredGraph {
     fn add_transient(
         &mut self,
         space: CoordinateSpace,
-        bounds: Rect,
+        bounds: Bounds,
         class: TextureClass,
     ) -> Result<PlanResourceId, PlanError> {
         self.add_resource(PlanResourceKind::Transient, space, bounds, class)
@@ -1012,7 +1019,7 @@ impl LoweredGraph {
     fn map(&mut self, id: crate::ProgramResourceId, value: PlanResourceId) {
         self.program_resources[id.index()] = Some(value);
     }
-    fn full_bounds(&self, id: PlanResourceId) -> Rect {
+    fn full_bounds(&self, id: PlanResourceId) -> Bounds {
         self.resources[id.index()].full_bounds
     }
     fn space(&self, id: PlanResourceId) -> CoordinateSpace {
@@ -1122,7 +1129,7 @@ fn local_extent(rect: PixelRect) -> PixelRect {
 }
 
 fn relative_physical_rect(
-    logical: Rect,
+    logical: Bounds,
     target: PixelRect,
     scale_factor: f32,
 ) -> Result<PixelRect, PlanError> {
@@ -1146,10 +1153,10 @@ fn relative_physical_rect(
 
 fn propagate_inputs(
     pass: &Pass,
-    demand: Rect,
+    demand: Bounds,
     scale: f32,
     resources: &[DraftResource],
-    demanded: &mut [Option<Rect>],
+    demanded: &mut [Option<Bounds>],
 ) -> Result<(), PlanError> {
     let mut needs = vec![demand; pass.inputs.len()];
     match pass.op {
@@ -1159,7 +1166,7 @@ fn propagate_inputs(
             support,
         } => {
             let amount = sigma_px * support / scale;
-            needs[0] = expand_rect(
+            needs[0] = expand_bounds(
                 demand,
                 match axis {
                     Axis::X => SampleExpansion::symmetric(amount, 0.0),
@@ -1171,7 +1178,7 @@ fn propagate_inputs(
             block_width_px,
             block_height_px,
         } => {
-            needs[0] = expand_rect(
+            needs[0] = expand_bounds(
                 demand,
                 SampleExpansion::symmetric(
                     block_width_px * 0.5 / scale,
@@ -1184,27 +1191,27 @@ fn propagate_inputs(
             chromatic_aberration_px,
         } => {
             let amount = (strength_px.abs() + chromatic_aberration_px.abs()) / scale;
-            needs[0] = expand_rect(demand, SampleExpansion::symmetric(amount, amount));
+            needs[0] = expand_bounds(demand, SampleExpansion::symmetric(amount, amount));
         }
         PassOp::ChromaticAberration { offset_px } => {
-            needs[0] = expand_rect(
+            needs[0] = expand_bounds(
                 demand,
                 SampleExpansion::symmetric(offset_px[0].abs() / scale, offset_px[1].abs() / scale),
             )
         }
         PassOp::AlphaSpread { radius_px, .. } => {
             let amount = radius_px / scale;
-            needs[0] = expand_rect(demand, SampleExpansion::symmetric(amount, amount));
+            needs[0] = expand_bounds(demand, SampleExpansion::symmetric(amount, amount));
         }
         PassOp::ShadowComposite { offset_px, .. } => {
             needs[0] = demand;
-            needs[1] = translate_rect(demand, -offset_px[0] / scale, -offset_px[1] / scale);
+            needs[1] = demand.translate((-offset_px[0] / scale, -offset_px[1] / scale))
         }
         PassOp::LayerComposite { transform, .. } => {
             let inverse = inverse_affine(transform).ok_or(PlanError::InternalInvariant(
                 "scheduled composite transform is singular",
             ))?;
-            needs[0] = inverse.transform_rect(demand);
+            needs[0] = inverse.transform_bounds(demand);
             if needs.len() > 1 {
                 needs[1] = demand;
             }
@@ -1216,7 +1223,9 @@ fn propagate_inputs(
         | PassOp::BackdropComposite { .. } => {}
     }
     for (index, input) in pass.inputs.iter().copied().enumerate() {
-        let need = intersect_rect(needs[index], resources[input.index()].full_bounds);
+        let Some(need) = needs[index] & resources[input.index()].full_bounds else {
+            continue;
+        };
         union_into(&mut demanded[input.index()], need);
     }
     Ok(())
@@ -1270,14 +1279,15 @@ fn validate_context(context: &LayerPlanContext) -> Result<(), PlanError> {
     Ok(())
 }
 
-fn validate_rect(rect: Rect, field: &'static str) -> Result<(), PlanError> {
-    if !rect_is_finite(rect) {
+fn validate_rect(rect: Bounds, field: &'static str) -> Result<(), PlanError> {
+    if !bounds_is_finite(rect) {
         return Err(PlanError::InvalidContext {
             field,
             reason: "must be finite",
         });
     }
-    if rect.width < 0.0 || rect.height < 0.0 {
+
+    if rect.max.x < rect.min.x || rect.max.y < rect.min.y {
         return Err(PlanError::InvalidContext {
             field,
             reason: "width and height must not be negative",
@@ -1285,8 +1295,8 @@ fn validate_rect(rect: Rect, field: &'static str) -> Result<(), PlanError> {
     }
     Ok(())
 }
-fn rect_is_finite(rect: Rect) -> bool {
-    [rect.x, rect.y, rect.width, rect.height]
+fn bounds_is_finite(rect: Bounds) -> bool {
+    [rect.min.x, rect.min.y, rect.max.x, rect.max.y]
         .iter()
         .all(|value| value.is_finite())
 }
@@ -1330,12 +1340,10 @@ fn spread_chunk_count(radius_px: u32) -> u32 {
     radius_px.div_ceil(128).max(1)
 }
 
-fn expand_rect(rect: Rect, value: SampleExpansion) -> Rect {
-    Rect::new(
-        rect.x - value.left,
-        rect.y - value.top,
-        rect.width + value.left + value.right,
-        rect.height + value.top + value.bottom,
+fn expand_bounds(rect: Bounds, value: SampleExpansion) -> Bounds {
+    Bounds::new(
+        rect.min - Point::new(value.left, value.top),
+        rect.max + Point::new(value.right, value.bottom),
     )
 }
 fn translate_rect(rect: Rect, x: f32, y: f32) -> Rect {
@@ -1352,18 +1360,18 @@ fn intersect_rect(a: Rect, b: Rect) -> Rect {
         Rect::new(x0, y0, x1 - x0, y1 - y0)
     }
 }
-fn union_into(target: &mut Option<Rect>, value: Rect) {
+fn union_into(target: &mut Option<Bounds>, value: Bounds) {
     *target = Some(match *target {
         Some(existing) => existing.union(value),
         None => value,
     });
 }
 
-fn physical_rect(rect: Rect, scale: f32) -> Result<PixelRect, PlanError> {
-    let x0 = (rect.x * scale).floor();
-    let y0 = (rect.y * scale).floor();
-    let x1 = ((rect.x + rect.width) * scale).ceil();
-    let y1 = ((rect.y + rect.height) * scale).ceil();
+fn physical_rect(rect: Bounds, scale: f32) -> Result<PixelRect, PlanError> {
+    let x0 = (rect.min.x * scale).floor();
+    let y0 = (rect.min.y * scale).floor();
+    let x1 = ((rect.max.x) * scale).ceil();
+    let y1 = ((rect.max.y) * scale).ceil();
     if [x0, y0, x1, y1].iter().any(|value| !value.is_finite())
         || x0 < i32::MIN as f32
         || y0 < i32::MIN as f32

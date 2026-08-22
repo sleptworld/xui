@@ -883,10 +883,11 @@ mod tests {
     };
     use std::sync::Arc;
     use xui_interface::{
-        Color, ComputedColorStyle, ComputedEffect, FilterQuality, ImageData, ImageKey, Rect, Size,
+        Bounds, Color, ComputedColorStyle, ComputedEffect, FilterQuality, ImageData, ImageKey,
+        Rect, Size,
     };
 
-    fn shape(rect: Rect, color: Color) -> Primitive {
+    fn shape(rect: Bounds, color: Color) -> Primitive {
         Primitive::Shape(ShapePrimitive {
             bounds: rect,
             shape: Shape::Rect,
@@ -900,8 +901,10 @@ mod tests {
     fn primitive_and_spatial_ids_survive_non_structural_updates() {
         let mut source = RenderScene::new();
         let transform = source.insert_transform(Affine::IDENTITY);
-        let primitive =
-            source.insert_primitive(shape(Rect::new(0.0, 0.0, 10.0, 10.0), Color::BLACK));
+        let primitive = source.insert_primitive(shape(
+            Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
+            Color::BLACK,
+        ));
         source.append_child(source.root(), transform).unwrap();
         source.set_child(transform, Some(primitive)).unwrap();
 
@@ -917,7 +920,10 @@ mod tests {
         source
             .update_primitive(
                 primitive,
-                shape(Rect::new(0.0, 0.0, 20.0, 10.0), Color::WHITE),
+                shape(
+                    Bounds::from_origin_size((0.0, 0.0), (20.0, 10.0)),
+                    Color::WHITE,
+                ),
             )
             .unwrap();
         let second_snapshot = source.dirty_snapshot();
@@ -934,8 +940,10 @@ mod tests {
     #[test]
     fn repeated_unacknowledged_snapshot_is_idempotent() {
         let mut source = RenderScene::new();
-        let primitive =
-            source.insert_primitive(shape(Rect::new(0.0, 0.0, 10.0, 10.0), Color::BLACK));
+        let primitive = source.insert_primitive(shape(
+            Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
+            Color::BLACK,
+        ));
         source.append_child(source.root(), primitive).unwrap();
         let snapshot = source.dirty_snapshot();
         let mut compiler = SceneCompiler::new();
@@ -952,8 +960,14 @@ mod tests {
     #[test]
     fn topology_rebuild_reuses_surviving_ids_and_removes_stale_items() {
         let mut source = RenderScene::new();
-        let first = source.insert_primitive(shape(Rect::new(0.0, 0.0, 10.0, 10.0), Color::BLACK));
-        let stale = source.insert_primitive(shape(Rect::new(20.0, 0.0, 10.0, 10.0), Color::WHITE));
+        let first = source.insert_primitive(shape(
+            Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
+            Color::BLACK,
+        ));
+        let stale = source.insert_primitive(shape(
+            Bounds::from_origin_size((20.0, 0.0), (10.0, 10.0)),
+            Color::WHITE,
+        ));
         source.append_child(source.root(), first).unwrap();
         source.append_child(source.root(), stale).unwrap();
         let mut compiler = SceneCompiler::new();
@@ -974,7 +988,10 @@ mod tests {
     #[test]
     fn clip_and_composite_updates_keep_compiled_ids() {
         let mut source = RenderScene::new();
-        let clip = source.insert_clip(ClipShape::Rect(Rect::new(0.0, 0.0, 10.0, 10.0)));
+        let clip = source.insert_clip(ClipShape::Rect(Bounds::from_origin_size(
+            (0.0, 0.0),
+            (10.0, 10.0),
+        )));
         let layer = source.insert_layer(LayerDescriptor {
             force_offscreen: true,
             ..LayerDescriptor::default()
@@ -988,7 +1005,10 @@ mod tests {
         let picture_id = first.picture_for_source(layer).unwrap();
 
         source
-            .update_clip(clip, ClipShape::Rect(Rect::new(1.0, 2.0, 20.0, 30.0)))
+            .update_clip(
+                clip,
+                ClipShape::Rect(Bounds::from_origin_size((1.0, 2.0), (20.0, 30.0))),
+            )
             .unwrap();
         source
             .update_layer_composite(
@@ -1005,7 +1025,7 @@ mod tests {
         assert_eq!(second.picture_for_source(layer), Some(picture_id));
         assert_eq!(
             second.clip(clip_id).unwrap().clip,
-            ClipShape::Rect(Rect::new(1.0, 2.0, 20.0, 30.0))
+            ClipShape::Rect(Bounds::from_origin_size((1.0, 2.0), (20.0, 30.0)))
         );
         assert_eq!(
             second
@@ -1022,8 +1042,10 @@ mod tests {
     fn isolation_switch_adds_and_removes_picture_without_replacing_primitive() {
         let mut source = RenderScene::new();
         let layer = source.insert_layer(LayerDescriptor::default());
-        let primitive =
-            source.insert_primitive(shape(Rect::new(0.0, 0.0, 10.0, 10.0), Color::BLACK));
+        let primitive = source.insert_primitive(shape(
+            Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
+            Color::BLACK,
+        ));
         source.append_child(source.root(), layer).unwrap();
         source.set_child(layer, Some(primitive)).unwrap();
         let mut compiler = SceneCompiler::new();
@@ -1066,7 +1088,10 @@ mod tests {
             ..LayerDescriptor::default()
         });
         let group = source.insert_group();
-        let first = source.insert_primitive(shape(Rect::new(0.0, 0.0, 10.0, 10.0), Color::BLACK));
+        let first = source.insert_primitive(shape(
+            Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
+            Color::BLACK,
+        ));
         source.append_child(source.root(), layer).unwrap();
         source.set_child(layer, Some(group)).unwrap();
         source.append_child(group, first).unwrap();
@@ -1074,7 +1099,10 @@ mod tests {
         let snapshot = source.dirty_snapshot();
         compiler.compile(&source, &snapshot).unwrap();
 
-        let second = source.insert_primitive(shape(Rect::new(20.0, 0.0, 10.0, 10.0), Color::WHITE));
+        let second = source.insert_primitive(shape(
+            Bounds::from_origin_size((20.0, 0.0), (10.0, 10.0)),
+            Color::WHITE,
+        ));
         source.append_child(group, second).unwrap();
         let compiled = compiler.compiled_scene().unwrap();
         assert_eq!(
@@ -1091,8 +1119,14 @@ mod tests {
     #[test]
     fn reorder_updates_picture_order_without_replacing_primitives() {
         let mut source = RenderScene::new();
-        let first = source.insert_primitive(shape(Rect::new(0.0, 0.0, 10.0, 10.0), Color::BLACK));
-        let second = source.insert_primitive(shape(Rect::new(20.0, 0.0, 10.0, 10.0), Color::WHITE));
+        let first = source.insert_primitive(shape(
+            Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
+            Color::BLACK,
+        ));
+        let second = source.insert_primitive(shape(
+            Bounds::from_origin_size((20.0, 0.0), (10.0, 10.0)),
+            Color::WHITE,
+        ));
         source.append_child(source.root(), first).unwrap();
         source.append_child(source.root(), second).unwrap();
         let mut compiler = SceneCompiler::new();
@@ -1176,8 +1210,10 @@ mod tests {
             .clone();
         let first_fingerprint = first_program.program().fingerprint();
 
-        let primitive =
-            source.insert_primitive(shape(Rect::new(0.0, 0.0, 10.0, 10.0), Color::BLACK));
+        let primitive = source.insert_primitive(shape(
+            Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
+            Color::BLACK,
+        ));
         source.append_child(contents, primitive).unwrap();
         let topology_update = compiler.compile(&source, &source.dirty_snapshot()).unwrap();
         assert!(Arc::ptr_eq(
@@ -1251,7 +1287,7 @@ mod tests {
             ComputedEffect::ImageMask {
                 image: ImageKey::UserProvided(key),
                 data: ImageData::rgba8(Size::new(1, 1), vec![value; 4]),
-                bounds: Rect::new(0.0, 0.0, 10.0, 10.0),
+                bounds: Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
             }
         }
 

@@ -10,13 +10,10 @@ path = "src/main.rs"
 [dependencies]
 winit = "0.30.12"
 xui = { path = "../xui" }
-xui-winit = { path = "../xui-winit" }
+xui-winit = { path = "../xui-winit", features=["skia"] }
 xui-components = { path = "../xui-components" }
 leanplot = { git = "https://github.com/sleptworld/LeanPlot.git" }
 
-[features]
-default = ["skia"]
-skia = ["xui-winit/skia"]
 
 [dev-dependencies]
 png = "0.18.1"

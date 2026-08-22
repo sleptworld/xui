@@ -1,9 +1,10 @@
 use crate::event_system::callbacks::EventHandlers;
+use crate::event_system::interaction::InteractionProperties;
 use crate::{element::ElementDesc, event_system::EventContext};
 use xui_interface::{
-    Affine, ComputedStyle, EventRef, EventResult, Key, OverflowWrap, ParagraphStyle, Rect, Style,
-    TextBoxStyle, TextContent, TextOverflow, TextPaintProps, TextPaintStyle, TextProps, WidgetType,
-    WidgetUpdateFlags,
+    Affine, Bounds, ComputedStyle, EventRef, EventResult, Key, OverflowWrap, ParagraphStyle, Rect,
+    Style, TextBoxStyle, TextContent, TextOverflow, TextPaintProps, TextPaintStyle, TextProps,
+    WidgetType, WidgetUpdateFlags,
 };
 
 use super::{props_hash, widget_element_desc};
@@ -16,6 +17,7 @@ pub struct TextWidget {
     pub props: TextProps,
     pub style: Style,
     pub event_handlers: EventHandlers,
+    pub interaction: InteractionProperties,
 }
 
 impl TextWidget {
@@ -25,6 +27,7 @@ impl TextWidget {
             props: TextProps::new(text),
             style: Style::default(),
             event_handlers: EventHandlers::default(),
+            interaction: InteractionProperties::default(),
         }
     }
 
@@ -130,7 +133,7 @@ impl TextWidget {
     pub(super) fn render(
         &self,
         node_id: xui_interface::NodeId,
-        rect: Rect,
+        rect: Bounds,
         style: &ComputedStyle,
         writer: &mut RenderTreeWriter<'_>,
     ) {

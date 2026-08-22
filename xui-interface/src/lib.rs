@@ -9,7 +9,7 @@ pub mod style;
 pub mod text;
 pub mod widget;
 
-pub use core::{Color, EdgeInsets, Point, Rect, Size, Sizing, Translation};
+pub use core::{Bounds, Color, EdgeInsets, Point, Rect, Size, Sizing, Translation};
 pub use dirty::{StyleDiffFlags, WidgetUpdateFlags};
 pub use events::{
     CommandEvent, CommandId, ContextMenuTrigger, Event, EventPhase, EventRef, EventRequest,

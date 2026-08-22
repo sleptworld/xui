@@ -326,7 +326,84 @@ fn flight_selector() -> ElementDesc {
     )
 }
 
-fn map_panel() -> ElementDesc {
+fn icing_product_items() -> Vec<DropDownItem> {
+    [
+        "LWC",
+        "Time",
+        "IC指数",
+        "IC改进",
+        "假霜点温度",
+        "积冰指数",
+        "XGB1",
+        "XGB2",
+        "XGB3",
+        "XGB4",
+    ]
+    .into_iter()
+    .map(|name| DropDownItem::new(name, name))
+    .collect()
+}
+
+fn icing_product_drop_down_style() -> DropDownStyle {
+    DropDownStyle {
+        root: Style::new().size(Size::fix(158.0, 30.0)),
+        trigger: Style::new()
+            .size(Size::fix(158.0, 30.0))
+            .padding(EdgeInsets::symmetric(12.0, 4.0))
+            .align(AlignStyle::Center)
+            .background(CONTROL)
+            .color(TEXT)
+            .font_size(13.0)
+            .font_weight(FontWeight::Medium)
+            .border_color(Color::hex("#55555A"))
+            .border_width(1.0)
+            .border_radius(4.0)
+            .when(WidgetState::HOVERED, |style| {
+                style.background(Color::hex("#343438"))
+            })
+            .when(WidgetState::FOCUSED, |style| style.border_color(ACCENT)),
+        trigger_open: Style::new().border_color(ACCENT),
+        backdrop: Style::new(),
+        menu: Style::new()
+            .padding(EdgeInsets::all(4.0))
+            .background(Color::hex("#1A1A1C"))
+            .border_color(Color::hex("#55555A"))
+            .border_width(1.0)
+            .border_radius(4.0)
+            .max_height(280.0)
+            .scroll_vertical(),
+        option: Style::new()
+            .padding(EdgeInsets::symmetric(10.0, 7.0))
+            .color(TEXT)
+            .font_size(12.0)
+            .border_radius(3.0)
+            .when(WidgetState::HOVERED, |style| style.background(CONTROL)),
+        selected_option: Style::new()
+            .padding(EdgeInsets::symmetric(10.0, 7.0))
+            .background(Color::hex("#253526"))
+            .color(ACCENT)
+            .font_size(12.0)
+            .font_weight(FontWeight::Bold)
+            .border_radius(3.0),
+        disabled_option: Style::new()
+            .padding(EdgeInsets::symmetric(10.0, 7.0))
+            .color(DIM)
+            .font_size(12.0)
+            .border_radius(3.0),
+    }
+}
+
+fn map_panel(selected_product: usize, on_product_change: DropDownChangeCallback) -> ElementDesc {
+    let product_selector = xui! {
+        <drop_down
+            items={icing_product_items()}
+            selected={Some(selected_product)}
+            on_change={Some(on_product_change)}
+            style={icing_product_drop_down_style()}
+            id_prefix={"icing-product".to_string()}
+            z_index={2000}
+        />
+    };
     let toolbar = row(
         Style::new()
             .height(42.0)
@@ -339,18 +416,7 @@ fn map_panel() -> ElementDesc {
                 Style::new().gap(9.0).align(AlignStyle::Center),
                 vec![
                     label("当前积冰监测产品:", 12.0, MUTED, FontWeight::SemiBold),
-                    row(
-                        Style::new()
-                            .size(Size::fix(158.0, 30.0))
-                            .padding(EdgeInsets::symmetric(12.0, 4.0))
-                            .align(AlignStyle::Center)
-                            .justify(JustifyStyle::SpaceBetween)
-                            .background(CONTROL)
-                            .border_color(Color::hex("#55555A"))
-                            .border_width(1.0)
-                            .border_radius(4.0),
-                        vec![label("LWC", 13.0, TEXT, FontWeight::Medium)],
-                    ),
+                    product_selector,
                 ],
             ),
             row(
@@ -671,10 +737,14 @@ fn status_bar() -> ElementDesc {
     )
 }
 
-fn dashboard_view(analytics: ElementDesc) -> ElementDesc {
+fn dashboard_view(
+    analytics: ElementDesc,
+    selected_product: usize,
+    on_product_change: DropDownChangeCallback,
+) -> ElementDesc {
     let workspace = row(
         Style::new().width(Sizing::fill()).height(714.0).gap(16.0),
-        vec![map_panel(), analytics],
+        vec![map_panel(selected_product, on_product_change), analytics],
     );
 
     column(
@@ -693,8 +763,12 @@ fn dashboard_view(analytics: ElementDesc) -> ElementDesc {
 #[component]
 pub fn flight_icing_dashboard() {
     let selected_tab = cx.use_state(|| 1usize);
+    let selected_product = cx.use_state(|| 0usize);
     let on_tab_change = cx.use_callback(selected_tab, move || {
         Box::new(move |index| selected_tab.set(index)) as TabChangeHandler
+    });
+    let on_product_change = cx.use_callback(selected_product, move || {
+        Box::new(move |index| selected_product.set(index)) as DropDownChangeHandler
     });
     let items = vec![
         TabItem::new("flight", "飞行监测", flight_monitor_content()),
@@ -751,7 +825,7 @@ pub fn flight_icing_dashboard() {
             id_prefix={"flight-icing-monitor".to_string()}
         />
     };
-    dashboard_view(analytics)
+    dashboard_view(analytics, *selected_product.get(), on_product_change)
 }
 
 #[cfg(test)]
@@ -862,7 +936,10 @@ mod tests {
                 }
                 let st = backend.frame_stats();
                 report.push((step, logical_w, diff_count));
-                eprintln!("step={step:+3} logical_w={logical_w:>8.2} phys_w={phys_w} diff_in_overlap={diff_count} root_damage_rects={} root_damage_area_sum={:.0}", st.root_damage_rects, st.root_damage_area_sum);
+                eprintln!(
+                    "step={step:+3} logical_w={logical_w:>8.2} phys_w={phys_w} diff_in_overlap={diff_count} root_damage_rects={} root_damage_area_sum={:.0}",
+                    st.root_damage_rects, st.root_damage_area_sum
+                );
             }
             prev = Some((phys_w, pixels));
         }

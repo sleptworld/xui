@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 use crate::{
     ComponentRender,
     fiber::{ErasedProps, Key},
-    widgets::WidgetI,
+    widgets::{OverlayEntryOptions, OverlayScopeId, WidgetI},
 };
 use xui_interface::WidgetType;
 
@@ -12,6 +12,7 @@ use xui_interface::WidgetType;
 pub enum ElementDesc {
     Host(WidgetDesc),
     Component(ComponentDesc),
+    Portal(PortalDesc),
 }
 
 #[derive(Clone, Debug)]
@@ -26,6 +27,52 @@ pub struct ComponentDesc {
     pub render: ComponentRender,
     pub props: Option<ErasedProps>,
     pub props_hash: u64,
+}
+
+/// Keeps children in the logical component tree while mounting their host
+/// subtree below the runtime's root overlayer.
+#[derive(Clone, Debug)]
+pub struct PortalDesc {
+    pub key: Option<Key>,
+    pub scope: Option<OverlayScopeId>,
+    pub options: OverlayEntryOptions,
+    pub children: Vec<ElementDesc>,
+}
+
+impl PortalDesc {
+    pub fn new(children: Vec<ElementDesc>) -> Self {
+        Self {
+            key: None,
+            scope: None,
+            options: OverlayEntryOptions::default(),
+            children,
+        }
+    }
+
+    pub fn key(mut self, key: impl Into<Key>) -> Self {
+        self.key = Some(key.into());
+        self
+    }
+
+    pub fn scope(mut self, scope: OverlayScopeId) -> Self {
+        self.scope = Some(scope);
+        self
+    }
+
+    pub fn z_index(mut self, z_index: i32) -> Self {
+        self.options.z_index = z_index;
+        self
+    }
+
+    pub fn hit_test(mut self, hit_test: bool) -> Self {
+        self.options.hit_test = hit_test;
+        self
+    }
+
+    pub fn modal(mut self, modal: bool) -> Self {
+        self.options.modal = modal;
+        self
+    }
 }
 
 impl WidgetDesc {
@@ -64,13 +111,14 @@ impl ElementDesc {
         match self {
             Self::Host(widget) => widget.widget.key(),
             Self::Component(component) => component.key,
+            Self::Portal(portal) => portal.key,
         }
     }
 
     pub fn node_type(&self) -> Option<WidgetType> {
         match self {
             Self::Host(widget) => Some(widget.widget.node_type()),
-            Self::Component(_) => None,
+            Self::Component(_) | Self::Portal(_) => None,
         }
     }
 
@@ -82,6 +130,14 @@ impl ElementDesc {
                 component.key.hash(&mut hasher);
                 component.render.hash(&mut hasher);
                 component.props_hash.hash(&mut hasher);
+                hasher.finish()
+            }
+            Self::Portal(portal) => {
+                let mut hasher = DefaultHasher::new();
+                portal.key.hash(&mut hasher);
+                portal.scope.hash(&mut hasher);
+                portal.options.hash(&mut hasher);
+                portal.children.hash(&mut hasher);
                 hasher.finish()
             }
         }
@@ -106,6 +162,16 @@ impl Into<ElementDesc> for ComponentDesc {
     }
 }
 
+impl From<PortalDesc> for ElementDesc {
+    fn from(portal: PortalDesc) -> Self {
+        Self::Portal(portal)
+    }
+}
+
+pub fn portal(children: Vec<ElementDesc>) -> PortalDesc {
+    PortalDesc::new(children)
+}
+
 impl Into<WidgetDesc> for ElementDesc {
     fn into(self) -> WidgetDesc {
         match self {
@@ -113,6 +179,7 @@ impl Into<WidgetDesc> for ElementDesc {
             ElementDesc::Component(_) => {
                 unreachable!()
             }
+            ElementDesc::Portal(_) => unreachable!(),
         }
     }
 }
@@ -124,6 +191,7 @@ impl Into<ComponentDesc> for ElementDesc {
                 unreachable!()
             }
             ElementDesc::Component(component) => component,
+            ElementDesc::Portal(_) => unreachable!(),
         }
     }
 }

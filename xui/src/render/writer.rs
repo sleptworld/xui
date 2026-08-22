@@ -142,9 +142,9 @@ impl NodeKind {
 mod tests {
     use super::*;
     use crate::render::{Shape, ShapePrimitive};
-    use xui_interface::{Color, ComputedColorStyle, Rect};
+    use xui_interface::{Bounds, Color, ComputedColorStyle, Rect};
 
-    fn shape(bounds: Rect, color: Color) -> Primitive {
+    fn shape(bounds: Bounds, color: Color) -> Primitive {
         Primitive::Shape(ShapePrimitive {
             bounds,
             shape: Shape::Rect,
@@ -161,10 +161,16 @@ mod tests {
         {
             let mut writer = RenderTreeWriter::new(&mut scene, parent);
             writer
-                .primitive(shape(Rect::new(0.0, 0.0, 10.0, 10.0), Color::BLACK))
+                .primitive(shape(
+                    Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
+                    Color::BLACK,
+                ))
                 .unwrap();
             writer
-                .primitive(shape(Rect::new(10.0, 0.0, 10.0, 10.0), Color::WHITE))
+                .primitive(shape(
+                    Bounds::from_origin_size((10.0, 0.0), (10.0, 10.0)),
+                    Color::WHITE,
+                ))
                 .unwrap();
             writer.finish().unwrap();
         }
@@ -173,7 +179,10 @@ mod tests {
         {
             let mut writer = RenderTreeWriter::new(&mut scene, parent);
             writer
-                .primitive(shape(Rect::new(1.0, 0.0, 10.0, 10.0), Color::WHITE))
+                .primitive(shape(
+                    Bounds::from_origin_size((1.0, 0.0), (10.0, 10.0)),
+                    Color::WHITE,
+                ))
                 .unwrap();
             writer.finish().unwrap();
         }

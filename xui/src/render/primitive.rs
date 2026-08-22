@@ -1,6 +1,7 @@
 use xui_interface::{
-    Affine, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, ImageData, ImageKey,
-    ImageStyle, ImageVariant, NodeId, Point, Rect, TextPaintProps, TextVerticalAlign, VectorScene,
+    Affine, Bounds, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, ImageData,
+    ImageKey, ImageStyle, ImageVariant, NodeId, Point, Rect, TextPaintProps, TextVerticalAlign,
+    VectorScene,
 };
 
 use crate::text::TextLayoutSlot;
@@ -20,19 +21,19 @@ pub enum Primitive {
 }
 
 impl Primitive {
-    pub fn local_bounds(&self) -> Rect {
+    pub fn local_bounds(&self) -> Bounds {
         match self {
             Self::Shape(value) => value.bounds,
-            Self::Vector(value) => value.transform.transform_rect(value.scene.bounds()),
+            Self::Vector(value) => value.transform.transform_bounds(value.scene.bounds()),
             Self::Image(value) => value.bounds,
             Self::Text(value) => value.bounds,
         }
     }
 
-    pub fn paint_bounds(&self) -> Rect {
+    pub fn paint_bounds(&self) -> Bounds {
         match self {
             Self::Shape(value) => shape_paint_bounds(value),
-            Self::Vector(value) => value.transform.transform_rect(value.scene.bounds()),
+            Self::Vector(value) => value.transform.transform_bounds(value.scene.bounds()),
             Self::Image(value) => value.bounds,
             Self::Text(value) => value.bounds,
         }
@@ -80,7 +81,7 @@ impl Primitive {
     }
 }
 
-fn shape_paint_bounds(shape: &ShapePrimitive) -> Rect {
+fn shape_paint_bounds(shape: &ShapePrimitive) -> Bounds {
     let stroke_bounds = shape.bounds.expand(
         shape
             .stroke
@@ -100,7 +101,7 @@ fn shape_paint_bounds(shape: &ShapePrimitive) -> Rect {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShapePrimitive {
-    pub bounds: Rect,
+    pub bounds: Bounds,
     pub shape: Shape,
     pub fill: Option<ComputedColorStyle>,
     pub stroke: Option<ComputedStrokeStyle>,
@@ -124,7 +125,7 @@ pub struct VectorPrimitive {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImagePrimitive {
-    pub bounds: Rect,
+    pub bounds: Bounds,
     pub image: ImageKey,
     pub data: ImageData,
     pub variant: ImageVariant,
@@ -134,7 +135,7 @@ pub struct ImagePrimitive {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextPrimitive {
-    pub bounds: Rect,
+    pub bounds: Bounds,
     pub node_id: NodeId,
     pub slot: TextLayoutSlot,
     pub layout_revision: u64,
@@ -145,12 +146,12 @@ pub struct TextPrimitive {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xui_interface::{Color, ComputedShadowStyle};
+    use xui_interface::{Color, ComputedShadowStyle, Size};
 
     #[test]
     fn paint_bounds_include_asymmetric_shadow_and_stroke() {
         let primitive = Primitive::Shape(ShapePrimitive {
-            bounds: Rect::new(10.0, 10.0, 20.0, 20.0),
+            bounds: Bounds::from_origin_size(Point::new(10.0, 10.0), Size::new(20.0, 20.0)),
             shape: Shape::Rect,
             fill: None,
             stroke: Some(ComputedStrokeStyle {
@@ -165,6 +166,9 @@ mod tests {
                 spread: 1.0,
             }),
         });
-        assert_eq!(primitive.paint_bounds(), Rect::new(8.0, 0.0, 37.0, 34.0));
+        assert_eq!(
+            primitive.paint_bounds(),
+            Bounds::from_origin_size((8.0, 0.0), (37.0, 34.0))
+        );
     }
 }

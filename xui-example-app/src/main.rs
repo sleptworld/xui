@@ -3,13 +3,11 @@ mod flight_icing;
 use winit::dpi::PhysicalSize;
 use winit::platform::macos::WindowAttributesExtMacOS;
 use winit::window::Window;
+use xui::core::Bounds;
 use xui::prelude::*;
 use xui_components::*;
 use xui_winit::WinitRunnerOptions;
-#[cfg(not(feature = "skia"))]
 use xui_winit::runner;
-#[cfg(feature = "skia")]
-use xui_winit::skia_runner as runner;
 
 fn filled_icon() -> IconData {
     static ICON: std::sync::OnceLock<IconData> = std::sync::OnceLock::new();
@@ -153,7 +151,7 @@ fn demo_canvas_scene(highlighted: bool) -> VectorScene {
     caption.text_box.overflow = TextOverflow::Ellipsis;
     scene.text_box(
         CanvasTextId::new(1),
-        Rect::new(38.0, 36.0, 190.0, 58.0),
+        Bounds::from_origin_size((38.0, 36.0), (190.0, 58.0)),
         caption,
     );
 

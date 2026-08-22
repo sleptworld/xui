@@ -125,7 +125,7 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
     }
 
     fn refresh_platform_output(&mut self) {
-        let arena = self.app.arena();
+        let arena = self.app.ui_runtime();
         let text_input = arena.focus_manager().focused().and_then(|id| {
             let node = arena.node(id)?;
             let rect = arena.visual_layout(id)?;

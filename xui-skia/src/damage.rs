@@ -1,26 +1,26 @@
 use std::collections::HashMap;
 
 use xui::{
-    Affine,
+    Affine, Point,
     render::{BuiltFrame, BuiltItem, ContentVersion, PlacementVersion, RenderNodeId},
 };
-use xui_interface::Rect;
+use xui_interface::{Bounds, Rect};
 use xui_render_graph::{ProgramFingerprint, SampleExpansion};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DamageRegion {
-    rects: Vec<Rect>,
+    rects: Vec<Bounds>,
 }
 
 impl DamageRegion {
-    pub(crate) fn full(rect: Rect) -> Self {
+    pub(crate) fn full(rect: Bounds) -> Self {
         let mut region = Self::default();
         region.add(rect);
         region
     }
 
-    pub(crate) fn add(&mut self, rect: Rect) {
-        if rect.width > 0.0 && rect.height > 0.0 {
+    pub(crate) fn add(&mut self, rect: Bounds) {
+        if rect.width() > 0.0 && rect.height() > 0.0 {
             self.rects.push(rect);
         }
     }
@@ -29,7 +29,7 @@ impl DamageRegion {
         self.rects.extend(other.rects);
     }
 
-    pub(crate) fn rects(&self) -> &[Rect] {
+    pub(crate) fn rects(&self) -> &[Bounds] {
         &self.rects
     }
 
@@ -37,20 +37,18 @@ impl DamageRegion {
         self.rects.is_empty()
     }
 
-    pub(crate) fn bounds(&self) -> Option<Rect> {
-        self.rects.iter().copied().reduce(Rect::union)
+    pub(crate) fn bounds(&self) -> Option<Bounds> {
+        self.rects.iter().copied().reduce(Bounds::union)
     }
 
-    fn backdrop_damage(&self, output_bounds: Rect, expansion: SampleExpansion) -> Self {
+    fn backdrop_damage(&self, output_bounds: Bounds, expansion: SampleExpansion) -> Self {
         let mut damage = Self::default();
         for rect in &self.rects {
-            let expanded = Rect::new(
-                rect.x - expansion.left,
-                rect.y - expansion.top,
-                rect.width + expansion.left + expansion.right,
-                rect.height + expansion.top + expansion.bottom,
+            let expanded = Bounds::new(
+                Point::new(rect.x() - expansion.left, rect.y() - expansion.top),
+                Point::new(rect.max.x + expansion.right, rect.max.y + expansion.bottom),
             );
-            if let Some(affected) = intersect_rect(expanded, output_bounds) {
+            if let Some(affected) = expanded & output_bounds {
                 damage.add(affected);
             }
         }
@@ -59,18 +57,16 @@ impl DamageRegion {
 
     fn expand_sample(&mut self, expansion: SampleExpansion) {
         for rect in &mut self.rects {
-            *rect = Rect::new(
-                rect.x - expansion.left,
-                rect.y - expansion.top,
-                rect.width + expansion.left + expansion.right,
-                rect.height + expansion.top + expansion.bottom,
+            *rect = Bounds::new(
+                Point::new(rect.min.x - expansion.left, rect.min.y - expansion.top),
+                Point::new(rect.max.x + expansion.right, rect.max.y + expansion.bottom),
             );
         }
     }
 
-    fn add_transformed(&mut self, other: &Self, transform: Affine, clip: Rect) {
+    fn add_transformed(&mut self, other: &Self, transform: Affine, clip: Bounds) {
         for rect in &other.rects {
-            if let Some(clipped) = intersect_rect(transform.transform_rect(*rect), clip) {
+            if let Some(clipped) = transform.transform_bounds(*rect) & clip {
                 self.add(clipped);
             }
         }
@@ -79,27 +75,20 @@ impl DamageRegion {
     fn through_prefix_placement(
         &self,
         child_to_parent: Affine,
-        parent_clip: Rect,
+        parent_clip: Bounds,
         expansion: SampleExpansion,
-        child_clip: Rect,
+        child_clip: Bounds,
     ) -> Self {
         let Some(parent_to_child) = inverse_affine(child_to_parent) else {
             return Self::default();
         };
         let mut result = Self::default();
         for rect in &self.rects {
-            let expanded = Rect::new(
-                rect.x - expansion.left,
-                rect.y - expansion.top,
-                rect.width + expansion.left + expansion.right,
-                rect.height + expansion.top + expansion.bottom,
-            );
-            let Some(parent_visible) = intersect_rect(expanded, parent_clip) else {
+            let expanded = expansion.apply_to_bounds(*rect);
+            let Some(parent_visible) = (expanded & parent_clip) else {
                 continue;
             };
-            if let Some(child) =
-                intersect_rect(parent_to_child.transform_rect(parent_visible), child_clip)
-            {
+            if let Some(child) = parent_to_child.transform_bounds(parent_visible) & child_clip {
                 result.add(child);
             }
         }
@@ -128,13 +117,13 @@ enum ItemKind {
 struct ItemSnapshot {
     source: RenderNodeId,
     version: ItemVersion,
-    bounds: Rect,
+    bounds: Bounds,
     kind: ItemKind,
 }
 
 #[derive(Debug, Clone)]
 struct LayerSnapshot {
-    render_bounds: Rect,
+    render_bounds: Bounds,
     items: Vec<ItemSnapshot>,
 }
 
@@ -481,18 +470,21 @@ mod tests {
     fn transformed_damage_is_clipped() {
         let mut output = DamageRegion::default();
         output.add_transformed(
-            &DamageRegion::full(Rect::new(0.0, 0.0, 5.0, 5.0)),
+            &DamageRegion::full(Bounds::from_origin_size((0.0, 0.0), (5.0, 5.0))),
             Affine::translate(8.0, 0.0),
-            Rect::new(0.0, 0.0, 10.0, 10.0),
+            Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
         );
-        assert_eq!(output.bounds(), Some(Rect::new(8.0, 0.0, 2.0, 5.0)));
+        assert_eq!(
+            output.bounds(),
+            Some(Bounds::from_origin_size((8.0, 0.0), (2.0, 5.0)))
+        );
     }
 
     #[test]
     fn backdrop_expands_only_intersecting_damage() {
-        let damage = DamageRegion::full(Rect::new(0.0, 0.0, 2.0, 2.0));
+        let damage = DamageRegion::full(Bounds::from_origin_size((0.0, 0.0), (2.0, 2.0)));
         let affected = damage.backdrop_damage(
-            Rect::new(3.0, 0.0, 4.0, 4.0),
+            Bounds::from_origin_size((3.0, 0.0), (4.0, 4.0)),
             SampleExpansion {
                 left: 2.0,
                 top: 0.0,
@@ -500,6 +492,9 @@ mod tests {
                 bottom: 0.0,
             },
         );
-        assert_eq!(affected.bounds(), Some(Rect::new(3.0, 0.0, 1.0, 2.0)));
+        assert_eq!(
+            affected.bounds(),
+            Some(Bounds::from_origin_size((3.0, 0.0), (1.0, 2.0)))
+        );
     }
 }

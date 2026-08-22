@@ -3,10 +3,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::element::ElementDesc;
-use crate::event_system::EventContext;
 use crate::event_system::callbacks::EventHandlers;
+use crate::event_system::interaction::InteractionProperties;
+use crate::event_system::EventContext;
 use xui_interface::{
-    Affine, Color, ComputedStyle, EventRef, EventResult, FillRule, Key, PathData, PathFill,
+    Affine, Bounds, Color, ComputedStyle, EventRef, EventResult, FillRule, Key, PathData, PathFill,
     PathStroke, Rect, Size, Sizing, Style, TextContent, TextProps, VectorSceneBuilder, WidgetType,
     WidgetUpdateFlags,
 };
@@ -196,6 +197,7 @@ pub struct IconWidget {
     pub color: Option<Color>,
     pub style: Style,
     pub event_handlers: EventHandlers,
+    pub interaction: InteractionProperties,
 }
 
 impl std::fmt::Debug for IconWidget {
@@ -217,6 +219,7 @@ impl IconWidget {
             color: None,
             style: Style::new(),
             event_handlers: EventHandlers::default(),
+            interaction: InteractionProperties::default(),
         }
     }
 
@@ -291,17 +294,17 @@ impl IconWidget {
     pub(super) fn render(
         &self,
         _node_id: xui_interface::NodeId,
-        rect: Rect,
+        rect: Bounds,
         style: &ComputedStyle,
         writer: &mut RenderTreeWriter<'_>,
     ) {
         let view = self.data.view_box;
-        if rect.width <= 0.0 || rect.height <= 0.0 || view.width <= 0.0 || view.height <= 0.0 {
+        if rect.width() <= 0.0 || rect.height() <= 0.0 || view.width <= 0.0 || view.height <= 0.0 {
             return;
         }
-        let scale = (rect.width / view.width).min(rect.height / view.height);
-        let x = rect.x + (rect.width - view.width * scale) * 0.5;
-        let y = rect.y + (rect.height - view.height * scale) * 0.5;
+        let scale = (rect.width() / view.width).min(rect.height() / view.height);
+        let x = rect.x() + (rect.width() - view.width * scale) * 0.5;
+        let y = rect.y() + (rect.height() - view.height * scale) * 0.5;
         let transform = Affine::translate(-view.x, -view.y)
             .then(Affine::scale(scale, scale))
             .then(Affine::translate(x, y));
@@ -490,7 +493,7 @@ mod tests {
         let mut writer = RenderTreeWriter::new(&mut scene, parent);
         widget.render(
             xui_interface::NodeId::default(),
-            Rect::new(0.0, 0.0, 40.0, 40.0),
+            Bounds::from_origin_size((0.0, 0.0), (40.0, 40.0)),
             &style,
             &mut writer,
         );

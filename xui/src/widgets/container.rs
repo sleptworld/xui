@@ -1,15 +1,18 @@
 use crate::element::ElementDesc;
-use crate::event_system::EventContext;
 use crate::event_system::callbacks::EventHandlers;
+use crate::event_system::interaction::InteractionProperties;
+use crate::event_system::EventContext;
+use crate::widgets::utils::render_box;
 use xui_animation::Transition;
 use xui_interface::style::FlexDirectionStyle;
+use xui_interface::Bounds;
 use xui_interface::{
-    ColorStyle, ComputedStyle, EventRef, EventResult, Key, LengthValue, Rect, ScrollDirectionStyle,
-    Style, TextContent, TextProps, WidgetType, WidgetUpdateFlags, style::ScrollbarStylePatch,
+    style::ScrollbarStylePatch, ColorStyle, ComputedStyle, EventRef, EventResult, Key, LengthValue,
+    ScrollDirectionStyle, Style, TextContent, TextProps, WidgetType, WidgetUpdateFlags,
 };
 
 use super::{props_hash, widget_element_desc};
-use crate::render::{Primitive, RenderTreeWriter, Shape, ShapePrimitive};
+use crate::render::RenderTreeWriter;
 
 pub struct ContainerWidget {
     pub key: Option<Key>,
@@ -17,6 +20,7 @@ pub struct ContainerWidget {
     pub flex_direction: Option<FlexDirectionStyle>,
     pub transition: Option<Transition>,
     pub event_handlers: EventHandlers,
+    pub interaction: InteractionProperties,
 }
 
 impl std::fmt::Debug for ContainerWidget {
@@ -37,6 +41,7 @@ impl ContainerWidget {
             flex_direction: None,
             transition: None,
             event_handlers: EventHandlers::default(),
+            interaction: InteractionProperties::default(),
         }
     }
 
@@ -155,7 +160,7 @@ impl ContainerWidget {
     pub(super) fn render(
         &self,
         _node_id: xui_interface::NodeId,
-        rect: Rect,
+        rect: Bounds,
         style: &ComputedStyle,
         writer: &mut RenderTreeWriter<'_>,
     ) {
@@ -177,22 +182,4 @@ impl ContainerWidget {
     pub(super) fn text_layout_props(&self, _style: &ComputedStyle) -> Option<TextProps> {
         None
     }
-}
-
-pub(super) fn render_box(rect: Rect, style: &ComputedStyle, writer: &mut RenderTreeWriter<'_>) {
-    let paint = style.paint;
-    let shape = if paint.border_radius > 0.0 {
-        Shape::RoundedRect(paint.border_radius)
-    } else {
-        Shape::Rect
-    };
-    writer
-        .primitive(Primitive::Shape(ShapePrimitive {
-            bounds: rect,
-            shape,
-            fill: Some(paint.background),
-            stroke: paint.stroke,
-            shadow: paint.shadow,
-        }))
-        .expect("widget render tree must remain valid");
 }

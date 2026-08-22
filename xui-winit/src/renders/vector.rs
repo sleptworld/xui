@@ -1,5 +1,6 @@
 use std::{ops::Range, sync::Arc};
 
+use moka::sync::Cache;
 use vello::{
     AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene,
     kurbo::{Affine as KurboAffine, BezPath, Cap, Join, Rect as KurboRect, Stroke},
@@ -10,8 +11,8 @@ use vello::{
 };
 use wgpu::util::DeviceExt;
 use xui_interface::{
-    Affine, Color, FillRule, LineCap, LineJoin, PathData, PathSegment, Point, Rect, VectorCommand,
-    VectorScene,
+    Affine, Color, FillRule, LineCap, LineJoin, PathData, PathDataId, PathFill, PathSegment,
+    PathStroke, Point, Rect, VectorCommand, VectorScene, VectorSceneId,
 };
 
 use crate::wgpu::{SCENE_FORMAT, SCENE_SAMPLE_COUNT, physical_scissor};
@@ -29,8 +30,9 @@ pub struct VectorDrawRecord {
 
 impl VectorDrawRecord {
     fn visible_bounds(&self) -> Option<Rect> {
+        let bounds = self.transform.transform_bounds(self.scene.bounds());
         intersect_rect(
-            self.transform.transform_rect(self.scene.bounds()),
+            Rect::new(bounds.x(), bounds.y(), bounds.width(), bounds.height()),
             self.clip,
         )
     }
@@ -65,6 +67,20 @@ struct VectorComposite {
     clip: Rect,
 }
 
+#[derive(Clone)]
+enum CompiledVectorCommand {
+    FillPath {
+        path: Arc<BezPath>,
+        transform: Affine,
+        fill: PathFill,
+    },
+    StrokePath {
+        path: Arc<BezPath>,
+        transform: Affine,
+        stroke: PathStroke,
+    },
+}
+
 pub struct VectorRenderer {
     renderer: Renderer,
     pipeline: wgpu::RenderPipeline,
@@ -75,6 +91,8 @@ pub struct VectorRenderer {
     composites: Vec<VectorComposite>,
     active_targets: Vec<VectorTarget>,
     available_targets: Vec<VectorTarget>,
+    paths: Cache<PathDataId, Arc<BezPath>>,
+    scenes: Cache<VectorSceneId, Arc<[CompiledVectorCommand]>>,
 }
 
 impl VectorRenderer {
@@ -172,6 +190,8 @@ impl VectorRenderer {
             composites: Vec::new(),
             active_targets: Vec::new(),
             available_targets: Vec::new(),
+            paths: Cache::new(4096),
+            scenes: Cache::new(1024),
         })
     }
 
@@ -228,7 +248,8 @@ impl VectorRenderer {
             );
             scene.push_clip_layer(Fill::NonZero, KurboAffine::IDENTITY, &clip);
             let outer = record.transform.then(target_transform);
-            for command in record.scene.commands() {
+            let compiled = self.compiled_scene(&record.scene);
+            for command in compiled.iter() {
                 encode_command(&mut scene, command, outer, record.opacity);
             }
             scene.pop_layer();
@@ -353,6 +374,49 @@ impl VectorRenderer {
             size,
         }
     }
+
+    fn compiled_scene(&self, scene: &VectorScene) -> Arc<[CompiledVectorCommand]> {
+        if let Some(compiled) = self.scenes.get(&scene.id()) {
+            return compiled;
+        }
+        let compiled: Arc<[CompiledVectorCommand]> = scene
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                VectorCommand::FillPath {
+                    path,
+                    transform,
+                    fill,
+                } => Some(CompiledVectorCommand::FillPath {
+                    path: self.compiled_path(path),
+                    transform: *transform,
+                    fill: *fill,
+                }),
+                VectorCommand::StrokePath {
+                    path,
+                    transform,
+                    stroke,
+                } => Some(CompiledVectorCommand::StrokePath {
+                    path: self.compiled_path(path),
+                    transform: *transform,
+                    stroke: *stroke,
+                }),
+                VectorCommand::TextBox { .. } => None,
+            })
+            .collect::<Vec<_>>()
+            .into();
+        self.scenes.insert(scene.id(), Arc::clone(&compiled));
+        compiled
+    }
+
+    fn compiled_path(&self, path: &PathData) -> Arc<BezPath> {
+        if let Some(compiled) = self.paths.get(&path.id()) {
+            return compiled;
+        }
+        let compiled = Arc::new(kurbo_path(path));
+        self.paths.insert(path.id(), Arc::clone(&compiled));
+        compiled
+    }
 }
 
 fn quad_vertices(bounds: Rect) -> [VectorVertex; 6] {
@@ -371,9 +435,9 @@ fn quad_vertices(bounds: Rect) -> [VectorVertex; 6] {
     ]
 }
 
-fn encode_command(scene: &mut Scene, command: &VectorCommand, outer: Affine, opacity: f32) {
+fn encode_command(scene: &mut Scene, command: &CompiledVectorCommand, outer: Affine, opacity: f32) {
     match command {
-        VectorCommand::FillPath {
+        CompiledVectorCommand::FillPath {
             path,
             transform,
             fill,
@@ -388,10 +452,10 @@ fn encode_command(scene: &mut Scene, command: &VectorCommand, outer: Affine, opa
                 kurbo_affine(transform.then(outer)),
                 color,
                 None,
-                &kurbo_path(path),
+                path.as_ref(),
             );
         }
-        VectorCommand::StrokePath {
+        CompiledVectorCommand::StrokePath {
             path,
             transform,
             stroke,
@@ -414,11 +478,10 @@ fn encode_command(scene: &mut Scene, command: &VectorCommand, outer: Affine, opa
                 kurbo_affine(transform.then(outer)),
                 color(stroke.color, opacity),
                 None,
-                &kurbo_path(path),
+                path.as_ref(),
             );
         }
-        VectorCommand::StrokePath { .. } => {}
-        VectorCommand::TextBox { .. } => {}
+        CompiledVectorCommand::StrokePath { .. } => {}
     }
 }
 

@@ -1,14 +1,14 @@
-use xui_interface::{PathData, Rect};
+use xui_interface::{Bounds, PathData};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClipShape {
-    Rect(Rect),
-    RoundedRect { rect: Rect, radius: f32 },
-    Path { path: PathData, bounds: Rect },
+    Rect(Bounds),
+    RoundedRect { rect: Bounds, radius: f32 },
+    Path { path: PathData, bounds: Bounds },
 }
 
 impl ClipShape {
-    pub fn local_bounds(&self) -> Rect {
+    pub fn local_bounds(&self) -> Bounds {
         match self {
             Self::Rect(rect) | Self::RoundedRect { rect, .. } => *rect,
             Self::Path { bounds, .. } => *bounds,

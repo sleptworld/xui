@@ -1,1 +1,1 @@
-pub use xui_interface::{Color, EdgeInsets, Point, Rect, Size};
+pub use xui_interface::{Bounds, Color, EdgeInsets, Point, Rect, Size};

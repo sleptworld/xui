@@ -1,7 +1,7 @@
 use crate::{
     BlendMode, ColorMatrix, CompositeOperator, FilterQuality, MaskShape, WorkingColorSpace,
 };
-use xui_interface::{Affine, Color, Point};
+use xui_interface::{Affine, Bounds, Color, Point};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct SampleExpansion {
@@ -53,6 +53,13 @@ impl SampleExpansion {
             self.top.to_bits(),
             self.bottom.to_bits(),
         ]
+    }
+
+    pub fn apply_to_bounds(&self, bound: Bounds) -> Bounds {
+        Bounds::new(
+            Point::new(bound.min.x - self.left, bound.min.y - self.top),
+            Point::new(bound.max.x + self.right, bound.max.y + self.bottom),
+        )
     }
 }
 

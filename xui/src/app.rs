@@ -1,4 +1,3 @@
-use crate::ElementDesc;
 use crate::component::ComponentRuntime;
 use crate::core::Size;
 use crate::event_system::translator::EventTranslator;
@@ -7,8 +6,8 @@ use crate::render::RenderBackend;
 use crate::state::{AsyncDispatcher, AsyncMessage, HookContext, Scheduler};
 use crate::style::Theme;
 use crate::text::TextHost;
-use crate::tree::RenderFrameError;
-use crate::tree::UiArena;
+use crate::ui_runtime::{RenderFrameError, UiRuntime};
+use crate::ElementDesc;
 use std::future::Future;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -16,8 +15,8 @@ use tokio::runtime::{
     Builder as TokioRuntimeBuilder, Handle as TokioHandle, Runtime as TokioRuntime,
 };
 use tokio::task::JoinHandle;
-use xui_interface::TextBackend;
 use xui_interface::events::{EventResult, RawEvent};
+use xui_interface::TextBackend;
 
 pub type ComponentFn = for<'a, 'b> fn(&'a mut HookContext<'b>) -> ElementDesc;
 
@@ -43,7 +42,7 @@ thread_local! {
 }
 
 pub struct App {
-    arena: UiArena,
+    ui_runtime: UiRuntime,
     components: ComponentRuntime,
     event_translator: EventTranslator,
     size: Size<f32>,
@@ -57,15 +56,14 @@ impl App {
         &self,
         event: &xui_interface::RawKeyboard,
     ) -> Option<(xui_interface::NodeId, xui_interface::ShortcutBinding)> {
-        self.arena.resolve_local_shortcut(event)
+        self.ui_runtime.resolve_local_shortcut(event)
     }
 
     pub(crate) fn command_root(&self) -> xui_interface::NodeId {
-        self.arena
-            .children(self.arena.root())
-            .first()
-            .copied()
-            .unwrap_or(self.arena.root())
+        self.ui_runtime
+            .children(self.ui_runtime.root())
+            .find(|child| *child != self.ui_runtime.root_overlayer())
+            .unwrap_or(self.ui_runtime.root())
     }
 
     pub(crate) fn dispatch_command<T: TextBackend>(
@@ -79,27 +77,28 @@ impl App {
             self.event_translator
                 .command_event(target, binding.command, binding.shortcut, raw);
         let result =
-            crate::event_system::dispatcher::dispatch_semantic(&mut self.arena, text, event).result;
+            crate::event_system::dispatcher::dispatch_semantic(&mut self.ui_runtime, text, event)
+                .result;
         if self.scheduler().is_dirty() {
             self.components.mark_root_dirty();
         }
         result
     }
     pub fn new(root_component: ComponentFn) -> Self {
-        let arena = UiArena::new();
+        let ui_runtime = UiRuntime::new();
         let scheduler = Scheduler::default();
         let tokio_runtime = Self::create_tokio_runtime();
         let (async_sender, async_receiver) = mpsc::channel();
         let async_dispatcher = AsyncDispatcher::new(async_sender);
         let components = ComponentRuntime::new_with_async(
-            arena.root(),
+            ui_runtime.root(),
             scheduler,
             async_dispatcher.clone(),
             Some(tokio_runtime.handle().clone()),
             root_component,
         );
         Self {
-            arena,
+            ui_runtime,
             components,
             event_translator: EventTranslator::default(),
             size: Size::<f32>::ZERO,
@@ -117,20 +116,20 @@ impl App {
             .expect("failed to create xui app tokio runtime")
     }
 
-    pub fn arena(&self) -> &UiArena {
-        &self.arena
+    pub fn ui_runtime(&self) -> &UiRuntime {
+        &self.ui_runtime
     }
 
-    pub fn arena_mut(&mut self) -> &mut UiArena {
-        &mut self.arena
+    pub fn ui_runtime_mut(&mut self) -> &mut UiRuntime {
+        &mut self.ui_runtime
     }
 
     pub fn theme(&self) -> &Theme {
-        self.arena.theme()
+        self.ui_runtime.theme()
     }
 
     pub fn set_theme(&mut self, theme: Theme) {
-        self.arena.set_theme(theme);
+        self.ui_runtime.set_theme(theme);
     }
 
     pub fn set_rebuild_budget(&mut self, budget: Duration) {
@@ -168,7 +167,8 @@ impl App {
     pub fn resize(&mut self, size: Size<f32>) {
         if self.size != size {
             self.size = size;
-            self.arena.mark_subtree_layout_dirty(self.arena.root());
+            self.ui_runtime
+                .mark_subtree_layout_dirty(self.ui_runtime.root());
         }
     }
 
@@ -182,10 +182,10 @@ impl App {
         text: &mut TextHost<T>,
     ) -> EventResult {
         self.rebuild_sync_if_needed();
-        self.arena.update_tree(self.size, text);
+        self.ui_runtime.update_tree(self.size, text);
         let lane = event_lane(&event);
         let result = with_update_lane(lane, || {
-            self.arena
+            self.ui_runtime
                 .dispatch_event(text, &mut self.event_translator, event)
         });
         if self.scheduler().is_dirty() {
@@ -196,12 +196,12 @@ impl App {
 
     #[inline(always)]
     pub fn tick_style_animations(&mut self, delta: Duration) -> bool {
-        self.arena.tick_style_animations(delta)
+        self.ui_runtime.tick_style_animations(delta)
     }
 
     #[inline(always)]
     pub fn has_running_style_animations(&self) -> bool {
-        self.arena.has_running_style_animations()
+        self.ui_runtime.has_running_style_animations()
     }
 
     pub fn render<B: RenderBackend<TextHost<T>>, T: TextBackend>(
@@ -215,10 +215,10 @@ impl App {
             self.flush_node_lifecycle(backend, text);
         }
 
-        self.arena.update_tree(self.size, text);
+        self.ui_runtime.update_tree(self.size, text);
 
         let Some(frame) = self
-            .arena
+            .ui_runtime
             .build_render_frame()
             .map_err(AppRenderError::Frame)?
         else {
@@ -233,13 +233,13 @@ impl App {
             .map_err(AppRenderError::Backend)?;
         backend.end_frame().map_err(AppRenderError::Backend)?;
         if backend.did_present() {
-            self.arena.finish_render_frame(&frame);
+            self.ui_runtime.finish_render_frame(&frame);
         }
         Ok(())
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.components.is_dirty() || self.arena.is_dirty()
+        self.components.is_dirty() || self.ui_runtime.is_dirty()
     }
 
     #[inline]
@@ -249,12 +249,13 @@ impl App {
 
     #[inline]
     fn rebuild_sync_if_needed(&mut self) {
-        self.components.rebuild_sync_if_needed(&mut self.arena);
+        self.components.rebuild_sync_if_needed(&mut self.ui_runtime);
     }
 
     #[inline]
     fn rebuild_slice_if_needed(&mut self) -> bool {
-        self.components.rebuild_slice_if_needed(&mut self.arena)
+        self.components
+            .rebuild_slice_if_needed(&mut self.ui_runtime)
     }
 
     fn flush_node_lifecycle<B: RenderBackend<TextHost<T>>, T: TextBackend>(
@@ -262,7 +263,7 @@ impl App {
         backend: &mut B,
         text: &mut TextHost<T>,
     ) {
-        for event in self.arena.drain_node_lifecycle_events() {
+        for event in self.ui_runtime.drain_node_lifecycle_events() {
             text.handle_node_lifecycle(&event);
             backend.handle_node_lifecycle(&event);
         }
@@ -273,10 +274,10 @@ impl App {
 mod tests {
     use super::*;
     use crate::lanes::{DEFAULT_LANE, NO_LANES};
-    use crate::prelude::{CanvasController, canvas, container};
+    use crate::prelude::{canvas, container, CanvasController};
     use crate::render::{BuiltDraw, BuiltFrame, BuiltItem, MockRenderBackend, RenderBackend};
     use crate::state::State;
-    use crate::text::{TextHost, testing::ZeroTextBackend};
+    use crate::text::{testing::ZeroTextBackend, TextHost};
     use core::convert::Infallible;
     use std::cell::RefCell;
     use std::time::Instant;

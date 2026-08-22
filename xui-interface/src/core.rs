@@ -1,7 +1,7 @@
 use ordered_float::NotNan;
 use std::{
     hash::{Hash, Hasher},
-    ops::{Add, Sub},
+    ops::{Add, AddAssign, BitAnd, BitOr, BitXor, Div, DivAssign, Mul, MulAssign, Sub, SubAssign},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -15,7 +15,7 @@ impl Point {
         Self { x, y }
     }
 
-    pub fn zero() -> Self {
+    pub const fn zero() -> Self {
         Self::new(0.0, 0.0)
     }
 
@@ -40,11 +40,64 @@ impl Sub<Point> for Point {
     }
 }
 
+impl SubAssign<Point> for Point {
+    fn sub_assign(&mut self, rhs: Point) {
+        self.x -= rhs.x;
+        self.y -= rhs.y;
+    }
+}
+
 impl Add<Point> for Point {
     type Output = Point;
 
     fn add(self, rhs: Point) -> Self::Output {
         Point::new(self.x + rhs.x, self.y + rhs.y)
+    }
+}
+
+impl Add<f32> for Point {
+    type Output = Point;
+    fn add(self, rhs: f32) -> Self::Output {
+        Self::new(self.x + rhs, self.y + rhs)
+    }
+}
+
+impl Sub<f32> for Point {
+    type Output = Point;
+    fn sub(self, rhs: f32) -> Self::Output {
+        Self::new(self.x - rhs, self.y - rhs)
+    }
+}
+
+impl Mul<f32> for Point {
+    type Output = Point;
+    fn mul(self, rhs: f32) -> Self::Output {
+        Self::new(self.x * rhs, self.y * rhs)
+    }
+}
+
+impl Mul<Point> for Point {
+    type Output = Point;
+    fn mul(self, rhs: Point) -> Self::Output {
+        Self::new(self.x * rhs.x, self.y * rhs.y)
+    }
+}
+
+impl Into<Point> for (f32, f32) {
+    fn into(self) -> Point {
+        Point {
+            x: self.0,
+            y: self.1,
+        }
+    }
+}
+
+impl Into<Size<f32>> for (f32, f32) {
+    fn into(self) -> Size<f32> {
+        Size {
+            width: self.0,
+            height: self.1,
+        }
     }
 }
 
@@ -109,6 +162,22 @@ impl<T> Size<T> {
     }
 }
 
+impl<T: num_traits::ToPrimitive> Size<T> {
+    pub fn to_f32(&self) -> Option<Size<f32>> {
+        Some(Size {
+            width: self.width.to_f32()?,
+            height: self.height.to_f32()?,
+        })
+    }
+
+    pub fn to_f64(&self) -> Option<Size<f64>> {
+        Some(Size {
+            width: self.width.to_f64()?,
+            height: self.height.to_f64()?,
+        })
+    }
+}
+
 impl Size<Sizing> {
     pub const ZERO: Self = Self::new(Sizing::Hug, Sizing::Hug);
 
@@ -155,6 +224,66 @@ impl<P: Copy> Size<P> {
 
     pub fn set_height(&mut self, height: P) {
         self.height = height;
+    }
+}
+
+impl<T: Add<Output = T> + Copy> Add<T> for Size<T> {
+    type Output = Size<T>;
+
+    fn add(self, rhs: T) -> Self::Output {
+        Size::new(self.width + rhs, self.height + rhs)
+    }
+}
+
+impl<T: Add<Output = T> + Copy> AddAssign<T> for Size<T> {
+    fn add_assign(&mut self, rhs: T) {
+        self.width = self.width + rhs;
+        self.height = self.height + rhs;
+    }
+}
+
+impl<T: Sub<Output = T> + Copy> Sub<T> for Size<T> {
+    type Output = Size<T>;
+
+    fn sub(self, rhs: T) -> Self::Output {
+        Size::new(self.width - rhs, self.height - rhs)
+    }
+}
+
+impl<T: Sub<Output = T> + Copy> SubAssign<T> for Size<T> {
+    fn sub_assign(&mut self, rhs: T) {
+        self.width = self.width - rhs;
+        self.height = self.height - rhs;
+    }
+}
+
+impl<T: Mul<Output = T> + Copy> Mul<T> for Size<T> {
+    type Output = Size<T>;
+
+    fn mul(self, rhs: T) -> Self::Output {
+        Size::new(self.width * rhs, self.height * rhs)
+    }
+}
+
+impl<T: Mul<Output = T> + Copy> MulAssign<T> for Size<T> {
+    fn mul_assign(&mut self, rhs: T) {
+        self.width = self.width * rhs;
+        self.height = self.height * rhs;
+    }
+}
+
+impl<T: Div<Output = T> + Copy> Div<T> for Size<T> {
+    type Output = Size<T>;
+
+    fn div(self, rhs: T) -> Self::Output {
+        Size::new(self.width / rhs, self.height / rhs)
+    }
+}
+
+impl<T: Div<Output = T> + Copy> DivAssign<T> for Size<T> {
+    fn div_assign(&mut self, rhs: T) {
+        self.width = self.width / rhs;
+        self.height = self.height / rhs;
     }
 }
 
@@ -440,8 +569,167 @@ impl Translation {
     }
 }
 
+impl Into<Point> for Translation {
+    fn into(self) -> Point {
+        Point {
+            x: self.x,
+            y: self.y,
+        }
+    }
+}
+
 impl From<Point> for Translation {
     fn from(point: Point) -> Self {
         Self::new(point.x, point.y)
+    }
+}
+
+impl Into<Translation> for (f32, f32) {
+    fn into(self) -> Translation {
+        Translation {
+            x: self.0,
+            y: self.1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Bounds {
+    pub min: Point,
+    pub max: Point,
+}
+
+impl Bounds {
+    pub const ZERO: Self = Self::new(Point::zero(), Point::zero());
+
+    pub const fn new(min: Point, max: Point) -> Self {
+        Self { min, max }
+    }
+
+    pub fn from_origin_size(origin: impl Into<Point>, size: impl Into<Size<f32>>) -> Self {
+        let origin = origin.into();
+        let size = size.into();
+        Self::new(origin, origin + Point::new(size.width, size.height))
+    }
+
+    pub fn from_zero_size(size: impl Into<Size<f32>>) -> Self {
+        let size = size.into();
+        Self::new(
+            Point::zero(),
+            Point::zero() + Point::new(size.width, size.height),
+        )
+    }
+
+    pub fn size(&self) -> Size<f32> {
+        let size = self.max - self.min;
+        Size {
+            width: size.x,
+            height: size.y,
+        }
+    }
+
+    pub fn x(&self) -> f32 {
+        self.min.x
+    }
+
+    pub fn y(&self) -> f32 {
+        self.min.y
+    }
+
+    pub fn width(&self) -> f32 {
+        self.max.x - self.min.x
+    }
+
+    pub fn height(&self) -> f32 {
+        self.max.y - self.min.y
+    }
+
+    pub fn contains(&self, point: Point) -> bool {
+        point.x >= self.min.x
+            && point.y >= self.min.y
+            && point.x <= self.max.x
+            && point.y <= self.max.y
+    }
+
+    pub fn intersects(&self, other: Self) -> bool {
+        self.min.x < other.max.x
+            && self.max.x > other.min.x
+            && self.min.y < other.max.y
+            && self.max.y > other.min.y
+    }
+
+    pub fn union(self, other: Self) -> Self {
+        if self.min.x == self.max.x || self.min.y == self.max.y {
+            return other;
+        }
+
+        if other.min.x == other.max.x || other.min.y == other.max.y {
+            return self;
+        }
+
+        let min_x = self.min.x.min(other.min.x);
+        let min_y = self.min.y.min(other.min.y);
+        let max_x = self.max.x.max(other.max.x);
+        let max_y = self.max.y.max(other.max.y);
+        Self::new(Point::new(min_x, min_y), Point::new(max_x, max_y))
+    }
+
+    pub fn shrink(self, amount: f32) -> Self {
+        Self::new(self.min + amount, self.max + amount)
+    }
+
+    pub fn expand(self, amount: f32) -> Self {
+        Self::new(self.min - amount, self.max + amount)
+    }
+
+    pub fn scale(self, factor: f32) -> Self {
+        Self::new(
+            self.min * factor,
+            self.max * factor,
+            // self.x * factor,
+            // self.y * factor,
+            // self.width * factor,
+            // self.height * factor,
+        )
+    }
+
+    pub fn translate(self, translation: impl Into<Translation>) -> Self {
+        let translation = translation.into();
+        let translation: Point = translation.into();
+        Self::new(self.min + translation, self.max + translation)
+    }
+
+    pub fn origin(&self) -> Point {
+        self.min
+    }
+}
+
+impl BitAnd<Bounds> for Bounds {
+    type Output = Option<Bounds>;
+
+    fn bitand(self, rhs: Bounds) -> Self::Output {
+        let min = Point {
+            x: self.min.x.max(rhs.min.x),
+            y: self.min.y.max(rhs.min.y),
+        };
+
+        let max = Point {
+            x: self.max.x.min(rhs.max.x),
+            y: self.max.y.min(rhs.max.y),
+        };
+
+        if min.x < max.x && min.y < max.y {
+            Some(Bounds { min, max })
+        } else {
+            None
+        }
+    }
+}
+
+impl BitOr<Bounds> for Bounds {
+    type Output = Bounds;
+
+    fn bitor(self, rhs: Bounds) -> Self::Output {
+        self.union(rhs)
     }
 }

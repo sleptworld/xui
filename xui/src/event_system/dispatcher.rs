@@ -1,6 +1,6 @@
 use crate::event_system::EventContext;
 use crate::text::{TextHost, TextLayoutQuery, TextLayoutSlot};
-use crate::tree::UiArena;
+use crate::ui_runtime::UiRuntime;
 use xui_interface::events::semantic::SemanticEvent;
 use xui_interface::events::{EventPhase, PropagationMode, RawEvent};
 use xui_interface::{
@@ -43,7 +43,7 @@ pub struct EventDispatcher;
 
 impl EventDispatcher {
     pub fn dispatch_raw<B: TextBackend>(
-        arena: &mut UiArena,
+        arena: &mut UiRuntime,
         host_text_cache: &TextHost<B>,
         event: RawEvent,
     ) -> DispatchReport {
@@ -60,7 +60,7 @@ impl EventDispatcher {
     }
 
     pub fn dispatch_semantic<B: TextBackend>(
-        arena: &mut UiArena,
+        arena: &mut UiRuntime,
         host_text_cache: &TextHost<B>,
         mut event: SemanticEvent,
     ) -> DispatchReport {
@@ -80,7 +80,7 @@ impl EventDispatcher {
 
 #[inline]
 pub fn dispatch_raw<B: TextBackend>(
-    arena: &mut UiArena,
+    arena: &mut UiRuntime,
     host_text_cache: &TextHost<B>,
     event: RawEvent,
 ) -> DispatchReport {
@@ -89,7 +89,7 @@ pub fn dispatch_raw<B: TextBackend>(
 
 #[inline]
 pub fn dispatch_semantic<B: TextBackend>(
-    arena: &mut UiArena,
+    arena: &mut UiRuntime,
     host_text_cache: &TextHost<B>,
     event: SemanticEvent,
 ) -> DispatchReport {
@@ -138,7 +138,7 @@ fn dispatch_path(
     report
 }
 
-fn resolve_raw_target(arena: &UiArena, event: &RawEvent) -> Option<NodeId> {
+fn resolve_raw_target(arena: &UiRuntime, event: &RawEvent) -> Option<NodeId> {
     if let Some(position) = event.pointer_position() {
         if let Some(captured) = arena
             .event_state()
@@ -161,7 +161,7 @@ fn resolve_raw_target(arena: &UiArena, event: &RawEvent) -> Option<NodeId> {
 }
 
 fn dispatch_raw_to_node<B: TextBackend>(
-    arena: &mut UiArena,
+    arena: &mut UiRuntime,
     host_text_cache: &TextHost<B>,
     node: NodeId,
     event: &RawEvent,
@@ -171,7 +171,7 @@ fn dispatch_raw_to_node<B: TextBackend>(
 }
 
 fn dispatch_semantic_to_node<B: TextBackend>(
-    arena: &mut UiArena,
+    arena: &mut UiRuntime,
     host_text_cache: &TextHost<B>,
     node: NodeId,
     event: &mut SemanticEvent,
@@ -191,18 +191,19 @@ fn dispatch_semantic_to_node<B: TextBackend>(
         phase,
     );
 
-    let Some(handles) = arena.node(node).map(|node| node.event_callbacks) else {
+    let Some(handles) = arena.callback_handles(node) else {
         return EventResult::Ignored;
     };
 
     let mut request_update = WidgetUpdateFlags::empty();
     let mut requests = EventRequests::default();
     let result = {
-        let node = arena.nodes.get(node).unwrap();
+        let (node, callbacks) = arena
+            .node_and_callbacks_mut(node)
+            .expect("event target disappeared during dispatch");
         let text_layout = primary_text_query(host_text_cache, node.id);
         let mut cx =
             EventContext::new(node, text_layout, phase, &mut request_update, &mut requests);
-        let callbacks = &mut arena.event_callbacks;
         let result = callbacks.dispatch_semantic(handles, event, &mut cx);
         result
     };
@@ -212,7 +213,7 @@ fn dispatch_semantic_to_node<B: TextBackend>(
 }
 
 fn apply_semantic_state(
-    arena: &mut UiArena,
+    arena: &mut UiRuntime,
     node: NodeId,
     event: &SemanticEvent,
     phase: EventPhase,
@@ -224,15 +225,7 @@ fn apply_semantic_state(
     let Some((flag, enabled)) = semantic_state_change(event) else {
         return;
     };
-    let Some(node_ref) = arena.node_mut(node) else {
-        return;
-    };
-    let before = node_ref.state;
-    node_ref.state.set(flag, enabled);
-    if before != node_ref.state {
-        node_ref.state_before_change.get_or_insert(before);
-        arena.mark_dirty(node, WidgetUpdateFlags::STATE_CHANGE);
-    }
+    arena.set_widget_state_flag(node, flag, enabled);
 }
 
 fn semantic_state_change(event: &SemanticEvent) -> Option<(xui_interface::WidgetState, bool)> {
@@ -260,7 +253,7 @@ fn semantic_state_change(event: &SemanticEvent) -> Option<(xui_interface::Widget
 }
 
 fn dispatch_builtin_event<B: TextBackend>(
-    arena: &mut UiArena,
+    arena: &mut UiRuntime,
     host_text_cache: &TextHost<B>,
     node_id: NodeId,
     event: EventRef<'_>,
@@ -270,12 +263,11 @@ fn dispatch_builtin_event<B: TextBackend>(
     let mut requests = EventRequests::default();
     let result = {
         arena
-            .nodes
-            .get_mut(node_id)
+            .node(node_id)
             .map(|node| {
                 let text_layout = primary_text_query(host_text_cache, node_id);
                 let mut cx =
-                    EventContext::new(&node, text_layout, phase, &mut update, &mut requests);
+                    EventContext::new(node, text_layout, phase, &mut update, &mut requests);
                 node.widget.handle_event(event, &mut cx)
             })
             .unwrap_or(EventResult::Ignored)
@@ -294,7 +286,7 @@ fn primary_text_query<B: TextBackend>(
 }
 
 fn apply_event_context(
-    arena: &mut UiArena,
+    arena: &mut UiRuntime,
     node: NodeId,
     request_update: WidgetUpdateFlags,
     requests: &EventRequests,

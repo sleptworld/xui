@@ -1,5 +1,6 @@
 use crate::{
-    Color, ComputedTextStyle, LineHeight, Point, Rect, Size, TextDecoration, TextProps, TextRange,
+    Bounds, Color, ComputedTextStyle, LineHeight, Point, Rect, Size, TextDecoration, TextProps,
+    TextRange,
 };
 use std::{
     collections::HashSet,
@@ -108,6 +109,32 @@ impl Affine {
         Rect::new(min_x, min_y, max_x - min_x, max_y - min_y)
     }
 
+    pub fn transform_bounds(self, rect: Bounds) -> Bounds {
+        let points = [
+            self.transform_point(rect.min),
+            self.transform_point(Point::new(rect.max.x, rect.min.y)),
+            self.transform_point(Point::new(rect.min.x, rect.max.y)),
+            self.transform_point(rect.max),
+        ];
+        let min_x = points
+            .iter()
+            .map(|point| point.x)
+            .fold(f32::INFINITY, f32::min);
+        let min_y = points
+            .iter()
+            .map(|point| point.y)
+            .fold(f32::INFINITY, f32::min);
+        let max_x = points
+            .iter()
+            .map(|point| point.x)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let max_y = points
+            .iter()
+            .map(|point| point.y)
+            .fold(f32::NEG_INFINITY, f32::max);
+        Bounds::new(Point::new(min_x, min_y), Point::new(max_x, max_y))
+    }
+
     pub fn is_translation(self) -> bool {
         self.xx == 1.0 && self.xy == 0.0 && self.yx == 0.0 && self.yy == 1.0
     }
@@ -153,7 +180,7 @@ impl PathDataId {
 pub struct PathData {
     id: PathDataId,
     segments: Arc<[PathSegment]>,
-    bounds: Rect,
+    bounds: Bounds,
 }
 
 impl PathData {
@@ -169,7 +196,7 @@ impl PathData {
 
     /// Conservative control-hull bounds. Curves may occupy less space, never
     /// more, which makes this suitable for culling and conservative visual bounds.
-    pub fn bounds(&self) -> Rect {
+    pub fn bounds(&self) -> Bounds {
         self.bounds
     }
 }
@@ -223,7 +250,7 @@ impl PathBuilder {
     }
 }
 
-fn path_segment_bounds(segments: &[PathSegment]) -> Rect {
+fn path_segment_bounds(segments: &[PathSegment]) -> Bounds {
     let mut min_x = f32::INFINITY;
     let mut min_y = f32::INFINITY;
     let mut max_x = f32::NEG_INFINITY;
@@ -254,9 +281,9 @@ fn path_segment_bounds(segments: &[PathSegment]) -> Rect {
         }
     }
     if min_x.is_finite() {
-        Rect::new(min_x, min_y, max_x - min_x, max_y - min_y)
+        Bounds::new(Point::new(min_x, min_y), Point::new(max_x, max_y))
     } else {
-        Rect::ZERO
+        Bounds::ZERO
     }
 }
 
@@ -340,22 +367,22 @@ pub enum VectorCommand {
     },
     TextBox {
         id: CanvasTextId,
-        bounds: Rect,
-        props: TextProps,
+        bounds: Bounds,
+        props: Arc<TextProps>,
     },
 }
 
 impl VectorCommand {
-    fn bounds(&self) -> Rect {
+    fn bounds(&self) -> Bounds {
         match self {
             Self::FillPath {
                 path, transform, ..
-            } => transform.transform_rect(path.bounds()),
+            } => transform.transform_bounds(path.bounds()),
             Self::StrokePath {
                 path,
                 transform,
                 stroke,
-            } => transform.transform_rect(path.bounds().expand(stroke.width.max(0.0) * 0.5)),
+            } => transform.transform_bounds(path.bounds().expand(stroke.width.max(0.0) * 0.5)),
             Self::TextBox { bounds, .. } => *bounds,
         }
     }
@@ -431,10 +458,21 @@ pub struct VectorSceneChange {
     pub paint: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub struct VectorSceneId(u64);
+
+impl VectorSceneId {
+    fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct VectorScene {
+    id: VectorSceneId,
     commands: Arc<[VectorCommand]>,
-    bounds: Rect,
+    bounds: Bounds,
 }
 
 impl VectorScene {
@@ -453,16 +491,24 @@ impl VectorScene {
         let bounds = commands
             .iter()
             .map(VectorCommand::bounds)
-            .reduce(Rect::union)
-            .unwrap_or(Rect::ZERO);
-        Self { commands, bounds }
+            .reduce(Bounds::union)
+            .unwrap_or(Bounds::ZERO);
+        Self {
+            id: VectorSceneId::next(),
+            commands,
+            bounds,
+        }
+    }
+
+    pub fn id(&self) -> VectorSceneId {
+        self.id
     }
 
     pub fn commands(&self) -> &[VectorCommand] {
         &self.commands
     }
 
-    pub fn bounds(&self) -> Rect {
+    pub fn bounds(&self) -> Bounds {
         self.bounds
     }
 
@@ -489,6 +535,12 @@ impl VectorScene {
                 change
             },
         )
+    }
+}
+
+impl PartialEq for VectorScene {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id || self.commands == other.commands
     }
 }
 
@@ -531,9 +583,12 @@ impl VectorSceneBuilder {
         self
     }
 
-    pub fn text_box(&mut self, id: CanvasTextId, bounds: Rect, props: TextProps) -> &mut Self {
-        self.commands
-            .push(VectorCommand::TextBox { id, bounds, props });
+    pub fn text_box(&mut self, id: CanvasTextId, bounds: Bounds, props: TextProps) -> &mut Self {
+        self.commands.push(VectorCommand::TextBox {
+            id,
+            bounds,
+            props: Arc::new(props),
+        });
         self
     }
 
@@ -596,7 +651,10 @@ mod path_tests {
             Point::new(12.0, -3.0),
             Point::new(6.0, 5.0),
         );
-        assert_eq!(builder.build().bounds(), Rect::new(-4.0, -3.0, 16.0, 11.0));
+        assert_eq!(
+            builder.build().bounds(),
+            Bounds::from_origin_size((-4.0, -3.0), (16., 11.))
+        );
         assert_eq!(
             Affine::scale(2.0, 3.0)
                 .then(Affine::translate(10.0, 20.0))
@@ -624,6 +682,7 @@ mod path_tests {
                 PathStroke::new(Color::WHITE, 4.0),
             );
         let scene = scene.build();
+        assert_eq!(scene.id(), scene.clone().id());
         assert!(matches!(
             scene.commands(),
             [
@@ -631,7 +690,10 @@ mod path_tests {
                 VectorCommand::StrokePath { .. }
             ]
         ));
-        assert_eq!(scene.bounds(), Rect::new(1.0, 1.0, 28.0, 42.0));
+        assert_eq!(
+            scene.bounds(),
+            Bounds::from_origin_size((1.0, 1.0), (28.0, 42.0))
+        );
     }
 
     #[test]
@@ -677,7 +739,7 @@ mod path_tests {
                 .fill_path(path.clone(), Affine::IDENTITY, PathFill::new(Color::BLACK))
                 .text_box(
                     CanvasTextId::new(7),
-                    Rect::new(20.0, 5.0, 80.0, 30.0),
+                    Bounds::from_origin_size((20.0, 5.0), (80.0, 30.0)),
                     props,
                 )
                 .stroke_path(
@@ -697,7 +759,10 @@ mod path_tests {
                 VectorCommand::StrokePath { .. }
             ] if *id == CanvasTextId::new(7)
         ));
-        assert_eq!(original.bounds(), Rect::new(-1.0, -1.0, 101.0, 36.0));
+        assert_eq!(
+            original.bounds(),
+            Bounds::from_origin_size((-1.0, -1.0), (101.0, 36.0))
+        );
 
         let mut recolored = props.clone();
         recolored.style.color = Color::WHITE;
@@ -727,12 +792,12 @@ mod path_tests {
         scene
             .text_box(
                 CanvasTextId::new(1),
-                Rect::new(0.0, 0.0, 10.0, 10.0),
+                Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
                 TextProps::new("first"),
             )
             .text_box(
                 CanvasTextId::new(1),
-                Rect::new(0.0, 0.0, 10.0, 10.0),
+                Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
                 TextProps::new("second"),
             );
         let _ = scene.build();
@@ -1015,7 +1080,7 @@ pub enum ImageRotation {
 /// Decoded pixel data for an image.
 ///
 /// This is the runtime payload carried inside an `Arc` so that widgets, the
-/// `UiArena` shared image pool, and retained image primitives can all reference
+/// `UiRuntime` shared image pool, and retained image primitives can all reference
 /// the same pixels without copying.
 ///
 /// Every `ImageData` carries a process-unique [`ImageDataId`] assigned at

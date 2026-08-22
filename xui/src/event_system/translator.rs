@@ -1,9 +1,9 @@
 use std::time::{Duration, Instant};
 
 use rustc_hash::FxHashMap;
-use xui_interface::{NodeId, Point, PointerButton, Translation, WidgetUpdateFlags, XuiPointerId};
+use xui_interface::{NodeId, Point, PointerButton, Translation, XuiPointerId};
 
-use crate::tree::UiArena;
+use crate::ui_runtime::UiRuntime;
 use xui_interface::events::*;
 
 pub struct EventTranslator {
@@ -78,7 +78,7 @@ impl Default for EventTranslator {
 impl EventTranslator {
     pub(crate) fn apply_focus_request(
         &mut self,
-        arena: &mut UiArena,
+        arena: &mut UiRuntime,
         request: crate::focus::FocusRequest,
         timestamp: Instant,
         modifiers: Modifiers,
@@ -148,7 +148,7 @@ impl EventTranslator {
     pub fn translate_raw_event(
         &mut self,
         raw: &RawEvent,
-        arena: &mut UiArena,
+        arena: &mut UiRuntime,
     ) -> Vec<SemanticEvent> {
         match raw {
             RawEvent::PointerMove(raw) => self.translate_pointer_move(raw, arena),
@@ -188,7 +188,7 @@ impl EventTranslator {
     fn translate_pointer_move(
         &mut self,
         raw: &RawPointerMove,
-        arena: &mut UiArena,
+        arena: &mut UiRuntime,
     ) -> Vec<SemanticEvent> {
         let mut out = Vec::new();
         let hit_target = self.resolve_pointer_target(raw.pointer_id, raw.position, arena);
@@ -226,7 +226,7 @@ impl EventTranslator {
     fn translate_pointer_down(
         &mut self,
         raw: &RawPointerButton,
-        arena: &mut UiArena,
+        arena: &mut UiRuntime,
     ) -> Vec<SemanticEvent> {
         let mut out = Vec::new();
         let Some(target) = self.resolve_pointer_target(raw.pointer_id, raw.position, arena) else {
@@ -301,7 +301,7 @@ impl EventTranslator {
     fn translate_pointer_up(
         &mut self,
         raw: &RawPointerButton,
-        arena: &mut UiArena,
+        arena: &mut UiRuntime,
     ) -> Vec<SemanticEvent> {
         let mut out = Vec::new();
         let release_target = self.resolve_pointer_target(raw.pointer_id, raw.position, arena);
@@ -407,7 +407,7 @@ impl EventTranslator {
     fn translate_pointer_cancel(
         &mut self,
         raw: &RawPointerCancel,
-        arena: &mut UiArena,
+        arena: &mut UiRuntime,
     ) -> Vec<SemanticEvent> {
         let mut out = Vec::new();
         let position = raw
@@ -495,7 +495,7 @@ impl EventTranslator {
         out
     }
 
-    fn translate_wheel(&mut self, raw: &RawWheel, arena: &mut UiArena) -> Vec<SemanticEvent> {
+    fn translate_wheel(&mut self, raw: &RawWheel, arena: &mut UiRuntime) -> Vec<SemanticEvent> {
         let mut out = Vec::new();
         let Some(hit) = arena.hit_test(raw.position) else {
             return out;
@@ -561,7 +561,11 @@ impl EventTranslator {
         out
     }
 
-    fn translate_key_down(&mut self, raw: &RawKeyboard, arena: &mut UiArena) -> Vec<SemanticEvent> {
+    fn translate_key_down(
+        &mut self,
+        raw: &RawKeyboard,
+        arena: &mut UiRuntime,
+    ) -> Vec<SemanticEvent> {
         let mut out = Vec::new();
 
         match raw.named_key {
@@ -618,7 +622,7 @@ impl EventTranslator {
     fn translate_context_menu(
         &mut self,
         raw: &RawContextMenu,
-        arena: &mut UiArena,
+        arena: &mut UiRuntime,
     ) -> Vec<SemanticEvent> {
         let target = match raw.position {
             Some(position) => arena.hit_test(position),
@@ -649,7 +653,7 @@ impl EventTranslator {
     fn translate_window_blur(
         &mut self,
         raw: &RawWindowEvent,
-        arena: &mut UiArena,
+        arena: &mut UiRuntime,
     ) -> Vec<SemanticEvent> {
         let mut out = Vec::new();
         self.cancel_active_drags(
@@ -709,7 +713,7 @@ impl EventTranslator {
         &self,
         pointer_id: XuiPointerId,
         position: Point,
-        arena: &UiArena,
+        arena: &UiRuntime,
     ) -> Option<NodeId> {
         self.pointer_capture
             .get(&pointer_id)
@@ -725,7 +729,7 @@ impl EventTranslator {
         buttons: PointerButtons,
         position: Point,
         target: Option<NodeId>,
-        arena: &UiArena,
+        arena: &UiRuntime,
     ) -> PointerSnapshot {
         let target_local = target
             .map(|node| arena.to_local(node, position))
@@ -776,7 +780,7 @@ impl EventTranslator {
         pointer: PointerSnapshot,
         timestamp: Instant,
         modifiers: Modifiers,
-        arena: &UiArena,
+        arena: &UiRuntime,
         out: &mut Vec<SemanticEvent>,
     ) {
         let old_path = self
@@ -862,7 +866,7 @@ impl EventTranslator {
         pointer: PointerSnapshot,
         timestamp: Instant,
         modifiers: Modifiers,
-        arena: &UiArena,
+        arena: &UiRuntime,
         out: &mut Vec<SemanticEvent>,
     ) {
         if self.active_drags.contains_key(&pointer_id) {
@@ -973,7 +977,7 @@ impl EventTranslator {
 
     fn change_focus(
         &mut self,
-        arena: &mut UiArena,
+        arena: &mut UiRuntime,
         new_focused: Option<NodeId>,
         reason: FocusReason,
         source: EventSource,
@@ -1068,7 +1072,7 @@ impl EventTranslator {
         reason: DragCancelReason,
         timestamp: Instant,
         modifiers: Modifiers,
-        arena: &UiArena,
+        arena: &UiRuntime,
         out: &mut Vec<SemanticEvent>,
     ) {
         let drags: Vec<_> = self.active_drags.drain().map(|(_, drag)| drag).collect();
@@ -1199,11 +1203,11 @@ fn normalize_scroll_delta(delta: ScrollDelta) -> Translation {
     }
 }
 
-fn parent_of(arena: &UiArena, node: NodeId) -> Option<NodeId> {
-    arena.node(node).and_then(|node| node.parent)
+fn parent_of(arena: &UiRuntime, node: NodeId) -> Option<NodeId> {
+    arena.parent(node)
 }
 
-fn nearest_focusable_ancestor(arena: &UiArena, target: NodeId) -> Option<NodeId> {
+fn nearest_focusable_ancestor(arena: &UiRuntime, target: NodeId) -> Option<NodeId> {
     let mut cursor = Some(target);
     while let Some(node_id) = cursor {
         if is_focusable(arena, node_id) {
@@ -1214,19 +1218,15 @@ fn nearest_focusable_ancestor(arena: &UiArena, target: NodeId) -> Option<NodeId>
     None
 }
 
-fn is_focusable(arena: &UiArena, node_id: NodeId) -> bool {
-    arena.node(node_id).is_some_and(|node| node.is_focusable())
+fn is_focusable(arena: &UiRuntime, node_id: NodeId) -> bool {
+    arena.is_focusable(node_id)
 }
 
-fn is_draggable(arena: &UiArena, node_id: NodeId) -> bool {
-    let Some(node) = arena.node(node_id) else {
-        return false;
-    };
-
-    node.event_callbacks.has_drag_callbacks()
+fn is_draggable(arena: &UiRuntime, node_id: NodeId) -> bool {
+    arena.has_drag_callbacks(node_id)
 }
 
-fn next_focusable(arena: &UiArena, focused: Option<NodeId>, reverse: bool) -> Option<NodeId> {
+fn next_focusable(arena: &UiRuntime, focused: Option<NodeId>, reverse: bool) -> Option<NodeId> {
     let focusables = focusable_nodes(arena);
     if focusables.is_empty() {
         return None;
@@ -1258,19 +1258,23 @@ fn next_focusable(arena: &UiArena, focused: Option<NodeId>, reverse: bool) -> Op
     focusables.get(next).copied()
 }
 
-fn focusable_nodes(arena: &UiArena) -> Vec<NodeId> {
+fn focusable_nodes(arena: &UiRuntime) -> Vec<NodeId> {
     let mut out = Vec::new();
     let mut stack = vec![arena.root()];
     let mut document_order = 0usize;
 
     while let Some(node_id) = stack.pop() {
-        if let Some(node) = arena.node(node_id) {
-            if node.is_sequentially_focusable() {
-                out.push((node_id, node.focus.tab_index.unwrap_or(0), document_order));
+        if arena.node(node_id).is_some() {
+            if arena.is_sequentially_focusable(node_id) {
+                out.push((
+                    node_id,
+                    arena.tab_index(node_id).unwrap_or(0),
+                    document_order,
+                ));
             }
             document_order += 1;
 
-            stack.extend(node.children.iter().rev().copied());
+            stack.extend(arena.children(node_id).rev());
         }
     }
 
@@ -1284,17 +1288,17 @@ fn focusable_nodes(arena: &UiArena) -> Vec<NodeId> {
     out.into_iter().map(|(node, _, _)| node).collect()
 }
 
-fn node_center(arena: &UiArena, node_id: NodeId) -> Option<Point> {
+fn node_center(arena: &UiRuntime, node_id: NodeId) -> Option<Point> {
     arena.node(node_id).map(|node| {
         Point::new(
-            node.layout.x + node.layout.width * 0.5,
-            node.layout.y + node.layout.height * 0.5,
+            node.layout.x() + node.layout.width() * 0.5,
+            node.layout.y() + node.layout.height() * 0.5,
         )
     })
 }
 
 fn consume_scroll_delta(
-    arena: &mut UiArena,
+    arena: &mut UiRuntime,
     node_id: NodeId,
     delta: Translation,
 ) -> Option<(Translation, Translation, Translation)> {
@@ -1305,12 +1309,12 @@ fn consume_scroll_delta(
     }
 
     let max_x = if direction.allows_horizontal() {
-        (node.content_size.width - node.layout.width).max(0.0)
+        (node.content_size.width - node.layout.width()).max(0.0)
     } else {
         0.0
     };
     let max_y = if direction.allows_vertical() {
-        (node.content_size.height - node.layout.height).max(0.0)
+        (node.content_size.height - node.layout.height()).max(0.0)
     } else {
         0.0
     };
@@ -1332,11 +1336,7 @@ fn consume_scroll_delta(
         offset_before.x - offset_after.x,
         offset_before.y - offset_after.y,
     );
-    let node = arena
-        .node_mut(node_id)
-        .expect("node was checked before scroll mutation");
-    node.scroll_offset = offset_after;
-    arena.mark_dirty(node_id, WidgetUpdateFlags::PAINT_OUTPUT);
+    arena.set_scroll_offset(node_id, offset_after);
 
     Some((offset_before.into(), offset_after.into(), consumed))
 }
@@ -1367,10 +1367,10 @@ mod tests {
     use super::*;
     use crate::widgets::{WidgetI, container};
 
-    fn append(arena: &mut UiArena, widget: crate::widgets::ContainerWidget) -> NodeId {
+    fn append(arena: &mut UiRuntime, widget: crate::widgets::ContainerWidget) -> NodeId {
         let widget = WidgetI::new(widget);
         let props_hash = widget.props_hash();
-        let handlers = widget.take_event_handlers();
+        let handlers = widget.take_host_interaction();
         let node = arena.create_node(None, props_hash, widget, handlers);
         arena.append_child(arena.root(), node);
         node
@@ -1378,7 +1378,7 @@ mod tests {
 
     #[test]
     fn sequential_focus_uses_tab_index_and_skips_negative_values() {
-        let mut arena = UiArena::new();
+        let mut arena = UiRuntime::new();
         let zero = append(&mut arena, container().tab_index(0));
         let second = append(&mut arena, container().tab_index(2));
         let first = append(&mut arena, container().tab_index(1));
@@ -1392,7 +1392,7 @@ mod tests {
 
     #[test]
     fn tab_from_programmatic_only_focus_enters_at_order_boundary() {
-        let mut arena = UiArena::new();
+        let mut arena = UiRuntime::new();
         let first = append(&mut arena, container().tab_index(0));
         let second = append(&mut arena, container().tab_index(0));
         let programmatic = append(&mut arena, container().tab_index(-1));

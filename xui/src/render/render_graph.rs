@@ -168,8 +168,8 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use xui_interface::{
-        Affine, Color, ComputedBackdropStyle, ComputedEffect, ImageData, ImageKey, Point, Rect,
-        Size,
+        Affine, Bounds, Color, ComputedBackdropStyle, ComputedEffect, ImageData, ImageKey, Point,
+        Rect, Size,
     };
 
     #[test]
@@ -289,7 +289,7 @@ mod tests {
             effects: Arc::from([ComputedEffect::ImageMask {
                 image: ImageKey::UserProvided(7),
                 data: ImageData::rgba8(Size::new(1, 1), [255, 255, 255, 255]),
-                bounds: Rect::new(10.0, 20.0, 30.0, 40.0),
+                bounds: Bounds::from_origin_size((10.0, 20.0), (30.0, 40.0)),
             }]),
             ..LayerDescriptor::default()
         };
@@ -329,7 +329,7 @@ mod tests {
                 ComputedEffect::ImageMask {
                     image: ImageKey::UserProvided(20),
                     data: pixels(20),
-                    bounds: Rect::new(0.0, 0.0, 10.0, 10.0),
+                    bounds: Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
                 },
                 ComputedEffect::Blur {
                     sigma_x: 2.0,
@@ -339,7 +339,7 @@ mod tests {
                 ComputedEffect::ImageMask {
                     image: ImageKey::UserProvided(30),
                     data: pixels(30),
-                    bounds: Rect::new(5.0, 5.0, 20.0, 20.0),
+                    bounds: Bounds::from_origin_size((5.0, 5.0), (20.0, 20.0)),
                 },
             ]),
             force_offscreen: true,

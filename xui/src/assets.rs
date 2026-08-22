@@ -1,12 +1,13 @@
 //! Common asset formats and runtime asset access used by XUI applications.
 
 use std::{
-    collections::HashMap,
     convert::Infallible,
     string::FromUtf8Error,
-    sync::{LazyLock, Mutex},
+    sync::{Arc, LazyLock, Mutex},
+    time::Duration,
 };
 
+use moka::sync::Cache;
 use xui_interface::{ImageData, Size};
 use zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions};
 use zune_image::{errors::ImageErrors, image::Image};
@@ -15,10 +16,36 @@ pub use xui_assets::*;
 
 use crate::{IconData, SvgIconError};
 
-#[derive(Default)]
+const DECODED_IMAGE_CACHE_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct DecodedImageKey {
+    id: AssetId,
+    content_hash: [u8; 32],
+}
+
 struct AssetRuntime {
-    manager: Option<AssetManager>,
-    images: HashMap<AssetId, Option<ImageData>>,
+    manager: Option<Arc<AssetManager>>,
+    images: Cache<DecodedImageKey, ImageData>,
+    misses: Cache<AssetId, ()>,
+}
+
+impl Default for AssetRuntime {
+    fn default() -> Self {
+        Self {
+            manager: None,
+            images: Cache::builder()
+                .max_capacity(DECODED_IMAGE_CACHE_BUDGET_BYTES)
+                .weigher(|_key: &DecodedImageKey, image: &ImageData| {
+                    u32::try_from(image.pixels.len()).unwrap_or(u32::MAX)
+                })
+                .build(),
+            misses: Cache::builder()
+                .max_capacity(256)
+                .time_to_live(Duration::from_secs(2))
+                .build(),
+        }
+    }
 }
 
 static ASSET_RUNTIME: LazyLock<Mutex<AssetRuntime>> =
@@ -30,8 +57,8 @@ static ASSET_RUNTIME: LazyLock<Mutex<AssetRuntime>> =
 /// application instance cannot observe stale image data.
 pub fn install_asset_manager(manager: AssetManager) {
     *ASSET_RUNTIME.lock().expect("asset runtime poisoned") = AssetRuntime {
-        manager: Some(manager),
-        images: HashMap::new(),
+        manager: Some(Arc::new(manager)),
+        ..AssetRuntime::default()
     };
 }
 
@@ -46,17 +73,41 @@ pub fn clear_asset_manager() {
 /// without decoded data participates in layout with a zero intrinsic size and emits no
 /// image paint command.
 pub fn load_image_asset(id: AssetId) -> Option<ImageData> {
-    let mut runtime = ASSET_RUNTIME.lock().expect("asset runtime poisoned");
-    if let Some(cached) = runtime.images.get(&id) {
-        return cached.clone();
+    let (manager, images, misses) = {
+        let runtime = ASSET_RUNTIME.lock().expect("asset runtime poisoned");
+        (
+            runtime.manager.clone()?,
+            runtime.images.clone(),
+            runtime.misses.clone(),
+        )
+    };
+    if misses.get(&id).is_some() {
+        return None;
     }
-
-    let image = runtime
-        .manager
-        .as_ref()
-        .and_then(|manager| manager.read::<ImageAsset>(id).ok().flatten());
-    runtime.images.insert(id, image.clone());
-    image
+    let metadata = match manager.metadata(id).ok().flatten() {
+        Some(metadata) => metadata,
+        None => {
+            misses.insert(id, ());
+            return None;
+        }
+    };
+    let key = DecodedImageKey {
+        id,
+        content_hash: metadata.content_hash,
+    };
+    if let Some(cached) = images.get(&key) {
+        return Some(cached);
+    }
+    match manager.read::<ImageAsset>(id).ok().flatten() {
+        Some(image) => {
+            images.insert(key, image.clone());
+            Some(image)
+        }
+        None => {
+            misses.insert(id, ());
+            None
+        }
+    }
 }
 
 /// Resolves a normalized asset path and decodes it as an image.

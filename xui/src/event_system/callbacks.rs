@@ -1,11 +1,10 @@
 use super::EventContext;
-use crate::focus::FocusHandle;
 use slotmap::{Key as SlotMapKey, SlotMap, new_key_type};
 use xui_interface::events::semantic::{
     ClickEvent, CommandEvent, ContextMenuEvent, DragEvent, FocusEvent, HoverChangeEvent,
     HoverEvent, PressEvent, ScrollEvent, SemanticEvent,
 };
-use xui_interface::{AccessibilityProperties, EventPhase, EventResult, FocusProperties};
+use xui_interface::{EventPhase, EventResult};
 
 pub type TypedEventHandler<E> = Box<dyn for<'a> FnMut(&E, &mut EventContext<'a>) -> EventResult>;
 
@@ -35,10 +34,6 @@ new_key_type! {
 
 #[derive(Default)]
 pub struct EventHandlers {
-    pub focus: FocusProperties,
-    pub focus_handle: Option<FocusHandle>,
-    pub accessibility: AccessibilityProperties,
-    pub shortcuts: Vec<xui_interface::ShortcutBinding>,
     pub on_command: Option<CommandEventHandler>,
     pub on_event: Option<SemanticEventHandler>,
     pub on_event_capture: Option<SemanticEventHandler>,
@@ -75,13 +70,48 @@ pub struct EventHandlers {
     pub on_scroll_capture: Option<ScrollEventHandler>,
 }
 
+impl EventHandlers {
+    pub fn is_empty(&self) -> bool {
+        self.on_command.is_none()
+            && self.on_event.is_none()
+            && self.on_event_capture.is_none()
+            && self.on_hover_enter.is_none()
+            && self.on_hover_leave.is_none()
+            && self.on_hover_change.is_none()
+            && self.on_press_start.is_none()
+            && self.on_press_start_capture.is_none()
+            && self.on_press_end.is_none()
+            && self.on_press_end_capture.is_none()
+            && self.on_press_cancel.is_none()
+            && self.on_press_cancel_capture.is_none()
+            && self.on_click.is_none()
+            && self.on_click_capture.is_none()
+            && self.on_double_click.is_none()
+            && self.on_double_click_capture.is_none()
+            && self.on_context_menu.is_none()
+            && self.on_context_menu_capture.is_none()
+            && self.on_focus.is_none()
+            && self.on_blur.is_none()
+            && self.on_focus_in.is_none()
+            && self.on_focus_in_capture.is_none()
+            && self.on_focus_out.is_none()
+            && self.on_focus_out_capture.is_none()
+            && self.on_drag_start.is_none()
+            && self.on_drag_start_capture.is_none()
+            && self.on_drag_move.is_none()
+            && self.on_drag_move_capture.is_none()
+            && self.on_drag_end.is_none()
+            && self.on_drag_end_capture.is_none()
+            && self.on_drag_cancel.is_none()
+            && self.on_drag_cancel_capture.is_none()
+            && self.on_scroll.is_none()
+            && self.on_scroll_capture.is_none()
+    }
+}
+
 impl std::fmt::Debug for EventHandlers {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EventHandlers")
-            .field("focus", &self.focus)
-            .field("focus_handle", &self.focus_handle)
-            .field("accessibility", &self.accessibility)
-            .field("shortcuts", &self.shortcuts)
             .field("on_command", &self.on_command.is_some())
             .field("on_event", &self.on_event.is_some())
             .field("on_event_capture", &self.on_event_capture.is_some())

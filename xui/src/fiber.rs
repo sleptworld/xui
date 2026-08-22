@@ -6,13 +6,14 @@ use std::rc::Rc;
 use taffy::prelude as tf;
 pub use xui_interface::Key;
 use xui_interface::widget::WidgetType;
-use xui_interface::{ComputedStyle, NodeId};
+use xui_interface::{Bounds, ComputedStyle, NodeId};
 
 use crate::HookContext;
 use crate::core::Rect;
 use crate::element::{ComponentDesc, ElementDesc};
 use crate::lanes::{Lanes, NO_LANES};
 use crate::widgets::WidgetI;
+use crate::widgets::{OverlayEntryId, OverlayEntryOptions, OverlayScopeId};
 
 pub type ErasedProps = Rc<dyn Any>;
 pub type ErasedPropsRef<'a> = &'a dyn Any;
@@ -93,6 +94,7 @@ pub enum FiberTag {
     Root,
     Host(WidgetType),
     Component,
+    Portal,
 }
 
 bitflags::bitflags! {
@@ -112,8 +114,8 @@ pub struct HostState {
     pub taffy_node: Option<tf::NodeId>,
     pub style: tf::Style,
     pub computed_style: ComputedStyle,
-    pub layout: Rect,
-    pub previous_layout: Rect,
+    pub layout: Bounds,
+    pub previous_layout: Bounds,
     pub props_hash: u64,
 }
 
@@ -122,6 +124,13 @@ pub struct ComponentState {
     pub key: Option<Key>,
     pub props_hash: u64,
     pub props: Option<ErasedProps>,
+}
+
+pub struct PortalState {
+    pub scope: Option<OverlayScopeId>,
+    pub options: OverlayEntryOptions,
+    pub entry: Option<OverlayEntryId>,
+    pub visual_root: Option<NodeId>,
 }
 
 pub enum PendingProps {
@@ -151,6 +160,7 @@ pub struct Node {
     pub effect: EffectTag,
     pub host: Option<HostState>,
     pub component: Option<ComponentState>,
+    pub portal: Option<PortalState>,
 }
 
 impl Node {
@@ -166,6 +176,7 @@ impl Node {
             effect: EffectTag::empty(),
             host: None,
             component: None,
+            portal: None,
         }
     }
 
@@ -186,6 +197,7 @@ impl Node {
                 props_hash: element.props_hash,
                 props: element.props,
             }),
+            portal: None,
         }
     }
 

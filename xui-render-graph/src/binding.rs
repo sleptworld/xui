@@ -164,9 +164,9 @@ pub enum BindingError {
 mod tests {
     use super::*;
     use crate::{BackdropDescriptor, LayerEffect, LayerGraphDescriptor, Mask, compile_layer};
-    use xui_interface::{Affine, ImageData, ImageKey, Rect, Size};
+    use xui_interface::{Affine, Bounds, ImageData, ImageKey, Rect, Size};
 
-    fn image_mask(key: u64, bounds: Rect) -> LayerEffect {
+    fn image_mask(key: u64, bounds: Bounds) -> LayerEffect {
         LayerEffect::ImageMask {
             image: ImageKey::UserProvided(key),
             data: ImageData::rgba8(Size::new(1, 1), [255, 255, 255, 255]),
@@ -185,8 +185,8 @@ mod tests {
                     ..BackdropDescriptor::default()
                 }),
                 effects: vec![
-                    image_mask(2, Rect::new(0.0, 0.0, 1.0, 1.0)),
-                    image_mask(3, Rect::new(0.0, 0.0, 1.0, 1.0)),
+                    image_mask(2, Bounds::from_origin_size((0.0, 0.0), (1.0, 1.0))),
+                    image_mask(3, Bounds::from_origin_size((0.0, 0.0), (1.0, 1.0))),
                 ],
                 ..LayerGraphDescriptor::default()
             })

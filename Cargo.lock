@@ -5095,6 +5095,7 @@ name = "xui"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.0",
+ "moka",
  "num-traits",
  "quick_cache",
  "ropey",
@@ -5189,6 +5190,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.13.0",
  "fixedstr",
+ "num-traits",
  "ordered-float",
  "slotmap",
  "smallstr",
@@ -5258,6 +5260,7 @@ name = "xui-skia"
 version = "0.1.0"
 dependencies = [
  "memmap2",
+ "moka",
  "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-metal 0.3.2",

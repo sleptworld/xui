@@ -3,7 +3,7 @@ use super::{
     RenderNodeId, ShapePrimitive, TextPrimitive, VectorPrimitive,
 };
 use crate::render::render_graph::BuiltLayerProgram;
-use xui_interface::{Affine, Rect};
+use xui_interface::{Affine, Bounds, Rect};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BuiltLayerId(pub usize);
@@ -77,8 +77,8 @@ pub enum LayerCacheId {
 #[derive(Debug, Clone)]
 pub struct BuiltLayer {
     pub source: RenderNodeId,
-    pub content_bounds: Rect,
-    pub render_bounds: Rect,
+    pub content_bounds: Bounds,
+    pub render_bounds: Bounds,
     pub content_version: ContentVersion,
     pub cache_id: Option<LayerCacheId>,
     pub cache_policy: CachePolicy,
@@ -101,7 +101,7 @@ pub struct BuiltLayerInstance {
     /// Reusable static IR paired with scene-owned external mask resources.
     pub render_program: BuiltLayerProgram,
     pub clip_chain: Option<BuiltClipChainId>,
-    pub world_bounds: Rect,
+    pub world_bounds: Bounds,
     pub placement_version: PlacementVersion,
     /// Logical destination observed before this operation starts.
     ///
@@ -121,7 +121,7 @@ pub struct BuiltClipChain {
     pub parent: Option<BuiltClipChainId>,
     pub clip: ClipShape,
     pub world_transform: Affine,
-    pub world_bounds: Rect,
+    pub world_bounds: Bounds,
 }
 
 #[derive(Debug, Clone)]
@@ -129,7 +129,7 @@ pub struct BuiltDrawData {
     pub source: RenderNodeId,
     pub content_version: ContentVersion,
     pub world_transform: Affine,
-    pub world_bounds: Rect,
+    pub world_bounds: Bounds,
     pub clip_chain: Option<BuiltClipChainId>,
 }
 

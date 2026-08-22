@@ -1,6 +1,6 @@
 use crate::wgpu::{SCENE_FORMAT, SCENE_SAMPLE_COUNT, WgpuBackendError};
 use moka::sync::Cache;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use wgpu::util::DeviceExt;
 use xui_interface::{
     ImageData, ImageDataId, ImageFormat, ImageKey, ImageRepeat, ImageRotation, ImageVariant, Rect,
@@ -15,14 +15,23 @@ const IMAGE_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_
     4 => Float32x4,
 ];
 
-const DEFAULT_IMAGE_TEXTURE_CACHE_CAPACITY: u64 = 256;
+const DEFAULT_IMAGE_TEXTURE_CACHE_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct ImageTextureKey {
+    image: ImageKey,
+    data: ImageDataId,
+}
 
 pub struct ImageRender {
     image_pipeline: wgpu::RenderPipeline,
     image_bind_group_layout: wgpu::BindGroupLayout,
     linear_sampler: wgpu::Sampler,
     nearest_sampler: wgpu::Sampler,
-    image_textures: Cache<ImageKey, Arc<CachedImageTexture>>,
+    image_textures: Cache<ImageTextureKey, Arc<CachedImageTexture>>,
+    frame_textures: HashMap<ImageTextureKey, Arc<CachedImageTexture>>,
+    frame_versions: HashMap<ImageKey, ImageDataId>,
+    latest_versions: Cache<ImageKey, ImageDataId>,
     instance_buffer: wgpu::Buffer,
     instance_capacity: usize,
 }
@@ -53,7 +62,6 @@ pub(crate) struct CachedImageTexture {
     pub(crate) extent: (u32, u32),
     linear_bind_group: wgpu::BindGroup,
     nearest_bind_group: wgpu::BindGroup,
-    data_id: ImageDataId,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -70,7 +78,15 @@ pub struct ImageDrawRecord {
 
 impl ImageRender {
     pub(crate) fn cached_texture(&self, key: &ImageKey) -> Option<Arc<CachedImageTexture>> {
-        self.image_textures.get(key)
+        let data = self.latest_versions.get(key)?;
+        let cache_key = ImageTextureKey {
+            image: key.clone(),
+            data,
+        };
+        self.frame_textures
+            .get(&cache_key)
+            .cloned()
+            .or_else(|| self.image_textures.get(&cache_key))
     }
 
     pub fn new(device: &wgpu::Device, tool_layout: &wgpu::BindGroupLayout) -> Self {
@@ -175,7 +191,21 @@ impl ImageRender {
             image_bind_group_layout,
             linear_sampler,
             nearest_sampler,
-            image_textures: Cache::new(DEFAULT_IMAGE_TEXTURE_CACHE_CAPACITY),
+            image_textures: Cache::builder()
+                .max_capacity(DEFAULT_IMAGE_TEXTURE_CACHE_BUDGET_BYTES)
+                .weigher(
+                    |_key: &ImageTextureKey, texture: &Arc<CachedImageTexture>| {
+                        texture
+                            .extent
+                            .0
+                            .saturating_mul(texture.extent.1)
+                            .saturating_mul(4)
+                    },
+                )
+                .build(),
+            frame_textures: HashMap::new(),
+            frame_versions: HashMap::new(),
+            latest_versions: Cache::new(4096),
             instance_buffer,
             instance_capacity: 0,
         }
@@ -187,24 +217,45 @@ impl ImageRender {
         queue: &wgpu::Queue,
         records: &[ImageDrawRecord],
     ) -> Result<(), WgpuBackendError> {
+        self.frame_textures.clear();
+        self.frame_versions.clear();
         for record in records {
-            let cached = self.image_textures.get(&record.key);
-            if cached
-                .as_ref()
-                .is_some_and(|texture| texture.data_id == record.data.id())
+            if let Some(previous) = self
+                .frame_versions
+                .insert(record.key.clone(), record.data.id())
+                && previous != record.data.id()
             {
-                continue;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "image key {:?} refers to multiple pixel versions in one frame",
+                        record.key
+                    ),
+                )
+                .into());
             }
-
-            let texture = Arc::new(create_cached_image_texture(
-                device,
-                queue,
-                &self.image_bind_group_layout,
-                &self.linear_sampler,
-                &self.nearest_sampler,
-                &record.data,
-            )?);
-            self.image_textures.insert(record.key.clone(), texture);
+            self.latest_versions
+                .insert(record.key.clone(), record.data.id());
+            let cache_key = ImageTextureKey {
+                image: record.key.clone(),
+                data: record.data.id(),
+            };
+            let texture = if let Some(texture) = self.image_textures.get(&cache_key) {
+                texture
+            } else {
+                let texture = Arc::new(create_cached_image_texture(
+                    device,
+                    queue,
+                    &self.image_bind_group_layout,
+                    &self.linear_sampler,
+                    &self.nearest_sampler,
+                    &record.data,
+                )?);
+                self.image_textures
+                    .insert(cache_key.clone(), Arc::clone(&texture));
+                texture
+            };
+            self.frame_textures.insert(cache_key, texture);
         }
 
         let instances: Vec<ImageInstance> = records
@@ -274,7 +325,11 @@ impl ImageRender {
         pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
         for index in range {
             let record = &records[index];
-            let Some(texture) = self.image_textures.get(&record.key) else {
+            let cache_key = ImageTextureKey {
+                image: record.key.clone(),
+                data: record.data.id(),
+            };
+            let Some(texture) = self.frame_textures.get(&cache_key) else {
                 continue;
             };
             let bind_group = match record.variant.sampling {
@@ -393,7 +448,6 @@ fn create_cached_image_texture(
         extent: (data.size.width, data.size.height),
         linear_bind_group,
         nearest_bind_group,
-        data_id: data.id(),
     })
 }
 

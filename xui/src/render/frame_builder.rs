@@ -7,7 +7,7 @@ use super::{
     ContentVersion, FrameProperties, LayerCacheId, PictureId, PlacementVersion, Primitive,
     RenderNodeId, SpatialNodeId,
 };
-use xui_interface::{Affine, Rect};
+use xui_interface::{Affine, Bounds, Point, Rect};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FrameBuildError {
@@ -57,7 +57,7 @@ impl FrameBuilder {
     pub fn build(
         &mut self,
         scene: &CompiledScene,
-        viewport: Rect,
+        viewport: Bounds,
         properties: &FrameProperties,
     ) -> Result<BuiltFrame, FrameBuildError> {
         for source in properties.transform_sources() {
@@ -80,7 +80,7 @@ impl FrameBuilder {
             root_layer,
             layers: vec![BuiltLayer {
                 source: root_picture.source,
-                content_bounds: Rect::ZERO,
+                content_bounds: Bounds::ZERO,
                 render_bounds: viewport,
                 content_version: ContentVersion::default(),
                 cache_id: None,
@@ -105,7 +105,7 @@ impl FrameBuilder {
         };
         let result = context.build_picture_contents(scene.root_picture(), root_layer, true)?;
         let root = &mut context.frame.layers[root_layer.0];
-        root.content_bounds = result.world_bounds.unwrap_or(Rect::ZERO);
+        root.content_bounds = result.world_bounds.unwrap_or(Bounds::ZERO);
         root.content_version = result.content_version;
         super::destination::build_destination_history(&mut context.frame);
         Ok(context.frame)
@@ -114,7 +114,7 @@ impl FrameBuilder {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct BuildResult {
-    world_bounds: Option<Rect>,
+    world_bounds: Option<Bounds>,
     content_version: ContentVersion,
 }
 
@@ -127,14 +127,14 @@ struct SpatialState {
 #[derive(Debug, Clone, Copy)]
 struct ClipState {
     id: BuiltClipChainId,
-    bounds: Rect,
+    bounds: Bounds,
     content_version: ContentVersion,
 }
 
 struct BuildContext<'a> {
     scene: &'a CompiledScene,
     properties: &'a FrameProperties,
-    viewport: Rect,
+    viewport: Bounds,
     frame: BuiltFrame,
     spatial_cache: HashMap<SpatialNodeId, SpatialState>,
     clip_cache: HashMap<CompiledClipId, ClipState>,
@@ -179,10 +179,10 @@ impl BuildContext<'_> {
             .ok_or(FrameBuildError::MissingPrimitive(primitive_id))?;
         let spatial = self.resolve_spatial(primitive.spatial)?;
         let local_bounds = primitive.primitive.paint_bounds();
-        let world_bounds = spatial.transform.transform_rect(local_bounds);
+        let world_bounds = spatial.transform.transform_bounds(local_bounds);
         let clip = primitive.clip.map(|id| self.resolve_clip(id)).transpose()?;
         let visible_bounds = match clip {
-            Some(clip) => intersect_rect(world_bounds, clip.bounds),
+            Some(clip) => world_bounds & clip.bounds,
             None => Some(world_bounds),
         };
         let mut content_version = primitive.content_version.merge(spatial.content_version);
@@ -247,8 +247,8 @@ impl BuildContext<'_> {
         let layer_id = self.frame.next_layer_id();
         self.frame.layers.push(BuiltLayer {
             source: picture.source,
-            content_bounds: Rect::ZERO,
-            render_bounds: Rect::ZERO,
+            content_bounds: Bounds::ZERO,
+            render_bounds: Bounds::ZERO,
             content_version: ContentVersion::default(),
             cache_id,
             cache_policy: picture.descriptor.cache_policy,
@@ -266,10 +266,10 @@ impl BuildContext<'_> {
         let descriptor_bounds = picture
             .descriptor
             .bounds
-            .map(|bounds| placement_spatial.transform.transform_rect(bounds));
+            .map(|bounds| placement_spatial.transform.transform_bounds(bounds));
         let content_bounds = descriptor_bounds
             .or(child.world_bounds)
-            .unwrap_or(Rect::ZERO);
+            .unwrap_or(Bounds::ZERO);
         let render_bounds = expand_by_sample_expansion(
             content_bounds,
             render_program.program().layer_visual_expansion(),
@@ -289,13 +289,13 @@ impl BuildContext<'_> {
             placement_version.dynamic = dynamic.revision;
         }
         let composite = composite.render_graph_instance();
-        let transformed_bounds = composite.transform.transform_rect(render_bounds);
+        let transformed_bounds = composite.transform.transform_bounds(render_bounds);
         let placement_clip = picture
             .placement_clip
             .map(|id| self.resolve_clip(id))
             .transpose()?;
         let placement_bounds = match placement_clip {
-            Some(clip) => intersect_rect(transformed_bounds, clip.bounds),
+            Some(clip) => transformed_bounds & clip.bounds,
             None => Some(transformed_bounds),
         };
         let content_version = picture
@@ -318,7 +318,7 @@ impl BuildContext<'_> {
                 composite,
                 render_program,
                 clip_chain: placement_clip.map(|clip| clip.id),
-                world_bounds: placement_bounds.unwrap_or(Rect::ZERO),
+                world_bounds: placement_bounds.unwrap_or(Bounds::ZERO),
                 placement_version,
                 destination_prefix: None,
             });
@@ -381,9 +381,9 @@ impl BuildContext<'_> {
             .map(|parent| self.resolve_clip(parent))
             .transpose()?;
         let spatial = self.resolve_spatial(clip.spatial)?;
-        let world_bounds = spatial.transform.transform_rect(clip.clip.local_bounds());
+        let world_bounds = spatial.transform.transform_bounds(clip.clip.local_bounds());
         let effective_bounds = match parent {
-            Some(parent) => intersect_rect(parent.bounds, world_bounds).unwrap_or(Rect::ZERO),
+            Some(parent) => (parent.bounds & world_bounds).unwrap_or(Bounds::ZERO),
             None => world_bounds,
         };
         let mut content_version = clip.content_version.merge(spatial.content_version);
@@ -427,12 +427,13 @@ pub(crate) fn intersect_rect(a: Rect, b: Rect) -> Option<Rect> {
     (right > x && bottom > y).then(|| Rect::new(x, y, right - x, bottom - y))
 }
 
-fn expand_by_sample_expansion(bounds: Rect, expansion: xui_render_graph::SampleExpansion) -> Rect {
-    Rect::new(
-        bounds.x - expansion.left,
-        bounds.y - expansion.top,
-        bounds.width + expansion.left + expansion.right,
-        bounds.height + expansion.top + expansion.bottom,
+fn expand_by_sample_expansion(
+    bounds: Bounds,
+    expansion: xui_render_graph::SampleExpansion,
+) -> Bounds {
+    Bounds::new(
+        bounds.min - Point::new(expansion.left, expansion.top),
+        bounds.max + Point::new(expansion.right, expansion.bottom),
     )
 }
 
@@ -446,7 +447,7 @@ mod tests {
         ComputedEffect, ComputedMaskShape, FilterQuality, ImageData, ImageKey, Point, Size,
     };
 
-    fn shape(rect: Rect, color: Color) -> Primitive {
+    fn shape(rect: Bounds, color: Color) -> Primitive {
         Primitive::Shape(ShapePrimitive {
             bounds: rect,
             shape: Shape::Rect,
@@ -480,8 +481,10 @@ mod tests {
     }
 
     fn append_shape(source: &mut super::super::RenderScene, parent: RenderNodeId) -> RenderNodeId {
-        let primitive =
-            source.insert_primitive(shape(Rect::new(0.0, 0.0, 10.0, 10.0), Color::BLACK));
+        let primitive = source.insert_primitive(shape(
+            Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
+            Color::BLACK,
+        ));
         source.append_child(parent, primitive).unwrap();
         primitive
     }
@@ -533,7 +536,7 @@ mod tests {
         let frame = FrameBuilder::new()
             .build(
                 &compile(&source),
-                Rect::new(0.0, 0.0, 100.0, 100.0),
+                Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
                 &FrameProperties::default(),
             )
             .unwrap();
@@ -564,7 +567,7 @@ mod tests {
         let frame = FrameBuilder::new()
             .build(
                 &compile(&source),
-                Rect::new(0.0, 0.0, 100.0, 100.0),
+                Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
                 &FrameProperties::default(),
             )
             .unwrap();
@@ -588,7 +591,7 @@ mod tests {
         let frame = FrameBuilder::new()
             .build(
                 &compile(&source),
-                Rect::new(0.0, 0.0, 100.0, 100.0),
+                Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
                 &FrameProperties::default(),
             )
             .unwrap();
@@ -635,7 +638,7 @@ mod tests {
             let frame = FrameBuilder::new()
                 .build(
                     &compile(&source),
-                    Rect::new(0.0, 0.0, 100.0, 100.0),
+                    Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
                     &FrameProperties::default(),
                 )
                 .unwrap();
@@ -696,17 +699,30 @@ mod tests {
     fn transform_clip_and_viewport_culling_are_resolved_per_frame() {
         let mut source = super::super::RenderScene::new();
         let transform = source.insert_transform(Affine::translate(10.0, 20.0));
-        let clip = source.insert_clip(ClipShape::Rect(Rect::new(0.0, 0.0, 20.0, 20.0)));
-        let visible = source.insert_primitive(shape(Rect::new(1.0, 1.0, 2.0, 2.0), Color::BLACK));
+        let clip = source.insert_clip(ClipShape::Rect(Bounds::from_origin_size(
+            (0.0, 0.0),
+            (20.0, 20.0),
+        )));
+        let visible = source.insert_primitive(shape(
+            Bounds::from_origin_size((1.0, 1.0), (2.0, 2.0)),
+            Color::BLACK,
+        ));
         source.append_child(source.root(), transform).unwrap();
         source.set_child(transform, Some(clip)).unwrap();
         source.set_child(clip, Some(visible)).unwrap();
-        let outside =
-            source.insert_primitive(shape(Rect::new(500.0, 500.0, 10.0, 10.0), Color::WHITE));
+        let outside = source.insert_primitive(shape(
+            Bounds::from_origin_size((500.0, 500.0), (10.0, 10.0)),
+            Color::WHITE,
+        ));
         source.append_child(source.root(), outside).unwrap();
-        let outside_clip = source.insert_clip(ClipShape::Rect(Rect::new(500.0, 500.0, 10.0, 10.0)));
-        let clipped_outside =
-            source.insert_primitive(shape(Rect::new(0.0, 0.0, 1_000.0, 1_000.0), Color::WHITE));
+        let outside_clip = source.insert_clip(ClipShape::Rect(Bounds::from_origin_size(
+            (500.0, 500.0),
+            (10.0, 10.0),
+        )));
+        let clipped_outside = source.insert_primitive(shape(
+            Bounds::from_origin_size((0.0, 0.0), (1_000.0, 1_000.0)),
+            Color::WHITE,
+        ));
         source.append_child(source.root(), outside_clip).unwrap();
         source
             .set_child(outside_clip, Some(clipped_outside))
@@ -716,7 +732,7 @@ mod tests {
         let frame = FrameBuilder::new()
             .build(
                 &scene,
-                Rect::new(0.0, 0.0, 100.0, 100.0),
+                Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
                 &FrameProperties::default(),
             )
             .unwrap();
@@ -738,19 +754,24 @@ mod tests {
         let mut source = super::super::RenderScene::new();
         let root = source.root();
         let (layer, contents) = append_layer(&mut source, root, glass_descriptor());
-        let primitive =
-            source.insert_primitive(shape(Rect::new(500.0, 500.0, 10.0, 10.0), Color::WHITE));
+        let primitive = source.insert_primitive(shape(
+            Bounds::from_origin_size((500.0, 500.0), (10.0, 10.0)),
+            Color::WHITE,
+        ));
         source.append_child(contents, primitive).unwrap();
 
         let frame = FrameBuilder::new()
             .build(
                 &compile(&source),
-                Rect::new(0.0, 0.0, 100.0, 100.0),
+                Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
                 &FrameProperties::default(),
             )
             .unwrap();
         let instance = instance_for_source(&frame, layer);
-        assert_eq!(instance.world_bounds, Rect::new(500.0, 500.0, 10.0, 10.0));
+        assert_eq!(
+            instance.world_bounds,
+            Bounds::from_origin_size((500.0, 500.0), (10.0, 10.0))
+        );
         assert!(
             frame.layers[frame.root_layer.0]
                 .items
@@ -763,8 +784,10 @@ mod tests {
     fn dynamic_transform_changes_frame_without_recompiling_scene() {
         let mut source = super::super::RenderScene::new();
         let transform = source.insert_transform(Affine::IDENTITY);
-        let primitive =
-            source.insert_primitive(shape(Rect::new(0.0, 0.0, 10.0, 10.0), Color::BLACK));
+        let primitive = source.insert_primitive(shape(
+            Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
+            Color::BLACK,
+        ));
         source.append_child(source.root(), transform).unwrap();
         source.set_child(transform, Some(primitive)).unwrap();
         let scene = compile(&source);
@@ -773,22 +796,30 @@ mod tests {
         properties.set_transform(transform, Affine::translate(30.0, 0.0));
         let mut builder = FrameBuilder::new();
         let first = builder
-            .build(&scene, Rect::new(0.0, 0.0, 100.0, 100.0), &properties)
+            .build(
+                &scene,
+                Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
+                &properties,
+            )
             .unwrap();
         let BuiltItem::Draw(draw) = &first.layers[0].items[0] else {
             panic!()
         };
-        assert_eq!(draw.common().world_bounds.x, 30.0);
+        assert_eq!(draw.common().world_bounds.min.x, 30.0);
         let first_dynamic_version = draw.common().content_version.dynamic;
 
         properties.set_transform(transform, Affine::translate(40.0, 0.0));
         let second = builder
-            .build(&scene, Rect::new(0.0, 0.0, 100.0, 100.0), &properties)
+            .build(
+                &scene,
+                Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
+                &properties,
+            )
             .unwrap();
         let BuiltItem::Draw(draw) = &second.layers[0].items[0] else {
             panic!()
         };
-        assert_eq!(draw.common().world_bounds.x, 40.0);
+        assert_eq!(draw.common().world_bounds.min.x, 40.0);
         assert!(draw.common().content_version.dynamic > first_dynamic_version);
         assert_eq!(scene.scene_revision(), scene_revision);
         assert_eq!(second.properties_revision, properties.revision());
@@ -801,15 +832,21 @@ mod tests {
             force_offscreen: true,
             ..LayerDescriptor::default()
         });
-        let primitive =
-            source.insert_primitive(shape(Rect::new(0.0, 0.0, 10.0, 10.0), Color::BLACK));
+        let primitive = source.insert_primitive(shape(
+            Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
+            Color::BLACK,
+        ));
         source.append_child(source.root(), layer).unwrap();
         source.set_child(layer, Some(primitive)).unwrap();
         let scene = compile(&source);
         let mut properties = FrameProperties::default();
         let mut builder = FrameBuilder::new();
         let first = builder
-            .build(&scene, Rect::new(0.0, 0.0, 100.0, 100.0), &properties)
+            .build(
+                &scene,
+                Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
+                &properties,
+            )
             .unwrap();
         let BuiltItem::Layer(first_instance_id) = &first.layers[0].items[0] else {
             panic!()
@@ -825,7 +862,11 @@ mod tests {
             },
         );
         let second = builder
-            .build(&scene, Rect::new(0.0, 0.0, 100.0, 100.0), &properties)
+            .build(
+                &scene,
+                Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
+                &properties,
+            )
             .unwrap();
         let BuiltItem::Layer(second_instance_id) = &second.layers[0].items[0] else {
             panic!()
@@ -843,7 +884,7 @@ mod tests {
             second_instance.placement_version.dynamic > first_instance.placement_version.dynamic
         );
         assert_eq!(second_instance.composite.opacity, 0.5);
-        assert_eq!(second_instance.world_bounds.x, 5.0);
+        assert_eq!(second_instance.world_bounds.min.x, 5.0);
         assert_eq!(
             first_instance.render_program.program().fingerprint(),
             second_instance.render_program.program().fingerprint()
@@ -867,7 +908,11 @@ mod tests {
 
         assert_eq!(
             FrameBuilder::new()
-                .build(&scene, Rect::new(0.0, 0.0, 100.0, 100.0), &properties,)
+                .build(
+                    &scene,
+                    Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
+                    &properties,
+                )
                 .unwrap_err(),
             FrameBuildError::DynamicCompositeOnNonIsolatedLayer(layer)
         );
@@ -876,8 +921,10 @@ mod tests {
     #[test]
     fn dynamic_transform_rejects_non_spatial_source() {
         let mut source = super::super::RenderScene::new();
-        let primitive =
-            source.insert_primitive(shape(Rect::new(0.0, 0.0, 10.0, 10.0), Color::BLACK));
+        let primitive = source.insert_primitive(shape(
+            Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
+            Color::BLACK,
+        ));
         source.append_child(source.root(), primitive).unwrap();
         let scene = compile(&source);
         let mut properties = FrameProperties::default();
@@ -885,7 +932,11 @@ mod tests {
 
         assert_eq!(
             FrameBuilder::new()
-                .build(&scene, Rect::new(0.0, 0.0, 100.0, 100.0), &properties,)
+                .build(
+                    &scene,
+                    Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
+                    &properties,
+                )
                 .unwrap_err(),
             FrameBuildError::DynamicTransformOnNonSpatialNode(primitive)
         );
@@ -894,13 +945,18 @@ mod tests {
     #[test]
     fn parent_clip_applies_to_picture_placement_not_cached_content() {
         let mut source = super::super::RenderScene::new();
-        let clip = source.insert_clip(ClipShape::Rect(Rect::new(0.0, 0.0, 25.0, 25.0)));
+        let clip = source.insert_clip(ClipShape::Rect(Bounds::from_origin_size(
+            (0.0, 0.0),
+            (25.0, 25.0),
+        )));
         let layer = source.insert_layer(LayerDescriptor {
             force_offscreen: true,
             ..LayerDescriptor::default()
         });
-        let primitive =
-            source.insert_primitive(shape(Rect::new(0.0, 0.0, 50.0, 50.0), Color::BLACK));
+        let primitive = source.insert_primitive(shape(
+            Bounds::from_origin_size((0.0, 0.0), (50.0, 50.0)),
+            Color::BLACK,
+        ));
         source.append_child(source.root(), clip).unwrap();
         source.set_child(clip, Some(layer)).unwrap();
         source.set_child(layer, Some(primitive)).unwrap();
@@ -908,7 +964,7 @@ mod tests {
         let frame = FrameBuilder::new()
             .build(
                 &scene,
-                Rect::new(0.0, 0.0, 100.0, 100.0),
+                Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
                 &FrameProperties::default(),
             )
             .unwrap();
@@ -921,7 +977,10 @@ mod tests {
             panic!()
         };
         assert_eq!(draw.common().clip_chain, None);
-        assert_eq!(instance.world_bounds, Rect::new(0.0, 0.0, 25.0, 25.0));
+        assert_eq!(
+            instance.world_bounds,
+            Bounds::from_origin_size((0.0, 0.0), (25.0, 25.0))
+        );
     }
 
     #[test]
@@ -940,14 +999,16 @@ mod tests {
                 ComputedEffect::ImageMask {
                     image: ImageKey::UserProvided(42),
                     data: ImageData::rgba8(Size::new(1, 1), vec![255; 4]),
-                    bounds: Rect::new(20.0, 30.0, 40.0, 30.0),
+                    bounds: Bounds::from_origin_size((20.0, 30.0), (40.0, 30.0)),
                 },
             ]),
             force_offscreen: true,
             ..LayerDescriptor::default()
         });
-        let primitive =
-            source.insert_primitive(shape(Rect::new(20.0, 30.0, 40.0, 30.0), Color::BLACK));
+        let primitive = source.insert_primitive(shape(
+            Bounds::from_origin_size((20.0, 30.0), (40.0, 30.0)),
+            Color::BLACK,
+        ));
         source.append_child(source.root(), layer).unwrap();
         source.set_child(layer, Some(primitive)).unwrap();
         let scene = compile(&source);
@@ -962,7 +1023,7 @@ mod tests {
         let frame = FrameBuilder::new()
             .build(
                 &scene,
-                Rect::new(0.0, 0.0, 200.0, 200.0),
+                Bounds::from_origin_size((0.0, 0.0), (200.0, 200.0)),
                 &FrameProperties::default(),
             )
             .unwrap();
@@ -985,14 +1046,14 @@ mod tests {
         ));
         assert_eq!(
             frame.layers[instance.layer.0].render_bounds,
-            Rect::new(18.0, 20.0, 54.0, 44.0)
+            Bounds::from_origin_size((18.0, 20.0), (54.0, 44.0))
         );
         let plan = instance
             .render_program
             .program()
             .instantiate(&xui_render_graph::LayerPlanContext {
-                backdrop_source_bounds: Rect::new(0.0, 0.0, 200.0, 200.0),
-                parent_destination_bounds: Rect::new(0.0, 0.0, 200.0, 200.0),
+                backdrop_source_bounds: Bounds::from_origin_size((0.0, 0.0), (200.0, 200.0)),
+                parent_destination_bounds: Bounds::from_origin_size((0.0, 0.0), (200.0, 200.0)),
                 composite_clip_bounds: None,
                 layer_content_bounds: frame.layers[instance.layer.0].content_bounds,
                 backdrop_bounds: None,

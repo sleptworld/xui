@@ -6,7 +6,7 @@ use skia_safe::{
     surfaces,
 };
 use xui::render::{BuiltLayer, CachePolicy, LayerCacheId, RenderNodeId};
-use xui_interface::Rect;
+use xui_interface::{Bounds, Rect};
 
 use crate::SkiaBackendError;
 
@@ -23,18 +23,18 @@ pub struct SkiaLayerCacheStats {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct SurfaceGeometry {
-    bounds: Rect,
+    bounds: Bounds,
     width: u32,
     height: u32,
     scale_bits: u32,
 }
 
 impl SurfaceGeometry {
-    fn new(bounds: Rect, scale: f32) -> Self {
+    fn new(bounds: Bounds, scale: f32) -> Self {
         Self {
             bounds,
-            width: (bounds.width.max(0.0) * scale).ceil().max(1.0) as u32,
-            height: (bounds.height.max(0.0) * scale).ceil().max(1.0) as u32,
+            width: (bounds.width().max(0.0) * scale).ceil().max(1.0) as u32,
+            height: (bounds.height().max(0.0) * scale).ceil().max(1.0) as u32,
             scale_bits: scale.to_bits(),
         }
     }
@@ -93,14 +93,16 @@ impl LayerSurfaceCache {
             .flatten();
         if let Some(id) = cache_id {
             if let Some(entry) = self.entries.remove(&id)
-                && entry.source == layer.source && entry.geometry == geometry {
-                    self.hits += 1;
-                    return Ok(SurfaceLease {
-                        surface: entry.surface,
-                        reused: true,
-                        cache_id: Some(id),
-                    });
-                }
+                && entry.source == layer.source
+                && entry.geometry == geometry
+            {
+                self.hits += 1;
+                return Ok(SurfaceLease {
+                    surface: entry.surface,
+                    reused: true,
+                    cache_id: Some(id),
+                });
+            }
             self.misses += 1;
         }
         let surface = if let Some(context) = gpu_context {

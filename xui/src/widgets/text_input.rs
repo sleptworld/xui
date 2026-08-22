@@ -1,14 +1,15 @@
 use xui_interface::events::{PointerButton, RawEvent, SemanticEvent, XuiPointerId};
 use xui_interface::{
-    Affine, Color, ComputedStyle, EventRef, EventResult, Key, Point, RawIme, Rect, Style,
+    Affine, Bounds, Color, ComputedStyle, EventRef, EventResult, Key, Point, RawIme, Rect, Style,
     TextCaret, TextContent, TextInputPurpose, TextInputSession, TextOffset, TextOffsetUnit,
     TextPaintProps, TextPaintStyle, TextProps, TextSelectionPaint, WhiteSpace, WidgetType,
     WidgetUpdateFlags,
 };
 
 use crate::element::ElementDesc;
-use crate::event_system::EventContext;
 use crate::event_system::callbacks::EventHandlers;
+use crate::event_system::interaction::InteractionProperties;
+use crate::event_system::EventContext;
 use crate::widgets::text_input::controller::ImeSession;
 
 use super::text::apply_text_style;
@@ -30,6 +31,7 @@ pub struct TextInputWidget {
     pub controller: TextController,
     pub style: Style,
     pub event_handlers: EventHandlers,
+    pub interaction: InteractionProperties,
     uses_external_controller: bool,
     last_text: String,
     focused: bool,
@@ -67,6 +69,7 @@ impl TextInputWidget {
             controller: TextController::new(),
             style: Style::default(),
             event_handlers: EventHandlers::default(),
+            interaction: InteractionProperties::default(),
             uses_external_controller: false,
             last_text: String::new(),
             focused: false,
@@ -110,14 +113,14 @@ impl TextInputWidget {
 
     pub(crate) fn platform_text_input_session(
         &self,
-        node_rect: Rect,
+        node_rect: Bounds,
         text_layout: &dyn crate::text::TextLayoutQuery,
     ) -> TextInputSession {
         let mut cursor_area = text_layout
             .caret_rect(self.controller.selection().extent)
-            .unwrap_or_else(|| Rect::new(0.0, 0.0, 1.0, node_rect.height.max(1.0)));
-        cursor_area.x += node_rect.x - self.scroll_x;
-        cursor_area.y += node_rect.y;
+            .unwrap_or_else(|| Rect::new(0.0, 0.0, 1.0, node_rect.height().max(1.0)));
+        cursor_area.x += node_rect.x() - self.scroll_x;
+        cursor_area.y += node_rect.y();
         cursor_area.width = cursor_area.width.max(1.0);
         cursor_area.height = cursor_area.height.max(1.0);
 
@@ -150,7 +153,7 @@ impl TextInputWidget {
     }
 
     fn viewport_width(&self, cx: &EventContext<'_>) -> f32 {
-        cx.node_ref.layout.width.max(0.0)
+        cx.node_ref.layout.width().max(0.0)
     }
 
     fn max_scroll_x(&self, cx: &EventContext<'_>) -> f32 {
@@ -279,7 +282,7 @@ impl TextInputWidget {
         if viewport_width <= 0.0 {
             return false;
         }
-        let local_x = position.x - cx.node_ref.layout.x;
+        let local_x = position.x - cx.node_ref.layout.x();
         let old = self.scroll_x;
         if local_x < 0.0 {
             self.scroll_x += local_x;
@@ -484,7 +487,7 @@ impl TextInputWidget {
     pub(super) fn render(
         &self,
         node_id: xui_interface::NodeId,
-        rect: Rect,
+        rect: Bounds,
         style: &ComputedStyle,
         writer: &mut RenderTreeWriter<'_>,
     ) {
@@ -509,7 +512,10 @@ impl TextInputWidget {
                 writer.transform(Affine::translate(-self.scroll_x, 0.0), |writer| {
                     writer.primitive(Primitive::Text(TextPrimitive {
                         node_id,
-                        bounds: Rect::new(rect.x, rect.y, rect.width + self.scroll_x, rect.height),
+                        bounds: Bounds::from_origin_size(
+                            rect.origin(),
+                            (rect.width() + self.scroll_x, rect.height()),
+                        ),
                         slot: crate::text::TextLayoutSlot::PRIMARY,
                         layout_revision: self.controller.revision(),
                         vertical_align: xui_interface::TextVerticalAlign::Baseline,

@@ -1,7 +1,5 @@
-use std::collections::{HashMap, HashSet};
-
 use slotmap::SlotMap;
-use xui_interface::{Affine, NodeId as HostNodeId, Point, Rect};
+use xui_interface::{Affine, Bounds, Point, Rect};
 
 use super::{
     CachePolicy, ClipShape, CompositeStyle, LayerCacheKey, LayerDescriptor, Primitive,
@@ -93,7 +91,6 @@ impl ContentVersion {
 pub struct RenderScene {
     nodes: SlotMap<RenderNodeId, RenderNode>,
     root: RenderNodeId,
-    host_bindings: HashMap<HostNodeId, HostRenderBinding>,
     revision: u64,
     dirty_nodes: Vec<RenderNodeId>,
 }
@@ -111,7 +108,6 @@ impl RenderScene {
         let mut scene = Self {
             nodes,
             root,
-            host_bindings: HashMap::new(),
             revision: 0,
             dirty_nodes: Vec::new(),
         };
@@ -427,12 +423,9 @@ impl RenderScene {
             stack.extend_from_slice(self.nodes[id].children());
             ids.push(id);
         }
-        let removed: HashSet<_> = ids.iter().copied().collect();
         for id in ids.into_iter().rev() {
             self.nodes.remove(id);
         }
-        self.host_bindings
-            .retain(|_, binding| !binding.references_any(&removed));
         Ok(())
     }
 
@@ -636,31 +629,6 @@ impl RenderScene {
             dirty
         }
         visit(self, self.root);
-    }
-
-    pub fn bind_host(
-        &mut self,
-        host: HostNodeId,
-        binding: HostRenderBinding,
-    ) -> Result<Option<HostRenderBinding>, SceneError> {
-        for (field, id) in binding.references() {
-            if !self.nodes.contains_key(id) {
-                return Err(SceneError::InvalidHostBinding { field, node: id });
-            }
-        }
-        Ok(self.host_bindings.insert(host, binding))
-    }
-
-    pub fn unbind_host(&mut self, host: HostNodeId) -> Option<HostRenderBinding> {
-        self.host_bindings.remove(&host)
-    }
-
-    pub fn host_binding(&self, host: HostNodeId) -> Option<&HostRenderBinding> {
-        self.host_bindings.get(&host)
-    }
-
-    pub(crate) fn host_binding_mut(&mut self, host: HostNodeId) -> Option<&mut HostRenderBinding> {
-        self.host_bindings.get_mut(&host)
     }
 
     pub fn depth_first(&self, root: RenderNodeId) -> Result<DepthFirst<'_>, SceneError> {
@@ -974,7 +942,7 @@ impl HostRenderBinding {
         }
     }
 
-    fn references(&self) -> Vec<(&'static str, RenderNodeId)> {
+    pub(crate) fn references(&self) -> Vec<(&'static str, RenderNodeId)> {
         let mut values = vec![
             ("root", self.root),
             ("transform", self.transform),
@@ -1002,10 +970,6 @@ impl HostRenderBinding {
             values.push(("layer", id));
         }
         values
-    }
-
-    fn references_any(&self, removed: &HashSet<RenderNodeId>) -> bool {
-        self.references().iter().any(|(_, id)| removed.contains(id))
     }
 }
 
@@ -1035,7 +999,7 @@ pub struct ScrollRenderNodes {
 
 pub fn create_scroll_scene(
     scene: &mut RenderScene,
-    viewport: Rect,
+    viewport: Bounds,
 ) -> Result<ScrollRenderNodes, SceneError> {
     let clip = scene.insert_clip(ClipShape::Rect(viewport));
     let transform = scene.insert_transform(Affine::IDENTITY);
@@ -1067,7 +1031,7 @@ pub struct PageRenderNodes {
 pub fn create_page_layer(
     scene: &mut RenderScene,
     cache_key: LayerCacheKey,
-    bounds: Rect,
+    bounds: Bounds,
 ) -> Result<PageRenderNodes, SceneError> {
     let descriptor = LayerDescriptor {
         bounds: Some(bounds),
@@ -1089,7 +1053,7 @@ mod tests {
     use slotmap::SlotMap;
     use xui_interface::{Color, ComputedColorStyle};
 
-    fn shape(bounds: Rect, color: Color) -> Primitive {
+    fn shape(bounds: Bounds, color: Color) -> Primitive {
         Primitive::Shape(ShapePrimitive {
             bounds,
             shape: Shape::Rect,
@@ -1145,7 +1109,7 @@ mod tests {
             scene.append_child(transform, b),
             Err(SceneError::UseSingleChildApi(_))
         ));
-        let primitive = scene.insert_primitive(shape(Rect::ZERO, Color::BLACK));
+        let primitive = scene.insert_primitive(shape(Bounds::ZERO, Color::BLACK));
         assert!(matches!(
             scene.append_child(primitive, b),
             Err(SceneError::NodeCannotHaveChildren(_))
@@ -1180,7 +1144,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_subtree_removes_descendants_and_any_binding_reference() {
+    fn remove_subtree_removes_descendants() {
         let mut scene = RenderScene::new();
         let root = scene.insert_group();
         let child = scene.insert_group();
@@ -1188,24 +1152,19 @@ mod tests {
         scene.append_child(root, child).unwrap();
         scene.append_child(child, grandchild).unwrap();
 
-        let mut hosts = SlotMap::<HostNodeId, ()>::with_key();
-        let host = hosts.insert(());
-        let mut binding =
-            HostRenderBinding::scaffold(root, root, root, Some(root), Some(root), Some(root));
-        binding.clip = Some(child);
-        scene.bind_host(host, binding).unwrap();
         scene.remove_subtree(child).unwrap();
         assert!(!scene.contains(child));
         assert!(!scene.contains(grandchild));
-        assert!(scene.host_binding(host).is_none());
     }
 
     #[test]
     fn primitive_diff_dirty_propagation_and_acknowledge_are_precise() {
         let mut scene = RenderScene::new();
         let group = scene.insert_group();
-        let primitive =
-            scene.insert_primitive(shape(Rect::new(0.0, 0.0, 10.0, 10.0), Color::BLACK));
+        let primitive = scene.insert_primitive(shape(
+            Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
+            Color::BLACK,
+        ));
         scene.append_child(scene.root(), group).unwrap();
         scene.append_child(group, primitive).unwrap();
         acknowledge_all(&mut scene);
@@ -1214,7 +1173,10 @@ mod tests {
             !scene
                 .update_primitive(
                     primitive,
-                    shape(Rect::new(0.0, 0.0, 10.0, 10.0), Color::BLACK)
+                    shape(
+                        Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
+                        Color::BLACK
+                    )
                 )
                 .unwrap()
         );
@@ -1223,7 +1185,10 @@ mod tests {
         scene
             .update_primitive(
                 primitive,
-                shape(Rect::new(1.0, 0.0, 10.0, 10.0), Color::BLACK),
+                shape(
+                    Bounds::from_origin_size((1.0, 0.0), (10.0, 10.0)),
+                    Color::BLACK,
+                ),
             )
             .unwrap();
         assert_eq!(scene.node(primitive).unwrap().dirty, RenderDirty::GEOMETRY);
@@ -1241,7 +1206,10 @@ mod tests {
         scene
             .update_primitive(
                 primitive,
-                shape(Rect::new(1.0, 0.0, 10.0, 10.0), Color::WHITE),
+                shape(
+                    Bounds::from_origin_size((1.0, 0.0), (10.0, 10.0)),
+                    Color::WHITE,
+                ),
             )
             .unwrap();
         assert_eq!(scene.node(primitive).unwrap().dirty, RenderDirty::PAINT);
@@ -1251,7 +1219,7 @@ mod tests {
     fn transform_clip_visibility_and_composite_use_separate_epochs() {
         let mut scene = RenderScene::new();
         let transform = scene.insert_transform(Affine::IDENTITY);
-        let clip = scene.insert_clip(ClipShape::Rect(Rect::ZERO));
+        let clip = scene.insert_clip(ClipShape::Rect(Bounds::ZERO));
         let layer = scene.insert_layer(LayerDescriptor::default());
         acknowledge_all(&mut scene);
 
@@ -1260,7 +1228,10 @@ mod tests {
             .unwrap();
         assert_eq!(scene.node(transform).unwrap().dirty, RenderDirty::GEOMETRY);
         scene
-            .update_clip(clip, ClipShape::Rect(Rect::new(0.0, 0.0, 5.0, 5.0)))
+            .update_clip(
+                clip,
+                ClipShape::Rect(Bounds::from_origin_size((0.0, 0.0), (5.0, 5.0))),
+            )
             .unwrap();
         assert_eq!(
             scene.node(clip).unwrap().dirty,
@@ -1296,7 +1267,11 @@ mod tests {
     #[test]
     fn scroll_and_page_helpers_preserve_content_versions() {
         let mut scene = RenderScene::new();
-        let scroll = create_scroll_scene(&mut scene, Rect::new(0.0, 0.0, 100.0, 80.0)).unwrap();
+        let scroll = create_scroll_scene(
+            &mut scene,
+            Bounds::from_origin_size((0.0, 0.0), (100.0, 80.0)),
+        )
+        .unwrap();
         acknowledge_all(&mut scene);
         update_scroll_offset(&mut scene, &scroll, Point::new(12.0, 7.0)).unwrap();
         assert_eq!(
@@ -1308,7 +1283,7 @@ mod tests {
         let page = create_page_layer(
             &mut scene,
             keys.insert(()),
-            Rect::new(0.0, 0.0, 320.0, 240.0),
+            Bounds::from_origin_size((0.0, 0.0), (320.0, 240.0)),
         )
         .unwrap();
         acknowledge_all(&mut scene);

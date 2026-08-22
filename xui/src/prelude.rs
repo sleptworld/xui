@@ -4,7 +4,7 @@ pub use crate::animation::{
 pub use crate::app::App;
 pub use crate::component::ComponentRuntime;
 pub use crate::core::{Color, EdgeInsets, Point, Rect, Size};
-pub use crate::element::{ComponentDesc, ElementDesc, WidgetDesc};
+pub use crate::element::{ComponentDesc, ElementDesc, PortalDesc, WidgetDesc, portal};
 pub use xui_animation::{Easing, Transition};
 pub use xui_interface::events::{
     ClickEvent, ContextMenuEvent, DragEvent, Event, EventPhase, EventRequest, EventRequests,
@@ -39,12 +39,13 @@ pub use crate::style::{
     StateStyleRule, Stroke, StrokeLineStyle, StrokeStyle, Style, StyleMerge, StylePatch,
     StyleValue, TextStylePatch, Theme, WidgetState, WidgetStateMatcher,
 };
-pub use crate::tree::UiArena;
+pub use crate::ui_runtime::{NodeView, RenderFrame, RenderFrameError, UiRuntime};
 pub use crate::widgets::{
     CanvasController, CanvasWidget, ContainerWidget, IconData, IconLayer, IconStroke, IconWidget,
-    ImageWidget, SvgIconError, TextCommand, TextController, TextInputChange, TextKeymap,
-    TextWidget, WidgetI, WithChildren, ZStackWidget, canvas, component, container, icon, image,
-    text, z_stack,
+    ImageWidget, OverlayChild, OverlayEntry, OverlayEntryId, OverlayEntryOptions,
+    OverlayModelError, OverlayScope, OverlayScopeId, SvgIconError, TextCommand, TextController,
+    TextInputChange, TextKeymap, TextWidget, WidgetI, WithChildren, ZStackWidget, canvas,
+    component, container, icon, image, text, z_stack,
 };
 pub use xui_interface::{
     AccessibilityProperties, AccessibilityRole, Affine, Alignment, CanvasTextId, ColorSpace,

@@ -326,12 +326,12 @@ fn normalize_layer_effect(
         LayerEffect::ImageMask { bounds, .. } => ProgramOp::ApplyMask {
             transform: normalize_transform(
                 xui_interface::Affine::new(
-                    bounds.width,
+                    bounds.width(),
                     0.0,
                     0.0,
-                    bounds.height,
-                    bounds.x,
-                    bounds.y,
+                    bounds.height(),
+                    bounds.min.x,
+                    bounds.min.y,
                 ),
                 "layer_mask.transform",
             )?,

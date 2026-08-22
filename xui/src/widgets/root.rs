@@ -1,7 +1,7 @@
-use crate::event_system::{EventContext, callbacks::EventHandlers};
+use crate::event_system::EventContext;
 use xui_interface::{
-    Color, ComputedStyle, EventRef, EventResult, Key, Rect, Size, Style, TextContent, TextProps,
-    WidgetType, WidgetUpdateFlags, core::Sizing,
+    core::Sizing, Bounds, Color, ComputedStyle, EventRef, EventResult, Key, Rect, Size, Style,
+    TextContent, TextProps, WidgetType, WidgetUpdateFlags,
 };
 
 use super::props_hash;
@@ -10,14 +10,12 @@ use crate::render::{Primitive, RenderTreeWriter, Shape, ShapePrimitive};
 #[derive(Debug)]
 pub struct RootWidget {
     pub style: Style,
-    pub event_handlers: EventHandlers,
 }
 
 impl Default for RootWidget {
     fn default() -> Self {
         Self {
             style: Style::new(),
-            event_handlers: EventHandlers::default(),
         }
     }
 }
@@ -65,7 +63,7 @@ impl RootWidget {
     pub(super) fn render(
         &self,
         _node_id: xui_interface::NodeId,
-        rect: Rect,
+        rect: Bounds,
         _style: &ComputedStyle,
         writer: &mut RenderTreeWriter<'_>,
     ) {
@@ -95,4 +93,6 @@ impl RootWidget {
     pub(super) fn text_layout_props(&self, _style: &ComputedStyle) -> Option<TextProps> {
         None
     }
+
+    no_event_handler_methods!();
 }

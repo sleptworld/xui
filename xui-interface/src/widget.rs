@@ -17,6 +17,7 @@ pub enum WidgetType {
     ZStack,
     StyleScope,
     ScrollScope,
+    RootOverlayer,
     Image,
     Icon,
 }
