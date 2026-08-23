@@ -7,6 +7,7 @@ pub mod runtime;
 pub mod state;
 pub mod style;
 pub mod text;
+pub mod transition;
 pub mod widget;
 
 pub use core::{Bounds, Color, EdgeInsets, Point, Rect, Size, Sizing, Translation};
@@ -37,6 +38,7 @@ pub use style::{
     WidgetStateMatcher,
 };
 pub use text::*;
+pub use transition::{AnimationProgress, Easing, Transition};
 pub use widget::{
     AccessibilityProperties, AccessibilityRole, Component, FocusProperties, Focusability, Key,
     NodeId, NodeLifecycleEvent, WidgetType,

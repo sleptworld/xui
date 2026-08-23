@@ -9,7 +9,7 @@ const LAST_TAB: CommandId = CommandId("xui.tabs.last");
 pub type TabChangeCallback = Callback<usize>;
 
 /// One selectable tab and the content displayed while it is active.
-#[derive(Clone, Debug, Hash)]
+#[derive(Clone, Debug)]
 pub struct TabItem {
     pub id: String,
     pub label: String,

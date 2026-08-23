@@ -26,22 +26,30 @@ impl ActiveStyleTransition {
         if !to.has_properties() {
             return None;
         }
+        let mut sampled = target_style.clone();
+        from.apply_to_computed(&mut sampled);
         Some(Self {
             timeline: Timeline::new(transition),
             from,
             to,
-            sampled: from_style.clone(),
+            sampled,
         })
     }
 
-    fn tick(&mut self, delta: Duration, target: &ComputedStyle, theme: &Theme) -> bool {
+    fn sync_target(&mut self, target: &ComputedStyle) {
+        let current = AnimableStyle::capture(&self.sampled, &self.to);
+        self.sampled = target.clone();
+        current.apply_to_computed(&mut self.sampled);
+    }
+
+    fn tick(&mut self, delta: Duration, target: &ComputedStyle) -> bool {
         let progress = self.timeline.tick(delta);
         self.sampled = target.clone();
         if progress.completed {
             return true;
         }
         let interpolated = AnimableStyle::interpolate(&self.from, &self.to, progress.eased);
-        interpolated.apply_to_computed(&mut self.sampled, theme);
+        interpolated.apply_to_computed(&mut self.sampled);
         false
     }
 }
@@ -149,11 +157,17 @@ impl StyleSystem {
         true
     }
 
-    pub(crate) fn remove_transition(&mut self, id: NodeId) {
-        self.animations.remove(id);
+    pub(crate) fn remove_transition(&mut self, id: NodeId) -> bool {
+        self.animations.remove(id).is_some()
     }
 
-    pub(crate) fn tick(&mut self, delta: Duration, theme: &Theme) -> Vec<NodeId> {
+    pub(crate) fn sync_transition_target(&mut self, id: NodeId, target: &ComputedStyle) {
+        if let Some(animation) = self.animations.get_mut(id) {
+            animation.sync_target(target);
+        }
+    }
+
+    pub(crate) fn tick(&mut self, delta: Duration, _theme: &Theme) -> Vec<NodeId> {
         let active = std::mem::take(&mut self.animations);
         let mut remaining = SparseSecondaryMap::new();
         let mut changed = Vec::with_capacity(active.len());
@@ -161,7 +175,7 @@ impl StyleSystem {
             let Some(target) = self.nodes.get(id).map(|node| &node.computed) else {
                 continue;
             };
-            let completed = animation.tick(delta, target, theme);
+            let completed = animation.tick(delta, target);
             changed.push(id);
             if !completed {
                 remaining.insert(id, animation);
@@ -200,7 +214,7 @@ impl StyleSystem {
 mod tests {
     use super::*;
     use slotmap::SlotMap;
-    use xui_interface::{Color, StylePatch};
+    use xui_interface::{Color, ComputedColorStyle, StylePatch};
 
     #[test]
     fn animation_override_is_sparse_and_falls_back_to_computed_style() {
@@ -234,5 +248,61 @@ mod tests {
         styles.remove(id);
         assert!(!styles.contains(id));
         assert!(styles.effective(id).is_none());
+    }
+
+    #[test]
+    fn text_and_clip_only_changes_do_not_start_paint_transition() {
+        let theme = Theme::default();
+        let initial = ComputedStyle::initial(&theme);
+        let mut text_target = initial.clone();
+        text_target.text.color = Color::WHITE;
+        let mut clip_target = initial.clone();
+        clip_target.paint.clip = true;
+        let mut ids = SlotMap::<NodeId, ()>::with_key();
+        let id = ids.insert(());
+        let mut styles = StyleSystem::new(initial.clone());
+        styles.create(id, initial.clone(), true);
+        let transition = Transition::new(Duration::from_millis(100));
+
+        assert!(!styles.start_transition(id, transition, &initial, &text_target));
+        assert!(!styles.start_transition(id, transition, &initial, &clip_target));
+        assert!(!styles.is_animating());
+    }
+
+    #[test]
+    fn syncing_target_keeps_animated_paint_and_applies_discrete_values() {
+        let theme = Theme::default();
+        let initial = ComputedStyle::initial(&theme);
+        let target = ComputedStyle::compute(
+            &initial,
+            &StylePatch::new().background(Color::WHITE),
+            &theme,
+        );
+        let mut ids = SlotMap::<NodeId, ()>::with_key();
+        let id = ids.insert(());
+        let mut styles = StyleSystem::new(initial.clone());
+        styles.create(id, initial.clone(), true);
+        assert!(styles.start_transition(
+            id,
+            Transition::new(Duration::from_millis(100)),
+            &initial,
+            &target,
+        ));
+        styles.set_computed(id, target.clone());
+        styles.tick(Duration::from_millis(50), &theme);
+
+        let mut updated_target = target;
+        updated_target.paint.clip = true;
+        updated_target.text.color = Color::WHITE;
+        styles.sync_transition_target(id, &updated_target);
+        styles.set_computed(id, updated_target);
+
+        let effective = styles.effective(id).unwrap();
+        assert!(effective.paint.clip);
+        assert_eq!(effective.text.color, Color::WHITE);
+        let ComputedColorStyle::Solid(background) = effective.paint.background else {
+            panic!("expected solid background")
+        };
+        assert!((background.r - 0.5).abs() < 0.0001);
     }
 }

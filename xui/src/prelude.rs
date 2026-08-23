@@ -1,6 +1,4 @@
-pub use crate::animation::{
-    AnimablePaintStyle, AnimableShadowStyle, AnimableStrokeStyle, AnimableStyle, AnimableTextStyle,
-};
+pub use crate::animation::{AnimablePaintStyle, AnimableStyle};
 pub use crate::app::App;
 pub use crate::component::ComponentRuntime;
 pub use crate::core::{Color, EdgeInsets, Point, Rect, Size};

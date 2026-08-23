@@ -1,9 +1,8 @@
 use crate::element::ElementDesc;
+use crate::event_system::EventContext;
 use crate::event_system::callbacks::EventHandlers;
 use crate::event_system::interaction::InteractionProperties;
-use crate::event_system::EventContext;
 use crate::render::RenderTreeWriter;
-use xui_animation::Transition;
 use xui_interface::{
     Alignment, Bounds, ComputedStyle, EventRef, EventResult, Key, Rect, Style, TextContent,
     TextProps, WidgetType, WidgetUpdateFlags,
@@ -18,7 +17,6 @@ pub struct ZStackWidget {
     pub key: Option<Key>,
     pub style: Style,
     pub alignment: Alignment,
-    pub transition: Option<Transition>,
     pub event_handlers: EventHandlers,
     pub interaction: InteractionProperties,
 }
@@ -28,7 +26,6 @@ impl std::fmt::Debug for ZStackWidget {
         f.debug_struct("ZStackWidget")
             .field("key", &self.key)
             .field("alignment", &self.alignment)
-            .field("transition", &self.transition)
             .finish()
     }
 }
@@ -39,7 +36,6 @@ impl ZStackWidget {
             key: None,
             style: Style::default(),
             alignment: Alignment::CENTER,
-            transition: None,
             event_handlers: EventHandlers::default(),
             interaction: InteractionProperties::default(),
         }
@@ -52,11 +48,6 @@ impl ZStackWidget {
 
     pub fn alignment(mut self, alignment: Alignment) -> Self {
         self.alignment = alignment;
-        self
-    }
-
-    pub fn transition(mut self, transition: Transition) -> Self {
-        self.transition = Some(transition);
         self
     }
 
@@ -80,7 +71,7 @@ impl ZStackWidget {
     }
 
     pub(super) fn props_hash(&self) -> u64 {
-        props_hash(&(&self.style, self.alignment, self.transition))
+        props_hash(&(&self.style, self.alignment))
     }
 
     pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
@@ -92,10 +83,6 @@ impl ZStackWidget {
         if self.alignment != next.alignment {
             self.alignment = next.alignment;
             flags |= WidgetUpdateFlags::LAYOUT_INPUT;
-        }
-        if self.transition != next.transition {
-            self.transition = next.transition;
-            flags |= WidgetUpdateFlags::STYLE_TARGET;
         }
         flags
     }

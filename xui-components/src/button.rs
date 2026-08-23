@@ -218,9 +218,8 @@ pub fn button(
     }
 
     let mut root = ContainerWidget::new()
-        .style(root_style)
+        .style(root_style.transition(Transition::new(Duration::from_millis(120))))
         .flex_direction(FlexDirectionStyle::Row)
-        .transition(Transition::new(Duration::from_millis(120)))
         .focusable(interactive)
         .tab_index(if interactive { 0 } else { -1 })
         .accessibility_role(AccessibilityRole::Button)

@@ -1,7 +1,7 @@
 use crate::{
     Affine, Bounds, Color, EdgeInsets, FontFamily, FontStyle, FontWeight, ImageData, ImageKey,
-    LineHeight, Point, Rect, Size, StyleDiffFlags, TextDecoration, WidgetState, core::Sizing,
-    text::TextStyle,
+    LineHeight, Point, Rect, Size, StyleDiffFlags, TextDecoration, Transition, WidgetState,
+    core::Sizing, text::TextStyle,
 };
 use std::{
     cell::RefCell,
@@ -800,6 +800,7 @@ pub struct ScrollStylePatch {
 pub struct Style {
     pub base: StylePatch,
     pub rules: Vec<StateStyleRule>,
+    transition: Option<Transition>,
     state_deps: WidgetState,
     patch_cache: RefCell<Vec<(WidgetState, StylePatch)>>,
 }
@@ -809,6 +810,7 @@ impl fmt::Debug for Style {
         f.debug_struct("Style")
             .field("base", &self.base)
             .field("rules", &self.rules)
+            .field("transition", &self.transition)
             .field("state_deps", &self.state_deps)
             .finish()
     }
@@ -819,6 +821,7 @@ impl Clone for Style {
         Self {
             base: self.base.clone(),
             rules: self.rules.clone(),
+            transition: self.transition,
             state_deps: self.state_deps,
             patch_cache: RefCell::default(),
         }
@@ -827,7 +830,10 @@ impl Clone for Style {
 
 impl PartialEq for Style {
     fn eq(&self, other: &Self) -> bool {
-        self.base == other.base && self.rules == other.rules && self.state_deps == other.state_deps
+        self.base == other.base
+            && self.rules == other.rules
+            && self.transition == other.transition
+            && self.state_deps == other.state_deps
     }
 }
 
@@ -840,6 +846,7 @@ impl Style {
         Self {
             base,
             rules: Vec::new(),
+            transition: None,
             state_deps: WidgetState::empty(),
             patch_cache: RefCell::default(),
         }
@@ -847,6 +854,20 @@ impl Style {
 
     pub fn merge<S: StyleMerge + ?Sized>(&mut self, other: &S) {
         other.merge_into(self);
+    }
+
+    pub fn transition(mut self, transition: Transition) -> Self {
+        self.transition = Some(transition);
+        self
+    }
+
+    pub fn clear_transition(mut self) -> Self {
+        self.transition = None;
+        self
+    }
+
+    pub fn transition_config(&self) -> Option<Transition> {
+        self.transition
     }
 
     fn map_base(mut self, f: impl FnOnce(StylePatch) -> StylePatch) -> Self {
@@ -1180,6 +1201,9 @@ impl StyleMerge for Style {
     fn merge_into(&self, target: &mut Style) {
         target.base.merge(&self.base);
         target.rules.extend(self.rules.iter().cloned());
+        if self.transition.is_some() {
+            target.transition = self.transition;
+        }
         target.state_deps |= self.state_deps;
         target.patch_cache.borrow_mut().clear();
     }
@@ -2754,6 +2778,7 @@ impl Hash for Style {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.base.hash(state);
         self.rules.hash(state);
+        self.transition.hash(state);
     }
 }
 
@@ -2882,6 +2907,8 @@ fn hash_style_value_scrollbar<H: Hasher>(value: &ScrollbarStylePatch, state: &mu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::hash_map::DefaultHasher;
+    use std::time::Duration;
 
     #[test]
     fn backdrop_defaults_to_an_empty_unmasked_style() {
@@ -3403,5 +3430,34 @@ mod tests {
             patch.paint.border_radius,
             StyleValue::Value(LengthValue::Px(4.0))
         );
+    }
+
+    #[test]
+    fn style_owns_transition_configuration() {
+        let transition = Transition::new(Duration::from_millis(180)).ease(crate::Easing::CubicOut);
+        let style = Style::new().background(Color::BLACK).transition(transition);
+
+        assert_eq!(style.transition_config(), Some(transition));
+        assert_eq!(style.clone(), style);
+        assert_eq!(style.clone().clear_transition().transition_config(), None);
+
+        let mut left = DefaultHasher::new();
+        style.hash(&mut left);
+        let mut right = DefaultHasher::new();
+        style.clone().hash(&mut right);
+        assert_eq!(left.finish(), right.finish());
+    }
+
+    #[test]
+    fn style_merge_overrides_only_with_configured_transition() {
+        let first = Transition::new(Duration::from_millis(100));
+        let second = Transition::new(Duration::from_millis(240));
+        let mut style = Style::new().transition(first);
+
+        style.merge(&Style::new().background(Color::BLACK));
+        assert_eq!(style.transition_config(), Some(first));
+
+        style.merge(&Style::new().transition(second));
+        assert_eq!(style.transition_config(), Some(second));
     }
 }

@@ -7,9 +7,9 @@ use xui_interface::{
 };
 
 use crate::element::ElementDesc;
+use crate::event_system::EventContext;
 use crate::event_system::callbacks::EventHandlers;
 use crate::event_system::interaction::InteractionProperties;
-use crate::event_system::EventContext;
 use crate::widgets::text_input::controller::ImeSession;
 
 use super::text::apply_text_style;

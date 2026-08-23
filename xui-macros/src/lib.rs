@@ -1332,7 +1332,6 @@ fn generate_component_props(
 
     Ok(GeneratedComponentProps {
         tokens: quote! {
-            #[derive(Hash)]
             #vis struct #props_name {
                 #(#fields),*
             }
@@ -1765,7 +1764,7 @@ fn expand_container(node: &ElementNode) -> Result<TokenStream2> {
         |name, value| {
             match name {
                 "transition" => Some(quote! {
-                    __xui_element = __xui_element.transition(#value);
+                    __xui_style = __xui_style.transition(#value);
                 }),
                 _ => None,
             }
@@ -2148,6 +2147,18 @@ mod tests {
         assert!(expanded.contains("IntoChildren :: append_children (children"));
         assert_eq!(expanded.matches("__xui_children . push").count(), 2);
         assert!(expanded.contains("into_element_desc (__xui_children)"));
+    }
+
+    #[test]
+    fn container_transition_attribute_is_stored_on_style() {
+        let node = syn::parse2::<ElementNode>(quote!(
+            <container transition={transition} />
+        ))
+        .unwrap();
+        let expanded = expand_container(&node).unwrap().to_string();
+
+        assert!(expanded.contains("__xui_style = __xui_style . transition (transition)"));
+        assert!(!expanded.contains("__xui_element . transition"));
     }
 
     #[test]

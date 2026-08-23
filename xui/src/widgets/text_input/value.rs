@@ -4,7 +4,7 @@ use std::{
 };
 
 use ropey::{Rope, RopeSlice};
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 
 #[derive(Debug, Clone)]
 pub struct TextEditingValue {

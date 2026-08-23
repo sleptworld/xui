@@ -122,7 +122,6 @@ pub struct HostState {
 pub struct ComponentState {
     pub render: ComponentRender,
     pub key: Option<Key>,
-    pub props_hash: u64,
     pub props: Option<ErasedProps>,
 }
 
@@ -145,7 +144,6 @@ pub struct HostUpdate {
 
 pub struct ComponentProps {
     pub render: ComponentRender,
-    pub props_hash: u64,
     pub props: Option<ErasedProps>,
 }
 
@@ -194,7 +192,6 @@ impl Node {
             component: Some(ComponentState {
                 render: element.render,
                 key: element.key,
-                props_hash: element.props_hash,
                 props: element.props,
             }),
             portal: None,

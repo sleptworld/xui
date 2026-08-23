@@ -16,7 +16,7 @@ use std::fmt;
 use std::ops::RangeBounds;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Handle as TokioHandle;
-use xui_interface::{NodeId, WidgetType};
+use xui_interface::NodeId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct WipId(usize);
@@ -27,17 +27,25 @@ pub struct WorkNode {
     tag: FiberTag,
     position: usize,
     // Signature of current fiber
-    current: Option<FiberId>,
     effect: EffectTag,
     children_resolved: bool,
-    children: SmallVec<[WipId; 20]>,
+    children: SmallVec<[WipId; 8]>,
     lanes: Lanes,
     child_lanes: Lanes,
-    // Host Widget
-    host_work: Option<HostWork>,
-    component_work: Option<ComponentWork>,
-    portal_work: Option<PortalWork>,
-    host_node: Option<NodeId>,
+    work: Option<Work>,
+    binding: WorkBinding,
+}
+
+enum Work {
+    HostWork(HostWork),
+    ComponentWork(ComponentWork),
+    PortalWork(PortalWork),
+}
+
+#[derive(Default)]
+struct WorkBinding {
+    current: Option<FiberId>,
+    current_host: Option<NodeId>,
 }
 
 struct HostWork {
@@ -50,7 +58,6 @@ struct HostWork {
 struct ComponentWork {
     render: ComponentRender,
     key: Option<Key>,
-    props_hash: u64,
     props: Option<ErasedProps>,
 }
 
@@ -67,13 +74,60 @@ impl Into<ComponentState> for ComponentWork {
         ComponentState {
             key: self.key,
             render: self.render,
-            props_hash: self.props_hash,
             props: self.props,
         }
     }
 }
 
 impl WorkNode {
+    fn host_work(&self) -> Option<&HostWork> {
+        match self.work.as_ref() {
+            Some(Work::HostWork(work)) => Some(work),
+            _ => None,
+        }
+    }
+
+    fn host_work_mut(&mut self) -> Option<&mut HostWork> {
+        match self.work.as_mut() {
+            Some(Work::HostWork(work)) => Some(work),
+            _ => None,
+        }
+    }
+
+    fn portal_work(&self) -> Option<&PortalWork> {
+        match self.work.as_ref() {
+            Some(Work::PortalWork(work)) => Some(work),
+            _ => None,
+        }
+    }
+
+    fn portal_work_mut(&mut self) -> Option<&mut PortalWork> {
+        match self.work.as_mut() {
+            Some(Work::PortalWork(work)) => Some(work),
+            _ => None,
+        }
+    }
+
+    fn take_component_work(&mut self) -> Option<ComponentWork> {
+        if !matches!(self.work, Some(Work::ComponentWork(_))) {
+            return None;
+        }
+        match self.work.take() {
+            Some(Work::ComponentWork(work)) => Some(work),
+            _ => unreachable!(),
+        }
+    }
+
+    fn take_portal_work(&mut self) -> Option<PortalWork> {
+        if !matches!(self.work, Some(Work::PortalWork(_))) {
+            return None;
+        }
+        match self.work.take() {
+            Some(Work::PortalWork(work)) => Some(work),
+            _ => unreachable!(),
+        }
+    }
+
     fn from_current(
         current: &Node,
         parent: Option<WipId>,
@@ -88,15 +142,15 @@ impl WorkNode {
             position,
             tag: current.tag,
             children: SmallVec::new(),
-            current: Some(current.id),
             children_resolved: false,
             effect: EffectTag::empty(),
             lanes,
             child_lanes,
-            host_node: current.host.as_ref().and_then(|host| host.node_id),
-            host_work: None,
-            component_work: None,
-            portal_work: None,
+            work: None,
+            binding: WorkBinding {
+                current: Some(current.id),
+                current_host: current.host.as_ref().and_then(|h| h.node_id),
+            },
         }
     }
 
@@ -111,63 +165,38 @@ impl WorkNode {
         lanes: Lanes,
         child_lanes: Lanes,
     ) -> Self {
-        let host_node = current
-            .and_then(|current| nodes.node(current))
-            .and_then(|node| node.host.as_ref())
-            .and_then(|host| host.node_id);
-
-        let (host_work, component_work, portal_work) = match prepared.pending {
+        let work = match prepared.pending {
             PreparedPending::Host {
                 widget,
                 interaction,
                 props_hash,
                 children,
-            } => (
-                Some(HostWork {
-                    widget: Some(widget),
-                    interaction,
-                    props_hash,
-                    pending_children: children,
-                }),
-                None,
-                None,
-            ),
-            PreparedPending::Component {
-                key,
-                render,
+            } => Work::HostWork(HostWork {
+                widget: Some(widget),
+                interaction,
                 props_hash,
-                props,
-            } => (
-                None,
-                Some(ComponentWork {
-                    render,
-                    key,
-                    props_hash,
-                    props,
-                }),
-                None,
-            ),
+                pending_children: children,
+            }),
+            PreparedPending::Component { key, render, props } => {
+                Work::ComponentWork(ComponentWork { render, key, props })
+            }
             PreparedPending::Portal {
                 scope,
                 options,
                 children,
-            } => (
-                None,
-                None,
-                Some(PortalWork {
-                    scope,
-                    options,
-                    pending_children: children,
-                    entry: current
-                        .and_then(|id| nodes.node(id))
-                        .and_then(|node| node.portal.as_ref())
-                        .and_then(|portal| portal.entry),
-                    visual_root: current
-                        .and_then(|id| nodes.node(id))
-                        .and_then(|node| node.portal.as_ref())
-                        .and_then(|portal| portal.visual_root),
-                }),
-            ),
+            } => Work::PortalWork(PortalWork {
+                scope,
+                options,
+                pending_children: children,
+                entry: current
+                    .and_then(|id| nodes.node(id))
+                    .and_then(|node| node.portal.as_ref())
+                    .and_then(|portal| portal.entry),
+                visual_root: current
+                    .and_then(|id| nodes.node(id))
+                    .and_then(|node| node.portal.as_ref())
+                    .and_then(|portal| portal.visual_root),
+            }),
         };
 
         Self {
@@ -176,50 +205,45 @@ impl WorkNode {
             key: prepared.key,
             position,
             tag: prepared.tag,
-            current,
             effect,
             children: SmallVec::new(),
             children_resolved: false,
             lanes,
             child_lanes,
-            host_work,
-            host_node,
-            component_work,
-            portal_work,
+            work: Some(work),
+            binding: WorkBinding {
+                current,
+                current_host: current
+                    .and_then(|c| nodes.node(c))
+                    .and_then(|n| n.host.as_ref())
+                    .and_then(|n| n.node_id),
+            },
         }
     }
 
     fn needs_begin_work(&self, render_lanes: Lanes) -> bool {
         self.is_uncommited()
-            || self.host_work.is_some()
-            || self.component_work.is_some()
-            || self.portal_work.is_some()
+            || self.work.is_some()
             || includes_some_lane(self.lanes | self.child_lanes, render_lanes)
     }
 
     fn should_render_component(&self, render_lanes: Lanes) -> bool {
         self.is_uncommited()
-            || self.component_work.is_some()
+            || matches!(self.work, Some(Work::ComponentWork(_)))
             || includes_some_lane(self.lanes, render_lanes)
     }
 
     fn take_work_nodes(&mut self) -> Option<Vec<ElementDesc>> {
-        match self.tag {
-            FiberTag::Host(_) => self
-                .host_work
-                .as_mut()
-                .map(|work| std::mem::take(&mut work.pending_children)),
-            FiberTag::Portal => self
-                .portal_work
-                .as_mut()
-                .map(|work| std::mem::take(&mut work.pending_children)),
+        match &mut self.work {
+            Some(Work::HostWork(h)) => Some(std::mem::take(&mut h.pending_children)),
+            Some(Work::PortalWork(p)) => Some(std::mem::take(&mut p.pending_children)),
             _ => None,
         }
     }
 
     #[inline(always)]
     fn is_uncommited(&self) -> bool {
-        self.current.is_none()
+        self.binding.current.is_none()
     }
 
     #[inline(always)]
@@ -239,21 +263,26 @@ impl WorkNode {
 
     #[inline(always)]
     fn is_from_current(&self) -> bool {
-        self.current.is_some()
+        self.binding.current.is_some()
     }
 
     fn component_render_props<'a, 'b: 'a>(
         &'a self,
         fiber_tree: &'b FiberArena,
     ) -> Option<(ComponentRender, Option<ErasedPropsRef<'a>>)> {
-        if let Some(component) = self.component_work.as_ref() {
-            Some((component.render, component.props.as_ref().map(|p| &**p)))
-        } else {
-            let fiber_node_component = self
+        match &self.work {
+            Some(Work::ComponentWork(c)) => Some((c.render, c.props.as_ref().map(|p| &**p))),
+            _ => self
+                .binding
                 .current
-                .and_then(|c| fiber_tree.node(c))
-                .and_then(|n| n.component.as_ref());
-            fiber_node_component.map(|c| (c.render, c.props.as_ref().map(|p| &**p)))
+                .and_then(|id| fiber_tree.node(id))
+                .and_then(|node| node.component.as_ref())
+                .map(|component| {
+                    (
+                        component.render,
+                        component.props.as_ref().map(|props| &**props),
+                    )
+                }),
         }
     }
 }
@@ -274,7 +303,6 @@ enum PreparedPending {
     Component {
         key: Option<Key>,
         render: ComponentRender,
-        props_hash: u64,
         props: Option<ErasedProps>,
     },
     Portal {
@@ -618,7 +646,7 @@ impl ComponentRuntime {
         I: IntoIterator<Item = ElementDesc>,
     {
         let work_node = self.wip_nodes.get(parent).unwrap();
-        let work_node_current = work_node.current;
+        let work_node_current = work_node.binding.current;
 
         let old_children = work_node_current
             .and_then(|id| self.nodes.node(id))
@@ -775,7 +803,6 @@ impl ComponentRuntime {
             pending: PreparedPending::Component {
                 key,
                 render: component.render,
-                props_hash: component.props_hash,
                 props: component.props,
             },
         }
@@ -884,32 +911,33 @@ impl ComponentRuntime {
     fn host_node_for_wip(&self, wip_id: WipId) -> Option<NodeId> {
         let wip = self.wip_nodes.get(wip_id)?;
 
-        if let Some(node_id) = wip.host_node {
+        if let Some(node_id) = wip.binding.current_host {
             return Some(node_id);
         }
 
-        wip.current
-            .and_then(|id| self.nodes.node(id))
-            .and_then(|node| node.host.as_ref())
-            .and_then(|host| host.node_id)
+        wip.binding.current_host
     }
 
     fn ensure_host_created(&mut self, wip_id: WipId, arena: &mut UiRuntime) -> Option<NodeId> {
-        if let Some(node_id) = self.wip_nodes.get(wip_id).and_then(|node| node.host_node) {
-            return Some(node_id);
+        if let Some(id) = self
+            .wip_nodes
+            .get(wip_id)
+            .and_then(|n| n.binding.current_host.as_ref())
+        {
+            return Some(*id);
         }
 
         let (key, props_hash, widget, interaction) = {
             let wip = self.wip_nodes.get_mut(wip_id)?;
             let key = wip.key;
-            let host_work = wip.host_work.as_mut()?;
+            let host_work = wip.host_work_mut()?;
             let widget = host_work.widget.take()?;
             let interaction = host_work.interaction.take();
             (key, host_work.props_hash, widget, interaction)
         };
 
         let node_id = arena.create_node(key, props_hash, widget, interaction);
-        self.wip_nodes.get_mut(wip_id)?.host_node = Some(node_id);
+        self.wip_nodes.get_mut(wip_id)?.binding.current_host = Some(node_id);
         Some(node_id)
     }
 
@@ -950,7 +978,7 @@ impl ComponentRuntime {
             let (scope, options, existing_entry) = self
                 .wip_nodes
                 .get_mut(wip_id)
-                .and_then(|node| node.portal_work.as_mut())
+                .and_then(WorkNode::portal_work_mut)
                 .map(|portal| (portal.scope, portal.options, portal.entry))
                 .expect("Portal placement is missing its model");
             let entry = if let Some(entry) = existing_entry {
@@ -970,7 +998,7 @@ impl ComponentRuntime {
             let portal = self
                 .wip_nodes
                 .get_mut(wip_id)
-                .and_then(|node| node.portal_work.as_mut())
+                .and_then(WorkNode::portal_work_mut)
                 .expect("Portal placement model disappeared");
             portal.entry = entry;
             portal.visual_root = visual_root;
@@ -1002,10 +1030,7 @@ impl ComponentRuntime {
             .get_mut(wip_id)
             .expect("update host fiber missing work node");
         let key = wip.key;
-        let host_work = wip
-            .host_work
-            .as_mut()
-            .expect("host update missing host work");
+        let host_work = wip.host_work_mut().expect("host update missing host work");
         let widget = host_work.widget.take().expect("host update missing widget");
         let interaction = host_work.interaction.take();
 
@@ -1016,7 +1041,7 @@ impl ComponentRuntime {
             widget,
             interaction,
         );
-        wip.host_node = Some(node_id);
+        wip.binding.current_host = Some(node_id);
     }
 
     fn commit_update_if_portal(&mut self, wip_id: WipId, arena: &mut UiRuntime) {
@@ -1024,7 +1049,7 @@ impl ComponentRuntime {
             .wip_nodes
             .get_mut(wip_id)
             .filter(|node| matches!(node.tag, FiberTag::Portal))
-            .and_then(|node| node.portal_work.as_mut())
+            .and_then(WorkNode::portal_work_mut)
         else {
             return;
         };
@@ -1041,7 +1066,7 @@ impl ComponentRuntime {
             .wip_nodes
             .get(wip_id)
             // .filter(|node| matches!(node.tag, FiberTag::Portal))
-            .and_then(|node| node.portal_work.as_ref())
+            .and_then(WorkNode::portal_work)
             .map(|portal| {
                 (
                     portal.scope,
@@ -1070,7 +1095,7 @@ impl ComponentRuntime {
         let portal = self
             .wip_nodes
             .get_mut(wip_id)
-            .and_then(|node| node.portal_work.as_mut())
+            .and_then(WorkNode::portal_work_mut)
             .expect("Portal model disappeared while synchronizing its visual root");
         portal.entry = next_entry;
         portal.visual_root = next_visual_root;
@@ -1150,7 +1175,7 @@ impl ComponentRuntime {
                 .map(|child| self.freeze_work_tree(child, Some(fiber_id), work, arena))
                 .collect::<Vec<_>>()
         } else {
-            self.collect_current_child_ids(wip.current)
+            self.collect_current_child_ids(wip.binding.current)
         };
 
         let host = self.freeze_host_state(&mut wip, arena);
@@ -1190,19 +1215,20 @@ impl ComponentRuntime {
         }
 
         let current_host = wip
+            .binding
             .current
             .and_then(|id| self.nodes.node_mut(id))
             .and_then(|node| node.host.take());
         let node_id = wip
-            .host_node
+            .binding
+            .current_host
             .or_else(|| current_host.as_ref().and_then(|host| host.node_id))
             .expect("host fiber missing committed host node");
         let arena_node = arena
             .node(node_id)
             .expect("committed host node missing from arena");
         let props_hash = wip
-            .host_work
-            .as_ref()
+            .host_work()
             .map(|host| host.props_hash)
             .or_else(|| current_host.as_ref().map(|host| host.props_hash))
             .unwrap_or(arena_node.new_props_hash);
@@ -1227,11 +1253,12 @@ impl ComponentRuntime {
             return None;
         }
 
-        if let Some(component) = wip.component_work.take() {
+        if let Some(component) = wip.take_component_work() {
             return Some(component.into());
         }
 
-        wip.current
+        wip.binding
+            .current
             .and_then(|id| self.nodes.node_mut(id))
             .and_then(|node| node.component.take())
     }
@@ -1240,7 +1267,7 @@ impl ComponentRuntime {
         if !matches!(wip.tag, FiberTag::Portal) {
             return None;
         }
-        if let Some(portal) = wip.portal_work.take() {
+        if let Some(portal) = wip.take_portal_work() {
             return Some(PortalState {
                 scope: portal.scope,
                 options: portal.options,
@@ -1248,7 +1275,8 @@ impl ComponentRuntime {
                 visual_root: portal.visual_root,
             });
         }
-        wip.current
+        wip.binding
+            .current
             .and_then(|id| self.nodes.node_mut(id))
             .and_then(|node| node.portal.take())
     }
@@ -1262,7 +1290,7 @@ impl ComponentRuntime {
         let Some(current_children) = self
             .wip_nodes
             .get(parent)
-            .and_then(|node| node.current)
+            .and_then(|node| node.binding.current)
             .and_then(|id| self.nodes.node(id))
             .map(|node| {
                 node.children(&self.nodes)
@@ -1362,7 +1390,7 @@ impl ComponentRuntime {
         };
 
         for node in self.wip_nodes.drain(..).flatten() {
-            if node.current.is_none() {
+            if node.binding.current.is_none() {
                 self.hooks.remove(&node.fiber_id);
                 self.nodes.remove_id(node.fiber_id);
                 self.scheduler.mark_unmounted(node.fiber_id);
@@ -1557,20 +1585,7 @@ fn prepared_needs_update(current: &Node, prepared: &PreparedElement) -> bool {
         (Some(host_state), _, PreparedPending::Host { props_hash, .. }) => {
             host_state.props_hash != *props_hash
         }
-        (
-            _,
-            Some(component),
-            PreparedPending::Component {
-                key,
-                render,
-                props_hash,
-                ..
-            },
-        ) => {
-            component.render != *render
-                || component.key != *key
-                || component.props_hash != *props_hash
-        }
+        (_, Some(_), PreparedPending::Component { .. }) => false,
         (_, _, PreparedPending::Portal { scope, options, .. }) => current
             .portal
             .as_ref()
@@ -1597,10 +1612,30 @@ fn child_tree_lanes(
 mod portal_tests {
     use super::*;
     use crate::element::portal;
-    use crate::widgets::container;
-    use std::sync::atomic::{AtomicU8, Ordering};
+    use crate::fiber::ComponentType;
+    use crate::widgets::{component, container};
+    use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
     static PORTAL_MODE: AtomicU8 = AtomicU8::new(0);
+    static CHILD_RENDER_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    struct NotHashProps;
+
+    fn counted_child(_cx: &mut HookContext<'_>, props: Option<ErasedPropsRef<'_>>) -> ElementDesc {
+        props
+            .and_then(|props| props.downcast_ref::<NotHashProps>())
+            .expect("counted child props changed type");
+        CHILD_RENDER_COUNT.fetch_add(1, Ordering::SeqCst);
+        container().into_element_desc(Vec::new())
+    }
+
+    fn counted_child_render() -> ComponentRender {
+        ComponentRender::new(ComponentType::new("counted_child"), counted_child)
+    }
+
+    fn component_parent(_cx: &mut HookContext<'_>) -> ElementDesc {
+        component(counted_child_render()).props(NotHashProps).into()
+    }
 
     fn portal_root(_cx: &mut HookContext<'_>) -> ElementDesc {
         let mode = PORTAL_MODE.load(Ordering::SeqCst);
@@ -1655,6 +1690,20 @@ mod portal_tests {
         runtime.mark_root_dirty();
         runtime.flush_sync(&mut arena);
         assert!(arena.children(arena.root_overlayer()).next().is_none());
+    }
+
+    #[test]
+    fn ordinary_component_renders_again_when_its_parent_renders() {
+        CHILD_RENDER_COUNT.store(0, Ordering::SeqCst);
+        let mut arena = UiRuntime::new();
+        let mut runtime =
+            ComponentRuntime::new(arena.root(), Scheduler::default(), component_parent);
+
+        runtime.flush_sync(&mut arena);
+        runtime.mark_root_dirty();
+        runtime.flush_sync(&mut arena);
+
+        assert_eq!(CHILD_RENDER_COUNT.load(Ordering::SeqCst), 2);
     }
 }
 

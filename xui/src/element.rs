@@ -1,6 +1,3 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-
 use crate::{
     ComponentRender,
     fiber::{ErasedProps, Key},
@@ -28,7 +25,6 @@ pub struct ComponentDesc {
     pub key: Option<Key>,
     pub render: ComponentRender,
     pub props: Option<ErasedProps>,
-    pub props_hash: u64,
 }
 
 /// Keeps children in the logical component tree while mounting their host
@@ -98,12 +94,11 @@ impl WidgetDesc {
 }
 
 impl ComponentDesc {
-    pub fn new(render: ComponentRender, props: Option<ErasedProps>, props_hash: u64) -> Self {
+    pub fn new(render: ComponentRender, props: Option<ErasedProps>) -> Self {
         Self {
             key: None,
             render,
             props,
-            props_hash,
         }
     }
 }
@@ -122,33 +117,6 @@ impl ElementDesc {
             Self::Host(widget) => Some(widget.widget.node_type()),
             Self::Component(_) | Self::Portal(_) => None,
         }
-    }
-
-    pub fn props_hash(&self) -> u64 {
-        match self {
-            Self::Host(widget) => widget.widget.props_hash(),
-            Self::Component(component) => {
-                let mut hasher = DefaultHasher::new();
-                component.key.hash(&mut hasher);
-                component.render.hash(&mut hasher);
-                component.props_hash.hash(&mut hasher);
-                hasher.finish()
-            }
-            Self::Portal(portal) => {
-                let mut hasher = DefaultHasher::new();
-                portal.key.hash(&mut hasher);
-                portal.scope.hash(&mut hasher);
-                portal.options.hash(&mut hasher);
-                portal.children.hash(&mut hasher);
-                hasher.finish()
-            }
-        }
-    }
-}
-
-impl Hash for ElementDesc {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.props_hash().hash(state);
     }
 }
 

@@ -103,13 +103,13 @@ impl TransitionStyleHandler {
         }
     }
 
-    fn current(&mut self, delta: Duration, theme: &Theme) -> &ComputedStyle {
+    fn current(&mut self, delta: Duration, _theme: &Theme) -> &ComputedStyle {
         let progress = self.timeline.tick(delta);
         if progress.completed {
             return &self.current_style;
         }
         let interpolated = AnimableStyle::interpolate(&self.from, &self.to, progress.eased);
-        interpolated.apply_to_computed(&mut self.current_style, theme);
+        interpolated.apply_to_computed(&mut self.current_style);
         &self.current_style
     }
 }

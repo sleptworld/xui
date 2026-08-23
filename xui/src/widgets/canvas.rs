@@ -2,7 +2,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use crate::element::ElementDesc;
 use crate::event_system::interaction::InteractionProperties;
-use crate::event_system::{callbacks::EventHandlers, EventContext};
+use crate::event_system::{EventContext, callbacks::EventHandlers};
 use crate::render::{ClipShape, Primitive, RenderTreeWriter, TextPrimitive, VectorPrimitive};
 use crate::text::TextLayoutSlot;
 use xui_interface::{

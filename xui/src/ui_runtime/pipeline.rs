@@ -1,5 +1,6 @@
 //! Cross-subsystem orchestration for [`UiRuntime`].
 
+use crate::animation::AnimableStyle;
 use crate::core::{Point, Size};
 use crate::event_system::callbacks::{CallbackHandleSet, CallbackStore};
 use crate::event_system::interaction::HostInteraction;
@@ -1339,27 +1340,41 @@ impl UiRuntime {
             return;
         }
 
-        if work_flags.is_empty() {
+        let paint_target_changed = {
+            let current_target = self.style_system.computed(id).expect("style node missing");
+            AnimableStyle::diff(current_target, &computed_style)
+                .1
+                .has_properties()
+        };
+        let mut cancelled_transition = false;
+        let started_transition = match (transition, paint_target_changed) {
+            (Some(transition), true) => {
+                let from_style = self
+                    .style_system
+                    .effective(id)
+                    .expect("style node missing")
+                    .clone();
+                self.style_system
+                    .start_transition(id, transition, &from_style, &computed_style)
+            }
+            (Some(_), false) => {
+                self.style_system
+                    .sync_transition_target(id, &computed_style);
+                false
+            }
+            (None, _) => {
+                cancelled_transition = self.style_system.remove_transition(id);
+                false
+            }
+        };
+
+        if work_flags.is_empty() && !cancelled_transition {
             return;
         }
 
-        let from_style = self
-            .style_system
-            .effective(id)
-            .expect("style node missing")
-            .clone();
-        let started_transition = transition
-            .map(|transition| {
-                self.style_system
-                    .start_transition(id, transition, &from_style, &computed_style)
-            })
-            .unwrap_or_else(|| {
-                self.style_system.remove_transition(id);
-                false
-            });
         self.style_system.set_computed(id, computed_style);
 
-        if started_transition {
+        if started_transition || cancelled_transition {
             work_flags |= HostWorkFlags::REBUILD_PAINT;
         }
 
@@ -2663,6 +2678,53 @@ mod tests {
         assert_eq!(arena.layout_passes, layout_passes);
         assert_eq!(arena.repaint_passes - repaint_passes, 1);
         assert_eq!(arena.node(right_leaf).unwrap().layout.width(), 20.0);
+    }
+
+    #[test]
+    fn state_style_changes_use_transition_owned_by_style() {
+        let mut arena = UiRuntime::new();
+        let transition = Transition::new(Duration::from_millis(100)).ease(Easing::Linear);
+        let style = Style::new()
+            .width(20.0)
+            .height(20.0)
+            .background(Color::BLACK)
+            .when(WidgetState::HOVERED, |patch| patch.background(Color::WHITE))
+            .transition(transition);
+        let node = create_host(&mut arena, WidgetI::new(container().style(style)));
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+
+        arena.set_widget_state_flag(node, WidgetState::HOVERED, true);
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        assert!(arena.has_running_style_animations());
+
+        arena.tick_style_animations(Duration::from_millis(50));
+        let effective = arena.style_system.effective(node).unwrap();
+        let ComputedColorStyle::Solid(background) = effective.paint.background else {
+            panic!("expected solid background")
+        };
+        assert!((background.r - 0.5).abs() < 0.0001);
+
+        let style_without_transition = Style::new()
+            .width(20.0)
+            .height(20.0)
+            .background(Color::BLACK)
+            .when(WidgetState::HOVERED, |patch| {
+                patch.background(Color::WHITE)
+            });
+        update_host(
+            &mut arena,
+            node,
+            WidgetI::new(container().style(style_without_transition)),
+        );
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+
+        assert!(!arena.has_running_style_animations());
+        let effective = arena.style_system.effective(node).unwrap();
+        assert_eq!(
+            effective.paint.background,
+            ComputedColorStyle::Solid(Color::WHITE)
+        );
     }
 }
 

@@ -1,14 +1,13 @@
 use crate::element::ElementDesc;
+use crate::event_system::EventContext;
 use crate::event_system::callbacks::EventHandlers;
 use crate::event_system::interaction::InteractionProperties;
-use crate::event_system::EventContext;
 use crate::widgets::utils::render_box;
-use xui_animation::Transition;
-use xui_interface::style::FlexDirectionStyle;
 use xui_interface::Bounds;
+use xui_interface::style::FlexDirectionStyle;
 use xui_interface::{
-    style::ScrollbarStylePatch, ColorStyle, ComputedStyle, EventRef, EventResult, Key, LengthValue,
-    ScrollDirectionStyle, Style, TextContent, TextProps, WidgetType, WidgetUpdateFlags,
+    ColorStyle, ComputedStyle, EventRef, EventResult, Key, LengthValue, ScrollDirectionStyle,
+    Style, TextContent, TextProps, WidgetType, WidgetUpdateFlags, style::ScrollbarStylePatch,
 };
 
 use super::{props_hash, widget_element_desc};
@@ -18,7 +17,6 @@ pub struct ContainerWidget {
     pub key: Option<Key>,
     pub style: Style,
     pub flex_direction: Option<FlexDirectionStyle>,
-    pub transition: Option<Transition>,
     pub event_handlers: EventHandlers,
     pub interaction: InteractionProperties,
 }
@@ -28,7 +26,6 @@ impl std::fmt::Debug for ContainerWidget {
         f.debug_struct("ContainerWidget")
             .field("key", &self.key)
             .field("flex_direction", &self.flex_direction)
-            .field("transition", &self.transition)
             .finish()
     }
 }
@@ -39,7 +36,6 @@ impl ContainerWidget {
             key: None,
             style: Style::default(),
             flex_direction: None,
-            transition: None,
             event_handlers: EventHandlers::default(),
             interaction: InteractionProperties::default(),
         }
@@ -47,11 +43,6 @@ impl ContainerWidget {
 
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
-        self
-    }
-
-    pub fn transition(mut self, transition: Transition) -> Self {
-        self.transition = Some(transition);
         self
     }
 
@@ -124,7 +115,7 @@ impl ContainerWidget {
     }
 
     pub(super) fn props_hash(&self) -> u64 {
-        props_hash(&(&self.style, self.flex_direction, self.transition))
+        props_hash(&(&self.style, self.flex_direction))
     }
 
     pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
@@ -137,11 +128,6 @@ impl ContainerWidget {
             self.flex_direction = next.flex_direction;
             flags |= WidgetUpdateFlags::LAYOUT_INPUT;
         }
-        if self.transition != next.transition {
-            self.transition = next.transition;
-            flags |= WidgetUpdateFlags::STYLE_TARGET;
-        }
-
         if flags.is_empty() {
             WidgetUpdateFlags::empty()
         } else {

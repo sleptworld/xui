@@ -5121,7 +5121,6 @@ dependencies = [
 name = "xui-animation"
 version = "0.1.0"
 dependencies = [
- "easer",
  "ordered-float",
  "palette",
  "xui-interface",
@@ -5189,6 +5188,7 @@ name = "xui-interface"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.0",
+ "easer",
  "fixedstr",
  "num-traits",
  "ordered-float",
