@@ -6,8 +6,7 @@ const NEXT_TAB: CommandId = CommandId("xui.tabs.next");
 const FIRST_TAB: CommandId = CommandId("xui.tabs.first");
 const LAST_TAB: CommandId = CommandId("xui.tabs.last");
 
-pub type TabChangeHandler = Box<dyn FnMut(usize)>;
-pub type TabChangeCallback = Callback<TabChangeHandler>;
+pub type TabChangeCallback = Callback<usize>;
 
 /// One selectable tab and the content displayed while it is active.
 #[derive(Clone, Debug, Hash)]
@@ -133,7 +132,7 @@ fn activate_tab(
         internal_selection.set(index);
     }
     if let Some(on_change) = on_change {
-        on_change.call_mut(|handler| handler(index));
+        on_change.call(index);
     }
 }
 

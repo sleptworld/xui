@@ -770,12 +770,9 @@ fn dashboard_view(
 pub fn flight_icing_dashboard() {
     let selected_tab = cx.use_state(|| 1usize);
     let selected_product = cx.use_state(|| 0usize);
-    let on_tab_change = cx.use_callback(selected_tab, move || {
-        Box::new(move |index| selected_tab.set(index)) as TabChangeHandler
-    });
-    let on_product_change = cx.use_callback(selected_product, move || {
-        Box::new(move |index| selected_product.set(index)) as DropDownChangeHandler
-    });
+    let on_tab_change = cx.use_callback(selected_tab, move |index| selected_tab.set(index));
+    let on_product_change =
+        cx.use_callback(selected_product, move |index| selected_product.set(index));
     let items = vec![
         TabItem::new("flight", "飞行监测", flight_monitor_content()),
         TabItem::new("icing", "积冰监测", icing_monitor_content()),

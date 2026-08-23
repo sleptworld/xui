@@ -4,8 +4,7 @@ use xui::prelude::*;
 
 const ACTIVATE_BUTTON: CommandId = CommandId("xui.button.activate");
 
-pub type ButtonClickHandler = Box<dyn FnMut()>;
-pub type ButtonClickCallback = Callback<ButtonClickHandler>;
+pub type ButtonClickCallback = Callback<()>;
 
 /// The semantic emphasis of a [`button`].
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
@@ -162,7 +161,7 @@ fn resolved_style(
 
 fn invoke(callback: &Option<ButtonClickCallback>) {
     if let Some(callback) = callback {
-        callback.call_mut(|handler| handler());
+        callback.call(());
     }
 }
 

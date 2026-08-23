@@ -262,9 +262,7 @@ fn test_page() {
 fn editor() {
     let label = cx.use_state(|| "Hello,World".to_string());
     let selected_tab = cx.use_state(|| 0usize);
-    let on_tab_change = cx.use_callback(selected_tab, move || {
-        Box::new(move |index| selected_tab.set(index)) as TabChangeHandler
-    });
+    let on_tab_change = cx.use_callback(selected_tab, move |index| selected_tab.set(index));
     let tab_items = demo_tab_items();
     let mut tabs_style = TabsStyle::default();
     tabs_style.root = tabs_style.root.width(440.0);

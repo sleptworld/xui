@@ -355,16 +355,24 @@ impl HookStorage {
     }
 }
 
-struct CallbackState<D, T> {
+type CallbackInner<Args, Output> = Rc<RefCell<Box<dyn FnMut(Args) -> Output>>>;
+
+struct CallbackState<D, Args, Output> {
     deps: D,
-    callback: Rc<RefCell<T>>,
+    callback: CallbackInner<Args, Output>,
 }
 
-pub struct Callback<T> {
-    callback: Rc<RefCell<T>>,
+/// A stable, type-safe component callback.
+///
+/// The generic parameters describe the callback's input and output; the
+/// concrete closure type is erased internally. This keeps component props
+/// cloneable and hashable without exposing `Box<dyn FnMut(...)>` to callers.
+///
+pub struct Callback<Args, Output = ()> {
+    callback: CallbackInner<Args, Output>,
 }
 
-impl<T> Clone for Callback<T> {
+impl<Args, Output> Clone for Callback<Args, Output> {
     fn clone(&self) -> Self {
         Self {
             callback: self.callback.clone(),
@@ -372,10 +380,9 @@ impl<T> Clone for Callback<T> {
     }
 }
 
-impl<T> Callback<T> {
-    pub fn call_mut<R>(&self, call: impl FnOnce(&mut T) -> R) -> R {
-        let mut callback = self.callback.borrow_mut();
-        call(&mut callback)
+impl<Args, Output> Callback<Args, Output> {
+    pub fn call(&self, args: Args) -> Output {
+        (self.callback.borrow_mut())(args)
     }
 
     pub fn ptr_eq(&self, other: &Self) -> bool {
@@ -383,21 +390,21 @@ impl<T> Callback<T> {
     }
 }
 
-impl<T> PartialEq for Callback<T> {
+impl<Args, Output> PartialEq for Callback<Args, Output> {
     fn eq(&self, other: &Self) -> bool {
         self.ptr_eq(other)
     }
 }
 
-impl<T> Eq for Callback<T> {}
+impl<Args, Output> Eq for Callback<Args, Output> {}
 
-impl<T> Hash for Callback<T> {
+impl<Args, Output> Hash for Callback<Args, Output> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         Rc::as_ptr(&self.callback).hash(state);
     }
 }
 
-impl<T> fmt::Debug for Callback<T> {
+impl<Args, Output> fmt::Debug for Callback<Args, Output> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Callback").finish_non_exhaustive()
     }
@@ -525,23 +532,28 @@ impl<'a> HookContext<'a> {
         Memo { inner: value }
     }
 
-    pub fn use_callback<D, T>(&mut self, deps: D, init: impl FnOnce() -> T) -> Callback<T>
+    pub fn use_callback<D, Args, Output>(
+        &mut self,
+        deps: D,
+        callback: impl FnMut(Args) -> Output + 'static,
+    ) -> Callback<Args, Output>
     where
         D: PartialEq + 'static,
-        T: 'static,
+        Args: 'static,
+        Output: 'static,
     {
         let mut next_deps = Some(deps);
-        let mut next_init = Some(init);
+        let mut next_callback = Some(callback);
         let (_, state) = self.storage.next_slot(|_| {
             let deps = next_deps
                 .take()
                 .expect("callback deps should be available for new hook slot");
-            let init = next_init
+            let callback = next_callback
                 .take()
-                .expect("callback init should be available for new hook slot");
+                .expect("callback should be available for new hook slot");
             RefCell::new(CallbackState {
                 deps,
-                callback: Rc::new(RefCell::new(init())),
+                callback: Rc::new(RefCell::new(Box::new(callback))),
             })
         });
         let state = read_slot(state);
@@ -550,10 +562,10 @@ impl<'a> HookContext<'a> {
             let mut state = state.borrow_mut();
             if state.deps != deps {
                 state.deps = deps;
-                let init = next_init
+                let callback = next_callback
                     .take()
-                    .expect("callback init should be available when deps change");
-                *state.callback.borrow_mut() = init();
+                    .expect("callback should be available when dependencies change");
+                *state.callback.borrow_mut() = Box::new(callback);
             }
         }
 
@@ -1051,13 +1063,10 @@ mod tests {
         owner: FiberId,
         scheduler: Scheduler,
         dep: usize,
-        builds: Rc<RefCell<usize>>,
-    ) -> Callback<Box<dyn FnMut() -> usize>> {
+        value: usize,
+    ) -> Callback<(), usize> {
         let mut cx = HookContext::new(storage, owner, scheduler, SYNC_LANE);
-        cx.use_callback(dep, move || {
-            *builds.borrow_mut() += 1;
-            Box::new(move || dep) as Box<dyn FnMut() -> usize>
-        })
+        cx.use_callback(dep, move |()| value)
     }
 
     fn render_state<T: Clone + 'static>(
@@ -1402,15 +1411,12 @@ mod tests {
         let scheduler = Scheduler::default();
         let owner = FiberArena::new().root();
         scheduler.set_root(owner);
-        let builds = Rc::new(RefCell::new(0));
-
-        let first = render_callback(&mut storage, owner, scheduler.clone(), 7, builds.clone());
-        let second = render_callback(&mut storage, owner, scheduler, 7, builds.clone());
+        let first = render_callback(&mut storage, owner, scheduler.clone(), 7, 7);
+        let second = render_callback(&mut storage, owner, scheduler, 7, 99);
 
         assert!(first.ptr_eq(&second));
-        assert_eq!(*builds.borrow(), 1);
-        assert_eq!(first.call_mut(|callback| callback()), 7);
-        assert_eq!(second.call_mut(|callback| callback()), 7);
+        assert_eq!(first.call(()), 7);
+        assert_eq!(second.call(()), 7);
     }
 
     #[test]
@@ -1419,20 +1425,30 @@ mod tests {
         let scheduler = Scheduler::default();
         let owner = FiberArena::new().root();
         scheduler.set_root(owner);
-        let builds = Rc::new(RefCell::new(0));
-
-        let first = render_callback(&mut storage, owner, scheduler.clone(), 7, builds.clone());
-        let second = render_callback(&mut storage, owner, scheduler, 9, builds.clone());
+        let first = render_callback(&mut storage, owner, scheduler.clone(), 7, 7);
+        let second = render_callback(&mut storage, owner, scheduler, 9, 9);
 
         assert!(first.ptr_eq(&second));
-        let hash = |callback: &Callback<Box<dyn FnMut() -> usize>>| {
+        let hash = |callback: &Callback<(), usize>| {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             callback.hash(&mut hasher);
             hasher.finish()
         };
         assert_eq!(hash(&first), hash(&second));
-        assert_eq!(*builds.borrow(), 2);
-        assert_eq!(first.call_mut(|callback| callback()), 9);
-        assert_eq!(second.call_mut(|callback| callback()), 9);
+        assert_eq!(first.call(()), 9);
+        assert_eq!(second.call(()), 9);
+    }
+
+    #[test]
+    fn use_callback_accepts_typed_arguments_without_boxing() {
+        let mut storage = HookStorage::default();
+        let scheduler = Scheduler::default();
+        let owner = FiberArena::new().root();
+        scheduler.set_root(owner);
+        let mut cx = HookContext::new(&mut storage, owner, scheduler, SYNC_LANE);
+
+        let callback: Callback<usize, usize> = cx.use_callback((), |value: usize| value + 1);
+
+        assert_eq!(callback.call(41), 42);
     }
 }

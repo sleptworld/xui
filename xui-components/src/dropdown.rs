@@ -1,7 +1,6 @@
 use xui::prelude::*;
 
-pub type DropDownChangeHandler = Box<dyn FnMut(usize)>;
-pub type DropDownChangeCallback = Callback<DropDownChangeHandler>;
+pub type DropDownChangeCallback = Callback<usize>;
 
 #[derive(Clone, Debug, Hash)]
 pub struct DropDownItem {
@@ -105,7 +104,7 @@ fn select_item(
     }
     open.set(false);
     if let Some(on_change) = on_change {
-        on_change.call_mut(|handler| handler(index));
+        on_change.call(index);
     }
 }
 

@@ -1,7 +1,7 @@
 use xui::prelude::*;
 
 #[component]
-fn callback_component_prop(label: &String, on_select: &Callback<fn(usize)>) {
+fn callback_component_prop(label: &String, on_select: &Callback<usize>) {
     let _ = on_select;
     xui! {
         <container accessibility_role={AccessibilityRole::Tab}>
