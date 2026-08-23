@@ -2,7 +2,7 @@ use std::ops::{Deref, DerefMut};
 
 use slotmap::SecondaryMap;
 use taffy as tf;
-use xui_interface::{core::Bounds, NodeId, Point, Size};
+use xui_interface::{NodeId, Point, Size, core::Bounds};
 
 pub(crate) enum WidgetContext {
     Text(NodeId),
@@ -32,8 +32,11 @@ impl LayoutNode {
     }
 
     #[inline(always)]
-    pub(crate) fn visual_bounds(&self) -> Bounds {
-        Bounds::from_origin_size(self.world_origin - self.scroll_offset, self.layout.size())
+    pub(crate) fn visual_bounds(&self, ancestor_scroll_offset: Point) -> Bounds {
+        Bounds::from_origin_size(
+            self.world_origin - ancestor_scroll_offset,
+            self.layout.size(),
+        )
     }
 }
 

@@ -1289,10 +1289,10 @@ fn focusable_nodes(arena: &UiRuntime) -> Vec<NodeId> {
 }
 
 fn node_center(arena: &UiRuntime, node_id: NodeId) -> Option<Point> {
-    arena.node(node_id).map(|node| {
+    arena.visual_layout(node_id).map(|layout| {
         Point::new(
-            node.layout.x() + node.layout.width() * 0.5,
-            node.layout.y() + node.layout.height() * 0.5,
+            layout.x() + layout.width() * 0.5,
+            layout.y() + layout.height() * 0.5,
         )
     })
 }

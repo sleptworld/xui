@@ -175,13 +175,17 @@ impl UiRuntime {
 
     pub fn node(&self, id: NodeId) -> Option<NodeView<'_>> {
         let (target, effective) = self.style_system.styles(id)?;
-        Some(NodeView::new(
+        let mut node = NodeView::new(
             id,
             self.hosts.get(id)?,
             self.layout_tree.host(id)?,
             target,
             effective,
-        ))
+        );
+        // Public/event-facing geometry follows the current visual position.
+        // Retained layout origins intentionally exclude dynamic scroll offsets.
+        node.world_origin = self.visual_layout(id)?.min;
+        Some(node)
     }
 
     #[inline]
@@ -1009,13 +1013,17 @@ impl UiRuntime {
 
     #[inline(always)]
     pub fn hit_test(&self, point: crate::core::Point) -> Option<NodeId> {
-        self.hit_test_from(self.root, point, Point::zero())
+        match self.hit_test_from(self.root, point, Point::zero()) {
+            HitTestOutcome::Hit(id) => Some(id),
+            HitTestOutcome::Miss | HitTestOutcome::Blocked => None,
+        }
     }
 
     /// Returns a node's layout rectangle in window logical coordinates after
     /// applying scroll offsets from its ancestors.
     pub fn visual_layout(&self, id: NodeId) -> Option<Bounds> {
-        let mut rect = self.layout_tree.host(id)?.layout;
+        let layout = self.layout_tree.host(id)?;
+        let mut scroll_offset = Point::zero();
         let mut cursor = self.hosts.parent(id);
         while let Some(parent) = cursor {
             let ancestor_layout = self.layout_tree.host(parent)?;
@@ -1026,45 +1034,101 @@ impl UiRuntime {
                 .direction
                 .is_scrollable()
             {
-                rect.min -= ancestor_layout.scroll_offset;
+                scroll_offset = scroll_offset + ancestor_layout.scroll_offset;
             }
             cursor = self.hosts.parent(parent);
         }
-        Some(rect)
+        Some(layout.visual_bounds(scroll_offset))
     }
 
     fn hit_test_from(
         &self,
         id: NodeId,
         point: crate::core::Point,
-        scroll_offset: Point,
-    ) -> Option<NodeId> {
-        let layout = self.layout_tree.host(id)?;
-        let visual_layout = layout.visual_bounds();
-        if !visual_layout.contains(point) {
-            return None;
+        ancestor_scroll_offset: Point,
+    ) -> HitTestOutcome {
+        let Some(layout) = self.layout_tree.host(id) else {
+            return HitTestOutcome::Miss;
+        };
+        let Some(node_style) = self.style_system.computed(id) else {
+            return HitTestOutcome::Miss;
+        };
+        let visual_layout = layout.visual_bounds(ancestor_scroll_offset);
+        let contains_point = visual_layout.contains(point);
+        let clips_children = node_style.paint.clip || node_style.scroll.direction.is_scrollable();
+
+        if clips_children
+            && !hit_test_clip_contains(visual_layout, node_style.paint.border_radius, point)
+        {
+            return HitTestOutcome::Miss;
         }
-        let node_style = self.style_system.computed(id)?;
 
         let child_scroll_offset = if node_style.scroll.direction.is_scrollable() {
             Point::new(
-                scroll_offset.x + layout.scroll_offset.x,
-                scroll_offset.y + layout.scroll_offset.y,
+                ancestor_scroll_offset.x + layout.scroll_offset.x,
+                ancestor_scroll_offset.y + layout.scroll_offset.y,
             )
         } else {
-            scroll_offset
+            ancestor_scroll_offset
         };
 
+        if self.hosts[id].node_type == WidgetType::RootOverlayer {
+            return self.hit_test_root_overlayer(point, child_scroll_offset);
+        }
+
         for child in self.hosts.children(id).rev() {
-            if let Some(hit) = self.hit_test_from(child, point, child_scroll_offset) {
-                return Some(hit);
+            match self.hit_test_from(child, point, child_scroll_offset) {
+                HitTestOutcome::Miss => {}
+                outcome => return outcome,
             }
         }
 
-        // The root overlayer covers the viewport by design, but its empty
-        // surface must not intercept input intended for application content.
-        // Its descendants were already visited above and remain hittable.
-        (self.hosts[id].node_type != WidgetType::RootOverlayer).then_some(id)
+        if contains_point {
+            HitTestOutcome::Hit(id)
+        } else {
+            HitTestOutcome::Miss
+        }
+    }
+
+    fn hit_test_root_overlayer(
+        &self,
+        point: crate::core::Point,
+        ancestor_scroll_offset: Point,
+    ) -> HitTestOutcome {
+        for child in self.hosts.children(self.root_overlayer).rev() {
+            let (hit_test, modal) = self
+                .overlay_entry_interaction(child)
+                .unwrap_or((true, false));
+
+            if hit_test {
+                match self.hit_test_from(child, point, ancestor_scroll_offset) {
+                    HitTestOutcome::Miss => {}
+                    outcome => return outcome,
+                }
+            }
+
+            // A modal entry is a stacking barrier even when the point is
+            // outside its visual root. This prevents hits from falling through
+            // to lower overlays or application content.
+            if modal {
+                return HitTestOutcome::Blocked;
+            }
+        }
+
+        // The transparent RootOverlayer surface never intercepts input.
+        HitTestOutcome::Miss
+    }
+
+    fn overlay_entry_interaction(&self, visual_root: NodeId) -> Option<(bool, bool)> {
+        let widget = self.hosts.get(self.root_overlayer)?.widget.clone();
+        widget.with_widgets(|widgets| {
+            let Widgets::RootOverlayer(overlayer) = widgets else {
+                return None;
+            };
+            let entry = overlayer.entry_for_visual_root(visual_root)?;
+            let entry = overlayer.entry(entry)?;
+            Some((entry.hit_test(), entry.modal()))
+        })
     }
 
     pub(crate) fn scroll_node_by(&mut self, start: NodeId, delta: Point) -> bool {
@@ -1889,6 +1953,33 @@ impl Default for UiRuntime {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HitTestOutcome {
+    Miss,
+    Hit(NodeId),
+    Blocked,
+}
+
+fn hit_test_clip_contains(bounds: Bounds, radius: f32, point: Point) -> bool {
+    if !bounds.contains(point) {
+        return false;
+    }
+
+    let radius = radius
+        .max(0.0)
+        .min(bounds.width().max(0.0) * 0.5)
+        .min(bounds.height().max(0.0) * 0.5);
+    if radius == 0.0 {
+        return true;
+    }
+
+    let center_x = point.x.clamp(bounds.min.x + radius, bounds.max.x - radius);
+    let center_y = point.y.clamp(bounds.min.y + radius, bounds.max.y - radius);
+    let dx = point.x - center_x;
+    let dy = point.y - center_y;
+    dx * dx + dy * dy <= radius * radius
+}
+
 fn layer_descriptor_from_style(style: &ComputedStyle, bounds: Bounds) -> Option<LayerDescriptor> {
     let descriptor = LayerDescriptor {
         bounds: Some(bounds),
@@ -1961,6 +2052,216 @@ mod tests {
             arena.children(arena.root()).collect::<Vec<_>>(),
             vec![overlayer]
         );
+    }
+
+    #[test]
+    fn hit_test_tracks_scrolled_content_without_moving_the_scroll_viewport() {
+        let mut arena = UiRuntime::new();
+        let scroll = create_host(
+            &mut arena,
+            WidgetI::new(
+                container().style(Style::new().width(100.0).height(100.0).scroll_vertical()),
+            ),
+        );
+        let content = create_host(
+            &mut arena,
+            WidgetI::new(container().style(Style::new().width(20.0).height(200.0))),
+        );
+        let target = create_host(
+            &mut arena,
+            WidgetI::new(
+                container().style(
+                    Style::new()
+                        .absolute()
+                        .inset(xui_interface::EdgeInsets::new(0.0, 0.0, 80.0, 0.0))
+                        .width(20.0)
+                        .height(20.0),
+                ),
+            ),
+        );
+        arena.append_child(scroll, content);
+        arena.append_child(content, target);
+
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+        assert!(arena.set_scroll_offset(scroll, Point::new(0.0, 60.0)));
+
+        assert_eq!(arena.visual_layout(target).unwrap().y(), 20.0);
+        assert_eq!(arena.node(target).unwrap().world_origin.y, 20.0);
+        assert_eq!(arena.hit_test(Point::new(10.0, 25.0)), Some(target));
+        assert_ne!(arena.hit_test(Point::new(10.0, 85.0)), Some(target));
+        assert_eq!(arena.hit_test(Point::new(50.0, 90.0)), Some(scroll));
+    }
+
+    #[test]
+    fn hit_test_accumulates_nested_scroll_offsets() {
+        let mut arena = UiRuntime::new();
+        let outer = create_host(
+            &mut arena,
+            WidgetI::new(
+                container().style(Style::new().width(120.0).height(100.0).scroll_vertical()),
+            ),
+        );
+        let inner = create_host(
+            &mut arena,
+            WidgetI::new(
+                container().style(
+                    Style::new()
+                        .absolute()
+                        .inset(xui_interface::EdgeInsets::new(0.0, 0.0, 40.0, 0.0))
+                        .width(100.0)
+                        .height(80.0)
+                        .scroll_vertical(),
+                ),
+            ),
+        );
+        let target = create_host(
+            &mut arena,
+            WidgetI::new(
+                container().style(
+                    Style::new()
+                        .absolute()
+                        .inset(xui_interface::EdgeInsets::new(0.0, 0.0, 50.0, 0.0))
+                        .width(20.0)
+                        .height(20.0),
+                ),
+            ),
+        );
+        arena.append_child(outer, inner);
+        arena.append_child(inner, target);
+
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+        assert!(arena.set_scroll_offset(outer, Point::new(0.0, 20.0)));
+        assert!(arena.set_scroll_offset(inner, Point::new(0.0, 30.0)));
+
+        assert_eq!(arena.visual_layout(target).unwrap().y(), 40.0);
+        assert_eq!(arena.hit_test(Point::new(10.0, 45.0)), Some(target));
+        assert_ne!(arena.hit_test(Point::new(10.0, 95.0)), Some(target));
+    }
+
+    #[test]
+    fn hit_test_allows_unclipped_overflow_and_respects_rounded_clips() {
+        let mut arena = UiRuntime::new();
+        let overflow_parent = create_host(
+            &mut arena,
+            WidgetI::new(container().style(Style::new().width(40.0).height(40.0))),
+        );
+        let overflow_child = create_host(
+            &mut arena,
+            WidgetI::new(
+                container().style(
+                    Style::new()
+                        .absolute()
+                        .inset(xui_interface::EdgeInsets::new(50.0, 0.0, 0.0, 0.0))
+                        .width(20.0)
+                        .height(20.0),
+                ),
+            ),
+        );
+        arena.append_child(overflow_parent, overflow_child);
+        let corner_child = create_host(
+            &mut arena,
+            WidgetI::new(container().style(Style::new().width(40.0).height(40.0))),
+        );
+        arena.append_child(overflow_parent, corner_child);
+
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        assert_eq!(arena.hit_test(Point::new(55.0, 10.0)), Some(overflow_child));
+
+        update_host(
+            &mut arena,
+            overflow_parent,
+            WidgetI::new(
+                container().style(
+                    Style::new()
+                        .width(40.0)
+                        .height(40.0)
+                        .clip(true)
+                        .border_radius(20.0),
+                ),
+            ),
+        );
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        assert_eq!(arena.hit_test(Point::new(1.0, 1.0)), Some(arena.root()));
+        assert_eq!(arena.hit_test(Point::new(20.0, 20.0)), Some(corner_child));
+        assert_ne!(arena.hit_test(Point::new(55.0, 10.0)), Some(overflow_child));
+    }
+
+    #[test]
+    fn root_overlayer_honors_hit_test_and_modal_stacking() {
+        let mut arena = UiRuntime::new();
+        let content = create_host(
+            &mut arena,
+            WidgetI::new(container().style(Style::new().size(Size::fill()))),
+        );
+        let pass_through = create_host(
+            &mut arena,
+            WidgetI::new(
+                container().style(
+                    Style::new()
+                        .absolute()
+                        .inset(xui_interface::EdgeInsets::zero())
+                        .width(40.0)
+                        .height(40.0),
+                ),
+            ),
+        );
+        let pass_through_entry = arena
+            .mount_overlay_entry(
+                pass_through,
+                None,
+                OverlayEntryOptions {
+                    hit_test: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        assert_eq!(arena.hit_test(Point::new(10.0, 10.0)), Some(content));
+
+        arena
+            .update_overlay_entry(pass_through_entry, None, OverlayEntryOptions::default())
+            .unwrap();
+        assert_eq!(arena.hit_test(Point::new(10.0, 10.0)), Some(pass_through));
+
+        arena
+            .update_overlay_entry(
+                pass_through_entry,
+                None,
+                OverlayEntryOptions {
+                    modal: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(arena.hit_test(Point::new(80.0, 80.0)), None);
+    }
+
+    #[test]
+    fn hit_test_uses_reverse_paint_order_for_overlapping_layers() {
+        let mut arena = UiRuntime::new();
+        let stack = create_host(
+            &mut arena,
+            WidgetI::new(z_stack().style(Style::new().width(50.0).height(50.0))),
+        );
+        let back = create_host(
+            &mut arena,
+            WidgetI::new(container().style(Style::new().width(50.0).height(50.0))),
+        );
+        let front = create_host(
+            &mut arena,
+            WidgetI::new(container().style(Style::new().width(50.0).height(50.0))),
+        );
+        arena.append_child(stack, back);
+        arena.append_child(stack, front);
+
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        assert_eq!(arena.hit_test(Point::new(10.0, 10.0)), Some(front));
     }
 
     fn update_host(arena: &mut UiRuntime, id: NodeId, widget: WidgetI) {

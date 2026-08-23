@@ -4,7 +4,9 @@ pub use crate::animation::{
 pub use crate::app::App;
 pub use crate::component::ComponentRuntime;
 pub use crate::core::{Color, EdgeInsets, Point, Rect, Size};
-pub use crate::element::{ComponentDesc, ElementDesc, PortalDesc, WidgetDesc, portal};
+pub use crate::element::{
+    Component, ComponentDesc, ElementDesc, IntoChildren, PortalDesc, WidgetDesc, portal,
+};
 pub use xui_animation::{Easing, Transition};
 pub use xui_interface::events::{
     ClickEvent, ContextMenuEvent, DragEvent, Event, EventPhase, EventRequest, EventRequests,

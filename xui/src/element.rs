@@ -8,6 +8,8 @@ use crate::{
 };
 use xui_interface::WidgetType;
 
+pub type Component = ElementDesc;
+
 #[derive(Clone, Debug)]
 pub enum ElementDesc {
     Host(WidgetDesc),
@@ -147,6 +149,54 @@ impl ElementDesc {
 impl Hash for ElementDesc {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.props_hash().hash(state);
+    }
+}
+
+impl From<&ElementDesc> for ElementDesc {
+    fn from(element: &ElementDesc) -> Self {
+        element.clone()
+    }
+}
+
+/// Converts either one element or a collection of elements into children.
+///
+/// The [`xui!`](crate::xui) macro uses this trait for braced child
+/// expressions, allowing both `{child}` and `{children}` composition.
+pub trait IntoChildren {
+    fn append_children(self, output: &mut Vec<ElementDesc>);
+}
+
+impl IntoChildren for ElementDesc {
+    fn append_children(self, output: &mut Vec<ElementDesc>) {
+        output.push(self);
+    }
+}
+
+impl IntoChildren for WidgetDesc {
+    fn append_children(self, output: &mut Vec<ElementDesc>) {
+        output.push(self.into());
+    }
+}
+
+impl IntoChildren for ComponentDesc {
+    fn append_children(self, output: &mut Vec<ElementDesc>) {
+        output.push(self.into());
+    }
+}
+
+impl IntoChildren for PortalDesc {
+    fn append_children(self, output: &mut Vec<ElementDesc>) {
+        output.push(self.into());
+    }
+}
+
+impl<I, T> IntoChildren for I
+where
+    I: IntoIterator<Item = T>,
+    T: Into<ElementDesc>,
+{
+    fn append_children(self, output: &mut Vec<ElementDesc>) {
+        output.extend(self.into_iter().map(Into::into));
     }
 }
 

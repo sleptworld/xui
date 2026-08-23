@@ -1779,18 +1779,16 @@ fn expand_container(node: &ElementNode) -> Result<TokenStream2> {
         &mut attr_stmts,
     )?;
 
-    let children = node
-        .children
-        .iter()
-        .map(expand_child)
-        .collect::<Result<Vec<_>>>()?;
+    let children = expand_children(&node.children)?;
 
     Ok(quote! {{
         let mut __xui_element = ::xui::container();
         let mut __xui_style = ::xui::Style::new();
+        let mut __xui_children = ::std::vec::Vec::new();
         #(#attr_stmts)*
+        #(#children)*
         __xui_element = __xui_element.style(__xui_style);
-        __xui_element.into_element_desc(::std::vec![#(#children),*])
+        __xui_element.into_element_desc(__xui_children)
     }})
 }
 
@@ -1939,16 +1937,13 @@ fn expand_function_component(node: &ElementNode) -> Result<TokenStream2> {
         let props_value = props_value
             .or(named_props_value)
             .unwrap_or_else(|| quote!(#component_props_name::builder().build()));
-        let children = node
-            .children
-            .iter()
-            .map(expand_child)
-            .collect::<Result<Vec<_>>>()?;
+        let children = expand_children(&node.children)?;
         let mut element_expr = quote! {{
-            let __xui_children = ::std::vec![#(#children),*];
+            let mut __xui_children = ::std::vec::Vec::new();
+            #(#children)*
             let __xui_props = ::xui::WithChildren::with_children(
                 #props_value,
-                __xui_children.clone(),
+                __xui_children,
             );
             ::xui::component(#component_handle_name())
                 .props(__xui_props)
@@ -1978,11 +1973,24 @@ fn to_element(expr: TokenStream2) -> TokenStream2 {
     quote!(::std::convert::Into::<::xui::ElementDesc>::into(#expr))
 }
 
-fn expand_child(child: &Child) -> Result<TokenStream2> {
-    match child {
-        Child::Element(node) => expand_node(node),
-        Child::Expr(expr) => Ok(quote!(::std::convert::Into::<::xui::ElementDesc>::into(#expr))),
-    }
+fn expand_children(children: &[Child]) -> Result<Vec<TokenStream2>> {
+    children
+        .iter()
+        .map(|child| match child {
+            Child::Element(node) => {
+                let child = expand_node(node)?;
+                Ok(quote! {
+                    __xui_children.push(#child);
+                })
+            }
+            Child::Expr(expr) => Ok(quote! {
+                ::xui::IntoChildren::append_children(
+                    #expr,
+                    &mut __xui_children,
+                );
+            }),
+        })
+        .collect()
 }
 
 fn optional_text(node: &ElementNode) -> TokenStream2 {
@@ -2123,6 +2131,23 @@ mod tests {
         let expanded = expand_function_component(&node).unwrap().to_string();
         assert!(expanded.contains("PbuttonProps :: builder"));
         assert!(expanded.contains(". build"));
+    }
+
+    #[test]
+    fn braced_children_are_appended_instead_of_forced_into_one_element() {
+        let node = syn::parse2::<ElementNode>(quote!(
+            <container>
+                <text text="before" />
+                {children}
+                <text text="after" />
+            </container>
+        ))
+        .unwrap();
+        let expanded = expand_container(&node).unwrap().to_string();
+
+        assert!(expanded.contains("IntoChildren :: append_children (children"));
+        assert_eq!(expanded.matches("__xui_children . push").count(), 2);
+        assert!(expanded.contains("into_element_desc (__xui_children)"));
     }
 
     #[test]
