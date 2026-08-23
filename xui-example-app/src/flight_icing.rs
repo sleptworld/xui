@@ -117,18 +117,24 @@ fn icon_button(kind: SourceIcon) -> ElementDesc {
 }
 
 fn component_button(text_value: &str, active: bool) -> ElementDesc {
-    let background = if active { Color::WHITE } else { SURFACE };
-    let foreground = if active { Color::BLACK } else { MUTED };
-    let props = ButtonProp {
-        padding: EdgeInsets::symmetric(8.0, 4.0),
-        background: background.into(),
-        border_radius: 4,
-        text_color: foreground.into(),
+    let variant = if active {
+        ButtonVariant::Primary
+    } else {
+        ButtonVariant::Secondary
     };
     let text_value = text_value.to_string();
     row(
         Style::new().height(26.0).font_size(11.0),
-        vec![xui! { <button text={text_value} ps={props} /> }],
+        vec![xui! {
+            <button
+                text={text_value}
+                variant={variant}
+                size={ButtonSize::Small}
+                style={Style::new()
+                    .min_height(26.0)
+                    .padding(EdgeInsets::symmetric(8.0, 4.0))}
+            />
+        }],
     )
 }
 

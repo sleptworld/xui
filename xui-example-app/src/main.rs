@@ -272,8 +272,7 @@ fn editor() {
     let canvas_controller = cx.use_ref(|| CanvasController::with_scene(demo_canvas_scene(false)));
     let canvas_handle = canvas_controller.get().clone();
     let canvas_click_handle = canvas_handle.clone();
-    let mut button_prop = ButtonProp::default();
-    button_prop.text_color = Color::BLUE_500.into();
+    let button_style = Style::new().color(Color::BLUE_500);
     xui! {
         <row size={Size::fill()}>
             <container width={Sizing::percent(0.3)} height={Sizing::fill()} background ={Color::rgb(1.0,0.0,0.0)} />
@@ -296,7 +295,7 @@ fn editor() {
                         {icon(stroked_icon()).color(Color::WHITE).style(Style::new().size(Size::fix(48.0, 48.0))).into_element_desc()}
                         {icon(svg_icon()).color(Color::BLACK).into_element_desc()}
                     </row>
-                    <button text={label.get()} ps = {button_prop}/>
+                    <button text={label.get()} style={button_style}/>
                     <text font_weight={FontWeight::Thin}> {"啊，是关中王来啦"} </text>
                     <image src={"https://i1.hdslb.com/bfs/archive/8b96913b723e39495c0d1f171779faded87fcbc7.jpg"} height={100} fit={ImageFit::ScaleDown} />
                     <text font_weight={FontWeight::Medium}> {"Backdrop blur · click the glass card"} </text>
