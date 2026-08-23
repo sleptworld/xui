@@ -15,7 +15,7 @@ pub use xui_interface::{
     WidgetStateMatcher,
 };
 
-use crate::animation::AnimableStyle;
+use crate::animation::{has_animatable_difference, interpolate_style};
 use xui_animation::*;
 
 pub struct XStyle {
@@ -46,12 +46,10 @@ impl XStyle {
                 &self.target
             };
 
-            let (from, to) = AnimableStyle::diff(current, &next);
-            if to.has_properties() {
+            if has_animatable_difference(current, &next) {
                 self.handler = Some(TransitionStyleHandler::new(
                     Timeline::new(transition),
-                    from,
-                    to,
+                    current.clone(),
                     next.clone(),
                 ));
                 self.target = next;
@@ -83,33 +81,25 @@ impl XStyle {
 
 struct TransitionStyleHandler {
     timeline: Timeline,
-    from: AnimableStyle,
-    to: AnimableStyle,
+    from: ComputedStyle,
+    target: ComputedStyle,
     current_style: ComputedStyle,
 }
 
 impl TransitionStyleHandler {
-    fn new(
-        timeline: Timeline,
-        from: AnimableStyle,
-        to: AnimableStyle,
-        start: ComputedStyle,
-    ) -> Self {
+    fn new(timeline: Timeline, from: ComputedStyle, target: ComputedStyle) -> Self {
+        let current_style = interpolate_style(&from, &target, 0.0);
         Self {
             from,
-            to,
+            target,
             timeline,
-            current_style: start,
+            current_style,
         }
     }
 
     fn current(&mut self, delta: Duration, _theme: &Theme) -> &ComputedStyle {
         let progress = self.timeline.tick(delta);
-        if progress.completed {
-            return &self.current_style;
-        }
-        let interpolated = AnimableStyle::interpolate(&self.from, &self.to, progress.eased);
-        interpolated.apply_to_computed(&mut self.current_style);
+        self.current_style = interpolate_style(&self.from, &self.target, progress.eased);
         &self.current_style
     }
 }
@@ -121,7 +111,7 @@ mod tests {
     use xui_interface::Color;
 
     #[test]
-    fn effect_chain_switches_discretely_while_other_properties_transition() {
+    fn effect_chain_and_paint_properties_transition_together() {
         let theme = Theme::default();
         let initial = ComputedStyle::initial(&theme);
         let next = ComputedStyle::compute(
@@ -136,12 +126,12 @@ mod tests {
 
         assert!(style.update_style(next.clone()));
         let current = style.style(Duration::ZERO, &theme);
-        assert_eq!(current.effect.effects, next.effect.effects);
+        assert_ne!(current.effect.effects, next.effect.effects);
         assert_eq!(current.paint.background, initial.paint.background);
     }
 
     #[test]
-    fn effect_only_change_does_not_create_an_animation_handler() {
+    fn compatible_effect_change_creates_an_animation_handler() {
         let theme = Theme::default();
         let initial = ComputedStyle::initial(&theme);
         let next = ComputedStyle::compute(
@@ -152,7 +142,7 @@ mod tests {
         let mut style =
             XStyle::new(initial).with_transition(Some(Transition::new(Duration::from_millis(100))));
 
-        assert!(!style.update_style(next.clone()));
-        assert_eq!(style.style(Duration::ZERO, &theme), &next);
+        assert!(style.update_style(next.clone()));
+        assert_ne!(style.style(Duration::ZERO, &theme), &next);
     }
 }

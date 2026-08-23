@@ -1,10 +1,10 @@
 //! Cross-subsystem orchestration for [`UiRuntime`].
 
-use crate::animation::AnimableStyle;
+use crate::animation::has_animatable_difference;
 use crate::core::{Point, Size};
 use crate::event_system::callbacks::{CallbackHandleSet, CallbackStore};
 use crate::event_system::interaction::HostInteraction;
-use crate::event_system::{self, EventState, translator::EventTranslator};
+use crate::event_system::{self, translator::EventTranslator, EventState};
 use crate::fiber::Key;
 use crate::focus::FocusManager;
 use crate::layout::{computed_style_for_widget, taffy_style_for_widget};
@@ -22,8 +22,8 @@ use crate::ui_runtime::style::StyleSystem;
 use crate::ui_runtime::tree::{HostData, HostTree};
 use crate::ui_runtime::{NodeView, RenderFrame, RenderFrameError, UiRuntime};
 use crate::widgets::{
-    OverlayEntryId, OverlayEntryOptions, OverlayModelError, OverlayScopeId, WidgetI, WidgetType,
-    Widgets, canvas_text_slot,
+    canvas_text_slot, OverlayEntryId, OverlayEntryOptions, OverlayModelError, OverlayScopeId,
+    WidgetI, WidgetType, Widgets,
 };
 use std::time::Duration;
 use taffy::prelude as tf;
@@ -293,13 +293,13 @@ impl UiRuntime {
             let (target, effective) = self.style_system.styles(id).expect("style node missing");
             let node = NodeView::new(id, host, layout, target, effective);
             let viewport = Bounds::from_origin_size(Point::zero(), layout.layout.size());
-            let needs_scroll = target.scroll.is_scrollable();
-            let needs_clip = node.target_style.paint.clip || needs_scroll;
+            let needs_scroll = effective.scroll.is_scrollable();
+            let needs_clip = node.effective_style.paint.clip || needs_scroll;
             let clip_shape = needs_clip.then(|| {
-                if node.target_style.paint.border_radius > 0.0 {
+                if node.effective_style.paint.border_radius > 0.0 {
                     ClipShape::RoundedRect {
                         rect: viewport,
-                        radius: node.target_style.paint.border_radius,
+                        radius: node.effective_style.paint.border_radius,
                     }
                 } else {
                     ClipShape::Rect(viewport)
@@ -314,7 +314,7 @@ impl UiRuntime {
                 needs_scroll,
                 needs_scrollbar_overlay(node),
                 clip_shape,
-                layer_descriptor_from_style(&node.target_style, viewport),
+                layer_descriptor_from_style(node.effective_style, viewport),
             )
         };
 
@@ -1051,7 +1051,7 @@ impl UiRuntime {
         let Some(layout) = self.layout_tree.host(id) else {
             return HitTestOutcome::Miss;
         };
-        let Some(node_style) = self.style_system.computed(id) else {
+        let Some(node_style) = self.style_system.effective(id) else {
             return HitTestOutcome::Miss;
         };
         let visual_layout = layout.visual_bounds(ancestor_scroll_offset);
@@ -1218,8 +1218,19 @@ impl UiRuntime {
             return false;
         }
         let changed = self.style_system.tick(delta, &self.theme);
-        for id in changed.iter().copied() {
-            self.mark_work(id, HostWorkFlags::REBUILD_PAINT);
+        for (id, diff, requires_layout) in changed.iter().copied() {
+            let mut work = HostWorkFlags::from_style_diff(diff);
+            // Sampling inherited text values must not dirty the target-style
+            // subtree every frame. Descendants own their own transitions.
+            work.remove(HostWorkFlags::RECALC_STYLE_SUBTREE);
+            if requires_layout {
+                self.sync_effective_taffy_style(id);
+                self.refresh_taffy_context(id);
+                work |= HostWorkFlags::RECALC_LAYOUT | HostWorkFlags::REBUILD_PAINT;
+            } else {
+                work.remove(HostWorkFlags::RECALC_LAYOUT);
+            }
+            self.mark_work(id, work);
         }
         !changed.is_empty()
     }
@@ -1299,24 +1310,12 @@ impl UiRuntime {
         let widget = self.hosts[id].widget.clone();
         let state = self.hosts[id].state;
         let parent = self.hosts.parent(id);
-        let parent_is_z_stack = parent.is_some_and(|parent| {
-            self.hosts[parent]
-                .widget
-                .with_widgets(|widget| matches!(widget, crate::widgets::Widgets::ZStack(_)))
-        });
         let parent_style = parent
             .and_then(|p| self.style_system.computed(p))
-            .unwrap_or_else(|| self.style_system.default_style());
+            .cloned()
+            .unwrap_or_else(|| self.style_system.default_style().clone());
 
-        let computed_style = computed_style_for_widget(&widget, parent_style, &self.theme, state);
-        let taffy_style =
-            taffy_style_for_widget(&widget, parent_style, &computed_style, parent_is_z_stack);
-
-        let taffy_node = self.layout_tree.node_id(id);
-        let current_taffy_style = self
-            .layout_tree
-            .style(taffy_node)
-            .expect("Missing taffy node");
+        let computed_style = computed_style_for_widget(&widget, &parent_style, &self.theme, state);
 
         let style_diff = self
             .style_system
@@ -1324,30 +1323,24 @@ impl UiRuntime {
             .expect("style node missing")
             .diff(&computed_style);
         let mut work_flags = HostWorkFlags::from_style_diff(style_diff);
-        if *current_taffy_style != taffy_style {
-            self.layout_tree
-                .set_style(taffy_node, taffy_style)
-                .expect("failed to update taffy style");
-            work_flags |= HostWorkFlags::RECALC_LAYOUT | HostWorkFlags::REBUILD_PAINT;
-        }
-
         let transition = widget.transition();
         if !self.style_system.initialized(id) {
             self.style_system.set_computed(id, computed_style);
             self.style_system.set_initialized(id);
+            if self.sync_effective_taffy_style(id) {
+                work_flags |= HostWorkFlags::RECALC_LAYOUT | HostWorkFlags::REBUILD_PAINT;
+            }
             self.mark_work(id, work_flags);
             self.refresh_taffy_context(id);
             return;
         }
 
-        let paint_target_changed = {
+        let animatable_target_changed = {
             let current_target = self.style_system.computed(id).expect("style node missing");
-            AnimableStyle::diff(current_target, &computed_style)
-                .1
-                .has_properties()
+            has_animatable_difference(current_target, &computed_style)
         };
         let mut cancelled_transition = false;
-        let started_transition = match (transition, paint_target_changed) {
+        let started_transition = match (transition, animatable_target_changed) {
             (Some(transition), true) => {
                 let from_style = self
                     .style_system
@@ -1374,6 +1367,10 @@ impl UiRuntime {
 
         self.style_system.set_computed(id, computed_style);
 
+        if self.sync_effective_taffy_style(id) {
+            work_flags |= HostWorkFlags::RECALC_LAYOUT | HostWorkFlags::REBUILD_PAINT;
+        }
+
         if started_transition || cancelled_transition {
             work_flags |= HostWorkFlags::REBUILD_PAINT;
         }
@@ -1385,6 +1382,42 @@ impl UiRuntime {
         }
 
         self.mark_work(id, work_flags & !HostWorkFlags::RECALC_STYLE_SUBTREE);
+    }
+
+    fn sync_effective_taffy_style(&mut self, id: NodeId) -> bool {
+        if !self.hosts.contains_key(id) {
+            return false;
+        }
+        let parent = self.hosts.parent(id);
+        let parent_is_z_stack = parent.is_some_and(|parent| {
+            self.hosts[parent]
+                .widget
+                .with_widgets(|widget| matches!(widget, crate::widgets::Widgets::ZStack(_)))
+        });
+        let parent_style = parent
+            .and_then(|parent| self.style_system.effective(parent))
+            .cloned()
+            .unwrap_or_else(|| self.style_system.default_style().clone());
+        let effective = self
+            .style_system
+            .effective(id)
+            .expect("style node missing")
+            .clone();
+        let widget = self.hosts[id].widget.clone();
+        let taffy_style =
+            taffy_style_for_widget(&widget, &parent_style, &effective, parent_is_z_stack);
+        let taffy_node = self.layout_tree.node_id(id);
+        let current = self
+            .layout_tree
+            .style(taffy_node)
+            .expect("layout style missing");
+        if *current == taffy_style {
+            return false;
+        }
+        self.layout_tree
+            .set_style(taffy_node, taffy_style)
+            .expect("failed to update animated layout style");
+        true
     }
 
     pub fn compute_layout_if_needed<T: TextBackend>(
@@ -2013,7 +2046,7 @@ mod tests {
     use crate::focus::FocusHandle;
     use crate::render::RenderNodeKind;
     use crate::text::testing::ZeroTextBackend;
-    use crate::widgets::{CanvasController, WidgetI, canvas, container, text, text_input, z_stack};
+    use crate::widgets::{canvas, container, text, text_input, z_stack, CanvasController, WidgetI};
     use std::time::{Duration, Instant};
     use xui_animation::{Easing, Transition};
     use xui_interface::events::{
@@ -2709,9 +2742,7 @@ mod tests {
             .width(20.0)
             .height(20.0)
             .background(Color::BLACK)
-            .when(WidgetState::HOVERED, |patch| {
-                patch.background(Color::WHITE)
-            });
+            .when(WidgetState::HOVERED, |patch| patch.background(Color::WHITE));
         update_host(
             &mut arena,
             node,
@@ -2725,6 +2756,87 @@ mod tests {
             effective.paint.background,
             ComputedColorStyle::Solid(Color::WHITE)
         );
+    }
+
+    #[test]
+    fn layout_transition_updates_effective_taffy_style_each_frame() {
+        let mut arena = UiRuntime::new();
+        let transition = Transition::new(Duration::from_millis(100)).ease(Easing::Linear);
+        let node = create_host(
+            &mut arena,
+            WidgetI::new(
+                container().style(Style::new().width(20.0).height(20.0).transition(transition)),
+            ),
+        );
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(200.0, 100.0), &mut measurer);
+
+        update_host(
+            &mut arena,
+            node,
+            WidgetI::new(
+                container().style(
+                    Style::new()
+                        .width(100.0)
+                        .height(20.0)
+                        .transition(transition),
+                ),
+            ),
+        );
+        arena.update_tree(Size::new(200.0, 100.0), &mut measurer);
+        let layout_passes = arena.layout_passes;
+
+        assert!(arena.tick_style_animations(Duration::from_millis(50)));
+        arena.update_tree(Size::new(200.0, 100.0), &mut measurer);
+
+        let effective = arena.style_system.effective(node).unwrap();
+        let xui_interface::Sizing::Fix(width) = effective.layout.width else {
+            panic!("expected fixed animated width")
+        };
+        assert!((width.into_inner() - 60.0).abs() < 0.0001);
+        assert!((arena.node(node).unwrap().layout.width() - 60.0).abs() < 0.0001);
+        assert_eq!(arena.layout_passes, layout_passes + 1);
+    }
+
+    #[test]
+    fn paint_only_transition_does_not_run_layout() {
+        let mut arena = UiRuntime::new();
+        let transition = Transition::new(Duration::from_millis(100)).ease(Easing::Linear);
+        let node = create_host(
+            &mut arena,
+            WidgetI::new(
+                container().style(
+                    Style::new()
+                        .width(20.0)
+                        .height(20.0)
+                        .background(Color::BLACK)
+                        .transition(transition),
+                ),
+            ),
+        );
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+
+        update_host(
+            &mut arena,
+            node,
+            WidgetI::new(
+                container().style(
+                    Style::new()
+                        .width(20.0)
+                        .height(20.0)
+                        .background(Color::WHITE)
+                        .transition(transition),
+                ),
+            ),
+        );
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        let layout_passes = arena.layout_passes;
+
+        assert!(arena.tick_style_animations(Duration::from_millis(50)));
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+
+        assert_eq!(arena.layout_passes, layout_passes);
     }
 }
 
@@ -2850,8 +2962,8 @@ fn clamp_scroll_offset(
 }
 
 fn needs_scrollbar_overlay(node: NodeView<'_>) -> bool {
-    let direction = node.target_style.scroll.direction;
-    let scrollbar = node.target_style.scroll.scrollbar;
+    let direction = node.effective_style.scroll.direction;
+    let scrollbar = node.effective_style.scroll.scrollbar;
     if scrollbar.visibility == ScrollbarVisibilityStyle::Hidden
         || scrollbar.width <= 0.0
         || !scrollbar.thumb_color.is_visible()
@@ -2866,8 +2978,8 @@ fn needs_scrollbar_overlay(node: NodeView<'_>) -> bool {
 }
 
 fn render_scrollbars_in_rect(node: NodeView<'_>, rect: Bounds, writer: &mut RenderTreeWriter<'_>) {
-    let direction = node.target_style.scroll.direction;
-    let scrollbar = node.target_style.scroll.scrollbar;
+    let direction = node.effective_style.scroll.direction;
+    let scrollbar = node.effective_style.scroll.scrollbar;
     if scrollbar.visibility == ScrollbarVisibilityStyle::Hidden || scrollbar.width <= 0.0 {
         return;
     }

@@ -1,8 +1,8 @@
-use crate::animation::AnimableStyle;
+use crate::animation::{has_animatable_difference, interpolate_style};
 use slotmap::{SecondaryMap, SparseSecondaryMap};
 use std::time::Duration;
-use xui_animation::{Animatable, Timeline, Transition};
-use xui_interface::{ComputedStyle, NodeId, Theme};
+use xui_animation::{Timeline, Transition};
+use xui_interface::{ComputedStyle, NodeId, StyleDiffFlags, Theme};
 
 pub(crate) struct StyleNode {
     computed: ComputedStyle,
@@ -11,8 +11,7 @@ pub(crate) struct StyleNode {
 
 struct ActiveStyleTransition {
     timeline: Timeline,
-    from: AnimableStyle,
-    to: AnimableStyle,
+    from: ComputedStyle,
     sampled: ComputedStyle,
 }
 
@@ -22,34 +21,29 @@ impl ActiveStyleTransition {
         from_style: &ComputedStyle,
         target_style: &ComputedStyle,
     ) -> Option<Self> {
-        let (from, to) = AnimableStyle::diff(from_style, target_style);
-        if !to.has_properties() {
+        if !has_animatable_difference(from_style, target_style) {
             return None;
         }
-        let mut sampled = target_style.clone();
-        from.apply_to_computed(&mut sampled);
         Some(Self {
             timeline: Timeline::new(transition),
-            from,
-            to,
-            sampled,
+            from: from_style.clone(),
+            sampled: interpolate_style(from_style, target_style, 0.0),
         })
     }
 
     fn sync_target(&mut self, target: &ComputedStyle) {
-        let current = AnimableStyle::capture(&self.sampled, &self.to);
-        self.sampled = target.clone();
-        current.apply_to_computed(&mut self.sampled);
+        // Preserve the animated sample while immediately accepting target
+        // values for fields that have no continuous representation.
+        self.sampled = interpolate_style(&self.sampled, target, 0.0);
     }
 
     fn tick(&mut self, delta: Duration, target: &ComputedStyle) -> bool {
         let progress = self.timeline.tick(delta);
-        self.sampled = target.clone();
         if progress.completed {
+            self.sampled = target.clone();
             return true;
         }
-        let interpolated = AnimableStyle::interpolate(&self.from, &self.to, progress.eased);
-        interpolated.apply_to_computed(&mut self.sampled);
+        self.sampled = interpolate_style(&self.from, target, progress.eased);
         false
     }
 }
@@ -167,7 +161,11 @@ impl StyleSystem {
         }
     }
 
-    pub(crate) fn tick(&mut self, delta: Duration, _theme: &Theme) -> Vec<NodeId> {
+    pub(crate) fn tick(
+        &mut self,
+        delta: Duration,
+        _theme: &Theme,
+    ) -> Vec<(NodeId, StyleDiffFlags, bool)> {
         let active = std::mem::take(&mut self.animations);
         let mut remaining = SparseSecondaryMap::new();
         let mut changed = Vec::with_capacity(active.len());
@@ -175,8 +173,16 @@ impl StyleSystem {
             let Some(target) = self.nodes.get(id).map(|node| &node.computed) else {
                 continue;
             };
+            let before = animation.sampled.clone();
             let completed = animation.tick(delta, target);
-            changed.push(id);
+            let diff = before.diff(&animation.sampled);
+            if !diff.is_empty() {
+                changed.push((
+                    id,
+                    diff,
+                    animated_sample_requires_layout(&before, &animation.sampled),
+                ));
+            }
             if !completed {
                 remaining.insert(id, animation);
             }
@@ -210,6 +216,27 @@ impl StyleSystem {
     }
 }
 
+macro_rules! any_field_changed {
+    ($from:expr, $to:expr; $($field:ident),+ $(,)?) => {
+        false $(|| $from.$field != $to.$field)+
+    };
+}
+
+fn animated_sample_requires_layout(from: &ComputedStyle, to: &ComputedStyle) -> bool {
+    from.layout != to.layout
+        || any_field_changed!(
+            from.text,
+            to.text;
+            font_family,
+            font_size,
+            font_weight,
+            font_style,
+            line_height,
+            letter_spacing,
+        )
+        || from.scroll.scrollbar.width != to.scroll.scrollbar.width
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,7 +268,9 @@ mod tests {
         assert_eq!(styles.effective(id), Some(&initial));
         assert!(styles.is_animating());
 
-        assert_eq!(styles.tick(Duration::from_millis(100), &theme), vec![id]);
+        let changed = styles.tick(Duration::from_millis(100), &theme);
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].0, id);
         assert!(!styles.is_animating());
         assert_eq!(styles.effective(id), Some(&target));
 
@@ -251,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn text_and_clip_only_changes_do_not_start_paint_transition() {
+    fn text_color_animates_but_clip_is_discrete() {
         let theme = Theme::default();
         let initial = ComputedStyle::initial(&theme);
         let mut text_target = initial.clone();
@@ -264,7 +293,8 @@ mod tests {
         styles.create(id, initial.clone(), true);
         let transition = Transition::new(Duration::from_millis(100));
 
-        assert!(!styles.start_transition(id, transition, &initial, &text_target));
+        assert!(styles.start_transition(id, transition, &initial, &text_target));
+        styles.remove_transition(id);
         assert!(!styles.start_transition(id, transition, &initial, &clip_target));
         assert!(!styles.is_animating());
     }
@@ -293,16 +323,36 @@ mod tests {
 
         let mut updated_target = target;
         updated_target.paint.clip = true;
-        updated_target.text.color = Color::WHITE;
         styles.sync_transition_target(id, &updated_target);
         styles.set_computed(id, updated_target);
 
         let effective = styles.effective(id).unwrap();
         assert!(effective.paint.clip);
-        assert_eq!(effective.text.color, Color::WHITE);
         let ComputedColorStyle::Solid(background) = effective.paint.background else {
             panic!("expected solid background")
         };
         assert!((background.r - 0.5).abs() < 0.0001);
+    }
+
+    #[test]
+    fn only_metric_samples_require_layout() {
+        let theme = Theme::default();
+        let initial = ComputedStyle::initial(&theme);
+
+        let mut color = initial.clone();
+        color.text.color = Color::WHITE;
+        assert!(!animated_sample_requires_layout(&initial, &color));
+
+        let mut width = initial.clone();
+        width.layout.width = xui_interface::Sizing::fix(80.0);
+        assert!(animated_sample_requires_layout(&initial, &width));
+
+        let mut font_size = initial.clone();
+        font_size.text.font_size += 4.0;
+        assert!(animated_sample_requires_layout(&initial, &font_size));
+
+        let mut scrollbar_color = initial.clone();
+        scrollbar_color.scroll.scrollbar.thumb_color = ComputedColorStyle::Solid(Color::WHITE);
+        assert!(!animated_sample_requires_layout(&initial, &scrollbar_color));
     }
 }

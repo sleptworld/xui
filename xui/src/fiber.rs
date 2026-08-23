@@ -9,7 +9,6 @@ use xui_interface::widget::WidgetType;
 use xui_interface::{Bounds, ComputedStyle, NodeId};
 
 use crate::HookContext;
-use crate::core::Rect;
 use crate::element::{ComponentDesc, ElementDesc};
 use crate::lanes::{Lanes, NO_LANES};
 use crate::widgets::WidgetI;
