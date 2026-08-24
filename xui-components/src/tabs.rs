@@ -12,13 +12,13 @@ pub type TabChangeCallback = Callback<usize>;
 #[derive(Clone, Debug)]
 pub struct TabItem {
     pub id: String,
-    pub label: String,
+    pub label: ElementDesc,
     pub content: ElementDesc,
     pub disabled: bool,
 }
 
 impl TabItem {
-    pub fn new(id: impl Into<String>, label: impl Into<String>, content: ElementDesc) -> Self {
+    pub fn new(id: impl Into<String>, label: impl Into<Component>, content: ElementDesc) -> Self {
         Self {
             id: id.into(),
             label: label.into(),
@@ -206,7 +206,7 @@ pub fn tabs(
             .focus_handle(focus_handles.get()[index].clone())
             .accessibility_role(AccessibilityRole::Tab)
             .accessibility_id(tab_id)
-            .accessibility_label(item.label.clone())
+            // .accessibility_label(item.label.clone())
             .accessibility_selected(is_active)
             .accessibility_disabled(disabled)
             .accessibility_controls(panel_id)
@@ -246,7 +246,7 @@ pub fn tabs(
                     EventResult::Consumed
                 }
             })
-            .into_element_desc(vec![text(item.label.clone()).into_element_desc()]);
+            .into_element_desc(vec![item.label.clone()]);
 
         tab_elements.push(tab);
     }
@@ -282,7 +282,8 @@ mod tests {
     use super::*;
 
     fn item(id: &str, disabled: bool) -> TabItem {
-        TabItem::new(id, id, text(id.to_string()).into_element_desc()).disabled(disabled)
+        TabItem::new(id, id.to_string(), text(id.to_string()).into_element_desc())
+            .disabled(disabled)
     }
 
     #[test]

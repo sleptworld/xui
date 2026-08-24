@@ -903,7 +903,10 @@ impl RenderNode {
 
 #[derive(Debug, Clone, Copy)]
 pub struct HostRenderBinding {
+    /// Layout-position transform and root of this host's retained subtree.
     pub root: RenderNodeId,
+    /// Visual Style transform. This remains separate from layout so frame
+    /// properties can animate it without recompiling the retained scene.
     pub transform: RenderNodeId,
     pub contents: RenderNodeId,
     pub paint: RenderNodeId,
@@ -920,6 +923,7 @@ pub struct HostRenderBinding {
 impl HostRenderBinding {
     pub fn scaffold(
         root: RenderNodeId,
+        transform: RenderNodeId,
         contents: RenderNodeId,
         paint: RenderNodeId,
         children: Option<RenderNodeId>,
@@ -928,7 +932,7 @@ impl HostRenderBinding {
     ) -> Self {
         Self {
             root,
-            transform: root,
+            transform,
             contents,
             paint,
             children,

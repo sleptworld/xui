@@ -2,7 +2,7 @@ use crate::animation::{has_animatable_difference, interpolate_style};
 use slotmap::{SecondaryMap, SparseSecondaryMap};
 use std::time::Duration;
 use xui_animation::{Timeline, Transition};
-use xui_interface::{ComputedStyle, NodeId, StyleDiffFlags, Theme};
+use xui_interface::{ComputedStyle, NodeId, StyleDiffFlags, StylePatch, StyleValue, Theme};
 
 pub(crate) struct StyleNode {
     computed: ComputedStyle,
@@ -53,6 +53,7 @@ impl ActiveStyleTransition {
 pub(crate) struct StyleSystem {
     nodes: SecondaryMap<NodeId, StyleNode>,
     animations: SparseSecondaryMap<NodeId, ActiveStyleTransition>,
+    inherited_samples: SparseSecondaryMap<NodeId, ComputedStyle>,
     style_dirty_list: Vec<NodeId>,
     subtree_dirty_list: Vec<NodeId>,
     default_style: ComputedStyle,
@@ -63,6 +64,7 @@ impl StyleSystem {
         Self {
             nodes: SecondaryMap::new(),
             animations: SparseSecondaryMap::new(),
+            inherited_samples: SparseSecondaryMap::new(),
             style_dirty_list: Vec::new(),
             subtree_dirty_list: Vec::new(),
             default_style,
@@ -82,6 +84,7 @@ impl StyleSystem {
     pub(crate) fn remove(&mut self, id: NodeId) {
         self.nodes.remove(id);
         self.animations.remove(id);
+        self.inherited_samples.remove(id);
     }
 
     pub(crate) fn contains(&self, id: NodeId) -> bool {
@@ -106,6 +109,7 @@ impl StyleSystem {
             self.animations
                 .get(id)
                 .map(|animation| &animation.sampled)
+                .or_else(|| self.inherited_samples.get(id))
                 .unwrap_or(&node.computed),
         )
     }
@@ -116,12 +120,48 @@ impl StyleSystem {
             .animations
             .get(id)
             .map(|animation| &animation.sampled)
+            .or_else(|| self.inherited_samples.get(id))
             .unwrap_or(target);
         Some((target, effective))
     }
 
     pub(crate) fn set_computed(&mut self, id: NodeId, computed: ComputedStyle) {
         self.nodes.get_mut(id).expect("style node missing").computed = computed;
+        self.inherited_samples.remove(id);
+    }
+
+    /// Re-resolves inherited text values against the parent's sampled style
+    /// while leaving this node's target computed style untouched.
+    pub(crate) fn sync_inherited_text(
+        &mut self,
+        id: NodeId,
+        parent: &ComputedStyle,
+        patch: &StylePatch,
+    ) -> (StyleDiffFlags, bool) {
+        let before = self.effective(id).expect("style node missing").clone();
+        if let Some(animation) = self.animations.get_mut(id) {
+            apply_sampled_text_inheritance(&mut animation.sampled, parent, patch);
+            self.inherited_samples.remove(id);
+        } else {
+            let computed = self
+                .nodes
+                .get(id)
+                .expect("style node missing")
+                .computed
+                .clone();
+            let mut sampled = computed.clone();
+            apply_sampled_text_inheritance(&mut sampled, parent, patch);
+            if sampled == computed {
+                self.inherited_samples.remove(id);
+            } else {
+                self.inherited_samples.insert(id, sampled);
+            }
+        }
+        let after = self.effective(id).expect("style node missing");
+        (
+            before.diff(after),
+            animated_sample_requires_layout(&before, after),
+        )
     }
 
     pub(crate) fn initialized(&self, id: NodeId) -> bool {
@@ -235,6 +275,36 @@ fn animated_sample_requires_layout(from: &ComputedStyle, to: &ComputedStyle) -> 
             letter_spacing,
         )
         || from.scroll.scrollbar.width != to.scroll.scrollbar.width
+}
+
+fn apply_sampled_text_inheritance(
+    sampled: &mut ComputedStyle,
+    parent: &ComputedStyle,
+    patch: &StylePatch,
+) {
+    macro_rules! inherit_text_fields {
+        ($($field:ident),+ $(,)?) => {
+            $(
+                if matches!(
+                    &patch.text.$field,
+                    StyleValue::Unset | StyleValue::Inherit
+                ) {
+                    sampled.text.$field = parent.text.$field.clone();
+                }
+            )+
+        };
+    }
+
+    inherit_text_fields!(
+        color,
+        font_family,
+        font_size,
+        font_weight,
+        font_style,
+        line_height,
+        letter_spacing,
+        decoration,
+    );
 }
 
 #[cfg(test)]

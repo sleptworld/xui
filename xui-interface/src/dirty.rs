@@ -24,5 +24,6 @@ bitflags::bitflags! {
         const PAINT = 1 << 2;
         const SCROLL = 1 << 3;
         const EFFECT = 1 << 4;
+        const TRANSFORM = 1 << 5;
     }
 }

@@ -34,8 +34,8 @@ pub use style::{
     LinearGradientStyle, MaskShape, PaintStylePatch, PositionStyle, RadialGradientStyle,
     RadiusToken, ScrollDirectionStyle, ScrollStylePatch, ScrollbarStyle, ScrollbarStylePatch,
     ScrollbarVisibilityStyle, ShadowStyle, SpacingToken, StateStyleRule, Stroke, StrokeLineStyle,
-    StrokeStyle, Style, StyleMerge, StylePatch, StyleValue, TextStylePatch, Theme,
-    WidgetStateMatcher,
+    StrokeStyle, Style, StyleMerge, StylePatch, StyleValue, TextStylePatch, Theme, TransformStyle,
+    TransformStylePatch, WidgetStateMatcher,
 };
 pub use text::*;
 pub use transition::{AnimationProgress, Easing, Transition};

@@ -742,6 +742,73 @@ pub enum PositionStyle {
     Absolute,
 }
 
+/// A visual transform applied after layout. `origin` is normalized within the
+/// node's laid-out bounds, so `(0.5, 0.5)` is the center.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TransformStyle {
+    pub translate: Point,
+    pub scale: Point,
+    /// Clockwise rotation in radians in XUI's y-down coordinate system.
+    pub rotate: f32,
+    pub origin: Point,
+}
+
+impl TransformStyle {
+    pub const IDENTITY: Self = Self {
+        translate: Point::zero(),
+        scale: Point::new(1.0, 1.0),
+        rotate: 0.0,
+        origin: Point::new(0.5, 0.5),
+    };
+
+    pub const fn new() -> Self {
+        Self::IDENTITY
+    }
+
+    pub const fn translate(mut self, translate: Point) -> Self {
+        self.translate = translate;
+        self
+    }
+
+    pub const fn scale(mut self, scale: Point) -> Self {
+        self.scale = scale;
+        self
+    }
+
+    pub const fn uniform_scale(mut self, scale: f32) -> Self {
+        self.scale = Point::new(scale, scale);
+        self
+    }
+
+    pub const fn rotate(mut self, radians: f32) -> Self {
+        self.rotate = radians;
+        self
+    }
+
+    pub const fn origin(mut self, origin: Point) -> Self {
+        self.origin = origin;
+        self
+    }
+
+    pub fn to_affine(self, size: Size<f32>) -> Affine {
+        let origin = Point::new(self.origin.x * size.width, self.origin.y * size.height);
+        let (sin, cos) = self.rotate.sin_cos();
+        Affine::translate(-origin.x, -origin.y)
+            .then(Affine::scale(self.scale.x, self.scale.y))
+            .then(Affine::new(cos, sin, -sin, cos, 0.0, 0.0))
+            .then(Affine::translate(
+                origin.x + self.translate.x,
+                origin.y + self.translate.y,
+            ))
+    }
+}
+
+impl Default for TransformStyle {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
 /// Patches
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TextStylePatch {
@@ -782,6 +849,17 @@ pub struct PaintStylePatch {
     pub stroke: StyleValue<StrokeStyle>,
     pub shadow: StyleValue<ShadowStyle>,
     pub clip: StyleValue<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TransformStylePatch {
+    pub translate_x: StyleValue<f32>,
+    pub translate_y: StyleValue<f32>,
+    pub scale_x: StyleValue<f32>,
+    pub scale_y: StyleValue<f32>,
+    pub rotate: StyleValue<f32>,
+    pub origin_x: StyleValue<f32>,
+    pub origin_y: StyleValue<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -978,6 +1056,38 @@ impl Style {
 
     pub fn inset(self, inset: EdgeInsets) -> Self {
         self.map_base(|base| base.inset(inset))
+    }
+
+    pub fn transform(self, transform: TransformStyle) -> Self {
+        self.map_base(|base| base.transform(transform))
+    }
+
+    pub fn translate(self, translate: Point) -> Self {
+        self.map_base(|base| base.translate(translate))
+    }
+
+    pub fn translate_x(self, x: f32) -> Self {
+        self.map_base(|base| base.translate_x(x))
+    }
+
+    pub fn translate_y(self, y: f32) -> Self {
+        self.map_base(|base| base.translate_y(y))
+    }
+
+    pub fn scale(self, scale: f32) -> Self {
+        self.map_base(|base| base.scale(scale))
+    }
+
+    pub fn scale_xy(self, scale: Point) -> Self {
+        self.map_base(|base| base.scale_xy(scale))
+    }
+
+    pub fn rotate(self, radians: f32) -> Self {
+        self.map_base(|base| base.rotate(radians))
+    }
+
+    pub fn transform_origin(self, origin: Point) -> Self {
+        self.map_base(|base| base.transform_origin(origin))
     }
 
     pub fn background(self, color: impl Into<ColorStyle>) -> Self {
@@ -1222,6 +1332,7 @@ pub struct StylePatch {
     pub text: TextStylePatch,
     pub layout: LayoutStylePatch,
     pub paint: PaintStylePatch,
+    pub transform: TransformStylePatch,
     pub effect: EffectStylePatch,
     pub scroll: ScrollStylePatch,
 }
@@ -1361,6 +1472,56 @@ impl StylePatch {
 
     pub fn inset(mut self, inset: EdgeInsets) -> Self {
         self.layout.inset = StyleValue::Value(inset);
+        self
+    }
+
+    pub fn transform(mut self, transform: TransformStyle) -> Self {
+        self.transform.translate_x = StyleValue::Value(transform.translate.x);
+        self.transform.translate_y = StyleValue::Value(transform.translate.y);
+        self.transform.scale_x = StyleValue::Value(transform.scale.x);
+        self.transform.scale_y = StyleValue::Value(transform.scale.y);
+        self.transform.rotate = StyleValue::Value(transform.rotate);
+        self.transform.origin_x = StyleValue::Value(transform.origin.x);
+        self.transform.origin_y = StyleValue::Value(transform.origin.y);
+        self
+    }
+
+    pub fn translate(mut self, translate: Point) -> Self {
+        self.transform.translate_x = StyleValue::Value(translate.x);
+        self.transform.translate_y = StyleValue::Value(translate.y);
+        self
+    }
+
+    pub fn translate_x(mut self, x: f32) -> Self {
+        self.transform.translate_x = StyleValue::Value(x);
+        self
+    }
+
+    pub fn translate_y(mut self, y: f32) -> Self {
+        self.transform.translate_y = StyleValue::Value(y);
+        self
+    }
+
+    pub fn scale(mut self, scale: f32) -> Self {
+        self.transform.scale_x = StyleValue::Value(scale);
+        self.transform.scale_y = StyleValue::Value(scale);
+        self
+    }
+
+    pub fn scale_xy(mut self, scale: Point) -> Self {
+        self.transform.scale_x = StyleValue::Value(scale.x);
+        self.transform.scale_y = StyleValue::Value(scale.y);
+        self
+    }
+
+    pub fn rotate(mut self, radians: f32) -> Self {
+        self.transform.rotate = StyleValue::Value(radians);
+        self
+    }
+
+    pub fn transform_origin(mut self, origin: Point) -> Self {
+        self.transform.origin_x = StyleValue::Value(origin.x);
+        self.transform.origin_y = StyleValue::Value(origin.y);
         self
     }
 
@@ -1527,6 +1688,7 @@ impl StylePatch {
         merge_text(&mut self.text, &other.text);
         merge_layout(&mut self.layout, &other.layout);
         merge_paint(&mut self.paint, &other.paint);
+        merge_transform(&mut self.transform, &other.transform);
         merge_effect(&mut self.effect, &other.effect);
         merge_scroll(&mut self.scroll, &other.scroll);
     }
@@ -1754,6 +1916,7 @@ pub struct ComputedStyle {
     pub text: ComputedTextStyle,
     pub layout: ComputedLayoutStyle,
     pub paint: ComputedPaintStyle,
+    pub transform: TransformStyle,
     pub effect: ComputedEffectStyle,
     pub scroll: ComputedScrollStyle,
 }
@@ -1796,6 +1959,7 @@ impl ComputedStyle {
                 shadow: None,
                 clip: false,
             },
+            transform: TransformStyle::IDENTITY,
             effect: ComputedEffectStyle {
                 backdrop: None,
                 effects: Arc::from([]),
@@ -1823,6 +1987,7 @@ impl ComputedStyle {
         apply_text(&mut self.text, &parent.text, &patch.text, theme);
         apply_layout(&mut self.layout, &patch.layout, theme);
         apply_paint(&mut self.paint, &patch.paint, theme);
+        apply_transform(&mut self.transform, &patch.transform);
         apply_effect(&mut self.effect, &patch.effect, theme);
         apply_scroll(&mut self.scroll, &patch.scroll, theme);
     }
@@ -1840,6 +2005,10 @@ impl ComputedStyle {
 
         if self.paint != other.paint {
             flags |= StyleDiffFlags::PAINT;
+        }
+
+        if self.transform != other.transform {
+            flags |= StyleDiffFlags::TRANSFORM;
         }
 
         if self.effect != other.effect {
@@ -1997,6 +2166,16 @@ fn merge_paint(target: &mut PaintStylePatch, other: &PaintStylePatch) {
     merge_value(&mut target.clip, &other.clip);
 }
 
+fn merge_transform(target: &mut TransformStylePatch, other: &TransformStylePatch) {
+    merge_value(&mut target.translate_x, &other.translate_x);
+    merge_value(&mut target.translate_y, &other.translate_y);
+    merge_value(&mut target.scale_x, &other.scale_x);
+    merge_value(&mut target.scale_y, &other.scale_y);
+    merge_value(&mut target.rotate, &other.rotate);
+    merge_value(&mut target.origin_x, &other.origin_x);
+    merge_value(&mut target.origin_y, &other.origin_y);
+}
+
 fn merge_effect(target: &mut EffectStylePatch, other: &EffectStylePatch) {
     merge_value(&mut target.backdrop, &other.backdrop);
     merge_value(&mut target.effects, &other.effects);
@@ -2140,6 +2319,19 @@ fn apply_paint(target: &mut ComputedPaintStyle, patch: &PaintStylePatch, theme: 
     );
     target.shadow = resolve_shadow_no_inherit(patch.shadow, target.shadow, initial.shadow, theme);
     target.clip = resolve_copy_no_inherit(patch.clip, target.clip, initial.clip);
+}
+
+fn apply_transform(target: &mut TransformStyle, patch: &TransformStylePatch) {
+    let initial = TransformStyle::IDENTITY;
+    target.translate.x =
+        resolve_copy_no_inherit(patch.translate_x, target.translate.x, initial.translate.x);
+    target.translate.y =
+        resolve_copy_no_inherit(patch.translate_y, target.translate.y, initial.translate.y);
+    target.scale.x = resolve_copy_no_inherit(patch.scale_x, target.scale.x, initial.scale.x);
+    target.scale.y = resolve_copy_no_inherit(patch.scale_y, target.scale.y, initial.scale.y);
+    target.rotate = resolve_copy_no_inherit(patch.rotate, target.rotate, initial.rotate);
+    target.origin.x = resolve_copy_no_inherit(patch.origin_x, target.origin.x, initial.origin.x);
+    target.origin.y = resolve_copy_no_inherit(patch.origin_y, target.origin.y, initial.origin.y);
 }
 
 fn apply_effect(target: &mut ComputedEffectStyle, patch: &EffectStylePatch, theme: &Theme) {
@@ -2787,6 +2979,7 @@ impl Hash for StylePatch {
         self.text.hash(state);
         self.layout.hash(state);
         self.paint.hash(state);
+        self.transform.hash(state);
         self.effect.hash(state);
         self.scroll.hash(state);
     }
@@ -2835,6 +3028,18 @@ impl Hash for PaintStylePatch {
     }
 }
 
+impl Hash for TransformStylePatch {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        hash_style_value_f32(&self.translate_x, state);
+        hash_style_value_f32(&self.translate_y, state);
+        hash_style_value_f32(&self.scale_x, state);
+        hash_style_value_f32(&self.scale_y, state);
+        hash_style_value_f32(&self.rotate, state);
+        hash_style_value_f32(&self.origin_x, state);
+        hash_style_value_f32(&self.origin_y, state);
+    }
+}
+
 impl Hash for EffectStylePatch {
     fn hash<H: Hasher>(&self, state: &mut H) {
         hash_style_value_backdrop(&self.backdrop, state);
@@ -2860,6 +3065,13 @@ fn hash_style_value_edge_insets<H: Hasher>(value: &StyleValue<EdgeInsets>, state
     core::mem::discriminant(value).hash(state);
     if let StyleValue::Value(value) = value {
         hash_edge_insets(*value, state);
+    }
+}
+
+fn hash_style_value_f32<H: Hasher>(value: &StyleValue<f32>, state: &mut H) {
+    core::mem::discriminant(value).hash(state);
+    if let StyleValue::Value(value) = value {
+        value.to_bits().hash(state);
     }
 }
 
@@ -3459,5 +3671,48 @@ mod tests {
 
         style.merge(&Style::new().transition(second));
         assert_eq!(style.transition_config(), Some(second));
+    }
+
+    #[test]
+    fn transform_is_non_inherited_and_state_patches_merge_by_component() {
+        let theme = Theme::default();
+        let initial = ComputedStyle::initial(&theme);
+        let style = Style::new()
+            .translate_x(3.0)
+            .when(WidgetState::PRESSED, |patch| patch.translate_y(2.0));
+
+        let normal = ComputedStyle::compute(
+            &initial,
+            &style.patch_for_state(WidgetState::empty()),
+            &theme,
+        );
+        let pressed = ComputedStyle::compute(
+            &initial,
+            &style.patch_for_state(WidgetState::PRESSED),
+            &theme,
+        );
+        let child = ComputedStyle::compute(&pressed, &StylePatch::new(), &theme);
+
+        assert_eq!(normal.transform.translate, Point::new(3.0, 0.0));
+        assert_eq!(pressed.transform.translate, Point::new(3.0, 2.0));
+        assert_eq!(child.transform, TransformStyle::IDENTITY);
+        assert_eq!(normal.diff(&pressed), StyleDiffFlags::TRANSFORM);
+    }
+
+    #[test]
+    fn transform_affine_uses_normalized_origin() {
+        let transform = TransformStyle::new()
+            .uniform_scale(0.5)
+            .translate(Point::new(0.0, 2.0));
+        let affine = transform.to_affine(Size::new(100.0, 20.0));
+
+        assert_eq!(
+            affine.transform_point(Point::new(50.0, 10.0)),
+            Point::new(50.0, 12.0)
+        );
+        assert_eq!(
+            affine.transform_point(Point::new(0.0, 0.0)),
+            Point::new(25.0, 7.0)
+        );
     }
 }

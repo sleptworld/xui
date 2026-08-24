@@ -1,7 +1,7 @@
 use super::{BlendMode, LayerCacheKey};
 use crate::render::CompositeOperator;
 use std::sync::Arc;
-use xui_interface::{Affine, Bounds, ComputedBackdropStyle, ComputedEffect, Rect};
+use xui_interface::{Affine, Bounds, ComputedBackdropStyle, ComputedEffect};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CompositeStyle {

@@ -965,8 +965,8 @@ pub fn image() -> ImageWidget {
     ImageWidget::new()
 }
 
-pub fn icon(data: IconData) -> IconWidget {
-    IconWidget::new(data)
+pub fn icon() -> IconWidget {
+    IconWidget::new()
 }
 
 pub(crate) fn root_overlayer_widget() -> RootOverlayerWidget {

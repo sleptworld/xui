@@ -4,7 +4,7 @@ use crate::animation::has_animatable_difference;
 use crate::core::{Point, Size};
 use crate::event_system::callbacks::{CallbackHandleSet, CallbackStore};
 use crate::event_system::interaction::HostInteraction;
-use crate::event_system::{self, translator::EventTranslator, EventState};
+use crate::event_system::{self, EventState, translator::EventTranslator};
 use crate::fiber::Key;
 use crate::focus::FocusManager;
 use crate::layout::{computed_style_for_widget, taffy_style_for_widget};
@@ -22,8 +22,8 @@ use crate::ui_runtime::style::StyleSystem;
 use crate::ui_runtime::tree::{HostData, HostTree};
 use crate::ui_runtime::{NodeView, RenderFrame, RenderFrameError, UiRuntime};
 use crate::widgets::{
-    canvas_text_slot, OverlayEntryId, OverlayEntryOptions, OverlayModelError, OverlayScopeId,
-    WidgetI, WidgetType, Widgets,
+    OverlayEntryId, OverlayEntryOptions, OverlayModelError, OverlayScopeId, WidgetI, WidgetType,
+    Widgets, canvas_text_slot,
 };
 use std::time::Duration;
 use taffy::prelude as tf;
@@ -229,14 +229,18 @@ impl UiRuntime {
 
     fn create_host_render_binding(&mut self, host: NodeId) -> Result<(), SceneError> {
         let root = self.render_system.scene.insert_transform(Affine::IDENTITY);
+        let transform = self.render_system.scene.insert_transform(Affine::IDENTITY);
         let contents = self.render_system.scene.insert_group();
         let paint = self.render_system.scene.insert_group();
         self.render_system.scene.append_child(contents, paint)?;
 
-        self.render_system.scene.set_child(root, Some(contents))?;
+        self.render_system
+            .scene
+            .set_child(transform, Some(contents))?;
+        self.render_system.scene.set_child(root, Some(transform))?;
         self.render_system.bind_host(
             host,
-            HostRenderBinding::scaffold(root, contents, paint, None, None, None),
+            HostRenderBinding::scaffold(root, transform, contents, paint, None, None, None),
         )?;
 
         if host == self.root {
@@ -320,7 +324,7 @@ impl UiRuntime {
 
         // Reconcile the fixed host scaffold.
         self.render_system.scene.update_transform(
-            binding.transform,
+            binding.root,
             Affine::translate(local_origin.x, local_origin.y),
         )?;
 
@@ -462,6 +466,8 @@ impl UiRuntime {
             writer.finish()?;
         }
 
+        self.sync_effective_transform(id);
+
         Ok(())
     }
 
@@ -509,8 +515,11 @@ impl UiRuntime {
             return Ok(());
         }
 
-        // Break the old root -> clip -> layer -> contents chain.
-        self.render_system.scene.set_child(binding.root, None)?;
+        // Break the old transform -> clip -> layer -> contents chain. The
+        // layout root remains permanently attached to the style transform.
+        self.render_system
+            .scene
+            .set_child(binding.transform, None)?;
         if let Some(clip) = old_clip {
             self.render_system.scene.set_child(clip, None)?;
         }
@@ -530,7 +539,7 @@ impl UiRuntime {
         }
         self.render_system
             .scene
-            .set_child(binding.root, Some(child))?;
+            .set_child(binding.transform, Some(child))?;
 
         // Drop binding references before removing obsolete wrapper subtrees.
         let stored = self
@@ -885,6 +894,9 @@ impl UiRuntime {
             self.layout_tree.remove_host(removed);
             if let Some(binding) = self.render_system.unbind_host(removed) {
                 self.render_system
+                    .properties
+                    .remove_source(binding.transform);
+                self.render_system
                     .scene
                     .remove_subtree(binding.root)
                     .expect("failed to remove host render subtree");
@@ -1218,10 +1230,16 @@ impl UiRuntime {
             return false;
         }
         let changed = self.style_system.tick(delta, &self.theme);
+        let inherited_text_changed = changed
+            .iter()
+            .any(|(_, diff, _)| diff.intersects(xui_interface::StyleDiffFlags::TEXT));
         for (id, diff, requires_layout) in changed.iter().copied() {
+            if diff.intersects(xui_interface::StyleDiffFlags::TRANSFORM) {
+                self.sync_effective_transform(id);
+            }
             let mut work = HostWorkFlags::from_style_diff(diff);
-            // Sampling inherited text values must not dirty the target-style
-            // subtree every frame. Descendants own their own transitions.
+            // Do not enqueue a target-style subtree recompute every frame.
+            // Sampled inherited values are propagated separately below.
             work.remove(HostWorkFlags::RECALC_STYLE_SUBTREE);
             if requires_layout {
                 self.sync_effective_taffy_style(id);
@@ -1231,6 +1249,9 @@ impl UiRuntime {
                 work.remove(HostWorkFlags::RECALC_LAYOUT);
             }
             self.mark_work(id, work);
+        }
+        if inherited_text_changed {
+            self.sync_sampled_text_inheritance(self.root);
         }
         !changed.is_empty()
     }
@@ -1251,12 +1272,20 @@ impl UiRuntime {
 
         // Fiber-style bailout: skip the whole branch when neither this node nor
         // any descendant has scheduled work.
-        for node_id in self.style_system.drain_dirty() {
+        let style_dirty = self.style_system.drain_dirty();
+        let mut styles_recomputed = !style_dirty.is_empty();
+        for node_id in style_dirty {
             self.recompute_node_style(node_id);
         }
 
-        for node_id in self.style_system.drain_subtree_dirty() {
+        let subtree_dirty = self.style_system.drain_subtree_dirty();
+        styles_recomputed |= !subtree_dirty.is_empty();
+        for node_id in subtree_dirty {
             self.recompute_subtree_styles(node_id);
+        }
+
+        if styles_recomputed {
+            self.sync_sampled_text_inheritance(self.root);
         }
 
         // Recompute layout if needed.
@@ -1285,6 +1314,37 @@ impl UiRuntime {
         // Recompute style if the widget's style affects the state change.
         if widget.with_widgets(|w| w.style().affects_state_change(before, state)) {
             self.mark_dirty(id, WidgetUpdateFlags::STYLE_TARGET);
+        }
+    }
+
+    fn sync_sampled_text_inheritance(&mut self, id: NodeId) {
+        let parent_effective = self.style_system.effective(id).cloned();
+        let children: Vec<_> = self.hosts.children(id).collect();
+        for child in children {
+            let state = self.hosts[child].state;
+            let patch = self.hosts[child]
+                .widget
+                .with_widgets(|widget| widget.style().patch_for_state(state));
+            let (diff, requires_layout) = self.style_system.sync_inherited_text(
+                child,
+                parent_effective
+                    .as_ref()
+                    .expect("parent style missing during inheritance sync"),
+                &patch,
+            );
+            if !diff.is_empty() {
+                let mut work = HostWorkFlags::from_style_diff(diff);
+                // Descendants are synchronized recursively below, so do not
+                // enqueue a second target-style subtree traversal.
+                work.remove(HostWorkFlags::RECALC_STYLE_SUBTREE);
+                if requires_layout {
+                    self.sync_effective_taffy_style(child);
+                    self.refresh_taffy_context(child);
+                    work |= HostWorkFlags::RECALC_LAYOUT | HostWorkFlags::REBUILD_PAINT;
+                }
+                self.mark_work(child, work);
+            }
+            self.sync_sampled_text_inheritance(child);
         }
     }
 
@@ -1327,6 +1387,7 @@ impl UiRuntime {
         if !self.style_system.initialized(id) {
             self.style_system.set_computed(id, computed_style);
             self.style_system.set_initialized(id);
+            self.sync_effective_transform(id);
             if self.sync_effective_taffy_style(id) {
                 work_flags |= HostWorkFlags::RECALC_LAYOUT | HostWorkFlags::REBUILD_PAINT;
             }
@@ -1339,8 +1400,13 @@ impl UiRuntime {
             let current_target = self.style_system.computed(id).expect("style node missing");
             has_animatable_difference(current_target, &computed_style)
         };
+        let effective_before = self
+            .style_system
+            .effective(id)
+            .expect("style node missing")
+            .clone();
         let mut cancelled_transition = false;
-        let started_transition = match (transition, animatable_target_changed) {
+        let _started_transition = match (transition, animatable_target_changed) {
             (Some(transition), true) => {
                 let from_style = self
                     .style_system
@@ -1361,18 +1427,21 @@ impl UiRuntime {
             }
         };
 
-        if work_flags.is_empty() && !cancelled_transition {
+        if style_diff.is_empty() && !cancelled_transition {
             return;
         }
 
         self.style_system.set_computed(id, computed_style);
+        let effective_diff =
+            effective_before.diff(self.style_system.effective(id).expect("style node missing"));
+        work_flags |= HostWorkFlags::from_style_diff(effective_diff);
+
+        if effective_diff.intersects(xui_interface::StyleDiffFlags::TRANSFORM) {
+            self.sync_effective_transform(id);
+        }
 
         if self.sync_effective_taffy_style(id) {
             work_flags |= HostWorkFlags::RECALC_LAYOUT | HostWorkFlags::REBUILD_PAINT;
-        }
-
-        if started_transition || cancelled_transition {
-            work_flags |= HostWorkFlags::REBUILD_PAINT;
         }
 
         self.refresh_taffy_context(id);
@@ -1448,6 +1517,30 @@ impl UiRuntime {
 
     fn effective_style(&self, id: NodeId) -> Option<&ComputedStyle> {
         self.style_system.effective(id)
+    }
+
+    fn sync_effective_transform(&mut self, id: NodeId) -> bool {
+        let Some(binding) = self.render_system.host_binding(id).copied() else {
+            return false;
+        };
+        let Some(style) = self.style_system.effective(id).map(|style| style.transform) else {
+            return false;
+        };
+        if style == xui_interface::TransformStyle::IDENTITY {
+            return self
+                .render_system
+                .properties
+                .clear_transform(binding.transform);
+        }
+        let size = self
+            .layout_tree
+            .host(id)
+            .expect("transform host is missing layout")
+            .layout
+            .size();
+        self.render_system
+            .properties
+            .set_transform(binding.transform, style.to_affine(size))
     }
 
     pub fn repaint_if_needed(&mut self, id: NodeId) {
@@ -2046,7 +2139,7 @@ mod tests {
     use crate::focus::FocusHandle;
     use crate::render::RenderNodeKind;
     use crate::text::testing::ZeroTextBackend;
-    use crate::widgets::{canvas, container, text, text_input, z_stack, CanvasController, WidgetI};
+    use crate::widgets::{CanvasController, WidgetI, canvas, container, text, text_input, z_stack};
     use std::time::{Duration, Instant};
     use xui_animation::{Easing, Transition};
     use xui_interface::events::{
@@ -2737,6 +2830,8 @@ mod tests {
             panic!("expected solid background")
         };
         assert!((background.r - 0.5).abs() < 0.0001);
+        let layout_passes = arena.layout_passes;
+        let repaint_passes = arena.repaint_passes;
 
         let style_without_transition = Style::new()
             .width(20.0)
@@ -2756,6 +2851,140 @@ mod tests {
             effective.paint.background,
             ComputedColorStyle::Solid(Color::WHITE)
         );
+        assert_eq!(arena.layout_passes, layout_passes);
+        assert_eq!(arena.repaint_passes, repaint_passes + 1);
+    }
+
+    #[test]
+    fn inherited_text_color_follows_parent_transition_sample_without_layout() {
+        let mut arena = UiRuntime::new();
+        let transition = Transition::new(Duration::from_millis(100)).ease(Easing::Linear);
+        let tab = create_host(
+            &mut arena,
+            WidgetI::new(
+                container().style(
+                    Style::new()
+                        .color(Color::BLACK)
+                        .when(WidgetState::HOVERED, |patch| patch.color(Color::WHITE))
+                        .transition(transition),
+                ),
+            ),
+        );
+        let label = create_host(&mut arena, WidgetI::new(text("New member")));
+        let explicit_label = create_host(
+            &mut arena,
+            WidgetI::new(text("Pinned").style(Style::new().color(Color::BLUE_500))),
+        );
+        arena.append_child(tab, label);
+        arena.append_child(tab, explicit_label);
+
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(200.0, 100.0), &mut measurer);
+        arena.set_widget_state_flag(tab, WidgetState::HOVERED, true);
+        arena.update_tree(Size::new(200.0, 100.0), &mut measurer);
+        let layout_passes = arena.layout_passes;
+
+        assert!(arena.tick_style_animations(Duration::from_millis(50)));
+        arena.update_tree(Size::new(200.0, 100.0), &mut measurer);
+
+        let parent_color = arena.style_system.effective(tab).unwrap().text.color;
+        let label_color = arena.style_system.effective(label).unwrap().text.color;
+        assert!((parent_color.r - 0.5).abs() < 0.0001);
+        assert_eq!(label_color, parent_color);
+        assert_eq!(
+            arena
+                .style_system
+                .effective(explicit_label)
+                .unwrap()
+                .text
+                .color,
+            Color::BLUE_500
+        );
+        assert_eq!(arena.layout_passes, layout_passes);
+    }
+
+    #[test]
+    fn hovered_cjk_tab_keeps_one_line_and_finishes_paint_transition() {
+        let mut arena = UiRuntime::new();
+        let transition = Transition::new(Duration::from_millis(100)).ease(Easing::Linear);
+        let tab = create_host(
+            &mut arena,
+            WidgetI::new(
+                container().style(
+                    Style::new()
+                        .padding(xui_interface::EdgeInsets::symmetric(16.0, 6.0))
+                        .color(Color::BLACK)
+                        .font_family("PingFang SC")
+                        .font_size(12.0)
+                        .border_width(1.0)
+                        .when(WidgetState::HOVERED, |patch| {
+                            patch.background(Color::BLACK).color(Color::WHITE)
+                        })
+                        .transition(transition),
+                ),
+            ),
+        );
+        let label = create_host(&mut arena, WidgetI::new(text("飞行监测")));
+        arena.append_child(tab, label);
+
+        let size = Size::new(400.0, 200.0);
+        let mut measurer = TextHost::new(crate::Engine::new());
+        arena.update_tree(size, &mut measurer);
+        let layout_passes = arena.layout_passes;
+        let tab_bounds = arena.node(tab).unwrap().layout;
+        let pointer = Point::new(
+            (tab_bounds.min.x + tab_bounds.max.x) * 0.5,
+            (tab_bounds.min.y + tab_bounds.max.y) * 0.5,
+        );
+        let mut translator =
+            EventTranslator::new(crate::event_system::translator::EventTranslatorConfig::default());
+
+        arena.dispatch_event(&measurer, &mut translator, pointer_move(pointer));
+        arena.update_tree(size, &mut measurer);
+        assert!(
+            arena
+                .node(tab)
+                .unwrap()
+                .state
+                .contains(WidgetState::HOVERED)
+        );
+        assert!(arena.has_running_style_animations());
+        assert_eq!(arena.layout_passes, layout_passes);
+
+        for frame in 0..20 {
+            // Repeated cursor notifications at a stationary position must not
+            // toggle the ancestor hover state or restart its transition.
+            arena.dispatch_event(&measurer, &mut translator, pointer_move(pointer));
+            assert!(
+                arena.ui_state.layout_dirty_list.is_empty(),
+                "pointer dispatch dirtied layout on frame {frame}"
+            );
+            arena.tick_style_animations(Duration::from_millis(8));
+            assert!(
+                arena.ui_state.layout_dirty_list.is_empty(),
+                "animation tick dirtied layout on frame {frame}"
+            );
+            arena.update_tree(size, &mut measurer);
+
+            assert!(
+                arena
+                    .node(tab)
+                    .unwrap()
+                    .state
+                    .contains(WidgetState::HOVERED)
+            );
+            let active = measurer
+                .active_slot(label, TextLayoutSlot::PRIMARY)
+                .and_then(|handle| measurer.layout(handle))
+                .expect("hovered tab label must retain an active layout");
+            assert_eq!(active.lines.len(), 1, "hover animation wrapped CJK label");
+            assert_eq!(
+                arena.layout_passes, layout_passes,
+                "paint-only hover transition triggered layout on frame {frame}"
+            );
+        }
+
+        assert!(!arena.has_running_style_animations());
     }
 
     #[test]
@@ -2837,6 +3066,90 @@ mod tests {
         arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
         assert_eq!(arena.layout_passes, layout_passes);
+    }
+
+    #[test]
+    fn state_transform_transition_updates_only_frame_properties() {
+        let mut arena = UiRuntime::new();
+        let transition = Transition::new(Duration::from_millis(100)).ease(Easing::QuadIn);
+        let style = Style::new()
+            .width(20.0)
+            .height(20.0)
+            .when(WidgetState::PRESSED, |patch| patch.translate_y(4.0))
+            .transition(transition);
+        let node = create_host(&mut arena, WidgetI::new(container().style(style)));
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+
+        arena.set_widget_state_flag(node, WidgetState::PRESSED, true);
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        let layout_passes = arena.layout_passes;
+        let repaint_passes = arena.repaint_passes;
+        let transform_node = arena.render_system.host_binding(node).unwrap().transform;
+        assert!(
+            arena
+                .render_system
+                .properties
+                .transform(transform_node)
+                .is_none()
+        );
+
+        assert!(arena.tick_style_animations(Duration::from_millis(50)));
+        let effective = arena.style_system.effective(node).unwrap();
+        assert!((effective.transform.translate.y - 1.0).abs() < 0.0001);
+        assert_eq!(
+            arena
+                .render_system
+                .properties
+                .transform(transform_node)
+                .unwrap()
+                .value,
+            Affine::translate(0.0, 1.0)
+        );
+
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        assert_eq!(arena.layout_passes, layout_passes);
+        assert_eq!(arena.repaint_passes, repaint_passes);
+    }
+
+    #[test]
+    fn direct_transform_update_skips_layout_and_repaint() {
+        let mut arena = UiRuntime::new();
+        let node = create_host(
+            &mut arena,
+            WidgetI::new(container().style(Style::new().width(20.0).height(20.0))),
+        );
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        let layout_passes = arena.layout_passes;
+        let repaint_passes = arena.repaint_passes;
+
+        update_host(
+            &mut arena,
+            node,
+            WidgetI::new(
+                container().style(
+                    Style::new()
+                        .width(20.0)
+                        .height(20.0)
+                        .translate(Point::new(3.0, 5.0)),
+                ),
+            ),
+        );
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+
+        let transform_node = arena.render_system.host_binding(node).unwrap().transform;
+        assert_eq!(
+            arena
+                .render_system
+                .properties
+                .transform(transform_node)
+                .unwrap()
+                .value,
+            Affine::translate(3.0, 5.0)
+        );
+        assert_eq!(arena.layout_passes, layout_passes);
+        assert_eq!(arena.repaint_passes, repaint_passes);
     }
 }
 

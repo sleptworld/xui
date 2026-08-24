@@ -185,6 +185,39 @@ pub fn parse_paint_style_attr<T: quote::ToTokens + ?Sized>(
     }
 }
 
+pub fn parse_transform_style_attr<T: quote::ToTokens + ?Sized>(
+    name: &str,
+    value: &T,
+) -> Option<TokenStream2> {
+    match name {
+        "transform" => Some(quote! {
+            __xui_style = __xui_style.transform(#value);
+        }),
+        "translate" => Some(quote! {
+            __xui_style = __xui_style.translate(#value);
+        }),
+        "translate_x" => Some(quote! {
+            __xui_style = __xui_style.translate_x(#value);
+        }),
+        "translate_y" => Some(quote! {
+            __xui_style = __xui_style.translate_y(#value);
+        }),
+        "scale" => Some(quote! {
+            __xui_style = __xui_style.scale(#value);
+        }),
+        "scale_xy" => Some(quote! {
+            __xui_style = __xui_style.scale_xy(#value);
+        }),
+        "rotate" => Some(quote! {
+            __xui_style = __xui_style.rotate(#value);
+        }),
+        "transform_origin" => Some(quote! {
+            __xui_style = __xui_style.transform_origin(#value);
+        }),
+        _ => None,
+    }
+}
+
 pub fn parse_scroll_style_attr<T: quote::ToTokens + ?Sized>(
     name: &str,
     value: &T,

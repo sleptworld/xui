@@ -3,7 +3,7 @@ use super::{
     RenderNodeId, ShapePrimitive, TextPrimitive, VectorPrimitive,
 };
 use crate::render::render_graph::BuiltLayerProgram;
-use xui_interface::{Affine, Bounds, Rect};
+use xui_interface::{Affine, Bounds};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BuiltLayerId(pub usize);

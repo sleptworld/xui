@@ -18,7 +18,7 @@ use syn::{
 use crate::tools::{
     event_attr_stmt, parse_attrs_helper, parse_base_attr, parse_event_attr,
     parse_layout_style_attr, parse_paint_style_attr, parse_scroll_style_attr,
-    parse_text_style_attr, unsupported_attr,
+    parse_text_style_attr, parse_transform_style_attr, unsupported_attr,
 };
 
 #[proc_macro]
@@ -1692,6 +1692,7 @@ fn expand_node(node: &ElementNode) -> Result<TokenStream2> {
         "text" => expand_text(node),
         "container" => expand_container(node),
         "canvas" => expand_canvas(node),
+        "icon" => expand_icon(node),
         _ => expand_function_component(node),
     }
 }
@@ -1772,6 +1773,7 @@ fn expand_container(node: &ElementNode) -> Result<TokenStream2> {
             .or(parse_text_style_attr(name, value)
                 .or(parse_layout_style_attr(name, value))
                 .or(parse_paint_style_attr(name, value))
+                .or(parse_transform_style_attr(name, value))
                 .or(parse_scroll_style_attr(name, value))
                 .or(parse_event_attr(name, value)))
         },
@@ -1816,6 +1818,7 @@ fn expand_canvas(node: &ElementNode) -> Result<TokenStream2> {
             .or(parse_text_style_attr(name, value)
                 .or(parse_layout_style_attr(name, value))
                 .or(parse_paint_style_attr(name, value))
+                .or(parse_transform_style_attr(name, value))
                 .or(parse_scroll_style_attr(name, value))
                 .or(parse_event_attr(name, value)))
         },
@@ -1831,6 +1834,47 @@ fn expand_canvas(node: &ElementNode) -> Result<TokenStream2> {
 
     Ok(quote! {{
         let mut __xui_element = ::xui::canvas(#controller);
+        let mut __xui_style = ::xui::Style::new();
+        #(#attr_stmts)*
+        __xui_element = __xui_element.style(__xui_style);
+        __xui_element.into_element_desc()
+    }})
+}
+
+fn expand_icon(node: &ElementNode) -> Result<TokenStream2> {
+    let mut attr_stmts = Vec::new();
+    parse_attrs_helper(
+        node,
+        |name, value| {
+            match name {
+                "transition" => Some(quote! {
+                    __xui_style = __xui_style.transition(#value);
+                }),
+                "asset" => Some(quote! {
+                    __xui_element = __xui_element.asset(#value);
+                }),
+                "size" => Some(quote! {
+                    let __xui_icon_size: ::xui::Sizing = (#value).into();
+                    __xui_style = __xui_style.size(::xui::Size::new(
+                        __xui_icon_size,
+                        __xui_icon_size,
+                    ));
+                }),
+                _ => None,
+            }
+            .or(parse_base_attr(name, value))
+            .or(parse_text_style_attr(name, value)
+                .or(parse_layout_style_attr(name, value))
+                .or(parse_paint_style_attr(name, value))
+                .or(parse_transform_style_attr(name, value))
+                .or(parse_scroll_style_attr(name, value))
+                .or(parse_event_attr(name, value)))
+        },
+        &mut attr_stmts,
+    )?;
+
+    Ok(quote! {{
+        let mut __xui_element = ::xui::icon();
         let mut __xui_style = ::xui::Style::new();
         #(#attr_stmts)*
         __xui_element = __xui_element.style(__xui_style);
@@ -1874,6 +1918,7 @@ fn expand_image(node: &ElementNode) -> Result<TokenStream2> {
             .or(parse_text_style_attr(name, value)
                 .or(parse_layout_style_attr(name, value))
                 .or(parse_paint_style_attr(name, value))
+                .or(parse_transform_style_attr(name, value))
                 .or(parse_scroll_style_attr(name, value))
                 .or(parse_event_attr(name, value)))
         },
@@ -1990,6 +2035,20 @@ fn expand_children(children: &[Child]) -> Result<Vec<TokenStream2>> {
             }),
         })
         .collect()
+}
+
+fn optional_icon_data(node: &ElementNode) -> TokenStream2 {
+    for attr in &node.attrs {
+        if attr.name == "data" {
+            return attr.value.clone();
+        }
+    }
+    if node.children.len() == 1 {
+        if let Child::Expr(expr) = &node.children[0] {
+            return expr.into_token_stream();
+        }
+    }
+    quote!("")
 }
 
 fn optional_text(node: &ElementNode) -> TokenStream2 {
@@ -2282,5 +2341,31 @@ mod tests {
         let error = expand_style(&input).unwrap_err();
 
         assert!(error.to_string().contains("cannot mix state names"));
+    }
+
+    #[test]
+    fn container_transform_attributes_write_style() {
+        let node = syn::parse2::<ElementNode>(quote!(
+            <container translate_y={2.0} scale={0.98}></container>
+        ))
+        .unwrap();
+        let expanded = expand_container(&node).unwrap().to_string();
+
+        assert!(expanded.contains("translate_y (2.0)"));
+        assert!(expanded.contains("scale (0.98)"));
+    }
+
+    #[test]
+    fn icon_expands_without_children_argument() {
+        let node = syn::parse2::<ElementNode>(quote!(
+            <icon asset={xui_assets::icons::SEARCH_SVG} size={16.0}/>
+        ))
+        .unwrap();
+        let expanded = expand_icon(&node).unwrap().to_string();
+
+        assert!(expanded.contains("into_element_desc ()"));
+        assert!(expanded.contains("let __xui_icon_size : :: xui :: Sizing = (16.0) . into ()"));
+        assert!(expanded.contains("Size :: new (__xui_icon_size , __xui_icon_size"));
+        assert!(!expanded.contains("into_element_desc (:: std :: vec :: Vec :: new ())"));
     }
 }

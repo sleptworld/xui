@@ -2,10 +2,12 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::assets::{SvgAsset, load_asset};
 use crate::element::ElementDesc;
 use crate::event_system::EventContext;
 use crate::event_system::callbacks::EventHandlers;
 use crate::event_system::interaction::InteractionProperties;
+use xui_assets::AssetId;
 use xui_interface::{
     Affine, Bounds, Color, ComputedStyle, EventRef, EventResult, FillRule, Key, PathData, PathFill,
     PathStroke, Rect, Size, Sizing, Style, TextContent, TextProps, VectorSceneBuilder, WidgetType,
@@ -193,7 +195,8 @@ impl Hash for IconData {
 
 pub struct IconWidget {
     pub key: Option<Key>,
-    pub data: IconData,
+    pub icon_key: Option<AssetId>,
+    pub data: Option<IconData>,
     pub color: Option<Color>,
     pub style: Style,
     pub event_handlers: EventHandlers,
@@ -212,33 +215,65 @@ impl std::fmt::Debug for IconWidget {
 }
 
 impl IconWidget {
-    pub fn new(data: IconData) -> Self {
+    pub fn new() -> Self {
         Self {
             key: None,
-            data,
+            data: None,
             color: None,
+            icon_key: None,
             style: Style::new(),
             event_handlers: EventHandlers::default(),
             interaction: InteractionProperties::default(),
         }
     }
 
-    pub fn from_svg(svg: &str) -> Result<Self, SvgIconError> {
-        IconData::from_svg(svg).map(Self::new)
+    pub fn asset(mut self, asset: AssetId) -> Self {
+        let data = load_asset::<SvgAsset>(asset);
+        self.icon_key = Some(asset);
+        self.data = data;
+        self
     }
 
-    pub fn from_svg_bytes(svg: &[u8]) -> Result<Self, SvgIconError> {
-        IconData::from_svg_bytes(svg).map(Self::new)
+    pub fn from_svg(mut self, svg: &str) -> Result<Self, SvgIconError> {
+        self.data = Some(IconData::from_svg(svg)?);
+        Ok(self)
     }
 
-    pub fn from_svg_file(path: impl AsRef<Path>) -> Result<Self, SvgIconError> {
-        IconData::from_svg_file(path).map(Self::new)
+    pub fn from_icon_data(mut self, svg: IconData) -> Self {
+        self.data = Some(svg);
+        self
     }
+
+    // pub fn from_svg_bytes(svg: &[u8]) -> Result<Self, SvgIconError> {
+    //     IconData::from_svg_bytes(svg).map(Self::new)
+    // }
+
+    // pub fn from_svg_file(path: impl AsRef<Path>) -> Result<Self, SvgIconError> {
+    //     IconData::from_svg_file(path).map(Self::new)
+    // }
 
     pub fn color(mut self, color: Color) -> Self {
         self.color = Some(color);
         self
     }
+
+    /// Sets both dimensions of the icon to the same value.
+    pub fn size(mut self, size: impl Into<Sizing>) -> Self {
+        let size = size.into();
+        self.style = self.style.size(Size::new(size, size));
+        self
+    }
+
+    pub fn width(mut self, width: impl Into<Sizing>) -> Self {
+        self.style = self.style.width(width);
+        self
+    }
+
+    pub fn height(mut self, height: impl Into<Sizing>) -> Self {
+        self.style = self.style.height(height);
+        self
+    }
+
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
@@ -298,7 +333,13 @@ impl IconWidget {
         style: &ComputedStyle,
         writer: &mut RenderTreeWriter<'_>,
     ) {
-        let view = self.data.view_box;
+        if self.data.is_none() {
+            return;
+        }
+
+        let data = self.data.as_ref().unwrap();
+
+        let view = data.view_box;
         if rect.width() <= 0.0 || rect.height() <= 0.0 || view.width <= 0.0 || view.height <= 0.0 {
             return;
         }
@@ -311,7 +352,7 @@ impl IconWidget {
         let color = self.color.unwrap_or(style.text.color);
 
         let mut scene = VectorSceneBuilder::new();
-        for layer in self.data.layers.iter() {
+        for layer in data.layers.iter() {
             if let Some(rule) = layer.fill {
                 scene.fill_path(
                     layer.path.clone(),
@@ -472,7 +513,9 @@ mod tests {
 
     #[test]
     fn defaults_to_twenty_four_logical_pixels() {
-        let style = IconWidget::new(icon_data()).default_style();
+        let style = IconWidget::new()
+            .from_icon_data(icon_data())
+            .default_style();
         assert_eq!(
             style.base.layout.width,
             StyleValue::Value(Sizing::fix(24.0))
@@ -484,9 +527,32 @@ mod tests {
     }
 
     #[test]
+    fn size_builders_write_widget_style() {
+        let square = IconWidget::new().size(16.0);
+        assert_eq!(
+            square.style.base.layout.width,
+            StyleValue::Value(Sizing::fix(16.0))
+        );
+        assert_eq!(
+            square.style.base.layout.height,
+            StyleValue::Value(Sizing::fix(16.0))
+        );
+
+        let rectangular = IconWidget::new().width(20.0).height(12.0);
+        assert_eq!(
+            rectangular.style.base.layout.width,
+            StyleValue::Value(Sizing::fix(20.0))
+        );
+        assert_eq!(
+            rectangular.style.base.layout.height,
+            StyleValue::Value(Sizing::fix(12.0))
+        );
+    }
+
+    #[test]
     fn contain_mapping_centers_view_box_and_uses_explicit_color() {
         let color = Color::rgb(0.2, 0.4, 0.6);
-        let widget = IconWidget::new(icon_data()).color(color);
+        let widget = IconWidget::new().from_icon_data(icon_data()).color(color);
         let style = ComputedStyle::initial(&Theme::default());
         let mut scene = crate::render::RenderScene::new();
         let parent = scene.insert_group();

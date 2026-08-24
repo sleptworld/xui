@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use moka::sync::Cache;
+use moka::{ops::compute::Op, sync::Cache};
 use xui_interface::{ImageData, Size};
 use zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions};
 use zune_image::{errors::ImageErrors, image::Image};
@@ -65,6 +65,33 @@ pub fn install_asset_manager(manager: AssetManager) {
 /// Removes the current UI thread's asset manager and decoded image cache.
 pub fn clear_asset_manager() {
     *ASSET_RUNTIME.lock().expect("asset runtime poisoned") = AssetRuntime::default();
+}
+
+pub fn load_asset<T: AssetFormat>(id: AssetId) -> Option<T::Output> {
+    let (manager, misses) = {
+        let runtime = ASSET_RUNTIME.lock().expect("asset runtime poisoned");
+        (runtime.manager.clone()?, runtime.misses.clone())
+    };
+
+    if misses.get(&id).is_some() {
+        return None;
+    }
+
+    let metadata = match manager.metadata(id).ok().flatten() {
+        Some(metadata) => metadata,
+        None => {
+            misses.insert(id, ());
+            return None;
+        }
+    };
+
+    match manager.read::<T>(id).ok().flatten() {
+        Some(data) => Some(data),
+        None => {
+            misses.insert(id, ());
+            None
+        }
+    }
 }
 
 /// Loads and decodes an image asset, caching both successful and failed lookups.

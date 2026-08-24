@@ -37,7 +37,8 @@ pub use crate::style::{
     PositionStyle, RadialGradientStyle, RadiusToken, ScrollDirectionStyle, ScrollStylePatch,
     ScrollbarStyle, ScrollbarStylePatch, ScrollbarVisibilityStyle, ShadowStyle, SpacingToken,
     StateStyleRule, Stroke, StrokeLineStyle, StrokeStyle, Style, StyleMerge, StylePatch,
-    StyleValue, TextStylePatch, Theme, WidgetState, WidgetStateMatcher,
+    StyleValue, TextStylePatch, Theme, TransformStyle, TransformStylePatch, WidgetState,
+    WidgetStateMatcher,
 };
 pub use crate::ui_runtime::{NodeView, RenderFrame, RenderFrameError, UiRuntime};
 pub use crate::widgets::{

@@ -12,9 +12,7 @@ use state::UiState;
 use style::StyleSystem;
 use tree::{HostData, HostTree};
 use xui_interface::core::Bounds;
-use xui_interface::{
-    ComputedStyle, NodeId, NodeLifecycleEvent, Point, Rect, Size, Theme, WidgetState,
-};
+use xui_interface::{ComputedStyle, NodeId, NodeLifecycleEvent, Point, Size, Theme, WidgetState};
 
 pub(crate) mod interaction;
 pub(crate) mod layout;

@@ -262,6 +262,25 @@ pub(crate) fn interpolate_style(
     sampled.paint.stroke = optional_stroke(from.paint.stroke, to.paint.stroke, progress);
     sampled.paint.shadow = optional_shadow(from.paint.shadow, to.paint.shadow, progress);
 
+    interpolate_fields!(
+        sampled.transform,
+        from.transform,
+        to.transform,
+        progress,
+        point;
+        translate,
+        scale,
+        origin,
+    );
+    interpolate_fields!(
+        sampled.transform,
+        from.transform,
+        to.transform,
+        progress,
+        lerp;
+        rotate,
+    );
+
     sampled.effect.backdrop =
         optional_backdrop(&from.effect.backdrop, &to.effect.backdrop, progress);
     sampled.effect.effects = effect_list(&from.effect.effects, &to.effect.effects, progress)
@@ -317,8 +336,8 @@ fn optional_sizing(from: Option<Sizing>, to: Option<Sizing>, progress: f32) -> O
 fn insets(from: EdgeInsets, to: EdgeInsets, progress: f32) -> EdgeInsets {
     EdgeInsets::new(
         lerp(from.left(), to.left(), progress),
-        lerp(from.top(), to.top(), progress),
         lerp(from.right(), to.right(), progress),
+        lerp(from.top(), to.top(), progress),
         lerp(from.bottom(), to.bottom(), progress),
     )
 }
@@ -868,6 +887,16 @@ mod tests {
         near(sampled.layout.padding.left(), 10.0);
         near(sampled.scroll.scrollbar.width, 12.0);
         assert!(has_animatable_difference(&from, &to));
+    }
+
+    #[test]
+    fn inset_sampling_preserves_edge_order() {
+        let from = EdgeInsets::new(1.0, 2.0, 3.0, 4.0);
+        let to = EdgeInsets::new(5.0, 6.0, 7.0, 8.0);
+        let sampled = insets(from, to, 0.5);
+
+        assert_eq!(sampled, EdgeInsets::new(3.0, 4.0, 5.0, 6.0));
+        assert_eq!(insets(from, from, 0.5), from);
     }
 
     #[test]

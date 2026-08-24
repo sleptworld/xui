@@ -1,3 +1,4 @@
+use crate::ElementDesc;
 use crate::component::ComponentRuntime;
 use crate::core::Size;
 use crate::event_system::translator::EventTranslator;
@@ -7,7 +8,6 @@ use crate::state::{AsyncDispatcher, AsyncMessage, HookContext, Scheduler};
 use crate::style::Theme;
 use crate::text::TextHost;
 use crate::ui_runtime::{RenderFrameError, UiRuntime};
-use crate::ElementDesc;
 use std::future::Future;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -15,8 +15,8 @@ use tokio::runtime::{
     Builder as TokioRuntimeBuilder, Handle as TokioHandle, Runtime as TokioRuntime,
 };
 use tokio::task::JoinHandle;
-use xui_interface::events::{EventResult, RawEvent};
 use xui_interface::TextBackend;
+use xui_interface::events::{EventResult, RawEvent};
 
 pub type ComponentFn = for<'a, 'b> fn(&'a mut HookContext<'b>) -> ElementDesc;
 
@@ -274,10 +274,10 @@ impl App {
 mod tests {
     use super::*;
     use crate::lanes::{DEFAULT_LANE, NO_LANES};
-    use crate::prelude::{canvas, container, CanvasController};
+    use crate::prelude::{CanvasController, canvas, container};
     use crate::render::{BuiltDraw, BuiltFrame, BuiltItem, MockRenderBackend, RenderBackend};
     use crate::state::State;
-    use crate::text::{testing::ZeroTextBackend, TextHost};
+    use crate::text::{TextHost, testing::ZeroTextBackend};
     use core::convert::Infallible;
     use std::cell::RefCell;
     use std::time::Instant;

@@ -9,7 +9,7 @@ use xui_interface::{
 
 use super::{props_hash, widget_element_desc};
 use crate::render::{Primitive, RenderTreeWriter, TextPrimitive};
-use crate::text::TextLayoutSlot;
+use crate::text::{self, TextLayoutSlot};
 
 #[derive(Debug)]
 pub struct TextWidget {
@@ -177,4 +177,14 @@ pub(super) fn apply_text_style(text_props: &mut TextProps, style: &ComputedStyle
     text_props.style.line_height = style.text.line_height;
     text_props.style.letter_spacing = style.text.letter_spacing;
     text_props.style.decoration = style.text.decoration;
+}
+
+/// Some Utils
+impl<T> From<T> for ElementDesc
+where
+    T: Into<TextContent>,
+{
+    fn from(value: T) -> Self {
+        TextWidget::new(value).into_element_desc()
+    }
 }

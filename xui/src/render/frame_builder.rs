@@ -419,14 +419,6 @@ fn merge_results(a: BuildResult, b: BuildResult) -> BuildResult {
     }
 }
 
-pub(crate) fn intersect_rect(a: Rect, b: Rect) -> Option<Rect> {
-    let x = a.x.max(b.x);
-    let y = a.y.max(b.y);
-    let right = (a.x + a.width).min(b.x + b.width);
-    let bottom = (a.y + a.height).min(b.y + b.height);
-    (right > x && bottom > y).then(|| Rect::new(x, y, right - x, bottom - y))
-}
-
 fn expand_by_sample_expansion(
     bounds: Bounds,
     expansion: xui_render_graph::SampleExpansion,

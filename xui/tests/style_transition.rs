@@ -22,4 +22,13 @@ fn style_owned_transition_compiles_for_builder_and_xui_sugar() {
             {"style-owned transition"}
         </text>
     };
+    let _: ElementDesc = xui! {
+        <container
+            translate_y={2.0}
+            scale={0.98}
+            rotate={0.05}
+            transform_origin={Point::new(0.5, 0.5)}
+            transition={transition}
+        />
+    };
 }
