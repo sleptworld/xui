@@ -1691,6 +1691,7 @@ fn expand_node(node: &ElementNode) -> Result<TokenStream2> {
     match node.name.to_string().as_str() {
         "text" => expand_text(node),
         "container" => expand_container(node),
+        "grid" => expand_grid(node),
         "canvas" => expand_canvas(node),
         "icon" => expand_icon(node),
         _ => expand_function_component(node),
@@ -1784,6 +1785,53 @@ fn expand_container(node: &ElementNode) -> Result<TokenStream2> {
 
     Ok(quote! {{
         let mut __xui_element = ::xui::container();
+        let mut __xui_style = ::xui::Style::new();
+        let mut __xui_children = ::std::vec::Vec::new();
+        #(#attr_stmts)*
+        #(#children)*
+        __xui_element = __xui_element.style(__xui_style);
+        __xui_element.into_element_desc(__xui_children)
+    }})
+}
+
+fn expand_grid(node: &ElementNode) -> Result<TokenStream2> {
+    let mut attr_stmts = Vec::new();
+    parse_attrs_helper(
+        node,
+        |name, value| {
+            match name {
+                "columns" => Some(quote! {
+                    __xui_element = __xui_element.columns(#value);
+                }),
+                "rows" => Some(quote! {
+                    __xui_element = __xui_element.rows(#value);
+                }),
+                "flow" => Some(quote! {
+                    __xui_element = __xui_element.flow(#value);
+                }),
+                "columns_count" => Some(quote! {
+                    __xui_element = __xui_element.columns_count(#value);
+                }),
+                "adaptive_columns" => Some(quote! {
+                    __xui_element = __xui_element.adaptive_columns(#value);
+                }),
+                _ => None,
+            }
+            .or(parse_base_attr(name, value))
+            .or(parse_text_style_attr(name, value)
+                .or(parse_layout_style_attr(name, value))
+                .or(parse_paint_style_attr(name, value))
+                .or(parse_transform_style_attr(name, value))
+                .or(parse_scroll_style_attr(name, value))
+                .or(parse_event_attr(name, value)))
+        },
+        &mut attr_stmts,
+    )?;
+
+    let children = expand_children(&node.children)?;
+
+    Ok(quote! {{
+        let mut __xui_element = ::xui::grid();
         let mut __xui_style = ::xui::Style::new();
         let mut __xui_children = ::std::vec::Vec::new();
         #(#attr_stmts)*
@@ -2218,6 +2266,30 @@ mod tests {
 
         assert!(expanded.contains("__xui_style = __xui_style . transition (transition)"));
         assert!(!expanded.contains("__xui_element . transition"));
+    }
+
+    #[test]
+    fn grid_expands_as_host_widget_with_adaptive_columns() {
+        let node = syn::parse2::<ElementNode>(quote!(
+            <grid
+                adaptive_columns={220.0}
+                gap={12.0}
+                flow={GridFlow::RowDense}
+            >
+                <container />
+                {cards}
+            </grid>
+        ))
+        .unwrap();
+        let expanded = expand_grid(&node).unwrap().to_string();
+
+        assert!(expanded.contains("xui :: grid ()"));
+        assert!(expanded.contains("adaptive_columns (220.0)"));
+        assert!(expanded.contains("gap (12.0)"));
+        assert!(expanded.contains("flow (GridFlow :: RowDense)"));
+        assert!(expanded.contains("IntoChildren :: append_children (cards"));
+        assert!(expanded.contains("into_element_desc (__xui_children)"));
+        assert!(!expanded.contains("grid_component_render"));
     }
 
     #[test]

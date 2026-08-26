@@ -17,7 +17,6 @@ members = [
     "slot", "xui-text-engine",
     "xui-render-graph",
     "xui-skia",
-    "zdl",
 ]
 
 

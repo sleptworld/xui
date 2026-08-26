@@ -42,11 +42,12 @@ pub use crate::style::{
 };
 pub use crate::ui_runtime::{NodeView, RenderFrame, RenderFrameError, UiRuntime};
 pub use crate::widgets::{
-    CanvasController, CanvasWidget, ContainerWidget, IconData, IconLayer, IconStroke, IconWidget,
-    ImageWidget, OverlayChild, OverlayEntry, OverlayEntryId, OverlayEntryOptions,
-    OverlayModelError, OverlayScope, OverlayScopeId, SvgIconError, TextCommand, TextController,
-    TextInputChange, TextKeymap, TextWidget, WidgetI, WithChildren, ZStackWidget, canvas,
-    component, container, icon, image, text, z_stack,
+    CanvasController, CanvasWidget, ContainerWidget, GridFlow, GridTrackSize, GridTracks,
+    GridWidget, IconData, IconLayer, IconStroke, IconWidget, ImageWidget, OverlayChild,
+    OverlayEntry, OverlayEntryId, OverlayEntryOptions, OverlayModelError, OverlayScope,
+    OverlayScopeId, SvgIconError, TextCommand, TextController, TextInputChange, TextKeymap,
+    TextWidget, WidgetI, WithChildren, ZStackWidget, canvas, component, container, grid, icon,
+    image, text, z_stack,
 };
 pub use xui_interface::{
     AccessibilityProperties, AccessibilityRole, Affine, Alignment, CanvasTextId, ColorSpace,

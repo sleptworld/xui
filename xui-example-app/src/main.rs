@@ -289,9 +289,9 @@ fn editor() {
                     />
                     <input width={100.0} background={Color::WHITE} border_color={Color::BLACK} border_radius={5.0} border_width={2.0} />
                     <row gap={12.0}>
-                        {icon(filled_icon()).color(Color::BLUE_500).into_element_desc()}
-                        {icon(stroked_icon()).color(Color::WHITE).style(Style::new().size(Size::fix(48.0, 48.0))).into_element_desc()}
-                        {icon(svg_icon()).color(Color::BLACK).into_element_desc()}
+                        {icon().from_icon_data(filled_icon()).color(Color::BLUE_500).into_element_desc()}
+                        {icon().from_icon_data(stroked_icon()).color(Color::WHITE).style(Style::new().size(Size::fix(48.0, 48.0))).into_element_desc()}
+                        {icon().from_icon_data(svg_icon()).color(Color::BLACK).into_element_desc()}
                     </row>
                     <button text={label.get()} style={button_style}/>
                     <text font_weight={FontWeight::Thin}> {"啊，是关中王来啦"} </text>

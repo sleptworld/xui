@@ -20,6 +20,7 @@ pub enum WidgetType {
     RootOverlayer,
     Image,
     Icon,
+    Grid,
 }
 
 /// Controls whether a widget can receive focus.

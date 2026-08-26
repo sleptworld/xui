@@ -91,6 +91,15 @@ fn computed_layout_style_for_parent(
             align_items: Some(stack_alignment(stack.alignment.y)),
             ..Default::default()
         },
+        Widgets::Grid(grid) => {
+            let mut style = tf::Style::default();
+            crate::widgets::grid_widget_to_taffy(&mut style, grid);
+            style.gap = tf::Size {
+                width: length_percentage(layout.gap),
+                height: length_percentage(layout.gap),
+            };
+            style
+        }
 
         Widgets::Image(image) => {
             let aspect_ratio = image
@@ -316,7 +325,9 @@ fn scroll_overflow(direction: ScrollDirectionStyle) -> TaffyPoint<Overflow> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widgets::{WidgetI, ZStackWidget, container};
+    use crate::widgets::{
+        GridFlow, GridTrackSize, GridTracks, GridWidget, WidgetI, ZStackWidget, container,
+    };
 
     fn fixed_grid_child(width: f32, height: f32) -> tf::Style {
         tf::Style {
@@ -386,6 +397,34 @@ mod tests {
         let child_style = taffy_style_for_widget(&child, &stack_computed, &child_computed, true);
         assert_eq!(child_style.grid_row, tf::line(1));
         assert_eq!(child_style.grid_column, tf::line(1));
+    }
+
+    #[test]
+    fn grid_widget_style_is_used_by_the_layout_pipeline() {
+        let theme = Theme::default();
+        let parent = ComputedStyle::initial(&theme);
+        let widget = WidgetI::new(
+            GridWidget::new()
+                .columns(GridTracks::repeat(3, GridTrackSize::flexible()))
+                .rows(GridTracks::explicit([GridTrackSize::fixed(24.0)]))
+                .flow(GridFlow::ColumnDense)
+                .style(xui_interface::Style::new().gap(12.0)),
+        );
+        let computed = computed_style_for_widget(
+            &widget,
+            &parent,
+            &theme,
+            xui_interface::WidgetState::empty(),
+        );
+
+        let style = taffy_style_for_widget(&widget, &parent, &computed, false);
+
+        assert_eq!(style.display, tf::Display::Grid);
+        assert_eq!(style.grid_auto_flow, tf::GridAutoFlow::ColumnDense);
+        assert_eq!(style.grid_template_columns.len(), 1);
+        assert_eq!(style.grid_template_rows.len(), 1);
+        assert_eq!(style.gap.width, tf::LengthPercentage::length(12.0));
+        assert_eq!(style.gap.height, tf::LengthPercentage::length(12.0));
     }
 
     #[test]

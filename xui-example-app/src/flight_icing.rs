@@ -90,7 +90,8 @@ fn label(value: impl Into<String>, size: f32, color: Color, weight: FontWeight) 
 }
 
 fn icon_view(kind: SourceIcon, size: f32, color: Color) -> ElementDesc {
-    icon(source_icon(kind))
+    icon()
+        .from_icon_data(source_icon(kind))
         .color(color)
         .style(Style::new().size(Size::fix(size, size)))
         .into_element_desc()
@@ -590,14 +591,14 @@ fn metric_card(title: &str, value: &str, unit: &str) -> ElementDesc {
 }
 
 fn flight_monitor_content() -> ElementDesc {
-    let metrics = row(
-        Style::new().width(Sizing::fill()).gap(12.0),
-        vec![
-            metric_card("当前飞行高度 (ALT)", "7462", "米 (m)"),
-            metric_card("当前真空速 (TAS)", "440", "公里/小时"),
-            metric_card("磁航向 (HDG)", "213°", "导航姿态稳定"),
-        ],
-    );
+    let metrics = xui! {
+        <grid adaptive_columns={200.0} width={Sizing::fill()} gap={12.0}>
+            {metric_card("当前飞行高度 (ALT)", "7462", "米 (m)")}
+            {metric_card("当前真空速 (TAS)", "440", "公里/小时")}
+            {metric_card("磁航向 (HDG)", "213°", "导航姿态稳定")}
+            {metric_card("当前垂直速度 (V/S)", "+3.2", "米/秒")}
+        </grid>
+    };
     column(
         Style::new().size(Size::fill()).gap(12.0),
         vec![

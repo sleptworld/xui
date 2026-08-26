@@ -579,6 +579,7 @@ macro_rules! event_handler_methods {
 
 mod canvas;
 mod container;
+mod grid;
 mod icon;
 mod image;
 mod overlay;
@@ -590,6 +591,7 @@ mod z_stack;
 pub(crate) use canvas::canvas_text_slot;
 pub use canvas::{CanvasController, CanvasWidget};
 pub use container::ContainerWidget;
+pub use grid::*;
 pub use icon::{IconData, IconLayer, IconStroke, IconWidget, SvgIconError};
 pub use image::ImageWidget;
 pub(crate) use overlay::RootOverlayerWidget;
@@ -788,6 +790,7 @@ define_widgets! {
     Canvas => CanvasWidget,
     Image => ImageWidget,
     Icon => IconWidget,
+    Grid => GridWidget,
     RootOverlayer => RootOverlayerWidget,
     Root => RootWidget,
 }
@@ -955,6 +958,10 @@ pub fn container() -> ContainerWidget {
 
 pub fn z_stack() -> ZStackWidget {
     ZStackWidget::new()
+}
+
+pub fn grid() -> GridWidget {
+    GridWidget::new()
 }
 
 pub fn canvas(controller: CanvasController) -> CanvasWidget {
