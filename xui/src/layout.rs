@@ -1,3 +1,4 @@
+use taffy::style_helpers::TaffyZero;
 use taffy::{LengthPercentage, prelude as tf};
 use taffy::{Overflow, Point as TaffyPoint};
 use xui_interface::core::Sizing;
@@ -142,6 +143,8 @@ fn computed_layout_style_for_parent(
         FlexDirectionStyle::Column => {
             if matches!(size.height(), Sizing::Fill) {
                 style.flex_grow = 1.0;
+                style.flex_shrink = 1.0;
+                style.flex_basis = tf::Dimension::length(0.0);
             }
             if matches!(size.height(), Sizing::Fix(_)) {
                 style.flex_shrink = 0.0;
@@ -150,6 +153,8 @@ fn computed_layout_style_for_parent(
         FlexDirectionStyle::Row => {
             if matches!(size.width(), Sizing::Fill) {
                 style.flex_grow = 1.0;
+                style.flex_shrink = 1.0;
+                style.flex_basis = tf::Dimension::length(0.0);
             }
             if matches!(size.width(), Sizing::Fix(_)) {
                 style.flex_shrink = 0.0;
@@ -162,11 +167,11 @@ fn computed_layout_style_for_parent(
         width: min_size
             .width()
             .map(|w| dimension_for_axis(w, Axis::Horizontal, parent_dire))
-            .unwrap_or(taffy::Dimension::auto()),
+            .unwrap_or(taffy::Dimension::ZERO),
         height: min_size
             .height()
             .map(|h| dimension_for_axis(h, Axis::Vertical, parent_dire))
-            .unwrap_or(taffy::Dimension::auto()),
+            .unwrap_or(taffy::Dimension::ZERO),
     };
 
     let max_size = layout.max_size();
