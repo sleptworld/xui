@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use slotmap::SecondaryMap;
 
 use super::{
     BackdropIsolation, BuiltClipChain, BuiltClipChainId, BuiltDraw, BuiltDrawData, BuiltFrame,
     BuiltImage, BuiltItem, BuiltLayer, BuiltLayerId, BuiltLayerInstance, BuiltLayerInstanceId,
-    BuiltShape, BuiltText, BuiltVector, CompiledClipId, CompiledPictureItem, CompiledScene,
-    ContentVersion, FrameProperties, LayerCacheId, PictureId, PlacementVersion, Primitive,
-    RenderNodeId, SpatialNodeId,
+    BuiltShape, BuiltText, BuiltVector, CompiledClipId, CompiledItemSpan, CompiledPictureItem,
+    CompiledScene, ContentVersion, FrameProperties, LayerCacheId, PictureId, PlacementVersion,
+    Primitive, RenderNodeId, SpatialNodeId,
 };
 use xui_interface::{Affine, Bounds, Point, Rect};
 
@@ -95,13 +95,33 @@ impl FrameBuilder {
             scene_revision: scene.scene_revision(),
             properties_revision: properties.revision(),
         };
+        // A dynamic transform moves content that the compiler already folded
+        // into its enclosing spans' bounds, so any span above such a node has
+        // to fall back to per-item culling. Marking strict ancestors only:
+        // a span rooted *at* the overridden node is still correct, because its
+        // bounds are recorded before that node's own transform is applied.
+        let mut stale_span_spatials: SecondaryMap<SpatialNodeId, ()> = SecondaryMap::new();
+        for source in properties.transform_sources() {
+            let Some(spatial) = scene.spatial_for_source(source) else {
+                continue;
+            };
+            let mut ancestor = scene.spatial_node(spatial).and_then(|node| node.parent);
+            while let Some(id) = ancestor {
+                if stale_span_spatials.insert(id, ()).is_some() {
+                    break;
+                }
+                ancestor = scene.spatial_node(id).and_then(|node| node.parent);
+            }
+        }
+
         let mut context = BuildContext {
             scene,
             properties,
             viewport,
             frame,
-            spatial_cache: HashMap::new(),
-            clip_cache: HashMap::new(),
+            spatial_cache: SecondaryMap::new(),
+            clip_cache: SecondaryMap::new(),
+            stale_span_spatials,
         };
         let result = context.build_picture_contents(scene.root_picture(), root_layer, true)?;
         let root = &mut context.frame.layers[root_layer.0];
@@ -136,8 +156,10 @@ struct BuildContext<'a> {
     properties: &'a FrameProperties,
     viewport: Bounds,
     frame: BuiltFrame,
-    spatial_cache: HashMap<SpatialNodeId, SpatialState>,
-    clip_cache: HashMap<CompiledClipId, ClipState>,
+    spatial_cache: SecondaryMap<SpatialNodeId, SpatialState>,
+    clip_cache: SecondaryMap<CompiledClipId, ClipState>,
+    /// Spatial nodes whose span bounds cannot be trusted this frame.
+    stale_span_spatials: SecondaryMap<SpatialNodeId, ()>,
 }
 
 impl BuildContext<'_> {
@@ -155,16 +177,61 @@ impl BuildContext<'_> {
             content_version: picture.content_version,
             ..BuildResult::default()
         };
-        for item in &picture.items {
-            let item_result = match item {
+
+        // Walk items and spans together. Spans are pre-order and sorted by
+        // `start`, so the enclosing one is always tested first and rejecting it
+        // skips everything nested inside.
+        let mut item_index = 0usize;
+        let mut span_index = 0usize;
+        while item_index < picture.items.len() {
+            if cull_to_viewport {
+                let mut skipped_to = None;
+                while let Some(span) = picture.spans.get(span_index) {
+                    if span.start as usize != item_index {
+                        break;
+                    }
+                    span_index += 1;
+                    if self.span_is_offscreen(span)? {
+                        skipped_to = Some(span.end as usize);
+                        break;
+                    }
+                }
+                if let Some(end) = skipped_to {
+                    item_index = end;
+                    // Spans nested in the rejected one start before `end`.
+                    while picture
+                        .spans
+                        .get(span_index)
+                        .is_some_and(|span| (span.start as usize) < end)
+                    {
+                        span_index += 1;
+                    }
+                    continue;
+                }
+            }
+
+            let item_result = match &picture.items[item_index] {
                 CompiledPictureItem::Primitive(id) => {
                     self.build_primitive(*id, layer_id, cull_to_viewport)?
                 }
                 CompiledPictureItem::Picture(id) => self.build_child_picture(*id, layer_id)?,
             };
             result = merge_results(result, item_result);
+            item_index += 1;
         }
         Ok(result)
+    }
+
+    /// Whether a whole span can be rejected without touching its items. Bounds
+    /// the compiler could not keep current this frame simply report `false`,
+    /// which costs culling precision and never correctness.
+    fn span_is_offscreen(&mut self, span: &CompiledItemSpan) -> Result<bool, FrameBuildError> {
+        if self.stale_span_spatials.contains_key(span.spatial) {
+            return Ok(false);
+        }
+        let spatial = self.resolve_spatial(span.spatial)?;
+        let world_bounds = spatial.transform.transform_bounds(span.local_bounds);
+        Ok(!world_bounds.intersects(self.viewport))
     }
 
     fn build_primitive(
@@ -336,7 +403,7 @@ impl BuildContext<'_> {
     }
 
     fn resolve_spatial(&mut self, id: SpatialNodeId) -> Result<SpatialState, FrameBuildError> {
-        if let Some(state) = self.spatial_cache.get(&id).copied() {
+        if let Some(state) = self.spatial_cache.get(id).copied() {
             return Ok(state);
         }
         let node = self
@@ -368,7 +435,7 @@ impl BuildContext<'_> {
     }
 
     fn resolve_clip(&mut self, id: CompiledClipId) -> Result<ClipState, FrameBuildError> {
-        if let Some(state) = self.clip_cache.get(&id).copied() {
+        if let Some(state) = self.clip_cache.get(id).copied() {
             return Ok(state);
         }
         let clip = self
@@ -685,6 +752,197 @@ mod tests {
         assert_eq!(chain.len(), 2);
         assert_eq!(chain[0].placement, None);
         assert_ne!(chain[0].local.layer, isolated.root_layer);
+    }
+
+    /// Every draw a frame emits, in order, as `(source, world bounds)`.
+    fn draw_digest(frame: &BuiltFrame) -> Vec<(usize, Vec<(RenderNodeId, Bounds)>)> {
+        frame
+            .layers
+            .iter()
+            .enumerate()
+            .map(|(index, layer)| {
+                let draws = layer
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        BuiltItem::Draw(draw) => {
+                            let common = draw.common();
+                            Some((common.source, common.world_bounds))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                (index, draws)
+            })
+            .collect()
+    }
+
+    /// A tall list whose rows mostly fall outside the viewport, nested deeply
+    /// enough that the compiler emits spans at several levels.
+    /// Returns the scene, the per-row transforms, and the per-cell transforms
+    /// nested inside them.
+    fn tall_list(
+        rows: usize,
+    ) -> (
+        super::super::RenderScene,
+        Vec<RenderNodeId>,
+        Vec<Vec<RenderNodeId>>,
+    ) {
+        let mut source = super::super::RenderScene::new();
+        let mut row_transforms = Vec::new();
+        let mut cell_transforms = Vec::new();
+        let list = source.insert_transform(Affine::translate(0.0, 0.0));
+        source.append_child(source.root(), list).unwrap();
+        let list_group = source.insert_group();
+        source.set_child(list, Some(list_group)).unwrap();
+
+        for index in 0..rows {
+            let row = source.insert_transform(Affine::translate(0.0, index as f32 * 30.0));
+            row_transforms.push(row);
+            source.append_child(list_group, row).unwrap();
+            let row_group = source.insert_group();
+            source.set_child(row, Some(row_group)).unwrap();
+            let mut row_cells = Vec::new();
+            for cell in 0..4 {
+                let inner = source.insert_transform(Affine::translate(cell as f32 * 24.0, 0.0));
+                source.append_child(row_group, inner).unwrap();
+                row_cells.push(inner);
+                let primitive = source.insert_primitive(shape(
+                    Bounds::from_origin_size((0.0, 0.0), (20.0, 20.0)),
+                    Color::BLACK,
+                ));
+                source.set_child(inner, Some(primitive)).unwrap();
+            }
+            cell_transforms.push(row_cells);
+        }
+        (source, row_transforms, cell_transforms)
+    }
+
+    fn clear_spans(scene: &CompiledScene) -> CompiledScene {
+        let mut stripped = scene.clone();
+        for (_, picture) in stripped.pictures.iter_mut() {
+            picture.spans.clear();
+        }
+        stripped
+    }
+
+    /// Span culling is an optimisation, so a frame built with spans must match
+    /// one built without them exactly -- same draws, same order, same bounds.
+    #[test]
+    fn span_culling_matches_an_unculled_build() {
+        let (source, _, _) = tall_list(200);
+        let scene = compile(&source);
+        assert!(
+            scene
+                .pictures
+                .values()
+                .any(|picture| !picture.spans.is_empty()),
+            "the fixture produced no spans, so this would not test anything"
+        );
+
+        let without_spans = clear_spans(&scene);
+
+        for viewport in [
+            Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
+            Bounds::from_origin_size((0.0, 0.0), (200.0, 3_000.0)),
+            Bounds::from_origin_size((0.0, 1_500.0), (200.0, 400.0)),
+            Bounds::from_origin_size((0.0, 90_000.0), (200.0, 400.0)),
+        ] {
+            let culled = FrameBuilder::new()
+                .build(&scene, viewport, &FrameProperties::default())
+                .unwrap();
+            let plain = FrameBuilder::new()
+                .build(&without_spans, viewport, &FrameProperties::default())
+                .unwrap();
+            assert_eq!(
+                draw_digest(&culled),
+                draw_digest(&plain),
+                "span culling changed the frame at viewport {viewport:?}"
+            );
+        }
+    }
+
+    /// A dynamic transform invalidates the span bounds recorded above it, so
+    /// the builder must fall back to per-item culling rather than trust them.
+    #[test]
+    fn span_culling_respects_dynamic_transforms() {
+        let (source, _, _) = tall_list(200);
+        let scene = compile(&source);
+        let without_spans = clear_spans(&scene);
+
+        // Drag a row that sits far below the viewport back into view.
+        let moved = scene
+            .spatial_nodes
+            .values()
+            .map(|node| node.source)
+            .find(|source| {
+                scene
+                    .spatial_by_source
+                    .get(source)
+                    .and_then(|id| scene.spatial_nodes.get(*id))
+                    .is_some_and(|node| node.local_transform != Affine::IDENTITY)
+            })
+            .expect("the fixture has translated rows");
+
+        let mut properties = FrameProperties::default();
+        properties.set_transform(moved, Affine::translate(0.0, -1_200.0));
+
+        let viewport = Bounds::from_origin_size((0.0, 0.0), (200.0, 100.0));
+        let culled = FrameBuilder::new()
+            .build(&scene, viewport, &properties)
+            .unwrap();
+        let plain = FrameBuilder::new()
+            .build(&without_spans, viewport, &properties)
+            .unwrap();
+        assert_eq!(
+            draw_digest(&culled),
+            draw_digest(&plain),
+            "span culling diverged once a dynamic transform was applied"
+        );
+    }
+
+    /// Moving a row back into view through `update_transform` is a
+    /// *non-structural* edit: the compiler keeps the existing spans, so their
+    /// bounds have to be refreshed or the builder culls content that is now
+    /// visible.
+    #[test]
+    fn span_bounds_follow_non_structural_geometry_changes() {
+        let (mut source, _, cells) = tall_list(200);
+        let mut compiler = SceneCompiler::new();
+        compiler.compile(&source, &source.dirty_snapshot()).unwrap();
+        let snapshot = source.dirty_snapshot();
+        source.acknowledge(&snapshot);
+
+        // Row 150 sits at y=4500, far below a 100pt viewport. Move one of the
+        // cells *inside* it back to the top of the screen: the row's own span
+        // bounds are recorded in row-local space, so only refreshing them keeps
+        // this cell visible.
+        source
+            .update_transform(cells[150][0], Affine::translate(0.0, -4_500.0))
+            .unwrap();
+
+        let snapshot = source.dirty_snapshot();
+        let scene = compiler.compile(&source, &snapshot).unwrap().clone();
+        let without_spans = clear_spans(&scene);
+
+        let viewport = Bounds::from_origin_size((0.0, 0.0), (200.0, 100.0));
+        let culled = FrameBuilder::new()
+            .build(&scene, viewport, &FrameProperties::default())
+            .unwrap();
+        let plain = FrameBuilder::new()
+            .build(&without_spans, viewport, &FrameProperties::default())
+            .unwrap();
+
+        // The moved row must actually be drawn, not just consistently dropped.
+        assert!(
+            plain.layers[0].items.len() > 4,
+            "the fixture did not bring the moved row into view"
+        );
+        assert_eq!(
+            draw_digest(&culled),
+            draw_digest(&plain),
+            "span culling dropped content that a non-structural edit moved into view"
+        );
     }
 
     #[test]

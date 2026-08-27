@@ -963,6 +963,7 @@ fn expand_component_function(
     let component_type_name = component_type_name(&original_name);
     let component_call_name = component_call_name(&original_name);
     let component_handle_name = component_handle_name(&original_name);
+    let module_name = component_module_name(&original_name);
     let props_name = component_props_name(&original_name);
     function.sig.ident = component_name.clone();
     function.sig.output = ReturnType::Type(
@@ -1006,7 +1007,12 @@ fn expand_component_function(
     }
 
     let props_arg_count = function.sig.inputs.len().saturating_sub(1);
-    let generated_props = if props_arg_count > 1 {
+    // Every parameter after `cx` becomes a field of the generated props
+    // struct, whatever the count. Treating a lone parameter as an
+    // already-written props type instead would be indistinguishable from a
+    // one-field component, and would leave `{Name}Props` undefined for the
+    // `xui!` call site.
+    let generated_props = if props_arg_count >= 1 {
         let generated = generate_component_props(function, &props_name)?;
         let cx_arg = function
             .sig
@@ -1020,17 +1026,6 @@ fn expand_component_function(
         function.sig.inputs = inputs;
         Some(generated)
     } else {
-        if let Some(default) = function
-            .input_defaults
-            .iter()
-            .skip(1)
-            .find_map(|default| default.as_ref())
-        {
-            return Err(Error::new(
-                default.span(),
-                "default component parameters require at least two props parameters",
-            ));
-        }
         None
     };
 
@@ -1071,26 +1066,46 @@ fn expand_component_function(
         .as_ref()
         .map(|props| props.bindings.as_slice())
         .unwrap_or(&[]);
+    // A component with no props has no props struct to surface.
+    let props_reexport = generated_props
+        .as_ref()
+        .map(|_| quote!(#vis use #module_name::#props_name;))
+        .unwrap_or_default();
 
+    // The typestate markers appear in `Props::builder()`'s signature, so the
+    // module has to be reachable or every builder method trips
+    // `private_interfaces`. It is hidden from docs instead.
     Ok(ExpandedComponentFunction {
         tokens: quote! {
-            #props_tokens
+            #[doc(hidden)]
+            #[allow(non_snake_case)]
+            #vis mod #module_name {
+                #[allow(unused_imports)]
+                use super::*;
 
-            #(#attrs)*
-            #vis #sig {
-                #(#prop_bindings)*
-                #body
+                #props_tokens
+
+                #(#attrs)*
+                pub #sig {
+                    #(#prop_bindings)*
+                    #body
+                }
+
+                pub fn #component_type_name() -> ::xui::ComponentType {
+                    ::xui::ComponentType::new(
+                        concat!(module_path!(), "::", stringify!(#original_name)),
+                    )
+                }
+
+                #component_call
+
+                pub fn #component_handle_name() -> ::xui::ComponentRender {
+                    ::xui::ComponentRender::new(#component_type_name(), #component_call_name)
+                }
             }
 
-            #vis fn #component_type_name() -> ::xui::ComponentType {
-                ::xui::ComponentType::new(concat!(module_path!(), "::", stringify!(#original_name)))
-            }
-
-            #component_call
-
-            #vis fn #component_handle_name() -> ::xui::ComponentRender {
-                ::xui::ComponentRender::new(#component_type_name(), #component_call_name)
-            }
+            #vis use #module_name::{#component_handle_name, #component_name};
+            #props_reexport
         },
     })
 }
@@ -1099,7 +1114,9 @@ fn generate_component_props(
     function: &ComponentFunction,
     props_name: &TokenIdent,
 ) -> Result<GeneratedComponentProps> {
-    let vis = &function.vis;
+    // Unconditionally public: these items live inside the support module, and
+    // the facade decides what the outside world can reach.
+    let vis = quote!(pub);
     let builder_name = component_props_builder_name(props_name);
     let mut props = Vec::new();
     let mut has_children = false;
@@ -1441,6 +1458,14 @@ fn component_props_type(sig: &Signature) -> Result<Option<Type>> {
         ));
     };
     Ok(Some((**elem).clone()))
+}
+
+/// Support module for one component. Everything the component needs but
+/// nobody names directly lives here, so a module that re-exports its
+/// components with a glob puts a handful of items in scope instead of one per
+/// prop plus four free functions.
+fn component_module_name(original_name: &Ident) -> TokenIdent {
+    TokenIdent::new(&format!("__xui_{}", original_name), original_name.span())
 }
 
 fn component_render_name(original_name: &Ident) -> TokenIdent {

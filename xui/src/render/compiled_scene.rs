@@ -5,7 +5,7 @@ use super::{
 use crate::render::render_graph::BuiltLayerProgram;
 use slotmap::{SecondaryMap, SlotMap};
 use std::collections::HashMap;
-use xui_interface::Affine;
+use xui_interface::{Affine, core::Bounds};
 
 #[derive(Debug, Clone)]
 pub struct CompiledScene {
@@ -85,10 +85,31 @@ impl CompiledScene {
     }
 }
 
+/// A contiguous run of `CompiledPicture::items` that all sit under one spatial
+/// node, carrying the union of their paint bounds in that node's local space.
+///
+/// Spans let the frame builder reject a whole subtree with a single bounds
+/// test instead of resolving and transforming every primitive inside it. They
+/// are stored pre-order (an enclosing span precedes the spans nested in it) and
+/// sorted by `start`, and they are advisory: dropping one only costs culling
+/// precision, never correctness.
+#[derive(Debug, Clone, Copy)]
+pub struct CompiledItemSpan {
+    pub spatial: SpatialNodeId,
+    /// Bounds in `spatial`'s local space, i.e. before `spatial`'s own
+    /// transform. A dynamic transform on `spatial` therefore stays correct;
+    /// one on a *descendant* does not, which the builder checks for.
+    pub local_bounds: Bounds,
+    pub start: u32,
+    pub end: u32,
+}
+
 #[derive(Debug, Clone)]
 pub struct CompiledPicture {
     pub source: RenderNodeId,
     pub items: Vec<CompiledPictureItem>,
+    /// Culling index over `items`; see [`CompiledItemSpan`].
+    pub spans: Vec<CompiledItemSpan>,
     pub descriptor: LayerDescriptor,
     /// Static render-graph IR and scene-owned mask bindings. Root pictures do
     /// not need a layer composite.

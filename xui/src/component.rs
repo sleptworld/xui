@@ -14,6 +14,7 @@ use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use std::fmt;
 use std::ops::RangeBounds;
+use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Handle as TokioHandle;
 use xui_interface::NodeId;
@@ -227,10 +228,42 @@ impl WorkNode {
             || includes_some_lane(self.lanes | self.child_lanes, render_lanes)
     }
 
-    fn should_render_component(&self, render_lanes: Lanes) -> bool {
-        self.is_uncommited()
-            || matches!(self.work, Some(Work::ComponentWork(_)))
-            || includes_some_lane(self.lanes, render_lanes)
+    /// Whether this component's function has to run again, as opposed to
+    /// cloning the committed subtree.
+    ///
+    /// A parent re-render always hands its children a freshly built
+    /// `ComponentDesc`, so the presence of `ComponentWork` alone says nothing
+    /// about whether anything changed. When the incoming props are the *same
+    /// allocation* the child is already holding, re-running the function
+    /// cannot produce a different tree, so the subtree is reused.
+    ///
+    /// Only pointer equality is checked, never contents: it is the cheap,
+    /// always-correct half. It pays off exactly where a caller deliberately
+    /// preserved an element -- forwarded `children`, or an element cached in a
+    /// `use_memo` -- which mirrors React's `oldProps === newProps` bailout.
+    fn should_render_component(&self, render_lanes: Lanes, fiber_tree: &FiberArena) -> bool {
+        if self.is_uncommited() || includes_some_lane(self.lanes, render_lanes) {
+            return true;
+        }
+        let Some(Work::ComponentWork(work)) = &self.work else {
+            return false;
+        };
+        let Some(committed) = self
+            .binding
+            .current
+            .and_then(|id| fiber_tree.node(id))
+            .and_then(|node| node.component.as_ref())
+        else {
+            return true;
+        };
+        if committed.render != work.render || committed.key != work.key {
+            return true;
+        }
+        match (&committed.props, &work.props) {
+            (Some(committed), Some(next)) => !Rc::ptr_eq(committed, next),
+            (None, None) => false,
+            _ => true,
+        }
     }
 
     fn take_work_nodes(&mut self) -> Option<Vec<ElementDesc>> {
@@ -571,7 +604,7 @@ impl ComponentRuntime {
             (
                 node.fiber_id,
                 node.tag,
-                node.should_render_component(work.render_lanes),
+                node.should_render_component(work.render_lanes, &self.nodes),
                 work.render_lanes,
             )
         };
@@ -1618,6 +1651,22 @@ mod portal_tests {
 
     static PORTAL_MODE: AtomicU8 = AtomicU8::new(0);
     static CHILD_RENDER_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static LEAF_RENDER_COUNT: AtomicUsize = AtomicUsize::new(0);
+    /// The fixtures below drive process-wide counters, so they cannot overlap.
+    static RENDER_COUNT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn exclusive() -> std::sync::MutexGuard<'static, ()> {
+        RENDER_COUNT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    thread_local! {
+        static SHARED_CHILD: std::cell::RefCell<Option<ElementDesc>> =
+            const { std::cell::RefCell::new(None) };
+        static LEAF_STATE: std::cell::RefCell<Option<crate::state::State<u32>>> =
+            const { std::cell::RefCell::new(None) };
+    }
 
     struct NotHashProps;
 
@@ -1635,6 +1684,53 @@ mod portal_tests {
 
     fn component_parent(_cx: &mut HookContext<'_>) -> ElementDesc {
         component(counted_child_render()).props(NotHashProps).into()
+    }
+
+    /// A child that owns state, so a scheduled update can be aimed at it while
+    /// its props stay untouched.
+    fn stateful_leaf(cx: &mut HookContext<'_>, _props: Option<ErasedPropsRef<'_>>) -> ElementDesc {
+        let state = cx.use_state(|| 0u32);
+        LEAF_STATE.with(|slot| *slot.borrow_mut() = Some(state));
+        LEAF_RENDER_COUNT.fetch_add(1, Ordering::SeqCst);
+        container().into_element_desc(Vec::new())
+    }
+
+    fn stateful_leaf_render() -> ComponentRender {
+        ComponentRender::new(ComponentType::new("stateful_leaf"), stateful_leaf)
+    }
+
+    fn middle(_cx: &mut HookContext<'_>, _props: Option<ErasedPropsRef<'_>>) -> ElementDesc {
+        CHILD_RENDER_COUNT.fetch_add(1, Ordering::SeqCst);
+        component(stateful_leaf_render()).props(NotHashProps).into()
+    }
+
+    fn middle_render() -> ComponentRender {
+        ComponentRender::new(ComponentType::new("middle"), middle)
+    }
+
+    /// Hands its child the *same* element every render, which is what
+    /// forwarding `children` or caching an element in `use_memo` produces.
+    fn shared_element_parent(_cx: &mut HookContext<'_>) -> ElementDesc {
+        SHARED_CHILD.with(|slot| {
+            slot.borrow_mut()
+                .get_or_insert_with(|| component(counted_child_render()).props(NotHashProps).into())
+                .clone()
+        })
+    }
+
+    fn shared_middle_parent(_cx: &mut HookContext<'_>) -> ElementDesc {
+        SHARED_CHILD.with(|slot| {
+            slot.borrow_mut()
+                .get_or_insert_with(|| component(middle_render()).props(NotHashProps).into())
+                .clone()
+        })
+    }
+
+    fn reset_counters() {
+        CHILD_RENDER_COUNT.store(0, Ordering::SeqCst);
+        LEAF_RENDER_COUNT.store(0, Ordering::SeqCst);
+        SHARED_CHILD.with(|slot| *slot.borrow_mut() = None);
+        LEAF_STATE.with(|slot| *slot.borrow_mut() = None);
     }
 
     fn portal_root(_cx: &mut HookContext<'_>) -> ElementDesc {
@@ -1692,8 +1788,11 @@ mod portal_tests {
         assert!(arena.children(arena.root_overlayer()).next().is_none());
     }
 
+    /// The bailout must not fire when the parent built fresh props, even
+    /// though their contents are identical: only pointer equality counts.
     #[test]
     fn ordinary_component_renders_again_when_its_parent_renders() {
+        let _exclusive = exclusive();
         CHILD_RENDER_COUNT.store(0, Ordering::SeqCst);
         let mut arena = UiRuntime::new();
         let mut runtime =
@@ -1704,6 +1803,84 @@ mod portal_tests {
         runtime.flush_sync(&mut arena);
 
         assert_eq!(CHILD_RENDER_COUNT.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_component_handed_the_same_props_allocation_is_not_re_rendered() {
+        let _exclusive = exclusive();
+        reset_counters();
+        let mut arena = UiRuntime::new();
+        let mut runtime =
+            ComponentRuntime::new(arena.root(), Scheduler::default(), shared_element_parent);
+
+        runtime.flush_sync(&mut arena);
+        assert_eq!(CHILD_RENDER_COUNT.load(Ordering::SeqCst), 1, "mount");
+
+        runtime.mark_root_dirty();
+        runtime.flush_sync(&mut arena);
+        assert_eq!(
+            CHILD_RENDER_COUNT.load(Ordering::SeqCst),
+            1,
+            "the child re-ran even though it was handed the same props"
+        );
+    }
+
+    /// A scheduled update on the component itself outranks the bailout.
+    #[test]
+    fn a_bailed_out_component_still_renders_for_its_own_update() {
+        let _exclusive = exclusive();
+        reset_counters();
+        let mut arena = UiRuntime::new();
+        let mut runtime =
+            ComponentRuntime::new(arena.root(), Scheduler::default(), shared_middle_parent);
+
+        runtime.flush_sync(&mut arena);
+        assert_eq!(LEAF_RENDER_COUNT.load(Ordering::SeqCst), 1, "mount");
+
+        // Nothing changed: both levels bail out.
+        runtime.mark_root_dirty();
+        runtime.flush_sync(&mut arena);
+        assert_eq!(
+            CHILD_RENDER_COUNT.load(Ordering::SeqCst),
+            1,
+            "middle re-ran"
+        );
+        assert_eq!(LEAF_RENDER_COUNT.load(Ordering::SeqCst), 1, "leaf re-ran");
+    }
+
+    /// The middle component bails out, but its descendant has work scheduled.
+    /// Cloning the subtree must not strand that update.
+    #[test]
+    fn a_bailout_does_not_strand_a_descendant_with_scheduled_work() {
+        let _exclusive = exclusive();
+        reset_counters();
+        let mut arena = UiRuntime::new();
+        let mut runtime =
+            ComponentRuntime::new(arena.root(), Scheduler::default(), shared_middle_parent);
+
+        runtime.flush_sync(&mut arena);
+        let mounted_leaf = LEAF_RENDER_COUNT.load(Ordering::SeqCst);
+        let mounted_middle = CHILD_RENDER_COUNT.load(Ordering::SeqCst);
+
+        // Both at once: the root re-renders, so the middle is handed
+        // ComponentWork and bails out on pointer equality -- while its child
+        // has an update that still has to get through.
+        LEAF_STATE.with(|slot| {
+            slot.borrow().as_ref().expect("leaf mounted").set(1);
+        });
+        runtime.mark_root_dirty();
+        runtime.flush_sync(&mut arena);
+
+        assert_eq!(
+            LEAF_RENDER_COUNT.load(Ordering::SeqCst),
+            mounted_leaf + 1,
+            "the leaf's own update was lost behind its parent's bailout"
+        );
+        assert_eq!(
+            CHILD_RENDER_COUNT.load(Ordering::SeqCst),
+            mounted_middle,
+            "the middle re-ran although only its child had work"
+        );
     }
 }
 

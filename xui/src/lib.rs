@@ -10,6 +10,8 @@ pub mod transition;
 pub mod event_system;
 pub mod fiber;
 pub mod focus;
+#[cfg(test)]
+mod frame_bench;
 pub mod lanes;
 pub mod layout;
 pub mod prelude;

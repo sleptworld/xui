@@ -3,12 +3,12 @@ use std::{collections::HashSet, sync::Arc};
 use slotmap::{SecondaryMap, SlotMap};
 
 use super::{
-    CompiledClip, CompiledClipId, CompiledPicture, CompiledPictureItem, CompiledPrimitive,
-    CompiledScene, CompiledSpatialNode, ContentVersion, DirtySnapshot, LayerCacheKey,
-    LayerDescriptor, PictureId, PrimitiveId, RenderDirty, RenderNodeId, RenderNodeKind,
-    RenderScene, SceneError, SpatialNodeId, render_graph::BuiltLayerProgram,
+    CompiledClip, CompiledClipId, CompiledItemSpan, CompiledPicture, CompiledPictureItem,
+    CompiledPrimitive, CompiledScene, CompiledSpatialNode, ContentVersion, DirtySnapshot,
+    LayerCacheKey, LayerDescriptor, PictureId, PrimitiveId, RenderDirty, RenderNodeId,
+    RenderNodeKind, RenderScene, SceneError, SpatialNodeId, render_graph::BuiltLayerProgram,
 };
-use xui_interface::Affine;
+use xui_interface::{Affine, core::Bounds};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SceneCompileError {
@@ -201,11 +201,72 @@ fn requires_structural_rebuild(
     }
 }
 
+/// Re-derives a primitive's paint bounds in `ancestor`'s local space by
+/// composing the local transforms between them.
+fn bounds_in_spatial(
+    compiled: &CompiledScene,
+    primitive: &CompiledPrimitive,
+    ancestor: SpatialNodeId,
+) -> Option<Bounds> {
+    let mut transform = Affine::IDENTITY;
+    let mut current = primitive.spatial;
+    while current != ancestor {
+        let node = compiled.spatial_nodes.get(current)?;
+        transform = transform.then(node.local_transform);
+        current = node.parent?;
+    }
+    Some(transform.transform_bounds(primitive.primitive.paint_bounds()))
+}
+
+/// Refreshes span bounds after a non-structural geometry update.
+///
+/// Such an update moves primitives and spatial nodes without changing the
+/// picture's item order, so every span's range stays valid and only the unions
+/// need redoing. Clips are deliberately not re-applied: ignoring them yields a
+/// bound at least as large as the original, which can only cull less.
+fn refresh_span_bounds(compiled: &mut CompiledScene) {
+    let picture_ids: Vec<_> = compiled
+        .pictures
+        .iter()
+        .filter(|(_, picture)| !picture.spans.is_empty())
+        .map(|(id, _)| id)
+        .collect();
+
+    for picture_id in picture_ids {
+        let mut spans = std::mem::take(&mut compiled.pictures[picture_id].spans);
+        let items = std::mem::take(&mut compiled.pictures[picture_id].items);
+        for span in &mut spans {
+            let mut bounds: Option<Bounds> = None;
+            for item in &items[span.start as usize..span.end as usize] {
+                let CompiledPictureItem::Primitive(primitive_id) = item else {
+                    continue;
+                };
+                let Some(primitive) = compiled.primitives.get(*primitive_id) else {
+                    continue;
+                };
+                let Some(local) = bounds_in_spatial(compiled, primitive, span.spatial) else {
+                    continue;
+                };
+                bounds = Some(match bounds {
+                    Some(bounds) => bounds.union(local),
+                    None => local,
+                });
+            }
+            if let Some(bounds) = bounds {
+                span.local_bounds = bounds;
+            }
+        }
+        compiled.pictures[picture_id].spans = spans;
+        compiled.pictures[picture_id].items = items;
+    }
+}
+
 fn apply_non_structural_updates(
     compiled: &mut CompiledScene,
     source: &RenderScene,
     changed: &[(RenderNodeId, RenderDirty)],
 ) -> Result<(), SceneCompileError> {
+    let mut geometry_moved = false;
     for (id, dirty) in changed {
         let node = source.node(*id).ok_or(SceneError::MissingNode(*id))?;
         match &node.kind {
@@ -219,6 +280,7 @@ fn apply_non_structural_updates(
                 if dirty.intersects(RenderDirty::GEOMETRY | RenderDirty::PAINT) {
                     primitive.primitive = value.primitive.clone();
                     primitive.content_version = node.epochs.content_version();
+                    geometry_moved |= dirty.contains(RenderDirty::GEOMETRY);
                 }
             }
             RenderNodeKind::Transform(value) => {
@@ -230,6 +292,7 @@ fn apply_non_structural_updates(
                 if dirty.contains(RenderDirty::GEOMETRY) {
                     spatial.local_transform = value.transform;
                     spatial.content_version = node.epochs.content_version();
+                    geometry_moved = true;
                 }
             }
             RenderNodeKind::Clip(value) => {
@@ -259,6 +322,12 @@ fn apply_non_structural_updates(
             }
         }
     }
+    // Span bounds are derived from primitive geometry and local transforms, so
+    // a geometry-only update would otherwise leave them stale and let the
+    // builder cull content that has moved back into view.
+    if geometry_moved {
+        refresh_span_bounds(compiled);
+    }
     Ok(())
 }
 
@@ -274,6 +343,7 @@ fn empty_compiled_scene(source: &RenderScene) -> CompiledScene {
     let root_picture = pictures.insert(CompiledPicture {
         source: source.root(),
         items: Vec::new(),
+        spans: Vec::new(),
         descriptor: LayerDescriptor::default(),
         render_program: None,
         placement_spatial: root_spatial,
@@ -310,6 +380,50 @@ struct LiveCompiledIds {
     clips: SecondaryMap<CompiledClipId, ()>,
 }
 
+/// Minimum number of items a span must cover to earn its per-frame bounds
+/// test; below that the test costs about as much as building the items.
+const MIN_SPAN_ITEMS: u32 = 4;
+
+/// What one `walk_node` call contributed, reported in the *caller's* spatial
+/// space so enclosing transforms can keep accumulating.
+#[derive(Clone, Copy)]
+struct WalkOutput {
+    local_bounds: Option<Bounds>,
+    /// False once the subtree emits an isolated picture: layer effects can
+    /// paint outside the recorded bounds, so no enclosing span may cull it.
+    boundable: bool,
+}
+
+impl WalkOutput {
+    const EMPTY: Self = Self {
+        local_bounds: None,
+        boundable: true,
+    };
+
+    fn merge(self, other: Self) -> Self {
+        Self {
+            local_bounds: match (self.local_bounds, other.local_bounds) {
+                (Some(a), Some(b)) => Some(a.union(b)),
+                (Some(bounds), None) | (None, Some(bounds)) => Some(bounds),
+                (None, None) => None,
+            },
+            boundable: self.boundable && other.boundable,
+        }
+    }
+}
+
+/// Drops spans too small to pay for themselves, then puts the rest in
+/// pre-order so the builder meets an enclosing span before the ones nested in
+/// it. Both steps are safe to skip: fewer spans only means coarser culling.
+fn finalize_picture_spans(picture: &mut CompiledPicture) {
+    picture
+        .spans
+        .retain(|span| span.end - span.start >= MIN_SPAN_ITEMS);
+    picture
+        .spans
+        .sort_unstable_by_key(|span| (span.start, std::cmp::Reverse(span.end)));
+}
+
 #[derive(Clone, Copy)]
 struct WalkContext {
     picture: PictureId,
@@ -344,6 +458,7 @@ fn rebuild_structure(
         .expect("root picture is retained") = CompiledPicture {
         source: source.root(),
         items: Vec::new(),
+        spans: Vec::new(),
         descriptor: LayerDescriptor::default(),
         render_program: None,
         placement_spatial: compiled.root_spatial,
@@ -367,6 +482,7 @@ fn rebuild_structure(
         },
         &mut live,
     )?;
+    finalize_picture_spans(&mut compiled.pictures[compiled.root_picture]);
     retain_live(compiled, &live);
     Ok(())
 }
@@ -504,6 +620,7 @@ fn rebuild_picture_contents(
         .get_mut(picture_id)
         .ok_or(SceneError::MissingNode(source_id))?;
     picture.items.clear();
+    picture.spans.clear();
     picture.descriptor = layer.descriptor.clone();
     picture.render_program = Some(render_program);
     picture.content_version = node.epochs.content_version();
@@ -518,6 +635,7 @@ fn rebuild_picture_contents(
     if let Some(child) = layer.child {
         walk_node(compiled, source, child, context, &mut branch_live)?;
     }
+    finalize_picture_spans(&mut compiled.pictures[picture_id]);
     Ok(())
 }
 
@@ -527,17 +645,19 @@ fn walk_node(
     id: RenderNodeId,
     context: WalkContext,
     live: &mut LiveCompiledIds,
-) -> Result<(), SceneCompileError> {
+) -> Result<WalkOutput, SceneCompileError> {
     let node = source.node(id).ok_or(SceneError::MissingNode(id))?;
     if !node.visible {
-        return Ok(());
+        return Ok(WalkOutput::EMPTY);
     }
 
-    match &node.kind {
+    let output = match &node.kind {
         RenderNodeKind::Group(group) => {
+            let mut output = WalkOutput::EMPTY;
             for child in &group.children {
-                walk_node(compiled, source, *child, context, live)?;
+                output = output.merge(walk_node(compiled, source, *child, context, live)?);
             }
+            output
         }
         RenderNodeKind::Primitive(value) => {
             let primitive_id = match compiled.primitive_by_source.get(&id).copied() {
@@ -568,6 +688,10 @@ fn walk_node(
             compiled.pictures[context.picture]
                 .items
                 .push(CompiledPictureItem::Primitive(primitive_id));
+            WalkOutput {
+                local_bounds: Some(value.primitive.paint_bounds()),
+                boundable: true,
+            }
         }
         RenderNodeKind::Transform(value) => {
             let spatial_id = match compiled.spatial_by_source.get(&id).copied() {
@@ -593,17 +717,38 @@ fn walk_node(
                 content_version: node.epochs.content_version(),
             };
             live.spatials.insert(spatial_id, ());
-            if let Some(child) = value.child {
-                walk_node(
-                    compiled,
-                    source,
-                    child,
-                    WalkContext {
+            let Some(child) = value.child else {
+                return Ok(WalkOutput::EMPTY);
+            };
+            let start = compiled.pictures[context.picture].items.len() as u32;
+            let inner = walk_node(
+                compiled,
+                source,
+                child,
+                WalkContext {
+                    spatial: spatial_id,
+                    ..context
+                },
+                live,
+            )?;
+            let end = compiled.pictures[context.picture].items.len() as u32;
+            // `inner.local_bounds` is already in `spatial_id`'s local space,
+            // which is exactly what the span records.
+            if let Some(local_bounds) = inner.local_bounds.filter(|_| inner.boundable) {
+                compiled.pictures[context.picture]
+                    .spans
+                    .push(CompiledItemSpan {
                         spatial: spatial_id,
-                        ..context
-                    },
-                    live,
-                )?;
+                        local_bounds,
+                        start,
+                        end,
+                    });
+            }
+            WalkOutput {
+                local_bounds: inner
+                    .local_bounds
+                    .map(|bounds| value.transform.transform_bounds(bounds)),
+                boundable: inner.boundable,
             }
         }
         RenderNodeKind::Clip(value) => {
@@ -629,23 +774,33 @@ fn walk_node(
                 content_version: node.epochs.content_version(),
             };
             live.clips.insert(clip_id, ());
-            if let Some(child) = value.child {
-                walk_node(
-                    compiled,
-                    source,
-                    child,
-                    WalkContext {
-                        clip: Some(clip_id),
-                        ..context
-                    },
-                    live,
-                )?;
+            let Some(child) = value.child else {
+                return Ok(WalkOutput::EMPTY);
+            };
+            let inner = walk_node(
+                compiled,
+                source,
+                child,
+                WalkContext {
+                    clip: Some(clip_id),
+                    ..context
+                },
+                live,
+            )?;
+            // The clip shares the caller's spatial node, so intersecting is a
+            // valid tightening of the reported bounds.
+            WalkOutput {
+                local_bounds: inner
+                    .local_bounds
+                    .and_then(|bounds| bounds & value.clip.local_bounds()),
+                boundable: inner.boundable,
             }
         }
         RenderNodeKind::Layer(value) if !value.descriptor.requires_isolation() => {
             compiled.picture_by_source.remove(&id);
-            if let Some(child) = value.child {
-                walk_node(compiled, source, child, context, live)?;
+            match value.child {
+                Some(child) => walk_node(compiled, source, child, context, live)?,
+                None => WalkOutput::EMPTY,
             }
         }
         RenderNodeKind::Layer(value) => {
@@ -661,6 +816,7 @@ fn walk_node(
                     let key = compiled.pictures.insert(CompiledPicture {
                         source: id,
                         items: Vec::new(),
+                        spans: Vec::new(),
                         descriptor: value.descriptor.clone(),
                         render_program: Some(render_program.clone()),
                         placement_spatial: context.spatial,
@@ -679,6 +835,7 @@ fn walk_node(
                 .expect("picture was retained") = CompiledPicture {
                 source: id,
                 items: Vec::new(),
+                spans: Vec::new(),
                 descriptor: value.descriptor.clone(),
                 render_program: Some(render_program),
                 placement_spatial: context.spatial,
@@ -704,9 +861,16 @@ fn walk_node(
                     live,
                 )?;
             }
+            finalize_picture_spans(&mut compiled.pictures[picture_id]);
+            // An isolated layer's effects can paint outside its content, so
+            // enclosing spans must not try to bound it.
+            WalkOutput {
+                local_bounds: None,
+                boundable: false,
+            }
         }
-    }
-    Ok(())
+    };
+    Ok(output)
 }
 
 fn compile_render_program(

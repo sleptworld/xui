@@ -5165,6 +5165,8 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "xui",
+ "xui-interface",
+ "xui-text-engine",
  "zune-core",
  "zune-image",
 ]
