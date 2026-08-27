@@ -615,9 +615,41 @@ impl RenderScene {
                 .get(*id)
                 .is_some_and(|node| node.dirty_enqueued && !node.dirty.is_empty())
         });
-        self.rebuild_subtree_dirty();
+        // `mark_dirty` keeps `subtree_dirty` correct on the way in, so only the
+        // nodes whose flags were just cleared need their ancestor summaries
+        // recomputed. A full-scene rebuild here would be O(scene) every frame.
+        for id in &snapshot.nodes {
+            self.refresh_subtree_dirty_from(*id);
+        }
     }
 
+    /// Recomputes `subtree_dirty` from `from` up to the root, stopping as soon
+    /// as a node's summary is unchanged: nothing above it can change either.
+    fn refresh_subtree_dirty_from(&mut self, from: RenderNodeId) {
+        let mut current = Some(from);
+        while let Some(id) = current {
+            let Some(node) = self.nodes.get(id) else {
+                break;
+            };
+            let parent = node.parent;
+            let mut summary = node.dirty;
+            for child in node.children() {
+                if let Some(child) = self.nodes.get(*child) {
+                    summary |= child.subtree_dirty;
+                }
+            }
+
+            let node = &mut self.nodes[id];
+            if node.subtree_dirty == summary {
+                break;
+            }
+            node.subtree_dirty = summary;
+            current = parent;
+        }
+    }
+
+    /// Recomputes every `subtree_dirty` summary from scratch. Only needed after
+    /// bulk edits that bypass `mark_dirty`; the per-frame path is incremental.
     pub fn rebuild_subtree_dirty(&mut self) {
         fn visit(scene: &mut RenderScene, id: RenderNodeId) -> RenderDirty {
             let children = scene.nodes[id].children().to_vec();

@@ -74,6 +74,7 @@ impl UiRuntime {
             root_overlayer: root,
             node_lifecycle_events: Vec::new(),
             interaction_system: InteractionSystem::new(),
+            text_nodes: slotmap::SparseSecondaryMap::new(),
             theme,
             update_visits: 0,
             layout_passes: 0,
@@ -267,8 +268,15 @@ impl UiRuntime {
         if work.intersects(relevant) {
             self.sync_host_render_node(id)?;
         }
-        let children: Vec<_> = self.hosts.children(id).collect();
-        for child in children {
+        // `sync_host_render_node` only rewrites the render scene, so the host
+        // sibling chain stays valid while it is walked in place.
+        let mut cursor = self.hosts.link(id).and_then(|node| node.first_child);
+        while let Some(child) = cursor {
+            cursor = self.hosts.link(child).and_then(|node| node.next_sibling);
+            let child_work = self.hosts[child].work | self.hosts[child].subtree_work;
+            if !child_work.intersects(relevant) {
+                continue;
+            }
             self.sync_render_dirty_subtree(child)?;
         }
         Ok(())
@@ -717,8 +725,12 @@ impl UiRuntime {
         let mut work = HostWorkFlags::RECALC_STYLE
             | HostWorkFlags::RECALC_LAYOUT
             | HostWorkFlags::REBUILD_PAINT;
-        if self.hosts[id].node_type == WidgetType::Canvas {
-            work |= HostWorkFlags::SHAPE_CHANGE;
+        match self.hosts[id].node_type {
+            WidgetType::Canvas => work |= HostWorkFlags::SHAPE_CHANGE,
+            WidgetType::Text => {
+                self.text_nodes.insert(id, ());
+            }
+            _ => {}
         }
         self.mark_work(id, work);
 
@@ -901,6 +913,7 @@ impl UiRuntime {
                     .remove_subtree(binding.root)
                     .expect("failed to remove host render subtree");
             }
+            self.text_nodes.remove(removed);
             self.hosts.remove(removed);
             self.node_lifecycle_events
                 .push(NodeLifecycleEvent::Removed(removed));
@@ -1273,18 +1286,20 @@ impl UiRuntime {
         // Fiber-style bailout: skip the whole branch when neither this node nor
         // any descendant has scheduled work.
         let style_dirty = self.style_system.drain_dirty();
-        let mut styles_recomputed = !style_dirty.is_empty();
+        let mut inherited_text_changed = false;
         for node_id in style_dirty {
-            self.recompute_node_style(node_id);
+            inherited_text_changed |= self.recompute_node_style(node_id);
         }
 
         let subtree_dirty = self.style_system.drain_subtree_dirty();
-        styles_recomputed |= !subtree_dirty.is_empty();
         for node_id in subtree_dirty {
-            self.recompute_subtree_styles(node_id);
+            inherited_text_changed |= self.recompute_subtree_styles(node_id);
         }
 
-        if styles_recomputed {
+        // Sampled inheritance only has to be republished when a recomputed
+        // style actually moved an inherited text field. Matches the gate
+        // `tick_style_animations` already applies to animated samples.
+        if inherited_text_changed {
             self.sync_sampled_text_inheritance(self.root);
         }
 
@@ -1348,22 +1363,27 @@ impl UiRuntime {
         }
     }
 
-    fn recompute_subtree_styles(&mut self, id: NodeId) {
+    fn recompute_subtree_styles(&mut self, id: NodeId) -> bool {
         if !self.hosts.contains_key(id) {
-            return;
+            return false;
         }
 
-        self.recompute_node_style(id);
+        let mut inherited_text_changed = self.recompute_node_style(id);
 
-        let children: Vec<_> = self.hosts.children(id).collect();
-        for child in children {
-            self.recompute_subtree_styles(child);
+        let mut cursor = self.hosts.link(id).and_then(|node| node.first_child);
+        while let Some(child) = cursor {
+            cursor = self.hosts.link(child).and_then(|node| node.next_sibling);
+            inherited_text_changed |= self.recompute_subtree_styles(child);
         }
+        inherited_text_changed
     }
 
-    fn recompute_node_style(&mut self, id: NodeId) {
+    /// Returns `true` when the node's effective style moved a text field that
+    /// descendants may inherit, which is the only reason to republish sampled
+    /// inheritance across the tree.
+    fn recompute_node_style(&mut self, id: NodeId) -> bool {
         if !self.hosts.contains_key(id) {
-            return;
+            return false;
         }
         self.update_visits += 1;
 
@@ -1393,7 +1413,7 @@ impl UiRuntime {
             }
             self.mark_work(id, work_flags);
             self.refresh_taffy_context(id);
-            return;
+            return true;
         }
 
         let animatable_target_changed = {
@@ -1428,7 +1448,7 @@ impl UiRuntime {
         };
 
         if style_diff.is_empty() && !cancelled_transition {
-            return;
+            return false;
         }
 
         self.style_system.set_computed(id, computed_style);
@@ -1451,6 +1471,7 @@ impl UiRuntime {
         }
 
         self.mark_work(id, work_flags & !HostWorkFlags::RECALC_STYLE_SUBTREE);
+        effective_diff.intersects(xui_interface::StyleDiffFlags::TEXT)
     }
 
     fn sync_effective_taffy_style(&mut self, id: NodeId) -> bool {
@@ -1607,12 +1628,10 @@ impl UiRuntime {
     fn activate_final_text_layouts<T: TextBackend>(&self, measurer: &mut TextHost<T>) {
         let font_context = measurer.backend().epoch();
         let requests: Vec<_> = self
-            .hosts
-            .iter()
-            .filter_map(|(id, node)| {
-                if node.node_type != WidgetType::Text {
-                    return None;
-                }
+            .text_nodes
+            .keys()
+            .filter_map(|id| {
+                let node = self.hosts.get(id)?;
                 let props = node.widget.with_widgets(|widget| {
                     widget.text_layout_props(
                         self.style_system.effective(id).expect("style node missing"),
@@ -1665,7 +1684,6 @@ impl UiRuntime {
         let old_rect = previous.layout;
         let layout_changed = old_rect != rect || previous.world_origin != world_origin;
         let size_changed = old_rect.width() != rect.width() || old_rect.height() != rect.height();
-        let children: Vec<_> = self.hosts.children(id).collect();
         let mut subtree_work = {
             let node = &mut self.hosts[id];
             let should_sync_children = layout_changed
@@ -1691,7 +1709,9 @@ impl UiRuntime {
             }
         };
 
-        for child in children {
+        let mut cursor = self.hosts.link(id).and_then(|node| node.first_child);
+        while let Some(child) = cursor {
+            cursor = self.hosts.link(child).and_then(|node| node.next_sibling);
             subtree_work |= self.sync_layout(child, world_origin.x, world_origin.y);
         }
 
@@ -1762,8 +1782,13 @@ impl UiRuntime {
             self.repaint_if_needed(id);
         }
 
-        let children: Vec<_> = self.hosts.children(id).collect();
-        for child in children {
+        let mut cursor = self.hosts.link(id).and_then(|node| node.first_child);
+        while let Some(child) = cursor {
+            cursor = self.hosts.link(child).and_then(|node| node.next_sibling);
+            let child_work = self.hosts[child].work | self.hosts[child].subtree_work;
+            if !child_work.intersects(Self::paint_work_flags()) {
+                continue;
+            }
             self.repaint_dirty_subtree(child);
         }
     }
@@ -1777,9 +1802,18 @@ impl UiRuntime {
         if !current.intersects(flags) {
             return current;
         }
-        let children: Vec<_> = self.hosts.children(id).collect();
         let mut subtree_work = HostWorkFlags::empty();
-        for child in children {
+        let mut cursor = self.hosts.link(id).and_then(|node| node.first_child);
+        while let Some(child) = cursor {
+            cursor = self.hosts.link(child).and_then(|node| node.next_sibling);
+            // A child with nothing to clear still contributes its residual
+            // work to this node's subtree summary, exactly as the recursive
+            // early return used to.
+            let child_work = self.hosts[child].work | self.hosts[child].subtree_work;
+            if !child_work.intersects(flags) {
+                subtree_work |= child_work;
+                continue;
+            }
             subtree_work |= self.clear_work_subtree(child, flags);
         }
 
@@ -1798,9 +1832,13 @@ impl UiRuntime {
         if self.hosts[id].work.is_empty() && self.hosts[id].subtree_work.is_empty() {
             return HostWorkFlags::empty();
         }
-        let children: Vec<_> = self.hosts.children(id).collect();
         let mut subtree_work = HostWorkFlags::empty();
-        for child in children {
+        let mut cursor = self.hosts.link(id).and_then(|node| node.first_child);
+        while let Some(child) = cursor {
+            cursor = self.hosts.link(child).and_then(|node| node.next_sibling);
+            if self.hosts[child].work.is_empty() && self.hosts[child].subtree_work.is_empty() {
+                continue;
+            }
             subtree_work |= self.rebuild_subtree_dirty(child);
         }
 

@@ -8,6 +8,7 @@ use crate::widgets::{WidgetI, WidgetType};
 use interaction::InteractionSystem;
 use layout::{LayoutNode, LayoutTree, WidgetContext};
 use render::RenderSystem;
+use slotmap::SparseSecondaryMap;
 use state::UiState;
 use style::StyleSystem;
 use tree::{HostData, HostTree};
@@ -33,6 +34,9 @@ pub struct UiRuntime {
     pub(crate) root_overlayer: NodeId,
     pub(crate) node_lifecycle_events: Vec<NodeLifecycleEvent>,
     pub(crate) interaction_system: InteractionSystem,
+    /// Index of live `WidgetType::Text` hosts. `HostData::node_type` is fixed at
+    /// creation, so membership only changes when a node is created or removed.
+    pub(crate) text_nodes: SparseSecondaryMap<NodeId, ()>,
     pub(crate) theme: Theme,
     pub update_visits: usize,
     pub layout_passes: usize,

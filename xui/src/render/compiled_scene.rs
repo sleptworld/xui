@@ -3,8 +3,8 @@ use super::{
     RenderNodeId, SpatialNodeId,
 };
 use crate::render::render_graph::BuiltLayerProgram;
-use slotmap::SlotMap;
-use std::collections::{HashMap, HashSet};
+use slotmap::{SecondaryMap, SlotMap};
+use std::collections::HashMap;
 use xui_interface::Affine;
 
 #[derive(Debug, Clone)]
@@ -19,8 +19,12 @@ pub struct CompiledScene {
     pub(crate) primitive_by_source: HashMap<RenderNodeId, PrimitiveId>,
     pub(crate) spatial_by_source: HashMap<RenderNodeId, SpatialNodeId>,
     pub(crate) clip_by_source: HashMap<RenderNodeId, CompiledClipId>,
-    pub(crate) reachable_sources: HashSet<RenderNodeId>,
-    pub(crate) layer_isolation: HashMap<RenderNodeId, bool>,
+    /// Source-scene metadata, stamped with `metadata_epoch` instead of being
+    /// cleared: a structural rebuild bumps the epoch and restamps what it
+    /// visits, so retiring the previous contents costs nothing.
+    pub(crate) source_epoch: SecondaryMap<RenderNodeId, u64>,
+    pub(crate) layer_isolation: SecondaryMap<RenderNodeId, (u64, bool)>,
+    pub(crate) metadata_epoch: u64,
     pub(crate) scene_revision: u64,
 }
 
@@ -70,11 +74,14 @@ impl CompiledScene {
     }
 
     pub fn contains_source(&self, source: RenderNodeId) -> bool {
-        self.reachable_sources.contains(&source)
+        self.source_epoch.get(source) == Some(&self.metadata_epoch)
     }
 
     pub(crate) fn layer_isolation(&self, source: RenderNodeId) -> Option<bool> {
-        self.layer_isolation.get(&source).copied()
+        self.layer_isolation
+            .get(source)
+            .filter(|(epoch, _)| *epoch == self.metadata_epoch)
+            .map(|(_, isolated)| *isolated)
     }
 }
 

@@ -1,6 +1,6 @@
 use std::{collections::HashSet, sync::Arc};
 
-use slotmap::SlotMap;
+use slotmap::{SecondaryMap, SlotMap};
 
 use super::{
     CompiledClip, CompiledClipId, CompiledPicture, CompiledPictureItem, CompiledPrimitive,
@@ -86,8 +86,6 @@ impl SceneCompiler {
         source: &RenderScene,
         snapshot: &DirtySnapshot,
     ) -> Result<&'a CompiledScene, SceneCompileError> {
-        validate_explicit_cache_keys(source)?;
-
         let needs_initial = self.compiled.is_none();
         let compiled_revision = self
             .compiled
@@ -109,21 +107,39 @@ impl SceneCompiler {
             })
             .collect();
 
+        // Duplicate cache keys can only appear when a layer descriptor changes
+        // (`EFFECT` covers `cache_key`) or when a subtree is attached
+        // (`TOPOLOGY`). Re-walking the whole scene on every paint-only frame
+        // costs O(scene) for a check that cannot have changed.
+        if needs_initial
+            || changed
+                .iter()
+                .any(|(_, dirty)| dirty.intersects(RenderDirty::TOPOLOGY | RenderDirty::EFFECT))
+        {
+            validate_explicit_cache_keys(source)?;
+        }
+
         let structural = needs_initial
             || changed.iter().any(|(id, dirty)| {
                 requires_structural_rebuild(source, self.compiled.as_ref(), *id, *dirty)
             });
 
         if structural {
-            let mut next = match self.compiled.as_ref() {
-                Some(current) => current.clone(),
+            // Taken rather than cloned: a deep copy of every SlotMap and
+            // source index costs O(scene) on each structural frame.
+            let mut next = match self.compiled.take() {
+                Some(current) => current,
                 None => empty_compiled_scene(source),
             };
-            if needs_initial {
-                rebuild_structure(&mut next, source)?;
+            let outcome = if needs_initial {
+                rebuild_structure(&mut next, source)
             } else {
-                rebuild_structural_branches(&mut next, source, &changed)?;
-            }
+                rebuild_structural_branches(&mut next, source, &changed)
+            };
+            // A failed rebuild leaves `next` half-written, so it is dropped
+            // instead of retained; `self.compiled` stays `None` and the next
+            // call starts from a clean full rebuild.
+            outcome?;
             next.scene_revision = source.revision();
             self.compiled = Some(next);
         } else if let Some(compiled) = self.compiled.as_mut() {
@@ -161,9 +177,13 @@ fn requires_structural_rebuild(
     id: RenderNodeId,
     dirty: RenderDirty,
 ) -> bool {
-    if dirty.intersects(RenderDirty::TOPOLOGY | RenderDirty::VISIBILITY | RenderDirty::EFFECT) {
+    if dirty.intersects(RenderDirty::TOPOLOGY | RenderDirty::VISIBILITY) {
         return true;
     }
+    // `EFFECT` alone is not structural. Only a layer that gains or loses
+    // isolation changes the picture graph, and the per-kind check below already
+    // detects exactly that; an effect swap on an already-isolated layer is a
+    // descriptor update that `apply_non_structural_updates` handles in place.
     let Some(node) = source.node(id) else {
         return true;
     };
@@ -273,18 +293,21 @@ fn empty_compiled_scene(source: &RenderScene) -> CompiledScene {
         primitive_by_source: Default::default(),
         spatial_by_source: Default::default(),
         clip_by_source: Default::default(),
-        reachable_sources: Default::default(),
+        source_epoch: Default::default(),
         layer_isolation: Default::default(),
+        metadata_epoch: 0,
         scene_revision: 0,
     }
 }
 
+/// Mark set for the compiled-graph sweep. Every id here is a slotmap key, so
+/// `SecondaryMap` indexes it directly instead of hashing it once per entity.
 #[derive(Default)]
 struct LiveCompiledIds {
-    pictures: HashSet<PictureId>,
-    primitives: HashSet<PrimitiveId>,
-    spatials: HashSet<SpatialNodeId>,
-    clips: HashSet<CompiledClipId>,
+    pictures: SecondaryMap<PictureId, ()>,
+    primitives: SecondaryMap<PrimitiveId, ()>,
+    spatials: SecondaryMap<SpatialNodeId, ()>,
+    clips: SecondaryMap<CompiledClipId, ()>,
 }
 
 #[derive(Clone, Copy)]
@@ -299,8 +322,8 @@ fn rebuild_structure(
     source: &RenderScene,
 ) -> Result<(), SceneCompileError> {
     let mut live = LiveCompiledIds::default();
-    live.pictures.insert(compiled.root_picture);
-    live.spatials.insert(compiled.root_spatial);
+    live.pictures.insert(compiled.root_picture, ());
+    live.spatials.insert(compiled.root_spatial, ());
     refresh_source_metadata(compiled, source)?;
 
     let root_node = source
@@ -352,14 +375,16 @@ fn refresh_source_metadata(
     compiled: &mut CompiledScene,
     source: &RenderScene,
 ) -> Result<(), SceneCompileError> {
-    compiled.reachable_sources.clear();
-    compiled.layer_isolation.clear();
+    // Bumping the epoch retires every previous stamp, so neither map has to be
+    // cleared (and regrown) on each structural frame.
+    compiled.metadata_epoch = compiled.metadata_epoch.wrapping_add(1);
+    let epoch = compiled.metadata_epoch;
     for (id, node) in source.depth_first(source.root())? {
-        compiled.reachable_sources.insert(id);
+        compiled.source_epoch.insert(id, epoch);
         if let RenderNodeKind::Layer(layer) = &node.kind {
             compiled
                 .layer_isolation
-                .insert(id, layer.descriptor.requires_isolation());
+                .insert(id, (epoch, layer.descriptor.requires_isolation()));
         }
     }
     Ok(())
@@ -489,7 +514,7 @@ fn rebuild_picture_contents(
         clip: None,
     };
     let mut branch_live = LiveCompiledIds::default();
-    branch_live.pictures.insert(picture_id);
+    branch_live.pictures.insert(picture_id, ());
     if let Some(child) = layer.child {
         walk_node(compiled, source, child, context, &mut branch_live)?;
     }
@@ -539,7 +564,7 @@ fn walk_node(
                 clip: context.clip,
                 content_version: node.epochs.content_version(),
             };
-            live.primitives.insert(primitive_id);
+            live.primitives.insert(primitive_id, ());
             compiled.pictures[context.picture]
                 .items
                 .push(CompiledPictureItem::Primitive(primitive_id));
@@ -567,7 +592,7 @@ fn walk_node(
                 local_transform: value.transform,
                 content_version: node.epochs.content_version(),
             };
-            live.spatials.insert(spatial_id);
+            live.spatials.insert(spatial_id, ());
             if let Some(child) = value.child {
                 walk_node(
                     compiled,
@@ -603,7 +628,7 @@ fn walk_node(
                 clip: value.clip.clone(),
                 content_version: node.epochs.content_version(),
             };
-            live.clips.insert(clip_id);
+            live.clips.insert(clip_id, ());
             if let Some(child) = value.child {
                 walk_node(
                     compiled,
@@ -662,7 +687,7 @@ fn walk_node(
                 composite_version: node.epochs.composite,
                 is_root: false,
             };
-            live.pictures.insert(picture_id);
+            live.pictures.insert(picture_id, ());
             compiled.pictures[context.picture]
                 .items
                 .push(CompiledPictureItem::Picture(picture_id));
@@ -728,14 +753,16 @@ fn retain_live(compiled: &mut CompiledScene, live: &LiveCompiledIds) {
     // for key in stale_pictures {
     //     compiled.pictures.remove(key);
     // }
-    compiled.pictures.retain(|k, _| live.pictures.contains(&k));
+    compiled
+        .pictures
+        .retain(|k, _| live.pictures.contains_key(k));
     compiled
         .primitives
-        .retain(|k, _| live.primitives.contains(&k));
+        .retain(|k, _| live.primitives.contains_key(k));
     compiled
         .spatial_nodes
-        .retain(|k, _| live.spatials.contains(&k));
-    compiled.clips.retain(|k, _| live.clips.contains(&k));
+        .retain(|k, _| live.spatials.contains_key(k));
+    compiled.clips.retain(|k, _| live.clips.contains_key(k));
     // let stale_primitives: Vec<_> = compiled
     //     .primitives
     //     .keys()
@@ -762,23 +789,23 @@ fn retain_live(compiled: &mut CompiledScene, live: &LiveCompiledIds) {
     // }
     compiled
         .picture_by_source
-        .retain(|_, key| live.pictures.contains(key));
+        .retain(|_, key| live.pictures.contains_key(*key));
     compiled
         .primitive_by_source
-        .retain(|_, key| live.primitives.contains(key));
+        .retain(|_, key| live.primitives.contains_key(*key));
     compiled
         .spatial_by_source
-        .retain(|_, key| live.spatials.contains(key));
+        .retain(|_, key| live.spatials.contains_key(*key));
     compiled
         .clip_by_source
-        .retain(|_, key| live.clips.contains(key));
+        .retain(|_, key| live.clips.contains_key(*key));
 }
 
 fn retain_picture_graph(compiled: &mut CompiledScene) {
     let mut live = LiveCompiledIds::default();
     let mut pictures = vec![compiled.root_picture];
     while let Some(picture_id) = pictures.pop() {
-        if !live.pictures.insert(picture_id) {
+        if live.pictures.insert(picture_id, ()).is_some() {
             continue;
         }
         let Some(picture) = compiled.pictures.get(picture_id).cloned() else {
@@ -791,7 +818,7 @@ fn retain_picture_graph(compiled: &mut CompiledScene) {
         for item in picture.items {
             match item {
                 CompiledPictureItem::Primitive(primitive_id) => {
-                    if !live.primitives.insert(primitive_id) {
+                    if live.primitives.insert(primitive_id, ()).is_some() {
                         continue;
                     }
                     let Some(primitive) = compiled.primitives.get(primitive_id).cloned() else {
@@ -815,7 +842,7 @@ fn mark_spatial_chain(
     mut spatial: SpatialNodeId,
 ) {
     loop {
-        if !live.spatials.insert(spatial) {
+        if live.spatials.insert(spatial, ()).is_some() {
             break;
         }
         let Some(parent) = compiled
@@ -835,7 +862,7 @@ fn mark_clip_chain(
     mut clip_id: CompiledClipId,
 ) {
     loop {
-        if !live.clips.insert(clip_id) {
+        if live.clips.insert(clip_id, ()).is_some() {
             break;
         }
         let Some(clip) = compiled.clips.get(clip_id) else {
