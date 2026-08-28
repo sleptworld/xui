@@ -26,7 +26,7 @@ use xui_interface::events::{
     KeyState, KeyText, RawEvent, RawIme, RawKeyboard, TextPayload, XuiPointerId,
 };
 use xui_interface::{
-    Modifiers, PlatformOutput, Point, PointerButtons, PointerKind, RawPointerButton,
+    CursorIcon, Modifiers, PlatformOutput, Point, PointerButtons, PointerKind, RawPointerButton,
     RawPointerMove, RawWheel, RawWindowEvent, Size, TextBackend, TextOffset, TextRange,
 };
 use xui_text_engine::CosmicEngine;
@@ -251,6 +251,16 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackend> WinitRunner<B, T> {
                     LogicalSize::new(area.width as f64, area.height as f64),
                 );
             }
+
+        if self.last_platform_output.cursor != next.cursor {
+            match to_winit_cursor(next.cursor) {
+                Some(icon) => {
+                    window.set_cursor_visible(true);
+                    window.set_cursor(icon);
+                }
+                None => window.set_cursor_visible(false),
+            }
+        }
 
         self.last_platform_output = next;
     }
@@ -579,4 +589,30 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackend> ApplicationHandler<WinitUser
             }
         }
     }
+}
+
+/// The one place that knows about winit's cursor vocabulary.
+///
+/// `None` means "hide the cursor", which winit models as a visibility flag
+/// rather than an icon.
+fn to_winit_cursor(cursor: CursorIcon) -> Option<winit::window::CursorIcon> {
+    use winit::window::CursorIcon as Winit;
+    Some(match cursor {
+        CursorIcon::Default => Winit::Default,
+        CursorIcon::Pointer => Winit::Pointer,
+        CursorIcon::Text => Winit::Text,
+        CursorIcon::Crosshair => Winit::Crosshair,
+        CursorIcon::Move => Winit::Move,
+        CursorIcon::Grab => Winit::Grab,
+        CursorIcon::Grabbing => Winit::Grabbing,
+        CursorIcon::NotAllowed => Winit::NotAllowed,
+        CursorIcon::Wait => Winit::Wait,
+        CursorIcon::Progress => Winit::Progress,
+        CursorIcon::Help => Winit::Help,
+        CursorIcon::ColumnResize => Winit::ColResize,
+        CursorIcon::RowResize => Winit::RowResize,
+        CursorIcon::EastWestResize => Winit::EwResize,
+        CursorIcon::NorthSouthResize => Winit::NsResize,
+        CursorIcon::None => return None,
+    })
 }

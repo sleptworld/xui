@@ -949,6 +949,10 @@ impl Style {
         self
     }
 
+    pub fn cursor(self, cursor: CursorIcon) -> Self {
+        self.map_base(|base| base.cursor(cursor))
+    }
+
     pub fn color(self, color: impl Into<ColorValue>) -> Self {
         self.map_base(|base| base.color(color))
     }
@@ -1321,6 +1325,40 @@ impl StyleMerge for StylePatch {
     }
 }
 
+/// The pointer shape a node asks the platform for.
+///
+/// A style property, so that it can be state-conditioned like any other —
+/// `style!(cursor: if disabled { NotAllowed } else { Pointer })` — and so that
+/// `cursor={..}` works on every widget without the DSL knowing about it.
+///
+/// It is deliberately absent from [`ComputedStyle::diff`]: a cursor produces no
+/// scene output, so changing one must not invalidate layout, paint, or text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum CursorIcon {
+    #[default]
+    Default,
+    /// The "this is clickable" hand.
+    Pointer,
+    /// An I-beam, for selectable text.
+    Text,
+    Crosshair,
+    Move,
+    /// Something can be picked up here.
+    Grab,
+    /// Something is being dragged right now.
+    Grabbing,
+    NotAllowed,
+    Wait,
+    Progress,
+    Help,
+    ColumnResize,
+    RowResize,
+    EastWestResize,
+    NorthSouthResize,
+    /// Draw nothing at all.
+    None,
+}
+
 /// Style Patches Info
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct StylePatch {
@@ -1330,11 +1368,19 @@ pub struct StylePatch {
     pub transform: TransformStylePatch,
     pub effect: EffectStylePatch,
     pub scroll: ScrollStylePatch,
+    /// Not part of any group, because the groups are what `diff` compares and a
+    /// cursor change must not dirty anything.
+    pub cursor: StyleValue<CursorIcon>,
 }
 
 impl StylePatch {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn cursor(mut self, cursor: CursorIcon) -> Self {
+        self.cursor = StyleValue::Value(cursor);
+        self
     }
 
     pub fn color(mut self, color: impl Into<ColorValue>) -> Self {
@@ -1686,6 +1732,7 @@ impl StylePatch {
         merge_transform(&mut self.transform, &other.transform);
         merge_effect(&mut self.effect, &other.effect);
         merge_scroll(&mut self.scroll, &other.scroll);
+        merge_value(&mut self.cursor, &other.cursor);
     }
 }
 
@@ -1914,6 +1961,13 @@ pub struct ComputedStyle {
     pub transform: TransformStyle,
     pub effect: ComputedEffectStyle,
     pub scroll: ComputedScrollStyle,
+    /// `None` means this node does not specify one; the resolver walks up to
+    /// the nearest ancestor that does.
+    ///
+    /// Not inherited through [`ComputedStyle::inherited_from`] on purpose:
+    /// inheriting would give every node a resolved copy to keep in step, while
+    /// the walk happens only when the hover target changes.
+    pub cursor: Option<CursorIcon>,
 }
 
 impl ComputedStyle {
@@ -1969,6 +2023,7 @@ impl ComputedStyle {
                     visibility: ScrollbarVisibilityStyle::Auto,
                 },
             },
+            cursor: None,
         }
     }
 
@@ -1985,6 +2040,11 @@ impl ComputedStyle {
         apply_transform(&mut self.transform, &patch.transform);
         apply_effect(&mut self.effect, &patch.effect, theme);
         apply_scroll(&mut self.scroll, &patch.scroll, theme);
+        match patch.cursor {
+            StyleValue::Unset | StyleValue::Inherit => {}
+            StyleValue::Initial => self.cursor = None,
+            StyleValue::Value(cursor) => self.cursor = Some(cursor),
+        }
     }
 
     pub fn diff(&self, other: &ComputedStyle) -> StyleDiffFlags {
@@ -2013,6 +2073,11 @@ impl ComputedStyle {
         if self.scroll != other.scroll {
             flags |= StyleDiffFlags::SCROLL;
         }
+
+        // `cursor` is intentionally not compared. It has no scene output, so a
+        // change must not dirty layout, paint, or text; the platform layer picks
+        // the current value up on its next pull. Adding it here would make
+        // hovering a button repaint it.
 
         flags
     }

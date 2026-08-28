@@ -6,7 +6,7 @@ pub use xui_interface::{
     ComputedColorStyle, ComputedEffect, ComputedEffectStyle, ComputedLayoutStyle,
     ComputedLinearGradientStyle, ComputedMaskShape, ComputedPaintStyle,
     ComputedRadialGradientStyle, ComputedScrollStyle, ComputedScrollbarStyle, ComputedShadowStyle,
-    ComputedStrokeStyle, ComputedStyle, ComputedTextStyle, Effect, EffectStylePatch, FilterQuality,
+    ComputedStrokeStyle, ComputedStyle, ComputedTextStyle, CursorIcon, Effect, EffectStylePatch, FilterQuality,
     FlexDirectionStyle, FontSizeToken, JustifyStyle, LayoutStylePatch, LengthValue,
     LinearGradientStyle, MaskShape, PaintStylePatch, PositionStyle, RadialGradientStyle,
     RadiusToken, ScrollDirectionStyle, ScrollStylePatch, ScrollbarStyle, ScrollbarStylePatch,

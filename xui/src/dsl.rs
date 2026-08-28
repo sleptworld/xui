@@ -27,7 +27,7 @@ use std::sync::Arc;
 use crate::core::{EdgeInsets, Point, Size};
 use crate::element::{ElementDesc, IntoChildren};
 use crate::style::{
-    AlignStyle, BackdropStyle, ColorStyle, ColorValue, Effect, JustifyStyle, LengthValue,
+    AlignStyle, BackdropStyle, ColorStyle, ColorValue, CursorIcon, Effect, JustifyStyle, LengthValue,
     PositionStyle, ScrollDirectionStyle, ScrollbarStyle, ScrollbarStylePatch,
     ScrollbarVisibilityStyle, ShadowStyle, StrokeLineStyle, StrokeStyle, Style, StyleMerge,
     TransformStyle,
@@ -186,6 +186,7 @@ style_props! {
     stroke(stroke: StrokeStyle) => stroke;
     shadow(shadow: ShadowStyle) => shadow;
     clip(clip: bool) => clip;
+    cursor(cursor: CursorIcon) => cursor;
     backdrop_blur(sigma: impl Into<LengthValue>) => backdrop_blur;
     backdrop_style(backdrop: BackdropStyle) => backdrop_style;
     effects(effects: impl Into<Arc<[Effect]>>) => effects;

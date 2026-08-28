@@ -1,4 +1,5 @@
 use crate::Rect;
+use crate::style::CursorIcon;
 
 /// Platform-facing state desired by the UI runtime.
 ///
@@ -7,6 +8,10 @@ use crate::Rect;
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PlatformOutput {
     pub text_input: Option<TextInputSession>,
+    /// The pointer shape the window should show right now, resolved from the
+    /// node under the pointer — or, while a pointer is captured, from the node
+    /// holding the capture.
+    pub cursor: CursorIcon,
 }
 
 /// The active native text-input/IME session.

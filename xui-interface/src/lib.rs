@@ -47,7 +47,7 @@ pub use style::{
     FlexDirectionStyle, FontSizeToken, JustifyStyle, LayoutStylePatch, LengthValue,
     LinearGradientStyle, MaskShape, PaintStylePatch, PositionStyle, RadialGradientStyle,
     RadiusToken, ScrollDirectionStyle, ScrollStylePatch, ScrollbarStyle, ScrollbarStylePatch,
-    ScrollbarVisibilityStyle, ShadowStyle, SpacingToken, StateStyleRule, Stroke, StrokeLineStyle,
+    CursorIcon, ScrollbarVisibilityStyle, ShadowStyle, SpacingToken, StateStyleRule, Stroke, StrokeLineStyle,
     StrokeStyle, Style, StyleMerge, StylePatch, StyleValue, TextStylePatch, Theme, TransformStyle,
     TransformStylePatch, WidgetStateMatcher,
 };

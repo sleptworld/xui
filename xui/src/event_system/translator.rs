@@ -195,6 +195,7 @@ impl EventTranslator {
 
         self.update_hover(
             raw.pointer_id,
+            raw.kind,
             hit_target,
             pointer,
             raw.timestamp,
@@ -773,11 +774,12 @@ impl EventTranslator {
     fn update_hover(
         &mut self,
         pointer_id: XuiPointerId,
+        kind: PointerKind,
         new_target: Option<NodeId>,
         pointer: PointerSnapshot,
         timestamp: Instant,
         modifiers: Modifiers,
-        arena: &UiRuntime,
+        arena: &mut UiRuntime,
         out: &mut Vec<SemanticEvent>,
     ) {
         let old_path = self
@@ -828,6 +830,13 @@ impl EventTranslator {
             self.hover_paths.remove(&pointer_id);
         } else {
             self.hover_paths.insert(pointer_id, new_path);
+        }
+
+        // Recorded for the platform cursor, which is resolved from the deepest
+        // hovered node. Written here because this is the only place that knows
+        // the path, rather than inferred from the order of the events above.
+        if kind == PointerKind::Mouse {
+            arena.event_state_mut().set_hovered(new_target);
         }
     }
 

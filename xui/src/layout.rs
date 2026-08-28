@@ -37,34 +37,55 @@ pub(crate) fn computed_style_for_widget(
     })
 }
 
+/// How a container arranges its children.
+///
+/// `Sizing::Fill` means a different taffy property in each case, and the
+/// previous code could not tell them apart: it took only the parent's
+/// `flex_direction`, a field that is a leftover default on every parent that is
+/// not a flex container. A `Fill` child of a grid, a z-stack, or a plain
+/// (block) container was given `flex_grow: 1` — which those layout modes ignore
+/// — and so silently did not fill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParentLayout {
+    /// A plain container: children stack in block flow. Deliberate — only
+    /// `row` and `column` turn flex on.
+    Block,
+    Flex(FlexDirectionStyle),
+    Grid,
+    /// A grid used as a single cell that every child shares.
+    ZStack,
+}
+
+/// The layout kind a widget imposes on its children.
+///
+/// Must agree with the `display` chosen in [`computed_layout_style_for_parent`];
+/// `container_layout_matches_the_taffy_display` holds them together.
+pub fn container_layout(widget: &WidgetI) -> ParentLayout {
+    widget.with_widgets(|widget| match widget {
+        Widgets::Container(container) => match container.flex_direction {
+            Some(direction) => ParentLayout::Flex(direction),
+            None => ParentLayout::Block,
+        },
+        Widgets::Root(_) => ParentLayout::Flex(FlexDirectionStyle::Column),
+        Widgets::ZStack(_) => ParentLayout::ZStack,
+        Widgets::Grid(_) => ParentLayout::Grid,
+        _ => ParentLayout::Block,
+    })
+}
+
 #[inline(always)]
 pub fn taffy_style_for_widget(
     widget: &WidgetI,
-    parent: &ComputedStyle,
-    computed: &ComputedStyle,
-    parent_is_z_stack: bool,
-) -> tf::Style {
-    computed_layout_style_for_parent(
-        widget,
-        parent.layout.flex_direction,
-        computed,
-        parent_is_z_stack,
-    )
-}
-
-pub fn computed_layout_style(
-    widget: &WidgetI,
-    parent_dire: FlexDirectionStyle,
+    parent_layout: ParentLayout,
     computed: &ComputedStyle,
 ) -> tf::Style {
-    computed_layout_style_for_parent(widget, parent_dire, computed, false)
+    computed_layout_style_for_parent(widget, parent_layout, computed)
 }
 
 fn computed_layout_style_for_parent(
     widget: &WidgetI,
-    parent_dire: FlexDirectionStyle,
+    parent_layout: ParentLayout,
     computed: &ComputedStyle,
-    parent_is_z_stack: bool,
 ) -> tf::Style {
     let layout = computed.layout;
     // let is_root = widget.with_widgets(|w| matches!(w, Widgets::Root(_)));
@@ -128,37 +149,32 @@ fn computed_layout_style_for_parent(
         PositionStyle::Absolute => tf::Position::Absolute,
     };
     style.inset = optional_edge_insets(layout.inset);
-    if parent_is_z_stack {
+    if parent_layout == ParentLayout::ZStack {
         style.grid_row = tf::line(1);
         style.grid_column = tf::line(1);
     }
 
     let size = layout.size();
     style.size = tf::Size {
-        width: dimension_for_axis(size.width, Axis::Horizontal, parent_dire),
-        height: dimension_for_axis(size.height, Axis::Vertical, parent_dire),
+        width: dimension_for_axis(size.width, Axis::Horizontal, parent_layout),
+        height: dimension_for_axis(size.height, Axis::Vertical, parent_layout),
     };
 
-    match parent_dire {
-        FlexDirectionStyle::Column => {
-            if matches!(size.height(), Sizing::Fill) {
-                style.flex_grow = 1.0;
-                style.flex_shrink = 1.0;
-                style.flex_basis = tf::Dimension::length(0.0);
-            }
-            if matches!(size.height(), Sizing::Fix(_)) {
-                style.flex_shrink = 0.0;
-            }
+    // Growing and shrinking are flex-only concepts. Setting them under a grid or
+    // a block parent is not merely useless: it used to be paired with an `auto`
+    // dimension, so the child silently kept its content size instead of filling.
+    if let ParentLayout::Flex(direction) = parent_layout {
+        let main = match direction {
+            FlexDirectionStyle::Column => size.height(),
+            FlexDirectionStyle::Row => size.width(),
+        };
+        if matches!(main, Sizing::Fill) {
+            style.flex_grow = 1.0;
+            style.flex_shrink = 1.0;
+            style.flex_basis = tf::Dimension::length(0.0);
         }
-        FlexDirectionStyle::Row => {
-            if matches!(size.width(), Sizing::Fill) {
-                style.flex_grow = 1.0;
-                style.flex_shrink = 1.0;
-                style.flex_basis = tf::Dimension::length(0.0);
-            }
-            if matches!(size.width(), Sizing::Fix(_)) {
-                style.flex_shrink = 0.0;
-            }
+        if matches!(main, Sizing::Fix(_)) {
+            style.flex_shrink = 0.0;
         }
     }
 
@@ -166,11 +182,11 @@ fn computed_layout_style_for_parent(
     style.min_size = tf::Size {
         width: min_size
             .width()
-            .map(|w| dimension_for_axis(w, Axis::Horizontal, parent_dire))
+            .map(|w| dimension_for_axis(w, Axis::Horizontal, parent_layout))
             .unwrap_or(taffy::Dimension::ZERO),
         height: min_size
             .height()
-            .map(|h| dimension_for_axis(h, Axis::Vertical, parent_dire))
+            .map(|h| dimension_for_axis(h, Axis::Vertical, parent_layout))
             .unwrap_or(taffy::Dimension::ZERO),
     };
 
@@ -179,11 +195,11 @@ fn computed_layout_style_for_parent(
     style.max_size = tf::Size {
         width: max_size
             .width()
-            .map(|w| dimension_for_axis(w, Axis::Horizontal, parent_dire))
+            .map(|w| dimension_for_axis(w, Axis::Horizontal, parent_layout))
             .unwrap_or(taffy::Dimension::auto()),
         height: max_size
             .height()
-            .map(|h| dimension_for_axis(h, Axis::Vertical, parent_dire))
+            .map(|h| dimension_for_axis(h, Axis::Vertical, parent_layout))
             .unwrap_or(taffy::Dimension::auto()),
     };
 
@@ -237,9 +253,10 @@ enum Axis {
     Vertical,
 }
 
-fn is_main_axis(axis: Axis, parent_dire: FlexDirectionStyle) -> bool {
+/// Whether `axis` is the axis a flex parent distributes free space along.
+fn is_main_axis(axis: Axis, direction: FlexDirectionStyle) -> bool {
     matches!(
-        (axis, parent_dire),
+        (axis, direction),
         (Axis::Horizontal, FlexDirectionStyle::Row) | (Axis::Vertical, FlexDirectionStyle::Column)
     )
 }
@@ -296,10 +313,18 @@ fn optional_edge_insets(value: Option<EdgeInsets>) -> tf::Rect<tf::LengthPercent
     )
 }
 
-fn dimension_for_axis(value: Sizing, axis: Axis, parent_dire: FlexDirectionStyle) -> tf::Dimension {
+fn dimension_for_axis(value: Sizing, axis: Axis, parent_layout: ParentLayout) -> tf::Dimension {
     match value {
-        Sizing::Fill if !is_main_axis(axis, parent_dire) => tf::Dimension::percent(1.0),
-        Sizing::Fill | Sizing::Hug => tf::Dimension::auto(),
+        // Along a flex main axis the dimension stays `auto` and `flex_grow`
+        // does the filling. Everywhere else — grid tracks, z-stack cells, block
+        // flow — asking for the full extent of the containing block is what
+        // "fill" means, and it degrades to `auto` on its own when the parent has
+        // no definite size in that axis.
+        Sizing::Fill => match parent_layout {
+            ParentLayout::Flex(direction) if is_main_axis(axis, direction) => tf::Dimension::auto(),
+            _ => tf::Dimension::percent(1.0),
+        },
+        Sizing::Hug => tf::Dimension::auto(),
         Sizing::Fix(v) => tf::Dimension::length(v.into_inner()),
         Sizing::Percent(v) => tf::Dimension::percent(v.into_inner()),
     }
@@ -346,6 +371,140 @@ mod tests {
         }
     }
 
+    /// `container_layout` and the `display` chosen when building the taffy style
+    /// are two readings of the same decision. If they drift, a child is told its
+    /// parent lays out one way while the parent actually lays out another — the
+    /// exact failure that made `Sizing::Fill` silently do nothing.
+    #[test]
+    fn container_layout_matches_the_taffy_display() {
+        use crate::widgets::{GridWidget, TextWidget, root_widget, text_input};
+
+        let theme = Theme::default();
+        let parent = ComputedStyle::initial(&theme);
+        let cases: Vec<WidgetI> = vec![
+            WidgetI::new(container()),
+            WidgetI::new(container().flex_direction(FlexDirectionStyle::Row)),
+            WidgetI::new(container().flex_direction(FlexDirectionStyle::Column)),
+            WidgetI::new(ZStackWidget::new()),
+            WidgetI::new(GridWidget::new()),
+            WidgetI::new(TextWidget::new("t")),
+            WidgetI::new(text_input()),
+            root_widget(),
+        ];
+
+        for widget in cases {
+            let computed =
+                computed_style_for_widget(&widget, &parent, &theme, WidgetState::empty());
+            let style = taffy_style_for_widget(&widget, ParentLayout::Block, &computed);
+            let expected = match container_layout(&widget) {
+                ParentLayout::Block => tf::Display::Block,
+                ParentLayout::Flex(_) => tf::Display::Flex,
+                ParentLayout::Grid | ParentLayout::ZStack => tf::Display::Grid,
+            };
+            assert_eq!(
+                style.display,
+                expected,
+                "`container_layout` says {:?} but the taffy style says {:?} for {:?}",
+                container_layout(&widget),
+                style.display,
+                widget.node_type()
+            );
+        }
+    }
+
+    /// `Fill` used to mean `flex_grow: 1` regardless of the parent, and
+    /// `flex_grow` is ignored by grid and block layout — so a `Fill` child of
+    /// anything but a row or a column silently kept its content size.
+    #[test]
+    fn fill_resolves_against_the_parents_actual_layout_mode() {
+        let theme = Theme::default();
+        let root = ComputedStyle::initial(&theme);
+        let widget = WidgetI::new(
+            container().style(
+                xui_interface::Style::new()
+                    .width(Sizing::Fill)
+                    .height(Sizing::Fill),
+            ),
+        );
+        let computed = computed_style_for_widget(&widget, &root, &theme, WidgetState::empty());
+
+        let full = tf::Dimension::percent(1.0);
+        let auto = tf::Dimension::auto();
+
+        // Flex: the main axis grows, the cross axis takes the full extent.
+        let in_column =
+            taffy_style_for_widget(&widget, ParentLayout::Flex(FlexDirectionStyle::Column), &computed);
+        assert_eq!(in_column.size.width, full);
+        assert_eq!(in_column.size.height, auto);
+        assert_eq!(in_column.flex_grow, 1.0);
+
+        let in_row =
+            taffy_style_for_widget(&widget, ParentLayout::Flex(FlexDirectionStyle::Row), &computed);
+        assert_eq!(in_row.size.width, auto);
+        assert_eq!(in_row.size.height, full);
+        assert_eq!(in_row.flex_grow, 1.0);
+
+        // Everywhere else "fill" is the full extent on both axes, and asking to
+        // grow would be meaningless.
+        for parent in [ParentLayout::Grid, ParentLayout::ZStack, ParentLayout::Block] {
+            let style = taffy_style_for_widget(&widget, parent, &computed);
+            assert_eq!(style.size.width, full, "width under {parent:?}");
+            assert_eq!(style.size.height, full, "height under {parent:?}");
+            assert_eq!(style.flex_grow, 0.0, "flex_grow under {parent:?}");
+        }
+    }
+
+    /// A z-stack child fills the shared cell instead of collapsing to its
+    /// content height.
+    #[test]
+    fn a_filling_child_of_a_z_stack_covers_the_stack() {
+        let mut taffy = tf::TaffyTree::<()>::new();
+        let theme = Theme::default();
+        let root = ComputedStyle::initial(&theme);
+
+        let filler = WidgetI::new(
+            container().style(
+                xui_interface::Style::new()
+                    .width(Sizing::Fill)
+                    .height(Sizing::Fill),
+            ),
+        );
+        let filler_computed =
+            computed_style_for_widget(&filler, &root, &theme, WidgetState::empty());
+        let filler_style = taffy_style_for_widget(&filler, ParentLayout::ZStack, &filler_computed);
+
+        let filler_node = taffy.new_leaf(filler_style).unwrap();
+        let sizer = taffy.new_leaf(fixed_grid_child(40.0, 30.0)).unwrap();
+        let stack = WidgetI::new(ZStackWidget::new());
+        let stack_computed = computed_style_for_widget(&stack, &root, &theme, WidgetState::empty());
+        let stack_node = taffy
+            .new_with_children(
+                taffy_style_for_widget(&stack, ParentLayout::Block, &stack_computed),
+                &[filler_node, sizer],
+            )
+            .unwrap();
+
+        taffy
+            .compute_layout(
+                stack_node,
+                tf::Size {
+                    width: tf::AvailableSpace::MaxContent,
+                    height: tf::AvailableSpace::MaxContent,
+                },
+            )
+            .unwrap();
+
+        let stack_size = taffy.layout(stack_node).unwrap().size;
+        let filler_size = taffy.layout(filler_node).unwrap().size;
+        assert_eq!(stack_size.width, 40.0);
+        assert_eq!(stack_size.height, 30.0);
+        assert_eq!(
+            (filler_size.width, filler_size.height),
+            (40.0, 30.0),
+            "the filling child did not cover the stack"
+        );
+    }
+
     #[test]
     fn z_stack_grid_uses_largest_child_and_centers_all_children() {
         let mut taffy = tf::TaffyTree::<()>::new();
@@ -387,7 +546,7 @@ mod tests {
         let stack = WidgetI::new(ZStackWidget::new().alignment(xui_interface::Alignment::END));
         let stack_computed =
             computed_style_for_widget(&stack, &parent, &theme, xui_interface::WidgetState::empty());
-        let stack_style = taffy_style_for_widget(&stack, &parent, &stack_computed, false);
+        let stack_style = taffy_style_for_widget(&stack, ParentLayout::Block, &stack_computed);
         assert_eq!(stack_style.display, tf::Display::Grid);
         assert_eq!(stack_style.align_items, Some(tf::AlignItems::END));
         assert_eq!(stack_style.justify_items, Some(tf::AlignItems::END));
@@ -399,7 +558,7 @@ mod tests {
             &theme,
             xui_interface::WidgetState::empty(),
         );
-        let child_style = taffy_style_for_widget(&child, &stack_computed, &child_computed, true);
+        let child_style = taffy_style_for_widget(&child, ParentLayout::ZStack, &child_computed);
         assert_eq!(child_style.grid_row, tf::line(1));
         assert_eq!(child_style.grid_column, tf::line(1));
     }
@@ -422,7 +581,7 @@ mod tests {
             xui_interface::WidgetState::empty(),
         );
 
-        let style = taffy_style_for_widget(&widget, &parent, &computed, false);
+        let style = taffy_style_for_widget(&widget, ParentLayout::Block, &computed);
 
         assert_eq!(style.display, tf::Display::Grid);
         assert_eq!(style.grid_auto_flow, tf::GridAutoFlow::ColumnDense);
@@ -487,7 +646,7 @@ mod tests {
             &theme,
             xui_interface::WidgetState::empty(),
         );
-        let style = taffy_style_for_widget(&widget, &parent, &computed, false);
+        let style = taffy_style_for_widget(&widget, ParentLayout::Block, &computed);
         assert_eq!(style.position, tf::Position::Absolute);
         assert_eq!(style.inset.left, tf::LengthPercentageAuto::length(3.0));
         assert_eq!(style.inset.right, tf::LengthPercentageAuto::length(4.0));
@@ -506,7 +665,7 @@ mod tests {
             &theme,
             xui_interface::WidgetState::empty(),
         );
-        let style = taffy_style_for_widget(&widget, &parent, &computed, false);
+        let style = taffy_style_for_widget(&widget, ParentLayout::Block, &computed);
 
         assert_eq!(style.position, tf::Position::Absolute);
         assert_eq!(style.inset.left, tf::LengthPercentageAuto::auto());
@@ -515,3 +674,4 @@ mod tests {
         assert_eq!(style.inset.bottom, tf::LengthPercentageAuto::auto());
     }
 }
+

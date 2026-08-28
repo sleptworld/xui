@@ -91,15 +91,28 @@ use xui_interface::{
 /// Input state the runtime owns, as opposed to the gesture state the
 /// translator owns.
 ///
-/// Hover used to live here too, as a field that nothing ever assigned and
-/// nothing ever read: the real hover state is `WidgetState::HOVERED` on the node
-/// and `EventTranslator::hover_paths` for the enter/leave bookkeeping.
+/// The hovered node here is only the deepest one — the leaf of the hover path.
+/// Per-node hover state lives on the nodes as `WidgetState::HOVERED`, and the
+/// enter/leave bookkeeping lives in `EventTranslator::hover_paths`. This is the
+/// single node the platform cursor is resolved from, so it is written by the
+/// translator, which is the only place that knows the path.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct EventState {
+    hovered: Option<NodeId>,
     pointer_capture: Option<NodeId>,
 }
 
 impl EventState {
+    /// The deepest node the mouse is over, or `None` when it is outside the
+    /// window or the last pointer was not a mouse.
+    pub fn hovered(&self) -> Option<NodeId> {
+        self.hovered
+    }
+
+    pub(crate) fn set_hovered(&mut self, node: Option<NodeId>) {
+        self.hovered = node;
+    }
+
     /// The node that currently receives pointer events regardless of hit
     /// testing. Both dispatch layers resolve their target through this, so a
     /// captured pointer cannot send raw events to one node and semantic events
@@ -109,6 +122,9 @@ impl EventState {
     }
 
     pub(crate) fn clear_node(&mut self, id: NodeId) {
+        if self.hovered == Some(id) {
+            self.hovered = None;
+        }
         if self.pointer_capture == Some(id) {
             self.pointer_capture = None;
         }

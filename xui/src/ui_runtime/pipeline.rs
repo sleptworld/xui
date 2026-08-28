@@ -3,11 +3,14 @@
 use crate::animation::has_animatable_difference;
 use crate::core::{Point, Size};
 use crate::event_system::callbacks::{EventHandlers, EventMask};
+use xui_interface::CursorIcon;
 use crate::event_system::interaction::HostInteraction;
 use crate::event_system::{self, EventState, translator::EventTranslator};
 use crate::fiber::Key;
 use crate::focus::FocusManager;
-use crate::layout::{computed_style_for_widget, taffy_style_for_widget};
+use crate::layout::{
+    ParentLayout, computed_style_for_widget, container_layout, taffy_style_for_widget,
+};
 use crate::render::{
     ClipShape, FrameProperties, HostRenderBinding, LayerDescriptor, Primitive, RenderScene,
     RenderTreeWriter, SceneError, Shape, ShapePrimitive,
@@ -49,12 +52,10 @@ impl UiRuntime {
             &theme,
             WidgetState::empty(),
         );
-        let root_taffy_style = taffy_style_for_widget(
-            &root_widget,
-            &root_parent_style,
-            &root_computed_style,
-            false,
-        );
+        // The root has no parent; block flow is the neutral choice and the
+        // root sizes itself to the viewport regardless.
+        let root_taffy_style =
+            taffy_style_for_widget(&root_widget, ParentLayout::Block, &root_computed_style);
         // Initialize Host Tree
         let mut hosts = HostTree::new();
         let root = hosts.insert_with_key(|_| HostData::new(None, 0, root_widget));
@@ -652,6 +653,44 @@ impl UiRuntime {
     }
 
     /// Whether any live host reads raw device events at all.
+    /// The pointer shape the window should be showing.
+    ///
+    /// Resolved rather than tracked: this is a read of state that already
+    /// exists, so it can be pulled once per dispatch instead of invalidated.
+    /// That matters because a cursor can change without the pointer moving — a
+    /// button becoming disabled under the pointer, or a drag starting and
+    /// turning `Grab` into `Grabbing` through `WidgetState::DRAGGING`. Tracking
+    /// every such source would be a standing bug farm.
+    ///
+    /// A captured pointer wins over hit testing, so drag-selecting out of a text
+    /// input keeps the I-beam instead of picking up whatever is underneath.
+    /// `cursor` is not inherited in the computed style, so this walks up to the
+    /// nearest ancestor that specifies one.
+    pub(crate) fn resolved_cursor(&self) -> CursorIcon {
+        let Some(source) = self
+            .pointer_capture_node()
+            .filter(|node| self.contains(*node))
+            .or_else(|| self.hovered_node())
+        else {
+            return CursorIcon::default();
+        };
+
+        let mut current = Some(source);
+        while let Some(id) = current {
+            if let Some((_, effective)) = self.style_system.styles(id)
+                && let Some(cursor) = effective.cursor
+            {
+                return cursor;
+            }
+            current = self.hosts.parent(id);
+        }
+        CursorIcon::default()
+    }
+
+    pub fn hovered_node(&self) -> Option<NodeId> {
+        self.interaction_system.event_state.hovered()
+    }
+
     pub(crate) fn has_raw_event_listeners(&self) -> bool {
         self.raw_event_listeners > 0
     }
@@ -1497,23 +1536,19 @@ impl UiRuntime {
             return false;
         }
         let parent = self.hosts.parent(id);
-        let parent_is_z_stack = parent.is_some_and(|parent| {
-            self.hosts[parent]
-                .widget
-                .with_widgets(|widget| matches!(widget, crate::widgets::Widgets::ZStack(_)))
-        });
-        let parent_style = parent
-            .and_then(|parent| self.style_system.effective(parent))
-            .cloned()
-            .unwrap_or_else(|| self.style_system.default_style().clone());
+        // How the parent arranges its children — not just which way it points.
+        // `Sizing::Fill` resolves differently under flex, grid, and block, and
+        // reading only `flex_direction` could not tell them apart.
+        let parent_layout = parent
+            .map(|parent| container_layout(&self.hosts[parent].widget))
+            .unwrap_or(ParentLayout::Block);
         let effective = self
             .style_system
             .effective(id)
             .expect("style node missing")
             .clone();
         let widget = self.hosts[id].widget.clone();
-        let taffy_style =
-            taffy_style_for_widget(&widget, &parent_style, &effective, parent_is_z_stack);
+        let taffy_style = taffy_style_for_widget(&widget, parent_layout, &effective);
         let taffy_node = self.layout_tree.node_id(id);
         let current = self
             .layout_tree
@@ -2189,6 +2224,7 @@ fn layer_descriptor_from_style(style: &ComputedStyle, bounds: Bounds) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dsl::StyleProps;
     use crate::event_system::callbacks::EventProps;
     use crate::event_system::translator::EventTranslator;
     use crate::event_system::{Flow, Handler};
@@ -2673,6 +2709,169 @@ mod tests {
             1,
             "the ancestor saw its own event plus a bubbled copy of the child's"
         );
+    }
+
+    /// `cursor` lives in `ComputedStyle` but must never reach `StyleDiffFlags`.
+    ///
+    /// It has no scene output, so treating it like other style properties would
+    /// make moving the pointer across a button dirty layout, paint, or text.
+    /// This is the guard against someone completing the `diff` match later.
+    #[test]
+    fn changing_the_cursor_dirties_nothing() {
+        let theme = Theme::default();
+        let base = ComputedStyle::initial(&theme);
+        let mut with_cursor = base.clone();
+        with_cursor.cursor = Some(CursorIcon::Pointer);
+
+        assert_ne!(base.cursor, with_cursor.cursor, "the fixture is not testing anything");
+        assert!(
+            base.diff(&with_cursor).is_empty(),
+            "a cursor change produced invalidation flags"
+        );
+    }
+
+    /// Not inherited in the computed style: resolution walks up instead, so a
+    /// child that specifies nothing shows its ancestor's cursor.
+    #[test]
+    fn an_unspecified_cursor_resolves_from_the_nearest_ancestor() {
+        let mut arena = UiRuntime::new();
+        let outer = create_host(
+            &mut arena,
+            WidgetI::new(
+                container()
+                    .style(Style::new().size(Size::fix(100.0, 100.0)))
+                    .cursor(CursorIcon::Pointer),
+            ),
+        );
+        let inner = {
+            let widget = WidgetI::new(container().style(Style::new().size(Size::fix(50.0, 50.0))));
+            let key = widget.key();
+            let props_hash = widget.props_hash();
+            let interaction = widget.take_host_interaction();
+            let id = arena.create_node(key, props_hash, widget, interaction);
+            arena.append_child(outer, id);
+            id
+        };
+
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+
+        assert_eq!(
+            arena.style_system.styles(inner).unwrap().1.cursor,
+            None,
+            "the child should not have inherited a resolved cursor"
+        );
+
+        let bounds = arena.node(inner).unwrap().layout;
+        let inside = Point::new(
+            (bounds.min.x + bounds.max.x) * 0.5,
+            (bounds.min.y + bounds.max.y) * 0.5,
+        );
+        let mut translator =
+            EventTranslator::new(crate::event_system::translator::EventTranslatorConfig::default());
+        arena.dispatch_event(&measurer, &mut translator, pointer_move(inside));
+
+        assert_eq!(arena.hovered_node(), Some(inner));
+        assert_eq!(arena.resolved_cursor(), CursorIcon::Pointer);
+    }
+
+    /// A captured pointer keeps its own cursor even once it has left the
+    /// capturing node — the same rule that keeps events aimed there.
+    #[test]
+    fn a_captured_pointer_keeps_its_own_cursor() {
+        let mut arena = UiRuntime::new();
+        let grabber = create_host(
+            &mut arena,
+            WidgetI::new(
+                container()
+                    .style(Style::new().size(Size::fix(50.0, 50.0)))
+                    .cursor(CursorIcon::Grabbing)
+                    .on_press_start(|_, cx| {
+                        cx.capture_pointer();
+                    }),
+            ),
+        );
+        let elsewhere = create_host(
+            &mut arena,
+            WidgetI::new(
+                container()
+                    .style(Style::new().size(Size::fix(50.0, 50.0)))
+                    .cursor(CursorIcon::Text),
+            ),
+        );
+
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+
+        let centre = |arena: &UiRuntime, node: NodeId| {
+            let bounds = arena.node(node).unwrap().layout;
+            Point::new(
+                (bounds.min.x + bounds.max.x) * 0.5,
+                (bounds.min.y + bounds.max.y) * 0.5,
+            )
+        };
+        let on_grabber = centre(&arena, grabber);
+        let on_elsewhere = centre(&arena, elsewhere);
+
+        let mut translator =
+            EventTranslator::new(crate::event_system::translator::EventTranslatorConfig::default());
+        arena.dispatch_event(&measurer, &mut translator, pointer_move(on_grabber));
+        assert_eq!(arena.resolved_cursor(), CursorIcon::Grabbing);
+
+        arena.dispatch_event(
+            &measurer,
+            &mut translator,
+            RawEvent::PointerDown(pointer_at(on_grabber)),
+        );
+        arena.dispatch_event(&measurer, &mut translator, pointer_move(on_elsewhere));
+
+        assert_eq!(
+            arena.resolved_cursor(),
+            CursorIcon::Grabbing,
+            "the cursor followed hit testing instead of the capture"
+        );
+    }
+
+    /// A widget's own default reaches the platform without the application
+    /// asking, and stays overridable.
+    #[test]
+    fn a_widget_default_cursor_applies_and_can_be_overridden() {
+        let mut arena = UiRuntime::new();
+        let input = create_host(
+            &mut arena,
+            WidgetI::new(text_input().style(Style::new().size(Size::fix(80.0, 30.0)))),
+        );
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+
+        let bounds = arena.node(input).unwrap().layout;
+        let inside = Point::new(
+            (bounds.min.x + bounds.max.x) * 0.5,
+            (bounds.min.y + bounds.max.y) * 0.5,
+        );
+        let mut translator =
+            EventTranslator::new(crate::event_system::translator::EventTranslatorConfig::default());
+        arena.dispatch_event(&measurer, &mut translator, pointer_move(inside));
+        assert_eq!(arena.resolved_cursor(), CursorIcon::Text);
+
+        let mut overridden = UiRuntime::new();
+        let node = create_host(
+            &mut overridden,
+            WidgetI::new(
+                text_input()
+                    .style(Style::new().size(Size::fix(80.0, 30.0)).cursor(CursorIcon::NotAllowed)),
+            ),
+        );
+        overridden.update_tree(Size::new(200.0, 200.0), &mut measurer);
+        let bounds = overridden.node(node).unwrap().layout;
+        let inside = Point::new(
+            (bounds.min.x + bounds.max.x) * 0.5,
+            (bounds.min.y + bounds.max.y) * 0.5,
+        );
+        let mut translator =
+            EventTranslator::new(crate::event_system::translator::EventTranslatorConfig::default());
+        overridden.dispatch_event(&measurer, &mut translator, pointer_move(inside));
+        assert_eq!(overridden.resolved_cursor(), CursorIcon::NotAllowed);
     }
 
     /// The counter that lets raw dispatch skip its ancestor walk. If it ever

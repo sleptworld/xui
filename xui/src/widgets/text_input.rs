@@ -1,4 +1,5 @@
 use xui_interface::events::{PointerButton, RawEvent, SemanticEvent, XuiPointerId};
+use xui_interface::CursorIcon;
 use xui_interface::{
     Affine, Bounds, Color, ComputedStyle, EventRef, EventResult, Key, Point, RawIme, Rect, Style,
     TextCaret, TextContent, TextInputPurpose, TextInputSession, TextOffset, TextOffsetUnit,
@@ -477,7 +478,12 @@ impl TextInputWidget {
     }
 
     pub(super) fn default_style(&self) -> Style {
-        Style::new().min_width(40.0).min_height(20.0)
+        // Through the normal cascade, so an application can still override it
+        // with `cursor={..}` on the tag.
+        Style::new()
+            .min_width(40.0)
+            .min_height(20.0)
+            .cursor(CursorIcon::Text)
     }
 
     pub(super) fn current_style(&self) -> &Style {

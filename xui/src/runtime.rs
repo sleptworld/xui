@@ -133,7 +133,8 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
             let layout = self.text_backend.query(handle)?;
             node.widget.platform_text_input_session(rect, layout)
         });
-        self.platform_output = PlatformOutput { text_input };
+        let cursor = arena.resolved_cursor();
+        self.platform_output = PlatformOutput { text_input, cursor };
     }
 
     pub fn handle_event(&mut self, event: RuntimeEvent) -> Vec<EventResult> {

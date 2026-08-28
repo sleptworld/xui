@@ -33,7 +33,7 @@ pub use crate::style::{
     ComputedColorStyle, ComputedEffect, ComputedEffectStyle, ComputedLayoutStyle,
     ComputedLinearGradientStyle, ComputedMaskShape, ComputedPaintStyle,
     ComputedRadialGradientStyle, ComputedShadowStyle, ComputedStrokeStyle, ComputedStyle,
-    ComputedTextStyle, Effect, EffectStylePatch, FilterQuality, FlexDirectionStyle, FontSizeToken,
+    ComputedTextStyle, CursorIcon, Effect, EffectStylePatch, FilterQuality, FlexDirectionStyle, FontSizeToken,
     JustifyStyle, LayoutStylePatch, LengthValue, LinearGradientStyle, MaskShape, PaintStylePatch,
     PositionStyle, RadialGradientStyle, RadiusToken, ScrollDirectionStyle, ScrollStylePatch,
     ScrollbarStyle, ScrollbarStylePatch, ScrollbarVisibilityStyle, ShadowStyle, SpacingToken,
