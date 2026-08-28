@@ -49,6 +49,7 @@ pub struct App {
     tokio_runtime: TokioRuntime,
     async_dispatcher: AsyncDispatcher,
     async_receiver: mpsc::Receiver<AsyncMessage>,
+    first_build_pending: bool,
 }
 
 impl App {
@@ -105,6 +106,7 @@ impl App {
             tokio_runtime,
             async_dispatcher,
             async_receiver,
+            first_build_pending: true,
         }
     }
 
@@ -211,7 +213,17 @@ impl App {
     ) -> Result<(), AppRenderError<B::Error>> {
         self.drain_async_messages();
 
-        if self.rebuild_slice_if_needed() {
+        // The initial mount is the one build with nothing to fall back on. A
+        // sliced build that runs out of budget commits nothing, so the frame
+        // that follows it paints an empty window — the blank first screen the
+        // user actually sees, for as many frames as the mount takes. Every
+        // later build has a previous frame on screen while it is sliced, so
+        // only this first one is forced to run to completion.
+        if self.first_build_pending {
+            self.first_build_pending = false;
+            self.rebuild_sync_if_needed();
+            self.flush_node_lifecycle(backend, text);
+        } else if self.rebuild_slice_if_needed() {
             self.flush_node_lifecycle(backend, text);
         }
 

@@ -29,12 +29,17 @@ use xui_interface::{
     CursorIcon, Modifiers, PlatformOutput, Point, PointerButtons, PointerKind, RawPointerButton,
     RawPointerMove, RawWheel, RawWindowEvent, Size, TextBackend, TextOffset, TextRange,
 };
-use xui_text_engine::CosmicEngine;
+use xui_text_engine::{CosmicEngine, FontSet};
 
 #[derive(Debug, Clone)]
 pub struct WinitRunnerOptions {
     pub window_attributes: WindowAttributes,
     pub exit_on_close_requested: bool,
+    /// The faces the text engine starts with. Defaults to every installed font,
+    /// which is what makes arbitrary text render without the application saying
+    /// anything — and is also the largest single cost before the first frame.
+    /// See [`FontSet`].
+    pub fonts: FontSet,
 }
 
 impl Default for WinitRunnerOptions {
@@ -44,6 +49,7 @@ impl Default for WinitRunnerOptions {
                 .with_title("XUI")
                 .with_inner_size(PhysicalSize::new(800, 600)),
             exit_on_close_requested: true,
+            fonts: FontSet::System,
         }
     }
 }
@@ -121,6 +127,10 @@ pub struct WinitRunner<B: RenderBackend<TextHost<T>>, T: TextBackend> {
     device_registry: WinitDeviceRegistry,
     event_proxy: Option<EventLoopProxy<WinitUserEvent>>,
     last_platform_output: PlatformOutput,
+    /// True while the window is held back, waiting for its first frame. Cleared
+    /// once it has been shown, and false from the start when the caller asked
+    /// for a window that stays hidden.
+    pending_first_present: bool,
 }
 
 impl<B: RenderBackend<TextHost<T>>, T: TextBackend> WinitRunner<B, T> {
@@ -174,6 +184,7 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackend> WinitRunner<B, T> {
             device_registry: WinitDeviceRegistry::default(),
             event_proxy: None,
             last_platform_output: PlatformOutput::default(),
+            pending_first_present: false,
         }
     }
 
@@ -219,12 +230,32 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackend> WinitRunner<B, T> {
     }
 
     fn render(&mut self, event_loop: &ActiveEventLoop) {
-        if let Err(error) = self.runtime_mut().frame() {
-            self.render_error = Some(error);
-            event_loop.exit();
-        } else {
-            self.sync_platform_output();
-            self.request_redraw_if_dirty();
+        match self.runtime_mut().frame() {
+            Err(error) => {
+                self.render_error = Some(error);
+                event_loop.exit();
+            }
+            Ok(_) => {
+                // Unconditionally, not only when the frame drew something: an
+                // app whose first frame has nothing to draw still gets its
+                // window, rather than staying hidden forever.
+                self.show_window_once_painted();
+                self.sync_platform_output();
+                self.request_redraw_if_dirty();
+            }
+        }
+    }
+
+    /// Reveals the window once its first frame has been through the backend.
+    fn show_window_once_painted(&mut self) {
+        if !self.pending_first_present {
+            return;
+        }
+        self.pending_first_present = false;
+        if let Some(window) = self.window.as_ref() {
+            window.set_visible(true);
+            // A window ordered in after creation is not made key on its own.
+            window.focus_window();
         }
     }
 
@@ -444,11 +475,13 @@ pub fn runner(
     options: Option<WinitRunnerOptions>,
 ) -> WinitRunner<WGPUBackend, CosmicEngine> {
     let app = App::new(app);
-    WinitRunner::with_fallible_backend_factory(
-        |w| -> Result<_, WgpuBackendInitError> {
+    let options = options.unwrap_or_default();
+    let fonts = options.fonts.clone();
+    WinitRunner::with_fallible_options(
+        move |w| -> Result<_, WgpuBackendInitError> {
             Ok((
                 app,
-                CosmicEngine::new(w.scale_factor() as f32),
+                CosmicEngine::with_fonts(w.scale_factor() as f32, fonts),
                 WGPUBackend::new(w)?,
             ))
         },
@@ -462,13 +495,15 @@ pub fn runner(
     options: Option<WinitRunnerOptions>,
 ) -> WinitRunner<xui_skia::SkiaBackend<CosmicEngine>, CosmicEngine> {
     let app = App::new(app);
-    WinitRunner::with_fallible_backend_factory(
-        |window| -> Result<_, std::io::Error> {
+    let options = options.unwrap_or_default();
+    let fonts = options.fonts.clone();
+    WinitRunner::with_fallible_options(
+        move |window| -> Result<_, std::io::Error> {
             let backend = xui_skia::SkiaBackend::<CosmicEngine>::new(window.clone())
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
             Ok((
                 app,
-                CosmicEngine::new(window.scale_factor() as f32),
+                CosmicEngine::with_fonts(window.scale_factor() as f32, fonts),
                 backend,
             ))
         },
@@ -493,8 +528,16 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackend> ApplicationHandler<WinitUser
             return;
         }
 
-        match event_loop.create_window(self.options.window_attributes.clone()) {
+        // Creating the window visible puts an unpainted — white — window on
+        // screen for as long as backend setup, font loading and the first
+        // build take (close to a second in release, several times that in a
+        // debug build). Nothing can paint into it during that window, so hold
+        // it back and show it once the first frame is actually on it.
+        let wants_visible = self.options.window_attributes.visible;
+        let attributes = self.options.window_attributes.clone().with_visible(false);
+        match event_loop.create_window(attributes) {
             Ok(window) => {
+                self.pending_first_present = wants_visible;
                 self.window_id = Some(window.id());
                 let window = Arc::new(window);
                 let (app, text, backend) = match (self.f_init.take().unwrap())(window.clone()) {
@@ -517,7 +560,10 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackend> ApplicationHandler<WinitUser
                 let logical_size = Self::logical_size_at_scale(size, init_scale_factor as f32);
                 self.runtime_mut()
                     .handle_event(RuntimeEvent::Resize(logical_size));
-                self.request_redraw_if_dirty();
+                // Paint before handing control back to the event loop: a hidden
+                // window is not guaranteed to be sent `RedrawRequested`, and
+                // this is the frame that decides when it becomes visible.
+                self.render(event_loop);
             }
             Err(error) => {
                 self.window_error = Some(error);

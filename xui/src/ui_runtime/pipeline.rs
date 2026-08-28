@@ -2225,6 +2225,8 @@ fn layer_descriptor_from_style(style: &ComputedStyle, bounds: Bounds) -> Option<
 mod tests {
     use super::*;
     use crate::dsl::StyleProps;
+    use xui_interface::core::Sizing;
+    use xui_interface::style::FlexDirectionStyle;
     use crate::event_system::callbacks::EventProps;
     use crate::event_system::translator::EventTranslator;
     use crate::event_system::{Flow, Handler};
@@ -2872,6 +2874,94 @@ mod tests {
             EventTranslator::new(crate::event_system::translator::EventTranslatorConfig::default());
         overridden.dispatch_event(&measurer, &mut translator, pointer_move(inside));
         assert_eq!(overridden.resolved_cursor(), CursorIcon::NotAllowed);
+    }
+
+    fn child_of(arena: &mut UiRuntime, parent: NodeId, widget: WidgetI) -> NodeId {
+        let key = widget.key();
+        let props_hash = widget.props_hash();
+        let interaction = widget.take_host_interaction();
+        let id = arena.create_node(key, props_hash, widget, interaction);
+        arena.append_child(parent, id);
+        id
+    }
+
+    /// A pane that fills the leftover height and scrolls, above a pane sized by
+    /// its content.
+    ///
+    /// The canonical app shell, and the layout most likely to break: it depends
+    /// on `Sizing::Fill` becoming `flex_grow` on the main axis, on the sibling
+    /// staying content-sized, and on the scrolling pane being allowed to be
+    /// shorter than its content. The last one is why `min_size` is pinned to
+    /// zero rather than taffy's `auto` — see `taffy_style_for_widget`.
+    fn build_two_pane_shell(scrollable: bool) -> (UiRuntime, NodeId, NodeId, NodeId) {
+        let mut arena = UiRuntime::new();
+        let vcol = || container().flex_direction(FlexDirectionStyle::Column);
+
+        let outer = create_host(
+            &mut arena,
+            WidgetI::new(vcol().style(Style::new().width(Sizing::Fill).height(Sizing::Fill))),
+        );
+
+        let mut top = Style::new().width(Sizing::Fill).height(Sizing::Fill);
+        if scrollable {
+            top = top.scroll_vertical();
+        }
+        let filling = child_of(&mut arena, outer, WidgetI::new(vcol().style(top)));
+        // 500 of content in a pane that can only be 240 tall.
+        for _ in 0..5 {
+            child_of(
+                &mut arena,
+                filling,
+                WidgetI::new(container().style(Style::new().width(Sizing::Fill).height(100.0))),
+            );
+        }
+
+        let hugging = child_of(
+            &mut arena,
+            outer,
+            WidgetI::new(vcol().style(Style::new().width(Sizing::Fill))),
+        );
+        child_of(
+            &mut arena,
+            hugging,
+            WidgetI::new(container().style(Style::new().width(Sizing::Fill).height(60.0))),
+        );
+
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(400.0, 300.0), &mut measurer);
+        (arena, outer, filling, hugging)
+    }
+
+    #[test]
+    fn a_filling_scroll_pane_shares_the_viewport_with_a_content_sized_sibling() {
+        let (arena, outer, filling, hugging) = build_two_pane_shell(true);
+        let height = |id: NodeId| arena.node(id).unwrap().layout.height();
+
+        assert_eq!(height(outer), 300.0, "the shell must not exceed the viewport");
+        assert_eq!(height(hugging), 60.0, "the bottom pane is sized by its content");
+        assert_eq!(height(filling), 240.0, "the top pane takes exactly what is left");
+        assert_eq!(
+            arena.node(filling).unwrap().content_size.height,
+            500.0,
+            "the pane must still know how tall its content is, or it cannot scroll"
+        );
+    }
+
+    /// Without a scroller, the filling pane is still capped at the space it was
+    /// given; its content overflows rather than pushing the shell past the
+    /// viewport.
+    ///
+    /// This is what `min_size: ZERO` buys. With taffy's default of `auto`, the
+    /// automatic minimum size of a flex item is its content, so this same tree
+    /// lays out 560 tall inside a 300 tall window.
+    #[test]
+    fn a_filling_pane_is_capped_even_when_its_content_does_not_fit() {
+        let (arena, outer, filling, hugging) = build_two_pane_shell(false);
+        let height = |id: NodeId| arena.node(id).unwrap().layout.height();
+
+        assert_eq!(height(outer), 300.0);
+        assert_eq!(height(filling), 240.0);
+        assert_eq!(height(hugging), 60.0);
     }
 
     /// The counter that lets raw dispatch skip its ancestor walk. If it ever

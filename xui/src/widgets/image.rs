@@ -83,8 +83,16 @@ impl ImageWidget {
             .map(|data| Size::new(data.size.width as f32, data.size.height as f32))
     }
 
-    pub fn style(mut self, style: Style) -> Self {
-        self.style = style;
+    /// Merges a style in, rather than replacing what is already there.
+    ///
+    /// On a fresh builder — how nearly every call site uses it — merging into an
+    /// all-unset style is indistinguishable from assignment. The difference
+    /// shows in the `xui!` macro, where `style={..}` is one attribute among
+    /// many: assignment made `<column padding={..} style={..} />` silently
+    /// discard the padding, and whether an attribute survived depended on
+    /// whether it was written before or after `style`.
+    pub fn style(mut self, style: impl xui_interface::StyleMerge) -> Self {
+        self.style.merge(&style);
         self
     }
 

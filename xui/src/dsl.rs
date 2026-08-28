@@ -205,15 +205,6 @@ style_props! {
     transition(transition: Transition) => transition;
 
     @manual {
-        /// Merges another style over the accumulated one, so `style={..}` can be
-        /// combined with individual property attributes in either order.
-        fn merge_style(self, other: impl StyleMerge) -> Self {
-            self.map_style(move |mut style| {
-                style.merge(&other);
-                style
-            })
-        }
-
         /// Multi-argument style setters take a tuple, so that every attribute
         /// stays a single `name={value}` pair.
         fn stroke_style(

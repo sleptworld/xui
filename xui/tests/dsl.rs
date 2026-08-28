@@ -6,7 +6,7 @@
 //! is covered separately by `tests/ui`.
 
 use xui::prelude::*;
-use xui::widgets::WidgetType;
+use xui::widgets::{WidgetType, container};
 use xui::{component, xui};
 
 fn host(element: &ElementDesc) -> &WidgetDesc {
@@ -215,5 +215,50 @@ fn row_and_column_are_hosts_with_opposite_directions() {
         host(&row).widget.props_hash(),
         host(&column).widget.props_hash(),
         "row and column produced identical containers"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// style={..} alongside individual attributes
+// ---------------------------------------------------------------------------
+
+/// State-conditioned values come from `style!`, which means a tag mixes
+/// `style={..}` with ordinary attributes. That only works if `style` merges:
+/// while it assigned, everything written before it was silently discarded, and
+/// whether an attribute survived depended on where in the tag it appeared.
+#[test]
+fn a_style_attribute_merges_with_the_attributes_around_it() {
+    let before_and_after = container()
+        .padding(EdgeInsets::all(12.0))
+        .style(xui::style!(border_color: if hovered { Color::WHITE } else { Color::BLACK }))
+        .border_width(1.0);
+
+    let patch = before_and_after
+        .style
+        .patch_for_state(WidgetState::empty());
+    assert_eq!(
+        patch.layout.padding,
+        StyleValue::Value(EdgeInsets::all(12.0)),
+        "an attribute written before `style` was discarded"
+    );
+    assert_eq!(patch.paint.border_width, StyleValue::Value(1.0.into()));
+    assert!(matches!(patch.paint.border_color, StyleValue::Value(_)));
+}
+
+/// And the state rules that `style!` produced survive the merge — otherwise the
+/// hover branch would be silently flattened to its else arm.
+#[test]
+fn merging_a_style_keeps_its_state_rules() {
+    let widget = container()
+        .padding(EdgeInsets::all(12.0))
+        .style(xui::style!(border_color: if hovered { Color::WHITE } else { Color::BLACK }));
+
+    assert!(
+        widget.style.state_deps().contains(WidgetState::HOVERED),
+        "the hovered rule did not survive being merged"
+    );
+    assert_ne!(
+        widget.style.patch_for_state(WidgetState::empty()).paint.border_color,
+        widget.style.patch_for_state(WidgetState::HOVERED).paint.border_color,
     );
 }

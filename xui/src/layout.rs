@@ -178,6 +178,16 @@ fn computed_layout_style_for_parent(
         }
     }
 
+    // Zero, not taffy's `auto`. CSS gives a flex item an automatic minimum size
+    // equal to its content, which means a pane told to fill the leftover space
+    // grows past it as soon as its content is too tall — a two-pane shell in a
+    // 300pt window lays out 560pt tall. Pinning the minimum to zero makes
+    // `Sizing::Fill` mean "exactly the space available", and content that does
+    // not fit overflows (and scrolls, if the pane scrolls) instead of pushing
+    // the window's own layout out of shape. `max_size` keeps taffy's `auto`
+    // because an absent maximum genuinely means "no limit".
+    //
+    // `a_filling_pane_is_capped_even_when_its_content_does_not_fit` pins this.
     let min_size = layout.min_size();
     style.min_size = tf::Size {
         width: min_size

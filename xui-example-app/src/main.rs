@@ -21,7 +21,7 @@ use xui_components::*;
 // Explicit: disambiguates the `<image>` tag from the `xui::image` host widget.
 use xui_components::image::image;
 use xui_winit::runner;
-use xui_winit::WinitRunnerOptions;
+use xui_winit::{FontSet, WinitRunnerOptions};
 
 fn filled_icon() -> IconData {
     static ICON: std::sync::OnceLock<IconData> = std::sync::OnceLock::new();
@@ -355,6 +355,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_fullsize_content_view(true)
             .with_titlebar_transparent(true)
             .with_inner_size(PhysicalSize::new(1600, 900)),
+        // The two faces this dashboard actually draws with. Scanning every
+        // installed font instead costs a font-database build before the first
+        // frame and, worse, makes the first layout fall back across hundreds of
+        // faces — together about 400 ms of the startup this app used to spend
+        // on a blank window. Paths that do not exist (any machine that is not
+        // this one) fall back to the full system scan.
+        fonts: FontSet::only_files([
+            "/System/Library/Fonts/Hiragino Sans GB.ttc",
+            "/System/Library/Fonts/SFNS.ttf",
+        ])
+        .with_sans_serif_family("Hiragino Sans GB"),
         ..Default::default()
     };
 

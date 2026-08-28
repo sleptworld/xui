@@ -268,6 +268,10 @@ pub struct SkiaBackend<T: TextBackend = crate::SkiaTextBackend> {
     // Font Cache
     font_cache: HashMap<(<T as FontDatabase>::FontId, FontWeight), SkTypeface>,
     font_cache_epoch: Option<u64>,
+    /// Built once and reused. `FontMgr::new()` is a CoreText enumeration on
+    /// macOS and costs ~30 ms a call, which used to be paid per typeface cache
+    /// miss — 300 ms of the first frame, for ten distinct fonts.
+    font_mgr: Option<FontMgr>,
     text_blob_cache: HashMap<TextLayoutHandle, CachedTextBlob>,
     frame_stats: SkiaFrameStats,
     frame_index: u64,
@@ -311,6 +315,7 @@ impl<T: TextBackend> SkiaBackend<T> {
             damage_history: VecDeque::new(),
             font_cache: HashMap::default(),
             font_cache_epoch: None,
+            font_mgr: None,
             text_blob_cache: HashMap::default(),
             frame_stats: SkiaFrameStats::default(),
             frame_index: 0,
@@ -339,6 +344,7 @@ impl<T: TextBackend> SkiaBackend<T> {
             damage_history: VecDeque::new(),
             font_cache: HashMap::new(),
             font_cache_epoch: None,
+            font_mgr: None,
             text_blob_cache: HashMap::new(),
             frame_stats: SkiaFrameStats::default(),
             frame_index: 0,
@@ -1737,17 +1743,26 @@ impl<T: TextBackend> SkiaBackend<T> {
     }
 
     fn load_font_from_path(
+        &mut self,
         path: &std::path::Path,
         index: u32,
     ) -> std::io::Result<Option<SkTypeface>> {
         let file = File::open(path)?;
         let f = unsafe { memmap2::Mmap::map(&file) }?;
-        Ok(Self::load_font_from_bytes(&f, index))
+        Ok(self.load_font_from_bytes(&f, index))
     }
 
-    fn load_font_from_bytes(bytes: &[u8], index: u32) -> Option<SkTypeface> {
-        let font_mgr = FontMgr::new();
-        font_mgr.new_from_data(bytes, Some(index as usize))
+    fn load_font_from_bytes(&mut self, bytes: &[u8], index: u32) -> Option<SkTypeface> {
+        self.font_mgr().new_from_data(bytes, Some(index as usize))
+    }
+
+    /// The process-wide font manager, built on first use.
+    ///
+    /// `FontMgr::new()` enumerates CoreText on macOS and costs tens of
+    /// milliseconds; building one per typeface cache miss put 300 ms into the
+    /// first frame of a text-heavy window.
+    fn font_mgr(&mut self) -> &FontMgr {
+        self.font_mgr.get_or_insert_with(FontMgr::new)
     }
 
     fn typeface_for_font(
@@ -1770,7 +1785,8 @@ impl<T: TextBackend> SkiaBackend<T> {
             SkiaBackendError::FontDataError("the shaper did not expose data for a run font".into())
         })?;
         let typeface = match font_data {
-            FontDataRef::Bytes { bytes, index } => Self::load_font_from_bytes(bytes, index)
+            FontDataRef::Bytes { bytes, index } => self
+                .load_font_from_bytes(bytes, index)
                 .ok_or_else(|| {
                     SkiaBackendError::FontDataError(format!(
                         "Skia could not load font bytes at collection index {index}"
@@ -1784,9 +1800,10 @@ impl<T: TextBackend> SkiaBackend<T> {
                 style,
                 stretch,
                 ..
-            } => FontMgr::new()
+            } => self
+                .font_mgr()
                 .match_family_style(family, sk_font_style(font_weight, stretch, style))
-                .or_else(|| Self::load_font_from_path(path, index).ok().flatten())
+                .or_else(|| self.load_font_from_path(path, index).ok().flatten())
                 .ok_or_else(|| {
                     SkiaBackendError::FontDataError(format!(
                         "Skia could not resolve system font {family} ({postscript_name}) from {} at collection index {index}",

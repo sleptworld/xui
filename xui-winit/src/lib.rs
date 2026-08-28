@@ -28,6 +28,7 @@ mod wgpu;
 pub use runner::runner;
 pub use runner::{WinitBackendInitError, WinitRunError, WinitRunner, WinitRunnerOptions};
 pub use sdf::UI_SHADER_WGSL;
+pub use xui_text_engine::FontSet;
 pub use translate::{
     translate_mouse_button, translate_mouse_wheel, translate_named_key, translate_physical_key,
     translate_window_event,

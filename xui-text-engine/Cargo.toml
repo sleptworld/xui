@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 cosmic-text = "0.19.0"
+sys-locale = "0.3.2"
 xui-interface = { path = "../xui-interface" }

@@ -28,6 +28,106 @@ pub struct CosmicEngine {
     scale: f32,
 }
 
+/// Which faces the engine starts with.
+///
+/// The choice is a startup-cost one. Scanning the installed fonts is what makes
+/// any text render correctly without the application saying anything, and it is
+/// also the single largest cost before the first frame — around 230 ms on
+/// macOS, where every face in every system font directory is opened and parsed.
+#[derive(Clone, Default)]
+pub enum FontSet {
+    /// Every font installed on the machine.
+    #[default]
+    System,
+    /// Only the given sources. Nothing is scanned, so startup pays for these
+    /// faces and nothing else — but a glyph that none of them covers has
+    /// nowhere to fall back to and renders as tofu, so an application picking
+    /// this owns the coverage of every script it displays.
+    ///
+    /// `sans_serif_family` names the face that generic family requests resolve
+    /// to; without one, the first loaded family is used for all three generic
+    /// families.
+    Only {
+        sources: Vec<fontdb::Source>,
+        sans_serif_family: Option<String>,
+    },
+}
+
+impl FontSet {
+    /// The sources for a set of font files, in the order given.
+    pub fn only_files(paths: impl IntoIterator<Item = impl Into<std::path::PathBuf>>) -> Self {
+        Self::Only {
+            sources: paths
+                .into_iter()
+                .map(|path| fontdb::Source::File(path.into()))
+                .collect(),
+            sans_serif_family: None,
+        }
+    }
+
+    /// Names the family generic requests (`sans-serif` and friends) resolve to.
+    pub fn with_sans_serif_family(mut self, family: impl Into<String>) -> Self {
+        if let Self::Only {
+            sans_serif_family, ..
+        } = &mut self
+        {
+            *sans_serif_family = Some(family.into());
+        }
+        self
+    }
+
+    fn build(self) -> FontSystem {
+        let Self::Only {
+            sources,
+            sans_serif_family,
+        } = self
+        else {
+            return FontSystem::new();
+        };
+
+        let mut db = fontdb::Database::new();
+        for source in sources {
+            db.load_font_source(source);
+        }
+        // A set that resolved to nothing would render the entire application as
+        // tofu — a font path that is right on the developer's machine and
+        // missing on the next one should cost startup time, not every glyph.
+        if db.is_empty() {
+            return FontSystem::new();
+        }
+        let default_family = sans_serif_family.or_else(|| {
+            db.faces()
+                .next()
+                .and_then(|face| face.families.first().map(|(name, _)| name.clone()))
+        });
+        if let Some(family) = default_family {
+            db.set_sans_serif_family(family.clone());
+            db.set_serif_family(family.clone());
+            db.set_monospace_family(family);
+        }
+        // Matches what `FontSystem::new` does with the locale it reads itself:
+        // it decides which face a CJK codepoint resolves to.
+        let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
+        FontSystem::new_with_locale_and_db(locale, db)
+    }
+}
+
+impl std::fmt::Debug for FontSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::System => f.write_str("System"),
+            Self::Only {
+                sources,
+                sans_serif_family,
+            } => f
+                .debug_struct("Only")
+                .field("sources", &sources.len())
+                .field("sans_serif_family", sans_serif_family)
+                .finish(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct CosmicParagraphState {
     buffer: Option<Buffer>,
@@ -35,8 +135,14 @@ pub struct CosmicParagraphState {
 
 impl CosmicEngine {
     pub fn new(init_scale_factor: f32) -> Self {
+        Self::with_fonts(init_scale_factor, FontSet::System)
+    }
+
+    /// Builds an engine over a chosen set of faces. See [`FontSet`] — the
+    /// default scans every installed font and that scan dominates startup.
+    pub fn with_fonts(init_scale_factor: f32, fonts: FontSet) -> Self {
         Self {
-            font_system: FontSystem::new(),
+            font_system: fonts.build(),
             swash_cache: SwashCache::new(),
             font_epoch: 0,
             scale: init_scale_factor,
@@ -762,6 +868,19 @@ mod tests {
         let ellipsized = layout(text, 55.0, ParagraphStyle::default(), ellipsis_box);
         assert_eq!(ellipsized.lines.len(), 2);
         assert!(ellipsized.lines.last().unwrap().ellipsized);
+    }
+
+    /// A restricted set that resolves to no faces at all would otherwise
+    /// render every glyph in the application as tofu — a font path that is
+    /// right on one machine and missing on the next must degrade to the slow
+    /// path, not to a blank interface.
+    #[test]
+    fn a_font_set_that_loads_nothing_falls_back_to_the_system_fonts() {
+        let engine = CosmicEngine::with_fonts(
+            1.0,
+            FontSet::only_files(["/definitely/not/a/font/file.ttf"]),
+        );
+        assert!(!engine.font_system().db().is_empty());
     }
 
     #[test]
