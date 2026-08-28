@@ -43,7 +43,8 @@ pub use crate::style::{
 };
 pub use crate::ui_runtime::{NodeView, RenderFrame, RenderFrameError, UiRuntime};
 pub use crate::widgets::{
-    CanvasController, CanvasWidget, ContainerWidget, GridFlow, GridTrackSize, GridTracks,
+    CanvasContent, CanvasController, CanvasPainter, CanvasPick, CanvasPickTag, CanvasWidget,
+    ContainerWidget, GridFlow, GridTrackSize, GridTracks,
     GridWidget, IconData, IconLayer, IconStroke, IconWidget, ImageWidget, OverlayChild,
     OverlayEntry, OverlayEntryId, OverlayEntryOptions, OverlayModelError, OverlayScope,
     OverlayScopeId, SvgIconError, TextCommand, TextController, TextInputChange, TextKeymap,
@@ -52,12 +53,12 @@ pub use crate::widgets::{
 };
 pub use xui_interface::{
     AccessibilityProperties, AccessibilityRole, Affine, Alignment, CanvasTextId, ColorSpace,
-    CommandEvent, CommandId, FillRule, FocusProperties, Focusability, FontFamily, FontStyle,
+    CommandEvent, CommandId, Dash, FillRule, FocusProperties, Focusability, FontFamily, FontStyle,
     FontWeight, ImageData, ImageDataId, ImageFit, ImageFormat, ImageKey, ImageRepeat,
     ImageRotation, ImageStyle, ImageTransform, ImageVariant, LineCap, LineHeight, LineJoin,
     NamedKey, NodeId, OverflowWrap, ParagraphStyle, PathBuilder, PathData, PathFill, PathSegment,
-    PathStroke, PhysicalKey, Sampling, Shortcut, ShortcutBinding, ShortcutKey, ShortcutModifiers,
-    Sizing, StyleDiffFlags, TextAlign, TextBoxStyle, TextContent, TextDecoration, TextOverflow,
+    PathStroke, PhysicalKey, Sampling, Shape, Shortcut, ShortcutBinding, ShortcutKey,
+    ShortcutModifiers, Sizing, StyleDiffFlags, TextAlign, TextBoxStyle, TextContent, TextDecoration, TextOverflow,
     TextProps, TextStyle, TextVerticalAlign, VectorCommand, VectorScene, VectorSceneBuilder,
     WhiteSpace, WidgetUpdateFlags,
 };

@@ -200,7 +200,10 @@ mod text_input;
 mod z_stack;
 
 pub(crate) use canvas::canvas_text_slot;
-pub use canvas::{CanvasController, CanvasWidget};
+pub(crate) use canvas::CanvasInvalidator;
+pub use canvas::{
+    CanvasContent, CanvasController, CanvasPainter, CanvasPick, CanvasPickTag, CanvasWidget,
+};
 pub use container::ContainerWidget;
 pub use grid::*;
 pub use icon::{IconData, IconLayer, IconStroke, IconWidget, SvgIconError};

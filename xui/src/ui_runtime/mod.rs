@@ -37,6 +37,15 @@ pub struct UiRuntime {
     /// Index of live `WidgetType::Text` hosts. `HostData::node_type` is fixed at
     /// creation, so membership only changes when a node is created or removed.
     pub(crate) text_nodes: SparseSecondaryMap<NodeId, ()>,
+    /// Index of live `WidgetType::Canvas` hosts, kept for the same reason as
+    /// `text_nodes`: the post-layout pass has to find them without walking the
+    /// whole tree.
+    pub(crate) canvas_nodes: SparseSecondaryMap<NodeId, ()>,
+    /// Repaints requested by a `CanvasController` outside of any rebuild.
+    pub(crate) canvas_invalidations: crate::widgets::CanvasInvalidator,
+    /// Physical pixels per logical pixel, forwarded to canvas painters so they
+    /// can size hairlines and snap to the device grid.
+    pub(crate) scale_factor: f32,
     /// How many live hosts read raw device events. Almost always zero, which is
     /// what lets raw dispatch skip its whole ancestor walk.
     pub(crate) raw_event_listeners: usize,

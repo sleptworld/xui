@@ -35,7 +35,7 @@ use xui_interface::{
     AccessibilityProperties, Affine, Bounds, ComputedColorStyle, ComputedScrollStyle,
     ComputedScrollbarStyle, ComputedStyle, EventResult, Focusability, NodeId, NodeLifecycleEvent,
     ScrollbarVisibilityStyle, TextBackend, TextLayoutConstraints, TextLayoutInput, Theme,
-    VectorCommand, WidgetState, WidgetUpdateFlags,
+    WidgetState, WidgetUpdateFlags,
 };
 
 impl UiRuntime {
@@ -76,6 +76,9 @@ impl UiRuntime {
             node_lifecycle_events: Vec::new(),
             interaction_system: InteractionSystem::new(),
             text_nodes: slotmap::SparseSecondaryMap::new(),
+            canvas_nodes: slotmap::SparseSecondaryMap::new(),
+            canvas_invalidations: crate::widgets::CanvasInvalidator::default(),
+            scale_factor: 1.0,
             raw_event_listeners: 0,
             theme,
             update_visits: 0,
@@ -776,7 +779,11 @@ impl UiRuntime {
             | HostWorkFlags::RECALC_LAYOUT
             | HostWorkFlags::REBUILD_PAINT;
         match self.hosts[id].node_type {
-            WidgetType::Canvas => work |= HostWorkFlags::SHAPE_CHANGE,
+            WidgetType::Canvas => {
+                self.canvas_nodes.insert(id, ());
+                self.bind_canvas_controller(id);
+                work |= HostWorkFlags::SHAPE_CHANGE;
+            }
             WidgetType::Text => {
                 self.text_nodes.insert(id, ());
             }
@@ -964,6 +971,9 @@ impl UiRuntime {
                     .expect("failed to remove host render subtree");
             }
             self.text_nodes.remove(removed);
+            if self.canvas_nodes.remove(removed).is_some() {
+                self.unbind_canvas_controller(removed);
+            }
             if self
                 .hosts
                 .get(removed)
@@ -1057,8 +1067,20 @@ impl UiRuntime {
             self.ui_state.mark_state_change_dirty(id);
         }
 
+        let is_canvas = self.hosts[id].node_type == WidgetType::Canvas;
         if newly_added.intersects(HostWorkFlags::SHAPE_CHANGE) {
-            self.ui_state.mark_shape_dirty(id);
+            if is_canvas {
+                // A canvas cannot be compiled before layout: a painter needs the
+                // measured size, and its text boxes do not exist until it runs.
+                self.ui_state.mark_canvas_dirty(id);
+            } else {
+                self.ui_state.mark_shape_dirty(id);
+            }
+        }
+
+        // Painters read the resolved style, so a theme switch has to reach them.
+        if is_canvas && newly_added.intersects(HostWorkFlags::RECALC_STYLE) {
+            self.ui_state.mark_canvas_dirty(id);
         }
 
         let mut current = id;
@@ -1332,6 +1354,7 @@ impl UiRuntime {
 
     pub fn update_tree<T: TextBackend>(&mut self, size: Size<f32>, measurer: &mut TextHost<T>) {
         self.update_visits = 0;
+        self.apply_canvas_invalidations();
         for node_id in self.ui_state.drain_state_change_dirty_list() {
             self.recompute_node_state(node_id);
         }
@@ -1366,6 +1389,9 @@ impl UiRuntime {
         }
 
         self.ui_state.layout_dirty_list.clear();
+        // After layout, before paint: this is the only point where a canvas has
+        // a final size and its text can still be shaped in time to be drawn.
+        self.sync_dirty_canvases(measurer);
         self.rebuild_subtree_dirty(self.root);
         self.repaint_dirty_subtree(self.root);
         self.sync_render_scene()
@@ -1737,6 +1763,9 @@ impl UiRuntime {
         let old_rect = previous.layout;
         let layout_changed = old_rect != rect || previous.world_origin != world_origin;
         let size_changed = old_rect.width() != rect.width() || old_rect.height() != rect.height();
+        if size_changed && self.hosts[id].node_type == WidgetType::Canvas {
+            self.ui_state.mark_canvas_dirty(id);
+        }
         let mut subtree_work = {
             let node = &mut self.hosts[id];
             let should_sync_children = layout_changed
@@ -1947,7 +1976,9 @@ impl UiRuntime {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.render_system.scene.is_dirty()
+        !self.canvas_invalidations.is_empty()
+            || !self.ui_state.canvas_dirty_list.is_empty()
+            || self.render_system.scene.is_dirty()
             || self.render_system.properties.is_dirty()
             || self.has_running_style_animations()
             || self.style_system.has_dirty()
@@ -1987,6 +2018,14 @@ impl UiRuntime {
         self.refresh_taffy_context(id);
         self.mark_dirty(id, flags);
         current_widget
+    }
+
+    /// Re-runs a canvas's drawing on the next frame.
+    pub fn invalidate_canvas(&mut self, id: NodeId) {
+        if self.canvas_nodes.contains_key(id) {
+            self.ui_state.mark_canvas_dirty(id);
+            self.mark_work(id, HostWorkFlags::REBUILD_PAINT);
+        }
     }
 
     fn sync_taffy_children(&mut self, parent: NodeId) {
@@ -2112,6 +2151,127 @@ impl UiRuntime {
             .set_node_context(taffy_node, context)
             .expect("failed to update taffy context");
     }
+    /// Physical pixels per logical pixel, for canvas painters.
+    pub fn set_scale_factor(&mut self, scale_factor: f32) {
+        if self.scale_factor == scale_factor {
+            return;
+        }
+        self.scale_factor = scale_factor;
+        // Hairline widths and pixel snapping are both derived from it, so every
+        // drawing that used the old factor is now off by a subpixel.
+        let canvases: Vec<_> = self.canvas_nodes.keys().collect();
+        for id in canvases {
+            self.ui_state.mark_canvas_dirty(id);
+        }
+    }
+
+    pub(crate) fn canvas_invalidator(&self) -> crate::widgets::CanvasInvalidator {
+        self.canvas_invalidations.clone()
+    }
+
+    /// Turns repaints requested by a controller into host work.
+    ///
+    /// This is the whole of the direct channel: a `CanvasController` names the
+    /// nodes drawing it and the flags they need, and the frame that follows
+    /// picks them up without any component ever rebuilding.
+    fn apply_canvas_invalidations(&mut self) {
+        if self.canvas_invalidations.is_empty() {
+            return;
+        }
+        for (id, flags) in self.canvas_invalidations.drain() {
+            if self.hosts.contains_key(id) {
+                self.mark_dirty(id, flags);
+            }
+        }
+    }
+
+    fn bind_canvas_controller(&mut self, id: NodeId) {
+        let invalidator = self.canvas_invalidator();
+        self.hosts[id].widget.with_widgets_mut(|widget| {
+            if let Widgets::Canvas(canvas) = widget {
+                canvas.bind(id, invalidator);
+            }
+        });
+    }
+
+    fn unbind_canvas_controller(&mut self, id: NodeId) {
+        let Some(node) = self.hosts.get(id) else {
+            return;
+        };
+        node.widget.with_widgets_mut(|widget| {
+            if let Widgets::Canvas(canvas) = widget {
+                canvas.unbind();
+            }
+        });
+    }
+
+    /// Rebuilds every canvas whose drawing no longer matches its node.
+    ///
+    /// Runs after layout and before paint, the same window
+    /// `activate_final_text_layouts` uses: a painter needs the size Taffy just
+    /// committed, and the text boxes it produces have to reach the shaper
+    /// before the node is repainted.
+    fn sync_dirty_canvases<T: TextBackend>(&mut self, measurer: &mut TextHost<T>) {
+        let dirty = self.ui_state.drain_canvas_dirty_list();
+        if dirty.is_empty() {
+            return;
+        }
+        let mut compiled = Vec::with_capacity(dirty.len());
+        for id in dirty {
+            if !self.canvas_nodes.contains_key(id) || compiled.contains(&id) {
+                continue;
+            }
+            compiled.push(id);
+            self.compile_canvas(id, measurer);
+        }
+    }
+
+    fn compile_canvas<T: TextBackend>(&mut self, id: NodeId, measurer: &mut TextHost<T>) {
+        let size = self
+            .layout_tree
+            .host(id)
+            .expect("canvas node missing layout")
+            .layout
+            .size();
+        let style = self
+            .style_system
+            .effective(id)
+            .expect("canvas node missing style")
+            .clone();
+        let theme = self.theme.clone();
+        let scale_factor = self.scale_factor;
+        let widget = self.hosts[id].widget.clone();
+
+        let text_boxes = widget.with_widgets_mut(|node| match node {
+            Widgets::Canvas(canvas) => {
+                canvas.compile(size, &style, &theme, scale_factor);
+                canvas.text_boxes()
+            }
+            _ => Vec::new(),
+        });
+
+        measurer.retain_direct_slots(
+            id,
+            text_boxes
+                .iter()
+                .map(|(text_id, _, _)| canvas_text_slot(*text_id)),
+        );
+        let font_context = measurer.backend().epoch();
+        for (text_id, bounds, props) in text_boxes {
+            let input = TextLayoutInput::new(
+                props.text,
+                TextLayoutConstraints::max_width(bounds.width().max(0.0)),
+                props.style.into(),
+                props.paragraph,
+                props.text_box,
+                font_context,
+            );
+            measurer.get_or_shape_slot(id, canvas_text_slot(text_id), input);
+        }
+
+        self.mark_work(id, HostWorkFlags::REBUILD_PAINT);
+    }
+
     fn recompute_node_text_shape<T: TextBackend>(
         &mut self,
         node_id: NodeId,
@@ -2142,35 +2302,6 @@ impl UiRuntime {
                     font_context,
                 );
                 measurer.get_or_shape_slot(node_id, TextLayoutSlot::PRIMARY, input);
-            }
-            WidgetType::Canvas => {
-                let commands = node.widget.with_widgets(|widget| match widget {
-                    Widgets::Canvas(canvas) => canvas.controller.scene(),
-                    _ => unreachable!("Canvas node must hold a CanvasWidget"),
-                });
-                let requests: Vec<_> = commands
-                    .commands()
-                    .iter()
-                    .filter_map(|command| match command {
-                        VectorCommand::TextBox { id, bounds, props } => {
-                            Some((canvas_text_slot(*id), *bounds, props.as_ref().clone()))
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                measurer.retain_direct_slots(node_id, requests.iter().map(|(slot, _, _)| *slot));
-                let font_context = measurer.backend().epoch();
-                for (slot, bounds, props) in requests {
-                    let input = TextLayoutInput::new(
-                        props.text,
-                        TextLayoutConstraints::max_width(bounds.width().max(0.0)),
-                        props.style.into(),
-                        props.paragraph,
-                        props.text_box,
-                        font_context,
-                    );
-                    measurer.get_or_shape_slot(node_id, slot, input);
-                }
             }
             _ => {}
         }
@@ -2258,6 +2389,184 @@ mod tests {
         let id = arena.create_node(key, props_hash, widget, interaction);
         arena.append_child(parent, id);
         id
+    }
+
+    fn canvas_generation(arena: &UiRuntime, id: NodeId) -> u64 {
+        arena.hosts[id].widget.with_widgets(|widget| match widget {
+            Widgets::Canvas(canvas) => canvas.compiled_generation(),
+            _ => panic!("not a canvas node"),
+        })
+    }
+
+    fn canvas_compiled_size(arena: &UiRuntime, id: NodeId) -> Size<f32> {
+        arena.hosts[id].widget.with_widgets(|widget| match widget {
+            Widgets::Canvas(canvas) => canvas.compiled_size(),
+            _ => panic!("not a canvas node"),
+        })
+    }
+
+    #[test]
+    fn a_controller_edit_repaints_its_canvas_with_no_component_rebuild() {
+        let mut arena = UiRuntime::new();
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        let controller = CanvasController::new();
+        let id = create_host(
+            &mut arena,
+            WidgetI::new(
+                canvas()
+                    .controller(controller.clone())
+                    .style(Style::new().width(80.0).height(40.0)),
+            ),
+        );
+
+        arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
+        let before = canvas_generation(&arena, id);
+        assert!(before > 0, "a mounted canvas is compiled before it paints");
+        assert!(arena.canvas_invalidations.is_empty());
+
+        let mut path = PathBuilder::new();
+        path.move_to(Point::new(0.0, 0.0))
+            .line_to(Point::new(10.0, 10.0));
+        let mut scene = VectorSceneBuilder::new();
+        scene.fill_path(path.build(), Affine::IDENTITY, PathFill::new(Color::BLACK));
+        controller.set_scene(scene.build());
+
+        assert!(
+            !arena.canvas_invalidations.is_empty(),
+            "the edit must reach the host directly"
+        );
+        assert!(
+            arena.is_dirty(),
+            "and it must be enough on its own to schedule a frame"
+        );
+
+        let visits_before = arena.update_visits;
+        arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
+        assert!(canvas_generation(&arena, id) > before);
+        assert!(arena.canvas_invalidations.is_empty());
+        let _ = visits_before;
+    }
+
+    #[test]
+    fn a_painter_is_re_run_against_the_size_layout_committed() {
+        let sizes = Rc::new(RefCell::new(Vec::new()));
+        let recorder = sizes.clone();
+        let controller = CanvasController::with_painter(move |painter| {
+            recorder.borrow_mut().push(painter.size());
+            let width = painter.width();
+            painter.rect(
+                Bounds::from_origin_size((0.0, 0.0), (width, 4.0)),
+                Color::BLACK,
+            );
+        });
+
+        let mut arena = UiRuntime::new();
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        let id = create_host(
+            &mut arena,
+            WidgetI::new(
+                canvas()
+                    .controller(controller.clone())
+                    .style(Style::new().size(Size::fill())),
+            ),
+        );
+
+        arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
+        assert_eq!(canvas_compiled_size(&arena, id), Size::new(400.0, 200.0));
+        assert_eq!(controller.size(), Size::new(400.0, 200.0));
+
+        arena.mark_subtree_layout_dirty(arena.root());
+        arena.update_tree(Size::new(640.0, 200.0), &mut measurer);
+        assert_eq!(canvas_compiled_size(&arena, id), Size::new(640.0, 200.0));
+        assert_eq!(
+            sizes.borrow().last().copied(),
+            Some(Size::new(640.0, 200.0)),
+            "the painter has to see the measured size, not the one it was authored for"
+        );
+    }
+
+    #[test]
+    fn a_painter_that_draws_nothing_new_is_not_re_run_when_only_the_viewport_moves() {
+        let runs = Rc::new(Cell::new(0));
+        let counter = runs.clone();
+        let controller = CanvasController::with_painter(move |_| {
+            counter.set(counter.get() + 1);
+        });
+
+        let mut arena = UiRuntime::new();
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        create_host(
+            &mut arena,
+            WidgetI::new(
+                canvas()
+                    .controller(controller)
+                    .style(Style::new().width(80.0).height(40.0)),
+            ),
+        );
+
+        arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
+        let after_mount = runs.get();
+
+        arena.mark_subtree_layout_dirty(arena.root());
+        arena.update_tree(Size::new(640.0, 200.0), &mut measurer);
+        assert_eq!(
+            runs.get(),
+            after_mount,
+            "a fixed-size canvas keeps its drawing when the window resizes around it"
+        );
+    }
+
+    #[test]
+    fn text_a_painter_produces_is_shaped_before_the_canvas_paints() {
+        let controller = CanvasController::with_painter(|painter| {
+            let width = painter.width();
+            painter.text(
+                Bounds::from_origin_size((0.0, 0.0), (width, 20.0)),
+                TextProps::new("measured after layout"),
+            );
+        });
+
+        let mut arena = UiRuntime::new();
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        let id = create_host(
+            &mut arena,
+            WidgetI::new(
+                canvas()
+                    .controller(controller)
+                    .style(Style::new().size(Size::fill())),
+            ),
+        );
+
+        arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
+        assert!(
+            measurer
+                .active_slot(id, canvas_text_slot(CanvasTextId::new(1)))
+                .is_some(),
+            "a painter's text box has to reach the shaper in the same frame it is drawn"
+        );
+    }
+
+    #[test]
+    fn removing_a_canvas_stops_its_controller_from_marking_the_dead_node() {
+        let mut arena = UiRuntime::new();
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        let controller = CanvasController::new();
+        let id = create_host(
+            &mut arena,
+            WidgetI::new(
+                canvas()
+                    .controller(controller.clone())
+                    .style(Style::new().width(80.0).height(40.0)),
+            ),
+        );
+        arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
+
+        arena.remove_subtree(id);
+        controller.invalidate();
+        assert!(
+            arena.canvas_invalidations.is_empty(),
+            "an unmounted canvas must not keep a queue entry alive"
+        );
     }
 
     #[test]

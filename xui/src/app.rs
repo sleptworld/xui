@@ -151,7 +151,22 @@ impl App {
     }
 
     pub fn set_async_wake_callback(&self, wake: impl Fn() + Send + Sync + 'static) {
-        self.async_dispatcher.set_wake_callback(wake);
+        // A canvas invalidated from a timer or a worker has no other signal to
+        // ride in on, so it wakes the loop through the same channel async state
+        // updates do.
+        let wake = std::sync::Arc::new(wake);
+        let canvas_wake = wake.clone();
+        self.ui_runtime
+            .canvas_invalidator()
+            .set_wake(std::rc::Rc::new(move || canvas_wake()));
+        self.async_dispatcher
+            .set_wake_callback(move || wake.as_ref()());
+    }
+
+    /// Physical pixels per logical pixel. Canvas painters use it to size
+    /// hairlines and snap to the device grid.
+    pub fn set_scale_factor(&mut self, scale_factor: f32) {
+        self.ui_runtime.set_scale_factor(scale_factor);
     }
 
     pub fn drain_async_messages(&mut self) -> bool {

@@ -1,6 +1,6 @@
 use xui_interface::{
     Affine, Bounds, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, ImageData,
-    ImageKey, ImageStyle, ImageVariant, NodeId, Point, TextPaintProps, TextVerticalAlign,
+    ImageKey, ImageStyle, ImageVariant, NodeId, TextPaintProps, TextVerticalAlign,
     VectorScene,
 };
 
@@ -108,14 +108,9 @@ pub struct ShapePrimitive {
     pub shadow: Option<ComputedShadowStyle>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Shape {
-    Rect,
-    RoundedRect(f32),
-    Circle,
-    Ellipse,
-    Line { from: Point, to: Point },
-}
+// `Shape` itself now lives in `xui-interface`, next to `VectorCommand`, so a
+// canvas scene can name the same analytic shapes this primitive draws.
+pub use xui_interface::Shape;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct VectorPrimitive {
@@ -146,7 +141,7 @@ pub struct TextPrimitive {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xui_interface::{Color, ComputedShadowStyle, Size};
+    use xui_interface::{Color, ComputedShadowStyle, Point, Size};
 
     #[test]
     fn paint_bounds_include_asymmetric_shadow_and_stroke() {

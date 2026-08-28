@@ -401,7 +401,10 @@ impl VectorRenderer {
                     transform: *transform,
                     stroke: *stroke,
                 }),
-                VectorCommand::TextBox { .. } => None,
+                // Shapes and text never arrive here: the canvas lowers both to
+                // their own primitives before a vector run is formed, so a
+                // vector scene is paths only by construction.
+                VectorCommand::Shape { .. } | VectorCommand::TextBox { .. } => None,
             })
             .collect::<Vec<_>>()
             .into();
@@ -470,9 +473,15 @@ fn encode_command(scene: &mut Scene, command: &CompiledVectorCommand, outer: Aff
                 LineJoin::Bevel => Join::Bevel,
                 LineJoin::Round => Join::Round,
             };
-            let style = Stroke::new(stroke.width as f64)
+            let mut style = Stroke::new(stroke.width as f64)
                 .with_caps(cap)
                 .with_join(join);
+            if let Some(dash) = stroke.effective_dash() {
+                style = style.with_dashes(
+                    dash.offset as f64,
+                    dash.intervals().iter().map(|value| *value as f64),
+                );
+            }
             scene.stroke(
                 &style,
                 kurbo_affine(transform.then(outer)),

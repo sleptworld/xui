@@ -1,14 +1,14 @@
 use crate::{
-    Bounds, Color, ComputedTextStyle, LineHeight, Point, Rect, Size, TextDecoration, TextProps,
-    TextRange,
+    Bounds, Color, ComputedColorStyle, ComputedStrokeStyle, ComputedTextStyle, LineHeight, Point,
+    Rect, Size, TextDecoration, TextProps, TextRange,
 };
 use std::{
-    collections::HashSet,
+    collections::{HashSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
     path::PathBuf,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
 };
 
@@ -166,13 +166,62 @@ pub enum PathSegment {
     Close,
 }
 
+/// Content address of a path's segment list.
+///
+/// Deliberately not a counter. The backends cache `PathDataId -> BezPath`, and
+/// `PathData`'s equality is this id: with a counter, a scene rebuilt from the
+/// same data produced all-new ids, so every cache lookup missed and every
+/// rebuilt path was re-tessellated. Hashing the segments makes an identical
+/// path identical, which is what both the caches and the scene diff assume.
+///
+/// This is a 64-bit hash, so a collision would make two different paths compare
+/// equal and paint the first one twice. At realistic path counts that sits far
+/// below the noise floor of everything else in a frame.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct PathDataId(u64);
 
 impl PathDataId {
-    fn next() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    fn of(segments: &[PathSegment]) -> Self {
+        let mut hasher = DefaultHasher::new();
+        segments.len().hash(&mut hasher);
+        for segment in segments {
+            hash_path_segment(segment, &mut hasher);
+        }
+        Self(hasher.finish())
+    }
+}
+
+fn hash_point<H: Hasher>(point: Point, hasher: &mut H) {
+    point.x.to_bits().hash(hasher);
+    point.y.to_bits().hash(hasher);
+}
+
+fn hash_path_segment<H: Hasher>(segment: &PathSegment, hasher: &mut H) {
+    match *segment {
+        PathSegment::MoveTo(point) => {
+            0u8.hash(hasher);
+            hash_point(point, hasher);
+        }
+        PathSegment::LineTo(point) => {
+            1u8.hash(hasher);
+            hash_point(point, hasher);
+        }
+        PathSegment::QuadraticTo { control, to } => {
+            2u8.hash(hasher);
+            hash_point(control, hasher);
+            hash_point(to, hasher);
+        }
+        PathSegment::CubicTo {
+            control1,
+            control2,
+            to,
+        } => {
+            3u8.hash(hasher);
+            hash_point(control1, hasher);
+            hash_point(control2, hasher);
+            hash_point(to, hasher);
+        }
+        PathSegment::Close => 4u8.hash(hasher),
     }
 }
 
@@ -201,6 +250,8 @@ impl PathData {
     }
 }
 
+/// Equality is the content address, so two independently built paths with the
+/// same segments compare equal and the scene diff reports no geometry change.
 impl PartialEq for PathData {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
@@ -240,10 +291,135 @@ impl PathBuilder {
         self.segments.push(PathSegment::Close);
         self
     }
+
+    /// Ends the current subpath so the next command starts a fresh one.
+    fn start_subpath(&mut self) {
+        if !self.segments.is_empty() && !matches!(self.segments.last(), Some(PathSegment::Close)) {
+            self.close();
+        }
+    }
+
+    /// Appends an elliptical arc as cubic segments, connecting from the current
+    /// point with a line when a subpath is already open.
+    ///
+    /// Angles are radians from the positive x axis; a positive `sweep` turns
+    /// toward the positive y axis, which is clockwise on screen. Each quarter
+    /// turn becomes one cubic, whose worst-case deviation from the true ellipse
+    /// is about 2.7e-4 of the radius -- under a pixel until the radius passes
+    /// ~3700px, and the reason `PathSegment` still has no arc variant.
+    pub fn arc(&mut self, center: Point, radii: (f32, f32), start: f32, sweep: f32) -> &mut Self {
+        let (rx, ry) = radii;
+        if !rx.is_finite() || !ry.is_finite() || !start.is_finite() || !sweep.is_finite() {
+            return self;
+        }
+
+        let (sin_start, cos_start) = start.sin_cos();
+        let first = Point::new(center.x + rx * cos_start, center.y + ry * sin_start);
+        let open = !matches!(self.segments.last(), None | Some(PathSegment::Close));
+        if open {
+            self.line_to(first);
+        } else {
+            self.move_to(first);
+        }
+
+        if sweep == 0.0 {
+            return self;
+        }
+
+        // A single cubic degrades past a quarter turn, so split the sweep into
+        // equal pieces no larger than 90 degrees.
+        let steps = (sweep.abs() / std::f32::consts::FRAC_PI_2).ceil().max(1.0);
+        let delta = sweep / steps;
+        let kappa = 4.0 / 3.0 * (delta / 4.0).tan();
+        let mut angle = start;
+        for _ in 0..steps as u32 {
+            let next = angle + delta;
+            let (sin0, cos0) = angle.sin_cos();
+            let (sin1, cos1) = next.sin_cos();
+            let from = Point::new(center.x + rx * cos0, center.y + ry * sin0);
+            let to = Point::new(center.x + rx * cos1, center.y + ry * sin1);
+            self.cubic_to(
+                Point::new(from.x - kappa * rx * sin0, from.y + kappa * ry * cos0),
+                Point::new(to.x + kappa * rx * sin1, to.y - kappa * ry * cos1),
+                to,
+            );
+            angle = next;
+        }
+        self
+    }
+
+    /// Appends a closed ellipse as a new subpath.
+    pub fn ellipse(&mut self, center: Point, radii: (f32, f32)) -> &mut Self {
+        self.start_subpath();
+        self.arc(center, radii, 0.0, std::f32::consts::TAU);
+        self.close()
+    }
+
+    /// Appends a closed circle as a new subpath.
+    pub fn circle(&mut self, center: Point, radius: f32) -> &mut Self {
+        self.ellipse(center, (radius, radius))
+    }
+
+    /// Appends a closed rectangle as a new subpath.
+    pub fn rect(&mut self, bounds: Bounds) -> &mut Self {
+        self.start_subpath();
+        self.move_to(Point::new(bounds.min.x, bounds.min.y))
+            .line_to(Point::new(bounds.max.x, bounds.min.y))
+            .line_to(Point::new(bounds.max.x, bounds.max.y))
+            .line_to(Point::new(bounds.min.x, bounds.max.y))
+            .close()
+    }
+
+    /// Appends a closed rounded rectangle as a new subpath. The radius is
+    /// clamped to half the shorter side.
+    ///
+    /// The straight edges come from each `arc`'s own leading `line_to`, so the
+    /// path carries no zero-length segments for round caps to flare out on.
+    pub fn rounded_rect(&mut self, bounds: Bounds, radius: f32) -> &mut Self {
+        let limit = bounds.width().min(bounds.height()) * 0.5;
+        let radius = radius.clamp(0.0, limit.max(0.0));
+        if radius <= 0.0 {
+            return self.rect(bounds);
+        }
+        self.start_subpath();
+        let (x0, y0) = (bounds.min.x, bounds.min.y);
+        let (x1, y1) = (bounds.max.x, bounds.max.y);
+        let quarter = std::f32::consts::FRAC_PI_2;
+        let radii = (radius, radius);
+        self.move_to(Point::new(x0 + radius, y0))
+            .arc(Point::new(x1 - radius, y0 + radius), radii, -quarter, quarter)
+            .arc(Point::new(x1 - radius, y1 - radius), radii, 0.0, quarter)
+            .arc(Point::new(x0 + radius, y1 - radius), radii, quarter, quarter)
+            .arc(
+                Point::new(x0 + radius, y0 + radius),
+                radii,
+                2.0 * quarter,
+                quarter,
+            )
+            .close()
+    }
+
+    /// Appends a polyline through `points` as a new subpath.
+    pub fn polyline(&mut self, points: impl IntoIterator<Item = Point>) -> &mut Self {
+        let mut points = points.into_iter();
+        let Some(first) = points.next() else {
+            return self;
+        };
+        self.start_subpath();
+        self.move_to(first);
+        for point in points {
+            self.line_to(point);
+        }
+        self
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.segments.is_empty()
+    }
     pub fn build(self) -> PathData {
         let bounds = path_segment_bounds(&self.segments);
         PathData {
-            id: PathDataId::next(),
+            id: PathDataId::of(&self.segments),
             segments: self.segments.into(),
             bounds,
         }
@@ -307,6 +483,97 @@ pub enum LineJoin {
     Round,
 }
 
+/// The longest dash pattern a [`PathStroke`] can carry.
+///
+/// Six covers everything CSS-style dashing expresses (dash, dot, dash-dot,
+/// dash-dot-dot). Storing them inline keeps `PathStroke` `Copy` and keeps a
+/// per-stroke heap allocation out of scene building, which for a chart happens
+/// once per line.
+pub const MAX_DASH_INTERVALS: usize = 6;
+
+/// On/off lengths for a dashed stroke, in path units.
+///
+/// Dashing belongs to the stroke rather than the geometry: both backends dash
+/// natively (kurbo `Stroke::with_dashes`, Skia `PathEffect::dash`), so a dashed
+/// line is one path plus a paint property. Splitting it into a run of short
+/// solid segments by hand instead multiplies the segment count, breaks caps and
+/// joins at every dash boundary, and gives the path a new content address on
+/// every phase change -- which costs a full re-tessellation per frame when the
+/// dash is animated.
+#[derive(Debug, Clone, Copy)]
+pub struct Dash {
+    intervals: [f32; MAX_DASH_INTERVALS],
+    len: u8,
+    /// How far into the pattern the first dash starts. Animate this for
+    /// marching ants or a line that draws itself on; the path never changes,
+    /// so its compiled geometry stays cached.
+    pub offset: f32,
+}
+
+impl Dash {
+    /// Intervals alternate on, off, on, ... Anything past
+    /// [`MAX_DASH_INTERVALS`] is dropped, as are negative and non-finite
+    /// lengths, which leaves the stroke solid rather than hanging the
+    /// backend's dash walker.
+    pub fn new(intervals: &[f32]) -> Self {
+        let mut stored = [0.0; MAX_DASH_INTERVALS];
+        let mut len = 0;
+        for value in intervals.iter().copied().take(MAX_DASH_INTERVALS) {
+            if !value.is_finite() || value < 0.0 {
+                return Self::solid();
+            }
+            stored[len] = value;
+            len += 1;
+        }
+        Self {
+            intervals: stored,
+            len: len as u8,
+            offset: 0.0,
+        }
+    }
+
+    /// Equal-length dashes and gaps.
+    pub const fn even(on: f32, off: f32) -> Self {
+        let mut intervals = [0.0; MAX_DASH_INTERVALS];
+        intervals[0] = on;
+        intervals[1] = off;
+        Self {
+            intervals,
+            len: 2,
+            offset: 0.0,
+        }
+    }
+
+    const fn solid() -> Self {
+        Self {
+            intervals: [0.0; MAX_DASH_INTERVALS],
+            len: 0,
+            offset: 0.0,
+        }
+    }
+
+    pub const fn offset(mut self, offset: f32) -> Self {
+        self.offset = offset;
+        self
+    }
+
+    pub fn intervals(&self) -> &[f32] {
+        &self.intervals[..self.len as usize]
+    }
+
+    /// A pattern with no positive interval would dash into nothing, so callers
+    /// paint the stroke solid instead.
+    pub fn is_visible(&self) -> bool {
+        self.len > 0 && self.intervals().iter().any(|value| *value > 0.0)
+    }
+}
+
+impl PartialEq for Dash {
+    fn eq(&self, other: &Self) -> bool {
+        self.intervals() == other.intervals() && self.offset == other.offset
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PathFill {
     pub color: Color,
@@ -332,6 +599,7 @@ pub struct PathStroke {
     pub width: f32,
     pub cap: LineCap,
     pub join: LineJoin,
+    pub dash: Option<Dash>,
 }
 
 impl PathStroke {
@@ -341,6 +609,7 @@ impl PathStroke {
             width,
             cap: LineCap::Butt,
             join: LineJoin::Miter,
+            dash: None,
         }
     }
     pub const fn cap(mut self, cap: LineCap) -> Self {
@@ -351,10 +620,44 @@ impl PathStroke {
         self.join = join;
         self
     }
+    pub const fn dash(mut self, dash: Dash) -> Self {
+        self.dash = Some(dash);
+        self
+    }
+    pub const fn dashed(self, on: f32, off: f32) -> Self {
+        self.dash(Dash::even(on, off))
+    }
+
+    /// The dash the backend should apply, or `None` when the stroke is solid.
+    pub fn effective_dash(&self) -> Option<&Dash> {
+        self.dash.as_ref().filter(|dash| dash.is_visible())
+    }
+}
+
+/// A primitive the renderer can draw analytically, without tessellating a path.
+///
+/// Lives in the interface crate rather than the render crate because a canvas
+/// scene needs to name it: these are the shapes the SDF pipeline draws as
+/// instanced quads, which is a different order of cost from a vector run.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Shape {
+    Rect,
+    RoundedRect(f32),
+    Circle,
+    Ellipse,
+    Line { from: Point, to: Point },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum VectorCommand {
+    /// An analytic shape. Lowered to the SDF pipeline, so it costs one
+    /// instanced quad and -- unlike a path -- carries gradients for free.
+    Shape {
+        bounds: Bounds,
+        shape: Shape,
+        fill: Option<ComputedColorStyle>,
+        stroke: Option<ComputedStrokeStyle>,
+    },
     FillPath {
         path: PathData,
         transform: Affine,
@@ -375,6 +678,11 @@ pub enum VectorCommand {
 impl VectorCommand {
     fn bounds(&self) -> Bounds {
         match self {
+            Self::Shape { bounds, stroke, .. } => bounds.expand(
+                stroke
+                    .map(|stroke| stroke.width.max(0.0) * 0.5)
+                    .unwrap_or(0.0),
+            ),
             Self::FillPath {
                 path, transform, ..
             } => transform.transform_bounds(path.bounds()),
@@ -389,6 +697,32 @@ impl VectorCommand {
 
     fn diff(&self, next: &Self) -> VectorSceneChange {
         match (self, next) {
+            (
+                Self::Shape {
+                    bounds: a_bounds,
+                    shape: a_shape,
+                    fill: a_fill,
+                    stroke: a_stroke,
+                },
+                Self::Shape {
+                    bounds: b_bounds,
+                    shape: b_shape,
+                    fill: b_fill,
+                    stroke: b_stroke,
+                },
+            ) => {
+                let outline = |stroke: &Option<ComputedStrokeStyle>| {
+                    stroke.map(|stroke| (stroke.width, stroke.line_style))
+                };
+                VectorSceneChange {
+                    geometry: a_bounds != b_bounds
+                        || a_shape != b_shape
+                        || outline(a_stroke) != outline(b_stroke),
+                    paint: a_fill != b_fill
+                        || a_stroke.map(|stroke| stroke.color)
+                            != b_stroke.map(|stroke| stroke.color),
+                }
+            }
             (
                 Self::FillPath {
                     path: a_path,
@@ -422,7 +756,8 @@ impl VectorCommand {
                     || a_transform != b_transform
                     || a_stroke.width != b_stroke.width
                     || a_stroke.cap != b_stroke.cap
-                    || a_stroke.join != b_stroke.join,
+                    || a_stroke.join != b_stroke.join
+                    || a_stroke.dash != b_stroke.dash,
                 paint: a_stroke.color != b_stroke.color,
             },
             (
@@ -481,7 +816,12 @@ impl VectorScene {
         let mut text_ids = HashSet::new();
         for command in commands.iter() {
             if let VectorCommand::TextBox { id, .. } = command {
-                assert!(
+                // A duplicate makes two boxes share one shaping slot, so the
+                // second one paints the first one's layout. Worth catching in
+                // development, not worth taking a shipped app down for -- and
+                // `CanvasPainter` hands out these ids itself now, so a
+                // collision means an explicit key was reused.
+                debug_assert!(
                     text_ids.insert(*id),
                     "duplicate CanvasTextId {} in one VectorScene",
                     id.get()
@@ -560,6 +900,22 @@ impl VectorSceneBuilder {
         Self::default()
     }
 
+    pub fn shape(
+        &mut self,
+        bounds: Bounds,
+        shape: Shape,
+        fill: Option<ComputedColorStyle>,
+        stroke: Option<ComputedStrokeStyle>,
+    ) -> &mut Self {
+        self.commands.push(VectorCommand::Shape {
+            bounds,
+            shape,
+            fill,
+            stroke,
+        });
+        self
+    }
+
     pub fn fill_path(&mut self, path: PathData, transform: Affine, fill: PathFill) -> &mut Self {
         self.commands.push(VectorCommand::FillPath {
             path,
@@ -612,6 +968,143 @@ fn text_layout_props_differ(current: &TextProps, next: &TextProps) -> bool {
 #[cfg(test)]
 mod path_tests {
     use super::*;
+
+    #[test]
+    fn path_ids_are_content_addressed_so_rebuilt_geometry_stays_cached() {
+        let build = |x: f32| {
+            let mut builder = PathBuilder::new();
+            builder
+                .move_to(Point::new(0.0, 0.0))
+                .line_to(Point::new(x, 10.0));
+            builder.build()
+        };
+
+        assert_eq!(
+            build(4.0),
+            build(4.0),
+            "two independently built paths with the same segments must be one path"
+        );
+        assert_ne!(build(4.0), build(5.0));
+        assert_ne!(build(4.0).id(), build(5.0).id());
+    }
+
+    #[test]
+    fn arc_helpers_close_their_subpath_and_stay_inside_the_radius_bounds() {
+        let mut builder = PathBuilder::new();
+        builder.circle(Point::new(50.0, 40.0), 10.0);
+        let circle = builder.build();
+
+        assert_eq!(circle.segments().first(), Some(&PathSegment::MoveTo(Point::new(60.0, 40.0))));
+        assert_eq!(circle.segments().last(), Some(&PathSegment::Close));
+        assert_eq!(
+            circle
+                .segments()
+                .iter()
+                .filter(|segment| matches!(segment, PathSegment::CubicTo { .. }))
+                .count(),
+            4,
+            "a full turn splits into four quarter-turn cubics"
+        );
+
+        // Control-hull bounds overshoot the true circle by the kappa handles,
+        // which is why `PathData::bounds` documents itself as conservative.
+        let bounds = circle.bounds();
+        assert!(bounds.min.x <= 40.0 && bounds.min.y <= 30.0);
+        assert!(bounds.max.x >= 60.0 && bounds.max.y >= 50.0);
+        assert!(bounds.min.x > 38.0 && bounds.max.x < 62.0);
+    }
+
+    #[test]
+    fn rounded_rect_walks_the_corners_without_zero_length_segments() {
+        let bounds = Bounds::from_origin_size((0.0, 0.0), (40.0, 20.0));
+        let mut builder = PathBuilder::new();
+        builder.rounded_rect(bounds, 4.0);
+        let path = builder.build();
+
+        let mut cursor = None;
+        for segment in path.segments() {
+            let to = match *segment {
+                PathSegment::MoveTo(point) | PathSegment::LineTo(point) => point,
+                PathSegment::QuadraticTo { to, .. } | PathSegment::CubicTo { to, .. } => to,
+                PathSegment::Close => continue,
+            };
+            if let Some(previous) = cursor {
+                assert_ne!(previous, to, "a repeated point would flare a round cap");
+            }
+            cursor = Some(to);
+        }
+
+        // A radius past half the shorter side is clamped, not honored.
+        let mut clamped = PathBuilder::new();
+        clamped.rounded_rect(bounds, 999.0);
+        assert!(!clamped.build().is_empty());
+    }
+
+    #[test]
+    fn a_dash_belongs_to_the_stroke_and_degrades_to_solid_when_it_would_not_draw() {
+        let stroke = PathStroke::new(Color::BLACK, 1.0).dashed(4.0, 4.0);
+        assert_eq!(stroke.effective_dash().map(Dash::intervals), Some(&[4.0, 4.0][..]));
+
+        let empty = PathStroke::new(Color::BLACK, 1.0).dash(Dash::new(&[]));
+        assert!(empty.effective_dash().is_none());
+        let zeroes = PathStroke::new(Color::BLACK, 1.0).dash(Dash::new(&[0.0, 0.0]));
+        assert!(
+            zeroes.effective_dash().is_none(),
+            "an all-zero pattern would walk forever in the backend"
+        );
+        let negative = PathStroke::new(Color::BLACK, 1.0).dash(Dash::new(&[4.0, -1.0]));
+        assert!(negative.effective_dash().is_none());
+
+        // Only the phase moved, so the path is untouched and its compiled
+        // geometry stays valid -- but the frame still has to notice.
+        let solid = PathStroke::new(Color::BLACK, 1.0).dashed(4.0, 4.0);
+        let shifted = PathStroke::new(Color::BLACK, 1.0).dash(Dash::even(4.0, 4.0).offset(2.0));
+        assert_ne!(solid, shifted);
+    }
+
+    #[test]
+    fn a_dashed_stroke_change_reads_as_geometry_not_paint() {
+        let mut builder = PathBuilder::new();
+        builder
+            .move_to(Point::new(0.0, 0.0))
+            .line_to(Point::new(10.0, 0.0));
+        let path = builder.build();
+
+        let scene_of = |stroke: PathStroke| {
+            let mut scene = VectorSceneBuilder::new();
+            scene.stroke_path(path.clone(), Affine::IDENTITY, stroke);
+            scene.build()
+        };
+
+        let solid = scene_of(PathStroke::new(Color::BLACK, 1.0));
+        let dashed = scene_of(PathStroke::new(Color::BLACK, 1.0).dashed(4.0, 4.0));
+        assert_eq!(
+            solid.diff(&dashed),
+            VectorSceneChange {
+                geometry: true,
+                paint: false
+            }
+        );
+    }
+
+    #[test]
+    fn shape_commands_carry_their_stroke_into_the_scene_bounds() {
+        let mut scene = VectorSceneBuilder::new();
+        scene.shape(
+            Bounds::from_origin_size((10.0, 10.0), (20.0, 20.0)),
+            Shape::Circle,
+            Some(ComputedColorStyle::Solid(Color::BLACK)),
+            Some(ComputedStrokeStyle {
+                color: ComputedColorStyle::Solid(Color::WHITE),
+                width: 4.0,
+                line_style: crate::StrokeLineStyle::Solid,
+            }),
+        );
+        assert_eq!(
+            scene.build().bounds(),
+            Bounds::from_origin_size((8.0, 8.0), (24.0, 24.0))
+        );
+    }
 
     #[test]
     fn path_builder_records_all_segments_and_clone_preserves_identity() {

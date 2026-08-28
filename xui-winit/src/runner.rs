@@ -556,6 +556,9 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackend> ApplicationHandler<WinitUser
                 self.runtime = Some(GuiRuntime::new(app, backend, text));
                 let size = window.inner_size();
                 let init_scale_factor = window.scale_factor();
+                self.runtime_mut()
+                    .app_mut()
+                    .set_scale_factor(init_scale_factor as f32);
                 self.window = Some(window);
                 let logical_size = Self::logical_size_at_scale(size, init_scale_factor as f32);
                 self.runtime_mut()
@@ -600,6 +603,9 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackend> ApplicationHandler<WinitUser
                 .set_factor(*scale_factor as f32);
             self.runtime_mut()
                 .text_backend_mut()
+                .set_scale_factor(*scale_factor as f32);
+            self.runtime_mut()
+                .app_mut()
                 .set_scale_factor(*scale_factor as f32);
             if let Some(window) = self.window.as_ref() {
                 let size = Self::logical_size_at_scale(window.inner_size(), *scale_factor as f32);

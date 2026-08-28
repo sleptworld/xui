@@ -1568,7 +1568,8 @@ impl<T: TextBackend> SkiaBackend<T> {
                     transform: *transform,
                     stroke: *stroke,
                 }),
-                VectorCommand::TextBox { .. } => None,
+                // See the vello backend: a vector scene only ever holds paths.
+                VectorCommand::Shape { .. } | VectorCommand::TextBox { .. } => None,
             })
             .collect::<Vec<_>>()
             .into();
@@ -2800,6 +2801,19 @@ fn draw_vector(
                     LineJoin::Bevel => SkJoin::Bevel,
                     LineJoin::Round => SkJoin::Round,
                 });
+                if let Some(dash) = stroke.effective_dash() {
+                    // Skia needs an even interval count; an odd pattern repeats
+                    // to close the cycle, which is what SVG does too.
+                    let mut intervals = dash.intervals().to_vec();
+                    if intervals.len() % 2 == 1 {
+                        intervals.extend_from_within(..);
+                    }
+                    if let Some(effect) =
+                        skia_safe::PathEffect::dash(&intervals, dash.offset)
+                    {
+                        paint.set_path_effect(effect);
+                    }
+                }
                 canvas.draw_path(path, &paint);
                 canvas.restore_to_count(save);
             }

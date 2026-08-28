@@ -19,6 +19,9 @@ pub(crate) struct UiState {
     pub(crate) layout_dirty_list: Vec<NodeId>,
     shape_dirty_list: Vec<NodeId>,
     state_change_dirty_list: Vec<NodeId>,
+    /// Canvases whose drawing has to be rebuilt. Separate from
+    /// `shape_dirty_list` because it is drained after layout, not before.
+    pub(crate) canvas_dirty_list: Vec<NodeId>,
 }
 
 impl UiState {
@@ -43,6 +46,15 @@ impl UiState {
 
     pub(crate) fn drain_shape_dirty_list(&mut self) -> Vec<NodeId> {
         std::mem::take(&mut self.shape_dirty_list)
+    }
+
+    #[inline]
+    pub(crate) fn mark_canvas_dirty(&mut self, id: NodeId) {
+        self.canvas_dirty_list.push(id);
+    }
+
+    pub(crate) fn drain_canvas_dirty_list(&mut self) -> Vec<NodeId> {
+        std::mem::take(&mut self.canvas_dirty_list)
     }
 }
 

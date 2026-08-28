@@ -1905,6 +1905,12 @@ impl Default for ComputedColorStyle {
     }
 }
 
+impl From<Color> for ComputedColorStyle {
+    fn from(value: Color) -> Self {
+        Self::Solid(value)
+    }
+}
+
 impl ComputedColorStyle {
     pub fn is_visible(self) -> bool {
         match self {
