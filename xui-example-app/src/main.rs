@@ -1,3 +1,15 @@
+//! End-to-end demo application for the `xui` framework.
+//!
+//! Demonstrates the `xui!` macro, `#[component]` functions, the
+//! `xui-components` widget set, asset loading, icons (path/SVG), text, layouts,
+//! vector scenes, and the `xui-winit` Skia runner. This is the recommended
+//! starting point for learning the framework.
+//!
+//! Build and run with `cargo xui run` — the `#[xui::main]` entry point
+//! requires the asset bootstrap module that `cargo xui` generates (it reads the
+//! `XUI_ASSETS_BOOTSTRAP` environment variable), so plain `cargo build` will not
+//! compile this binary.
+
 mod components;
 mod flight_icing;
 use winit::dpi::PhysicalSize;
@@ -6,8 +18,10 @@ use winit::window::Window;
 use xui::core::Bounds;
 use xui::prelude::*;
 use xui_components::*;
-use xui_winit::WinitRunnerOptions;
+// Explicit: disambiguates the `<image>` tag from the `xui::image` host widget.
+use xui_components::image::image;
 use xui_winit::runner;
+use xui_winit::WinitRunnerOptions;
 
 fn filled_icon() -> IconData {
     static ICON: std::sync::OnceLock<IconData> = std::sync::OnceLock::new();
@@ -193,7 +207,7 @@ fn tab_panel(title: &str, description: &str) -> ElementDesc {
         .style(Style::new().gap(6.0))
         .flex_direction(FlexDirectionStyle::Column)
         .into_element_desc(vec![
-            text(title.to_string())
+            TextWidget::new(title.to_string())
                 .style(
                     Style::new()
                         .color(Color::WHITE)
@@ -201,7 +215,7 @@ fn tab_panel(title: &str, description: &str) -> ElementDesc {
                         .font_weight(FontWeight::Medium),
                 )
                 .into_element_desc(),
-            text(description.to_string())
+            TextWidget::new(description.to_string())
                 .style(
                     Style::new()
                         .color(Color::rgba(0.92, 0.96, 1.0, 0.68))

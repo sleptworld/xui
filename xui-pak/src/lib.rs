@@ -1,4 +1,23 @@
 //! Versioned, deterministic containers for arbitrary application bytes.
+//!
+//! Defines the on-disk `.xpak` format, the `AssetSource` trait, and readers for
+//! mapped (file) and embedded (static slice) archives. No build logic lives
+//! here — see `xui-pak-build`.
+//!
+//! # Format
+//!
+//! A fixed 56-byte header (`MAGIC = *b"XPAK"`, `FORMAT_VERSION = 1`) is
+//! followed by payload blobs (raw or `zstd`-compressed, aligned to a power of
+//! two) and a `postcard`-encoded index protected by its own `blake3` hash.
+//! Entries are strictly sorted by `AssetId`.
+//!
+//! # Readers
+//!
+//! - `PakSource` — memory-mapped file reader.
+//! - `EmbeddedPak` — zero-copy reader over a `&'static [u8]`.
+//! - `PakOpenOptions` — hard limits on index and decompressed-entry sizes.
+//!
+//! `load` re-verifies each entry's content hash; `verify_all` checks every entry.
 
 use std::{
     collections::{HashMap, HashSet},

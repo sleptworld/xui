@@ -1,3 +1,17 @@
+//! Shared type vocabulary for the `xui` framework.
+//!
+//! Zero-runtime contracts every other crate agrees on: geometry (`Color`,
+//! `Point`, `Rect`, `Size`, `Sizing`, `EdgeInsets`), the style system (`Style`,
+//! `StylePatch`, `ComputedStyle`, tokens, themes, state matchers), input and
+//! semantic events, widget contracts (`Component`, `NodeId`, `Key`), platform
+//! integration (`TextInputSession`), animation timing (`Easing`, `Transition`),
+//! text traits and layout data, and dirty-tracking flags. Has no dependency on
+//! the runtime or any backend, which keeps the type surface stable.
+//!
+//! Modules: `core`, `style`, `events`, `widget`, `platform`, `transition`,
+//! `text`, `dirty`, `runtime`, `render`. All items are re-exported at the crate
+//! root for convenience.
+
 pub mod core;
 pub mod dirty;
 pub mod events;

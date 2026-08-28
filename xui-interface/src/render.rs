@@ -7,8 +7,8 @@ use std::{
     hash::{Hash, Hasher},
     path::PathBuf,
     sync::{
-        Arc,
         atomic::{AtomicU64, Ordering},
+        Arc,
     },
 };
 

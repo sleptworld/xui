@@ -1,7 +1,7 @@
 use ordered_float::NotNan;
 use std::{
     hash::{Hash, Hasher},
-    ops::{Add, AddAssign, BitAnd, BitOr, BitXor, Div, DivAssign, Mul, MulAssign, Sub, SubAssign},
+    ops::{Add, AddAssign, BitAnd, BitOr, Div, DivAssign, Mul, MulAssign, Sub, SubAssign},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -83,20 +83,17 @@ impl Mul<Point> for Point {
     }
 }
 
-impl Into<Point> for (f32, f32) {
-    fn into(self) -> Point {
-        Point {
-            x: self.0,
-            y: self.1,
-        }
+impl From<(f32, f32)> for Point {
+    fn from(val: (f32, f32)) -> Self {
+        Point { x: val.0, y: val.1 }
     }
 }
 
-impl Into<Size<f32>> for (f32, f32) {
-    fn into(self) -> Size<f32> {
+impl From<(f32, f32)> for Size<f32> {
+    fn from(val: (f32, f32)) -> Self {
         Size {
-            width: self.0,
-            height: self.1,
+            width: val.0,
+            height: val.1,
         }
     }
 }
@@ -569,12 +566,9 @@ impl Translation {
     }
 }
 
-impl Into<Point> for Translation {
-    fn into(self) -> Point {
-        Point {
-            x: self.x,
-            y: self.y,
-        }
+impl From<Translation> for Point {
+    fn from(val: Translation) -> Self {
+        Point { x: val.x, y: val.y }
     }
 }
 
@@ -584,12 +578,9 @@ impl From<Point> for Translation {
     }
 }
 
-impl Into<Translation> for (f32, f32) {
-    fn into(self) -> Translation {
-        Translation {
-            x: self.0,
-            y: self.1,
-        }
+impl From<(f32, f32)> for Translation {
+    fn from(val: (f32, f32)) -> Self {
+        Translation { x: val.0, y: val.1 }
     }
 }
 

@@ -1,4 +1,5 @@
-use crate::event_system::EventContext;
+use crate::event_system::callbacks::EventHandlers;
+use crate::event_system::{EventContext, Flow};
 use crate::text::{TextHost, TextLayoutQuery, TextLayoutSlot};
 use crate::ui_runtime::UiRuntime;
 use xui_interface::events::semantic::SemanticEvent;
@@ -47,6 +48,15 @@ impl EventDispatcher {
         host_text_cache: &TextHost<B>,
         event: RawEvent,
     ) -> DispatchReport {
+        // Raw events are widget-private: no user handler can be registered for
+        // them, so a path with no raw-reading widget on it has nothing to run.
+        // Pointer moves arrive every frame and almost never meet a listener, so
+        // this check is worth making before resolving a target or allocating a
+        // path.
+        if !arena.has_raw_event_listeners() {
+            return DispatchReport::default();
+        }
+
         let Some(target) = resolve_raw_target(arena, &event) else {
             return DispatchReport::default();
         };
@@ -55,7 +65,12 @@ impl EventDispatcher {
         dispatch_path(
             path,
             PropagationMode::CaptureTargetBubble,
-            move |node, phase| dispatch_raw_to_node(arena, host_text_cache, node, &event, phase),
+            move |node, phase| {
+                if !arena.node_reads_raw_events(node) {
+                    return Flow::empty();
+                }
+                dispatch_raw_to_node(arena, host_text_cache, node, &event, phase)
+            },
         )
     }
 
@@ -99,7 +114,7 @@ pub fn dispatch_semantic<B: TextBackend>(
 fn dispatch_path(
     path: Vec<NodeId>,
     mode: PropagationMode,
-    mut dispatch_to_node: impl FnMut(NodeId, EventPhase) -> EventResult,
+    mut dispatch_to_node: impl FnMut(NodeId, EventPhase) -> Flow,
 ) -> DispatchReport {
     let mut report = DispatchReport::default();
     let Some(target) = path.last().copied() else {
@@ -112,7 +127,7 @@ fn dispatch_path(
     ) {
         for node in path.iter().copied().take(path.len().saturating_sub(1)) {
             report.push(node, EventPhase::Capture);
-            if dispatch_to_node(node, EventPhase::Capture).is_consumed() {
+            if dispatch_to_node(node, EventPhase::Capture).stops_propagation() {
                 report.mark_consumed();
                 return report;
             }
@@ -120,7 +135,7 @@ fn dispatch_path(
     }
 
     report.push(target, EventPhase::Target);
-    if dispatch_to_node(target, EventPhase::Target).is_consumed() {
+    if dispatch_to_node(target, EventPhase::Target).stops_propagation() {
         report.mark_consumed();
         return report;
     }
@@ -128,7 +143,7 @@ fn dispatch_path(
     if matches!(mode, PropagationMode::CaptureTargetBubble) {
         for node in path.into_iter().rev().skip(1) {
             report.push(node, EventPhase::Bubble);
-            if dispatch_to_node(node, EventPhase::Bubble).is_consumed() {
+            if dispatch_to_node(node, EventPhase::Bubble).stops_propagation() {
                 report.mark_consumed();
                 return report;
             }
@@ -166,8 +181,15 @@ fn dispatch_raw_to_node<B: TextBackend>(
     node: NodeId,
     event: &RawEvent,
     phase: EventPhase,
-) -> EventResult {
-    dispatch_builtin_event(arena, host_text_cache, node, EventRef::Raw(event), phase)
+) -> Flow {
+    // Raw events reach widgets only; user handlers are semantic.
+    Flow::from(dispatch_builtin_event(
+        arena,
+        host_text_cache,
+        node,
+        EventRef::Raw(event),
+        phase,
+    ))
 }
 
 fn dispatch_semantic_to_node<B: TextBackend>(
@@ -176,40 +198,63 @@ fn dispatch_semantic_to_node<B: TextBackend>(
     node: NodeId,
     event: &mut SemanticEvent,
     phase: EventPhase,
-) -> EventResult {
+) -> Flow {
     let meta = event.meta_mut();
     meta.current_target = node;
     meta.phase = phase;
 
     apply_semantic_state(arena, node, event, phase);
 
-    dispatch_builtin_event(
-        arena,
-        host_text_cache,
-        node,
-        EventRef::Semantic(&event),
-        phase,
-    );
+    // User handlers run *before* the widget's own handling of the event, which
+    // is what makes `Flow::PREVENT_DEFAULT` mean anything: the default action a
+    // handler wants to prevent is still ahead of it. The previous order ran the
+    // widget first and then dropped its result on the floor, so a widget could
+    // neither stop propagation nor be stopped.
+    let mut flow = dispatch_user_handlers(arena, host_text_cache, node, event, phase);
 
-    let Some(handles) = arena.callback_handles(node) else {
-        return EventResult::Ignored;
-    };
+    if !flow.prevents_default() && EventHandlers::widget_stage_runs(event, phase) {
+        flow |= Flow::from(dispatch_builtin_event(
+            arena,
+            host_text_cache,
+            node,
+            EventRef::Semantic(event),
+            phase,
+        ));
+    }
 
+    flow
+}
+
+fn dispatch_user_handlers<B: TextBackend>(
+    arena: &mut UiRuntime,
+    host_text_cache: &TextHost<B>,
+    node: NodeId,
+    event: &SemanticEvent,
+    phase: EventPhase,
+) -> Flow {
     let mut request_update = WidgetUpdateFlags::empty();
     let mut requests = EventRequests::default();
-    let result = {
-        let (node, callbacks) = arena
-            .node_and_callbacks_mut(node)
-            .expect("event target disappeared during dispatch");
-        let text_layout = primary_text_query(host_text_cache, node.id);
-        let mut cx =
-            EventContext::new(node, text_layout, phase, &mut request_update, &mut requests);
-        let result = callbacks.dispatch_semantic(handles, event, &mut cx);
-        result
+
+    let flow = {
+        let Some((view, handlers)) = arena.node_and_handlers(node) else {
+            return Flow::empty();
+        };
+        if handlers.is_empty() {
+            return Flow::empty();
+        }
+        let text_layout = primary_text_query(host_text_cache, node);
+        let mut cx = EventContext::new(
+            view,
+            text_layout,
+            phase,
+            &mut request_update,
+            &mut requests,
+        );
+        handlers.dispatch(event, &mut cx)
     };
 
     apply_event_context(arena, node, request_update, &requests);
-    result
+    flow
 }
 
 fn apply_semantic_state(
@@ -230,8 +275,9 @@ fn apply_semantic_state(
 
 fn semantic_state_change(event: &SemanticEvent) -> Option<(xui_interface::WidgetState, bool)> {
     match event {
-        SemanticEvent::HoverEnter(_) => Some((xui_interface::WidgetState::HOVERED, true)),
-        SemanticEvent::HoverLeave(_) => Some((xui_interface::WidgetState::HOVERED, false)),
+        SemanticEvent::Hovered(event) => {
+            Some((xui_interface::WidgetState::HOVERED, event.hovered))
+        }
         SemanticEvent::PressStart(_) => Some((xui_interface::WidgetState::PRESSED, true)),
         SemanticEvent::PressEnd(_) | SemanticEvent::PressCancel(_) => {
             Some((xui_interface::WidgetState::PRESSED, false))

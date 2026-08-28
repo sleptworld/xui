@@ -1,3 +1,8 @@
+//! `xpak` — minimal CLI for inspecting and building `.xpak` archives.
+//!
+//! The lower-level counterpart to `cargo xui`; applications usually use
+//! `cargo xui` instead. Commands: `pack`, `list`, `verify`.
+
 use std::{env, error::Error, path::Path};
 
 use xui_pak::PakSource;

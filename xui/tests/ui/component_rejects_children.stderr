@@ -1,0 +1,24 @@
+error[E0277]: `<LeafPropsBuilder<LeafPropsLabelSet>>` does not accept this kind of body
+  --> tests/ui/component_rejects_children.rs:12:13
+   |
+12 |     xui! { <leaf label={String::from("hi")}>{"unexpected"}</leaf> }
+   |     --------^^^^^^^^^^---------------------------------------------
+   |     |       |
+   |     |       not a valid body for this element
+   |     required by a bound introduced by this call
+   |
+   = note: `NoChildren` = `<tag />`, `Children` = `<tag><a /><b /></tag>`, `Content<T>` = `<tag>{expr}</tag>`
+   = note: a leaf element such as `canvas` or `icon` accepts no body at all
+help: the trait `IntoElement<Content<&str>>` is not implemented for `LeafPropsBuilder<LeafPropsLabelSet>`
+      but trait `IntoElement<NoChildren>` is implemented for it
+  --> tests/ui/component_rejects_children.rs:6:1
+   |
+ 6 | #[component]
+   | ^^^^^^^^^^^^
+   = help: for that trait implementation, expected `NoChildren`, found `Content<&str>`
+note: required by a bound in `build`
+  --> src/dsl.rs
+   |
+   |     fn build<W: IntoElement<Self>>(self, widget: W) -> ElementDesc {
+   |                 ^^^^^^^^^^^^^^^^^ required by this bound in `ElementBody::build`
+   = note: this error originates in the attribute macro `component` (in Nightly builds, run with -Z macro-backtrace for more info)

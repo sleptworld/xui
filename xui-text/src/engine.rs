@@ -119,6 +119,12 @@ pub struct Engine {
     scale_factor: f32,
 }
 
+impl Default for Engine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Engine {
     pub fn new() -> Self {
         Self {
@@ -153,7 +159,7 @@ impl Engine {
             dir_depth: 0,
             needs_bidi: false,
             last_offset: offset,
-            dir: dir,
+            dir,
         }
     }
 
@@ -404,8 +410,8 @@ fn rasterize_swash_glyph(
 
     Some(RasterizedGlyph {
         format,
-        width: placement.width as u32,
-        height: placement.height as u32,
+        width: placement.width,
+        height: placement.height,
         left: placement.left,
         top: placement.top,
         pixels: Arc::from(pixels),
@@ -509,11 +515,10 @@ impl<'a> Session<'a> {
                 SpanElement::Span(i) => self.layout_span(&doc.spans[*i], doc),
                 SpanElement::Fragment(i) => {
                     let (start, end) = doc.fragments[*i];
-                    if start < end {
-                        if let Some(s) = doc.text.get(start..end) {
+                    if start < end
+                        && let Some(s) = doc.text.get(start..end) {
                             self.add_text(s);
                         }
-                    }
                 }
             }
         }

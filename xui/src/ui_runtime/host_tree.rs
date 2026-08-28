@@ -10,6 +10,9 @@ use crate::widgets::{WidgetI, WidgetType};
 /// Dense, high-frequency host data keyed by the topology's generational id.
 pub(crate) struct HostData {
     pub node_type: WidgetType,
+    /// Cached at creation: raw dispatch consults it to skip nodes whose widget
+    /// never looks at `EventRef::Raw`.
+    pub reads_raw_events: bool,
     pub key: Option<Key>,
     pub work: HostWorkFlags,
     pub subtree_work: HostWorkFlags,
@@ -23,8 +26,10 @@ pub(crate) struct HostData {
 impl HostData {
     pub(crate) fn new(key: Option<Key>, props_hash: u64, widget: WidgetI) -> Self {
         let node_type = widget.node_type();
+        let reads_raw_events = widget.reads_raw_events();
         Self {
             node_type,
+            reads_raw_events,
             key,
             work: HostWorkFlags::empty(),
             subtree_work: HostWorkFlags::empty(),

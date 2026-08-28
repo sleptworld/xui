@@ -488,11 +488,10 @@ impl BidiResolver {
                     break;
                 }
                 bracket_stack.push(i, close);
-            } else if c.opening_bracket().is_some() {
-                if let Some(open) = bracket_stack.find_and_pop(c) {
+            } else if c.opening_bracket().is_some()
+                && let Some(open) = bracket_stack.find_and_pop(c) {
                     self.bracket_pairs.push((open, i));
                 }
-            }
         }
         if self.bracket_pairs.len() > base_brackets {
             let embed_dir = if level & 1 != 0 { R } else { L };
@@ -670,9 +669,7 @@ where
                 let mut j = i;
                 let mut k = end - 1;
                 while j < k {
-                    let tmp = order[j];
-                    order[j] = order[k];
-                    order[k] = tmp;
+                    order.swap(j, k);
                     j += 1;
                     k -= 1;
                 }

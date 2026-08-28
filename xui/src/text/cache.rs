@@ -12,7 +12,7 @@ use rustc_hash::FxHashMap;
 use slotmap::{SlotMap, new_key_type};
 use smallvec::SmallVec;
 use xui_interface::{
-    Affinity, FontDatabase, NodeId, NodeLifecycleEvent, ParagraphLayout, Point, Rect, Shaper, Size,
+    Affinity, NodeId, NodeLifecycleEvent, ParagraphLayout, Point, Rect, Shaper, Size,
     TextBackend, TextLayoutConstraints, TextLayoutInput, TextLayoutKey, TextOffset, TextOffsetUnit,
     TextPosition, TextRange,
 };

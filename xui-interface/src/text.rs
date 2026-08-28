@@ -120,7 +120,7 @@ pub trait TextBackend:
     fn set_scale_factor(&mut self, _scale_factor: f32) {}
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct TextProps {
     pub text: TextContent,
     pub style: TextStyle,
@@ -149,17 +149,6 @@ impl TextProps {
         Self {
             text: text.into(),
             ..Default::default()
-        }
-    }
-}
-
-impl Default for TextProps {
-    fn default() -> Self {
-        Self {
-            text: TextContent::default(),
-            style: TextStyle::default(),
-            paragraph: ParagraphStyle::default(),
-            text_box: TextBoxStyle::default(),
         }
     }
 }
@@ -355,19 +344,10 @@ impl Hash for LineHeight {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct TextDecoration {
     pub underline: bool,
     pub line_through: bool,
-}
-
-impl Default for TextDecoration {
-    fn default() -> Self {
-        Self {
-            underline: false,
-            line_through: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -624,7 +604,11 @@ impl<F, K> ParagraphLayout<F, K> {
                     let right = left + cluster.hitbox.width;
                     let rtl = self.cluster_is_rtl(cluster);
                     return if offset.raw == start {
-                        if rtl { right } else { left }
+                        if rtl {
+                            right
+                        } else {
+                            left
+                        }
                     } else if rtl {
                         left
                     } else {

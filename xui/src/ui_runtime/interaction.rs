@@ -1,9 +1,6 @@
 use crate::event_system::interaction::{HostInteraction, InteractionProperties};
 use crate::{
-    event_system::{
-        callbacks::{CallbackHandleSet, CallbackStore},
-        *,
-    },
+    event_system::{callbacks::EventHandlers, *},
     focus::FocusManager,
 };
 use slotmap::SparseSecondaryMap;
@@ -11,13 +8,15 @@ use xui_interface::NodeId;
 
 pub(crate) struct InteractionNode {
     pub properties: InteractionProperties,
-    pub callbacks: CallbackHandleSet,
+    /// Owned outright. The handlers used to live in 34 global `SlotMap`s with
+    /// only their keys stored here; nothing ever resolved a key from anywhere
+    /// but this node, so the indirection was pure overhead.
+    pub handlers: EventHandlers,
 }
 
 pub(crate) struct InteractionSystem {
     pub event_state: EventState,
     pub focus: FocusManager,
-    pub callbacks: CallbackStore,
     nodes: SparseSecondaryMap<NodeId, InteractionNode>,
 }
 
@@ -26,7 +25,6 @@ impl InteractionSystem {
         Self {
             event_state: EventState::default(),
             focus: FocusManager::default(),
-            callbacks: CallbackStore::default(),
             nodes: SparseSecondaryMap::new(),
         }
     }
@@ -44,15 +42,12 @@ impl InteractionSystem {
             handle.unbind(id);
         }
 
-        let current_callbacks = old.as_ref().map(|node| node.callbacks).unwrap_or_default();
+        // Dropping the old node drops its handlers; there is no store to keep
+        // in step, so no `update_set`/`clear_set` pair to get wrong.
         let Some(interaction) = interaction else {
-            self.callbacks.clear_set(current_callbacks);
             return;
         };
 
-        let callbacks = self
-            .callbacks
-            .update_set(current_callbacks, interaction.handlers);
         if let Some(handle) = interaction.properties.focus_handle.as_ref() {
             handle.bind(id);
         }
@@ -60,7 +55,7 @@ impl InteractionSystem {
             id,
             InteractionNode {
                 properties: interaction.properties,
-                callbacks,
+                handlers: interaction.handlers,
             },
         );
     }
@@ -68,11 +63,10 @@ impl InteractionSystem {
     pub fn remove(&mut self, id: NodeId) {
         self.event_state.clear_node(id);
         self.focus.clear_node(id);
-        if let Some(node) = self.nodes.remove(id) {
-            if let Some(handle) = node.properties.focus_handle.as_ref() {
-                handle.unbind(id);
-            }
-            self.callbacks.clear_set(node.callbacks);
+        if let Some(node) = self.nodes.remove(id)
+            && let Some(handle) = node.properties.focus_handle.as_ref()
+        {
+            handle.unbind(id);
         }
     }
 }

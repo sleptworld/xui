@@ -206,7 +206,7 @@ impl<'a> DocumentBuilder<'a> {
         let index = self.doc.spans.len();
         self.doc.spans.push(span);
         if let Some(parent) = self.spans.last() {
-            self.doc.spans[*parent as usize]
+            self.doc.spans[*parent ]
                 .elements
                 .push(SpanElement::Span(index));
         } else {
@@ -227,7 +227,7 @@ impl<'a> DocumentBuilder<'a> {
             self.doc.text.push_str(text);
             let end = self.doc.text.len();
             self.doc.fragments.push((start, end));
-            self.doc.spans[*span as usize]
+            self.doc.spans[*span ]
                 .elements
                 .push(SpanElement::Fragment(index));
         }

@@ -33,7 +33,7 @@ impl TabItem {
     }
 }
 
-/// Visual slots for [`tabs`]. Each slot is a complete style and can be
+/// Visual slots for `tabs`. Each slot is a complete style and can be
 /// replaced independently.
 #[derive(Clone, Debug, Hash)]
 pub struct TabsStyle {
@@ -282,7 +282,7 @@ mod tests {
     use super::*;
 
     fn item(id: &str, disabled: bool) -> TabItem {
-        TabItem::new(id, id.to_string(), text(id.to_string()).into_element_desc())
+        TabItem::new(id, id.to_string(), TextWidget::new(id.to_string()).into_element_desc())
             .disabled(disabled)
     }
 

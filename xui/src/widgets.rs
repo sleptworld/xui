@@ -7,12 +7,13 @@ use std::rc::Rc;
 pub use crate::event_system::callbacks::EventHandlers;
 use crate::event_system::interaction::{HostInteraction, InteractionProperties};
 use xui_interface::core::Bounds;
+use xui_interface::style::FlexDirectionStyle;
 use xui_interface::{EventRef, EventResult, TextContent, TextProps, WidgetUpdateFlags};
 pub use xui_interface::{Style, WidgetType};
 
 mod utils;
 
-use crate::core::{Rect, Size};
+use crate::core::Size;
 use crate::element::{ComponentDesc, ElementDesc, WidgetDesc};
 use crate::fiber::{ComponentRender, Key};
 use crate::render::RenderTreeWriter;
@@ -167,413 +168,23 @@ macro_rules! event_handler_methods {
             self
         }
 
-        pub fn on_command(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::CommandEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_command = Some(Box::new(handler));
-            self
-        }
+    };
+}
 
-        pub fn on_event(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::SemanticEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_event = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_event_capture(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::SemanticEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_event_capture = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_click(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::ClickEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_click = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_click_capture(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::ClickEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_click_capture = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_double_click(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::ClickEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_double_click = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_double_click_capture(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::ClickEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_double_click_capture = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_context_menu(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::ContextMenuEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_context_menu = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_context_menu_capture(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::ContextMenuEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_context_menu_capture = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_hover_enter(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::HoverEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_hover_enter = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_hover_leave(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::HoverEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_hover_leave = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_hover_change(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::HoverChangeEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_hover_change = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_press_start(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::PressEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_press_start = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_press_start_capture(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::PressEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_press_start_capture = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_press_end(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::PressEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_press_end = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_press_end_capture(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::PressEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_press_end_capture = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_press_cancel(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::PressEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_press_cancel = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_press_cancel_capture(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::PressEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_press_cancel_capture = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_focus(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::FocusEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_focus = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_blur(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::FocusEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_blur = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_focus_in(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::FocusEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_focus_in = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_focus_in_capture(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::FocusEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_focus_in_capture = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_focus_out(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::FocusEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_focus_out = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_focus_out_capture(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::FocusEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_focus_out_capture = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_drag_start(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::DragEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_drag_start = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_drag_start_capture(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::DragEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_drag_start_capture = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_drag_move(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::DragEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_drag_move = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_drag_move_capture(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::DragEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_drag_move_capture = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_drag_end(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::DragEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_drag_end = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_drag_end_capture(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::DragEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_drag_end_capture = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_drag_cancel(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::DragEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_drag_cancel = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_drag_cancel_capture(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::DragEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_drag_cancel_capture = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_scroll(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::ScrollEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_scroll = Some(Box::new(handler));
-            self
-        }
-
-        pub fn on_scroll_capture(
-            mut self,
-            handler: impl for<'a> FnMut(
-                &xui_interface::events::ScrollEvent,
-                &mut crate::event_system::EventContext<'a>,
-            ) -> xui_interface::EventResult
-            + 'static,
-        ) -> Self {
-            self.event_handlers.on_scroll_capture = Some(Box::new(handler));
-            self
-        }
+/// Opts a widget into the generated `on_*` vocabulary.
+///
+/// The 34 builder methods that used to be written out here now come from
+/// `EventProps`, blanket-implemented over this trait — the same arrangement as
+/// `Styled`/`StyleProps` on the style side.
+macro_rules! impl_listen {
+    ($($widget:ty),* $(,)?) => {
+        $(
+            impl crate::event_system::callbacks::Listen for $widget {
+                fn handlers_mut(&mut self) -> &mut EventHandlers {
+                    &mut self.event_handlers
+                }
+            }
+        )*
     };
 }
 
@@ -607,10 +218,21 @@ pub use text_input::keymap::{TextCommand, TextKeymap};
 pub use text_input::{TextController, TextInputChange};
 pub use z_stack::ZStackWidget;
 
+impl_listen!(
+    CanvasWidget,
+    ContainerWidget,
+    GridWidget,
+    IconWidget,
+    ImageWidget,
+    TextWidget,
+    TextInputWidget,
+    ZStackWidget,
+);
+
 pub type RootComponentRender = fn(&mut HookContext) -> ElementDesc;
 
 macro_rules! define_widgets {
-    ($($name:ident => $widget:ty),+ $(,)?) => {
+    ($($name:ident => $widget:ty $([$raw:ident])?),+ $(,)?) => {
         #[derive(Debug)]
         pub enum Widgets {
             $(
@@ -673,6 +295,20 @@ macro_rules! define_widgets {
                 match self {
                     $(
                         Self::$name(widget) => widget.node_type(),
+                    )+
+                }
+            }
+
+            /// Whether this widget reads `EventRef::Raw` in `handle_event`.
+            ///
+            /// Raw dispatch walks the whole ancestor path on every pointer
+            /// move; knowing that nobody on it is listening turns that walk
+            /// into an integer comparison. Declared in the widget table rather
+            /// than in a hand-kept `match`, so it cannot drift from reality.
+            pub(crate) fn reads_raw_events(&self) -> bool {
+                match self {
+                    $(
+                        Self::$name(_) => false $( || stringify!($raw) == "raw" )? ,
                     )+
                 }
             }
@@ -782,11 +418,14 @@ macro_rules! define_widgets {
     };
 }
 
+// `[raw]` marks a widget that reads `EventRef::Raw` in its `handle_event`.
+// Raw events are widget-private — see the module docs on `event_system` — so
+// this list is the complete set of nodes raw dispatch has to visit.
 define_widgets! {
     Container => ContainerWidget,
     ZStack => ZStackWidget,
     Text => TextWidget,
-    TextInput => TextInputWidget,
+    TextInput => TextInputWidget [raw],
     Canvas => CanvasWidget,
     Image => ImageWidget,
     Icon => IconWidget,
@@ -823,6 +462,10 @@ impl WidgetI {
 
     pub fn node_type(&self) -> WidgetType {
         self.with_widgets(|widget| widget.node_type())
+    }
+
+    pub(crate) fn reads_raw_events(&self) -> bool {
+        self.with_widgets(|widget| widget.reads_raw_events())
     }
 
     pub fn props_hash(&self) -> u64 {
@@ -935,8 +578,11 @@ impl ComponentDesc {
 //     LabelWidget::new(text)
 // }
 
-pub fn text(text: impl Into<xui_interface::TextContent>) -> TextWidget {
-    TextWidget::new(text)
+/// `<text>` — starts empty; content comes from `text={..}` or `<text>{..}</text>`.
+/// Hand-written call sites that already have the content want
+/// [`TextWidget::new`] instead.
+pub fn text() -> TextWidget {
+    TextWidget::new("")
 }
 
 #[doc(hidden)]
@@ -956,6 +602,22 @@ pub fn container() -> ContainerWidget {
     ContainerWidget::new()
 }
 
+/// `<row>` — a [`container`] preset, not a distinct widget.
+///
+/// Direction is the only thing a row adds over a container, so it is a
+/// constructor rather than a component. Being a host tag is what lets it take
+/// the full style vocabulary *and* event handlers:
+/// `<row gap={8.0} on_click={handler}>`. A component would have to redeclare
+/// every one of those as a prop, and could not accept the handlers at all.
+pub fn row() -> ContainerWidget {
+    ContainerWidget::new().flex_direction(FlexDirectionStyle::Row)
+}
+
+/// `<column>` — a [`container`] preset. See [`row`].
+pub fn column() -> ContainerWidget {
+    ContainerWidget::new().flex_direction(FlexDirectionStyle::Column)
+}
+
 pub fn z_stack() -> ZStackWidget {
     ZStackWidget::new()
 }
@@ -964,8 +626,11 @@ pub fn grid() -> GridWidget {
     GridWidget::new()
 }
 
-pub fn canvas(controller: CanvasController) -> CanvasWidget {
-    CanvasWidget::new(controller)
+/// `<canvas>` — starts with a detached controller that `controller={..}`
+/// replaces. Every tag constructor takes no arguments so that the `xui!` macro
+/// needs no per-tag knowledge.
+pub fn canvas() -> CanvasWidget {
+    CanvasWidget::new(CanvasController::new())
 }
 
 pub fn image() -> ImageWidget {

@@ -60,7 +60,7 @@ impl TextKeymap {
             Some(NamedKey::Delete) => Some(TextCommand::DeleteForward),
             _ => None,
         };
-        named_command.or_else(|| match event.physical_key {
+        named_command.or(match event.physical_key {
             PhysicalKey::ArrowLeft => Some(TextCommand::MoveLeft { extend }),
             PhysicalKey::ArrowRight => Some(TextCommand::MoveRight { extend }),
             PhysicalKey::Home => Some(TextCommand::MoveHome { extend }),

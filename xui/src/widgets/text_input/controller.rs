@@ -427,7 +427,7 @@ impl ImeSession {
         let cursor = cursor_byte_range
             .map(|range| {
                 preedit_cursor_to_selection(
-                    &text,
+                    text,
                     (range.start.raw, range.end.raw),
                     new_range.start,
                 )

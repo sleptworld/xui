@@ -1,3 +1,18 @@
+//! `winit` window and event-loop integration for `xui`.
+//!
+//! Glues an `xui::app::App` to a `winit` window and a render backend. Translates
+//! raw `winit` events into `xui_interface::events::RawEvent`s and drives the
+//! `GuiRuntime`.
+//!
+//! # Features
+//!
+//! - `skia` (default) — pulls in `xui-skia` and re-exports `SkiaBackend` and
+//!   `SkiaTextBackend`; enables the `runner` function.
+//! - `wgpu` — enables the optional `wgpu` renderer module (`WGPUBackend`,
+//!   `TexturePool`, `TextureLease`, ...).
+//!
+//! See `xui-example-app` for the standard application setup.
+
 mod device;
 pub mod error;
 mod runner;

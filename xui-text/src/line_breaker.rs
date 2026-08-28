@@ -5,17 +5,14 @@ use super::layout::*;
 /// Alignment of a paragraph.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 #[repr(u8)]
+#[derive(Default)]
 pub enum Alignment {
+    #[default]
     Start,
     Middle,
     End,
 }
 
-impl Default for Alignment {
-    fn default() -> Self {
-        Self::Start
-    }
-}
 
 /// Line breaking support for a paragraph.
 pub struct BreakLines<'a> {
@@ -270,11 +267,11 @@ impl<'a> BreakLines<'a> {
             }
             let mut total_advance = 0.;
             for run in self.lines.runs[make_range(line.runs)].iter() {
-                let r = Run::new(self.layout, &run);
+                let r = Run::new(self.layout, run);
                 let rtl = run.level & 1 != 0;
-                let mut clusters = r.visual_clusters();
+                let clusters = r.visual_clusters();
                 let mut pos = 0;
-                while let Some(cluster) = clusters.next() {
+                for cluster in clusters {
                     let index = if rtl {
                         run.clusters.1.wrapping_sub(pos).wrapping_sub(1)
                     } else {

@@ -7,7 +7,7 @@ use super::{
     CompiledScene, ContentVersion, FrameProperties, LayerCacheId, PictureId, PlacementVersion,
     Primitive, RenderNodeId, SpatialNodeId,
 };
-use xui_interface::{Affine, Bounds, Point, Rect};
+use xui_interface::{Affine, Bounds, Point};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FrameBuildError {

@@ -6,7 +6,7 @@ use crate::event_system::{EventContext, callbacks::EventHandlers};
 use crate::render::{ClipShape, Primitive, RenderTreeWriter, TextPrimitive, VectorPrimitive};
 use crate::text::TextLayoutSlot;
 use xui_interface::{
-    Affine, Bounds, CanvasTextId, ComputedStyle, EventRef, EventResult, Key, Rect, Style,
+    Affine, Bounds, CanvasTextId, ComputedStyle, EventRef, EventResult, Key, Style,
     TextContent, TextPaintProps, TextPaintStyle, TextProps, VectorCommand, VectorScene, WidgetType,
     WidgetUpdateFlags,
 };

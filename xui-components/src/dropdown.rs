@@ -172,7 +172,7 @@ pub fn drop_down(
                 EventResult::Consumed
             }
         })
-        .into_element_desc(vec![text(label).into_element_desc()]);
+        .into_element_desc(vec![TextWidget::new(label).into_element_desc()]);
 
     let mut children = vec![trigger];
     if *open.get()
@@ -209,7 +209,7 @@ pub fn drop_down(
                         select_item(index, controlled, selection, open_state, &callback);
                         EventResult::Consumed
                     })
-                    .into_element_desc(vec![text(item.label.clone()).into_element_desc()]),
+                    .into_element_desc(vec![TextWidget::new(item.label.clone()).into_element_desc()]),
             );
         }
 

@@ -1047,15 +1047,12 @@ fn validate_explicit_cache_keys(source: &RenderScene) -> Result<(), SceneCompile
         keys: &mut HashSet<LayerCacheKey>,
     ) -> Result<(), SceneCompileError> {
         let node = source.node(id).ok_or(SceneError::MissingNode(id))?;
-        if let RenderNodeKind::Layer(layer) = &node.kind {
-            if layer.descriptor.requires_isolation() {
-                if let Some(key) = layer.descriptor.cache_key {
-                    if !keys.insert(key) {
+        if let RenderNodeKind::Layer(layer) = &node.kind
+            && layer.descriptor.requires_isolation()
+                && let Some(key) = layer.descriptor.cache_key
+                    && !keys.insert(key) {
                         return Err(SceneCompileError::DuplicateLayerCacheKey(key));
                     }
-                }
-            }
-        }
         for child in node.children() {
             visit(source, *child, keys)?;
         }

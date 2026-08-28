@@ -7,18 +7,18 @@ use xui::prelude::*;
 
 #[component]
 fn one_prop(label: &String) {
-    text(label.clone()).into_element_desc()
+    TextWidget::new(label.clone()).into_element_desc()
 }
 
 #[component]
 #[defaults(label = "fallback".to_string())]
 fn one_prop_with_default(label: &String) {
-    text(label.clone()).into_element_desc()
+    TextWidget::new(label.clone()).into_element_desc()
 }
 
 #[component]
 fn two_props(label: &String, size: &f32) {
-    text(format!("{label}:{size}")).into_element_desc()
+    TextWidget::new(format!("{label}:{size}")).into_element_desc()
 }
 
 #[component]

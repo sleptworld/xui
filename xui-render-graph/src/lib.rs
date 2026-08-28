@@ -3,6 +3,9 @@
 //! [`compile_layer`] normalizes static style into a reusable [`LayerProgram`].
 //! [`LayerProgram::instantiate`] applies frame geometry, lowers executable pass IR,
 //! and assigns abstract transient texture slots. The crate has no GPU dependency.
+//!
+//! Backends (`xui-skia`, or `wgpu` via `xui-winit`) bind external resources
+//! and execute the resulting `LayerRenderPlan`.
 
 #![forbid(unsafe_code)]
 

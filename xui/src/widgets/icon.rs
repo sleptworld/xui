@@ -214,6 +214,12 @@ impl std::fmt::Debug for IconWidget {
     }
 }
 
+impl Default for IconWidget {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IconWidget {
     pub fn new() -> Self {
         Self {

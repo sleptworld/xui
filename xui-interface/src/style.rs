@@ -1,7 +1,7 @@
 use crate::{
-    Affine, Bounds, Color, EdgeInsets, FontFamily, FontStyle, FontWeight, ImageData, ImageKey,
-    LineHeight, Point, Rect, Size, StyleDiffFlags, TextDecoration, Transition, WidgetState,
-    core::Sizing, text::TextStyle,
+    core::Sizing, text::TextStyle, Affine, Bounds, Color, EdgeInsets, FontFamily, FontStyle,
+    FontWeight, ImageData, ImageKey, LineHeight, Point, Size, StyleDiffFlags, TextDecoration,
+    Transition, WidgetState,
 };
 use std::{
     cell::RefCell,
@@ -52,18 +52,13 @@ pub enum FontSizeToken {
 }
 
 /// Styles
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum StyleValue<T> {
+    #[default]
     Unset,
     Inherit,
     Initial,
     Value(T),
-}
-
-impl<T> Default for StyleValue<T> {
-    fn default() -> Self {
-        Self::Unset
-    }
 }
 
 impl<T> StyleValue<T> {
@@ -2488,7 +2483,11 @@ fn compute_effect(effect: &Effect, theme: &Theme) -> ComputedEffect {
 }
 
 fn non_negative(value: f32) -> f32 {
-    if value < 0.0 { 0.0 } else { value }
+    if value < 0.0 {
+        0.0
+    } else {
+        value
+    }
 }
 
 fn normalize_radians(value: f32) -> f32 {

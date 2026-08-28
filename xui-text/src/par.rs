@@ -250,7 +250,7 @@ impl Par {
     }
 
     pub(super) fn apply_spacing(&mut self, spans: &[SpanData]) {
-        if spans.len() == 0 {
+        if spans.is_empty() {
             return;
         }
         for run in &mut self.data.runs {
@@ -322,8 +322,8 @@ impl Par {
                     }
                 }
             }
-        } else if !cluster.is_empty() {
-            if let Some(glyph) = self.data.glyphs.get_mut(cluster.glyphs as usize) {
+        } else if !cluster.is_empty()
+            && let Some(glyph) = self.data.glyphs.get_mut(cluster.glyphs as usize) {
                 if glyph.is_simple() {
                     glyph.clear_advance();
                 } else if let Some(glyph) = self.data.detailed_glyphs.get_mut(glyph.detail_index())
@@ -331,7 +331,6 @@ impl Par {
                     glyph.advance = 0.;
                 }
             }
-        }
 
         if let Some(run) = self.data.runs.iter_mut().rev().find(|run| {
             let cluster_index = cluster_index as u32;
@@ -794,13 +793,12 @@ impl<'a> Session<'a> {
     /// Pops the current span, restoring the styles of the parent.
     pub fn pop_span(&mut self) {
         let s = &mut self.engine.state;
-        if let Some((_, dir_changed)) = s.pop() {
-            if dir_changed {
+        if let Some((_, dir_changed)) = s.pop()
+            && dir_changed {
                 const PDI: char = '\u{2069}';
                 self.dir_depth = self.dir_depth.saturating_sub(1);
                 self.push_char(PDI);
             }
-        }
     }
 
     /// Adds a text fragment to the paragraph.
@@ -1014,7 +1012,7 @@ impl<'a> Session<'a> {
             shape_item(
                 &mut self.engine.font_ctx,
                 &mut self.engine.scx,
-                &s,
+                s,
                 item,
                 &mut cluster,
                 layout,

@@ -54,9 +54,8 @@ pub struct EventMeta {
 pub enum SemanticEvent {
     Command(CommandEvent),
     // Hover
-    HoverEnter(HoverEvent),
-    HoverLeave(HoverEvent),
-    HoverChange(HoverChangeEvent),
+    /// This node entered or left the hover path. See [`HoverEvent`].
+    Hovered(HoverEvent),
     // Press
     PressStart(PressEvent),
     PressEnd(PressEvent),
@@ -83,9 +82,7 @@ impl SemanticEvent {
     pub fn meta(&self) -> &EventMeta {
         match self {
             SemanticEvent::Command(e) => &e.meta,
-            SemanticEvent::HoverEnter(e) => &e.meta,
-            SemanticEvent::HoverLeave(e) => &e.meta,
-            SemanticEvent::HoverChange(e) => &e.meta,
+            SemanticEvent::Hovered(e) => &e.meta,
 
             SemanticEvent::PressStart(e) => &e.meta,
             SemanticEvent::PressEnd(e) => &e.meta,
@@ -112,9 +109,7 @@ impl SemanticEvent {
     pub fn meta_mut(&mut self) -> &mut EventMeta {
         match self {
             SemanticEvent::Command(e) => &mut e.meta,
-            SemanticEvent::HoverEnter(e) => &mut e.meta,
-            SemanticEvent::HoverLeave(e) => &mut e.meta,
-            SemanticEvent::HoverChange(e) => &mut e.meta,
+            SemanticEvent::Hovered(e) => &mut e.meta,
 
             SemanticEvent::PressStart(e) => &mut e.meta,
             SemanticEvent::PressEnd(e) => &mut e.meta,
@@ -141,10 +136,11 @@ impl SemanticEvent {
     pub fn propagation_mode(&self) -> PropagationMode {
         match self {
             SemanticEvent::Command(_) => PropagationMode::CaptureTargetBubble,
-            SemanticEvent::HoverEnter(_) => PropagationMode::Direct,
-            SemanticEvent::HoverLeave(_) => PropagationMode::Direct,
-
-            SemanticEvent::HoverChange(_) => PropagationMode::Direct,
+            // Direct on purpose. The translator diffs the whole hover path and
+            // emits one event per node that actually changed, so every hovered
+            // ancestor is already reached. Bubbling would deliver a second copy
+            // of a child's event to ancestors that got their own.
+            SemanticEvent::Hovered(_) => PropagationMode::Direct,
 
             SemanticEvent::PressStart(_) => PropagationMode::CaptureTargetBubble,
             SemanticEvent::PressEnd(_) => PropagationMode::CaptureTargetBubble,
@@ -191,21 +187,34 @@ pub struct CommandEvent {
     pub shortcut: Shortcut,
 }
 
+/// A node entered or left the hover path.
+///
+/// Delivered once to each node whose hover state actually changed, which
+/// includes every ancestor that gained or lost hover — the translator diffs the
+/// old and new root-to-target paths rather than reporting only the leaf.
+///
+/// # Prefer styling to handling
+///
+/// If all you want is to *look* different while hovered, do not use this event.
+/// `style!(background: if hovered { .. })` lowers to a `WidgetStateMatcher` that
+/// the style system resolves without re-rendering the component, and it can be
+/// animated by the transition system. Handling this event and storing the result
+/// in state turns every pointer move across a boundary into a component render.
+///
+/// Use it for side effects that styling cannot express: opening a tooltip after
+/// a delay, prefetching, analytics.
 #[derive(Debug, Clone)]
 pub struct HoverEvent {
     pub meta: EventMeta,
     pub pointer: PointerSnapshot,
+    /// `true` when this node just became hovered, `false` when it stopped.
+    ///
+    /// One event with a flag rather than a separate enter and leave event:
+    /// consumers want the state, and splitting it made every one of them
+    /// reconstruct this boolean from two handlers.
+    pub hovered: bool,
+    /// Where the pointer came from when entering, or went to when leaving.
     pub related_target: Option<NodeId>,
-}
-
-#[derive(Debug, Clone)]
-pub struct HoverChangeEvent {
-    pub meta: EventMeta,
-    pub pointer: PointerSnapshot,
-    pub old_target: Option<NodeId>,
-    pub new_target: Option<NodeId>,
-    pub entered: Vec<NodeId>,
-    pub left: Vec<NodeId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

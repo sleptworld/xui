@@ -6,7 +6,7 @@ const ACTIVATE_BUTTON: CommandId = CommandId("xui.button.activate");
 
 pub type ButtonClickCallback = Callback<()>;
 
-/// The semantic emphasis of a [`button`].
+/// The semantic emphasis of a `button`.
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 pub enum ButtonVariant {
     Primary,
@@ -17,7 +17,7 @@ pub enum ButtonVariant {
     Danger,
 }
 
-/// The density of a [`button`]. All sizes retain a practical pointer target.
+/// The density of a `button`. All sizes retain a practical pointer target.
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 pub enum ButtonSize {
     Small,
@@ -207,12 +207,12 @@ pub fn button(
         children.push(
             loading_indicator
                 .clone()
-                .unwrap_or_else(|| xui::widgets::text("…").into_element_desc()),
+                .unwrap_or_else(|| xui::widgets::TextWidget::new("…").into_element_desc()),
         );
     } else if let Some(leading) = leading {
         children.push(leading.clone());
     }
-    children.push(xui::widgets::text(text.clone()).into_element_desc());
+    children.push(xui::widgets::TextWidget::new(text.clone()).into_element_desc());
     if !*loading && let Some(trailing) = trailing {
         children.push(trailing.clone());
     }

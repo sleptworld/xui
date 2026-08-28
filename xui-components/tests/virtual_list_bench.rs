@@ -38,7 +38,7 @@ fn row(index: usize) -> ElementDesc {
                 .background(Color::hex("#141414")),
         )
         .into_element_desc(vec![
-            text(format!("row {index}"))
+            TextWidget::new(format!("row {index}"))
                 .style(Style::new().width(120.0).height(16.0))
                 .into_element_desc(),
             ContainerWidget::new()

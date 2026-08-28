@@ -1,5 +1,5 @@
 use slotmap::SecondaryMap;
-use xui_interface::{Bounds, NodeId, Rect};
+use xui_interface::{Bounds, NodeId};
 
 use crate::render::{
     FrameBuilder, FrameProperties, HostRenderBinding, RenderScene, SceneCompiler, SceneError,

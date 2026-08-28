@@ -1,4 +1,14 @@
-//! Cargo subcommand that builds XUI assets from `xui.toml` before invoking Cargo.
+//! `cargo xui` — builds XUI assets from `xui.toml` before invoking Cargo.
+//!
+//! Reads `xui.toml` next to the application's `Cargo.toml`, packs its assets
+//! into a deterministic `.xpak`, generates a bootstrap module exposing
+//! `xui_assets::refs` and `xui_assets::manager()`, sets the
+//! `XUI_ASSETS_BOOTSTRAP` env var, and then invokes Cargo so
+//! `xui::include_assets!()` can find the bootstrap module.
+//!
+//! Commands: `build`, `run`, `check`, `test`, `clippy`, and `assets {pack,list,verify}`.
+//! Cargo arguments (including `--release`, `--target`, `--manifest-path`, and a
+//! trailing `-- <args>` separator) are forwarded verbatim.
 
 use std::{
     env,
@@ -13,7 +23,7 @@ use clap::{Args, Parser, Subcommand};
 use serde::Deserialize;
 use thiserror::Error;
 use xui_pak::PakSource;
-use xui_pak_build::{BuildConfig, BuildOutput, PackageConfig, RuleConfig, build_to};
+use xui_pak_build::{build_to, BuildConfig, BuildOutput, PackageConfig, RuleConfig};
 
 #[derive(Debug, Error)]
 pub enum CliError {
@@ -412,7 +422,11 @@ fn profile_from_args(args: &[OsString]) -> String {
 }
 
 fn cargo_profile_directory(profile: &str) -> &str {
-    if profile == "dev" { "debug" } else { profile }
+    if profile == "dev" {
+        "debug"
+    } else {
+        profile
+    }
 }
 
 fn option_value<'a>(args: &'a [OsString], name: &str) -> Option<&'a OsStr> {

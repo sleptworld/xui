@@ -1,720 +1,400 @@
-use super::EventContext;
-use slotmap::{Key as SlotMapKey, SlotMap, new_key_type};
+//! The event vocabulary, declared once.
+//!
+//! Everything below — the handler enum, the per-node storage, the dispatch
+//! match, the `EventMask` bits, and the whole `on_*` builder surface — is
+//! generated from the `events!` table in the middle of this file.
+//!
+//! It replaces seven hand-maintained copies of the same list of 34 handler
+//! names: the `EventHandlers` fields, its `is_empty`, its `Debug`, a
+//! `CallbackHandleSet` of slotmap keys, a `CallbackStore` of 34 separate
+//! `SlotMap`s, an `update_set` that touched each of them, and 525 lines of
+//! builder methods in `widgets.rs`. Adding an event meant editing all seven.
+//!
+//! The slotmap layer is gone with them. Handler ids were never looked up from
+//! anywhere but the node that owned them, so the indirection bought nothing
+//! while costing a 272-byte `Copy` handle set per node and 34 allocators per
+//! runtime. Handlers now live inline on the node, in a `SmallVec` that stays on
+//! the stack for the two-or-so handlers a node typically has.
+
+use smallvec::SmallVec;
+use xui_interface::EventPhase;
 use xui_interface::events::semantic::{
-    ClickEvent, CommandEvent, ContextMenuEvent, DragEvent, FocusEvent, HoverChangeEvent,
-    HoverEvent, PressEvent, ScrollEvent, SemanticEvent,
+    ClickEvent, CommandEvent, ContextMenuEvent, DragEvent, FocusEvent, HoverEvent, PressEvent,
+    ScrollEvent, SemanticEvent,
 };
-use xui_interface::{EventPhase, EventResult};
 
-pub type TypedEventHandler<E> = Box<dyn for<'a> FnMut(&E, &mut EventContext<'a>) -> EventResult>;
+use super::{EventContext, Flow, Handler};
 
-pub type SemanticEventHandler = TypedEventHandler<SemanticEvent>;
-pub type HoverEventHandler = TypedEventHandler<HoverEvent>;
-pub type HoverChangeEventHandler = TypedEventHandler<HoverChangeEvent>;
-pub type PressEventHandler = TypedEventHandler<PressEvent>;
-pub type ClickEventHandler = TypedEventHandler<ClickEvent>;
-pub type ContextMenuEventHandler = TypedEventHandler<ContextMenuEvent>;
-pub type FocusEventHandler = TypedEventHandler<FocusEvent>;
-pub type DragEventHandler = TypedEventHandler<DragEvent>;
-pub type ScrollEventHandler = TypedEventHandler<ScrollEvent>;
-pub type CommandEventHandler = TypedEventHandler<CommandEvent>;
-
-new_key_type! {
-    pub struct SemanticEventHandlerId;
-    pub struct HoverEventHandlerId;
-    pub struct HoverChangeEventHandlerId;
-    pub struct PressEventHandlerId;
-    pub struct ClickEventHandlerId;
-    pub struct ContextMenuEventHandlerId;
-    pub struct FocusEventHandlerId;
-    pub struct DragEventHandlerId;
-    pub struct ScrollEventHandlerId;
-    pub struct CommandEventHandlerId;
+/// Which side of the propagation path a handler listens on.
+///
+/// The previous design encoded this in the handler's *name* (`on_click` versus
+/// `on_click_capture`), doubling every list it appeared in and forcing an
+/// `if is_capture { .. } else { .. }` into every arm of the dispatch match.
+/// Phase was already a value; now the storage agrees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ListenPhase {
+    /// Runs at the target and while bubbling back up.
+    Bubble,
+    /// Runs while descending towards the target.
+    Capture,
 }
 
-#[derive(Default)]
+impl ListenPhase {
+    fn matches(self, phase: EventPhase) -> bool {
+        match self {
+            ListenPhase::Capture => phase == EventPhase::Capture,
+            ListenPhase::Bubble => phase != EventPhase::Capture,
+        }
+    }
+}
+
+macro_rules! events {
+    (
+        $(
+            $kind:ident : $variant:ident($event:ty) => $method:ident
+                $(, capture = $capture_method:ident)?
+                $(, widget = $widget_stage:ident)? ;
+        )*
+    ) => {
+        /// One discriminant per handler slot.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum EventKind {
+            /// `on_event` — every semantic event, whatever its kind.
+            Any,
+            $($kind,)*
+        }
+
+        bitflags::bitflags! {
+            /// Which kinds a node listens for at all, in one word.
+            ///
+            /// Subsumes the hand-written `has_focus_callbacks()` and
+            /// `has_drag_callbacks()` chains, and lets the runtime ask "does
+            /// this node care?" without touching the handler list.
+            #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+            pub struct EventMask: u64 {
+                const ANY = 1 << 0;
+                $( const $kind = 1 << (EventKind::$kind as u64 + 1); )*
+            }
+        }
+
+        impl EventKind {
+            fn mask(self) -> EventMask {
+                match self {
+                    EventKind::Any => EventMask::ANY,
+                    $( EventKind::$kind => EventMask::$kind, )*
+                }
+            }
+
+            /// Whether the owning widget's own handling runs at every phase, or
+            /// only when the event is actually aimed at it.
+            ///
+            /// Target-only is the default because the alternative is a trap: an
+            /// event that bubbles reaches every ancestor's widget too, and
+            /// nothing reminds the widget author to check `current_target`. The
+            /// one widget in this codebase that reads semantic events did not
+            /// check, and only escaped the bug by being a leaf.
+            fn widget_runs_at(self, phase: EventPhase) -> bool {
+                #[allow(unused_mut, unused_assignments)]
+                let mut all_phases = false;
+                $(
+                    if let EventKind::$kind = self {
+                        $( all_phases = stringify!($widget_stage) == "all_phases"; )?
+                    }
+                )*
+                all_phases || phase == EventPhase::Target
+            }
+
+            pub fn of(event: &SemanticEvent) -> Self {
+                match event {
+                    $( SemanticEvent::$variant(_) => EventKind::$kind, )*
+                }
+            }
+        }
+
+        /// A handler together with the event type it expects.
+        ///
+        /// One variant per slot rather than per payload type, so the dispatch
+        /// match below is a straight 1:1 generation from the table.
+        #[derive(Debug)]
+        pub enum AnyHandler {
+            Any(Handler<SemanticEvent>),
+            $( $kind(Handler<$event>), )*
+        }
+
+        impl AnyHandler {
+            fn kind(&self) -> EventKind {
+                match self {
+                    AnyHandler::Any(_) => EventKind::Any,
+                    $( AnyHandler::$kind(_) => EventKind::$kind, )*
+                }
+            }
+
+            fn call(&self, event: &SemanticEvent, cx: &mut EventContext<'_>) -> Flow {
+                match (self, event) {
+                    (AnyHandler::Any(handler), event) => handler.call(event, cx),
+                    $(
+                        (AnyHandler::$kind(handler), SemanticEvent::$variant(event)) => {
+                            handler.call(event, cx)
+                        }
+                    )*
+                    // A slot only ever holds the handler its kind implies, so
+                    // this is unreachable; returning empty keeps it total.
+                    _ => Flow::empty(),
+                }
+            }
+        }
+
+        /// The `on_*` builder surface, for every widget that owns handlers.
+        ///
+        /// Blanket-implemented over [`Listen`], the same way `StyleProps` is
+        /// blanket-implemented over `Styled`: a widget opts in with a
+        /// three-line impl and gets the whole vocabulary.
+        pub trait EventProps: Listen {
+            /// Every semantic event, before the kind-specific handler.
+            fn on_event<R: Into<Flow>>(
+                mut self,
+                handler: impl for<'a> FnMut(&SemanticEvent, &mut EventContext<'a>) -> R + 'static,
+            ) -> Self {
+                self.handlers_mut()
+                    .set(ListenPhase::Bubble, AnyHandler::Any(Handler::new(handler)));
+                self
+            }
+
+            fn on_event_capture<R: Into<Flow>>(
+                mut self,
+                handler: impl for<'a> FnMut(&SemanticEvent, &mut EventContext<'a>) -> R + 'static,
+            ) -> Self {
+                self.handlers_mut()
+                    .set(ListenPhase::Capture, AnyHandler::Any(Handler::new(handler)));
+                self
+            }
+
+            $(
+                fn $method<R: Into<Flow>>(
+                    mut self,
+                    handler: impl for<'a> FnMut(&$event, &mut EventContext<'a>) -> R + 'static,
+                ) -> Self {
+                    self.handlers_mut().set(
+                        ListenPhase::Bubble,
+                        AnyHandler::$kind(Handler::new(handler)),
+                    );
+                    self
+                }
+
+                $(
+                    fn $capture_method<R: Into<Flow>>(
+                        mut self,
+                        handler: impl for<'a> FnMut(&$event, &mut EventContext<'a>) -> R + 'static,
+                    ) -> Self {
+                        self.handlers_mut().set(
+                            ListenPhase::Capture,
+                            AnyHandler::$kind(Handler::new(handler)),
+                        );
+                        self
+                    }
+                )?
+            )*
+        }
+
+        impl<T: Listen> EventProps for T {}
+    };
+}
+
+// The whole event vocabulary. Adding a row adds the enum discriminant, the mask
+// bit, the handler variant, the dispatch arm, and the builder methods.
+events! {
+    Command:      Command(CommandEvent)          => on_command;
+
+    Hovered:      Hovered(HoverEvent)            => on_hovered;
+
+    PressStart:   PressStart(PressEvent)         => on_press_start,   capture = on_press_start_capture;
+    PressEnd:     PressEnd(PressEvent)           => on_press_end,     capture = on_press_end_capture;
+    PressCancel:  PressCancel(PressEvent)        => on_press_cancel,  capture = on_press_cancel_capture;
+
+    Click:        Click(ClickEvent)              => on_click,         capture = on_click_capture;
+    DoubleClick:  DoubleClick(ClickEvent)        => on_double_click,  capture = on_double_click_capture;
+    ContextMenu:  ContextMenu(ContextMenuEvent)  => on_context_menu,  capture = on_context_menu_capture;
+
+    Focus:        Focus(FocusEvent)              => on_focus;
+    Blur:         Blur(FocusEvent)               => on_blur;
+    FocusIn:      FocusIn(FocusEvent)            => on_focus_in,      capture = on_focus_in_capture;
+    FocusOut:     FocusOut(FocusEvent)           => on_focus_out,     capture = on_focus_out_capture;
+
+    DragStart:    DragStart(DragEvent)           => on_drag_start,    capture = on_drag_start_capture;
+    DragMove:     DragMove(DragEvent)            => on_drag_move,     capture = on_drag_move_capture;
+    DragEnd:      DragEnd(DragEvent)             => on_drag_end,      capture = on_drag_end_capture;
+    DragCancel:   DragCancel(DragEvent)          => on_drag_cancel,   capture = on_drag_cancel_capture;
+
+    Scroll:       Scroll(ScrollEvent)            => on_scroll,        capture = on_scroll_capture;
+}
+
+impl EventMask {
+    /// Focus-ish kinds, for `is_focusable`'s "does this node handle focus?".
+    pub const FOCUS: Self = Self::Focus
+        .union(Self::Blur)
+        .union(Self::FocusIn)
+        .union(Self::FocusOut);
+
+    /// Drag kinds, for the translator's "should this node start a drag?".
+    pub const DRAG: Self = Self::DragStart
+        .union(Self::DragMove)
+        .union(Self::DragEnd)
+        .union(Self::DragCancel);
+}
+
+/// A builder that owns an [`EventHandlers`], which [`EventProps`] then decorates
+/// with the whole `on_*` vocabulary.
+pub trait Listen: Sized {
+    fn handlers_mut(&mut self) -> &mut EventHandlers;
+}
+
+#[derive(Debug)]
+struct Entry {
+    phase: ListenPhase,
+    handler: AnyHandler,
+}
+
+/// The handlers attached to one node.
+///
+/// Flat rather than a struct of 34 `Option`s: a node with an `on_click` used to
+/// carry 33 empty fields plus, in the runtime, a 272-byte handle set. Nodes
+/// almost always have zero or one handler, so a `SmallVec` inline capacity of
+/// four covers the realistic cases without allocating.
+#[derive(Default, Debug)]
 pub struct EventHandlers {
-    pub on_command: Option<CommandEventHandler>,
-    pub on_event: Option<SemanticEventHandler>,
-    pub on_event_capture: Option<SemanticEventHandler>,
-    pub on_hover_enter: Option<HoverEventHandler>,
-    pub on_hover_leave: Option<HoverEventHandler>,
-    pub on_hover_change: Option<HoverChangeEventHandler>,
-    pub on_press_start: Option<PressEventHandler>,
-    pub on_press_start_capture: Option<PressEventHandler>,
-    pub on_press_end: Option<PressEventHandler>,
-    pub on_press_end_capture: Option<PressEventHandler>,
-    pub on_press_cancel: Option<PressEventHandler>,
-    pub on_press_cancel_capture: Option<PressEventHandler>,
-    pub on_click: Option<ClickEventHandler>,
-    pub on_click_capture: Option<ClickEventHandler>,
-    pub on_double_click: Option<ClickEventHandler>,
-    pub on_double_click_capture: Option<ClickEventHandler>,
-    pub on_context_menu: Option<ContextMenuEventHandler>,
-    pub on_context_menu_capture: Option<ContextMenuEventHandler>,
-    pub on_focus: Option<FocusEventHandler>,
-    pub on_blur: Option<FocusEventHandler>,
-    pub on_focus_in: Option<FocusEventHandler>,
-    pub on_focus_in_capture: Option<FocusEventHandler>,
-    pub on_focus_out: Option<FocusEventHandler>,
-    pub on_focus_out_capture: Option<FocusEventHandler>,
-    pub on_drag_start: Option<DragEventHandler>,
-    pub on_drag_start_capture: Option<DragEventHandler>,
-    pub on_drag_move: Option<DragEventHandler>,
-    pub on_drag_move_capture: Option<DragEventHandler>,
-    pub on_drag_end: Option<DragEventHandler>,
-    pub on_drag_end_capture: Option<DragEventHandler>,
-    pub on_drag_cancel: Option<DragEventHandler>,
-    pub on_drag_cancel_capture: Option<DragEventHandler>,
-    pub on_scroll: Option<ScrollEventHandler>,
-    pub on_scroll_capture: Option<ScrollEventHandler>,
+    mask: EventMask,
+    entries: SmallVec<[Entry; 4]>,
 }
 
 impl EventHandlers {
     pub fn is_empty(&self) -> bool {
-        self.on_command.is_none()
-            && self.on_event.is_none()
-            && self.on_event_capture.is_none()
-            && self.on_hover_enter.is_none()
-            && self.on_hover_leave.is_none()
-            && self.on_hover_change.is_none()
-            && self.on_press_start.is_none()
-            && self.on_press_start_capture.is_none()
-            && self.on_press_end.is_none()
-            && self.on_press_end_capture.is_none()
-            && self.on_press_cancel.is_none()
-            && self.on_press_cancel_capture.is_none()
-            && self.on_click.is_none()
-            && self.on_click_capture.is_none()
-            && self.on_double_click.is_none()
-            && self.on_double_click_capture.is_none()
-            && self.on_context_menu.is_none()
-            && self.on_context_menu_capture.is_none()
-            && self.on_focus.is_none()
-            && self.on_blur.is_none()
-            && self.on_focus_in.is_none()
-            && self.on_focus_in_capture.is_none()
-            && self.on_focus_out.is_none()
-            && self.on_focus_out_capture.is_none()
-            && self.on_drag_start.is_none()
-            && self.on_drag_start_capture.is_none()
-            && self.on_drag_move.is_none()
-            && self.on_drag_move_capture.is_none()
-            && self.on_drag_end.is_none()
-            && self.on_drag_end_capture.is_none()
-            && self.on_drag_cancel.is_none()
-            && self.on_drag_cancel_capture.is_none()
-            && self.on_scroll.is_none()
-            && self.on_scroll_capture.is_none()
-    }
-}
-
-impl std::fmt::Debug for EventHandlers {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EventHandlers")
-            .field("on_command", &self.on_command.is_some())
-            .field("on_event", &self.on_event.is_some())
-            .field("on_event_capture", &self.on_event_capture.is_some())
-            .field("on_hover_enter", &self.on_hover_enter.is_some())
-            .field("on_hover_leave", &self.on_hover_leave.is_some())
-            .field("on_hover_change", &self.on_hover_change.is_some())
-            .field("on_press_start", &self.on_press_start.is_some())
-            .field(
-                "on_press_start_capture",
-                &self.on_press_start_capture.is_some(),
-            )
-            .field("on_press_end", &self.on_press_end.is_some())
-            .field("on_press_end_capture", &self.on_press_end_capture.is_some())
-            .field("on_press_cancel", &self.on_press_cancel.is_some())
-            .field(
-                "on_press_cancel_capture",
-                &self.on_press_cancel_capture.is_some(),
-            )
-            .field("on_click", &self.on_click.is_some())
-            .field("on_click_capture", &self.on_click_capture.is_some())
-            .field("on_double_click", &self.on_double_click.is_some())
-            .field(
-                "on_double_click_capture",
-                &self.on_double_click_capture.is_some(),
-            )
-            .field("on_context_menu", &self.on_context_menu.is_some())
-            .field(
-                "on_context_menu_capture",
-                &self.on_context_menu_capture.is_some(),
-            )
-            .field("on_focus", &self.on_focus.is_some())
-            .field("on_blur", &self.on_blur.is_some())
-            .field("on_focus_in", &self.on_focus_in.is_some())
-            .field("on_focus_in_capture", &self.on_focus_in_capture.is_some())
-            .field("on_focus_out", &self.on_focus_out.is_some())
-            .field("on_focus_out_capture", &self.on_focus_out_capture.is_some())
-            .field("on_drag_start", &self.on_drag_start.is_some())
-            .field(
-                "on_drag_start_capture",
-                &self.on_drag_start_capture.is_some(),
-            )
-            .field("on_drag_move", &self.on_drag_move.is_some())
-            .field("on_drag_move_capture", &self.on_drag_move_capture.is_some())
-            .field("on_drag_end", &self.on_drag_end.is_some())
-            .field("on_drag_end_capture", &self.on_drag_end_capture.is_some())
-            .field("on_drag_cancel", &self.on_drag_cancel.is_some())
-            .field(
-                "on_drag_cancel_capture",
-                &self.on_drag_cancel_capture.is_some(),
-            )
-            .field("on_scroll", &self.on_scroll.is_some())
-            .field("on_scroll_capture", &self.on_scroll_capture.is_some())
-            .finish()
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct CallbackHandleSet {
-    pub on_command: Option<CommandEventHandlerId>,
-    pub on_event: Option<SemanticEventHandlerId>,
-    pub on_event_capture: Option<SemanticEventHandlerId>,
-    pub on_hover_enter: Option<HoverEventHandlerId>,
-    pub on_hover_leave: Option<HoverEventHandlerId>,
-    pub on_hover_change: Option<HoverChangeEventHandlerId>,
-    pub on_press_start: Option<PressEventHandlerId>,
-    pub on_press_start_capture: Option<PressEventHandlerId>,
-    pub on_press_end: Option<PressEventHandlerId>,
-    pub on_press_end_capture: Option<PressEventHandlerId>,
-    pub on_press_cancel: Option<PressEventHandlerId>,
-    pub on_press_cancel_capture: Option<PressEventHandlerId>,
-    pub on_click: Option<ClickEventHandlerId>,
-    pub on_click_capture: Option<ClickEventHandlerId>,
-    pub on_double_click: Option<ClickEventHandlerId>,
-    pub on_double_click_capture: Option<ClickEventHandlerId>,
-    pub on_context_menu: Option<ContextMenuEventHandlerId>,
-    pub on_context_menu_capture: Option<ContextMenuEventHandlerId>,
-    pub on_focus: Option<FocusEventHandlerId>,
-    pub on_blur: Option<FocusEventHandlerId>,
-    pub on_focus_in: Option<FocusEventHandlerId>,
-    pub on_focus_in_capture: Option<FocusEventHandlerId>,
-    pub on_focus_out: Option<FocusEventHandlerId>,
-    pub on_focus_out_capture: Option<FocusEventHandlerId>,
-    pub on_drag_start: Option<DragEventHandlerId>,
-    pub on_drag_start_capture: Option<DragEventHandlerId>,
-    pub on_drag_move: Option<DragEventHandlerId>,
-    pub on_drag_move_capture: Option<DragEventHandlerId>,
-    pub on_drag_end: Option<DragEventHandlerId>,
-    pub on_drag_end_capture: Option<DragEventHandlerId>,
-    pub on_drag_cancel: Option<DragEventHandlerId>,
-    pub on_drag_cancel_capture: Option<DragEventHandlerId>,
-    pub on_scroll: Option<ScrollEventHandlerId>,
-    pub on_scroll_capture: Option<ScrollEventHandlerId>,
-}
-
-impl CallbackHandleSet {
-    pub fn has_focus_callbacks(self) -> bool {
-        self.on_focus.is_some()
-            || self.on_blur.is_some()
-            || self.on_focus_in.is_some()
-            || self.on_focus_in_capture.is_some()
-            || self.on_focus_out.is_some()
-            || self.on_focus_out_capture.is_some()
+        self.entries.is_empty()
     }
 
-    pub fn has_drag_callbacks(self) -> bool {
-        self.on_drag_start.is_some()
-            || self.on_drag_start_capture.is_some()
-            || self.on_drag_move.is_some()
-            || self.on_drag_move_capture.is_some()
-            || self.on_drag_end.is_some()
-            || self.on_drag_end_capture.is_some()
-            || self.on_drag_cancel.is_some()
-            || self.on_drag_cancel_capture.is_some()
+    /// Which kinds this node listens for, on either phase.
+    pub fn mask(&self) -> EventMask {
+        self.mask
     }
-}
 
-#[derive(Default)]
-pub(crate) struct CallbackStore {
-    on_command: SlotMap<CommandEventHandlerId, CommandEventHandler>,
-    on_event: SlotMap<SemanticEventHandlerId, SemanticEventHandler>,
-    on_event_capture: SlotMap<SemanticEventHandlerId, SemanticEventHandler>,
-    on_hover_enter: SlotMap<HoverEventHandlerId, HoverEventHandler>,
-    on_hover_leave: SlotMap<HoverEventHandlerId, HoverEventHandler>,
-    on_hover_change: SlotMap<HoverChangeEventHandlerId, HoverChangeEventHandler>,
-    on_press_start: SlotMap<PressEventHandlerId, PressEventHandler>,
-    on_press_start_capture: SlotMap<PressEventHandlerId, PressEventHandler>,
-    on_press_end: SlotMap<PressEventHandlerId, PressEventHandler>,
-    on_press_end_capture: SlotMap<PressEventHandlerId, PressEventHandler>,
-    on_press_cancel: SlotMap<PressEventHandlerId, PressEventHandler>,
-    on_press_cancel_capture: SlotMap<PressEventHandlerId, PressEventHandler>,
-    on_click: SlotMap<ClickEventHandlerId, ClickEventHandler>,
-    on_click_capture: SlotMap<ClickEventHandlerId, ClickEventHandler>,
-    on_double_click: SlotMap<ClickEventHandlerId, ClickEventHandler>,
-    on_double_click_capture: SlotMap<ClickEventHandlerId, ClickEventHandler>,
-    on_context_menu: SlotMap<ContextMenuEventHandlerId, ContextMenuEventHandler>,
-    on_context_menu_capture: SlotMap<ContextMenuEventHandlerId, ContextMenuEventHandler>,
-    on_focus: SlotMap<FocusEventHandlerId, FocusEventHandler>,
-    on_blur: SlotMap<FocusEventHandlerId, FocusEventHandler>,
-    on_focus_in: SlotMap<FocusEventHandlerId, FocusEventHandler>,
-    on_focus_in_capture: SlotMap<FocusEventHandlerId, FocusEventHandler>,
-    on_focus_out: SlotMap<FocusEventHandlerId, FocusEventHandler>,
-    on_focus_out_capture: SlotMap<FocusEventHandlerId, FocusEventHandler>,
-    on_drag_start: SlotMap<DragEventHandlerId, DragEventHandler>,
-    on_drag_start_capture: SlotMap<DragEventHandlerId, DragEventHandler>,
-    on_drag_move: SlotMap<DragEventHandlerId, DragEventHandler>,
-    on_drag_move_capture: SlotMap<DragEventHandlerId, DragEventHandler>,
-    on_drag_end: SlotMap<DragEventHandlerId, DragEventHandler>,
-    on_drag_end_capture: SlotMap<DragEventHandlerId, DragEventHandler>,
-    on_drag_cancel: SlotMap<DragEventHandlerId, DragEventHandler>,
-    on_drag_cancel_capture: SlotMap<DragEventHandlerId, DragEventHandler>,
-    on_scroll: SlotMap<ScrollEventHandlerId, ScrollEventHandler>,
-    on_scroll_capture: SlotMap<ScrollEventHandlerId, ScrollEventHandler>,
-}
+    pub fn listens_for(&self, mask: EventMask) -> bool {
+        self.mask.intersects(mask)
+    }
 
-impl CallbackStore {
-    pub(crate) fn update_set(
-        &mut self,
-        current: CallbackHandleSet,
-        handlers: EventHandlers,
-    ) -> CallbackHandleSet {
-        CallbackHandleSet {
-            on_command: update_handler(
-                &mut self.on_command,
-                current.on_command,
-                handlers.on_command,
-            ),
-            on_event: update_handler(&mut self.on_event, current.on_event, handlers.on_event),
-            on_event_capture: update_handler(
-                &mut self.on_event_capture,
-                current.on_event_capture,
-                handlers.on_event_capture,
-            ),
-            on_hover_enter: update_handler(
-                &mut self.on_hover_enter,
-                current.on_hover_enter,
-                handlers.on_hover_enter,
-            ),
-            on_hover_leave: update_handler(
-                &mut self.on_hover_leave,
-                current.on_hover_leave,
-                handlers.on_hover_leave,
-            ),
-            on_hover_change: update_handler(
-                &mut self.on_hover_change,
-                current.on_hover_change,
-                handlers.on_hover_change,
-            ),
-            on_press_start: update_handler(
-                &mut self.on_press_start,
-                current.on_press_start,
-                handlers.on_press_start,
-            ),
-            on_press_start_capture: update_handler(
-                &mut self.on_press_start_capture,
-                current.on_press_start_capture,
-                handlers.on_press_start_capture,
-            ),
-            on_press_end: update_handler(
-                &mut self.on_press_end,
-                current.on_press_end,
-                handlers.on_press_end,
-            ),
-            on_press_end_capture: update_handler(
-                &mut self.on_press_end_capture,
-                current.on_press_end_capture,
-                handlers.on_press_end_capture,
-            ),
-            on_press_cancel: update_handler(
-                &mut self.on_press_cancel,
-                current.on_press_cancel,
-                handlers.on_press_cancel,
-            ),
-            on_press_cancel_capture: update_handler(
-                &mut self.on_press_cancel_capture,
-                current.on_press_cancel_capture,
-                handlers.on_press_cancel_capture,
-            ),
-            on_click: update_handler(&mut self.on_click, current.on_click, handlers.on_click),
-            on_click_capture: update_handler(
-                &mut self.on_click_capture,
-                current.on_click_capture,
-                handlers.on_click_capture,
-            ),
-            on_double_click: update_handler(
-                &mut self.on_double_click,
-                current.on_double_click,
-                handlers.on_double_click,
-            ),
-            on_double_click_capture: update_handler(
-                &mut self.on_double_click_capture,
-                current.on_double_click_capture,
-                handlers.on_double_click_capture,
-            ),
-            on_context_menu: update_handler(
-                &mut self.on_context_menu,
-                current.on_context_menu,
-                handlers.on_context_menu,
-            ),
-            on_context_menu_capture: update_handler(
-                &mut self.on_context_menu_capture,
-                current.on_context_menu_capture,
-                handlers.on_context_menu_capture,
-            ),
-            on_focus: update_handler(&mut self.on_focus, current.on_focus, handlers.on_focus),
-            on_blur: update_handler(&mut self.on_blur, current.on_blur, handlers.on_blur),
-            on_focus_in: update_handler(
-                &mut self.on_focus_in,
-                current.on_focus_in,
-                handlers.on_focus_in,
-            ),
-            on_focus_in_capture: update_handler(
-                &mut self.on_focus_in_capture,
-                current.on_focus_in_capture,
-                handlers.on_focus_in_capture,
-            ),
-            on_focus_out: update_handler(
-                &mut self.on_focus_out,
-                current.on_focus_out,
-                handlers.on_focus_out,
-            ),
-            on_focus_out_capture: update_handler(
-                &mut self.on_focus_out_capture,
-                current.on_focus_out_capture,
-                handlers.on_focus_out_capture,
-            ),
-            on_drag_start: update_handler(
-                &mut self.on_drag_start,
-                current.on_drag_start,
-                handlers.on_drag_start,
-            ),
-            on_drag_start_capture: update_handler(
-                &mut self.on_drag_start_capture,
-                current.on_drag_start_capture,
-                handlers.on_drag_start_capture,
-            ),
-            on_drag_move: update_handler(
-                &mut self.on_drag_move,
-                current.on_drag_move,
-                handlers.on_drag_move,
-            ),
-            on_drag_move_capture: update_handler(
-                &mut self.on_drag_move_capture,
-                current.on_drag_move_capture,
-                handlers.on_drag_move_capture,
-            ),
-            on_drag_end: update_handler(
-                &mut self.on_drag_end,
-                current.on_drag_end,
-                handlers.on_drag_end,
-            ),
-            on_drag_end_capture: update_handler(
-                &mut self.on_drag_end_capture,
-                current.on_drag_end_capture,
-                handlers.on_drag_end_capture,
-            ),
-            on_drag_cancel: update_handler(
-                &mut self.on_drag_cancel,
-                current.on_drag_cancel,
-                handlers.on_drag_cancel,
-            ),
-            on_drag_cancel_capture: update_handler(
-                &mut self.on_drag_cancel_capture,
-                current.on_drag_cancel_capture,
-                handlers.on_drag_cancel_capture,
-            ),
-            on_scroll: update_handler(&mut self.on_scroll, current.on_scroll, handlers.on_scroll),
-            on_scroll_capture: update_handler(
-                &mut self.on_scroll_capture,
-                current.on_scroll_capture,
-                handlers.on_scroll_capture,
-            ),
+    /// Replaces any handler already registered for the same slot, so setting an
+    /// attribute twice behaves like assignment rather than accumulating.
+    pub fn set(&mut self, phase: ListenPhase, handler: AnyHandler) {
+        let kind = handler.kind();
+        self.mask |= kind.mask();
+        match self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.phase == phase && entry.handler.kind() == kind)
+        {
+            Some(entry) => entry.handler = handler,
+            None => self.entries.push(Entry { phase, handler }),
         }
     }
 
-    pub(crate) fn clear_set(&mut self, handlers: CallbackHandleSet) {
-        remove_handler(&mut self.on_command, handlers.on_command);
-        remove_handler(&mut self.on_event, handlers.on_event);
-        remove_handler(&mut self.on_event_capture, handlers.on_event_capture);
-        remove_handler(&mut self.on_hover_enter, handlers.on_hover_enter);
-        remove_handler(&mut self.on_hover_leave, handlers.on_hover_leave);
-        remove_handler(&mut self.on_hover_change, handlers.on_hover_change);
-        remove_handler(&mut self.on_press_start, handlers.on_press_start);
-        remove_handler(
-            &mut self.on_press_start_capture,
-            handlers.on_press_start_capture,
-        );
-        remove_handler(&mut self.on_press_end, handlers.on_press_end);
-        remove_handler(
-            &mut self.on_press_end_capture,
-            handlers.on_press_end_capture,
-        );
-        remove_handler(&mut self.on_press_cancel, handlers.on_press_cancel);
-        remove_handler(
-            &mut self.on_press_cancel_capture,
-            handlers.on_press_cancel_capture,
-        );
-        remove_handler(&mut self.on_click, handlers.on_click);
-        remove_handler(&mut self.on_click_capture, handlers.on_click_capture);
-        remove_handler(&mut self.on_double_click, handlers.on_double_click);
-        remove_handler(
-            &mut self.on_double_click_capture,
-            handlers.on_double_click_capture,
-        );
-        remove_handler(&mut self.on_context_menu, handlers.on_context_menu);
-        remove_handler(
-            &mut self.on_context_menu_capture,
-            handlers.on_context_menu_capture,
-        );
-        remove_handler(&mut self.on_focus, handlers.on_focus);
-        remove_handler(&mut self.on_blur, handlers.on_blur);
-        remove_handler(&mut self.on_focus_in, handlers.on_focus_in);
-        remove_handler(&mut self.on_focus_in_capture, handlers.on_focus_in_capture);
-        remove_handler(&mut self.on_focus_out, handlers.on_focus_out);
-        remove_handler(
-            &mut self.on_focus_out_capture,
-            handlers.on_focus_out_capture,
-        );
-        remove_handler(&mut self.on_drag_start, handlers.on_drag_start);
-        remove_handler(
-            &mut self.on_drag_start_capture,
-            handlers.on_drag_start_capture,
-        );
-        remove_handler(&mut self.on_drag_move, handlers.on_drag_move);
-        remove_handler(
-            &mut self.on_drag_move_capture,
-            handlers.on_drag_move_capture,
-        );
-        remove_handler(&mut self.on_drag_end, handlers.on_drag_end);
-        remove_handler(&mut self.on_drag_end_capture, handlers.on_drag_end_capture);
-        remove_handler(&mut self.on_drag_cancel, handlers.on_drag_cancel);
-        remove_handler(
-            &mut self.on_drag_cancel_capture,
-            handlers.on_drag_cancel_capture,
-        );
-        remove_handler(&mut self.on_scroll, handlers.on_scroll);
-        remove_handler(&mut self.on_scroll_capture, handlers.on_scroll_capture);
+    fn get(&self, kind: EventKind, phase: EventPhase) -> Option<&AnyHandler> {
+        self.entries
+            .iter()
+            .find(|entry| entry.handler.kind() == kind && entry.phase.matches(phase))
+            .map(|entry| &entry.handler)
     }
 
-    pub(crate) fn dispatch_semantic(
-        &mut self,
-        handlers: CallbackHandleSet,
+    /// Runs this node's handlers for one event, in one phase.
+    ///
+    /// The generic `on_event` handler runs first and can stop the rest, matching
+    /// the previous behaviour.
+    pub(crate) fn dispatch(
+        &self,
         event: &SemanticEvent,
         cx: &mut EventContext<'_>,
-    ) -> EventResult {
-        let is_capture = cx.phase == EventPhase::Capture;
-        let generic_result = if is_capture {
-            dispatch_handler(
-                &mut self.on_event_capture,
-                handlers.on_event_capture,
-                event,
-                cx,
-            )
-        } else {
-            dispatch_handler(&mut self.on_event, handlers.on_event, event, cx)
-        };
-        if generic_result.is_consumed() {
-            return EventResult::Consumed;
+    ) -> Flow {
+        let phase = cx.phase;
+        let mut flow = Flow::empty();
+
+        if let Some(handler) = self.get(EventKind::Any, phase) {
+            flow |= handler.call(event, cx);
+            if flow.stops_propagation() {
+                return flow;
+            }
         }
 
-        match event {
-            SemanticEvent::Command(event) => {
-                dispatch_handler(&mut self.on_command, handlers.on_command, event, cx)
-            }
-            SemanticEvent::HoverEnter(event) => {
-                dispatch_handler(&mut self.on_hover_enter, handlers.on_hover_enter, event, cx)
-            }
-            SemanticEvent::HoverLeave(event) => {
-                dispatch_handler(&mut self.on_hover_leave, handlers.on_hover_leave, event, cx)
-            }
-            SemanticEvent::HoverChange(event) => dispatch_handler(
-                &mut self.on_hover_change,
-                handlers.on_hover_change,
-                event,
-                cx,
-            ),
-            SemanticEvent::PressStart(event) => {
-                let (store, handler) = if is_capture {
-                    (
-                        &mut self.on_press_start_capture,
-                        handlers.on_press_start_capture,
-                    )
-                } else {
-                    (&mut self.on_press_start, handlers.on_press_start)
-                };
-                dispatch_handler(store, handler, event, cx)
-            }
-            SemanticEvent::PressEnd(event) => {
-                let (store, handler) = if is_capture {
-                    (
-                        &mut self.on_press_end_capture,
-                        handlers.on_press_end_capture,
-                    )
-                } else {
-                    (&mut self.on_press_end, handlers.on_press_end)
-                };
-                dispatch_handler(store, handler, event, cx)
-            }
-            SemanticEvent::PressCancel(event) => {
-                let (store, handler) = if is_capture {
-                    (
-                        &mut self.on_press_cancel_capture,
-                        handlers.on_press_cancel_capture,
-                    )
-                } else {
-                    (&mut self.on_press_cancel, handlers.on_press_cancel)
-                };
-                dispatch_handler(store, handler, event, cx)
-            }
-            SemanticEvent::Click(event) => {
-                let (store, handler) = if is_capture {
-                    (&mut self.on_click_capture, handlers.on_click_capture)
-                } else {
-                    (&mut self.on_click, handlers.on_click)
-                };
-                dispatch_handler(store, handler, event, cx)
-            }
-            SemanticEvent::DoubleClick(event) => {
-                let (store, handler) = if is_capture {
-                    (
-                        &mut self.on_double_click_capture,
-                        handlers.on_double_click_capture,
-                    )
-                } else {
-                    (&mut self.on_double_click, handlers.on_double_click)
-                };
-                dispatch_handler(store, handler, event, cx)
-            }
-            SemanticEvent::ContextMenu(event) => {
-                let (store, handler) = if is_capture {
-                    (
-                        &mut self.on_context_menu_capture,
-                        handlers.on_context_menu_capture,
-                    )
-                } else {
-                    (&mut self.on_context_menu, handlers.on_context_menu)
-                };
-                dispatch_handler(store, handler, event, cx)
-            }
-            SemanticEvent::Focus(event) => {
-                dispatch_handler(&mut self.on_focus, handlers.on_focus, event, cx)
-            }
-            SemanticEvent::Blur(event) => {
-                dispatch_handler(&mut self.on_blur, handlers.on_blur, event, cx)
-            }
-            SemanticEvent::FocusIn(event) => {
-                let (store, handler) = if is_capture {
-                    (&mut self.on_focus_in_capture, handlers.on_focus_in_capture)
-                } else {
-                    (&mut self.on_focus_in, handlers.on_focus_in)
-                };
-                dispatch_handler(store, handler, event, cx)
-            }
-            SemanticEvent::FocusOut(event) => {
-                let (store, handler) = if is_capture {
-                    (
-                        &mut self.on_focus_out_capture,
-                        handlers.on_focus_out_capture,
-                    )
-                } else {
-                    (&mut self.on_focus_out, handlers.on_focus_out)
-                };
-                dispatch_handler(store, handler, event, cx)
-            }
-            SemanticEvent::DragStart(event) => {
-                let (store, handler) = if is_capture {
-                    (
-                        &mut self.on_drag_start_capture,
-                        handlers.on_drag_start_capture,
-                    )
-                } else {
-                    (&mut self.on_drag_start, handlers.on_drag_start)
-                };
-                dispatch_handler(store, handler, event, cx)
-            }
-            SemanticEvent::DragMove(event) => {
-                let (store, handler) = if is_capture {
-                    (
-                        &mut self.on_drag_move_capture,
-                        handlers.on_drag_move_capture,
-                    )
-                } else {
-                    (&mut self.on_drag_move, handlers.on_drag_move)
-                };
-                dispatch_handler(store, handler, event, cx)
-            }
-            SemanticEvent::DragEnd(event) => {
-                let (store, handler) = if is_capture {
-                    (&mut self.on_drag_end_capture, handlers.on_drag_end_capture)
-                } else {
-                    (&mut self.on_drag_end, handlers.on_drag_end)
-                };
-                dispatch_handler(store, handler, event, cx)
-            }
-            SemanticEvent::DragCancel(event) => {
-                let (store, handler) = if is_capture {
-                    (
-                        &mut self.on_drag_cancel_capture,
-                        handlers.on_drag_cancel_capture,
-                    )
-                } else {
-                    (&mut self.on_drag_cancel, handlers.on_drag_cancel)
-                };
-                dispatch_handler(store, handler, event, cx)
-            }
-            SemanticEvent::Scroll(event) => {
-                let (store, handler) = if is_capture {
-                    (&mut self.on_scroll_capture, handlers.on_scroll_capture)
-                } else {
-                    (&mut self.on_scroll, handlers.on_scroll)
-                };
-                dispatch_handler(store, handler, event, cx)
-            }
+        if let Some(handler) = self.get(EventKind::of(event), phase) {
+            flow |= handler.call(event, cx);
         }
+
+        flow
+    }
+
+    /// Whether the owning widget's built-in handling should run for this event
+    /// at this phase. See [`EventKind::widget_runs_at`].
+    pub(crate) fn widget_stage_runs(event: &SemanticEvent, phase: EventPhase) -> bool {
+        EventKind::of(event).widget_runs_at(phase)
     }
 }
 
-fn update_handler<K, H>(
-    handlers: &mut SlotMap<K, H>,
-    current: Option<K>,
-    next: Option<H>,
-) -> Option<K>
-where
-    K: SlotMapKey,
-{
-    match (current, next) {
-        (Some(id), Some(next)) => {
-            if let Some(current) = handlers.get_mut(id) {
-                *current = next;
-                Some(id)
-            } else {
-                Some(handlers.insert(next))
-            }
-        }
-        (Some(id), None) => {
-            handlers.remove(id);
-            None
-        }
-        (None, Some(next)) => Some(handlers.insert(next)),
-        (None, None) => None,
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn remove_handler<K, H>(handlers: &mut SlotMap<K, H>, id: Option<K>)
-where
-    K: SlotMapKey,
-{
-    if let Some(id) = id {
-        handlers.remove(id);
+    #[test]
+    fn a_node_with_no_handlers_carries_an_empty_mask() {
+        let handlers = EventHandlers::default();
+        assert!(handlers.is_empty());
+        assert!(!handlers.listens_for(EventMask::all()));
     }
-}
 
-fn dispatch_handler<K, E>(
-    handlers: &mut SlotMap<K, TypedEventHandler<E>>,
-    id: Option<K>,
-    event: &E,
-    cx: &mut EventContext<'_>,
-) -> EventResult
-where
-    K: SlotMapKey,
-{
-    if let Some(handler) = id.and_then(|id| handlers.get_mut(id)) {
-        handler(event, cx)
-    } else {
-        EventResult::Ignored
+    #[test]
+    fn setting_the_same_slot_twice_replaces_rather_than_accumulates() {
+        let mut handlers = EventHandlers::default();
+        handlers.set(
+            ListenPhase::Bubble,
+            AnyHandler::Click(Handler::new(|_, _| Flow::empty())),
+        );
+        handlers.set(
+            ListenPhase::Bubble,
+            AnyHandler::Click(Handler::new(|_, _| Flow::STOP_PROPAGATION)),
+        );
+        assert_eq!(handlers.entries.len(), 1);
+    }
+
+    #[test]
+    fn the_two_phases_are_separate_slots() {
+        let mut handlers = EventHandlers::default();
+        handlers.set(
+            ListenPhase::Bubble,
+            AnyHandler::Click(Handler::new(|_, _| Flow::empty())),
+        );
+        handlers.set(
+            ListenPhase::Capture,
+            AnyHandler::Click(Handler::new(|_, _| Flow::empty())),
+        );
+        assert_eq!(handlers.entries.len(), 2);
+        assert!(handlers.get(EventKind::Click, EventPhase::Capture).is_some());
+        assert!(handlers.get(EventKind::Click, EventPhase::Target).is_some());
+        assert!(handlers.get(EventKind::Click, EventPhase::Bubble).is_some());
+    }
+
+    #[test]
+    fn the_mask_answers_group_queries_without_walking_the_list() {
+        let mut handlers = EventHandlers::default();
+        assert!(!handlers.listens_for(EventMask::DRAG));
+        handlers.set(
+            ListenPhase::Bubble,
+            AnyHandler::DragMove(Handler::new(|_, _| Flow::empty())),
+        );
+        assert!(handlers.listens_for(EventMask::DRAG));
+        assert!(!handlers.listens_for(EventMask::FOCUS));
+    }
+
+    #[test]
+    fn a_widget_only_sees_a_bubbling_event_aimed_at_it() {
+        // The default that keeps an ancestor `text_input` from treating a
+        // descendant's `FocusIn` as its own.
+        assert!(EventKind::FocusIn.widget_runs_at(EventPhase::Target));
+        assert!(!EventKind::FocusIn.widget_runs_at(EventPhase::Bubble));
+        assert!(!EventKind::FocusIn.widget_runs_at(EventPhase::Capture));
     }
 }

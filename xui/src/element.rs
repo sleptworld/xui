@@ -168,15 +168,15 @@ where
     }
 }
 
-impl Into<ElementDesc> for WidgetDesc {
-    fn into(self) -> ElementDesc {
-        ElementDesc::Host(self)
+impl From<WidgetDesc> for ElementDesc {
+    fn from(val: WidgetDesc) -> Self {
+        ElementDesc::Host(val)
     }
 }
 
-impl Into<ElementDesc> for ComponentDesc {
-    fn into(self) -> ElementDesc {
-        ElementDesc::Component(self)
+impl From<ComponentDesc> for ElementDesc {
+    fn from(val: ComponentDesc) -> Self {
+        ElementDesc::Component(val)
     }
 }
 
@@ -190,9 +190,9 @@ pub fn portal(children: Vec<ElementDesc>) -> PortalDesc {
     PortalDesc::new(children)
 }
 
-impl Into<WidgetDesc> for ElementDesc {
-    fn into(self) -> WidgetDesc {
-        match self {
+impl From<ElementDesc> for WidgetDesc {
+    fn from(val: ElementDesc) -> Self {
+        match val {
             ElementDesc::Host(widget) => widget,
             ElementDesc::Component(_) => {
                 unreachable!()
@@ -202,9 +202,9 @@ impl Into<WidgetDesc> for ElementDesc {
     }
 }
 
-impl Into<ComponentDesc> for ElementDesc {
-    fn into(self) -> ComponentDesc {
-        match self {
+impl From<ElementDesc> for ComponentDesc {
+    fn from(val: ElementDesc) -> Self {
+        match val {
             ElementDesc::Host(_) => {
                 unreachable!()
             }

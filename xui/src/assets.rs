@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use moka::{ops::compute::Op, sync::Cache};
+use moka::sync::Cache;
 use xui_interface::{ImageData, Size};
 use zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions};
 use zune_image::{errors::ImageErrors, image::Image};
@@ -77,7 +77,7 @@ pub fn load_asset<T: AssetFormat>(id: AssetId) -> Option<T::Output> {
         return None;
     }
 
-    let metadata = match manager.metadata(id).ok().flatten() {
+    let _metadata = match manager.metadata(id).ok().flatten() {
         Some(metadata) => metadata,
         None => {
             misses.insert(id, ());

@@ -8,19 +8,12 @@ pub struct FramePropertiesSnapshot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Default)]
 pub struct DynamicComposite {
     pub opacity: Option<f32>,
     pub transform: Option<Affine>,
 }
 
-impl Default for DynamicComposite {
-    fn default() -> Self {
-        Self {
-            opacity: None,
-            transform: None,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Versioned<T> {

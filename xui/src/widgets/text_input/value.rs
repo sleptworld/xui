@@ -125,11 +125,10 @@ impl TextEditingValue {
             }
 
             self.text.remove(change.range.as_range());
-            if let Some(ref insert) = change.insert {
-                if !insert.is_empty() {
+            if let Some(ref insert) = change.insert
+                && !insert.is_empty() {
                     self.text.insert(change.range.start, insert);
                 }
-            }
         }
 
         self.selection = final_selection;
@@ -339,7 +338,7 @@ impl TextChange {
     }
 
     pub fn is_noop(&self) -> bool {
-        self.range.is_empty() && self.insert.as_ref().map_or(true, |text| text.is_empty())
+        self.range.is_empty() && self.insert.as_ref().is_none_or(|text| text.is_empty())
     }
 }
 

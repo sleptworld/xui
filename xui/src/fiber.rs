@@ -183,7 +183,7 @@ impl Node {
             parent: None,
             child: None,
             sibling: None,
-            key: element.key.clone(),
+            key: element.key,
             position: 0,
             tag: FiberTag::Component,
             effect: EffectTag::PLACEMENT,
@@ -199,7 +199,7 @@ impl Node {
 
     pub fn children<'a>(&self, arena: &'a FiberArena) -> NodeChildren<'a, Self> {
         NodeChildren {
-            arena: arena,
+            arena,
             child: self.child,
             _marker: PhantomData,
         }
@@ -344,11 +344,10 @@ impl FiberArena {
             self.remove_subtree_detached(child);
         }
 
-        if let Some(host) = self.nodes[id].host.as_ref() {
-            if let Some(taffy_node) = host.taffy_node {
+        if let Some(host) = self.nodes[id].host.as_ref()
+            && let Some(taffy_node) = host.taffy_node {
                 let _ = self.taffy.remove(taffy_node);
             }
-        }
         self.nodes.remove(id);
     }
 

@@ -1,3 +1,15 @@
+//! `cosmic-text` text backend for `xui`.
+//!
+//! Implements the `xui-interface` text traits (`TextBackend`, `Shaper`,
+//! `FontDatabase`, `GlyphRasterizer`) on top of the `cosmic-text` crate, and is
+//! the default text backend used by `xui` applications.
+//!
+//! `CosmicEngine` owns a `FontSystem` and `SwashCache`, reuses a `Buffer` across
+//! layouts, and translates cosmic-text runs into the `ParagraphLayout` shape the
+//! framework expects. `xui-interface` paragraph and text-box options (alignment,
+//! wrap, ellipsis, max lines, font weight/style/stretch/family, line height,
+//! underline) are mapped onto cosmic-text equivalents.
+
 use cosmic_text::{
     Align, Attrs, Buffer, CacheKey, Ellipsize, EllipsizeHeightLimit, Family, FontSystem, Metrics,
     Shaping, Style as CosmicStyle, SwashCache, Weight, Wrap, fontdb,
@@ -114,16 +126,14 @@ impl CosmicEngine {
 
         let line_bases = compute_line_base_byte_offsets(input.text.as_str());
         let mut layout = self.layout_paragraph_from_buffer(buffer, &line_bases);
-        if input.text_box_style.overflow == TextOverflow::Clip {
-            if let Some(max_lines) = input.text_box_style.max_lines {
+        if input.text_box_style.overflow == TextOverflow::Clip
+            && let Some(max_lines) = input.text_box_style.max_lines {
                 truncate_layout_lines(&mut layout, max_lines);
             }
-        }
-        if ellipsize != Ellipsize::None {
-            if let Some(last) = layout.lines.last_mut() {
+        if ellipsize != Ellipsize::None
+            && let Some(last) = layout.lines.last_mut() {
                 last.ellipsized = last.text_range.end.raw < text_len;
             }
-        }
         layout
     }
 
@@ -197,7 +207,7 @@ impl CosmicEngine {
                     cluster_index
                 };
 
-                let run_key = self.run_key_from_cosmic_glyph(&g);
+                let run_key = self.run_key_from_cosmic_glyph(g);
 
                 let run_index = if current_run_key.as_ref() == Some(&run_key) {
                     current_run_index.expect("current_run_index must exist")
@@ -303,7 +313,7 @@ impl CosmicEngine {
             font_weight: map_cosmic_weight(glyph.font_weight),
             style_id: glyph.metadata as u32,
             bidi_level,
-            direction: if bidi_level % 2 == 0 {
+            direction: if bidi_level.is_multiple_of(2) {
                 TextDirection::Ltr
             } else {
                 TextDirection::Rtl
@@ -313,9 +323,7 @@ impl CosmicEngine {
     }
 
     fn font_handle(&self, id: fontdb::ID) -> Option<SystemFontHandle> {
-        if self.font_system.db().face(id).is_none() {
-            return None;
-        }
+        self.font_system.db().face(id)?;
         let mut hasher = DefaultHasher::new();
         id.hash(&mut hasher);
         Some(SystemFontHandle(hasher.finish()))
@@ -460,8 +468,8 @@ impl GlyphRasterizer for CosmicEngine {
 
         Some(RasterizedGlyph {
             format: rasterized_glyph_format(image.content),
-            width: image.placement.width as u32,
-            height: image.placement.height as u32,
+            width: image.placement.width,
+            height: image.placement.height,
             left: image.placement.left,
             top: image.placement.top,
             pixels: Arc::from(rgba_bitmap_data(image.content, &image.data)),

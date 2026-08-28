@@ -1,15 +1,19 @@
-use xui_interface::{Affine, Color, ImageData, ImageKey, Point, Rect, Size};
+use xui_interface::{Affine, Bounds, Color, ImageData, ImageKey, Point, Size};
 use xui_render_graph::{
-    BackdropDescriptor, BackdropFilter, BlendMode, CompileError, CompositeDescriptor,
-    CompositeOperator, ExternalResourceKind, FilterQuality, LayerEffect, LayerGraphDescriptor,
-    Mask, MaskShape, ProgramOp, WorkingColorSpace, compile_layer,
+    compile_layer, BackdropDescriptor, BackdropFilter, BlendMode, CompileError,
+    CompositeDescriptor, CompositeOperator, ExternalResourceKind, FilterQuality, LayerEffect,
+    LayerGraphDescriptor, Mask, MaskShape, ProgramOp, WorkingColorSpace,
 };
 
 fn descriptor() -> LayerGraphDescriptor {
     LayerGraphDescriptor::default()
 }
 
-fn image_mask(key: u64, bounds: Rect) -> LayerEffect {
+fn rect_bounds(x: f32, y: f32, w: f32, h: f32) -> Bounds {
+    Bounds::from_origin_size(Point::new(x, y), Size::new(w, h))
+}
+
+fn image_mask(key: u64, bounds: Bounds) -> LayerEffect {
     LayerEffect::ImageMask {
         image: ImageKey::UserProvided(key),
         data: ImageData::rgba8(Size::new(1, 1), [255, 255, 255, 255]),
@@ -58,10 +62,9 @@ fn direct_replacement_api_builds_one_static_layer_program() {
     };
     let program = compile_layer(&value).unwrap();
     let ops: Vec<_> = program.nodes().iter().map(|node| &node.op).collect();
-    assert!(
-        ops.iter()
-            .any(|op| matches!(op, ProgramOp::BackdropComposite { .. }))
-    );
+    assert!(ops
+        .iter()
+        .any(|op| matches!(op, ProgramOp::BackdropComposite { .. })));
     assert!(ops.iter().any(|op| matches!(op, ProgramOp::Blur { .. })));
     assert!(matches!(
         ops.last().unwrap(),
@@ -155,30 +158,24 @@ fn texture_masks_receive_stable_external_ordinals() {
         ..BackdropDescriptor::default()
     });
     value.effects = vec![
-        image_mask(2, Rect::new(0.0, 0.0, 1.0, 1.0)),
+        image_mask(2, rect_bounds(0.0, 0.0, 1.0, 1.0)),
         LayerEffect::Blur {
             sigma_x: 1.0,
             sigma_y: 1.0,
             quality: FilterQuality::Low,
         },
-        image_mask(3, Rect::new(2.0, 3.0, 1.0, 1.0)),
+        image_mask(3, rect_bounds(2.0, 3.0, 1.0, 1.0)),
     ];
     let program = compile_layer(&value).unwrap();
-    assert!(
-        program
-            .external_resource(ExternalResourceKind::BackdropMask)
-            .is_some()
-    );
-    assert!(
-        program
-            .external_resource(ExternalResourceKind::LayerMask(0))
-            .is_some()
-    );
-    assert!(
-        program
-            .external_resource(ExternalResourceKind::LayerMask(1))
-            .is_some()
-    );
+    assert!(program
+        .external_resource(ExternalResourceKind::BackdropMask)
+        .is_some());
+    assert!(program
+        .external_resource(ExternalResourceKind::LayerMask(0))
+        .is_some());
+    assert!(program
+        .external_resource(ExternalResourceKind::LayerMask(1))
+        .is_some());
     let ordinals: Vec<_> = program
         .nodes()
         .iter()
@@ -214,7 +211,7 @@ fn masks_are_normalized_and_must_be_invertible() {
 
     value
         .effects
-        .push(image_mask(4, Rect::new(0.0, 0.0, 0.0, 1.0)));
+        .push(image_mask(4, rect_bounds(0.0, 0.0, 0.0, 1.0)));
     assert!(matches!(
         compile_layer(&value),
         Err(CompileError::InvalidStyleParameter {

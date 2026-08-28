@@ -1,6 +1,6 @@
 use crate::event_system::EventContext;
 use xui_interface::{
-    Bounds, Color, ComputedStyle, EventRef, EventResult, Key, Rect, Size, Style, TextContent,
+    Bounds, Color, ComputedStyle, EventRef, EventResult, Key, Size, Style, TextContent,
     TextProps, WidgetType, WidgetUpdateFlags, core::Sizing,
 };
 

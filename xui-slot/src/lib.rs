@@ -1,3 +1,18 @@
+//! `Copy`-able `GenerationalBox<T>` state with owners and refcounting.
+//!
+//! Provides both unsync (single-threaded) and sync (thread-safe) backends for
+//! fine-grained, refcounted reactive state. An `Owner` drops everything it
+//! created when the last clone is dropped.
+//!
+//! - `GenerationalBox<T, S>` — the core `Copy` handle; stale handles fail to
+//!   read rather than aliasing freed memory.
+//! - `Owner<S>` — refcounted guard that owns the boxes it inserts.
+//! - `UnsyncStorage` / `SyncStorage` — `RefCell`- and `RwLock`-backed storages.
+//! - `Storage<Data>` / `AnyStorage` traits — read/write/map/recycle.
+//! - `GenerationalBoxId` — type-erased, `Send`/`Sync` id.
+//!
+//! Most consumers reach this indirectly through `xui::state` hooks.
+
 use parking_lot::Mutex;
 use std::{
     fmt::Debug,
@@ -6,8 +21,8 @@ use std::{
     ops::{Deref, DerefMut},
     sync::Arc,
 };
-mod error;
 mod entry;
+mod error;
 mod references;
 mod sync;
 mod unsync;
@@ -16,7 +31,6 @@ pub use error::*;
 pub use references::*;
 pub use sync::SyncStorage;
 pub use unsync::UnsyncStorage;
-
 
 /// The type erased id of a generational box.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

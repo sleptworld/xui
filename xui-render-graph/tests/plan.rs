@@ -1,19 +1,19 @@
-use xui_interface::{Affine, Color, ImageData, ImageKey, Point, Rect, Size};
+use xui_interface::{Affine, Bounds, Color, ImageData, ImageKey, Point, Size};
 use xui_render_graph::{
-    AttachmentBlend, Axis, BackdropDescriptor, BackdropFilter, BlendMode, CompositeDescriptor,
-    CompositeInstance, CompositeOperator, CoordinateSpace, DrawShader, ExternalAliasing,
-    ExternalResourceKind, FilterQuality, LayerEffect, LayerGraphDescriptor, LayerPlanContext,
-    LayerProgramEntry, PassOp, PipelineKey, PlanError, PlanLimits, PlanResourceKind, TextureClass,
-    compile_layer,
+    compile_layer, AttachmentBlend, Axis, BackdropDescriptor, BackdropFilter, BlendMode,
+    CompositeDescriptor, CompositeInstance, CompositeOperator, CoordinateSpace, DrawShader,
+    ExternalAliasing, ExternalResourceKind, FilterQuality, LayerEffect, LayerGraphDescriptor,
+    LayerPlanContext, LayerProgramEntry, PassOp, PipelineKey, PlanError, PlanLimits,
+    PlanResourceKind, TextureClass,
 };
 
 fn context() -> LayerPlanContext {
     LayerPlanContext {
-        backdrop_source_bounds: Rect::new(0.0, 0.0, 200.0, 150.0),
-        parent_destination_bounds: Rect::new(0.0, 0.0, 200.0, 150.0),
+        backdrop_source_bounds: rect_bounds(0.0, 0.0, 200.0, 150.0),
+        parent_destination_bounds: rect_bounds(0.0, 0.0, 200.0, 150.0),
         composite_clip_bounds: None,
-        layer_content_bounds: Rect::new(20.0, 30.0, 40.0, 30.0),
-        backdrop_bounds: Some(Rect::new(20.0, 30.0, 40.0, 30.0)),
+        layer_content_bounds: rect_bounds(20.0, 30.0, 40.0, 30.0),
+        backdrop_bounds: Some(rect_bounds(20.0, 30.0, 40.0, 30.0)),
         composite: CompositeInstance::default(),
         scale_factor: 1.0,
         color_texture_class: TextureClass::LINEAR_COLOR,
@@ -26,7 +26,11 @@ fn descriptor() -> LayerGraphDescriptor {
     LayerGraphDescriptor::default()
 }
 
-fn image_mask(key: u64, bounds: Rect) -> LayerEffect {
+fn rect_bounds(x: f32, y: f32, w: f32, h: f32) -> Bounds {
+    Bounds::from_origin_size(Point::new(x, y), Size::new(w, h))
+}
+
+fn image_mask(key: u64, bounds: Bounds) -> LayerEffect {
     LayerEffect::ImageMask {
         image: ImageKey::UserProvided(key),
         data: ImageData::rgba8(Size::new(1, 1), [255, 255, 255, 255]),
@@ -93,34 +97,26 @@ fn explicit_program_entries_lower_only_the_selected_branch() {
     let backdrop = program
         .instantiate_entry(LayerProgramEntry::BackdropOnly, &context())
         .unwrap();
-    assert!(
-        backdrop
-            .passes()
-            .iter()
-            .any(|pass| matches!(pass.op, PassOp::BackdropComposite { .. }))
-    );
-    assert!(
-        !backdrop
-            .passes()
-            .iter()
-            .any(|pass| matches!(pass.op, PassOp::LayerComposite { .. }))
-    );
+    assert!(backdrop
+        .passes()
+        .iter()
+        .any(|pass| matches!(pass.op, PassOp::BackdropComposite { .. })));
+    assert!(!backdrop
+        .passes()
+        .iter()
+        .any(|pass| matches!(pass.op, PassOp::LayerComposite { .. })));
 
     let layer = program
         .instantiate_entry(LayerProgramEntry::LayerOnly, &context())
         .unwrap();
-    assert!(
-        !layer
-            .passes()
-            .iter()
-            .any(|pass| matches!(pass.op, PassOp::BackdropComposite { .. }))
-    );
-    assert!(
-        layer
-            .passes()
-            .iter()
-            .any(|pass| matches!(pass.op, PassOp::LayerComposite { .. }))
-    );
+    assert!(!layer
+        .passes()
+        .iter()
+        .any(|pass| matches!(pass.op, PassOp::BackdropComposite { .. })));
+    assert!(layer
+        .passes()
+        .iter()
+        .any(|pass| matches!(pass.op, PassOp::LayerComposite { .. })));
 }
 
 #[test]
@@ -178,16 +174,16 @@ fn backdrop_source_demand_can_extend_beyond_parent_destination_tile() {
         ..descriptor()
     };
     let mut ctx = context();
-    ctx.backdrop_source_bounds = Rect::new(0.0, 0.0, 200.0, 150.0);
-    ctx.parent_destination_bounds = Rect::new(50.0, 50.0, 20.0, 20.0);
+    ctx.backdrop_source_bounds = rect_bounds(0.0, 0.0, 200.0, 150.0);
+    ctx.parent_destination_bounds = rect_bounds(50.0, 50.0, 20.0, 20.0);
     ctx.backdrop_bounds = Some(ctx.parent_destination_bounds);
     let plan = compile_layer(&value).unwrap().instantiate(&ctx).unwrap();
     let backdrop = &plan.resources()[plan.backdrop().unwrap().index()];
-    assert!(backdrop.logical_bounds.x < ctx.parent_destination_bounds.x);
-    assert!(backdrop.logical_bounds.y < ctx.parent_destination_bounds.y);
+    assert!(backdrop.logical_bounds.x() < ctx.parent_destination_bounds.x());
+    assert!(backdrop.logical_bounds.y() < ctx.parent_destination_bounds.y());
     assert!(
-        backdrop.logical_bounds.x + backdrop.logical_bounds.width
-            > ctx.parent_destination_bounds.x + ctx.parent_destination_bounds.width
+        backdrop.logical_bounds.x() + backdrop.logical_bounds.width()
+            > ctx.parent_destination_bounds.x() + ctx.parent_destination_bounds.width()
     );
 }
 
@@ -264,16 +260,14 @@ fn drop_shadow_lowers_to_explicit_dag_and_asymmetric_bounds() {
         plan.passes()[2].op,
         PassOp::AlphaSpread { axis: Axis::Y, .. }
     ));
-    assert!(
-        plan.passes()
-            .iter()
-            .any(|pass| matches!(pass.op, PassOp::GaussianBlur { axis: Axis::X, .. }))
-    );
-    assert!(
-        plan.passes()
-            .iter()
-            .any(|pass| matches!(pass.op, PassOp::GaussianBlur { axis: Axis::Y, .. }))
-    );
+    assert!(plan
+        .passes()
+        .iter()
+        .any(|pass| matches!(pass.op, PassOp::GaussianBlur { axis: Axis::X, .. })));
+    assert!(plan
+        .passes()
+        .iter()
+        .any(|pass| matches!(pass.op, PassOp::GaussianBlur { axis: Axis::Y, .. })));
     let merge = plan
         .passes()
         .iter()
@@ -314,11 +308,10 @@ fn shadow_skips_zero_spread_and_blur_but_preserves_merge() {
         pass.op,
         PassOp::AlphaSpread { .. } | PassOp::GaussianBlur { .. }
     )));
-    assert!(
-        plan.passes()
-            .iter()
-            .any(|pass| matches!(pass.op, PassOp::ShadowComposite { .. }))
-    );
+    assert!(plan
+        .passes()
+        .iter()
+        .any(|pass| matches!(pass.op, PassOp::ShadowComposite { .. })));
 }
 
 #[test]
@@ -360,12 +353,10 @@ fn advanced_blends_snapshot_at_each_terminal_and_attachment_modes_do_not() {
         .unwrap()
         .instantiate(&aliased_context)
         .unwrap();
-    assert!(
-        !attachment
-            .passes()
-            .iter()
-            .any(|pass| matches!(pass.op, PassOp::Copy))
-    );
+    assert!(!attachment
+        .passes()
+        .iter()
+        .any(|pass| matches!(pass.op, PassOp::Copy)));
 }
 
 #[test]
@@ -405,13 +396,13 @@ fn transform_maps_forward_and_crops_demand_back_to_layer_space() {
         quality: FilterQuality::Medium,
     });
     let mut ctx = context();
-    ctx.layer_content_bounds = Rect::new(0.0, 0.0, 100.0, 80.0);
-    ctx.parent_destination_bounds = Rect::new(50.0, 20.0, 30.0, 40.0);
+    ctx.layer_content_bounds = rect_bounds(0.0, 0.0, 100.0, 80.0);
+    ctx.parent_destination_bounds = rect_bounds(50.0, 20.0, 30.0, 40.0);
     ctx.composite.transform = Affine::new(1.0, 0.25, 0.5, 1.0, 40.0, 10.0);
     let plan = compile_layer(&value).unwrap().instantiate(&ctx).unwrap();
     let layer = &plan.resources()[plan.layer_content().index()];
     assert_eq!(layer.coordinate_space, CoordinateSpace::LayerLocal);
-    assert!(layer.logical_bounds.width < ctx.layer_content_bounds.width);
+    assert!(layer.logical_bounds.width() < ctx.layer_content_bounds.width());
     let PassOp::LayerComposite { bounds, .. } = plan.passes().last().unwrap().op else {
         panic!("layer terminal")
     };
@@ -422,14 +413,14 @@ fn transform_maps_forward_and_crops_demand_back_to_layer_space() {
 fn translate_scale_and_rotation_produce_expected_terminal_bounds() {
     let value = descriptor();
     let mut ctx = context();
-    ctx.layer_content_bounds = Rect::new(0.0, 0.0, 10.0, 20.0);
-    ctx.parent_destination_bounds = Rect::new(-100.0, -100.0, 300.0, 300.0);
+    ctx.layer_content_bounds = rect_bounds(0.0, 0.0, 10.0, 20.0);
+    ctx.parent_destination_bounds = rect_bounds(-100.0, -100.0, 300.0, 300.0);
     ctx.composite.transform = Affine::new(0.0, 2.0, -3.0, 0.0, 50.0, 10.0);
     let plan = compile_layer(&value).unwrap().instantiate(&ctx).unwrap();
     let PassOp::LayerComposite { bounds, .. } = plan.passes().last().unwrap().op else {
         panic!("layer terminal")
     };
-    assert_eq!(bounds, Rect::new(-10.0, 10.0, 60.0, 20.0));
+    assert_eq!(bounds, rect_bounds(-10.0, 10.0, 60.0, 20.0));
 }
 
 #[test]
@@ -444,11 +435,10 @@ fn singular_transform_skips_layer_but_not_backdrop() {
     let mut ctx = context();
     ctx.composite.transform = Affine::scale(0.0, 1.0);
     let plan = compile_layer(&value).unwrap().instantiate(&ctx).unwrap();
-    assert!(
-        plan.passes()
-            .iter()
-            .any(|pass| matches!(pass.op, PassOp::BackdropComposite { .. }))
-    );
+    assert!(plan
+        .passes()
+        .iter()
+        .any(|pass| matches!(pass.op, PassOp::BackdropComposite { .. })));
     assert!(!plan.passes().iter().any(|pass| matches!(
         pass.op,
         PassOp::LayerComposite { .. }
@@ -466,11 +456,10 @@ fn zero_dynamic_opacity_skips_only_layer_branch() {
     let mut ctx = context();
     ctx.composite.opacity = 0.0;
     let plan = compile_layer(&value).unwrap().instantiate(&ctx).unwrap();
-    assert!(
-        plan.passes()
-            .iter()
-            .any(|pass| matches!(pass.op, PassOp::BackdropComposite { .. }))
-    );
+    assert!(plan
+        .passes()
+        .iter()
+        .any(|pass| matches!(pass.op, PassOp::BackdropComposite { .. })));
     assert!(!plan.passes().iter().any(|pass| matches!(
         pass.op,
         PassOp::LayerComposite { .. } | PassOp::ColorMatrix(_)
@@ -489,12 +478,12 @@ fn empty_reverse_clip_skips_the_complete_layer_branch() {
         quality: FilterQuality::Medium,
     });
     let mut ctx = context();
-    ctx.parent_destination_bounds = Rect::new(1_000.0, 1_000.0, 20.0, 20.0);
+    ctx.parent_destination_bounds = rect_bounds(1_000.0, 1_000.0, 20.0, 20.0);
     let plan = compile_layer(&value).unwrap().instantiate(&ctx).unwrap();
     assert!(plan.is_noop());
     assert_eq!(
         plan.resources()[plan.layer_content().index()].logical_bounds,
-        Rect::ZERO
+        Bounds::ZERO
     );
 }
 
@@ -509,8 +498,8 @@ fn external_masks_never_allocate_slots_and_spaces_are_explicit() {
         ..BackdropDescriptor::default()
     });
     value.effects = vec![
-        image_mask(2, Rect::new(0.0, 0.0, 1.0, 1.0)),
-        image_mask(3, Rect::new(1.0, 0.0, 1.0, 1.0)),
+        image_mask(2, rect_bounds(0.0, 0.0, 1.0, 1.0)),
+        image_mask(3, rect_bounds(1.0, 0.0, 1.0, 1.0)),
     ];
     let plan = compile_layer(&value)
         .unwrap()
@@ -577,8 +566,8 @@ fn transient_allocator_reuses_across_finished_branches_deterministically() {
 #[test]
 fn scale_rounding_limits_and_context_validation_are_enforced() {
     let mut ctx = context();
-    ctx.parent_destination_bounds = Rect::new(0.25, 0.25, 10.1, 5.1);
-    ctx.layer_content_bounds = Rect::new(0.25, 0.25, 10.1, 5.1);
+    ctx.parent_destination_bounds = rect_bounds(0.25, 0.25, 10.1, 5.1);
+    ctx.layer_content_bounds = rect_bounds(0.25, 0.25, 10.1, 5.1);
     ctx.scale_factor = 2.0;
     let plan = compile_layer(&descriptor())
         .unwrap()

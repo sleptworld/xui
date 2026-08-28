@@ -2,14 +2,14 @@ use crate::event_system::callbacks::EventHandlers;
 use crate::event_system::interaction::InteractionProperties;
 use crate::{element::ElementDesc, event_system::EventContext};
 use xui_interface::{
-    Affine, Bounds, ComputedStyle, EventRef, EventResult, Key, OverflowWrap, ParagraphStyle, Rect,
+    Bounds, ComputedStyle, EventRef, EventResult, Key, OverflowWrap, ParagraphStyle,
     Style, TextBoxStyle, TextContent, TextOverflow, TextPaintProps, TextPaintStyle, TextProps,
     WidgetType, WidgetUpdateFlags,
 };
 
 use super::{props_hash, widget_element_desc};
 use crate::render::{Primitive, RenderTreeWriter, TextPrimitive};
-use crate::text::{self, TextLayoutSlot};
+use crate::text::TextLayoutSlot;
 
 #[derive(Debug)]
 pub struct TextWidget {

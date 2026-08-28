@@ -65,7 +65,7 @@ fn row(index: usize) -> ElementDesc {
         .transition(long_transition());
 
     container().style(style).into_element_desc(vec![
-        text(if index % 3 == 0 { "row label" } else { "item" })
+        TextWidget::new(if index % 3 == 0 { "row label" } else { "item" })
             .style(Style::new().width(120.0).height(20.0))
             .into_element_desc(),
         container()

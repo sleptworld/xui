@@ -1,0 +1,5 @@
+error: expected closing tag </container>
+ --> tests/ui/mismatched_closing_tag.rs:7:44
+  |
+7 |     xui! { <container><text>{"hi"}</text></grid> }
+  |                                            ^^^^

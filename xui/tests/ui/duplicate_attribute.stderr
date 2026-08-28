@@ -1,0 +1,11 @@
+error: attribute `width` is set more than once
+ --> tests/ui/duplicate_attribute.rs:7:49
+  |
+7 |     xui! { <container width={10.0} height={4.0} width={20.0} /> }
+  |                                                 ^^^^^
+
+error: `width` was first set here
+ --> tests/ui/duplicate_attribute.rs:7:23
+  |
+7 |     xui! { <container width={10.0} height={4.0} width={20.0} /> }
+  |                       ^^^^^

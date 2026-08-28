@@ -8,6 +8,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, mpsc};
 
+use crate::event_system::{EventContext, Flow, Handler};
 use slot::unsync::Slot;
 use slot::{Pointer, RenderPhase as SlotRenderPhase, Runtime as SlotRuntime, Scope};
 use tokio::runtime::Handle as TokioHandle;
@@ -84,8 +85,8 @@ impl AsyncDispatcher {
             }),
         };
 
-        if self.sender.send(message).is_ok() {
-            if let Some(wake) = self
+        if self.sender.send(message).is_ok()
+            && let Some(wake) = self
                 .wake
                 .lock()
                 .expect("async wake callback poisoned")
@@ -94,7 +95,6 @@ impl AsyncDispatcher {
             {
                 wake();
             }
-        }
     }
 }
 
@@ -362,6 +362,11 @@ struct CallbackState<D, Args, Output> {
     callback: CallbackInner<Args, Output>,
 }
 
+struct HandlerState<D, E: 'static> {
+    deps: D,
+    handler: Handler<E>,
+}
+
 /// A stable, type-safe component callback.
 ///
 /// The generic parameters describe the callback's input and output; the
@@ -572,6 +577,55 @@ impl<'a> HookContext<'a> {
         Callback {
             callback: state.borrow().callback.clone(),
         }
+    }
+
+    /// A [`Handler`] whose identity survives re-renders, for handing to a
+    /// component as a prop.
+    ///
+    /// [`use_callback`](Self::use_callback) cannot express an event handler:
+    /// `Callback<Args, Output>` needs `Args: 'static`, and an event handler's
+    /// arguments include `&mut EventContext<'a>`. Components therefore had to
+    /// invent a semantic payload type per event and lose the context. This keeps
+    /// the context, and keeps the handler comparable so that passing it as a
+    /// prop does not defeat memoisation.
+    ///
+    /// The stored closure is replaced only when `deps` change, so the returned
+    /// handler is the same allocation across renders that do not change them.
+    pub fn use_handler<D, E, R>(
+        &mut self,
+        deps: D,
+        handler: impl for<'cx> FnMut(&E, &mut EventContext<'cx>) -> R + 'static,
+    ) -> Handler<E>
+    where
+        D: PartialEq + 'static,
+        E: 'static,
+        R: Into<Flow>,
+    {
+        let mut next_deps = Some(deps);
+        let mut next_handler = Some(Handler::new(handler));
+        let (_, state) = self.storage.next_slot(|_| {
+            let deps = next_deps
+                .take()
+                .expect("handler deps should be available for new hook slot");
+            let handler = next_handler
+                .take()
+                .expect("handler should be available for new hook slot");
+            RefCell::new(HandlerState { deps, handler })
+        });
+        let state = read_slot(state);
+
+        if let Some(deps) = next_deps.take() {
+            let mut state = state.borrow_mut();
+            if state.deps != deps {
+                state.deps = deps;
+                state.handler = next_handler
+                    .take()
+                    .expect("handler should be available when dependencies change");
+            }
+        }
+
+        let handler = state.borrow().handler.clone();
+        handler
     }
 
     pub fn use_task<D, F>(&mut self, deps: D, init: impl FnOnce(TaskContext) -> F + Send + 'static)
@@ -949,8 +1003,8 @@ impl Scheduler {
         if !inner.mounted_components.contains(&message.owner) {
             return false;
         }
-        if let Some(scope) = message.scope {
-            if inner
+        if let Some(scope) = message.scope
+            && inner
                 .async_scopes
                 .get(&(scope.owner, scope.hook_index))
                 .copied()
@@ -958,7 +1012,6 @@ impl Scheduler {
             {
                 return false;
             }
-        }
 
         inner
             .hook_updates

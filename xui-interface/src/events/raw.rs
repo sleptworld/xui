@@ -557,17 +557,6 @@ impl RawEvent {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EventResult {
-    Ignored,
-    Consumed,
-}
-
-impl EventResult {
-    pub fn is_consumed(self) -> bool {
-        matches!(self, Self::Consumed)
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventRequest {

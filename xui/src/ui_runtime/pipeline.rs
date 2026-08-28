@@ -2,7 +2,7 @@
 
 use crate::animation::has_animatable_difference;
 use crate::core::{Point, Size};
-use crate::event_system::callbacks::{CallbackHandleSet, CallbackStore};
+use crate::event_system::callbacks::{EventHandlers, EventMask};
 use crate::event_system::interaction::HostInteraction;
 use crate::event_system::{self, EventState, translator::EventTranslator};
 use crate::fiber::Key;
@@ -75,6 +75,7 @@ impl UiRuntime {
             node_lifecycle_events: Vec::new(),
             interaction_system: InteractionSystem::new(),
             text_nodes: slotmap::SparseSecondaryMap::new(),
+            raw_event_listeners: 0,
             theme,
             update_visits: 0,
             layout_passes: 0,
@@ -307,7 +308,7 @@ impl UiRuntime {
             let viewport = Bounds::from_origin_size(Point::zero(), layout.layout.size());
             let needs_scroll = effective.scroll.is_scrollable();
             let needs_clip = node.effective_style.paint.clip || needs_scroll;
-            let clip_shape = needs_clip.then(|| {
+            let clip_shape = needs_clip.then_some({
                 if node.effective_style.paint.border_radius > 0.0 {
                     ClipShape::RoundedRect {
                         rect: viewport,
@@ -351,19 +352,18 @@ impl UiRuntime {
 
         // Scroll transforms are transient and exist only while scrolling is enabled.
         let removed_scroll_transform = if needs_scroll {
-            if binding.scroll_transform.is_none() {
-                if let Some(children) = binding.children {
-                    self.render_system.scene.detach(children)?;
-                    let scroll_transform =
-                        self.render_system.scene.insert_transform(Affine::IDENTITY);
-                    self.render_system
-                        .scene
-                        .set_child(scroll_transform, Some(children))?;
-                    self.render_system
-                        .scene
-                        .insert_child(binding.contents, 1, scroll_transform)?;
-                    binding.scroll_transform = Some(scroll_transform);
-                }
+            if binding.scroll_transform.is_none()
+                && let Some(children) = binding.children
+            {
+                self.render_system.scene.detach(children)?;
+                let scroll_transform = self.render_system.scene.insert_transform(Affine::IDENTITY);
+                self.render_system
+                    .scene
+                    .set_child(scroll_transform, Some(children))?;
+                self.render_system
+                    .scene
+                    .insert_child(binding.contents, 1, scroll_transform)?;
+                binding.scroll_transform = Some(scroll_transform);
             }
             None
         } else if let Some(scroll_transform) = binding.scroll_transform.take() {
@@ -603,10 +603,6 @@ impl UiRuntime {
         None
     }
 
-    pub fn hovered_node(&self) -> Option<NodeId> {
-        self.interaction_system.event_state.hovered()
-    }
-
     pub fn pointer_capture_node(&self) -> Option<NodeId> {
         self.interaction_system.event_state.pointer_capture()
     }
@@ -638,10 +634,12 @@ impl UiRuntime {
         &mut self.interaction_system.event_state
     }
 
-    pub(crate) fn node_and_callbacks_mut(
-        &mut self,
-        id: NodeId,
-    ) -> Option<(NodeView<'_>, &mut CallbackStore)> {
+    /// A read-only node projection paired with that node's own handlers.
+    ///
+    /// Handlers are shared (`Rc`) rather than uniquely owned boxes, so dispatch
+    /// no longer needs `&mut` access to a global store while holding a node
+    /// view — the two used to have to be handed out together.
+    pub(crate) fn node_and_handlers(&self, id: NodeId) -> Option<(NodeView<'_>, &EventHandlers)> {
         let (target, effective) = self.style_system.styles(id)?;
         let node = NodeView::new(
             id,
@@ -650,16 +648,26 @@ impl UiRuntime {
             target,
             effective,
         );
-        Some((node, &mut self.interaction_system.callbacks))
+        Some((node, &self.interaction_system.get(id)?.handlers))
     }
 
-    pub(crate) fn callback_handles(&self, id: NodeId) -> Option<CallbackHandleSet> {
-        self.interaction_system.get(id).map(|node| node.callbacks)
+    /// Whether any live host reads raw device events at all.
+    pub(crate) fn has_raw_event_listeners(&self) -> bool {
+        self.raw_event_listeners > 0
+    }
+
+    pub(crate) fn node_reads_raw_events(&self, id: NodeId) -> bool {
+        self.hosts.get(id).is_some_and(|host| host.reads_raw_events)
+    }
+
+    pub(crate) fn listens_for(&self, id: NodeId, mask: EventMask) -> bool {
+        self.interaction_system
+            .get(id)
+            .is_some_and(|node| node.handlers.listens_for(mask))
     }
 
     pub(crate) fn has_drag_callbacks(&self, id: NodeId) -> bool {
-        self.callback_handles(id)
-            .is_some_and(|callbacks| callbacks.has_drag_callbacks())
+        self.listens_for(id, EventMask::DRAG)
     }
 
     pub(crate) fn is_focusable(&self, id: NodeId) -> bool {
@@ -676,7 +684,7 @@ impl UiRuntime {
             Focusability::Auto => {
                 focus.tab_index.is_some()
                     || matches!(node.node_type, WidgetType::Button | WidgetType::TextInput)
-                    || interaction.is_some_and(|node| node.callbacks.has_focus_callbacks())
+                    || interaction.is_some_and(|node| node.handlers.listens_for(EventMask::FOCUS))
             }
         }
     }
@@ -712,6 +720,9 @@ impl UiRuntime {
         let id = self
             .hosts
             .insert_with_key(|_| HostData::new(key, props_hash, widget));
+        if self.hosts[id].reads_raw_events {
+            self.raw_event_listeners += 1;
+        }
         self.style_system
             .create(id, self.style_system.default_style().clone(), false);
         self.interaction_system.update(id, interaction);
@@ -914,6 +925,13 @@ impl UiRuntime {
                     .expect("failed to remove host render subtree");
             }
             self.text_nodes.remove(removed);
+            if self
+                .hosts
+                .get(removed)
+                .is_some_and(|host| host.reads_raw_events)
+            {
+                self.raw_event_listeners -= 1;
+            }
             self.hosts.remove(removed);
             self.node_lifecycle_events
                 .push(NodeLifecycleEvent::Removed(removed));
@@ -2119,9 +2137,7 @@ impl UiRuntime {
                     measurer.get_or_shape_slot(node_id, slot, input);
                 }
             }
-            _ => {
-                return;
-            }
+            _ => {}
         }
     }
 }
@@ -2173,15 +2189,23 @@ fn layer_descriptor_from_style(style: &ComputedStyle, bounds: Bounds) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event_system::callbacks::EventProps;
     use crate::event_system::translator::EventTranslator;
+    use crate::event_system::{Flow, Handler};
     use crate::focus::FocusHandle;
     use crate::render::RenderNodeKind;
     use crate::text::testing::ZeroTextBackend;
-    use crate::widgets::{CanvasController, WidgetI, canvas, container, text, text_input, z_stack};
+    use crate::widgets::{
+        CanvasController, TextWidget, WidgetI, canvas, container, text_input, z_stack,
+    };
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
     use std::time::{Duration, Instant};
     use xui_animation::{Easing, Transition};
+    use xui_interface::events::semantic::ClickEvent;
     use xui_interface::events::{
-        Modifiers, PointerButtons, PointerKind, RawPointerMove, XuiPointerId,
+        Modifiers, PointerButton, PointerButtons, PointerKind, RawPointerButton, RawPointerMove,
+        XuiPointerId,
     };
     use xui_interface::{
         Affine, CanvasTextId, Color, ComputedColorStyle, FontDatabase, PathBuilder, PathFill,
@@ -2450,6 +2474,369 @@ mod tests {
         arena.update_widget_node_from_parts(id, key, props_hash, widget, interaction);
     }
 
+    // ---------------------------------------------------------------------
+    // Event system: handler sharing, Flow, and the widget stage
+    // ---------------------------------------------------------------------
+
+    fn pointer_at(position: Point) -> RawPointerButton {
+        RawPointerButton {
+            position,
+            pointer_id: XuiPointerId::new(0),
+            device_id: None,
+            kind: PointerKind::Mouse,
+            button: PointerButton::Primary,
+            buttons: PointerButtons::default(),
+            modifiers: Modifiers::default(),
+            timestamp: Instant::now(),
+        }
+    }
+
+    /// Clicks the centre of `node` by driving the real raw-event pipeline, so
+    /// the semantic events under test are the ones the translator actually
+    /// produces.
+    fn click(arena: &mut UiRuntime, measurer: &TextHost<ZeroTextBackend>, node: NodeId) {
+        let bounds = arena.node(node).unwrap().layout;
+        let point = Point::new(
+            (bounds.min.x + bounds.max.x) * 0.5,
+            (bounds.min.y + bounds.max.y) * 0.5,
+        );
+        let mut translator =
+            EventTranslator::new(crate::event_system::translator::EventTranslatorConfig::default());
+        arena.dispatch_event(measurer, &mut translator, pointer_move(point));
+        arena.dispatch_event(
+            measurer,
+            &mut translator,
+            RawEvent::PointerDown(pointer_at(point)),
+        );
+        arena.dispatch_event(
+            measurer,
+            &mut translator,
+            RawEvent::PointerUp(pointer_at(point)),
+        );
+    }
+
+    /// One handler, two widgets. Impossible with the previous
+    /// `Box<dyn FnMut>`, which could be neither cloned nor shared, and the
+    /// reason a component could not accept an event handler as a prop.
+    #[test]
+    fn one_handler_can_be_attached_to_two_widgets() {
+        let calls = Rc::new(Cell::new(0u32));
+        let handler = {
+            let calls = Rc::clone(&calls);
+            Handler::<ClickEvent>::new(move |_, _| {
+                calls.set(calls.get() + 1);
+            })
+        };
+
+        let mut arena = UiRuntime::new();
+        let left = create_host(
+            &mut arena,
+            WidgetI::new(
+                container()
+                    .style(Style::new().size(Size::fix(40.0, 40.0)))
+                    .on_click(handler.clone().into_fn()),
+            ),
+        );
+        let right = create_host(
+            &mut arena,
+            WidgetI::new(
+                container()
+                    .style(Style::new().size(Size::fix(40.0, 40.0)))
+                    .on_click(handler.clone().into_fn()),
+            ),
+        );
+
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+
+        click(&mut arena, &measurer, left);
+        click(&mut arena, &measurer, right);
+
+        assert_eq!(calls.get(), 2, "the shared handler did not run on both");
+        assert!(handler.ptr_eq(&handler.clone()), "cloning changed identity");
+    }
+
+    /// Hovering a leaf marks every ancestor on the way to it, each exactly once.
+    ///
+    /// The translator diffs the old and new root-to-target paths, so the whole
+    /// entered segment is reported — not just the leaf. This is what makes
+    /// `style!(.. if hovered ..)` work on a container whose child is under the
+    /// pointer.
+    #[test]
+    fn entering_a_leaf_reports_every_ancestor_that_gained_hover_once_each() {
+        let counts: Rc<RefCell<Vec<(&'static str, bool)>>> = Rc::new(RefCell::new(Vec::new()));
+
+        let mut arena = UiRuntime::new();
+
+        let outer_log = Rc::clone(&counts);
+        let outer = create_host(
+            &mut arena,
+            WidgetI::new(
+                container()
+                    .style(Style::new().size(Size::fix(100.0, 100.0)))
+                    .on_hovered(move |event, _| {
+                        outer_log.borrow_mut().push(("outer", event.hovered));
+                    }),
+            ),
+        );
+
+        let mut nest = |arena: &mut UiRuntime, parent: NodeId, name: &'static str, size: f32| {
+            let log = Rc::clone(&counts);
+            let widget = WidgetI::new(
+                container()
+                    .style(Style::new().size(Size::fix(size, size)))
+                    .on_hovered(move |event, _| {
+                        log.borrow_mut().push((name, event.hovered));
+                    }),
+            );
+            let key = widget.key();
+            let props_hash = widget.props_hash();
+            let interaction = widget.take_host_interaction();
+            let id = arena.create_node(key, props_hash, widget, interaction);
+            arena.append_child(parent, id);
+            id
+        };
+
+        let middle = nest(&mut arena, outer, "middle", 80.0);
+        let leaf = nest(&mut arena, middle, "leaf", 60.0);
+
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+
+        let bounds = arena.node(leaf).unwrap().layout;
+        let inside = Point::new(
+            (bounds.min.x + bounds.max.x) * 0.5,
+            (bounds.min.y + bounds.max.y) * 0.5,
+        );
+        let mut translator =
+            EventTranslator::new(crate::event_system::translator::EventTranslatorConfig::default());
+        arena.dispatch_event(&measurer, &mut translator, pointer_move(inside));
+
+        let seen = counts.borrow().clone();
+        for name in ["outer", "middle", "leaf"] {
+            let entered = seen
+                .iter()
+                .filter(|(node, hovered)| *node == name && *hovered)
+                .count();
+            assert_eq!(
+                entered, 1,
+                "`{name}` should have been reported hovered exactly once, got {entered} in {seen:?}"
+            );
+        }
+        assert!(
+            !seen.iter().any(|(_, hovered)| !*hovered),
+            "nothing left the hover path yet, but a leave was reported: {seen:?}"
+        );
+    }
+
+    /// `Hovered` is `Direct`, so an ancestor is reached because it is genuinely
+    /// on the hover path — never a second time by a child's event bubbling up.
+    /// Making it bubble would double-report every ancestor.
+    #[test]
+    fn an_ancestor_is_not_reported_twice_when_a_child_is_hovered() {
+        let outer_events = Rc::new(Cell::new(0u32));
+        let mut arena = UiRuntime::new();
+
+        let counter = Rc::clone(&outer_events);
+        let outer = create_host(
+            &mut arena,
+            WidgetI::new(
+                container()
+                    .style(Style::new().size(Size::fix(100.0, 100.0)))
+                    .on_hovered(move |_, _| counter.set(counter.get() + 1)),
+            ),
+        );
+        let child = {
+            let widget = WidgetI::new(container().style(Style::new().size(Size::fix(60.0, 60.0))));
+            let key = widget.key();
+            let props_hash = widget.props_hash();
+            let interaction = widget.take_host_interaction();
+            let id = arena.create_node(key, props_hash, widget, interaction);
+            arena.append_child(outer, id);
+            id
+        };
+
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+
+        let bounds = arena.node(child).unwrap().layout;
+        let inside = Point::new(
+            (bounds.min.x + bounds.max.x) * 0.5,
+            (bounds.min.y + bounds.max.y) * 0.5,
+        );
+        let mut translator =
+            EventTranslator::new(crate::event_system::translator::EventTranslatorConfig::default());
+        arena.dispatch_event(&measurer, &mut translator, pointer_move(inside));
+
+        assert_eq!(
+            outer_events.get(),
+            1,
+            "the ancestor saw its own event plus a bubbled copy of the child's"
+        );
+    }
+
+    /// The counter that lets raw dispatch skip its ancestor walk. If it ever
+    /// drifts, raw events stop reaching the widgets that need them — silently —
+    /// so it is checked against node creation and removal directly.
+    #[test]
+    fn the_raw_listener_count_tracks_node_lifetime() {
+        let mut arena = UiRuntime::new();
+        assert!(
+            !arena.has_raw_event_listeners(),
+            "an empty tree has nothing reading raw events"
+        );
+
+        let plain = create_host(&mut arena, WidgetI::new(container()));
+        assert!(!arena.has_raw_event_listeners());
+        assert!(!arena.node_reads_raw_events(plain));
+
+        let input = create_host(&mut arena, WidgetI::new(text_input()));
+        assert!(arena.has_raw_event_listeners());
+        assert!(arena.node_reads_raw_events(input));
+
+        arena.remove_subtree(plain);
+        assert!(
+            arena.has_raw_event_listeners(),
+            "removing an unrelated node dropped the count"
+        );
+
+        arena.remove_subtree(input);
+        assert!(!arena.has_raw_event_listeners());
+    }
+
+    /// Capture steers *both* dispatch layers.
+    ///
+    /// The runtime and the translator used to keep separate pointer-capture
+    /// state, and only the runtime's was ever written to — so raw events
+    /// followed the capture while semantic events silently hit-tested. They now
+    /// resolve through the same one.
+    #[test]
+    fn a_captured_pointer_keeps_aiming_at_the_capturing_node() {
+        let hovered_sibling = Rc::new(Cell::new(false));
+        let flag = Rc::clone(&hovered_sibling);
+
+        let mut arena = UiRuntime::new();
+        let grabber = create_host(
+            &mut arena,
+            WidgetI::new(
+                container()
+                    .style(Style::new().size(Size::fix(50.0, 50.0)))
+                    .on_press_start(|_, cx| {
+                        cx.capture_pointer();
+                    }),
+            ),
+        );
+        let sibling = create_host(
+            &mut arena,
+            WidgetI::new(
+                container()
+                    .style(Style::new().size(Size::fix(50.0, 50.0)))
+                    .on_hovered(move |event, _| {
+                        if event.hovered {
+                            flag.set(true);
+                        }
+                    }),
+            ),
+        );
+
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+
+        let centre = |arena: &UiRuntime, node: NodeId| {
+            let bounds = arena.node(node).unwrap().layout;
+            Point::new(
+                (bounds.min.x + bounds.max.x) * 0.5,
+                (bounds.min.y + bounds.max.y) * 0.5,
+            )
+        };
+        let on_grabber = centre(&arena, grabber);
+        let on_sibling = centre(&arena, sibling);
+        assert_ne!(on_grabber, on_sibling, "the two nodes must not overlap");
+
+        let mut translator =
+            EventTranslator::new(crate::event_system::translator::EventTranslatorConfig::default());
+        arena.dispatch_event(&measurer, &mut translator, pointer_move(on_grabber));
+        arena.dispatch_event(
+            &measurer,
+            &mut translator,
+            RawEvent::PointerDown(pointer_at(on_grabber)),
+        );
+        assert_eq!(
+            arena.pointer_capture_node(),
+            Some(grabber),
+            "the press handler did not take the capture"
+        );
+
+        arena.dispatch_event(&measurer, &mut translator, pointer_move(on_sibling));
+
+        assert!(
+            !hovered_sibling.get(),
+            "the pointer was captured, but the semantic layer still hit-tested \
+             its way onto the sibling"
+        );
+    }
+
+    /// A handler that returns nothing at all is the common case; it used to have
+    /// to spell out `EventResult::Ignored`.
+    #[test]
+    fn a_handler_may_return_unit_flow_or_the_old_event_result() {
+        let mut arena = UiRuntime::new();
+        let node = create_host(
+            &mut arena,
+            WidgetI::new(
+                container()
+                    .style(Style::new().size(Size::fix(40.0, 40.0)))
+                    .on_click(|_, _| {})
+                    .on_press_start(|_, _| Flow::empty())
+                    .on_hovered(|_, _| EventResult::Ignored),
+            ),
+        );
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+        click(&mut arena, &measurer, node);
+        assert!(arena.contains(node));
+    }
+
+    /// `STOP_PROPAGATION` keeps an ancestor from seeing the event; on its own it
+    /// says nothing about the widget's own behaviour.
+    #[test]
+    fn stopping_propagation_hides_the_event_from_ancestors() {
+        let seen_by_parent = Rc::new(Cell::new(false));
+        let mut arena = UiRuntime::new();
+
+        let parent_flag = Rc::clone(&seen_by_parent);
+        let parent = create_host(
+            &mut arena,
+            WidgetI::new(
+                container()
+                    .style(Style::new().size(Size::fix(80.0, 80.0)))
+                    .on_click(move |_, _| parent_flag.set(true)),
+            ),
+        );
+        let child = {
+            let widget = WidgetI::new(
+                container()
+                    .style(Style::new().size(Size::fix(40.0, 40.0)))
+                    .on_click(|_, _| Flow::STOP_PROPAGATION),
+            );
+            let key = widget.key();
+            let props_hash = widget.props_hash();
+            let interaction = widget.take_host_interaction();
+            let id = arena.create_node(key, props_hash, widget, interaction);
+            arena.append_child(parent, id);
+            id
+        };
+
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+        click(&mut arena, &measurer, child);
+
+        assert!(
+            !seen_by_parent.get(),
+            "the click bubbled past a handler that stopped it"
+        );
+    }
+
     fn pointer_move(position: Point) -> RawEvent {
         RawEvent::PointerMove(RawPointerMove {
             position,
@@ -2611,7 +2998,7 @@ mod tests {
         let mut arena = UiRuntime::new();
         let node = create_host(
             &mut arena,
-            WidgetI::new(text("飞行监测").style(Style::new().width(120.0))),
+            WidgetI::new(TextWidget::new("飞行监测").style(Style::new().width(120.0))),
         );
         let mut measurer = TextHost::new(ZeroTextBackend);
 
@@ -2667,7 +3054,7 @@ mod tests {
         let mut arena = UiRuntime::new();
         let node = create_host(
             &mut arena,
-            WidgetI::new(text("中文").style(Style::new().width(45.5).height(20.0))),
+            WidgetI::new(TextWidget::new("中文").style(Style::new().width(45.5).height(20.0))),
         );
         let mut measurer = TextHost::new(ZeroTextBackend);
 
@@ -2754,7 +3141,7 @@ mod tests {
                 ),
             ),
         );
-        let label = create_child(&mut arena, tab, WidgetI::new(text("飞行监测")));
+        let label = create_child(&mut arena, tab, WidgetI::new(TextWidget::new("飞行监测")));
         create_child(
             &mut arena,
             analytics,
@@ -2908,10 +3295,10 @@ mod tests {
                 ),
             ),
         );
-        let label = create_host(&mut arena, WidgetI::new(text("New member")));
+        let label = create_host(&mut arena, WidgetI::new(TextWidget::new("New member")));
         let explicit_label = create_host(
             &mut arena,
-            WidgetI::new(text("Pinned").style(Style::new().color(Color::BLUE_500))),
+            WidgetI::new(TextWidget::new("Pinned").style(Style::new().color(Color::BLUE_500))),
         );
         arena.append_child(tab, label);
         arena.append_child(tab, explicit_label);
@@ -2962,7 +3349,7 @@ mod tests {
                 ),
             ),
         );
-        let label = create_host(&mut arena, WidgetI::new(text("飞行监测")));
+        let label = create_host(&mut arena, WidgetI::new(TextWidget::new("飞行监测")));
         arena.append_child(tab, label);
 
         let size = Size::new(400.0, 200.0);

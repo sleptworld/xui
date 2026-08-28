@@ -1,8 +1,36 @@
+//! Core of the `xui` GUI framework: a retained-mode, declarative UI runtime.
+//!
+//! `xui` ties together a JSX-style `xui!` element macro, a React-style hook
+//! and fiber reconciler, flexbox layout (`taffy`), a style pipeline with tokens
+//! and themes, a backend-independent render scene, built-in widgets, and
+//! integration points for assets and text. Applications reach it through the
+//! `prelude` module and the `xui-macros` crate.
+//!
+//! # Modules
+//!
+//! - `app` — `App` owns the component root, async runtime, scheduler, theme,
+//!   and text host.
+//! - `runtime` — `GuiRuntime` drives the event/render loop.
+//! - `fiber` — retained fiber tree that reconciles `ElementDesc` trees.
+//! - `state` — hooks: `HookContext`, `Memo`, `Resource`, `Callback`,
+//!   `AsyncValue`, `TaskContext`, with lanes for batched updates.
+//! - `layout` — `taffy` flexbox over retained spatial nodes.
+//! - `style` — patches, tokens, themes, `ComputedStyle`, state rules.
+//! - `render` — scene, scene compiler, and the `RenderBackend` trait.
+//! - `widgets` — primitive widget interface and built-in widgets.
+//! - `event_system`, `focus`, `shortcut` — input, focus, and shortcuts.
+//! - `assets` — process-global `AssetManager` installation and loaders.
+//! - `text` — `TextHost` and the configured text backend.
+//!
+//! See `xui-example-app` for a complete runnable application, and the workspace
+//! `README.md` for a quick start.
+
 pub mod animation;
 pub mod app;
 pub mod assets;
 pub mod component;
 pub mod core;
+pub mod dsl;
 pub mod element;
 pub mod render;
 pub mod transition;

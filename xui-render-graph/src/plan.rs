@@ -909,7 +909,7 @@ impl LoweredGraph {
                     None => continue,
                 },
             };
-            let Some(output_demands) =
+            let Some(_output_demands) =
                 output_demand & self.resources[pass.output.index()].full_bounds
             else {
                 continue;

@@ -37,6 +37,9 @@ pub struct UiRuntime {
     /// Index of live `WidgetType::Text` hosts. `HostData::node_type` is fixed at
     /// creation, so membership only changes when a node is created or removed.
     pub(crate) text_nodes: SparseSecondaryMap<NodeId, ()>,
+    /// How many live hosts read raw device events. Almost always zero, which is
+    /// what lets raw dispatch skip its whole ancestor walk.
+    pub(crate) raw_event_listeners: usize,
     pub(crate) theme: Theme,
     pub update_visits: usize,
     pub layout_passes: usize,

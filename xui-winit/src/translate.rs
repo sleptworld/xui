@@ -7,7 +7,7 @@ use winit::keyboard::{
 use xui::prelude::{RuntimeEvent, Size};
 use xui_interface::events::{KeyState, KeyText, NamedKey, PhysicalKey, RawEvent, RawKeyboard};
 use xui_interface::{
-    Event, Modifiers, Point, PointerButton, PointerButtons, PointerKind, RawPointerButton,
+    Modifiers, Point, PointerButton, PointerButtons, PointerKind, RawPointerButton,
     RawPointerMove, RawWheel, RawWindowEvent, ScrollDelta, Translation, events::XuiPointerId,
 };
 use xui_interface::{RawIme, TextOffset, TextPayload, TextRange};

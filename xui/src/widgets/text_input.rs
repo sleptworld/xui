@@ -614,10 +614,10 @@ impl TextInputWidget {
                     RawIme::Preedit {
                         text,
                         cursor,
-                        timestamp,
+                        timestamp: _,
                     } => {
                         if !self.ime_session.is_active() {
-                            self.ime_session.begin(&mut self.controller).unwrap();
+                            self.ime_session.begin(&self.controller).unwrap();
                         }
                         if self
                             .ime_session
@@ -627,12 +627,12 @@ impl TextInputWidget {
                             self.apply_text_edit(cx);
                         }
                     }
-                    RawIme::Commit { text, timestamp } => {
+                    RawIme::Commit { text, timestamp: _ } => {
                         if self.ime_session.commit(&self.controller, text).is_ok() {
                             self.apply_text_edit(cx);
                         }
                     }
-                    RawIme::Disabled { timestamp } => {
+                    RawIme::Disabled { timestamp: _ } => {
                         self.ime_session.end(&self.controller);
                     }
                 }

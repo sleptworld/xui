@@ -4,7 +4,7 @@ use xui::prelude::*;
 /// asked for, so the cost of a list stops depending on how long it is.
 pub type VirtualItemRenderer = Callback<usize, ElementDesc>;
 
-/// The half-open range of rows a [`virtual_list`] currently materializes.
+/// The half-open range of rows a `virtual_list` currently materializes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VirtualRange {
     pub start: usize,

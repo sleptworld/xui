@@ -1,4 +1,14 @@
 //! Source mounting and caching for arbitrary XPAK assets.
+//!
+//! The runtime side of the asset system. An `AssetManager` mounts one or more
+//! `AssetSource`s and resolves assets by `AssetId`, caching decompressed
+//! immutable bytes and parsing them through pluggable `AssetFormat`s. Re-exports
+//! the container types from `xui-pak`.
+//!
+//! Sources are searched in insertion order; the first match wins, so mount
+//! high-priority overlays first. `CachePolicy::Immutable` (paks) cache
+//! decompressed bytes and stay zero-copy where possible; `CachePolicy::Volatile`
+//! (`DirectorySource`) never caches so live edits take effect immediately.
 
 use std::{
     error::Error,

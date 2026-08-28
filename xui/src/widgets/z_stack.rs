@@ -4,7 +4,7 @@ use crate::event_system::callbacks::EventHandlers;
 use crate::event_system::interaction::InteractionProperties;
 use crate::render::RenderTreeWriter;
 use xui_interface::{
-    Alignment, Bounds, ComputedStyle, EventRef, EventResult, Key, Rect, Style, TextContent,
+    Alignment, Bounds, ComputedStyle, EventRef, EventResult, Key, Style, TextContent,
     TextProps, WidgetType, WidgetUpdateFlags,
 };
 

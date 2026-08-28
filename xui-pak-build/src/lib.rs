@@ -1,4 +1,14 @@
 //! Build-time and command-line tooling for deterministic XPAK archives.
+//!
+//! Scans a source directory with `ignore`, applies glob `RuleConfig`s, encodes a
+//! deterministic `.xpak` archive, and generates Rust asset-id constants. Used by
+//! `xui-cli` (`cargo xui`) and `xui-pak-cli` (`xpak`), or directly from a
+//! `build.rs` via `build`.
+//!
+//! Archives are reproducible: the same source and config produce byte-identical
+//! `.xpak` files (entries are ordered by `AssetId`, not filesystem order). The
+//! generated Rust mirrors the directory structure as nested `pub mod`s with
+//! `pub const NAME: AssetId = AssetId::from_bytes([...]);` constants.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -13,9 +23,8 @@ use ignore::WalkBuilder;
 use serde::Deserialize;
 use thiserror::Error;
 use xui_pak::{
-    AssetError, AssetId, Compression, HEADER_LEN,
-    format::{PakIndex, PakIndexEntry, encode_header},
-    normalize_asset_path,
+    format::{encode_header, PakIndex, PakIndexEntry},
+    normalize_asset_path, AssetError, AssetId, Compression, HEADER_LEN,
 };
 
 #[derive(Debug, Error)]

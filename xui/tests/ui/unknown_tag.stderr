@@ -1,0 +1,15 @@
+error[E0425]: cannot find function `containr` in this scope
+ --> tests/ui/unknown_tag.rs:7:13
+  |
+7 |     xui! { <containr /> }
+  |             ^^^^^^^^
+  |
+ ::: src/widgets.rs
+  |
+  | pub fn container() -> ContainerWidget {
+  | ------------------------------------- similarly named function `container` defined here
+  |
+help: a function with a similar name exists
+  |
+7 |     xui! { <container /> }
+  |                    +

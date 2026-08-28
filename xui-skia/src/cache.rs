@@ -6,7 +6,7 @@ use skia_safe::{
     surfaces,
 };
 use xui::render::{BuiltLayer, CachePolicy, LayerCacheId, RenderNodeId};
-use xui_interface::{Bounds, Rect};
+use xui_interface::Bounds;
 
 use crate::SkiaBackendError;
 

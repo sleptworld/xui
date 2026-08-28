@@ -1,3 +1,16 @@
+//! Generational slot storage with `RenderPhase` guards.
+//!
+//! Used by `xui::state` for hook-local scratch storage. Combines a generational
+//! `Pointer`/`Scope` allocator with a thread-local `RenderPhase` so that, in
+//! debug builds, state reads and writes are only permitted during legal runtime
+//! phases (`Render`, `Event`, `Effect`, `Commit`). This catches reads outside a
+//! render pass and writes outside the event/effect phases early.
+//!
+//! - `Pointer<S, T>` — `Copy` generational handle; `Eq`/`Hash` by slot + generation.
+//! - `Storage` / `ScopeStorage` traits — allocate, read, write, recycle, clear.
+//! - `Scope<S>` — owns a `Vec` of allocated slots; drops and recycles on `Drop`.
+//! - `unsync` — the default single-threaded backend.
+
 use std::{
     cell::Cell,
     fmt,
@@ -262,6 +275,7 @@ impl<S: ?Sized, T> Pointer<S, T> {
     ///
     /// The caller is responsible for using the returned pointer only with APIs
     /// that can tolerate a runtime type mismatch.
+    // pi-lens-ignore: ast-grep:redundant-unsafe-function
     pub unsafe fn cast<U>(self) -> Pointer<S, U> {
         Pointer::new(self.slot, self.generation)
     }

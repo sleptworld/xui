@@ -17,7 +17,7 @@ pub trait FontRenderBackend {
     }
 }
 
-const SOURCES: &'static [Source] = &[
+const SOURCES: &[Source] = &[
     Source::ColorBitmap(StrikeWith::BestFit),
     Source::ColorOutline(0),
     Source::Outline,

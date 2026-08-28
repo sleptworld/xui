@@ -163,7 +163,7 @@ pub enum BindingError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BackdropDescriptor, LayerEffect, LayerGraphDescriptor, Mask, compile_layer};
+    use crate::{compile_layer, BackdropDescriptor, LayerEffect, LayerGraphDescriptor, Mask};
     use xui_interface::{Affine, Bounds, ImageData, ImageKey, Rect, Size};
 
     fn image_mask(key: u64, bounds: Bounds) -> LayerEffect {

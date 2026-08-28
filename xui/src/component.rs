@@ -70,12 +70,12 @@ struct PortalWork {
     visual_root: Option<NodeId>,
 }
 
-impl Into<ComponentState> for ComponentWork {
-    fn into(self) -> ComponentState {
+impl From<ComponentWork> for ComponentState {
+    fn from(val: ComponentWork) -> Self {
         ComponentState {
-            key: self.key,
-            render: self.render,
-            props: self.props,
+            key: val.key,
+            render: val.render,
+            props: val.props,
         }
     }
 }
@@ -304,7 +304,7 @@ impl WorkNode {
         fiber_tree: &'b FiberArena,
     ) -> Option<(ComponentRender, Option<ErasedPropsRef<'a>>)> {
         match &self.work {
-            Some(Work::ComponentWork(c)) => Some((c.render, c.props.as_ref().map(|p| &**p))),
+            Some(Work::ComponentWork(c)) => Some((c.render, c.props.as_deref())),
             _ => self
                 .binding
                 .current
@@ -313,7 +313,7 @@ impl WorkNode {
                 .map(|component| {
                     (
                         component.render,
-                        component.props.as_ref().map(|props| &**props),
+                        component.props.as_deref(),
                     )
                 }),
         }
@@ -394,11 +394,11 @@ impl WipArena {
     }
 
     fn get(&self, id: WipId) -> Option<&WorkNode> {
-        self.wip_nodes.get(id.0).map(|n| n.as_ref()).flatten()
+        self.wip_nodes.get(id.0).and_then(|n| n.as_ref())
     }
 
     fn get_mut(&mut self, id: WipId) -> Option<&mut WorkNode> {
-        self.wip_nodes.get_mut(id.0).map(|n| n.as_mut()).flatten()
+        self.wip_nodes.get_mut(id.0).and_then(|n| n.as_mut())
     }
 
     fn take_node(&mut self, id: WipId) -> Option<WorkNode> {
@@ -883,8 +883,8 @@ impl ComponentRuntime {
             let _ = arena.unmount_overlay_entry(entry);
         }
 
-        if remove_host {
-            if let Some(host_node) = host_node {
+        if remove_host
+            && let Some(host_node) = host_node {
                 arena.remove_subtree(host_node);
                 for child in children {
                     self.commit_deletion(child, arena, false);
@@ -892,7 +892,6 @@ impl ComponentRuntime {
                 self.nodes.remove_node(id);
                 return;
             }
-        }
 
         for child in children {
             self.commit_deletion(child, arena, remove_host);
@@ -1019,15 +1018,9 @@ impl ComponentRuntime {
                     .update_overlay_entry(entry, scope, options)
                     .expect("Portal entry could not be moved");
                 Some(entry)
-            } else if let Some(visual_root) = visual_root {
-                Some(
-                    arena
+            } else { visual_root.map(|visual_root| arena
                         .mount_overlay_entry(visual_root, scope, options)
-                        .expect("Portal entry could not be mounted"),
-                )
-            } else {
-                None
-            };
+                        .expect("Portal entry could not be mounted")) };
             let portal = self
                 .wip_nodes
                 .get_mut(wip_id)
@@ -1543,11 +1536,10 @@ fn find_reusable_child_fast(
     let old = *old_children.get(old_index)?;
     let old_node = nodes.node(old)?;
 
-    if prepared.key.is_none() {
-        if old_node.key.is_some() || old_node.position != position {
+    if prepared.key.is_none()
+        && (old_node.key.is_some() || old_node.position != position) {
             return None;
         }
-    }
 
     if !can_reuse_prepared(old_node, prepared) {
         return None;
@@ -1909,7 +1901,7 @@ mod portal_tests {
 //             .expect("item props missing")
 //             .downcast_ref::<ItemProps>()
 //             .expect("item props type changed");
-//         text(props.text).into_element_desc()
+//         TextWidget::new(props.text).into_element_desc()
 //     }
 
 //     fn item_render() -> ComponentRender {
@@ -1924,7 +1916,7 @@ mod portal_tests {
 //     }
 
 //     fn keyed_text(key: &'static str, label: &'static str) -> ElementDesc {
-//         text(label).key(key).into_element_desc()
+//         TextWidget::new(label).key(key).into_element_desc()
 //     }
 
 //     fn column_with(children: Vec<ElementDesc>) -> ElementDesc {

@@ -7,7 +7,7 @@ use crate::widgets::utils::render_box;
 use xui_interface::{style::ScrollbarStylePatch, *};
 
 use super::{props_hash, widget_element_desc};
-use crate::render::{ImagePrimitive, Primitive, RenderTreeWriter, Shape, ShapePrimitive};
+use crate::render::{ImagePrimitive, Primitive, RenderTreeWriter};
 
 pub struct ImageWidget {
     pub key: Option<Key>,

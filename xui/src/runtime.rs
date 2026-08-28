@@ -148,8 +148,8 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
                     _ => None,
                 };
                 let mut result = self.app.dispatch_event(event, &mut self.text_backend);
-                if !result.is_consumed() {
-                    if let Some(raw) = keyboard {
+                if !result.is_consumed()
+                    && let Some(raw) = keyboard {
                         let resolved = self.app.resolve_local_shortcut(&raw).or_else(|| {
                             self.shortcuts
                                 .resolve(&raw)
@@ -167,7 +167,6 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
                             }
                         }
                     }
-                }
                 self.refresh_platform_output();
                 vec![result]
             }

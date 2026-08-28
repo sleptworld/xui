@@ -1,5 +1,5 @@
 use slotmap::SlotMap;
-use xui_interface::{Affine, Bounds, Point, Rect};
+use xui_interface::{Affine, Bounds, Point};
 
 use super::{
     CachePolicy, ClipShape, CompositeStyle, LayerCacheKey, LayerDescriptor, Primitive,

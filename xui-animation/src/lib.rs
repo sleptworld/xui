@@ -1,3 +1,19 @@
+//! Timing and interpolation primitives for the `xui` framework.
+//!
+//! Re-exports `Easing`, `Transition`, and `AnimationProgress` from
+//! `xui-interface` and adds:
+//!
+//! - the `Animatable` trait and `#[derive(Animatable)]` plumbing (the derive
+//!   lives in `xui-macros`),
+//! - `Tween<T>` / `PropertyAnimation<T>` for sampling a value over a transition,
+//! - `Timeline` and `AnimationClock` for phase-accurate progress tracking,
+//! - built-in interpolations for `f32`, `NotNan<f32>`, `Point`, `Size`,
+//!   `EdgeInsets`, `Color`, `LengthValue`, `ColorStyle`, gradients, shadows,
+//!   strokes, and scrollbars.
+//!
+//! Different enum variants snap at the end (discrete interpolation), so
+//! mismatched color/length variants never produce a meaningless blend.
+
 use ordered_float::NotNan;
 use std::time::Duration;
 

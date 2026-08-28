@@ -1,8 +1,9 @@
 use easer::functions::{Cubic, Easing as EaserFunction, Linear, Quad, Quart, Quint, Sine};
 use std::time::Duration;
 
-#[derive(Debug, Clone, Copy, PartialEq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Default)]
 pub enum Easing {
+    #[default]
     Linear,
     QuadIn,
     QuadOut,
@@ -19,12 +20,6 @@ pub enum Easing {
     SineIn,
     SineOut,
     SineInOut,
-}
-
-impl Default for Easing {
-    fn default() -> Self {
-        Self::Linear
-    }
 }
 
 impl Easing {

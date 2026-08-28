@@ -15,7 +15,6 @@ pub struct EventTranslator {
     active_presses: FxHashMap<(XuiPointerId, PointerButton), ActivePress>,
     active_drags: FxHashMap<XuiPointerId, ActiveDrag>,
     last_click: Option<ClickRecord>,
-    pointer_capture: FxHashMap<XuiPointerId, NodeId>,
     config: EventTranslatorConfig,
 }
 
@@ -132,18 +131,11 @@ impl EventTranslator {
             active_presses: FxHashMap::default(),
             active_drags: FxHashMap::default(),
             last_click: None,
-            pointer_capture: FxHashMap::default(),
             config,
         }
     }
 
-    pub fn set_pointer_capture(&mut self, pointer_id: XuiPointerId, target: NodeId) {
-        self.pointer_capture.insert(pointer_id, target);
-    }
 
-    pub fn release_pointer_capture(&mut self, pointer_id: XuiPointerId) {
-        self.pointer_capture.remove(&pointer_id);
-    }
 
     pub fn translate_raw_event(
         &mut self,
@@ -157,7 +149,7 @@ impl EventTranslator {
             RawEvent::PointerCancel(raw) => self.translate_pointer_cancel(raw, arena),
             RawEvent::Wheel(raw) => self.translate_wheel(raw, arena),
             RawEvent::Keyboard(raw) if raw.state == xui_interface::events::KeyState::Down => {
-                self.translate_key_down(&raw, arena)
+                self.translate_key_down(raw, arena)
             }
             RawEvent::Keyboard(_) => Vec::new(),
             RawEvent::WindowBlur(raw) => self.translate_window_blur(raw, arena),
@@ -703,21 +695,27 @@ impl EventTranslator {
             &mut out,
         );
         self.hover_paths.clear();
-        self.pointer_capture.clear();
 
         out
     }
 
+    /// Where a pointer event is aimed.
+    ///
+    /// A captured pointer keeps aiming at the capturing node even once it has
+    /// left that node's bounds — which is what makes drag-selecting out of a
+    /// text input work. The translator used to keep a second, parallel capture
+    /// map of its own that nothing ever wrote to, so raw dispatch honoured
+    /// capture while semantic dispatch silently hit-tested instead. There is now
+    /// one capture, owned by the runtime, and both layers read it.
     #[inline(always)]
     fn resolve_pointer_target(
         &self,
-        pointer_id: XuiPointerId,
+        _pointer_id: XuiPointerId,
         position: Point,
         arena: &UiRuntime,
     ) -> Option<NodeId> {
-        self.pointer_capture
-            .get(&pointer_id)
-            .copied()
+        arena
+            .pointer_capture_node()
             .filter(|target| arena.contains(*target))
             .or_else(|| arena.hit_test(position))
     }
@@ -732,8 +730,7 @@ impl EventTranslator {
         arena: &UiRuntime,
     ) -> PointerSnapshot {
         let target_local = target
-            .map(|node| arena.to_local(node, position))
-            .flatten()
+            .and_then(|node| arena.to_local(node, position))
             .unwrap_or(position);
 
         PointerSnapshot {
@@ -798,59 +795,33 @@ impl EventTranslator {
 
         let common = common_prefix_len(&old_path, &new_path);
         let left: Vec<NodeId> = old_path[common..].iter().rev().copied().collect();
-        let entered: Vec<NodeId> = new_path[common..].iter().copied().collect();
+        let entered: Vec<NodeId> = new_path[common..].to_vec();
         let old_target = old_path.last().copied();
         let new_target = new_path.last().copied();
 
-        for node in &left {
+        let mut push_hovered = |node: NodeId, hovered: bool, related_target, out: &mut Vec<SemanticEvent>| {
             let meta = self.make_meta(
                 timestamp,
-                *node,
-                *node,
+                node,
+                node,
                 EventPhase::Target,
                 EventSource::Pointer,
                 modifiers,
             );
-            out.push(SemanticEvent::HoverLeave(HoverEvent {
+            out.push(SemanticEvent::Hovered(HoverEvent {
                 meta,
                 pointer,
-                related_target: new_target,
+                hovered,
+                related_target,
             }));
+        };
+
+        for node in &left {
+            push_hovered(*node, false, new_target, out);
         }
 
         for node in &entered {
-            let meta = self.make_meta(
-                timestamp,
-                *node,
-                *node,
-                EventPhase::Target,
-                EventSource::Pointer,
-                modifiers,
-            );
-            out.push(SemanticEvent::HoverEnter(HoverEvent {
-                meta,
-                pointer,
-                related_target: old_target,
-            }));
-        }
-
-        if let Some(target) = new_target.or(old_target) {
-            let meta = self.make_meta(
-                timestamp,
-                target,
-                target,
-                EventPhase::Target,
-                EventSource::Pointer,
-                modifiers,
-            );
-            out.push(SemanticEvent::HoverChange(HoverChangeEvent {
-                meta,
-                pointer,
-                old_target,
-                new_target,
-                entered,
-                left,
-            }));
+            push_hovered(*node, true, old_target, out);
         }
 
         if new_path.is_empty() {

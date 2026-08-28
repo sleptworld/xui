@@ -30,7 +30,7 @@ fn list_root(cx: &mut HookContext<'_>) -> ElementDesc {
     let render_item: VirtualItemRenderer = cx.use_callback((), |index: usize| {
         RENDER_CALLS.fetch_add(1, Ordering::Relaxed);
         RENDERED.with(|slot| slot.borrow_mut().push(index));
-        text(format!("row {index}"))
+        TextWidget::new(format!("row {index}"))
             .style(Style::new().width(Sizing::Fill).height(ITEM_HEIGHT))
             .into_element_desc()
     });

@@ -1,6 +1,6 @@
 use xui_interface::{
     Affine, Bounds, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, ImageData,
-    ImageKey, ImageStyle, ImageVariant, NodeId, Point, Rect, TextPaintProps, TextVerticalAlign,
+    ImageKey, ImageStyle, ImageVariant, NodeId, Point, TextPaintProps, TextVerticalAlign,
     VectorScene,
 };
 

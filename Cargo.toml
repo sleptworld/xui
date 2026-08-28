@@ -18,6 +18,29 @@ members = [
     "xui-render-graph",
     "xui-skia",
 ]
+# Library crates built by default by plain `cargo` (build/check/test/doc).
+# `xui-example-app` is a workspace member but is built via `cargo xui` (its
+# `#[xui::main]` entry point requires the asset bootstrap `cargo xui`
+# generates), so it is excluded from the default set — run `cargo xui run`
+# for it, or `cargo build -p xui-example-app` is intentionally not plain-cargo.
+default-members = [
+    "xui-assets",
+    "xui-interface",
+    "xui-pak",
+    "xui-pak-build",
+    "xui-pak-cli",
+    "xui",
+    "xui-macros",
+    "xui-winit",
+    "xui-text",
+    "xui-components",
+    "xui-cli",
+    "xui-animation",
+    "slot",
+    "xui-text-engine",
+    "xui-render-graph",
+    "xui-skia",
+]
 
 
 [workspace.dependencies]
