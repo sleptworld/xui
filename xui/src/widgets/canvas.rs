@@ -105,12 +105,7 @@ pub struct CanvasPainter<'a> {
 }
 
 impl<'a> CanvasPainter<'a> {
-    fn new(
-        size: Size<f32>,
-        style: &'a ComputedStyle,
-        theme: &'a Theme,
-        scale_factor: f32,
-    ) -> Self {
+    fn new(size: Size<f32>, style: &'a ComputedStyle, theme: &'a Theme, scale_factor: f32) -> Self {
         Self {
             commands: Vec::new(),
             picks: Vec::new(),
@@ -1321,7 +1316,10 @@ mod tests {
         };
         assert_eq!(outer.clip, ClipShape::Rect(rect));
 
-        let children = render_scene.children(outer.child.unwrap()).unwrap().to_vec();
+        let children = render_scene
+            .children(outer.child.unwrap())
+            .unwrap()
+            .to_vec();
         assert_eq!(children.len(), 3);
 
         let RenderNodeKind::Primitive(shape) = &render_scene.node(children[0]).unwrap().kind else {
@@ -1335,7 +1333,8 @@ mod tests {
             Bounds::from_origin_size((2.0, 3.0), (10.0, 10.0))
         );
 
-        let RenderNodeKind::Primitive(vector) = &render_scene.node(children[1]).unwrap().kind else {
+        let RenderNodeKind::Primitive(vector) = &render_scene.node(children[1]).unwrap().kind
+        else {
             panic!("second batch should be a vector primitive");
         };
         let Primitive::Vector(vector) = &vector.primitive else {

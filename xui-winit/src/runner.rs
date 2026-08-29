@@ -22,6 +22,7 @@ use xui::{
     app::AppRenderError, render::RenderBackend, runtime::ControlFlow as XuiControlFlow,
     runtime::GuiRuntime, runtime::RuntimeEvent,
 };
+use xui_f::FBackend;
 use xui_interface::events::{
     KeyState, KeyText, RawEvent, RawIme, RawKeyboard, TextPayload, XuiPointerId,
 };
@@ -29,17 +30,12 @@ use xui_interface::{
     CursorIcon, Modifiers, PlatformOutput, Point, PointerButtons, PointerKind, RawPointerButton,
     RawPointerMove, RawWheel, RawWindowEvent, Size, TextBackend, TextOffset, TextRange,
 };
-use xui_text_engine::{CosmicEngine, FontSet};
+// use xui_text_engine::{CosmicEngine, FontSet};
 
 #[derive(Debug, Clone)]
 pub struct WinitRunnerOptions {
     pub window_attributes: WindowAttributes,
     pub exit_on_close_requested: bool,
-    /// The faces the text engine starts with. Defaults to every installed font,
-    /// which is what makes arbitrary text render without the application saying
-    /// anything — and is also the largest single cost before the first frame.
-    /// See [`FontSet`].
-    pub fonts: FontSet,
 }
 
 impl Default for WinitRunnerOptions {
@@ -49,7 +45,6 @@ impl Default for WinitRunnerOptions {
                 .with_title("XUI")
                 .with_inner_size(PhysicalSize::new(800, 600)),
             exit_on_close_requested: true,
-            fonts: FontSet::System,
         }
     }
 }
@@ -276,12 +271,13 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackend> WinitRunner<B, T> {
             .map(|session| session.cursor_area);
         let next_area = next.text_input.as_ref().map(|session| session.cursor_area);
         if previous_area != next_area
-            && let Some(area) = next_area {
-                window.set_ime_cursor_area(
-                    LogicalPosition::new(area.x as f64, area.y as f64),
-                    LogicalSize::new(area.width as f64, area.height as f64),
-                );
-            }
+            && let Some(area) = next_area
+        {
+            window.set_ime_cursor_area(
+                LogicalPosition::new(area.x as f64, area.y as f64),
+                LogicalSize::new(area.width as f64, area.height as f64),
+            );
+        }
 
         if self.last_platform_output.cursor != next.cursor {
             match to_winit_cursor(next.cursor) {
@@ -298,9 +294,10 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackend> WinitRunner<B, T> {
 
     fn request_redraw_if_dirty(&self) {
         if self.runtime().app().is_dirty()
-            && let Some(window) = self.window.as_ref() {
-                window.request_redraw();
-            }
+            && let Some(window) = self.window.as_ref()
+        {
+            window.request_redraw();
+        }
     }
 
     #[inline(always)]
@@ -493,19 +490,14 @@ pub fn runner(
 pub fn runner(
     app: ComponentFn,
     options: Option<WinitRunnerOptions>,
-) -> WinitRunner<xui_skia::SkiaBackend<CosmicEngine>, CosmicEngine> {
+) -> WinitRunner<xui_skia::SkiaBackend<FBackend>, FBackend> {
     let app = App::new(app);
     let options = options.unwrap_or_default();
-    let fonts = options.fonts.clone();
     WinitRunner::with_fallible_options(
         move |window| -> Result<_, std::io::Error> {
-            let backend = xui_skia::SkiaBackend::<CosmicEngine>::new(window.clone())
+            let backend = xui_skia::SkiaBackend::<FBackend>::new(window.clone())
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
-            Ok((
-                app,
-                CosmicEngine::with_fonts(window.scale_factor() as f32, fonts),
-                backend,
-            ))
+            Ok((app, FBackend::new(), backend))
         },
         options,
     )

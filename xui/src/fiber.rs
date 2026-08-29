@@ -345,9 +345,10 @@ impl FiberArena {
         }
 
         if let Some(host) = self.nodes[id].host.as_ref()
-            && let Some(taffy_node) = host.taffy_node {
-                let _ = self.taffy.remove(taffy_node);
-            }
+            && let Some(taffy_node) = host.taffy_node
+        {
+            let _ = self.taffy.remove(taffy_node);
+        }
         self.nodes.remove(id);
     }
 

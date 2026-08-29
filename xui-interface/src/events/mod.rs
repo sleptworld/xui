@@ -17,7 +17,6 @@ pub enum EventRef<'a> {
     Semantic(&'a semantic::SemanticEvent),
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventResult {
     Ignored,

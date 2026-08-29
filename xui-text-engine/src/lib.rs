@@ -233,13 +233,15 @@ impl CosmicEngine {
         let line_bases = compute_line_base_byte_offsets(input.text.as_str());
         let mut layout = self.layout_paragraph_from_buffer(buffer, &line_bases);
         if input.text_box_style.overflow == TextOverflow::Clip
-            && let Some(max_lines) = input.text_box_style.max_lines {
-                truncate_layout_lines(&mut layout, max_lines);
-            }
+            && let Some(max_lines) = input.text_box_style.max_lines
+        {
+            truncate_layout_lines(&mut layout, max_lines);
+        }
         if ellipsize != Ellipsize::None
-            && let Some(last) = layout.lines.last_mut() {
-                last.ellipsized = last.text_range.end.raw < text_len;
-            }
+            && let Some(last) = layout.lines.last_mut()
+        {
+            last.ellipsized = last.text_range.end.raw < text_len;
+        }
         layout
     }
 
@@ -529,7 +531,7 @@ impl FontDatabase for CosmicEngine {
         ids.first().copied().unwrap_or_default()
     }
 
-    fn query(&self, query: &FontQuery) -> Option<Self::FontId> {
+    fn query(&mut self, query: &FontQuery) -> Option<Self::FontId> {
         let families = query_families(&query.families);
         self.font_system.db().query(&fontdb::Query {
             families: &families,
@@ -894,5 +896,4 @@ mod tests {
         assert!(value.lines[0].ellipsized);
         assert!(value.lines[0].width <= 45.0);
     }
-
 }

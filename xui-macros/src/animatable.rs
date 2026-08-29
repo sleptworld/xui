@@ -45,7 +45,6 @@ pub fn expand_derive_animatable(input: &DeriveInput) -> Result<TokenStream2> {
     })
 }
 
-
 fn expand_animatable_struct_body(
     fields: &Fields,
     animatable_path: &TokenStream2,
@@ -102,4 +101,3 @@ fn expand_animatable_struct_body(
         Fields::Unit => Ok(quote!(Self)),
     }
 }
-

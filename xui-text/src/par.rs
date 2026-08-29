@@ -323,14 +323,14 @@ impl Par {
                 }
             }
         } else if !cluster.is_empty()
-            && let Some(glyph) = self.data.glyphs.get_mut(cluster.glyphs as usize) {
-                if glyph.is_simple() {
-                    glyph.clear_advance();
-                } else if let Some(glyph) = self.data.detailed_glyphs.get_mut(glyph.detail_index())
-                {
-                    glyph.advance = 0.;
-                }
+            && let Some(glyph) = self.data.glyphs.get_mut(cluster.glyphs as usize)
+        {
+            if glyph.is_simple() {
+                glyph.clear_advance();
+            } else if let Some(glyph) = self.data.detailed_glyphs.get_mut(glyph.detail_index()) {
+                glyph.advance = 0.;
             }
+        }
 
         if let Some(run) = self.data.runs.iter_mut().rev().find(|run| {
             let cluster_index = cluster_index as u32;
@@ -794,11 +794,12 @@ impl<'a> Session<'a> {
     pub fn pop_span(&mut self) {
         let s = &mut self.engine.state;
         if let Some((_, dir_changed)) = s.pop()
-            && dir_changed {
-                const PDI: char = '\u{2069}';
-                self.dir_depth = self.dir_depth.saturating_sub(1);
-                self.push_char(PDI);
-            }
+            && dir_changed
+        {
+            const PDI: char = '\u{2069}';
+            self.dir_depth = self.dir_depth.saturating_sub(1);
+            self.push_char(PDI);
+        }
     }
 
     /// Adds a text fragment to the paragraph.

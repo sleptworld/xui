@@ -3,7 +3,6 @@
 use crate::animation::has_animatable_difference;
 use crate::core::{Point, Size};
 use crate::event_system::callbacks::{EventHandlers, EventMask};
-use xui_interface::CursorIcon;
 use crate::event_system::interaction::HostInteraction;
 use crate::event_system::{self, EventState, translator::EventTranslator};
 use crate::fiber::Key;
@@ -30,6 +29,7 @@ use crate::widgets::{
 };
 use std::time::Duration;
 use taffy::prelude as tf;
+use xui_interface::CursorIcon;
 use xui_interface::events::RawEvent;
 use xui_interface::{
     AccessibilityProperties, Affine, Bounds, ComputedColorStyle, ComputedScrollStyle,
@@ -2356,8 +2356,6 @@ fn layer_descriptor_from_style(style: &ComputedStyle, bounds: Bounds) -> Option<
 mod tests {
     use super::*;
     use crate::dsl::StyleProps;
-    use xui_interface::core::Sizing;
-    use xui_interface::style::FlexDirectionStyle;
     use crate::event_system::callbacks::EventProps;
     use crate::event_system::translator::EventTranslator;
     use crate::event_system::{Flow, Handler};
@@ -2371,11 +2369,13 @@ mod tests {
     use std::rc::Rc;
     use std::time::{Duration, Instant};
     use xui_animation::{Easing, Transition};
+    use xui_interface::core::Sizing;
     use xui_interface::events::semantic::ClickEvent;
     use xui_interface::events::{
         Modifiers, PointerButton, PointerButtons, PointerKind, RawPointerButton, RawPointerMove,
         XuiPointerId,
     };
+    use xui_interface::style::FlexDirectionStyle;
     use xui_interface::{
         Affine, CanvasTextId, Color, ComputedColorStyle, FontDatabase, PathBuilder, PathFill,
         Style, TextProps, VectorSceneBuilder, WidgetState,
@@ -3034,7 +3034,10 @@ mod tests {
         let mut with_cursor = base.clone();
         with_cursor.cursor = Some(CursorIcon::Pointer);
 
-        assert_ne!(base.cursor, with_cursor.cursor, "the fixture is not testing anything");
+        assert_ne!(
+            base.cursor, with_cursor.cursor,
+            "the fixture is not testing anything"
+        );
         assert!(
             base.diff(&with_cursor).is_empty(),
             "a cursor change produced invalidation flags"
@@ -3169,8 +3172,11 @@ mod tests {
         let node = create_host(
             &mut overridden,
             WidgetI::new(
-                text_input()
-                    .style(Style::new().size(Size::fix(80.0, 30.0)).cursor(CursorIcon::NotAllowed)),
+                text_input().style(
+                    Style::new()
+                        .size(Size::fix(80.0, 30.0))
+                        .cursor(CursorIcon::NotAllowed),
+                ),
             ),
         );
         overridden.update_tree(Size::new(200.0, 200.0), &mut measurer);
@@ -3246,9 +3252,21 @@ mod tests {
         let (arena, outer, filling, hugging) = build_two_pane_shell(true);
         let height = |id: NodeId| arena.node(id).unwrap().layout.height();
 
-        assert_eq!(height(outer), 300.0, "the shell must not exceed the viewport");
-        assert_eq!(height(hugging), 60.0, "the bottom pane is sized by its content");
-        assert_eq!(height(filling), 240.0, "the top pane takes exactly what is left");
+        assert_eq!(
+            height(outer),
+            300.0,
+            "the shell must not exceed the viewport"
+        );
+        assert_eq!(
+            height(hugging),
+            60.0,
+            "the bottom pane is sized by its content"
+        );
+        assert_eq!(
+            height(filling),
+            240.0,
+            "the top pane takes exactly what is left"
+        );
         assert_eq!(
             arena.node(filling).unwrap().content_size.height,
             500.0,

@@ -1,7 +1,7 @@
 use crate::{
-    core::Sizing, text::TextStyle, Affine, Bounds, Color, EdgeInsets, FontFamily, FontStyle,
-    FontWeight, ImageData, ImageKey, LineHeight, Point, Size, StyleDiffFlags, TextDecoration,
-    Transition, WidgetState,
+    Affine, Bounds, Color, EdgeInsets, FontFamily, FontStyle, FontWeight, ImageData, ImageKey,
+    LineHeight, Point, Size, StyleDiffFlags, TextDecoration, Transition, WidgetState, core::Sizing,
+    text::TextStyle,
 };
 use std::{
     cell::RefCell,
@@ -2554,11 +2554,7 @@ fn compute_effect(effect: &Effect, theme: &Theme) -> ComputedEffect {
 }
 
 fn non_negative(value: f32) -> f32 {
-    if value < 0.0 {
-        0.0
-    } else {
-        value
-    }
+    if value < 0.0 { 0.0 } else { value }
 }
 
 fn normalize_radians(value: f32) -> f32 {

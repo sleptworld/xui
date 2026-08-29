@@ -1,7 +1,7 @@
 use crate::event_system::EventContext;
 use xui_interface::{
-    Bounds, Color, ComputedStyle, EventRef, EventResult, Key, Size, Style, TextContent,
-    TextProps, WidgetType, WidgetUpdateFlags, core::Sizing,
+    Bounds, Color, ComputedStyle, EventRef, EventResult, Key, Size, Style, TextContent, TextProps,
+    WidgetType, WidgetUpdateFlags, core::Sizing,
 };
 
 use super::props_hash;

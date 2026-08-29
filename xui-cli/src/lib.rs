@@ -23,7 +23,7 @@ use clap::{Args, Parser, Subcommand};
 use serde::Deserialize;
 use thiserror::Error;
 use xui_pak::PakSource;
-use xui_pak_build::{build_to, BuildConfig, BuildOutput, PackageConfig, RuleConfig};
+use xui_pak_build::{BuildConfig, BuildOutput, PackageConfig, RuleConfig, build_to};
 
 #[derive(Debug, Error)]
 pub enum CliError {
@@ -422,11 +422,7 @@ fn profile_from_args(args: &[OsString]) -> String {
 }
 
 fn cargo_profile_directory(profile: &str) -> &str {
-    if profile == "dev" {
-        "debug"
-    } else {
-        profile
-    }
+    if profile == "dev" { "debug" } else { profile }
 }
 
 fn option_value<'a>(args: &'a [OsString], name: &str) -> Option<&'a OsStr> {

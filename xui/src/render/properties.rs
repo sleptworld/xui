@@ -7,13 +7,11 @@ pub struct FramePropertiesSnapshot {
     pub revision: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct DynamicComposite {
     pub opacity: Option<f32>,
     pub transform: Option<Affine>,
 }
-
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Versioned<T> {

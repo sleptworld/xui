@@ -10,9 +10,10 @@ use std::{
 
 use skia_safe::{
     AlphaType, BlendMode as SkBlendMode, Canvas, ClipOp, Color4f, ColorSpace, ColorType, Data,
-    Font, FontMgr, GlyphId as SkGlyphId, IRect, Image, ImageFilter, ImageInfo, Matrix, Paint,
-    PaintStyle, Path, PathBuilder, Point as SkPoint, RRect, Rect as SkRect, Region, RuntimeEffect,
-    SamplingOptions, Surface, TextBlob, TextBlobBuilder, TileMode, Typeface as SkTypeface,
+    Font, FontMgr, FontStyle as SkFontStyle, GlyphId as SkGlyphId, IRect, Image, ImageFilter,
+    ImageInfo, Matrix, Paint, PaintStyle, Path, PathBuilder, Point as SkPoint, RRect,
+    Rect as SkRect, Region, RuntimeEffect, SamplingOptions, Surface, TextBlob, TextBlobBuilder,
+    TileMode, Typeface as SkTypeface,
     gradient::{self, Colors, Gradient, Interpolation},
     images,
     paint::{Cap as SkCap, Join as SkJoin},
@@ -1757,6 +1758,27 @@ impl<T: TextBackend> SkiaBackend<T> {
         self.font_mgr().new_from_data(bytes, Some(index as usize))
     }
 
+    fn system_typeface(
+        &mut self,
+        family: &str,
+        postscript_name: &str,
+        style: SkFontStyle,
+    ) -> Option<SkTypeface> {
+        let mut styles = self.font_mgr().match_family(family);
+        for index in 0..styles.count() {
+            let Some(typeface) = styles.new_typeface(index) else {
+                continue;
+            };
+            if typeface
+                .post_script_name()
+                .is_some_and(|name| name == postscript_name)
+            {
+                return Some(typeface);
+            }
+        }
+        self.font_mgr().match_family_style(family, style)
+    }
+
     /// The process-wide font manager, built on first use.
     ///
     /// `FontMgr::new()` enumerates CoreText on macOS and costs tens of
@@ -1793,6 +1815,26 @@ impl<T: TextBackend> SkiaBackend<T> {
                         "Skia could not load font bytes at collection index {index}"
                     ))
                 })?,
+            FontDataRef::SystemMemory {
+                bytes,
+                index,
+                family,
+                postscript_name,
+                style,
+                stretch,
+                ..
+            } => self
+                .system_typeface(
+                    family,
+                    postscript_name,
+                    sk_font_style(font_weight, stretch, style),
+                )
+                .or_else(|| self.load_font_from_bytes(bytes, index))
+                .ok_or_else(|| {
+                    SkiaBackendError::FontDataError(format!(
+                        "Skia could not resolve system font {family} ({postscript_name}) from in-memory collection index {index}"
+                    ))
+                })?,
             FontDataRef::System {
                 path,
                 index,
@@ -1802,8 +1844,11 @@ impl<T: TextBackend> SkiaBackend<T> {
                 stretch,
                 ..
             } => self
-                .font_mgr()
-                .match_family_style(family, sk_font_style(font_weight, stretch, style))
+                .system_typeface(
+                    family,
+                    postscript_name,
+                    sk_font_style(font_weight, stretch, style),
+                )
                 .or_else(|| self.load_font_from_path(path, index).ok().flatten())
                 .ok_or_else(|| {
                     SkiaBackendError::FontDataError(format!(
@@ -2808,9 +2853,7 @@ fn draw_vector(
                     if intervals.len() % 2 == 1 {
                         intervals.extend_from_within(..);
                     }
-                    if let Some(effect) =
-                        skia_safe::PathEffect::dash(&intervals, dash.offset)
-                    {
+                    if let Some(effect) = skia_safe::PathEffect::dash(&intervals, dash.offset) {
                         paint.set_path_effect(effect);
                     }
                 }

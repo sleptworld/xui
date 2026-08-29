@@ -17,6 +17,7 @@ members = [
     "slot", "xui-text-engine",
     "xui-render-graph",
     "xui-skia",
+    "xui-f",
 ]
 # Library crates built by default by plain `cargo` (build/check/test/doc).
 # `xui-example-app` is a workspace member but is built via `cargo xui` (its
@@ -40,6 +41,7 @@ default-members = [
     "xui-text-engine",
     "xui-render-graph",
     "xui-skia",
+    "xui-f",
 ]
 
 

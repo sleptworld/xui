@@ -126,9 +126,10 @@ impl TextEditingValue {
 
             self.text.remove(change.range.as_range());
             if let Some(ref insert) = change.insert
-                && !insert.is_empty() {
-                    self.text.insert(change.range.start, insert);
-                }
+                && !insert.is_empty()
+            {
+                self.text.insert(change.range.start, insert);
+            }
         }
 
         self.selection = final_selection;

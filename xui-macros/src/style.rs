@@ -46,7 +46,6 @@ struct StyleEntryTokens {
     value: TokenStream2,
 }
 
-
 impl Parse for StyleInput {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
         Ok(Self {
@@ -162,25 +161,25 @@ fn collect_style_value(
     rules: &mut Vec<StyleRuleEntries>,
 ) -> Result<()> {
     if let Expr::If(if_expr) = value
-        && let Some(condition) = parse_style_condition(&if_expr.cond)? {
-            let then_conditions =
-                cross_condition_masks(conditions.to_vec(), condition.true_masks());
-            collect_style_block_value(
-                name,
-                &if_expr.then_branch,
-                &then_conditions,
-                base_entries,
-                rules,
-            )?;
+        && let Some(condition) = parse_style_condition(&if_expr.cond)?
+    {
+        let then_conditions = cross_condition_masks(conditions.to_vec(), condition.true_masks());
+        collect_style_block_value(
+            name,
+            &if_expr.then_branch,
+            &then_conditions,
+            base_entries,
+            rules,
+        )?;
 
-            if let Some((_, else_expr)) = &if_expr.else_branch {
-                let else_conditions =
-                    cross_condition_masks(conditions.to_vec(), condition.false_masks());
-                collect_style_value(name, else_expr, &else_conditions, base_entries, rules)?;
-            }
-
-            return Ok(());
+        if let Some((_, else_expr)) = &if_expr.else_branch {
+            let else_conditions =
+                cross_condition_masks(conditions.to_vec(), condition.false_masks());
+            collect_style_value(name, else_expr, &else_conditions, base_entries, rules)?;
         }
+
+        return Ok(());
+    }
 
     push_style_value(
         name,
@@ -244,9 +243,10 @@ fn style_block_value_tokens(block: &syn::Block) -> TokenStream2 {
 
 fn single_tail_expr(block: &syn::Block) -> Option<&Expr> {
     if block.stmts.len() == 1
-        && let syn::Stmt::Expr(expr, None) = &block.stmts[0] {
-            return Some(expr);
-        }
+        && let syn::Stmt::Expr(expr, None) = &block.stmts[0]
+    {
+        return Some(expr);
+    }
     None
 }
 

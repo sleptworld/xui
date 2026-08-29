@@ -85,7 +85,7 @@ impl DamageRegion {
         let mut result = Self::default();
         for rect in &self.rects {
             let expanded = expansion.apply_to_bounds(*rect);
-            let Some(parent_visible) = expanded & parent_clip  else {
+            let Some(parent_visible) = expanded & parent_clip else {
                 continue;
             };
             if let Some(child) = parent_to_child.transform_bounds(parent_visible) & child_clip {

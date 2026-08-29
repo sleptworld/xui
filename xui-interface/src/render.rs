@@ -387,9 +387,19 @@ impl PathBuilder {
         let quarter = std::f32::consts::FRAC_PI_2;
         let radii = (radius, radius);
         self.move_to(Point::new(x0 + radius, y0))
-            .arc(Point::new(x1 - radius, y0 + radius), radii, -quarter, quarter)
+            .arc(
+                Point::new(x1 - radius, y0 + radius),
+                radii,
+                -quarter,
+                quarter,
+            )
             .arc(Point::new(x1 - radius, y1 - radius), radii, 0.0, quarter)
-            .arc(Point::new(x0 + radius, y1 - radius), radii, quarter, quarter)
+            .arc(
+                Point::new(x0 + radius, y1 - radius),
+                radii,
+                quarter,
+                quarter,
+            )
             .arc(
                 Point::new(x0 + radius, y0 + radius),
                 radii,
@@ -994,7 +1004,10 @@ mod path_tests {
         builder.circle(Point::new(50.0, 40.0), 10.0);
         let circle = builder.build();
 
-        assert_eq!(circle.segments().first(), Some(&PathSegment::MoveTo(Point::new(60.0, 40.0))));
+        assert_eq!(
+            circle.segments().first(),
+            Some(&PathSegment::MoveTo(Point::new(60.0, 40.0)))
+        );
         assert_eq!(circle.segments().last(), Some(&PathSegment::Close));
         assert_eq!(
             circle
@@ -1043,7 +1056,10 @@ mod path_tests {
     #[test]
     fn a_dash_belongs_to_the_stroke_and_degrades_to_solid_when_it_would_not_draw() {
         let stroke = PathStroke::new(Color::BLACK, 1.0).dashed(4.0, 4.0);
-        assert_eq!(stroke.effective_dash().map(Dash::intervals), Some(&[4.0, 4.0][..]));
+        assert_eq!(
+            stroke.effective_dash().map(Dash::intervals),
+            Some(&[4.0, 4.0][..])
+        );
 
         let empty = PathStroke::new(Color::BLACK, 1.0).dash(Dash::new(&[]));
         assert!(empty.effective_dash().is_none());

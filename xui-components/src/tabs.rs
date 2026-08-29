@@ -282,8 +282,12 @@ mod tests {
     use super::*;
 
     fn item(id: &str, disabled: bool) -> TabItem {
-        TabItem::new(id, id.to_string(), TextWidget::new(id.to_string()).into_element_desc())
-            .disabled(disabled)
+        TabItem::new(
+            id,
+            id.to_string(),
+            TextWidget::new(id.to_string()).into_element_desc(),
+        )
+        .disabled(disabled)
     }
 
     #[test]

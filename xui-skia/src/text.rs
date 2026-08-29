@@ -139,7 +139,7 @@ impl FontDatabase for SkiaTextBackend {
         SkiaFontId(id)
     }
 
-    fn query(&self, query: &FontQuery) -> Option<Self::FontId> {
+    fn query(&mut self, query: &FontQuery) -> Option<Self::FontId> {
         let style = sk_font_style(query.weight, query.stretch, query.style);
         for family in query_family_names(&query.families) {
             let typeface = match family {

@@ -442,21 +442,31 @@ mod tests {
         let auto = tf::Dimension::auto();
 
         // Flex: the main axis grows, the cross axis takes the full extent.
-        let in_column =
-            taffy_style_for_widget(&widget, ParentLayout::Flex(FlexDirectionStyle::Column), &computed);
+        let in_column = taffy_style_for_widget(
+            &widget,
+            ParentLayout::Flex(FlexDirectionStyle::Column),
+            &computed,
+        );
         assert_eq!(in_column.size.width, full);
         assert_eq!(in_column.size.height, auto);
         assert_eq!(in_column.flex_grow, 1.0);
 
-        let in_row =
-            taffy_style_for_widget(&widget, ParentLayout::Flex(FlexDirectionStyle::Row), &computed);
+        let in_row = taffy_style_for_widget(
+            &widget,
+            ParentLayout::Flex(FlexDirectionStyle::Row),
+            &computed,
+        );
         assert_eq!(in_row.size.width, auto);
         assert_eq!(in_row.size.height, full);
         assert_eq!(in_row.flex_grow, 1.0);
 
         // Everywhere else "fill" is the full extent on both axes, and asking to
         // grow would be meaningless.
-        for parent in [ParentLayout::Grid, ParentLayout::ZStack, ParentLayout::Block] {
+        for parent in [
+            ParentLayout::Grid,
+            ParentLayout::ZStack,
+            ParentLayout::Block,
+        ] {
             let style = taffy_style_for_widget(&widget, parent, &computed);
             assert_eq!(style.size.width, full, "width under {parent:?}");
             assert_eq!(style.size.height, full, "height under {parent:?}");
@@ -684,4 +694,3 @@ mod tests {
         assert_eq!(style.inset.bottom, tf::LengthPercentageAuto::auto());
     }
 }
-

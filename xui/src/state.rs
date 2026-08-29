@@ -92,9 +92,9 @@ impl AsyncDispatcher {
                 .expect("async wake callback poisoned")
                 .as_ref()
                 .cloned()
-            {
-                wake();
-            }
+        {
+            wake();
+        }
     }
 }
 
@@ -1009,9 +1009,9 @@ impl Scheduler {
                 .get(&(scope.owner, scope.hook_index))
                 .copied()
                 != Some(scope.generation)
-            {
-                return false;
-            }
+        {
+            return false;
+        }
 
         inner
             .hook_updates

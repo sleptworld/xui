@@ -23,8 +23,9 @@ use ignore::WalkBuilder;
 use serde::Deserialize;
 use thiserror::Error;
 use xui_pak::{
-    format::{encode_header, PakIndex, PakIndexEntry},
-    normalize_asset_path, AssetError, AssetId, Compression, HEADER_LEN,
+    AssetError, AssetId, Compression, HEADER_LEN,
+    format::{PakIndex, PakIndexEntry, encode_header},
+    normalize_asset_path,
 };
 
 #[derive(Debug, Error)]

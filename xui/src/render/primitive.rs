@@ -1,7 +1,6 @@
 use xui_interface::{
     Affine, Bounds, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, ImageData,
-    ImageKey, ImageStyle, ImageVariant, NodeId, TextPaintProps, TextVerticalAlign,
-    VectorScene,
+    ImageKey, ImageStyle, ImageVariant, NodeId, TextPaintProps, TextVerticalAlign, VectorScene,
 };
 
 use crate::text::TextLayoutSlot;

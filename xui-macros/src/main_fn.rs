@@ -1,11 +1,11 @@
 //! `#[xui::main]` — installs the generated asset bootstrap before `main` runs.
 
+use proc_macro2::Span;
 use proc_macro2::{Delimiter, TokenStream as TokenStream2, TokenTree};
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::{Attribute as SynAttribute, Error, Expr, LitStr, Result, Signature, Visibility};
-use proc_macro2::Span;
 
 use crate::component::strip_component_param_defaults;
 use crate::krate;
@@ -18,7 +18,6 @@ pub struct MainFunction {
     body: TokenStream2,
 }
 
-
 impl Parse for MainFunction {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
         let attrs = input.call(SynAttribute::parse_outer)?;
@@ -28,10 +27,11 @@ impl Parse for MainFunction {
         while !input.is_empty() {
             let token: TokenTree = input.parse()?;
             if let TokenTree::Group(group) = &token
-                && group.delimiter() == Delimiter::Brace {
-                    body = Some(group.stream());
-                    break;
-                }
+                && group.delimiter() == Delimiter::Brace
+            {
+                body = Some(group.stream());
+                break;
+            }
             sig_tokens.extend(std::iter::once(token));
         }
         let body =
@@ -101,4 +101,3 @@ pub fn expand_main_function(function: MainFunction) -> Result<TokenStream2> {
         }
     })
 }
-

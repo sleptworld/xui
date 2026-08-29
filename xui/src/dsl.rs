@@ -27,8 +27,8 @@ use std::sync::Arc;
 use crate::core::{EdgeInsets, Point, Size};
 use crate::element::{ElementDesc, IntoChildren};
 use crate::style::{
-    AlignStyle, BackdropStyle, ColorStyle, ColorValue, CursorIcon, Effect, JustifyStyle, LengthValue,
-    PositionStyle, ScrollDirectionStyle, ScrollbarStyle, ScrollbarStylePatch,
+    AlignStyle, BackdropStyle, ColorStyle, ColorValue, CursorIcon, Effect, JustifyStyle,
+    LengthValue, PositionStyle, ScrollDirectionStyle, ScrollbarStyle, ScrollbarStylePatch,
     ScrollbarVisibilityStyle, ShadowStyle, StrokeLineStyle, StrokeStyle, Style, StyleMerge,
     TransformStyle,
 };

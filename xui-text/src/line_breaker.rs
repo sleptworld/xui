@@ -13,7 +13,6 @@ pub enum Alignment {
     End,
 }
 
-
 /// Line breaking support for a paragraph.
 pub struct BreakLines<'a> {
     layout: &'a mut LayoutData,

@@ -5208,6 +5208,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "xui-f"
+version = "0.1.0"
+dependencies = [
+ "fontique",
+ "harfrust",
+ "self_cell",
+ "skrifa 0.42.1",
+ "unicode-bidi",
+ "unicode-linebreak",
+ "unicode-script",
+ "unicode-segmentation",
+ "xui-interface",
+]
+
+[[package]]
 name = "xui-interface"
 version = "0.1.0"
 dependencies = [
@@ -5340,10 +5355,10 @@ dependencies = [
  "wgpu",
  "winit",
  "xui",
+ "xui-f",
  "xui-interface",
  "xui-render-graph",
  "xui-skia",
- "xui-text-engine",
 ]
 
 [[package]]

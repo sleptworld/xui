@@ -1,10 +1,10 @@
 use xui_interface::{Affine, Bounds, Color, ImageData, ImageKey, Point, Size};
 use xui_render_graph::{
-    compile_layer, AttachmentBlend, Axis, BackdropDescriptor, BackdropFilter, BlendMode,
-    CompositeDescriptor, CompositeInstance, CompositeOperator, CoordinateSpace, DrawShader,
-    ExternalAliasing, ExternalResourceKind, FilterQuality, LayerEffect, LayerGraphDescriptor,
-    LayerPlanContext, LayerProgramEntry, PassOp, PipelineKey, PlanError, PlanLimits,
-    PlanResourceKind, TextureClass,
+    AttachmentBlend, Axis, BackdropDescriptor, BackdropFilter, BlendMode, CompositeDescriptor,
+    CompositeInstance, CompositeOperator, CoordinateSpace, DrawShader, ExternalAliasing,
+    ExternalResourceKind, FilterQuality, LayerEffect, LayerGraphDescriptor, LayerPlanContext,
+    LayerProgramEntry, PassOp, PipelineKey, PlanError, PlanLimits, PlanResourceKind, TextureClass,
+    compile_layer,
 };
 
 fn context() -> LayerPlanContext {
@@ -97,26 +97,34 @@ fn explicit_program_entries_lower_only_the_selected_branch() {
     let backdrop = program
         .instantiate_entry(LayerProgramEntry::BackdropOnly, &context())
         .unwrap();
-    assert!(backdrop
-        .passes()
-        .iter()
-        .any(|pass| matches!(pass.op, PassOp::BackdropComposite { .. })));
-    assert!(!backdrop
-        .passes()
-        .iter()
-        .any(|pass| matches!(pass.op, PassOp::LayerComposite { .. })));
+    assert!(
+        backdrop
+            .passes()
+            .iter()
+            .any(|pass| matches!(pass.op, PassOp::BackdropComposite { .. }))
+    );
+    assert!(
+        !backdrop
+            .passes()
+            .iter()
+            .any(|pass| matches!(pass.op, PassOp::LayerComposite { .. }))
+    );
 
     let layer = program
         .instantiate_entry(LayerProgramEntry::LayerOnly, &context())
         .unwrap();
-    assert!(!layer
-        .passes()
-        .iter()
-        .any(|pass| matches!(pass.op, PassOp::BackdropComposite { .. })));
-    assert!(layer
-        .passes()
-        .iter()
-        .any(|pass| matches!(pass.op, PassOp::LayerComposite { .. })));
+    assert!(
+        !layer
+            .passes()
+            .iter()
+            .any(|pass| matches!(pass.op, PassOp::BackdropComposite { .. }))
+    );
+    assert!(
+        layer
+            .passes()
+            .iter()
+            .any(|pass| matches!(pass.op, PassOp::LayerComposite { .. }))
+    );
 }
 
 #[test]
@@ -260,14 +268,16 @@ fn drop_shadow_lowers_to_explicit_dag_and_asymmetric_bounds() {
         plan.passes()[2].op,
         PassOp::AlphaSpread { axis: Axis::Y, .. }
     ));
-    assert!(plan
-        .passes()
-        .iter()
-        .any(|pass| matches!(pass.op, PassOp::GaussianBlur { axis: Axis::X, .. })));
-    assert!(plan
-        .passes()
-        .iter()
-        .any(|pass| matches!(pass.op, PassOp::GaussianBlur { axis: Axis::Y, .. })));
+    assert!(
+        plan.passes()
+            .iter()
+            .any(|pass| matches!(pass.op, PassOp::GaussianBlur { axis: Axis::X, .. }))
+    );
+    assert!(
+        plan.passes()
+            .iter()
+            .any(|pass| matches!(pass.op, PassOp::GaussianBlur { axis: Axis::Y, .. }))
+    );
     let merge = plan
         .passes()
         .iter()
@@ -308,10 +318,11 @@ fn shadow_skips_zero_spread_and_blur_but_preserves_merge() {
         pass.op,
         PassOp::AlphaSpread { .. } | PassOp::GaussianBlur { .. }
     )));
-    assert!(plan
-        .passes()
-        .iter()
-        .any(|pass| matches!(pass.op, PassOp::ShadowComposite { .. })));
+    assert!(
+        plan.passes()
+            .iter()
+            .any(|pass| matches!(pass.op, PassOp::ShadowComposite { .. }))
+    );
 }
 
 #[test]
@@ -353,10 +364,12 @@ fn advanced_blends_snapshot_at_each_terminal_and_attachment_modes_do_not() {
         .unwrap()
         .instantiate(&aliased_context)
         .unwrap();
-    assert!(!attachment
-        .passes()
-        .iter()
-        .any(|pass| matches!(pass.op, PassOp::Copy)));
+    assert!(
+        !attachment
+            .passes()
+            .iter()
+            .any(|pass| matches!(pass.op, PassOp::Copy))
+    );
 }
 
 #[test]
@@ -435,10 +448,11 @@ fn singular_transform_skips_layer_but_not_backdrop() {
     let mut ctx = context();
     ctx.composite.transform = Affine::scale(0.0, 1.0);
     let plan = compile_layer(&value).unwrap().instantiate(&ctx).unwrap();
-    assert!(plan
-        .passes()
-        .iter()
-        .any(|pass| matches!(pass.op, PassOp::BackdropComposite { .. })));
+    assert!(
+        plan.passes()
+            .iter()
+            .any(|pass| matches!(pass.op, PassOp::BackdropComposite { .. }))
+    );
     assert!(!plan.passes().iter().any(|pass| matches!(
         pass.op,
         PassOp::LayerComposite { .. }
@@ -456,10 +470,11 @@ fn zero_dynamic_opacity_skips_only_layer_branch() {
     let mut ctx = context();
     ctx.composite.opacity = 0.0;
     let plan = compile_layer(&value).unwrap().instantiate(&ctx).unwrap();
-    assert!(plan
-        .passes()
-        .iter()
-        .any(|pass| matches!(pass.op, PassOp::BackdropComposite { .. })));
+    assert!(
+        plan.passes()
+            .iter()
+            .any(|pass| matches!(pass.op, PassOp::BackdropComposite { .. }))
+    );
     assert!(!plan.passes().iter().any(|pass| matches!(
         pass.op,
         PassOp::LayerComposite { .. } | PassOp::ColorMatrix(_)

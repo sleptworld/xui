@@ -243,13 +243,8 @@ fn dispatch_user_handlers<B: TextBackend>(
             return Flow::empty();
         }
         let text_layout = primary_text_query(host_text_cache, node);
-        let mut cx = EventContext::new(
-            view,
-            text_layout,
-            phase,
-            &mut request_update,
-            &mut requests,
-        );
+        let mut cx =
+            EventContext::new(view, text_layout, phase, &mut request_update, &mut requests);
         handlers.dispatch(event, &mut cx)
     };
 
@@ -275,9 +270,7 @@ fn apply_semantic_state(
 
 fn semantic_state_change(event: &SemanticEvent) -> Option<(xui_interface::WidgetState, bool)> {
     match event {
-        SemanticEvent::Hovered(event) => {
-            Some((xui_interface::WidgetState::HOVERED, event.hovered))
-        }
+        SemanticEvent::Hovered(event) => Some((xui_interface::WidgetState::HOVERED, event.hovered)),
         SemanticEvent::PressStart(_) => Some((xui_interface::WidgetState::PRESSED, true)),
         SemanticEvent::PressEnd(_) | SemanticEvent::PressCancel(_) => {
             Some((xui_interface::WidgetState::PRESSED, false))

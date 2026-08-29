@@ -167,7 +167,6 @@ macro_rules! event_handler_methods {
             }
             self
         }
-
     };
 }
 
@@ -199,8 +198,8 @@ mod text;
 mod text_input;
 mod z_stack;
 
-pub(crate) use canvas::canvas_text_slot;
 pub(crate) use canvas::CanvasInvalidator;
+pub(crate) use canvas::canvas_text_slot;
 pub use canvas::{
     CanvasContent, CanvasController, CanvasPainter, CanvasPick, CanvasPickTag, CanvasWidget,
 };

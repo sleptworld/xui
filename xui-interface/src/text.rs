@@ -7,10 +7,17 @@ use std::sync::Arc;
 use crate::{Color, ComputedTextStyle, NodeLifecycleEvent, Point, Rect, Size};
 
 pub trait Shaper {
+    /// Persistent backend state for one logical text unit.
+    ///
+    /// Hosts create this once when the unit is created and reuse it across
+    /// intrinsic and definite-width layout probes. Implementations must
+    /// invalidate or rebuild cached internals when the input content, shaping
+    /// style, or font context changes.
     type State;
     type GlyphKey: Clone + Eq + Hash;
     type FontId: Clone + Copy + Eq + Hash;
 
+    /// Creates the state for a newly created logical text unit.
     fn create_state(&mut self) -> Self::State;
     fn layout_paragraph(
         &mut self,
@@ -26,7 +33,7 @@ pub trait FontDatabase {
     fn epoch(&self) -> u64;
     fn load_system_fonts(&mut self);
     fn load_font_bytes(&mut self, bytes: Arc<[u8]>) -> Self::FontId;
-    fn query(&self, query: &FontQuery) -> Option<Self::FontId>;
+    fn query(&mut self, query: &FontQuery) -> Option<Self::FontId>;
     /// Returns the source data for a shaped font.
     ///
     /// `index` is the face index in a font collection and must be preserved by
@@ -60,6 +67,18 @@ pub enum FontDataRef<'a> {
     Bytes {
         bytes: &'a [u8],
         index: u32,
+    },
+    /// A system font whose platform source exposes collection bytes rather
+    /// than a stable filesystem handle. Renderers should prefer their native
+    /// font manager and use `bytes` as a fallback.
+    SystemMemory {
+        bytes: &'a [u8],
+        index: u32,
+        family: &'a str,
+        postscript_name: &'a str,
+        weight: FontWeight,
+        style: FontStyle,
+        stretch: FontStretch,
     },
     System {
         handle: SystemFontHandle,
@@ -604,11 +623,7 @@ impl<F, K> ParagraphLayout<F, K> {
                     let right = left + cluster.hitbox.width;
                     let rtl = self.cluster_is_rtl(cluster);
                     return if offset.raw == start {
-                        if rtl {
-                            right
-                        } else {
-                            left
-                        }
+                        if rtl { right } else { left }
                     } else if rtl {
                         left
                     } else {

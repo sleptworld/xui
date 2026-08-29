@@ -426,11 +426,7 @@ impl ImeSession {
 
         let cursor = cursor_byte_range
             .map(|range| {
-                preedit_cursor_to_selection(
-                    text,
-                    (range.start.raw, range.end.raw),
-                    new_range.start,
-                )
+                preedit_cursor_to_selection(text, (range.start.raw, range.end.raw), new_range.start)
             })
             .unwrap_or_else(|| TextSelection::collapsed(new_range.end));
 

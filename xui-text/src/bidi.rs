@@ -489,9 +489,10 @@ impl BidiResolver {
                 }
                 bracket_stack.push(i, close);
             } else if c.opening_bracket().is_some()
-                && let Some(open) = bracket_stack.find_and_pop(c) {
-                    self.bracket_pairs.push((open, i));
-                }
+                && let Some(open) = bracket_stack.find_and_pop(c)
+            {
+                self.bracket_pairs.push((open, i));
+            }
         }
         if self.bracket_pairs.len() > base_brackets {
             let embed_dir = if level & 1 != 0 { R } else { L };

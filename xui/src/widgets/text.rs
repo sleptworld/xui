@@ -2,9 +2,9 @@ use crate::event_system::callbacks::EventHandlers;
 use crate::event_system::interaction::InteractionProperties;
 use crate::{element::ElementDesc, event_system::EventContext};
 use xui_interface::{
-    Bounds, ComputedStyle, EventRef, EventResult, Key, OverflowWrap, ParagraphStyle,
-    Style, TextBoxStyle, TextContent, TextOverflow, TextPaintProps, TextPaintStyle, TextProps,
-    WidgetType, WidgetUpdateFlags,
+    Bounds, ComputedStyle, EventRef, EventResult, Key, OverflowWrap, ParagraphStyle, Style,
+    TextBoxStyle, TextContent, TextOverflow, TextPaintProps, TextPaintStyle, TextProps, WidgetType,
+    WidgetUpdateFlags,
 };
 
 use super::{props_hash, widget_element_desc};

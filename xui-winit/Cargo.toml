@@ -17,7 +17,8 @@ winit = "0.30.12"
 xui = { path = "../xui" }
 xui-render-graph = { path = "../xui-render-graph" }
 xui-interface = { path = "../xui-interface" }
-xui-text-engine = { path = "../xui-text-engine" }
+# xui-text-engine = { path = "../xui-text-engine" }
+xui-f = {path="../xui-f"}
 
 glam = { workspace = true }
 thiserror = "2.0.18"

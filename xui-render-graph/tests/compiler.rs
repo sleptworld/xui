@@ -1,8 +1,8 @@
 use xui_interface::{Affine, Bounds, Color, ImageData, ImageKey, Point, Size};
 use xui_render_graph::{
-    compile_layer, BackdropDescriptor, BackdropFilter, BlendMode, CompileError,
-    CompositeDescriptor, CompositeOperator, ExternalResourceKind, FilterQuality, LayerEffect,
-    LayerGraphDescriptor, Mask, MaskShape, ProgramOp, WorkingColorSpace,
+    BackdropDescriptor, BackdropFilter, BlendMode, CompileError, CompositeDescriptor,
+    CompositeOperator, ExternalResourceKind, FilterQuality, LayerEffect, LayerGraphDescriptor,
+    Mask, MaskShape, ProgramOp, WorkingColorSpace, compile_layer,
 };
 
 fn descriptor() -> LayerGraphDescriptor {
@@ -62,9 +62,10 @@ fn direct_replacement_api_builds_one_static_layer_program() {
     };
     let program = compile_layer(&value).unwrap();
     let ops: Vec<_> = program.nodes().iter().map(|node| &node.op).collect();
-    assert!(ops
-        .iter()
-        .any(|op| matches!(op, ProgramOp::BackdropComposite { .. })));
+    assert!(
+        ops.iter()
+            .any(|op| matches!(op, ProgramOp::BackdropComposite { .. }))
+    );
     assert!(ops.iter().any(|op| matches!(op, ProgramOp::Blur { .. })));
     assert!(matches!(
         ops.last().unwrap(),
@@ -167,15 +168,21 @@ fn texture_masks_receive_stable_external_ordinals() {
         image_mask(3, rect_bounds(2.0, 3.0, 1.0, 1.0)),
     ];
     let program = compile_layer(&value).unwrap();
-    assert!(program
-        .external_resource(ExternalResourceKind::BackdropMask)
-        .is_some());
-    assert!(program
-        .external_resource(ExternalResourceKind::LayerMask(0))
-        .is_some());
-    assert!(program
-        .external_resource(ExternalResourceKind::LayerMask(1))
-        .is_some());
+    assert!(
+        program
+            .external_resource(ExternalResourceKind::BackdropMask)
+            .is_some()
+    );
+    assert!(
+        program
+            .external_resource(ExternalResourceKind::LayerMask(0))
+            .is_some()
+    );
+    assert!(
+        program
+            .external_resource(ExternalResourceKind::LayerMask(1))
+            .is_some()
+    );
     let ordinals: Vec<_> = program
         .nodes()
         .iter()

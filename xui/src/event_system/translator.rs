@@ -135,8 +135,6 @@ impl EventTranslator {
         }
     }
 
-
-
     pub fn translate_raw_event(
         &mut self,
         raw: &RawEvent,
@@ -801,22 +799,23 @@ impl EventTranslator {
         let old_target = old_path.last().copied();
         let new_target = new_path.last().copied();
 
-        let mut push_hovered = |node: NodeId, hovered: bool, related_target, out: &mut Vec<SemanticEvent>| {
-            let meta = self.make_meta(
-                timestamp,
-                node,
-                node,
-                EventPhase::Target,
-                EventSource::Pointer,
-                modifiers,
-            );
-            out.push(SemanticEvent::Hovered(HoverEvent {
-                meta,
-                pointer,
-                hovered,
-                related_target,
-            }));
-        };
+        let mut push_hovered =
+            |node: NodeId, hovered: bool, related_target, out: &mut Vec<SemanticEvent>| {
+                let meta = self.make_meta(
+                    timestamp,
+                    node,
+                    node,
+                    EventPhase::Target,
+                    EventSource::Pointer,
+                    modifiers,
+                );
+                out.push(SemanticEvent::Hovered(HoverEvent {
+                    meta,
+                    pointer,
+                    hovered,
+                    related_target,
+                }));
+            };
 
         for node in &left {
             push_hovered(*node, false, new_target, out);

@@ -233,9 +233,7 @@ fn a_style_attribute_merges_with_the_attributes_around_it() {
         .style(xui::style!(border_color: if hovered { Color::WHITE } else { Color::BLACK }))
         .border_width(1.0);
 
-    let patch = before_and_after
-        .style
-        .patch_for_state(WidgetState::empty());
+    let patch = before_and_after.style.patch_for_state(WidgetState::empty());
     assert_eq!(
         patch.layout.padding,
         StyleValue::Value(EdgeInsets::all(12.0)),
@@ -258,7 +256,15 @@ fn merging_a_style_keeps_its_state_rules() {
         "the hovered rule did not survive being merged"
     );
     assert_ne!(
-        widget.style.patch_for_state(WidgetState::empty()).paint.border_color,
-        widget.style.patch_for_state(WidgetState::HOVERED).paint.border_color,
+        widget
+            .style
+            .patch_for_state(WidgetState::empty())
+            .paint
+            .border_color,
+        widget
+            .style
+            .patch_for_state(WidgetState::HOVERED)
+            .paint
+            .border_color,
     );
 }

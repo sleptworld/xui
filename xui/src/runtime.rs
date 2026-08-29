@@ -150,24 +150,25 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
                 };
                 let mut result = self.app.dispatch_event(event, &mut self.text_backend);
                 if !result.is_consumed()
-                    && let Some(raw) = keyboard {
-                        let resolved = self.app.resolve_local_shortcut(&raw).or_else(|| {
-                            self.shortcuts
-                                .resolve(&raw)
-                                .map(|binding| (self.app.command_root(), binding))
-                        });
-                        if let Some((target, binding)) = resolved {
-                            result = self.app.dispatch_command(
-                                target,
-                                binding,
-                                &raw,
-                                &mut self.text_backend,
-                            );
-                            if !result.is_consumed() {
-                                result = EventResult::Consumed;
-                            }
+                    && let Some(raw) = keyboard
+                {
+                    let resolved = self.app.resolve_local_shortcut(&raw).or_else(|| {
+                        self.shortcuts
+                            .resolve(&raw)
+                            .map(|binding| (self.app.command_root(), binding))
+                    });
+                    if let Some((target, binding)) = resolved {
+                        result = self.app.dispatch_command(
+                            target,
+                            binding,
+                            &raw,
+                            &mut self.text_backend,
+                        );
+                        if !result.is_consumed() {
+                            result = EventResult::Consumed;
                         }
                     }
+                }
                 self.refresh_platform_output();
                 vec![result]
             }

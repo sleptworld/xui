@@ -254,7 +254,7 @@ impl FontDatabase for Engine {
         0
     }
 
-    fn query(&self, _query: &FontQuery) -> Option<Self::FontId> {
+    fn query(&mut self, _query: &FontQuery) -> Option<Self::FontId> {
         Some(0)
     }
 
@@ -516,9 +516,10 @@ impl<'a> Session<'a> {
                 SpanElement::Fragment(i) => {
                     let (start, end) = doc.fragments[*i];
                     if start < end
-                        && let Some(s) = doc.text.get(start..end) {
-                            self.add_text(s);
-                        }
+                        && let Some(s) = doc.text.get(start..end)
+                    {
+                        self.add_text(s);
+                    }
                 }
             }
         }

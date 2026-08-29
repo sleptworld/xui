@@ -310,12 +310,7 @@ impl WorkNode {
                 .current
                 .and_then(|id| fiber_tree.node(id))
                 .and_then(|node| node.component.as_ref())
-                .map(|component| {
-                    (
-                        component.render,
-                        component.props.as_deref(),
-                    )
-                }),
+                .map(|component| (component.render, component.props.as_deref())),
         }
     }
 }
@@ -883,15 +878,14 @@ impl ComponentRuntime {
             let _ = arena.unmount_overlay_entry(entry);
         }
 
-        if remove_host
-            && let Some(host_node) = host_node {
-                arena.remove_subtree(host_node);
-                for child in children {
-                    self.commit_deletion(child, arena, false);
-                }
-                self.nodes.remove_node(id);
-                return;
+        if remove_host && let Some(host_node) = host_node {
+            arena.remove_subtree(host_node);
+            for child in children {
+                self.commit_deletion(child, arena, false);
             }
+            self.nodes.remove_node(id);
+            return;
+        }
 
         for child in children {
             self.commit_deletion(child, arena, remove_host);
@@ -1018,9 +1012,13 @@ impl ComponentRuntime {
                     .update_overlay_entry(entry, scope, options)
                     .expect("Portal entry could not be moved");
                 Some(entry)
-            } else { visual_root.map(|visual_root| arena
+            } else {
+                visual_root.map(|visual_root| {
+                    arena
                         .mount_overlay_entry(visual_root, scope, options)
-                        .expect("Portal entry could not be mounted")) };
+                        .expect("Portal entry could not be mounted")
+                })
+            };
             let portal = self
                 .wip_nodes
                 .get_mut(wip_id)
@@ -1536,10 +1534,9 @@ fn find_reusable_child_fast(
     let old = *old_children.get(old_index)?;
     let old_node = nodes.node(old)?;
 
-    if prepared.key.is_none()
-        && (old_node.key.is_some() || old_node.position != position) {
-            return None;
-        }
+    if prepared.key.is_none() && (old_node.key.is_some() || old_node.position != position) {
+        return None;
+    }
 
     if !can_reuse_prepared(old_node, prepared) {
         return None;

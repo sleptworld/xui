@@ -209,7 +209,9 @@ pub fn drop_down(
                         select_item(index, controlled, selection, open_state, &callback);
                         EventResult::Consumed
                     })
-                    .into_element_desc(vec![TextWidget::new(item.label.clone()).into_element_desc()]),
+                    .into_element_desc(vec![
+                        TextWidget::new(item.label.clone()).into_element_desc(),
+                    ]),
             );
         }
 

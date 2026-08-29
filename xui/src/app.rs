@@ -300,8 +300,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lanes::{DEFAULT_LANE, NO_LANES};
     use crate::event_system::callbacks::EventProps;
+    use crate::lanes::{DEFAULT_LANE, NO_LANES};
     use crate::prelude::{CanvasController, canvas, container};
     use crate::render::{BuiltDraw, BuiltFrame, BuiltItem, MockRenderBackend, RenderBackend};
     use crate::state::State;
@@ -370,7 +370,8 @@ mod tests {
         CANVAS_SLOT.with(|slot| {
             *slot.borrow_mut() = Some(canvas_handle.clone());
         });
-        canvas().controller(canvas_handle)
+        canvas()
+            .controller(canvas_handle)
             .style(Style::new().width(40.0).height(20.0))
             .on_click(move |_, _| {
                 let next = !*highlighted.get();

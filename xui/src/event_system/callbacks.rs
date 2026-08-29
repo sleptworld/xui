@@ -306,11 +306,7 @@ impl EventHandlers {
     ///
     /// The generic `on_event` handler runs first and can stop the rest, matching
     /// the previous behaviour.
-    pub(crate) fn dispatch(
-        &self,
-        event: &SemanticEvent,
-        cx: &mut EventContext<'_>,
-    ) -> Flow {
+    pub(crate) fn dispatch(&self, event: &SemanticEvent, cx: &mut EventContext<'_>) -> Flow {
         let phase = cx.phase;
         let mut flow = Flow::empty();
 
@@ -372,7 +368,11 @@ mod tests {
             AnyHandler::Click(Handler::new(|_, _| Flow::empty())),
         );
         assert_eq!(handlers.entries.len(), 2);
-        assert!(handlers.get(EventKind::Click, EventPhase::Capture).is_some());
+        assert!(
+            handlers
+                .get(EventKind::Click, EventPhase::Capture)
+                .is_some()
+        );
         assert!(handlers.get(EventKind::Click, EventPhase::Target).is_some());
         assert!(handlers.get(EventKind::Click, EventPhase::Bubble).is_some());
     }

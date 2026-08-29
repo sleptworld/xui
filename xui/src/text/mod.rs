@@ -47,7 +47,7 @@ pub(crate) mod testing {
             0
         }
 
-        fn query(&self, _query: &FontQuery) -> Option<Self::FontId> {
+        fn query(&mut self, _query: &FontQuery) -> Option<Self::FontId> {
             Some(0)
         }
 
@@ -103,6 +103,7 @@ mod tests {
     use super::*;
 
     struct CountingTextBackend {
+        create_state_calls: usize,
         layout_calls: usize,
         lifecycle_calls: usize,
         epoch: u64,
@@ -111,11 +112,17 @@ mod tests {
     impl CountingTextBackend {
         fn new() -> Self {
             Self {
+                create_state_calls: 0,
                 layout_calls: 0,
                 lifecycle_calls: 0,
                 epoch: 0,
             }
         }
+    }
+
+    #[derive(Default)]
+    struct CountingParagraphState {
+        layout_calls: usize,
     }
 
     impl FontDatabase for CountingTextBackend {
@@ -134,7 +141,7 @@ mod tests {
             0
         }
 
-        fn query(&self, _query: &FontQuery) -> Option<Self::FontId> {
+        fn query(&mut self, _query: &FontQuery) -> Option<Self::FontId> {
             Some(0)
         }
 
@@ -144,18 +151,22 @@ mod tests {
     }
 
     impl Shaper for CountingTextBackend {
-        type State = ();
+        type State = CountingParagraphState;
         type GlyphKey = ();
         type FontId = u32;
 
-        fn create_state(&mut self) -> Self::State {}
+        fn create_state(&mut self) -> Self::State {
+            self.create_state_calls += 1;
+            CountingParagraphState::default()
+        }
 
         fn layout_paragraph(
             &mut self,
-            _state: &mut Self::State,
+            state: &mut Self::State,
             _input: TextLayoutInput,
         ) -> ParagraphLayout<Self::FontId, Self::GlyphKey> {
             self.layout_calls += 1;
+            state.layout_calls += 1;
             ParagraphLayout {
                 lines: Vec::new(),
                 runs: Vec::new(),
@@ -213,9 +224,46 @@ mod tests {
         );
 
         assert_eq!(host.backend().layout_calls, 2);
+        assert_eq!(host.backend().create_state_calls, 1);
+        assert_eq!(host.state(active).unwrap().layout_calls, 2);
         assert_eq!(
             host.active_slot(owner, TextLayoutSlot::PRIMARY),
             Some(active)
         );
+    }
+
+    #[test]
+    fn shaper_state_lives_for_the_text_unit() {
+        let mut owners = SlotMap::<NodeId, ()>::with_key();
+        let owner = owners.insert(());
+        let mut host = TextHost::new(CountingTextBackend::new());
+
+        host.measure_slot(
+            owner,
+            TextLayoutSlot::PRIMARY,
+            input(TextLayoutConstraints::UNBOUNDED),
+        );
+        host.measure_slot(
+            owner,
+            TextLayoutSlot::PRIMARY,
+            input(TextLayoutConstraints::max_width(80.0)),
+        );
+        assert_eq!(host.backend().create_state_calls, 1);
+
+        host.invalidate_slot(owner, TextLayoutSlot::PRIMARY);
+        let active = host.activate_slot(
+            owner,
+            TextLayoutSlot::PRIMARY,
+            input(TextLayoutConstraints::max_width(40.0)),
+        );
+        assert_eq!(host.backend().create_state_calls, 1);
+        assert_eq!(host.state(active).unwrap().layout_calls, 3);
+
+        host.measure_slot(
+            owner,
+            TextLayoutSlot::new(1),
+            input(TextLayoutConstraints::UNBOUNDED),
+        );
+        assert_eq!(host.backend().create_state_calls, 2);
     }
 }

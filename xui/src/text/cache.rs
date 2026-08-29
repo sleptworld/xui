@@ -12,8 +12,8 @@ use rustc_hash::FxHashMap;
 use slotmap::{SlotMap, new_key_type};
 use smallvec::SmallVec;
 use xui_interface::{
-    Affinity, NodeId, NodeLifecycleEvent, ParagraphLayout, Point, Rect, Shaper, Size,
-    TextBackend, TextLayoutConstraints, TextLayoutInput, TextLayoutKey, TextOffset, TextOffsetUnit,
+    Affinity, NodeId, NodeLifecycleEvent, ParagraphLayout, Point, Rect, Shaper, Size, TextBackend,
+    TextLayoutConstraints, TextLayoutInput, TextLayoutKey, TextOffset, TextOffsetUnit,
     TextPosition, TextRange,
 };
 
@@ -85,10 +85,13 @@ impl ParagraphInfo {
     }
 }
 
-/// A text backend plus all logical text ownership and globally bounded layout results.
+/// A text backend plus logical text ownership and globally bounded layout results.
+///
+/// Each [`TextUnitId`] owns one persistent shaper state. Width-specific layout
+/// variants share that state but remain independently cached for rendering.
 pub struct TextHost<B: TextBackend> {
     backend: B,
-    units: SlotMap<TextUnitId, TextUnitCache>,
+    units: SlotMap<TextUnitId, TextUnitCache<B::State>>,
     entries: SlotMap<TextLayoutHandle, LayoutEntry<B>>,
     residency: GlobalLayoutCache,
     owners: FxHashMap<NodeId, OwnerCache>,
@@ -159,9 +162,11 @@ impl<B: TextBackend> TextHost<B> {
             return unit;
         }
 
+        let state = self.backend.create_state();
         let unit = self.units.insert(TextUnitCache {
             owner,
             location: TextUnitLocation::Direct { owner, slot },
+            state,
             active: None,
             resident_layouts: SmallVec::new(),
         });
@@ -240,12 +245,14 @@ impl<B: TextBackend> TextHost<B> {
             return self.layout(handle).map(|layout| layout.size());
         }
 
-        let mut state = self.backend.create_state();
-        let layout = Arc::new(self.backend.layout_paragraph(&mut state, input.clone()));
+        let layout = {
+            let state = &mut self.units.get_mut(unit)?.state;
+            Arc::new(self.backend.layout_paragraph(state, input.clone()))
+        };
         let size = layout.size();
-        let memory_cost = Self::estimated_memory_cost(&layout, &state);
+        let memory_cost = Self::estimated_memory_cost(&layout, &self.units.get(unit)?.state);
         if self
-            .insert_entry(unit, key, layout, state, Some(input), memory_cost, false)
+            .insert_entry(unit, key, layout, Some(input), memory_cost, false)
             .is_some()
         {
             self.enforce_unit_variant_limit(unit);
@@ -279,10 +286,12 @@ impl<B: TextBackend> TextHost<B> {
             return Some(handle);
         }
 
-        let mut state = self.backend.create_state();
-        let layout = Arc::new(self.backend.layout_paragraph(&mut state, input.clone()));
-        let memory_cost = Self::estimated_memory_cost(&layout, &state);
-        let handle = self.insert_entry(unit, key, layout, state, Some(input), memory_cost, true)?;
+        let layout = {
+            let state = &mut self.units.get_mut(unit)?.state;
+            Arc::new(self.backend.layout_paragraph(state, input.clone()))
+        };
+        let memory_cost = Self::estimated_memory_cost(&layout, &self.units.get(unit)?.state);
+        let handle = self.insert_entry(unit, key, layout, Some(input), memory_cost, true)?;
         self.replace_active_unit(unit, key, handle, true);
         self.enforce_unit_variant_limit(unit);
         Some(handle)
@@ -324,7 +333,8 @@ impl<B: TextBackend> TextHost<B> {
     }
 
     pub fn state(&self, handle: TextLayoutHandle) -> Option<&B::State> {
-        Some(&self.resident_entry(handle)?.state)
+        let unit = self.resident_entry(handle)?.cache_key.unit;
+        Some(&self.units.get(unit)?.state)
     }
 
     pub fn state_mut(&mut self, handle: TextLayoutHandle) -> Option<&mut B::State> {
@@ -333,7 +343,7 @@ impl<B: TextBackend> TextHost<B> {
         let last_access = self.next_access_epoch();
         let entry = self.entries.get_mut(handle)?;
         entry.last_access.set(last_access);
-        Some(&mut entry.state)
+        Some(&mut self.units.get_mut(cache_key.unit)?.state)
     }
 
     pub fn insert_unit_variant(
@@ -358,7 +368,8 @@ impl<B: TextBackend> TextHost<B> {
         if let Some(handle) = self.find_unit(unit, &key) {
             return Some(handle);
         }
-        let handle = self.insert_entry(unit, key, layout, state, None, memory_cost, false)?;
+        self.units.get_mut(unit)?.state = state;
+        let handle = self.insert_entry(unit, key, layout, None, memory_cost, false)?;
         self.enforce_unit_variant_limit(unit);
         self.entries.contains_key(handle).then_some(handle)
     }
@@ -388,8 +399,12 @@ impl<B: TextBackend> TextHost<B> {
             return handle;
         }
 
+        self.units
+            .get_mut(unit)
+            .expect("active text layout unit must exist")
+            .state = state;
         let handle = self
-            .insert_entry(unit, key, layout, state, None, memory_cost, true)
+            .insert_entry(unit, key, layout, None, memory_cost, true)
             .expect("a pinned text layout must be admitted to the cache");
         self.replace_active_unit(unit, key, handle, true);
         self.enforce_unit_variant_limit(unit);
@@ -610,6 +625,7 @@ impl<B: TextBackend> TextHost<B> {
     ) -> Option<ParagraphInfo> {
         self.owners.get(&owner)?.documents.get(document)?;
 
+        let state = self.backend.create_state();
         let unit = self.units.insert(TextUnitCache {
             owner,
             // Replaced immediately after the paragraph id is allocated.
@@ -617,6 +633,7 @@ impl<B: TextBackend> TextHost<B> {
                 owner,
                 slot: TextLayoutSlot::PRIMARY,
             },
+            state,
             active: None,
             resident_layouts: SmallVec::new(),
         });
@@ -891,7 +908,6 @@ impl<B: TextBackend> TextHost<B> {
         unit: TextUnitId,
         key: TextLayoutKey,
         layout: Arc<ParagraphLayout<<B as Shaper>::FontId, <B as Shaper>::GlyphKey>>,
-        state: B::State,
         input: Option<TextLayoutInput>,
         memory_cost: u64,
         pinned: bool,
@@ -902,7 +918,6 @@ impl<B: TextBackend> TextHost<B> {
         let handle = self.entries.insert(LayoutEntry {
             cache_key,
             layout,
-            state,
             input,
             last_access: Cell::new(last_access),
         });
@@ -1047,9 +1062,10 @@ impl<B: TextBackend> TextHost<B> {
     }
 }
 
-struct TextUnitCache {
+struct TextUnitCache<S> {
     owner: NodeId,
     location: TextUnitLocation,
+    state: S,
     active: Option<(TextLayoutKey, TextLayoutHandle)>,
     resident_layouts: SmallVec<[TextLayoutHandle; DEFAULT_MAX_VARIANTS_PER_UNIT]>,
 }
@@ -1212,7 +1228,6 @@ type GlobalLayoutCache = QuickCache<
 struct LayoutEntry<B: TextBackend> {
     cache_key: LayoutCacheKey,
     layout: Arc<ParagraphLayout<<B as Shaper>::FontId, <B as Shaper>::GlyphKey>>,
-    state: B::State,
     input: Option<TextLayoutInput>,
     last_access: Cell<u64>,
 }

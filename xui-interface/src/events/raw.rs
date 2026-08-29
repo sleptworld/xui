@@ -557,7 +557,6 @@ impl RawEvent {
     }
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventRequest {
     Focus(NodeId),

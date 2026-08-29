@@ -2,8 +2,8 @@
 //! when a downstream crate renames its dependency — and when `xui` itself is the
 //! consumer.
 
-use proc_macro2::{Ident, Span, TokenStream as TokenStream2};
 use proc_macro_crate::{FoundCrate, crate_name};
+use proc_macro2::{Ident, Span, TokenStream as TokenStream2};
 use quote::quote;
 use syn::{Error, Result};
 

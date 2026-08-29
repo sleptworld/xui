@@ -133,9 +133,5 @@ fn lerp(from: ColorMatrix, to: ColorMatrix, amount: f32) -> ColorMatrix {
 }
 
 pub(crate) fn canonical_zero(value: f32) -> f32 {
-    if value == 0.0 {
-        0.0
-    } else {
-        value
-    }
+    if value == 0.0 { 0.0 } else { value }
 }

@@ -1,7 +1,9 @@
 //! `#[component]` / `component_fn!` — props struct, typed builder, and the tag
 //! constructor that lets `xui!` treat a component exactly like a host widget.
 
-use proc_macro2::{Delimiter, Group, Ident as TokenIdent, Span, TokenStream as TokenStream2, TokenTree};
+use proc_macro2::{
+    Delimiter, Group, Ident as TokenIdent, Span, TokenStream as TokenStream2, TokenTree,
+};
 use quote::quote;
 use syn::parse::{Parse, ParseStream, Parser};
 use syn::punctuated::Punctuated;
@@ -43,11 +45,9 @@ pub struct ComponentFunction {
     body: TokenStream2,
 }
 
-
 pub struct ExpandedComponentFunction {
     pub tokens: TokenStream2,
 }
-
 
 struct ComponentParam {
     arg: FnArg,
@@ -74,7 +74,6 @@ impl Parse for DefaultsAttr {
     }
 }
 
-
 struct ComponentDefaultEntry {
     name: Ident,
     value: Expr,
@@ -98,10 +97,11 @@ impl Parse for ComponentFunction {
         while !input.is_empty() {
             let token: TokenTree = input.parse()?;
             if let TokenTree::Group(group) = &token
-                && group.delimiter() == Delimiter::Brace {
-                    body = Some(group.stream());
-                    break;
-                }
+                && group.delimiter() == Delimiter::Brace
+            {
+                body = Some(group.stream());
+                break;
+            }
             sig_tokens.extend(std::iter::once(token));
         }
         let body =
@@ -117,8 +117,6 @@ impl Parse for ComponentFunction {
         })
     }
 }
-
-
 
 impl Parse for ComponentParam {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
@@ -305,14 +303,13 @@ pub fn expand_component_function(
     // one-field component, and would leave `{Name}Props` undefined for the
     // `xui!` call site.
     let generated_props = if props_arg_count >= 1 {
-        let generated =
-            generate_component_props(
-                function,
-                &props_name,
-                &xui,
-                &component_handle_name,
-                &original_name,
-            )?;
+        let generated = generate_component_props(
+            function,
+            &props_name,
+            &xui,
+            &component_handle_name,
+            &original_name,
+        )?;
         let cx_arg = function
             .sig
             .inputs
@@ -1023,7 +1020,6 @@ fn phantom_type(params: &[TokenIdent]) -> TokenStream2 {
     }
 }
 
-
 fn is_hook_context_arg(arg: &FnArg) -> bool {
     let FnArg::Typed(arg) = arg else {
         return false;
@@ -1042,4 +1038,3 @@ fn type_ends_with_ident(ty: &Type, ident: &str) -> bool {
         _ => false,
     }
 }
-
