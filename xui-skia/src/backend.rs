@@ -367,12 +367,18 @@ impl<T: TextBackend> SkiaBackend<T> {
         if self.gpu_context.is_some() {
             if self.frame_size_px != Size::new(width, height) {
                 self.frame_size_px = Size::new(width, height);
-                if let Some(presenter) = self.presenter.as_mut() {
-                    presenter.resize(width, height)?;
-                }
+                // Rebuilding a swapchain releases its images, so nothing may
+                // still reference one. `raster` wraps the image acquired for
+                // the current frame, and the layer cache holds offscreen
+                // surfaces the presenter is about to free with the rest of the
+                // context's GPU resources.
+                self.raster = None;
                 self.damage_tracker.clear();
                 self.layer_cache.clear();
                 self.damage_history.clear();
+                if let Some(presenter) = self.presenter.as_mut() {
+                    presenter.resize(self.gpu_context.as_mut(), width, height)?;
+                }
             }
             return Ok(());
         }

@@ -98,19 +98,32 @@ impl WindowPresenter {
 
     /// Resizes the swapchain. A no-op for the software presenter, which sizes
     /// its buffer while presenting.
-    pub(crate) fn resize(&mut self, width: u32, height: u32) -> Result<(), SkiaBackendError> {
+    ///
+    /// `context` is needed because rebuilding a swapchain releases its images,
+    /// and Skia keeps wrapped render targets in its resource cache after the
+    /// surface wrapping them is dropped. Those cached references have to go
+    /// before the platform will hand the images back.
+    pub(crate) fn resize(
+        &mut self,
+        context: Option<&mut DirectContext>,
+        width: u32,
+        height: u32,
+    ) -> Result<(), SkiaBackendError> {
         match self {
             #[cfg(target_os = "macos")]
             Self::Metal(presenter) => {
+                // A `CAMetalLayer` hands out a fresh drawable a frame, so there
+                // is nothing cached to release here.
+                let _ = context;
                 presenter.resize(width, height);
                 Ok(())
             }
             #[cfg(target_os = "windows")]
-            Self::Direct3D(presenter) => presenter.resize(width, height),
+            Self::Direct3D(presenter) => presenter.resize(context, width, height),
             #[cfg(target_os = "linux")]
-            Self::Vulkan(presenter) => presenter.resize(width, height),
+            Self::Vulkan(presenter) => presenter.resize(context, width, height),
             Self::Software(_) => {
-                let _ = (width, height);
+                let _ = (context, width, height);
                 Ok(())
             }
         }

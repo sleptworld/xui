@@ -195,9 +195,22 @@ impl VulkanPresenter {
         Ok((presenter, context))
     }
 
-    pub(crate) fn resize(&mut self, width: u32, height: u32) -> Result<(), SkiaBackendError> {
+    pub(crate) fn resize(
+        &mut self,
+        context: Option<&mut DirectContext>,
+        width: u32,
+        height: u32,
+    ) -> Result<(), SkiaBackendError> {
         if self.requested == (width, height) && self.swapchain != vk::SwapchainKHR::null() {
             return Ok(());
+        }
+        // The old swapchain's images are about to be destroyed. Skia caches the
+        // render targets wrapping them, so those have to go first, or the cache
+        // is left holding dead `VkImage` handles that a recycled handle could
+        // later collide with.
+        if let Some(context) = context {
+            context.flush_submit_and_sync_cpu();
+            context.free_gpu_resources();
         }
         self.recreate_swapchain(width, height)
     }
@@ -208,13 +221,15 @@ impl VulkanPresenter {
         width: u32,
         height: u32,
     ) -> Result<Surface, SkiaBackendError> {
-        self.resize(width, height)?;
+        self.resize(Some(context), width, height)?;
 
         // Two attempts: a swapchain can go out of date between the resize above
         // and the acquire below (a compositor-driven resize, a mode change).
         let index = match self.acquire_index()? {
             Some(index) => index,
             None => {
+                context.flush_submit_and_sync_cpu();
+                context.free_gpu_resources();
                 self.recreate_swapchain(width, height)?;
                 self.acquire_index()?
                     .ok_or_else(|| present_error("the swapchain went out of date twice in a row"))?

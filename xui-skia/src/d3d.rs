@@ -160,13 +160,30 @@ impl Direct3DPresenter {
         ))
     }
 
-    pub(crate) fn resize(&mut self, width: u32, height: u32) -> Result<(), SkiaBackendError> {
+    pub(crate) fn resize(
+        &mut self,
+        context: Option<&mut DirectContext>,
+        width: u32,
+        height: u32,
+    ) -> Result<(), SkiaBackendError> {
         if (self.width, self.height) == (width, height) || width == 0 || height == 0 {
             return Ok(());
         }
-        // Every back buffer is about to be released, so all frames referencing
-        // them have to be off the GPU first.
+
+        // `ResizeBuffers` recreates every back buffer and fails with
+        // DXGI_ERROR_INVALID_CALL if *any* reference to one is still
+        // outstanding. Dropping the Skia surface is not enough: the wrapped
+        // render target stays in the context's resource cache, holding its
+        // `ID3D12Resource`, until that cache is flushed and freed.
+        if let Some(context) = context {
+            context.flush_submit_and_sync_cpu();
+            context.free_gpu_resources();
+        }
+        // Frames that referenced the old buffers also have to be off the GPU
+        // before those buffers go away.
         self.wait_for_fence(self.fence_value)?;
+        self.acquired = None;
+
         unsafe {
             self.swapchain.ResizeBuffers(
                 BUFFER_COUNT as u32,
@@ -180,7 +197,6 @@ impl Direct3DPresenter {
         self.buffer_fences = [0; BUFFER_COUNT];
         self.width = width;
         self.height = height;
-        self.acquired = None;
         Ok(())
     }
 
@@ -190,7 +206,7 @@ impl Direct3DPresenter {
         width: u32,
         height: u32,
     ) -> Result<Surface, SkiaBackendError> {
-        self.resize(width, height)?;
+        self.resize(Some(context), width, height)?;
 
         let index = unsafe { self.swapchain.GetCurrentBackBufferIndex() };
         // Do not record into a back buffer the GPU is still reading.
