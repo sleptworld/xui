@@ -6,6 +6,12 @@ pub use cache::{
 };
 use xui_interface::{Point, Rect, Size, TextPosition, TextRange};
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TextLayoutMetrics {
+    pub size: Size<f32>,
+    pub first_baseline: Option<f32>,
+}
+
 /// Geometry queries supported by a resident shaped-text layout.
 pub trait TextLayoutQuery {
     fn size(&self) -> Size<f32>;

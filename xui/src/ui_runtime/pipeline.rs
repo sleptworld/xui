@@ -16,7 +16,7 @@ use crate::render::{
 };
 use crate::text::{TextHost, TextLayoutSlot};
 use crate::ui_runtime::interaction::InteractionSystem;
-use crate::ui_runtime::layout::{LayoutTree, WidgetContext};
+use crate::ui_runtime::layout::{LayoutTree, MeasuredLeaf, WidgetContext};
 use crate::ui_runtime::render::RenderSystem;
 use crate::ui_runtime::state::HostWorkFlags;
 use crate::ui_runtime::state::UiState;
@@ -4201,7 +4201,7 @@ fn measure_layout_context<T: TextBackend>(
     available_space: tf::Size<tf::AvailableSpace>,
     node_context: Option<&mut WidgetContext>,
     measurer: &mut TextHost<T>,
-) -> tf::Size<f32> {
+) -> MeasuredLeaf {
     let known_size = if let tf::Size {
         width: Some(width),
         height: Some(height),
@@ -4212,12 +4212,11 @@ fn measure_layout_context<T: TextBackend>(
         None
     };
 
-    let measured = match node_context {
+    match node_context {
         Some(WidgetContext::Text(node_id)) => {
             let node = ui_tree.get(*node_id).expect("node not found");
-            if let Some(props) = node.widget.with_widgets(|w| {
-                w.text_layout_props(styles.effective(*node_id).expect("style node missing"))
-            }) {
+            let effective = styles.effective(*node_id).expect("style node missing");
+            if let Some(props) = node.widget.with_widgets(|w| w.text_layout_props(effective)) {
                 let constraints = if node.node_type == WidgetType::TextInput {
                     TextLayoutConstraints::UNBOUNDED
                 } else {
@@ -4242,36 +4241,40 @@ fn measure_layout_context<T: TextBackend>(
                     props.text_box,
                     font_context,
                 );
-                let size = measurer.measure_slot(*node_id, TextLayoutSlot::PRIMARY, input);
-                return tf::Size {
-                    width: known_dimensions.width.unwrap_or(size.width),
-                    height: known_dimensions.height.unwrap_or(size.height),
+                let metrics =
+                    measurer.measure_slot_metrics(*node_id, TextLayoutSlot::PRIMARY, input);
+                return MeasuredLeaf {
+                    size: tf::Size {
+                        width: known_dimensions.width.unwrap_or(metrics.size.width),
+                        height: known_dimensions.height.unwrap_or(metrics.size.height),
+                    },
+                    // Paragraph baselines are content-box local. Taffy expects
+                    // the baseline from the leaf's border-box top edge.
+                    first_baseline: metrics
+                        .first_baseline
+                        .map(|baseline| effective.layout.padding.top + baseline),
                 };
             } else {
-                return tf::Size {
+                return MeasuredLeaf::from_size(tf::Size {
                     width: known_dimensions.width.unwrap_or(0.0),
                     height: known_dimensions.height.unwrap_or(0.0),
-                };
+                });
             }
         }
-        Some(WidgetContext::Image(size)) => {
-            return tf::Size {
-                width: known_dimensions.width.unwrap_or(size.width),
-                height: known_dimensions.height.unwrap_or(size.height),
-            };
-        }
+        Some(WidgetContext::Image(size)) => MeasuredLeaf::from_size(tf::Size {
+            width: known_dimensions.width.unwrap_or(size.width),
+            height: known_dimensions.height.unwrap_or(size.height),
+        }),
 
         _ => {
             if let Some(size) = known_size {
-                return size;
+                return MeasuredLeaf::from_size(size);
             }
-            Size::<f32>::ZERO
+            MeasuredLeaf::from_size(tf::Size {
+                width: 0.0,
+                height: 0.0,
+            })
         }
-    };
-
-    tf::Size {
-        width: measured.width,
-        height: measured.height,
     }
 }
 

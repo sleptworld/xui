@@ -718,6 +718,7 @@ pub enum AlignStyle {
     Center,
     End,
     Stretch,
+    Baseline,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

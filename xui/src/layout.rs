@@ -278,6 +278,7 @@ fn align_items(value: AlignStyle) -> tf::AlignItems {
         AlignStyle::Center => tf::AlignItems::CENTER,
         AlignStyle::End => tf::AlignItems::END,
         AlignStyle::Stretch => tf::AlignItems::STRETCH,
+        AlignStyle::Baseline => tf::AlignItems::BASELINE,
     }
 }
 

@@ -17,7 +17,7 @@ use xui_interface::{
     TextPosition, TextRange,
 };
 
-use super::TextLayoutQuery;
+use super::{TextLayoutMetrics, TextLayoutQuery};
 
 new_key_type! {
     /// Stable identity of one logical text unit.
@@ -224,9 +224,18 @@ impl<B: TextBackend> TextHost<B> {
         slot: TextLayoutSlot,
         input: TextLayoutInput,
     ) -> Size<f32> {
+        self.measure_slot_metrics(owner, slot, input).size
+    }
+
+    pub(crate) fn measure_slot_metrics(
+        &mut self,
+        owner: NodeId,
+        slot: TextLayoutSlot,
+        input: TextLayoutInput,
+    ) -> TextLayoutMetrics {
         let unit = self.ensure_direct_unit(owner, slot);
         let key = layout_key_for_input(&input);
-        self.measure_unit(unit, key, input)
+        self.measure_unit_metrics(unit, key, input)
             .expect("a newly ensured text unit must exist")
     }
 
@@ -240,16 +249,28 @@ impl<B: TextBackend> TextHost<B> {
         key: TextLayoutKey,
         input: TextLayoutInput,
     ) -> Option<Size<f32>> {
+        self.measure_unit_metrics(unit, key, input)
+            .map(|metrics| metrics.size)
+    }
+
+    fn measure_unit_metrics(
+        &mut self,
+        unit: TextUnitId,
+        key: TextLayoutKey,
+        input: TextLayoutInput,
+    ) -> Option<TextLayoutMetrics> {
         self.units.get(unit)?;
         if let Some(handle) = self.find_unit(unit, &key) {
-            return self.layout(handle).map(|layout| layout.size());
+            return self
+                .layout(handle)
+                .map(|layout| text_layout_metrics(&layout));
         }
 
         let layout = {
             let state = &mut self.units.get_mut(unit)?.state;
             Arc::new(self.backend.layout_paragraph(state, input.clone()))
         };
-        let size = layout.size();
+        let metrics = text_layout_metrics(&layout);
         let memory_cost = Self::estimated_memory_cost(&layout, &self.units.get(unit)?.state);
         if self
             .insert_entry(unit, key, layout, Some(input), memory_cost, false)
@@ -257,7 +278,7 @@ impl<B: TextBackend> TextHost<B> {
         {
             self.enforce_unit_variant_limit(unit);
         }
-        Some(size)
+        Some(metrics)
     }
 
     /// Returns a cached layout for an owner-local slot, or shapes and activates it.
@@ -1224,6 +1245,13 @@ type GlobalLayoutCache = QuickCache<
     DefaultHashBuilder,
     LayoutLifecycle,
 >;
+
+fn text_layout_metrics<F, K>(layout: &ParagraphLayout<F, K>) -> TextLayoutMetrics {
+    TextLayoutMetrics {
+        size: layout.size(),
+        first_baseline: layout.lines.first().map(|line| line.baseline),
+    }
+}
 
 struct LayoutEntry<B: TextBackend> {
     cache_key: LayoutCacheKey,
