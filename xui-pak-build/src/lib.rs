@@ -14,7 +14,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     env, fs,
     io::Cursor,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -268,9 +268,7 @@ fn scan_assets(source: &Path, rules: &[CompiledRule]) -> Result<Vec<InputAsset>,
         let relative = path.strip_prefix(&source).map_err(|_| {
             BuildError::InvalidConfig(format!("path escaped source root: {}", path.display()))
         })?;
-        let relative = Utf8Path::from_path(relative)
-            .ok_or_else(|| BuildError::NonUtf8(relative.to_owned()))?;
-        let normalized = normalize_asset_path(relative.as_str())?;
+        let normalized = filesystem_asset_path(relative)?;
         if paths.insert(normalized.clone(), ()).is_some() {
             return Err(BuildError::InvalidConfig(format!(
                 "duplicate path `{normalized}`"
@@ -297,6 +295,20 @@ fn scan_assets(source: &Path, rules: &[CompiledRule]) -> Result<Vec<InputAsset>,
         });
     }
     Ok(assets)
+}
+
+fn filesystem_asset_path(path: &Path) -> Result<Utf8PathBuf, BuildError> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        let Component::Normal(part) = component else {
+            return Err(AssetError::InvalidPath(path.display().to_string()).into());
+        };
+        parts.push(
+            part.to_str()
+                .ok_or_else(|| BuildError::NonUtf8(path.to_owned()))?,
+        );
+    }
+    Ok(normalize_asset_path(&parts.join("/"))?)
 }
 
 fn auto_compression(path: &Utf8Path) -> Compression {
@@ -503,6 +515,15 @@ mod tests {
     fn content_changes_do_not_change_id() {
         let id = AssetId::from_path("data/app.bin").unwrap();
         assert_eq!(id, AssetId::from_path("data/app.bin").unwrap());
+    }
+
+    #[test]
+    fn filesystem_paths_use_forward_slashes_for_asset_paths() {
+        let path = Path::new("images").join("icons").join("app.png");
+        assert_eq!(
+            filesystem_asset_path(&path).unwrap(),
+            Utf8Path::new("images/icons/app.png")
+        );
     }
 
     #[test]
