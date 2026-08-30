@@ -42,7 +42,7 @@ on its own if you only want the shared type vocabulary.
 | [`xui-text`](xui-text/src/lib.rs) | `swash`/`fontique` text shaping, atlas, bidi, layout |
 | [`xui-text-engine`](xui-text-engine/src/lib.rs) | `cosmic-text` implementation of the `xui-interface` text traits |
 | [`xui-render-graph`](xui-render-graph/src/lib.rs) | Backend-independent layer/backdrop/filter compilation (`#![forbid(unsafe_code)]`) |
-| [`xui-skia`](xui-skia/src/lib.rs) | Skia rendering backend (`skia-safe`), Metal on macOS |
+| [`xui-skia`](xui-skia/src/lib.rs) | Skia rendering backend (`skia-safe`); Metal on macOS, Direct3D 12 on Windows, Vulkan on Linux, `softbuffer` fallback |
 | [`xui-winit`](xui-winit/src/lib.rs) | `winit` window/event loop integration; `skia` (default) or `wgpu` backend |
 | [`xui-assets`](xui-assets/src/lib.rs) | `AssetManager`, source mounting, caching, `AssetFormat` |
 | [`xui-pak`](xui-pak/src/lib.rs) | Versioned `.xpak` container format and readers |

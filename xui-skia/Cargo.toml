@@ -22,5 +22,22 @@ objc2-quartz-core = { version = "0.3.2", features = ["CALayer", "CAMetalLayer"] 
 raw-window-metal = "1.1.0"
 skia-safe = { version = "0.99.0", features = ["gpu", "metal", "textlayout"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+ash = "0.38"
+ash-window = "0.13"
+skia-safe = { version = "0.99.0", features = ["gpu", "vulkan", "textlayout"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }
+skia-safe = { version = "0.99.0", features = ["gpu", "d3d", "textlayout"] }
+
 [dev-dependencies]
 xui-text-engine = { path = "../xui-text-engine" }

@@ -32,6 +32,16 @@ pub enum SkiaBackendError {
     MetalInitialization(String),
     #[error("failed to acquire or present a Metal drawable: {0}")]
     MetalPresentation(String),
+    #[error("failed to initialize Skia Vulkan: {0}")]
+    VulkanInitialization(String),
+    #[error("failed to acquire or present a Vulkan swapchain image: {0}")]
+    VulkanPresentation(String),
+    #[error("failed to initialize Skia Direct3D 12: {0}")]
+    Direct3DInitialization(String),
+    #[error("failed to acquire or present a Direct3D 12 back buffer: {0}")]
+    Direct3DPresentation(String),
+    #[error("this platform has no GPU presentation backend")]
+    NoGpuPresenter,
     #[error("Font Data load error: {0}")]
     FontDataError(String),
 }

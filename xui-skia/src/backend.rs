@@ -1,10 +1,9 @@
 use moka::sync::Cache;
-#[cfg(not(target_os = "macos"))]
-use std::num::NonZeroU32;
 use std::{
     collections::{HashMap, VecDeque},
     fs::File,
     hash::Hash,
+    num::NonZeroU32,
     sync::Arc,
 };
 
@@ -19,8 +18,6 @@ use skia_safe::{
     paint::{Cap as SkCap, Join as SkJoin},
     runtime_effect::RuntimeShaderBuilder,
 };
-#[cfg(not(target_os = "macos"))]
-use softbuffer::{Context, Surface as SoftSurface};
 use winit::window::Window;
 use xui::render::render_graph::ImageResource;
 use xui::{
@@ -47,11 +44,9 @@ use crate::{
     SkiaBackendError, SkiaFrameStats, SkiaLayerCacheStats,
     cache::LayerSurfaceCache,
     damage::{DamageRegion, DamageTracker},
+    present::WindowPresenter,
     text::sk_font_style,
 };
-
-#[cfg(target_os = "macos")]
-use crate::metal::MetalPresenter as WindowPresenter;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SkiaBackendOptions {
@@ -65,26 +60,6 @@ impl Default for SkiaBackendOptions {
             clear_color: Color::rgba(0.08, 0.09, 0.11, 1.0),
             layer_cache_budget_bytes: 128 * 1024 * 1024,
         }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-struct WindowPresenter {
-    _window: Arc<Window>,
-    _context: Context<Arc<Window>>,
-    surface: SoftSurface<Arc<Window>, Arc<Window>>,
-}
-
-#[cfg(not(target_os = "macos"))]
-impl WindowPresenter {
-    fn new(window: Arc<Window>) -> Result<Self, SkiaBackendError> {
-        let context = Context::new(window.clone())?;
-        let surface = SoftSurface::new(&context, window.clone())?;
-        Ok(Self {
-            _window: window,
-            _context: context,
-            surface,
-        })
     }
 }
 
@@ -290,13 +265,7 @@ impl<T: TextBackend> SkiaBackend<T> {
         options: SkiaBackendOptions,
     ) -> Result<Self, SkiaBackendError> {
         let scale_factor = window.scale_factor() as f32;
-        #[cfg(target_os = "macos")]
-        let (presenter, gpu_context) = {
-            let (presenter, context) = WindowPresenter::new(window)?;
-            (presenter, Some(context))
-        };
-        #[cfg(not(target_os = "macos"))]
-        let (presenter, gpu_context) = (WindowPresenter::new(window)?, None);
+        let (presenter, gpu_context) = WindowPresenter::new(window)?;
         Ok(Self {
             presenter: Some(presenter),
             raster: None,
@@ -398,9 +367,8 @@ impl<T: TextBackend> SkiaBackend<T> {
         if self.gpu_context.is_some() {
             if self.frame_size_px != Size::new(width, height) {
                 self.frame_size_px = Size::new(width, height);
-                #[cfg(target_os = "macos")]
-                if let Some(presenter) = self.presenter.as_ref() {
-                    presenter.resize(width, height);
+                if let Some(presenter) = self.presenter.as_mut() {
+                    presenter.resize(width, height)?;
                 }
                 self.damage_tracker.clear();
                 self.layer_cache.clear();
@@ -1959,7 +1927,6 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for SkiaBackend<T> {
             self.text_blob_cache
                 .retain(|_, cached| cached.last_used_frame >= oldest);
         }
-        #[cfg(target_os = "macos")]
         if let (Some(presenter), Some(context)) =
             (self.presenter.as_mut(), self.gpu_context.as_mut())
         {
@@ -2036,23 +2003,19 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for SkiaBackend<T> {
                 "submit must be called before end_frame".into(),
             ));
         }
-        #[cfg(target_os = "macos")]
         if let (Some(presenter), Some(context)) =
             (self.presenter.as_mut(), self.gpu_context.as_mut())
         {
-            let mut surface = self.raster.take().ok_or_else(|| {
-                SkiaBackendError::InvalidFrame("Metal frame surface is unavailable".into())
+            let surface = self.raster.take().ok_or_else(|| {
+                SkiaBackendError::InvalidFrame("the GPU frame surface is unavailable".into())
             })?;
-            context.flush_and_submit_surface(&mut surface, None);
-            drop(surface);
-            presenter.present()?;
+            presenter.present(context, surface)?;
             self.rollback_damage_tracker = None;
             self.pending_damage = DamageRegion::default();
             self.presented = true;
             return Ok(());
         }
 
-        #[cfg(not(target_os = "macos"))]
         {
             let present_result = (|| {
                 if self.presenter.is_some() && !self.pending_damage.is_empty() {
@@ -2070,7 +2033,15 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for SkiaBackend<T> {
                     let height = NonZeroU32::new(self.frame_size_px.height).ok_or_else(|| {
                         SkiaBackendError::InvalidFrame("frame height is zero".into())
                     })?;
-                    let presenter = self.presenter.as_mut().expect("checked above");
+                    let presenter = self
+                        .presenter
+                        .as_mut()
+                        .and_then(WindowPresenter::software_mut)
+                        .ok_or_else(|| {
+                            SkiaBackendError::InvalidFrame(
+                                "no software presenter to blit the frame into".into(),
+                            )
+                        })?;
                     presenter.surface.resize(width, height)?;
                     let mut buffer = presenter.surface.buffer_mut()?;
                     let age = usize::from(buffer.age());
@@ -2306,7 +2277,6 @@ fn damage_region(
     region
 }
 
-#[cfg(not(target_os = "macos"))]
 fn physical_damage_rects(
     damage: &DamageRegion,
     scale: f32,
@@ -2316,10 +2286,10 @@ fn physical_damage_rects(
         .rects()
         .iter()
         .filter_map(|rect| {
-            let left = (rect.x * scale).floor().max(0.0) as u32;
-            let top = (rect.y * scale).floor().max(0.0) as u32;
-            let right = ((rect.x + rect.width) * scale).ceil().max(0.0) as u32;
-            let bottom = ((rect.y + rect.height) * scale).ceil().max(0.0) as u32;
+            let left = (rect.x() * scale).floor().max(0.0) as u32;
+            let top = (rect.y() * scale).floor().max(0.0) as u32;
+            let right = ((rect.x() + rect.width()) * scale).ceil().max(0.0) as u32;
+            let bottom = ((rect.y() + rect.height()) * scale).ceil().max(0.0) as u32;
             let left = left.min(size.width);
             let top = top.min(size.height);
             let right = right.min(size.width);
@@ -2334,7 +2304,6 @@ fn physical_damage_rects(
         .collect()
 }
 
-#[cfg(not(target_os = "macos"))]
 fn full_softbuffer_rect(size: Size<u32>) -> Result<softbuffer::Rect, SkiaBackendError> {
     Ok(softbuffer::Rect {
         x: 0,
@@ -2346,7 +2315,6 @@ fn full_softbuffer_rect(size: Size<u32>) -> Result<softbuffer::Rect, SkiaBackend
     })
 }
 
-#[cfg(not(target_os = "macos"))]
 fn copy_surface_damage(
     surface: &mut Surface,
     destination: &mut [u32],

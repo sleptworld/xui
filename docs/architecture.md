@@ -159,8 +159,11 @@ The render path is split into three stages so backends stay thin:
    frame geometry, lowers executable pass IR, and assigns abstract transient
    texture slots. Pure Rust, no GPU dependency, `#![forbid(unsafe_code)]`.
 3. **Backend** (`xui-skia`, or `wgpu` via `xui-winit`) — consumes the graph and
-   rasterizes to the window surface. `xui-skia` uses `skia-safe` with Metal on
-   macOS; caches layers, glyphs, and paragraphs; reports frame stats.
+   rasterizes to the window surface. `xui-skia` uses `skia-safe` on a
+   platform swapchain picked at runtime (Metal on macOS, Direct3D 12 on
+   Windows, Vulkan on Linux, and a `softbuffer` CPU blit as the fallback when
+   no GPU context can be created — `XUI_SKIA_GPU=0` forces it); caches layers,
+   glyphs, and paragraphs; reports frame stats.
 
 ## Asset pipeline
 
