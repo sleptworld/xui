@@ -1,0 +1,13 @@
+[package]
+name = "lucide-rs"
+version = "1.27.0"
+edition = "2024"
+license = "ISC"
+description = "Lucide icons as lazily parsed xui IconData"
+repository = "https://github.com/lucide-icons/lucide"
+build = "build.rs"
+publish = false
+
+[dependencies]
+xui = { path = "../xui" }
+

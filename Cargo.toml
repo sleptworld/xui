@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "lucide-rs",
     "xui-assets",
     "xui-interface",
     "xui-pak",
@@ -25,6 +26,7 @@ members = [
 # generates), so it is excluded from the default set — run `cargo xui run`
 # for it, or `cargo build -p xui-example-app` is intentionally not plain-cargo.
 default-members = [
+    "lucide-rs",
     "xui-assets",
     "xui-interface",
     "xui-pak",
