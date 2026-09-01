@@ -498,14 +498,18 @@ impl EventTranslator {
         while let Some(node) = cursor {
             cursor = parent_of(arena, node);
 
-            let Some((offset_before, offset_after, consumed)) =
-                consume_scroll_delta(arena, node, remaining)
-            else {
-                continue;
-            };
+            let (offset_before, offset_after, consumed) =
+                if let Some((offset_before, offset_after, consumed)) =
+                    consume_scroll_delta(arena, node, remaining)
+                {
+                    (Some(offset_before), Some(offset_after), Some(consumed))
+                } else {
+                    (None, None, None)
+                };
 
             let remaining_after =
-                Translation::new(remaining.x - consumed.x, remaining.y - consumed.y);
+                consumed.map(|c| Translation::new(remaining.x - c.x, remaining.y - c.y));
+
             let meta = self.make_meta(
                 raw.timestamp,
                 node,
@@ -543,7 +547,7 @@ impl EventTranslator {
                 }),
             }));
 
-            remaining = remaining_after;
+            // remaining = remaining_after;
             if remaining.is_zero() {
                 break;
             }

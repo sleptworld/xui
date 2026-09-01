@@ -385,17 +385,17 @@ pub struct ScrollEvent {
     pub scroll_target: NodeId,
 
     /// 滚动前 offset
-    pub offset_before: Translation,
+    pub offset_before: Option<Translation>,
 
     /// 滚动后 offset
-    pub offset_after: Translation,
+    pub offset_after: Option<Translation>,
 
     /// 实际被消费的滚动量
-    pub consumed_delta: Translation,
+    pub consumed_delta: Option<Translation>,
 
     /// 没有被当前 scroll container 消费的剩余滚动量。
     /// 可以用于 scroll chaining。
-    pub remaining_delta: Translation,
+    pub remaining_delta: Option<Translation>,
 
     /// 是否来自惯性滚动
     pub is_inertial: bool,

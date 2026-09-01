@@ -132,7 +132,7 @@ pub fn virtual_list(
     ContainerWidget::new()
         .style(style.clone().scroll_vertical())
         .on_scroll(move |event, event_cx| {
-            let offset = event.offset_after.y;
+            let offset = event.offset_after.unwrap().y;
             let layout_height = event_cx.node_ref.layout.height();
             let viewport = if layout_height > 0.0 {
                 layout_height
