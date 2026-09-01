@@ -331,6 +331,59 @@ fn a_partial_repaint_culls_the_untouched_items() {
     );
 }
 
+/// Resizing tears down the compositor surface, the layer cache, the surface
+/// pool and the damage tracker at once. What comes out has to be the frame a
+/// backend that had always been that size would have drawn.
+#[test]
+fn a_resized_backend_draws_the_frame_a_fresh_one_would() {
+    const RESIZED: Size<f32> = Size {
+        width: 640.0,
+        height: 420.0,
+    };
+
+    let mut resized = Harness::new(SkiaOptimizations::default());
+    for _ in 0..3 {
+        resized.render();
+    }
+    resized.app.resize(RESIZED);
+    for _ in 0..3 {
+        resized.render();
+    }
+
+    let mut fresh = Harness::new(SkiaOptimizations::default());
+    fresh.app.resize(RESIZED);
+    for _ in 0..3 {
+        fresh.render();
+    }
+
+    assert_identical(&resized.pixels(), &fresh.pixels(), "resized vs fresh");
+}
+
+/// Resizing repeatedly must not leave the caches in a state that changes what
+/// gets drawn — or one that keeps growing.
+#[test]
+fn repeated_resizes_stay_correct() {
+    let mut harness = Harness::new(SkiaOptimizations::default());
+    for step in 0..8 {
+        let width = 400.0 + (step % 4) as f32 * 60.0;
+        harness.app.resize(Size {
+            width,
+            height: 300.0 + (step % 3) as f32 * 40.0,
+        });
+        harness.render();
+    }
+    harness.app.resize(VIEWPORT);
+    for _ in 0..3 {
+        harness.render();
+    }
+
+    let mut fresh = Harness::new(SkiaOptimizations::default());
+    for _ in 0..3 {
+        fresh.render();
+    }
+    assert_identical(&harness.pixels(), &fresh.pixels(), "after eight resizes");
+}
+
 /// Offscreen surfaces should come back from the pool on a steady-state frame
 /// rather than being allocated again.
 #[test]

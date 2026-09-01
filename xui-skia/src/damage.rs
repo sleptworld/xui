@@ -13,8 +13,10 @@ use xui_render_graph::{ProgramFingerprint, SampleExpansion};
 const MAX_RECTS: usize = 32;
 /// How much dead area a merge may introduce, relative to the two inputs.
 const MERGE_SLACK: f32 = 0.25;
-/// Beyond this many rects, collapse to a single union instead of pairing them.
-const COALESCE_BAILOUT: usize = 4096;
+/// Above this many rects the pairwise passes cost more than they save, and
+/// their cost grows faster than the input: the whole job goes to `band_merge`,
+/// which is O(n log n) regardless.
+const PAIRWISE_LIMIT: usize = 64;
 
 fn area(rect: Bounds) -> f32 {
     rect.width().max(0.0) * rect.height().max(0.0)
@@ -81,11 +83,8 @@ impl DamageRegion {
         if self.rects.len() < 2 {
             return;
         }
-        // Past this point the pairwise pass costs more than it saves.
-        if self.rects.len() > COALESCE_BAILOUT {
-            let all = self.rects.iter().copied().reduce(Bounds::union);
-            self.rects.clear();
-            self.rects.extend(all);
+        if self.rects.len() > PAIRWISE_LIMIT {
+            self.band_merge();
             return;
         }
         // Two passes: a merge can open up a further merge with a rect already
@@ -97,11 +96,33 @@ impl DamageRegion {
                 break;
             }
         }
+        // Bounded by `PAIRWISE_LIMIT`, so this stays a fixed small cost.
         while self.rects.len() > MAX_RECTS {
             if !self.merge_closest_pair() {
                 break;
             }
         }
+    }
+
+    /// Collapses a large region into at most `MAX_RECTS` horizontal bands.
+    ///
+    /// Sorting by position first keeps each band spatially tight, which matters
+    /// because the union of a band is what gets repainted. Quality is lower
+    /// than the pairwise merge, but the cost is O(n log n) instead of growing
+    /// with the square of a count this code does not control.
+    fn band_merge(&mut self) {
+        self.rects.sort_unstable_by(|a, b| {
+            a.min
+                .y
+                .total_cmp(&b.min.y)
+                .then_with(|| a.min.x.total_cmp(&b.min.x))
+        });
+        let group = self.rects.len().div_ceil(MAX_RECTS);
+        self.rects = self
+            .rects
+            .chunks(group)
+            .filter_map(|chunk| chunk.iter().copied().reduce(Bounds::union))
+            .collect();
     }
 
     fn merge_pass(&mut self) {
@@ -629,38 +650,61 @@ mod tests {
     }
 
     /// Simplification may only ever grow the covered area. Losing a pixel here
-    /// means a stale pixel on screen.
+    /// means a stale pixel left on screen.
+    ///
+    /// Swept across the pairwise limit so both the pairwise and the banding
+    /// path are covered.
     #[test]
     fn simplify_never_drops_coverage() {
+        for count in [2, 17, PAIRWISE_LIMIT, PAIRWISE_LIMIT + 1, 200] {
+            let mut region = DamageRegion::default();
+            let probes: Vec<Bounds> = (0..count)
+                .map(|i| {
+                    let i = i as f32;
+                    rect((i * 7.0) % 400.0, (i * 13.0) % 300.0, 12.0, 9.0)
+                })
+                .collect();
+            for probe in &probes {
+                region.add(*probe);
+            }
+            region.simplify();
+            assert!(region.rects.len() <= MAX_RECTS, "count {count}");
+            for probe in &probes {
+                assert!(
+                    covers(&region, *probe),
+                    "simplify dropped coverage of {probe:?} at count {count}"
+                );
+            }
+        }
+    }
+
+    /// A region far past the pairwise limit still has to come out bounded, and
+    /// without paying a cost that grows with the square of the input.
+    #[test]
+    fn simplify_bounds_a_huge_region_without_losing_coverage() {
         let mut region = DamageRegion::default();
-        let probes: Vec<Bounds> = (0..200)
+        let probes: Vec<Bounds> = (0..20_000)
             .map(|i| {
                 let i = i as f32;
-                rect((i * 7.0) % 400.0, (i * 13.0) % 300.0, 12.0, 9.0)
+                rect((i * 3.0) % 1900.0, (i * 11.0) % 1000.0, 4.0, 4.0)
             })
             .collect();
         for probe in &probes {
             region.add(*probe);
         }
+        let started = std::time::Instant::now();
         region.simplify();
+        let elapsed = started.elapsed();
         assert!(region.rects.len() <= MAX_RECTS);
         for probe in &probes {
-            assert!(
-                covers(&region, *probe),
-                "simplify dropped coverage of {probe:?}"
-            );
+            assert!(covers(&region, *probe), "band merge dropped {probe:?}");
         }
-    }
-
-    #[test]
-    fn simplify_collapses_a_pathological_region_to_one_rect() {
-        let mut region = DamageRegion::default();
-        for i in 0..(COALESCE_BAILOUT + 1) {
-            let i = i as f32;
-            region.add(rect(i, i, 1.0, 1.0));
-        }
-        region.simplify();
-        assert_eq!(region.rects.len(), 1);
+        // Generous next to O(n log n) on 20k rects, tight next to the O(n^3)
+        // the pairwise path would have cost here.
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "simplify took {elapsed:?} on 20k rects"
+        );
     }
 
     #[test]

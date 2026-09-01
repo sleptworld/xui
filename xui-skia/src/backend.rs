@@ -209,21 +209,61 @@ impl<K: Copy + Eq + Hash, V: Clone> LocalLru<K, V> {
 /// A surface handed back here still holds the last frame's pixels, so `take`
 /// clears it: a full-surface clear is a load-op on the GPU and a memset on the
 /// CPU, both far cheaper than the allocation they replace.
+/// How long an unwanted extent stays resident. Extents come and go as the
+/// scene changes — a resized window, an effect that stopped being applied —
+/// and without an upper bound the pool would hold every extent it ever saw
+/// until it hit its budget.
+const MAX_POOL_IDLE_FRAMES: u64 = 60;
+
+struct PooledSurface {
+    surface: Surface,
+    idle_since: u64,
+}
+
 #[derive(Default)]
 struct SurfacePool {
-    idle: HashMap<(u32, u32), Vec<Surface>>,
+    idle: HashMap<(u32, u32), Vec<PooledSurface>>,
     bytes: u64,
+    frame: u64,
 }
 
 impl SurfacePool {
+    fn begin_frame(&mut self) {
+        self.frame += 1;
+        let Some(cutoff) = self.frame.checked_sub(MAX_POOL_IDLE_FRAMES) else {
+            return;
+        };
+        let before = self.idle.len();
+        self.idle.retain(|_, bucket| {
+            bucket.retain(|entry| entry.idle_since >= cutoff);
+            !bucket.is_empty()
+        });
+        if self.idle.len() != before {
+            self.bytes = self
+                .idle
+                .values()
+                .flatten()
+                .map(|entry| surface_bytes(&entry.surface))
+                .sum();
+        }
+    }
+
     fn take(&mut self, width: u32, height: u32) -> Option<Surface> {
         let bucket = self.idle.get_mut(&(width, height))?;
-        let mut surface = bucket.pop()?;
+        let mut surface = bucket.pop()?.surface;
         if bucket.is_empty() {
             self.idle.remove(&(width, height));
         }
         self.bytes = self.bytes.saturating_sub(surface_bytes(&surface));
-        surface.canvas().clear(skia_safe::Color::TRANSPARENT);
+        let canvas = surface.canvas();
+        // Hand it back indistinguishable from a fresh allocation. Without
+        // pooling, nothing that drew into an offscreen surface had to leave
+        // the canvas tidy; a leftover clip would spare part of the previous
+        // frame's pixels from the clear below, and a leftover transform would
+        // displace whatever draws next.
+        canvas.restore_to_count(1);
+        canvas.reset_matrix();
+        canvas.clear(skia_safe::Color::TRANSPARENT);
         Some(surface)
     }
 
@@ -236,7 +276,10 @@ impl SurfacePool {
         self.idle
             .entry((surface.width() as u32, surface.height() as u32))
             .or_default()
-            .push(surface);
+            .push(PooledSurface {
+                surface,
+                idle_since: self.frame,
+            });
     }
 
     fn clear(&mut self) {
@@ -420,8 +463,10 @@ impl<T: TextBackend> SkiaBackend<T> {
     /// on the surface — and by the tests, to render a reference frame that owes
     /// nothing to the frames before it.
     pub fn invalidate(&mut self) {
+        // The compositor surface is kept: the next frame repaints it in full,
+        // and reallocating a screen-sized surface on every invalidation would
+        // cost more than the repaint it is there to avoid.
         self.damage_tracker.clear();
-        self.compositor = None;
         self.layer_cache.clear();
         self.surface_pool.clear();
         self.damage_history.clear();
@@ -2138,6 +2183,7 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for SkiaBackend<T> {
                 self.frame_size_px.height,
             )?);
         }
+        self.surface_pool.begin_frame();
         self.submitted = false;
         self.presented = false;
         self.damage_rollback_pending = false;
@@ -4340,5 +4386,100 @@ mod blit_tests {
 
         assert_eq!(pixel(&mut destination, 0, 0), [0, 255, 0, 255]);
         assert_eq!(pixel(&mut destination, 7, 7), [0, 255, 0, 255]);
+    }
+}
+
+#[cfg(test)]
+mod surface_pool_tests {
+    use super::*;
+
+    fn raster(width: i32, height: i32) -> Surface {
+        skia_safe::surfaces::raster_n32_premul((width, height)).expect("raster surface")
+    }
+
+    fn pixel(surface: &mut Surface, x: i32, y: i32) -> [u8; 4] {
+        let info = ImageInfo::new(
+            (1, 1),
+            ColorType::RGBA8888,
+            AlphaType::Unpremul,
+            ColorSpace::new_srgb(),
+        );
+        let mut bytes = [0u8; 4];
+        assert!(surface.read_pixels(&info, &mut bytes, 4, (x, y)));
+        bytes
+    }
+
+    /// A recycled surface must come back indistinguishable from a fresh one.
+    ///
+    /// Without pooling every offscreen surface was newly allocated, so no
+    /// drawing code had to leave the canvas tidy. Pooling makes a stray clip or
+    /// an unbalanced `save` outlive the frame that left it, which would corrupt
+    /// whatever draws next at that size — a failure that only shows up once
+    /// some unrelated code drifts out of balance.
+    #[test]
+    fn a_recycled_surface_carries_no_canvas_state() {
+        let mut pool = SurfacePool::default();
+        let mut dirty = raster(8, 8);
+        {
+            let canvas = dirty.canvas();
+            canvas.clear(skia_safe::Color::RED);
+            // Left behind by the frame that used this surface.
+            canvas.save();
+            canvas.clip_rect(
+                SkRect::from_xywh(0.0, 0.0, 2.0, 2.0),
+                ClipOp::Intersect,
+                false,
+            );
+            canvas.translate((3.0, 3.0));
+        }
+        pool.put(dirty, u64::MAX);
+
+        let mut reused = pool.take(8, 8).expect("the surface is in the pool");
+        assert_eq!(
+            pixel(&mut reused, 7, 7),
+            [0, 0, 0, 0],
+            "a leftover clip kept the recycled surface from being cleared"
+        );
+        let mut green = Paint::default();
+        green.set_color(skia_safe::Color::GREEN);
+        reused
+            .canvas()
+            .draw_rect(SkRect::from_xywh(0.0, 0.0, 1.0, 1.0), &green);
+        assert_eq!(
+            pixel(&mut reused, 0, 0),
+            [0, 255, 0, 255],
+            "a leftover transform displaced the first draw into the recycled surface"
+        );
+    }
+
+    /// An extent nothing asks for again must not stay resident forever.
+    #[test]
+    fn the_pool_drops_extents_that_go_unused() {
+        let mut pool = SurfacePool::default();
+        pool.begin_frame();
+        pool.put(raster(8, 8), u64::MAX);
+        for _ in 0..MAX_POOL_IDLE_FRAMES {
+            pool.begin_frame();
+        }
+        assert!(pool.take(8, 8).is_some(), "dropped while still fresh");
+
+        pool.put(raster(8, 8), u64::MAX);
+        for _ in 0..=MAX_POOL_IDLE_FRAMES {
+            pool.begin_frame();
+        }
+        assert!(pool.take(8, 8).is_none(), "kept an extent nothing wanted");
+        assert_eq!(pool.bytes, 0, "the byte count outlived the surfaces");
+    }
+
+    #[test]
+    fn the_pool_stops_at_its_budget() {
+        let mut pool = SurfacePool::default();
+        let budget = surface_bytes(&raster(8, 8)) * 2;
+        for _ in 0..4 {
+            pool.put(raster(8, 8), budget);
+        }
+        assert!(pool.take(8, 8).is_some());
+        assert!(pool.take(8, 8).is_some());
+        assert!(pool.take(8, 8).is_none(), "the pool exceeded its budget");
     }
 }
