@@ -7,6 +7,26 @@ use xui::{
 use xui_interface::{Bounds, Rect};
 use xui_render_graph::{ProgramFingerprint, SampleExpansion};
 
+/// Upper bound on the rects a simplified region keeps. Skia builds one region
+/// band per distinct y-span, and the software presenter blits per rect, so a
+/// handful of slightly-too-large rects beats a hundred exact ones.
+const MAX_RECTS: usize = 32;
+/// How much dead area a merge may introduce, relative to the two inputs.
+const MERGE_SLACK: f32 = 0.25;
+/// Beyond this many rects, collapse to a single union instead of pairing them.
+const COALESCE_BAILOUT: usize = 4096;
+
+fn area(rect: Bounds) -> f32 {
+    rect.width().max(0.0) * rect.height().max(0.0)
+}
+
+fn contains(outer: Bounds, inner: Bounds) -> bool {
+    outer.min.x <= inner.min.x
+        && outer.min.y <= inner.min.y
+        && outer.max.x >= inner.max.x
+        && outer.max.y >= inner.max.y
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DamageRegion {
     rects: Vec<Bounds>,
@@ -39,6 +59,94 @@ impl DamageRegion {
 
     pub(crate) fn bounds(&self) -> Option<Bounds> {
         self.rects.iter().copied().reduce(Bounds::union)
+    }
+
+    /// True when any damaged rect touches `bounds`. Used to cull scene items
+    /// that cannot contribute to this repaint.
+    pub(crate) fn intersects(&self, bounds: Bounds) -> bool {
+        self.rects.iter().any(|rect| rect.intersects(bounds))
+    }
+
+    /// Merges overlapping and near-overlapping rects in place.
+    ///
+    /// Damage is accumulated by appending, so a frame that touches one subtree
+    /// through several paths (composite prefixes, backdrop expansion, child
+    /// propagation) ends up with many rects covering nearly the same pixels.
+    /// Every one of them costs a `Region` band, a clip band, and — on the
+    /// software presenter — its own `read_pixels` plus per-pixel conversion.
+    ///
+    /// Every operation here only ever *grows* the covered area, so a simplified
+    /// region is always safe to repaint: it can waste work, never lose it.
+    pub(crate) fn simplify(&mut self) {
+        if self.rects.len() < 2 {
+            return;
+        }
+        // Past this point the pairwise pass costs more than it saves.
+        if self.rects.len() > COALESCE_BAILOUT {
+            let all = self.rects.iter().copied().reduce(Bounds::union);
+            self.rects.clear();
+            self.rects.extend(all);
+            return;
+        }
+        // Two passes: a merge can open up a further merge with a rect already
+        // visited, and a fixpoint loop is not worth the extra scans.
+        for _ in 0..2 {
+            let before = self.rects.len();
+            self.merge_pass();
+            if self.rects.len() == before {
+                break;
+            }
+        }
+        while self.rects.len() > MAX_RECTS {
+            if !self.merge_closest_pair() {
+                break;
+            }
+        }
+    }
+
+    fn merge_pass(&mut self) {
+        let mut merged: Vec<Bounds> = Vec::with_capacity(self.rects.len());
+        'next: for rect in std::mem::take(&mut self.rects) {
+            for existing in &mut merged {
+                if contains(*existing, rect) {
+                    continue 'next;
+                }
+                if contains(rect, *existing) {
+                    *existing = rect;
+                    continue 'next;
+                }
+                if existing.intersects(rect) {
+                    let union = existing.union(rect);
+                    if area(union) <= (area(*existing) + area(rect)) * (1.0 + MERGE_SLACK) {
+                        *existing = union;
+                        continue 'next;
+                    }
+                }
+            }
+            merged.push(rect);
+        }
+        self.rects = merged;
+    }
+
+    /// Unions the pair whose union wastes the fewest pixels. Returns false when
+    /// there is nothing left to merge.
+    fn merge_closest_pair(&mut self) -> bool {
+        let mut best: Option<(usize, usize, f32)> = None;
+        for (i, a) in self.rects.iter().enumerate() {
+            for (j, b) in self.rects.iter().enumerate().skip(i + 1) {
+                let waste = area(a.union(*b)) - area(*a) - area(*b);
+                if best.is_none_or(|(_, _, current)| waste < current) {
+                    best = Some((i, j, waste));
+                }
+            }
+        }
+        let Some((i, j, _)) = best else {
+            return false;
+        };
+        let merged = self.rects[i].union(self.rects[j]);
+        self.rects.swap_remove(j);
+        self.rects[i] = merged;
+        true
     }
 
     fn backdrop_damage(&self, output_bounds: Bounds, expansion: SampleExpansion) -> Self {
@@ -161,6 +269,9 @@ impl DamageTracker {
         }
 
         propagate_composite_prefix_damage(frame, &mut dirty_by_layer);
+        for region in dirty_by_layer.values_mut() {
+            region.simplify();
+        }
         self.snapshots = next_snapshots;
         self.last_damage = dirty_by_layer;
         self.last_damage
@@ -478,6 +589,78 @@ mod tests {
             output.bounds(),
             Some(Bounds::from_origin_size((8.0, 0.0), (2.0, 5.0)))
         );
+    }
+
+    fn rect(x: f32, y: f32, w: f32, h: f32) -> Bounds {
+        Bounds::from_origin_size((x, y), (w, h))
+    }
+
+    /// Every merge is a union and every drop is of a rect already contained,
+    /// so each original rect must still sit entirely inside *some* result rect.
+    fn covers(region: &DamageRegion, probe: Bounds) -> bool {
+        region.rects.iter().any(|rect| contains(*rect, probe))
+    }
+
+    #[test]
+    fn simplify_folds_a_contained_rect_away() {
+        let mut region = DamageRegion::default();
+        region.add(rect(0.0, 0.0, 100.0, 100.0));
+        region.add(rect(10.0, 10.0, 5.0, 5.0));
+        region.simplify();
+        assert_eq!(region.rects, vec![rect(0.0, 0.0, 100.0, 100.0)]);
+    }
+
+    #[test]
+    fn simplify_merges_overlapping_rects_it_barely_grows() {
+        let mut region = DamageRegion::default();
+        region.add(rect(0.0, 0.0, 100.0, 10.0));
+        region.add(rect(90.0, 0.0, 100.0, 10.0));
+        region.simplify();
+        assert_eq!(region.rects, vec![rect(0.0, 0.0, 190.0, 10.0)]);
+    }
+
+    #[test]
+    fn simplify_keeps_rects_whose_union_would_waste_space() {
+        let mut region = DamageRegion::default();
+        region.add(rect(0.0, 0.0, 10.0, 10.0));
+        region.add(rect(500.0, 500.0, 10.0, 10.0));
+        region.simplify();
+        assert_eq!(region.rects.len(), 2);
+    }
+
+    /// Simplification may only ever grow the covered area. Losing a pixel here
+    /// means a stale pixel on screen.
+    #[test]
+    fn simplify_never_drops_coverage() {
+        let mut region = DamageRegion::default();
+        let probes: Vec<Bounds> = (0..200)
+            .map(|i| {
+                let i = i as f32;
+                rect((i * 7.0) % 400.0, (i * 13.0) % 300.0, 12.0, 9.0)
+            })
+            .collect();
+        for probe in &probes {
+            region.add(*probe);
+        }
+        region.simplify();
+        assert!(region.rects.len() <= MAX_RECTS);
+        for probe in &probes {
+            assert!(
+                covers(&region, *probe),
+                "simplify dropped coverage of {probe:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn simplify_collapses_a_pathological_region_to_one_rect() {
+        let mut region = DamageRegion::default();
+        for i in 0..(COALESCE_BAILOUT + 1) {
+            let i = i as f32;
+            region.add(rect(i, i, 1.0, 1.0));
+        }
+        region.simplify();
+        assert_eq!(region.rects.len(), 1);
     }
 
     #[test]

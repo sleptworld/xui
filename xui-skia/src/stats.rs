@@ -20,4 +20,11 @@ pub struct SkiaFrameStats {
     pub image_snapshots: u64,
     pub backdrop_materializations: u64,
     pub backdrop_materializations_avoided: u64,
+    /// Draw items skipped because they fall outside the repainted region.
+    pub items_culled: u64,
+    /// Layer instances skipped for the same reason. Each one also skips an
+    /// offscreen surface, a subtree traversal, a snapshot and a composite pass.
+    pub layer_instances_culled: u64,
+    /// Offscreen surfaces served from the frame pool rather than allocated.
+    pub pooled_surface_reuses: u64,
 }

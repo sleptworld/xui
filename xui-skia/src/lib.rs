@@ -31,7 +31,7 @@ mod text;
 #[cfg(target_os = "linux")]
 mod vulkan;
 
-pub use backend::{SkiaBackend, SkiaBackendOptions};
+pub use backend::{SkiaBackend, SkiaBackendOptions, SkiaOptimizations};
 pub use cache::SkiaLayerCacheStats;
 pub use error::SkiaBackendError;
 pub use stats::SkiaFrameStats;

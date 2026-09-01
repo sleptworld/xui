@@ -4,15 +4,15 @@ use std::{
     fs::File,
     hash::Hash,
     num::NonZeroU32,
-    sync::Arc,
+    sync::{Arc, LazyLock},
 };
 
 use skia_safe::{
     AlphaType, BlendMode as SkBlendMode, Canvas, ClipOp, Color4f, ColorSpace, ColorType, Data,
     Font, FontMgr, FontStyle as SkFontStyle, GlyphId as SkGlyphId, IRect, Image, ImageFilter,
     ImageInfo, Matrix, Paint, PaintStyle, Path, PathBuilder, Point as SkPoint, RRect,
-    Rect as SkRect, Region, RuntimeEffect, SamplingOptions, Surface, TextBlob, TextBlobBuilder,
-    TileMode, Typeface as SkTypeface,
+    Rect as SkRect, Region, RuntimeEffect, SamplingOptions, Shader, Surface, TextBlob,
+    TextBlobBuilder, TileMode, Typeface as SkTypeface,
     gradient::{self, Colors, Gradient, Interpolation},
     images,
     paint::{Cap as SkCap, Join as SkJoin},
@@ -22,17 +22,18 @@ use winit::window::Window;
 use xui::render::render_graph::ImageResource;
 use xui::{
     render::{
-        BackdropIsolation, BuiltClipChainId, BuiltDraw, BuiltFrame, BuiltItem, BuiltLayerId,
-        BuiltLayerInstance, ClipShape, RenderBackend, Shape,
+        BackdropIsolation, BuiltClipChainId, BuiltDraw, BuiltFrame, BuiltItem, BuiltLayer,
+        BuiltLayerId, BuiltLayerInstance, ClipShape, RenderBackend, Shape,
     },
     text::{TextHost, TextLayoutHandle},
 };
 use xui_interface::{
-    Affine, Alignment, Bounds, Color, ComputedColorStyle, FontDataRef, FontDatabase, FontWeight,
-    ImageData, ImageFit, ImageKey, ImageRepeat, ImageRotation, ImageStyle, ImageTransform, LineCap,
-    LineJoin, NodeId, NodeLifecycleEvent, ParagraphLayout, PathData, PathDataId, PathFill,
-    PathSegment, PathStroke, Rect, Sampling, Shaper, Size, TextBackend, TextVerticalAlign,
-    VectorCommand, VectorScene, VectorSceneId,
+    Affine, Alignment, Bounds, Color, ComputedColorStyle, ComputedLinearGradientStyle,
+    ComputedRadialGradientStyle, FontDataRef, FontDatabase, FontWeight, ImageData, ImageFit,
+    ImageKey, ImageRepeat, ImageRotation, ImageStyle, ImageTransform, LineCap, LineJoin, NodeId,
+    NodeLifecycleEvent, ParagraphLayout, PathData, PathDataId, PathFill, PathSegment, PathStroke,
+    Rect, Sampling, Shaper, Size, TextBackend, TextVerticalAlign, VectorCommand, VectorScene,
+    VectorSceneId,
 };
 use xui_render_graph::{
     BlendMode, CompositeOperator, ExternalAliasing, ExternalResourceKind, LayerPlanContext,
@@ -42,16 +43,24 @@ use xui_render_graph::{
 
 use crate::{
     SkiaBackendError, SkiaFrameStats, SkiaLayerCacheStats,
-    cache::LayerSurfaceCache,
+    cache::{Acquired, LayerSurfaceCache, SurfaceLease},
     damage::{DamageRegion, DamageTracker},
     present::WindowPresenter,
     text::sk_font_style,
 };
 
+/// `XUI_DEBUG_FRAME=1` prints a per-frame damage summary. Read once: an env
+/// lookup takes the process-wide env lock and allocates.
+static DEBUG_FRAME: LazyLock<bool> =
+    LazyLock::new(|| std::env::var_os("XUI_DEBUG_FRAME").is_some());
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SkiaBackendOptions {
     pub clear_color: Color,
     pub layer_cache_budget_bytes: u64,
+    /// Ceiling on the idle offscreen surfaces kept for reuse between frames.
+    pub surface_pool_budget_bytes: u64,
+    pub optimizations: SkiaOptimizations,
 }
 
 impl Default for SkiaBackendOptions {
@@ -59,8 +68,42 @@ impl Default for SkiaBackendOptions {
         Self {
             clear_color: Color::rgba(0.08, 0.09, 0.11, 1.0),
             layer_cache_budget_bytes: 128 * 1024 * 1024,
+            surface_pool_budget_bytes: 64 * 1024 * 1024,
+            optimizations: SkiaOptimizations::default(),
         }
     }
+}
+
+/// Switches for the frame-level drawing optimizations.
+///
+/// All are on by default. They exist as switches so the tests can render one
+/// frame both ways and compare the pixels, which is the only cheap way to keep
+/// a fast path honest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkiaOptimizations {
+    /// Skip draw items and layer instances that fall outside the repainted
+    /// region. Correctness rests on the damage tracker covering every change,
+    /// which is the contract it already has to meet for the cached-layer path.
+    pub cull: bool,
+    /// Recycle offscreen surfaces within a frame instead of allocating each.
+    pub surface_pool: bool,
+}
+
+impl Default for SkiaOptimizations {
+    fn default() -> Self {
+        Self {
+            cull: true,
+            surface_pool: true,
+        }
+    }
+}
+
+impl SkiaOptimizations {
+    /// Every fast path off — the reference drawing path.
+    pub const NONE: Self = Self {
+        cull: false,
+        surface_pool: false,
+    };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -155,6 +198,57 @@ impl<K: Copy + Eq + Hash, V: Clone> LocalLru<K, V> {
     }
 }
 
+/// Offscreen surfaces recycled across frames, keyed by exact pixel extent.
+///
+/// Every filter pass in a render plan allocates a surface, uses it for one
+/// frame and drops it. A plain effects list runs eight of those per frame, and
+/// the extents repeat frame after frame because the scene geometry does. Skia's
+/// resource cache recycles the underlying allocation, but each request still
+/// builds a surface, a render target and a device on top of it.
+///
+/// A surface handed back here still holds the last frame's pixels, so `take`
+/// clears it: a full-surface clear is a load-op on the GPU and a memset on the
+/// CPU, both far cheaper than the allocation they replace.
+#[derive(Default)]
+struct SurfacePool {
+    idle: HashMap<(u32, u32), Vec<Surface>>,
+    bytes: u64,
+}
+
+impl SurfacePool {
+    fn take(&mut self, width: u32, height: u32) -> Option<Surface> {
+        let bucket = self.idle.get_mut(&(width, height))?;
+        let mut surface = bucket.pop()?;
+        if bucket.is_empty() {
+            self.idle.remove(&(width, height));
+        }
+        self.bytes = self.bytes.saturating_sub(surface_bytes(&surface));
+        surface.canvas().clear(skia_safe::Color::TRANSPARENT);
+        Some(surface)
+    }
+
+    fn put(&mut self, surface: Surface, budget: u64) {
+        let bytes = surface_bytes(&surface);
+        if self.bytes.saturating_add(bytes) > budget {
+            return;
+        }
+        self.bytes += bytes;
+        self.idle
+            .entry((surface.width() as u32, surface.height() as u32))
+            .or_default()
+            .push(surface);
+    }
+
+    fn clear(&mut self) {
+        self.idle.clear();
+        self.bytes = 0;
+    }
+}
+
+fn surface_bytes(surface: &Surface) -> u64 {
+    (surface.width() as u64).saturating_mul(surface.height() as u64) * 4
+}
+
 struct CachedTextBlob {
     blob: Option<TextBlob>,
     font_epoch: u64,
@@ -162,71 +256,37 @@ struct CachedTextBlob {
     last_used_frame: u64,
 }
 
-struct BackdropRequirements {
-    layers: Vec<bool>,
+/// What a single walk over the frame's items tells the drawing pass.
+///
+/// This replaces three separate walks over every item of every layer — one to
+/// validate backdrop prefixes, one to upload image data, and one to work out
+/// which layers contain something that reads the destination.
+struct FrameAnalysis {
+    /// Per layer: does anything inside it read the destination, either directly
+    /// or through a passthrough descendant?
+    needs_backdrop: Vec<bool>,
 }
 
-impl BackdropRequirements {
-    fn for_frame(frame: &BuiltFrame) -> Self {
-        fn visit(
-            frame: &BuiltFrame,
-            layer_index: usize,
-            memo: &mut [Option<bool>],
-            visiting: &mut [bool],
-        ) -> bool {
-            if let Some(value) = memo.get(layer_index).copied().flatten() {
-                return value;
-            }
-            let Some(layer) = frame.layers.get(layer_index) else {
-                return false;
-            };
-            if visiting.get(layer_index).copied().unwrap_or(true) {
-                return false;
-            }
-            visiting[layer_index] = true;
-            let needs_backdrop = layer.items.iter().any(|item| {
-                let BuiltItem::Layer(instance_id) = item else {
-                    return false;
-                };
-                let Some(instance) = frame.layer_instance(*instance_id) else {
-                    return false;
-                };
-                if instance
-                    .render_program
-                    .program()
-                    .external_resource(ExternalResourceKind::Backdrop)
-                    .is_some()
-                {
-                    return true;
-                }
-                frame.layers.get(instance.layer.0).is_some_and(|child| {
-                    child.backdrop_isolation == BackdropIsolation::Passthrough
-                        && visit(frame, instance.layer.0, memo, visiting)
-                })
-            });
-            visiting[layer_index] = false;
-            memo[layer_index] = Some(needs_backdrop);
-            needs_backdrop
-        }
-
-        let mut memo = vec![None; frame.layers.len()];
-        let mut visiting = vec![false; frame.layers.len()];
-        for index in 0..frame.layers.len() {
-            visit(frame, index, &mut memo, &mut visiting);
-        }
-        Self {
-            layers: memo.into_iter().map(Option::unwrap_or_default).collect(),
-        }
-    }
-
+impl FrameAnalysis {
     fn layer(&self, id: BuiltLayerId) -> bool {
-        self.layers.get(id.0).copied().unwrap_or(false)
+        self.needs_backdrop.get(id.0).copied().unwrap_or(false)
     }
 }
 
 pub struct SkiaBackend<T: TextBackend = crate::SkiaTextBackend> {
     presenter: Option<WindowPresenter>,
+    /// Where the frame is presented from: the raster surface on the software
+    /// path, the acquired swapchain image on the GPU path.
     raster: Option<Surface>,
+    /// The GPU path's persistent frame store.
+    ///
+    /// A swapchain image comes back with undefined contents, so drawing
+    /// straight into one forces a full repaint every frame and throws away
+    /// everything the damage tracker computed. Scene drawing goes to this
+    /// surface instead, which does keep its pixels, and the finished frame is
+    /// blitted to the swapchain image whole. A full-frame blit costs one
+    /// screen-sized textured quad; a full-frame repaint costs the scene.
+    compositor: Option<Surface>,
     options: SkiaBackendOptions,
     scale_factor: f32,
     frame_size_px: Size<u32>,
@@ -235,10 +295,16 @@ pub struct SkiaBackend<T: TextBackend = crate::SkiaTextBackend> {
     source_images: Cache<ImageKey, CachedSourceImage>,
     vector_paths: LocalLru<PathDataId, Path>,
     vector_scenes: LocalLru<VectorSceneId, Arc<[CompiledVectorCommand]>>,
+    gradients: LocalLru<GradientKey, Shader>,
     runtime_effects: HashMap<&'static str, RuntimeEffect>,
     damage_tracker: DamageTracker,
-    rollback_damage_tracker: Option<DamageTracker>,
+    /// Set once `submit` has mutated the damage tracker for a frame that has
+    /// not been presented yet, so a failed present can invalidate it.
+    damage_rollback_pending: bool,
     layer_cache: LayerSurfaceCache,
+    surface_pool: SurfacePool,
+    /// A 1x1 transparent pixel, stretched wherever an empty image is needed.
+    empty_image: Option<Image>,
     pending_damage: DamageRegion,
     damage_history: VecDeque<Vec<softbuffer::Rect>>,
     // Font Cache
@@ -269,6 +335,7 @@ impl<T: TextBackend> SkiaBackend<T> {
         Ok(Self {
             presenter: Some(presenter),
             raster: None,
+            compositor: None,
             options,
             scale_factor,
             frame_size_px: Size::new(0, 0),
@@ -277,10 +344,13 @@ impl<T: TextBackend> SkiaBackend<T> {
             source_images: source_image_cache(),
             vector_paths: LocalLru::new(4096),
             vector_scenes: LocalLru::new(1024),
+            gradients: LocalLru::new(256),
             runtime_effects: HashMap::new(),
             damage_tracker: DamageTracker::default(),
-            rollback_damage_tracker: None,
+            damage_rollback_pending: false,
             layer_cache: LayerSurfaceCache::default(),
+            surface_pool: SurfacePool::default(),
+            empty_image: None,
             pending_damage: DamageRegion::default(),
             damage_history: VecDeque::new(),
             font_cache: HashMap::default(),
@@ -298,6 +368,7 @@ impl<T: TextBackend> SkiaBackend<T> {
         Self {
             presenter: None,
             raster: None,
+            compositor: None,
             options,
             scale_factor: valid_scale(scale_factor),
             frame_size_px: Size::new(0, 0),
@@ -306,10 +377,13 @@ impl<T: TextBackend> SkiaBackend<T> {
             source_images: source_image_cache(),
             vector_paths: LocalLru::new(4096),
             vector_scenes: LocalLru::new(1024),
+            gradients: LocalLru::new(256),
             runtime_effects: HashMap::new(),
             damage_tracker: DamageTracker::default(),
-            rollback_damage_tracker: None,
+            damage_rollback_pending: false,
             layer_cache: LayerSurfaceCache::default(),
+            surface_pool: SurfacePool::default(),
+            empty_image: None,
             pending_damage: DamageRegion::default(),
             damage_history: VecDeque::new(),
             font_cache: HashMap::new(),
@@ -337,6 +411,21 @@ impl<T: TextBackend> SkiaBackend<T> {
 
     pub const fn frame_stats(&self) -> SkiaFrameStats {
         self.frame_stats
+    }
+
+    /// Drops every incremental-rendering assumption, so the next frame
+    /// repaints in full.
+    ///
+    /// Needed whenever something outside this backend may have changed what is
+    /// on the surface — and by the tests, to render a reference frame that owes
+    /// nothing to the frames before it.
+    pub fn invalidate(&mut self) {
+        self.damage_tracker.clear();
+        self.compositor = None;
+        self.layer_cache.clear();
+        self.surface_pool.clear();
+        self.damage_history.clear();
+        self.damage_rollback_pending = false;
     }
 
     pub fn read_pixels_rgba8(&mut self) -> Result<Vec<u8>, SkiaBackendError> {
@@ -373,12 +462,20 @@ impl<T: TextBackend> SkiaBackend<T> {
                 // surfaces the presenter is about to free with the rest of the
                 // context's GPU resources.
                 self.raster = None;
+                self.compositor = None;
                 self.damage_tracker.clear();
                 self.layer_cache.clear();
+                self.surface_pool.clear();
                 self.damage_history.clear();
                 if let Some(presenter) = self.presenter.as_mut() {
                     presenter.resize(self.gpu_context.as_mut(), width, height)?;
                 }
+            }
+            if self.compositor.is_none() {
+                // Freshly allocated, so nothing on it is worth keeping and the
+                // first frame after this has to repaint in full.
+                self.compositor = Some(new_surface_px(width, height, self.gpu_context.as_mut())?);
+                self.damage_tracker.clear();
             }
             return Ok(());
         }
@@ -390,6 +487,7 @@ impl<T: TextBackend> SkiaBackend<T> {
             self.frame_size_px = Size::new(width, height);
             self.damage_tracker.clear();
             self.layer_cache.clear();
+            self.surface_pool.clear();
             self.damage_history.clear();
         }
         Ok(())
@@ -406,36 +504,124 @@ impl<T: TextBackend> SkiaBackend<T> {
     }
 
     fn new_surface_px(&mut self, width: u32, height: u32) -> Result<Surface, SkiaBackendError> {
+        if self.options.optimizations.surface_pool
+            && let Some(surface) = self.surface_pool.take(width, height)
+        {
+            self.frame_stats.pooled_surface_reuses += 1;
+            return Ok(surface);
+        }
         self.frame_stats.offscreen_surface_allocations += 1;
         new_surface_px(width, height, self.gpu_context.as_mut())
     }
 
-    fn transparent_image(&mut self, bounds: Bounds) -> Result<RasterImage, SkiaBackendError> {
-        // let bounds = non_empty_bounds(bounds);
-        let mut surface = self.new_surface(bounds)?;
-        surface.canvas().clear(skia_safe::Color::TRANSPARENT);
-        Ok(self.snapshot_target(&mut surface, bounds))
+    /// Hands a surface back for reuse. Only safe once nothing holds a snapshot
+    /// of it: drawing into a surface with a live snapshot makes Skia copy it.
+    fn recycle_surface(&mut self, surface: Surface) {
+        if !self.options.optimizations.surface_pool {
+            return;
+        }
+        self.surface_pool
+            .put(surface, self.options.surface_pool_budget_bytes);
     }
 
-    fn validate_frame(&self, frame: &BuiltFrame) -> Result<(), SkiaBackendError> {
-        for (index, instance) in frame.layer_instances.iter().enumerate() {
-            if instance
-                .render_program
-                .program()
-                .external_resource(ExternalResourceKind::Backdrop)
-                .is_some()
-            {
-                let prefix = instance.destination_prefix.ok_or_else(|| {
-                    SkiaBackendError::InvalidFrame(format!(
-                        "backdrop layer instance {index} has no destination prefix"
-                    ))
-                })?;
-                frame.composite_prefix(prefix).ok_or_else(|| {
-                    SkiaBackendError::InvalidFrame(format!(
-                        "backdrop layer instance {index} references a missing destination prefix"
-                    ))
-                })?;
+    /// A fully transparent image covering `bounds`.
+    ///
+    /// Used for an empty mask and for the layer-content placeholder a
+    /// backdrop-only pass never reads. Both used to allocate a full
+    /// layer-sized surface, clear it and snapshot it just to express
+    /// "nothing"; a 1x1 transparent pixel stretches to exactly the same
+    /// result wherever it is drawn.
+    fn transparent_image(&mut self, bounds: Bounds) -> Result<RasterImage, SkiaBackendError> {
+        let image = match &self.empty_image {
+            Some(image) => image.clone(),
+            None => {
+                let image = make_image_from_pixels(&[0, 0, 0, 0], 1, 1)?;
+                self.empty_image = Some(image.clone());
+                image
             }
+        };
+        Ok(RasterImage { image, bounds })
+    }
+
+    /// Walks every item once, uploading image data and working out which
+    /// layers need a materialized backdrop.
+    ///
+    /// `draw_layer` re-checks each backdrop instance's destination prefix as it
+    /// reaches it, and more strictly than a pre-pass can — it also knows the
+    /// prefix has to name the item position it is standing on — so there is no
+    /// separate validation walk. A frame that fails mid-draw leaves the target
+    /// partly written, which `submit` already handles by dropping the damage
+    /// tracker and repainting in full.
+    fn analyze_frame(&mut self, frame: &BuiltFrame) -> Result<FrameAnalysis, SkiaBackendError> {
+        let count = frame.layers.len();
+        let mut needs_backdrop = vec![false; count];
+        // Passthrough parent -> child edges, along which the need propagates.
+        let mut edges: Vec<(usize, usize)> = Vec::new();
+        for (index, layer) in frame.layers.iter().enumerate() {
+            for item in &layer.items {
+                match item {
+                    BuiltItem::Draw(BuiltDraw::Image(draw)) => {
+                        self.prepare_image(&draw.primitive)?;
+                    }
+                    BuiltItem::Draw(_) => {}
+                    BuiltItem::Layer(instance_id) => {
+                        let Some(instance) = frame.layer_instance(*instance_id) else {
+                            continue;
+                        };
+                        if instance
+                            .render_program
+                            .program()
+                            .external_resource(ExternalResourceKind::Backdrop)
+                            .is_some()
+                        {
+                            needs_backdrop[index] = true;
+                        }
+                        if frame.layers.get(instance.layer.0).is_some_and(|child| {
+                            child.backdrop_isolation == BackdropIsolation::Passthrough
+                        }) {
+                            edges.push((index, instance.layer.0));
+                        }
+                    }
+                }
+            }
+        }
+        // A child layer is always pushed after its parent, so one reverse sweep
+        // settles the common case; the loop covers any order and terminates
+        // because each round either sets a flag or stops.
+        let mut changed = !edges.is_empty();
+        while changed {
+            changed = false;
+            for &(parent, child) in edges.iter().rev() {
+                if needs_backdrop[child] && !needs_backdrop[parent] {
+                    needs_backdrop[parent] = true;
+                    changed = true;
+                }
+            }
+        }
+        Ok(FrameAnalysis { needs_backdrop })
+    }
+
+    /// Uploads a primitive's pixels if the cache does not already hold them.
+    fn prepare_image(
+        &mut self,
+        primitive: &xui::render::ImagePrimitive,
+    ) -> Result<(), SkiaBackendError> {
+        if primitive.data.size.width == 0 || primitive.data.size.height == 0 {
+            return Ok(());
+        }
+        let stale = self
+            .source_images
+            .get(&primitive.image)
+            .is_none_or(|cached| cached.data_id != primitive.data.id().raw());
+        if stale {
+            self.source_images.insert(
+                primitive.image.clone(),
+                CachedSourceImage {
+                    data_id: primitive.data.id().raw(),
+                    image: make_image(&primitive.data, ImageTransform::default())?,
+                    bytes: image_bytes(&primitive.data),
+                },
+            );
         }
         Ok(())
     }
@@ -447,9 +633,7 @@ impl<T: TextBackend> SkiaBackend<T> {
         damage: &DamageRegion,
         text: &mut TextHost<T>,
     ) -> Result<(), SkiaBackendError> {
-        self.validate_frame(frame)?;
-        self.prepare_frame_images(frame)?;
-        let backdrop_requirements = BackdropRequirements::for_frame(frame);
+        let analysis = self.analyze_frame(frame)?;
         let viewport =
             Bounds::from_zero_size(self.frame_size_px().to_f32().unwrap() / self.scale_factor);
         if !damage.is_empty() {
@@ -462,7 +646,7 @@ impl<T: TextBackend> SkiaBackend<T> {
                 damage,
                 self.options.clear_color,
                 text,
-                &backdrop_requirements,
+                &analysis,
             )?;
         }
         Ok(())
@@ -479,7 +663,7 @@ impl<T: TextBackend> SkiaBackend<T> {
         damage: &DamageRegion,
         clear_color: Color,
         text: &mut TextHost<T>,
-        backdrop_requirements: &BackdropRequirements,
+        analysis: &FrameAnalysis,
     ) -> Result<(), SkiaBackendError> {
         let region = damage_region(target, target_bounds, self.scale_factor, damage);
         if region.is_empty() {
@@ -496,42 +680,22 @@ impl<T: TextBackend> SkiaBackend<T> {
             frame,
             layer_id,
             inherited_backdrop,
+            damage,
             text,
-            backdrop_requirements,
+            analysis,
         )?;
         target.canvas().restore_to_count(save);
         Ok(())
     }
 
-    fn prepare_frame_images(&mut self, frame: &BuiltFrame) -> Result<(), SkiaBackendError> {
-        for layer in &frame.layers {
-            for item in &layer.items {
-                let BuiltItem::Draw(BuiltDraw::Image(draw)) = item else {
-                    continue;
-                };
-                let primitive = &draw.primitive;
-                if primitive.data.size.width == 0 || primitive.data.size.height == 0 {
-                    continue;
-                }
-                let stale = self
-                    .source_images
-                    .get(&primitive.image)
-                    .is_none_or(|cached| cached.data_id != primitive.data.id().raw());
-                if stale {
-                    self.source_images.insert(
-                        primitive.image.clone(),
-                        CachedSourceImage {
-                            data_id: primitive.data.id().raw(),
-                            image: make_image(&primitive.data, ImageTransform::default())?,
-                            bytes: image_bytes(&primitive.data),
-                        },
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
-
+    /// Draws one layer's items into `target`.
+    ///
+    /// `damage` is in `target_bounds` coordinates and is what the canvas clip
+    /// was built from. Items are tested against it up front, so an item outside
+    /// the repaint costs one bounds intersection rather than a save, a clip
+    /// chain rebuild, a paint and a draw call Skia then rejects. Skia would
+    /// reject those draws too, but only after all of that has been paid for.
+    #[allow(clippy::too_many_arguments)]
     fn draw_layer(
         &mut self,
         target: &mut Surface,
@@ -539,27 +703,37 @@ impl<T: TextBackend> SkiaBackend<T> {
         frame: &BuiltFrame,
         layer_id: BuiltLayerId,
         inherited_backdrop: Option<&RasterImage>,
+        damage: &DamageRegion,
         text: &mut TextHost<T>,
-        backdrop_requirements: &BackdropRequirements,
+        analysis: &FrameAnalysis,
     ) -> Result<(), SkiaBackendError> {
         let layer = frame.layers.get(layer_id.0).ok_or_else(|| {
             SkiaBackendError::InvalidFrame(format!("missing layer {}", layer_id.0))
         })?;
         self.frame_stats.layer_draws += 1;
+        let cull = self.options.optimizations.cull;
         for (item_index, item) in layer.items.iter().enumerate() {
             match item {
                 BuiltItem::Draw(draw) => {
-                    self.frame_stats.primitive_draws += 1;
                     let common = draw.common();
+                    if cull && !damage.intersects(common.world_bounds) {
+                        self.frame_stats.items_culled += 1;
+                        continue;
+                    }
+                    self.frame_stats.primitive_draws += 1;
                     let canvas = target.canvas();
                     let save = canvas.save();
                     configure_canvas(canvas, target_bounds, self.scale_factor);
                     self.apply_clip_chain(canvas, frame, common.clip_chain, Affine::IDENTITY)?;
                     let transform = common.world_transform;
                     match draw {
-                        BuiltDraw::Shape(value) => {
-                            draw_shape(canvas, &value.primitive, transform, 1.0)
-                        }
+                        BuiltDraw::Shape(value) => draw_shape(
+                            canvas,
+                            &mut self.gradients,
+                            &value.primitive,
+                            transform,
+                            1.0,
+                        ),
                         BuiltDraw::Vector(value) => {
                             let commands = self.compiled_vector_scene(&value.primitive.scene);
                             draw_vector(
@@ -586,12 +760,11 @@ impl<T: TextBackend> SkiaBackend<T> {
                             instance_id.0
                         ))
                     })?;
-                    if instance
-                        .render_program
-                        .program()
+                    let program = instance.render_program.program();
+                    let program_needs_backdrop = program
                         .external_resource(ExternalResourceKind::Backdrop)
-                        .is_some()
-                    {
+                        .is_some();
+                    if program_needs_backdrop {
                         let prefix_id = instance.destination_prefix.ok_or_else(|| {
                             SkiaBackendError::InvalidFrame(format!(
                                 "backdrop layer instance {} has no destination prefix",
@@ -619,14 +792,22 @@ impl<T: TextBackend> SkiaBackend<T> {
                     })?;
                     // let child_bounds = non_empty_bounds(child_layer.render_bounds);
                     let child_bounds = child_layer.render_bounds;
-                    let program_needs_backdrop = instance
-                        .render_program
-                        .program()
-                        .external_resource(ExternalResourceKind::Backdrop)
-                        .is_some();
                     let child_needs_backdrop = child_layer.backdrop_isolation
                         == BackdropIsolation::Passthrough
-                        && backdrop_requirements.layer(instance.layer);
+                        && analysis.layer(instance.layer);
+                    // Anything that reads the destination is left alone: it is
+                    // rare, and its cost is dominated by the backdrop snapshot
+                    // rather than by the traversal a cull would save.
+                    let plain = !program_needs_backdrop && !child_needs_backdrop;
+                    // A blur or shadow paints outside the instance bounds, so
+                    // the visible footprint is what decides visibility.
+                    let visible_bounds = program
+                        .layer_visual_expansion()
+                        .apply_to_bounds(instance.world_bounds);
+                    if cull && plain && !damage.intersects(visible_bounds) {
+                        self.frame_stats.layer_instances_culled += 1;
+                        continue;
+                    }
                     let backdrop = if program_needs_backdrop || child_needs_backdrop {
                         self.frame_stats.backdrop_materializations += 1;
                         let prefix = self.snapshot_target(target, target_bounds);
@@ -659,11 +840,18 @@ impl<T: TextBackend> SkiaBackend<T> {
                         None
                     };
 
-                    let mut lease = self.layer_cache.acquire(
-                        child_layer,
-                        self.scale_factor,
-                        self.gpu_context.as_mut(),
-                    )?;
+                    let mut lease = match self.layer_cache.acquire(child_layer, self.scale_factor) {
+                        Acquired::Hit(lease) => lease,
+                        Acquired::Miss {
+                            cache_id,
+                            width,
+                            height,
+                        } => SurfaceLease {
+                            surface: self.new_surface_px(width, height)?,
+                            reused: false,
+                            cache_id,
+                        },
+                    };
                     let child_damage = if lease.reused {
                         self.damage_tracker.layer(child_layer.source)
                     } else {
@@ -679,7 +867,7 @@ impl<T: TextBackend> SkiaBackend<T> {
                             &child_damage,
                             Color::TRANSPARENT,
                             text,
-                            backdrop_requirements,
+                            analysis,
                         )?;
                         if lease.cache_id.is_some() {
                             self.layer_cache.record_update(
@@ -688,7 +876,8 @@ impl<T: TextBackend> SkiaBackend<T> {
                         }
                     }
                     let child_image = self.snapshot_target(&mut lease.surface, child_bounds);
-                    self.layer_cache
+                    let spent = self
+                        .layer_cache
                         .release(child_layer, self.scale_factor, lease);
                     self.execute_instance(
                         target,
@@ -699,6 +888,12 @@ impl<T: TextBackend> SkiaBackend<T> {
                         backdrop.as_ref().unwrap_or(&child_image),
                         LayerProgramEntry::Complete,
                     )?;
+                    // After the composite, so nothing is still reading the
+                    // snapshot when the surface goes back in the pool.
+                    drop(child_image);
+                    if let Some(surface) = spent {
+                        self.recycle_surface(surface);
+                    }
                 }
             }
         }
@@ -857,6 +1052,12 @@ impl<T: TextBackend> SkiaBackend<T> {
                     *value = None;
                 }
             }
+        }
+        // Drop the snapshots before the surfaces they were taken from, so the
+        // pool hands back surfaces nothing is reading.
+        drop(values);
+        for surface in transient_surfaces {
+            self.recycle_surface(surface);
         }
         Ok(())
     }
@@ -1175,6 +1376,24 @@ impl<T: TextBackend> SkiaBackend<T> {
         })
     }
 
+    /// Copies the finished frame onto the acquired swapchain image.
+    ///
+    /// Whole-frame, because a swapchain image's previous contents are not
+    /// guaranteed — only the *scene* drawing is incremental.
+    fn blit_to_swapchain(&mut self, source: &mut Surface) -> Result<(), SkiaBackendError> {
+        // Make the scene's work visible to the read that follows it. Skia
+        // orders this itself for a same-context read, but the presenters flush
+        // only the swapchain surface, so state it rather than rely on it.
+        if let Some(context) = self.gpu_context.as_mut() {
+            context.flush_and_submit_surface(source, None);
+        }
+        let target = self.raster.as_mut().ok_or_else(|| {
+            SkiaBackendError::InvalidFrame("no acquired swapchain image to present into".into())
+        })?;
+        blit_surface(source, target.canvas());
+        Ok(())
+    }
+
     fn snapshot_target(&mut self, target: &mut Surface, bounds: Bounds) -> RasterImage {
         self.frame_stats.image_snapshots += 1;
         RasterImage {
@@ -1480,6 +1699,12 @@ impl<T: TextBackend> SkiaBackend<T> {
         }
     }
 
+    /// Applies a clip chain outermost-first.
+    ///
+    /// The chain is stored child-to-parent, so this recurses into the parent
+    /// before clipping itself. Depth is the nesting depth of clipping scene
+    /// nodes, which is small; the old iterative form allocated a `Vec` on every
+    /// call, and this runs once per drawn item.
     fn apply_clip_chain(
         &self,
         canvas: &Canvas,
@@ -1487,33 +1712,15 @@ impl<T: TextBackend> SkiaBackend<T> {
         clip: Option<BuiltClipChainId>,
         placement: Affine,
     ) -> Result<(), SkiaBackendError> {
-        let mut chain = Vec::new();
-        let mut current = clip;
-        while let Some(id) = current {
-            let value = frame.clip_chains.get(id.0).ok_or_else(|| {
-                SkiaBackendError::InvalidFrame(format!("missing clip chain {}", id.0))
-            })?;
-            chain.push(value);
-            current = value.parent;
-        }
-        for value in chain.into_iter().rev() {
-            let matrix = sk_matrix(value.world_transform.then(placement));
-            let mut builder = PathBuilder::new();
-            match &value.clip {
-                ClipShape::Rect(rect) => {
-                    builder.add_rect(sk_bounds(*rect), None, None);
-                }
-                ClipShape::RoundedRect { rect, radius } => {
-                    let rr = RRect::new_rect_xy(sk_bounds(*rect), *radius, *radius);
-                    builder.add_rrect(rr, None, None);
-                }
-                ClipShape::Path { path, .. } => {
-                    append_path(&mut builder, path);
-                }
-            }
-            builder.transform(&matrix);
-            canvas.clip_path(&builder.detach(), ClipOp::Intersect, true);
-        }
+        let Some(id) = clip else {
+            return Ok(());
+        };
+        let value = frame.clip_chains.get(id.0).ok_or_else(|| {
+            SkiaBackendError::InvalidFrame(format!("missing clip chain {}", id.0))
+        })?;
+        self.apply_clip_chain(canvas, frame, value.parent, placement)?;
+        let matrix = sk_matrix(value.world_transform.then(placement));
+        apply_clip_shape(canvas, &value.clip, &matrix);
         Ok(())
     }
 
@@ -1574,20 +1781,9 @@ impl<T: TextBackend> SkiaBackend<T> {
         {
             return Ok(());
         }
-        let source_stale = self
-            .source_images
-            .get(&primitive.image)
-            .is_none_or(|cached| cached.data_id != primitive.data.id().raw());
-        if source_stale {
-            self.source_images.insert(
-                primitive.image.clone(),
-                CachedSourceImage {
-                    data_id: primitive.data.id().raw(),
-                    image: make_image(&primitive.data, ImageTransform::default())?,
-                    bytes: image_bytes(&primitive.data),
-                },
-            );
-        }
+        // `analyze_frame` has already uploaded this, but a mask resolved
+        // mid-frame can reach a primitive it never walked.
+        self.prepare_image(primitive)?;
         let source = self
             .source_images
             .get(&primitive.image)
@@ -1944,19 +2140,17 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for SkiaBackend<T> {
         }
         self.submitted = false;
         self.presented = false;
-        self.rollback_damage_tracker = None;
+        self.damage_rollback_pending = false;
         Ok(())
     }
 
     fn submit(&mut self, frame: &BuiltFrame, text: &mut TextHost<T>) -> Result<(), Self::Error> {
-        let mut next_damage_tracker = self.damage_tracker.clone();
-        let mut root_damage = next_damage_tracker.update(frame);
-        if self.gpu_context.is_some() {
-            root_damage = DamageRegion::full(Bounds::from_zero_size(
-                self.frame_size_px().to_f32().unwrap() / self.scale_factor,
-            ));
-        }
-        if std::env::var("XUI_DEBUG_FRAME").is_ok() {
+        // The tracker rebuilds its snapshot map from scratch, so cloning it
+        // first only duplicated a full scene snapshot per frame. A failed frame
+        // clears it instead of restoring it: the target surface has already
+        // been partially written, so the only sound recovery is a full repaint.
+        let root_damage = self.damage_tracker.update(frame);
+        if *DEBUG_FRAME {
             let root_layer = &frame.layers[frame.root_layer.0];
             eprintln!(
                 "[frame {}] frame_size_px={:?} root_layer render_bounds={:?} items={} root_damage_rects={} root_damage_area_sum={:.0} gpu={}",
@@ -1980,24 +2174,39 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for SkiaBackend<T> {
             .map(|rect| rect.width() * rect.height())
             .sum();
         self.layer_cache
-            .begin_frame(next_damage_tracker.dirty_region_count());
-        let mut surface = self.raster.take().ok_or_else(|| {
+            .begin_frame(self.damage_tracker.dirty_region_count());
+        // On the GPU path the scene is drawn to the persistent compositor
+        // surface and blitted to the acquired swapchain image afterwards; on
+        // the software path the raster surface is itself persistent.
+        let on_gpu = self.gpu_context.is_some();
+        let mut surface = if on_gpu {
+            self.compositor.take()
+        } else {
+            self.raster.take()
+        }
+        .ok_or_else(|| {
             SkiaBackendError::InvalidFrame("begin_frame must be called before submit".into())
         })?;
-        let previous_damage_tracker =
-            std::mem::replace(&mut self.damage_tracker, next_damage_tracker);
-        let result = self.draw_frame(&mut surface, frame, &root_damage, text);
-        self.raster = Some(surface);
+        let mut result = self.draw_frame(&mut surface, frame, &root_damage, text);
+        if result.is_ok() && on_gpu {
+            result = self.blit_to_swapchain(&mut surface);
+        }
+        if on_gpu {
+            self.compositor = Some(surface);
+        } else {
+            self.raster = Some(surface);
+        }
         if let Err(error) = result {
-            self.damage_tracker = previous_damage_tracker;
+            self.damage_tracker.clear();
             self.layer_cache.clear();
+            self.surface_pool.clear();
             return Err(error);
         }
         self.layer_cache.finish_frame(
             &frame.live_layer_caches,
             self.options.layer_cache_budget_bytes,
         );
-        self.rollback_damage_tracker = Some(previous_damage_tracker);
+        self.damage_rollback_pending = true;
         self.pending_damage = root_damage;
         self.submitted = true;
         Ok(())
@@ -2016,7 +2225,7 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for SkiaBackend<T> {
                 SkiaBackendError::InvalidFrame("the GPU frame surface is unavailable".into())
             })?;
             presenter.present(context, surface)?;
-            self.rollback_damage_tracker = None;
+            self.damage_rollback_pending = false;
             self.pending_damage = DamageRegion::default();
             self.presented = true;
             return Ok(());
@@ -2073,14 +2282,14 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for SkiaBackend<T> {
                 Ok::<_, SkiaBackendError>(())
             })();
             if let Err(error) = present_result {
-                if let Some(previous) = self.rollback_damage_tracker.take() {
-                    self.damage_tracker = previous;
+                if std::mem::take(&mut self.damage_rollback_pending) {
+                    self.damage_tracker.clear();
                 }
                 self.layer_cache.clear();
                 return Err(error);
             }
         }
-        self.rollback_damage_tracker = None;
+        self.damage_rollback_pending = false;
         self.presented = true;
         Ok(())
     }
@@ -2096,10 +2305,12 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for SkiaBackend<T> {
     fn set_factor(&mut self, factor: f32) -> Result<(), Self::Error> {
         self.scale_factor = valid_scale(factor);
         self.raster = None;
+        self.compositor = None;
         self.frame_size_px = Size::new(0, 0);
         self.damage_tracker.clear();
-        self.rollback_damage_tracker = None;
+        self.damage_rollback_pending = false;
         self.layer_cache.clear();
+        self.surface_pool.clear();
         self.damage_history.clear();
         Ok(())
     }
@@ -2368,6 +2579,25 @@ fn non_empty_bounds(bounds: Rect) -> Rect {
     )
 }
 
+/// Copies `source` over `canvas` one-to-one in device pixels.
+///
+/// `Src` rather than `SrcOver`: the destination is a swapchain image whose
+/// previous contents are undefined, so the frame has to replace them outright
+/// rather than blend with them.
+fn blit_surface(source: &mut Surface, canvas: &Canvas) {
+    let save = canvas.save();
+    canvas.reset_matrix();
+    let mut paint = Paint::default();
+    paint.set_blend_mode(SkBlendMode::Src);
+    source.draw(
+        canvas,
+        (0, 0),
+        SamplingOptions::new(skia_safe::FilterMode::Nearest, skia_safe::MipmapMode::None),
+        Some(&paint),
+    );
+    canvas.restore_to_count(save);
+}
+
 fn configure_canvas(canvas: &Canvas, bounds: Bounds, scale: f32) {
     canvas.scale((scale, scale));
     canvas.translate((-bounds.x(), -bounds.y()));
@@ -2465,6 +2695,50 @@ fn shadow_color_filter(color: Color) -> Option<skia_safe::ColorFilter> {
         0.0, 0.0, color.a, 0.0,
     );
     Some(skia_safe::color_filters::matrix(&matrix, None))
+}
+
+/// Clips `canvas` to one chain node, already transformed by `matrix`.
+///
+/// A rect or rounded-rect clip is pushed as such whenever `matrix` keeps it
+/// axis-aligned, which lets Skia scissor (or take its rrect fast path) instead
+/// of rasterizing a clip mask from a path. Rotated and skewed clips, and path
+/// clips, still go through the path form.
+fn apply_clip_shape(canvas: &Canvas, clip: &ClipShape, matrix: &Matrix) {
+    if matrix.rect_stays_rect() {
+        match clip {
+            ClipShape::Rect(rect) => {
+                let (mapped, _) = matrix.map_rect(sk_bounds(*rect));
+                canvas.clip_rect(mapped, ClipOp::Intersect, true);
+                return;
+            }
+            ClipShape::RoundedRect { rect, radius } => {
+                let rrect = RRect::new_rect_xy(sk_bounds(*rect), *radius, *radius);
+                if let Some(mapped) = rrect.transform(matrix) {
+                    canvas.clip_rrect(mapped, ClipOp::Intersect, true);
+                    return;
+                }
+            }
+            ClipShape::Path { .. } => {}
+        }
+    }
+    let mut builder = PathBuilder::new();
+    match clip {
+        ClipShape::Rect(rect) => {
+            builder.add_rect(sk_bounds(*rect), None, None);
+        }
+        ClipShape::RoundedRect { rect, radius } => {
+            builder.add_rrect(
+                RRect::new_rect_xy(sk_bounds(*rect), *radius, *radius),
+                None,
+                None,
+            );
+        }
+        ClipShape::Path { path, .. } => {
+            append_path(&mut builder, path);
+        }
+    }
+    builder.transform(matrix);
+    canvas.clip_path(&builder.detach(), ClipOp::Intersect, true);
 }
 
 fn draw_mask_shape(canvas: &Canvas, shape: MaskShape, paint: &Paint) {
@@ -2628,31 +2902,106 @@ fn sk_path(path: &PathData) -> Path {
     builder.detach()
 }
 
+thread_local! {
+    /// `ColorSpace::new_srgb()` crosses the FFI boundary to hand back what is a
+    /// process-wide singleton on the Skia side. Every paint built per draw call
+    /// used to pay for that round trip.
+    static SRGB: ColorSpace = ColorSpace::new_srgb();
+}
+
+fn srgb() -> ColorSpace {
+    SRGB.with(Clone::clone)
+}
+
 fn solid_paint(color: Color) -> Paint {
     let mut paint = Paint::default();
     paint.set_anti_alias(true);
-    paint.set_color4f(sk_color4f(color), ColorSpace::new_srgb().as_ref());
+    paint.set_color4f(sk_color4f(color), srgb().as_ref());
     paint
 }
 
-fn style_paint(style: ComputedColorStyle, rect: Bounds, opacity: f32) -> Paint {
-    let mut paint = Paint::default();
-    paint.set_anti_alias(true);
-    match style {
-        ComputedColorStyle::Solid(color) => {
-            paint.set_color4f(
-                sk_color4f(alpha_color(color, opacity)),
-                ColorSpace::new_srgb().as_ref(),
-            );
+/// Identifies a gradient shader by every input that shapes it.
+///
+/// The fields are destructured rather than read through accessors so that
+/// adding one to `ComputedColorStyle` fails to compile here instead of
+/// silently producing a key that two different gradients share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct GradientKey([u32; 18]);
+
+impl GradientKey {
+    fn new(style: ComputedColorStyle, rect: Bounds, opacity: f32) -> Option<Self> {
+        // 1 discriminant + 8 geometry/colour slots + 4 rect + 1 opacity, with
+        // both arms padded to the same 13 before the rect.
+        let mut bits = [0u32; 18];
+        let mut at = 0;
+        let mut push = |value: f32| {
+            bits[at] = value.to_bits();
+            at += 1;
+        };
+        match style {
+            ComputedColorStyle::Solid(_) => return None,
+            ComputedColorStyle::LinearGradient(ComputedLinearGradientStyle {
+                start,
+                end,
+                from,
+                to,
+            }) => {
+                push(0.0);
+                push(start.x);
+                push(start.y);
+                push(end.x);
+                push(end.y);
+                for color in [from, to] {
+                    push(color.r);
+                    push(color.g);
+                    push(color.b);
+                    push(color.a);
+                }
+            }
+            ComputedColorStyle::RadialGradient(ComputedRadialGradientStyle {
+                center,
+                radius,
+                from,
+                to,
+            }) => {
+                push(1.0);
+                push(center.x);
+                push(center.y);
+                push(radius);
+                for color in [from, to] {
+                    push(color.r);
+                    push(color.g);
+                    push(color.b);
+                    push(color.a);
+                }
+                push(0.0);
+            }
         }
+        push(rect.min.x);
+        push(rect.min.y);
+        push(rect.max.x);
+        push(rect.max.y);
+        push(opacity);
+        debug_assert_eq!(at, bits.len(), "gradient key left a slot unwritten");
+        Some(Self(bits))
+    }
+}
+
+fn gradient_shader(style: ComputedColorStyle, rect: Bounds, opacity: f32) -> Option<Shader> {
+    let (from, to) = match style {
+        ComputedColorStyle::Solid(_) => return None,
+        ComputedColorStyle::LinearGradient(value) => (value.from, value.to),
+        ComputedColorStyle::RadialGradient(value) => (value.from, value.to),
+    };
+    let colors = [
+        sk_color4f(alpha_color(from, opacity)),
+        sk_color4f(alpha_color(to, opacity)),
+    ];
+    let colors = Colors::new_evenly_spaced(&colors, TileMode::Clamp, srgb());
+    let gradient = Gradient::new(colors, Interpolation::default());
+    match style {
+        ComputedColorStyle::Solid(_) => None,
         ComputedColorStyle::LinearGradient(value) => {
-            let colors = [
-                sk_color4f(alpha_color(value.from, opacity)),
-                sk_color4f(alpha_color(value.to, opacity)),
-            ];
-            let colors =
-                Colors::new_evenly_spaced(&colors, TileMode::Clamp, ColorSpace::new_srgb());
-            let gradient = Gradient::new(colors, Interpolation::default());
             let start = (
                 rect.x() + rect.width() * value.start.x,
                 rect.y() + rect.height() * value.start.y,
@@ -2661,36 +3010,52 @@ fn style_paint(style: ComputedColorStyle, rect: Bounds, opacity: f32) -> Paint {
                 rect.x() + rect.width() * value.end.x,
                 rect.y() + rect.height() * value.end.y,
             );
-            if let Some(shader) = gradient::shaders::linear_gradient((start, end), &gradient, None)
-            {
-                paint.set_shader(shader);
-            }
+            gradient::shaders::linear_gradient((start, end), &gradient, None)
         }
         ComputedColorStyle::RadialGradient(value) => {
-            let colors = [
-                sk_color4f(alpha_color(value.from, opacity)),
-                sk_color4f(alpha_color(value.to, opacity)),
-            ];
-            let colors =
-                Colors::new_evenly_spaced(&colors, TileMode::Clamp, ColorSpace::new_srgb());
-            let gradient = Gradient::new(colors, Interpolation::default());
             let center = (
                 rect.x() + rect.width() * value.center.x,
                 rect.y() + rect.height() * value.center.y,
             );
             let radius = value.radius * rect.width().min(rect.height());
-            if let Some(shader) =
-                gradient::shaders::radial_gradient((center, radius.max(0.001)), &gradient, None)
-            {
-                paint.set_shader(shader);
-            }
+            gradient::shaders::radial_gradient((center, radius.max(0.001)), &gradient, None)
         }
+    }
+}
+
+/// Builds the paint for a fill or stroke, taking the gradient shader from
+/// `cache` when one was already built for the same gradient and geometry.
+fn style_paint(
+    cache: &mut LocalLru<GradientKey, Shader>,
+    style: ComputedColorStyle,
+    rect: Bounds,
+    opacity: f32,
+) -> Paint {
+    let mut paint = Paint::default();
+    paint.set_anti_alias(true);
+    if let ComputedColorStyle::Solid(color) = style {
+        paint.set_color4f(sk_color4f(alpha_color(color, opacity)), srgb().as_ref());
+        return paint;
+    }
+    let key = GradientKey::new(style, rect, opacity);
+    if let Some(key) = key
+        && let Some(shader) = cache.get(&key)
+    {
+        paint.set_shader(shader);
+        return paint;
+    }
+    if let Some(shader) = gradient_shader(style, rect, opacity) {
+        if let Some(key) = key {
+            cache.insert(key, shader.clone());
+        }
+        paint.set_shader(shader);
     }
     paint
 }
 
 fn draw_shape(
     canvas: &Canvas,
+    gradients: &mut LocalLru<GradientKey, Shader>,
     primitive: &xui::render::ShapePrimitive,
     transform: Affine,
     opacity: f32,
@@ -2713,7 +3078,7 @@ fn draw_shape(
         );
     }
     if let Some(fill) = primitive.fill {
-        let paint = style_paint(fill, primitive.bounds, opacity);
+        let paint = style_paint(gradients, fill, primitive.bounds, opacity);
         draw_shape_geometry(
             canvas,
             primitive.shape,
@@ -2723,7 +3088,7 @@ fn draw_shape(
         );
     }
     if let Some(stroke) = primitive.stroke.filter(|s| s.width > 0.0) {
-        let mut paint = style_paint(stroke.color, primitive.bounds, opacity);
+        let mut paint = style_paint(gradients, stroke.color, primitive.bounds, opacity);
         paint.set_style(PaintStyle::Stroke);
         paint.set_stroke_width(stroke.width);
         draw_shape_geometry(
@@ -3905,3 +4270,75 @@ mod text_draw_tests {
 //         assert!(!<TestBackend as RenderBackend<TextHost<CosmicEngine>>>::did_present(&backend));
 //     }
 // }
+
+#[cfg(test)]
+mod blit_tests {
+    use super::*;
+
+    fn raster(width: i32, height: i32) -> Surface {
+        skia_safe::surfaces::raster_n32_premul((width, height)).expect("raster surface")
+    }
+
+    fn pixel(surface: &mut Surface, x: i32, y: i32) -> [u8; 4] {
+        let info = ImageInfo::new(
+            (1, 1),
+            ColorType::RGBA8888,
+            AlphaType::Unpremul,
+            ColorSpace::new_srgb(),
+        );
+        let mut bytes = [0u8; 4];
+        assert!(
+            surface.read_pixels(&info, &mut bytes, 4, (x, y)),
+            "pixel read at {x},{y}"
+        );
+        bytes
+    }
+
+    /// The GPU path draws the scene to a persistent surface and blits that to
+    /// the acquired swapchain image. There is no GPU in a unit test, but the
+    /// blit itself — alignment, and replacing rather than blending with
+    /// whatever the destination held — is the part worth pinning down.
+    #[test]
+    fn blit_replaces_the_destination_one_to_one() {
+        let mut source = raster(8, 8);
+        source.canvas().clear(skia_safe::Color::TRANSPARENT);
+        let mut red = Paint::default();
+        red.set_color(skia_safe::Color::RED);
+        source
+            .canvas()
+            .draw_rect(SkRect::from_xywh(2.0, 3.0, 1.0, 1.0), &red);
+
+        // A destination holding something else entirely, as a swapchain image
+        // recycled by the presentation engine would.
+        let mut destination = raster(8, 8);
+        destination.canvas().clear(skia_safe::Color::BLUE);
+        blit_surface(&mut source, destination.canvas());
+
+        assert_eq!(
+            pixel(&mut destination, 2, 3),
+            [255, 0, 0, 255],
+            "the source pixel did not land at its own coordinates"
+        );
+        assert_eq!(
+            pixel(&mut destination, 0, 0),
+            [0, 0, 0, 0],
+            "the destination's old contents showed through the transparent source"
+        );
+    }
+
+    /// A blit must not inherit whatever transform the caller left on the canvas.
+    #[test]
+    fn blit_ignores_the_canvas_transform() {
+        let mut source = raster(8, 8);
+        source.canvas().clear(skia_safe::Color::GREEN);
+
+        let mut destination = raster(8, 8);
+        destination.canvas().clear(skia_safe::Color::TRANSPARENT);
+        destination.canvas().translate((4.0, 4.0));
+        destination.canvas().scale((2.0, 2.0));
+        blit_surface(&mut source, destination.canvas());
+
+        assert_eq!(pixel(&mut destination, 0, 0), [0, 255, 0, 255]);
+        assert_eq!(pixel(&mut destination, 7, 7), [0, 255, 0, 255]);
+    }
+}

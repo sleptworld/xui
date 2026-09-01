@@ -1,14 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use skia_safe::{
-    AlphaType, ColorSpace, ColorType, ImageInfo, Surface,
-    gpu::{self, DirectContext},
-    surfaces,
-};
+use skia_safe::Surface;
 use xui::render::{BuiltLayer, CachePolicy, LayerCacheId, RenderNodeId};
 use xui_interface::Bounds;
-
-use crate::SkiaBackendError;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SkiaLayerCacheStats {
@@ -60,6 +54,18 @@ pub(crate) struct SurfaceLease {
     pub(crate) cache_id: Option<LayerCacheId>,
 }
 
+/// What `acquire` found. A miss reports the surface the caller has to supply
+/// rather than allocating one, so every offscreen surface in the backend goes
+/// through the same pooled allocator.
+pub(crate) enum Acquired {
+    Hit(SurfaceLease),
+    Miss {
+        cache_id: Option<LayerCacheId>,
+        width: u32,
+        height: u32,
+    },
+}
+
 #[derive(Default)]
 pub(crate) struct LayerSurfaceCache {
     entries: HashMap<LayerCacheId, CachedSurface>,
@@ -72,6 +78,13 @@ pub(crate) struct LayerSurfaceCache {
 }
 
 impl LayerSurfaceCache {
+    /// The cache slot a layer would occupy, or `None` when it is not cached.
+    pub(crate) fn cache_id(layer: &BuiltLayer) -> Option<LayerCacheId> {
+        (layer.cache_policy != CachePolicy::None)
+            .then_some(layer.cache_id)
+            .flatten()
+    }
+
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
     }
@@ -81,23 +94,16 @@ impl LayerSurfaceCache {
         self.dirty_regions = dirty_regions;
     }
 
-    pub(crate) fn acquire(
-        &mut self,
-        layer: &BuiltLayer,
-        scale: f32,
-        gpu_context: Option<&mut DirectContext>,
-    ) -> Result<SurfaceLease, SkiaBackendError> {
+    pub(crate) fn acquire(&mut self, layer: &BuiltLayer, scale: f32) -> Acquired {
         let geometry = SurfaceGeometry::new(layer.render_bounds, scale);
-        let cache_id = (layer.cache_policy != CachePolicy::None)
-            .then_some(layer.cache_id)
-            .flatten();
+        let cache_id = Self::cache_id(layer);
         if let Some(id) = cache_id {
             if let Some(entry) = self.entries.remove(&id)
                 && entry.source == layer.source
                 && entry.geometry == geometry
             {
                 self.hits += 1;
-                return Ok(SurfaceLease {
+                return Acquired::Hit(SurfaceLease {
                     surface: entry.surface,
                     reused: true,
                     cache_id: Some(id),
@@ -105,40 +111,25 @@ impl LayerSurfaceCache {
             }
             self.misses += 1;
         }
-        let surface = if let Some(context) = gpu_context {
-            let info = ImageInfo::new(
-                (geometry.width as i32, geometry.height as i32),
-                ColorType::BGRA8888,
-                AlphaType::Premul,
-                ColorSpace::new_srgb(),
-            );
-            gpu::surfaces::render_target(
-                context,
-                gpu::Budgeted::Yes,
-                &info,
-                None,
-                gpu::SurfaceOrigin::TopLeft,
-                None,
-                false,
-                false,
-            )
-        } else {
-            surfaces::raster_n32_premul((geometry.width as i32, geometry.height as i32))
-        }
-        .ok_or(SkiaBackendError::SurfaceAllocation {
+        Acquired::Miss {
+            cache_id,
             width: geometry.width,
             height: geometry.height,
-        })?;
-        Ok(SurfaceLease {
-            surface,
-            reused: false,
-            cache_id,
-        })
+        }
     }
 
-    pub(crate) fn release(&mut self, layer: &BuiltLayer, scale: f32, lease: SurfaceLease) {
+    /// Takes a lease back. A layer with no cache identity — which is most of
+    /// them, since a layer is only cached when its scene node asks to be —
+    /// hands its surface back to the caller to recycle.
+    #[must_use]
+    pub(crate) fn release(
+        &mut self,
+        layer: &BuiltLayer,
+        scale: f32,
+        lease: SurfaceLease,
+    ) -> Option<Surface> {
         let Some(id) = lease.cache_id else {
-            return;
+            return Some(lease.surface);
         };
         self.entries.insert(
             id,
@@ -150,6 +141,7 @@ impl LayerSurfaceCache {
                 last_used: self.frame,
             },
         );
+        None
     }
 
     pub(crate) fn record_update(&mut self, partial: bool) {

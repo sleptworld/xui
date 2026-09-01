@@ -6,15 +6,14 @@
 //! cargo test -p xui-skia --release --test raster_budget -- --ignored --nocapture
 //! ```
 //!
-//! Complements `xui`'s `frame_bench`, which stops at the built frame. Two
-//! caveats on the numbers:
+//! Complements `xui`'s `frame_bench`, which stops at the built frame.
 //!
-//! - headless Skia rasterizes on the CPU, while the shipping macOS path runs on
-//!   Metal, so this is not a prediction of on-device raster cost;
-//! - the CPU path honours the damage tracker, whereas `SkiaBackend::submit`
-//!   forces full-viewport damage whenever a GPU context is present. The gap
-//!   between the idle/animating columns here therefore shows what damage
-//!   tracking buys, which is a benefit the GPU path does not currently take.
+//! One caveat on the numbers: headless Skia rasterizes on the CPU, while the
+//! shipping macOS path runs on Metal, so this is not a prediction of on-device
+//! raster cost. Both paths do now honour the damage tracker — the GPU path
+//! draws the scene into a persistent compositor surface and blits that to the
+//! swapchain image — so the gap between the idle and animating columns is the
+//! same benefit either one gets.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
