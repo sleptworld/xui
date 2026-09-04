@@ -19,11 +19,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use xui::prelude::*;
 use xui::text::TextHost;
+use xui_cosmic::CosmicEngine;
 use xui_interface::events::{
     Modifiers, PointerButtons, PointerKind, RawEvent, RawPointerMove, XuiPointerId,
 };
 use xui_skia::{SkiaBackend, SkiaBackendOptions};
-use xui_text_engine::CosmicEngine;
 
 const ROW_COUNTS: [usize; 4] = [25, 100, 400, 1600];
 const VIEWPORT: Size<f32> = Size {

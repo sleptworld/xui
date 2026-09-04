@@ -22,6 +22,8 @@ use xui::{
     app::AppRenderError, render::RenderBackend, runtime::ControlFlow as XuiControlFlow,
     runtime::GuiRuntime, runtime::RuntimeEvent,
 };
+#[cfg(feature = "wgpu")]
+use xui_cosmic::{CosmicEngine, FontSet};
 use xui_f::FBackend;
 use xui_interface::events::{
     KeyState, KeyText, RawEvent, RawIme, RawKeyboard, TextPayload, XuiPointerId,
@@ -30,7 +32,6 @@ use xui_interface::{
     CursorIcon, Modifiers, PlatformOutput, Point, PointerButtons, PointerKind, RawPointerButton,
     RawPointerMove, RawWheel, RawWindowEvent, Size, TextBackend, TextOffset, TextRange,
 };
-// use xui_text_engine::{CosmicEngine, FontSet};
 
 #[derive(Debug, Clone)]
 pub struct WinitRunnerOptions {

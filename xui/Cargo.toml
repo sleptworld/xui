@@ -14,7 +14,6 @@ xui-animation = { path = "../xui-animation" }
 xui-assets = { path = "../xui-assets" }
 xui-interface = { path = "../xui-interface" }
 xui-macros = { path = "../xui-macros" }
-xui-text = { path = "../xui-text" }
 slot = { path = "../slot" }
 bitflags = "2.13.0"
 ropey = "1.6.1"
@@ -28,3 +27,4 @@ xui-render-graph = { path = "../xui-render-graph" }
 
 [dev-dependencies]
 trybuild = "1.0.120"
+xui-cosmic = { path = "../xui-cosmic" }

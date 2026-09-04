@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-
+use rustc_hash::FxHashMap;
 use xui::{
     Affine, Point,
     render::{BuiltFrame, BuiltItem, ContentVersion, PlacementVersion, RenderNodeId},
@@ -138,7 +137,8 @@ impl DamageRegion {
                 }
                 if existing.intersects(rect) {
                     let union = existing.union(rect);
-                    if area(union) <= (area(*existing) + area(rect)) * (1.0 + MERGE_SLACK) {
+
+                    if union.area() <= (existing.area() + rect.area()) * (1.0 + MERGE_SLACK) {
                         *existing = union;
                         continue 'next;
                     }
@@ -155,7 +155,7 @@ impl DamageRegion {
         let mut best: Option<(usize, usize, f32)> = None;
         for (i, a) in self.rects.iter().enumerate() {
             for (j, b) in self.rects.iter().enumerate().skip(i + 1) {
-                let waste = area(a.union(*b)) - area(*a) - area(*b);
+                let waste = a.union(*b).area() - a.area() - b.area();
                 if best.is_none_or(|(_, _, current)| waste < current) {
                     best = Some((i, j, waste));
                 }
@@ -173,10 +173,7 @@ impl DamageRegion {
     fn backdrop_damage(&self, output_bounds: Bounds, expansion: SampleExpansion) -> Self {
         let mut damage = Self::default();
         for rect in &self.rects {
-            let expanded = Bounds::new(
-                Point::new(rect.x() - expansion.left, rect.y() - expansion.top),
-                Point::new(rect.max.x + expansion.right, rect.max.y + expansion.bottom),
-            );
+            let expanded = expansion.apply_to_bounds(*rect);
             if let Some(affected) = expanded & output_bounds {
                 damage.add(affected);
             }
@@ -258,8 +255,8 @@ struct LayerSnapshot {
 
 #[derive(Clone, Default)]
 pub(crate) struct DamageTracker {
-    snapshots: HashMap<RenderNodeId, LayerSnapshot>,
-    last_damage: HashMap<RenderNodeId, DamageRegion>,
+    snapshots: FxHashMap<RenderNodeId, LayerSnapshot>,
+    last_damage: FxHashMap<RenderNodeId, DamageRegion>,
 }
 
 impl DamageTracker {
@@ -269,8 +266,8 @@ impl DamageTracker {
     }
 
     pub(crate) fn update(&mut self, frame: &BuiltFrame) -> DamageRegion {
-        let mut next_snapshots = HashMap::new();
-        let mut dirty_by_layer = HashMap::new();
+        let mut next_snapshots = FxHashMap::default();
+        let mut dirty_by_layer = FxHashMap::default();
         let effect_expansions = layer_effect_expansions(frame);
 
         for layer in frame.layers.iter().rev() {
@@ -363,7 +360,7 @@ fn layer_snapshot(frame: &BuiltFrame, layer: &xui::render::BuiltLayer) -> LayerS
 fn diff_layer(
     previous: &LayerSnapshot,
     next: &LayerSnapshot,
-    child_dirty: &HashMap<RenderNodeId, DamageRegion>,
+    child_dirty: &FxHashMap<RenderNodeId, DamageRegion>,
 ) -> DamageRegion {
     if previous.render_bounds != next.render_bounds {
         let mut dirty = DamageRegion::full(previous.render_bounds);
@@ -410,7 +407,7 @@ fn same_item_kind(a: &ItemKind, b: &ItemKind) -> bool {
 fn diff_ordered_items(
     previous: &[ItemSnapshot],
     next: &[ItemSnapshot],
-    child_dirty: &HashMap<RenderNodeId, DamageRegion>,
+    child_dirty: &FxHashMap<RenderNodeId, DamageRegion>,
 ) -> DamageRegion {
     let mut accumulated = DamageRegion::default();
     for (old, new) in previous.iter().zip(next) {
@@ -429,7 +426,7 @@ fn diff_ordered_items(
 fn diff_item(
     old: &ItemSnapshot,
     new: &ItemSnapshot,
-    child_dirty: &HashMap<RenderNodeId, DamageRegion>,
+    child_dirty: &FxHashMap<RenderNodeId, DamageRegion>,
 ) -> DamageRegion {
     let mut dirty = DamageRegion::default();
     if old.version.placement == new.version.placement
@@ -456,8 +453,8 @@ fn diff_item(
     dirty
 }
 
-fn layer_effect_expansions(frame: &BuiltFrame) -> HashMap<RenderNodeId, SampleExpansion> {
-    let mut expansions = HashMap::<RenderNodeId, SampleExpansion>::new();
+fn layer_effect_expansions(frame: &BuiltFrame) -> FxHashMap<RenderNodeId, SampleExpansion> {
+    let mut expansions = FxHashMap::<RenderNodeId, SampleExpansion>::default();
     for parent in &frame.layers {
         for item in &parent.items {
             let BuiltItem::Layer(instance_id) = item else {
@@ -484,7 +481,7 @@ fn layer_effect_expansions(frame: &BuiltFrame) -> HashMap<RenderNodeId, SampleEx
 
 fn propagate_composite_prefix_damage(
     frame: &BuiltFrame,
-    dirty_by_layer: &mut HashMap<RenderNodeId, DamageRegion>,
+    dirty_by_layer: &mut FxHashMap<RenderNodeId, DamageRegion>,
 ) {
     let mut additions = Vec::new();
     for parent in &frame.layers {

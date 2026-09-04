@@ -673,6 +673,10 @@ impl Bounds {
         Self::new(self.min - amount, self.max + amount)
     }
 
+    pub fn area(&self) -> f32 {
+        self.height() * self.width()
+    }
+
     pub fn scale(self, factor: f32) -> Self {
         Self::new(
             self.min * factor,

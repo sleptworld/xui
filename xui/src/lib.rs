@@ -50,7 +50,6 @@ pub mod style;
 pub mod widgets;
 pub use crate::prelude::*;
 pub use xui_macros::main;
-pub use xui_text::engine::Engine;
 pub mod text;
 pub mod ui_runtime;
 

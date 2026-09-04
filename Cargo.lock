@@ -5216,10 +5216,10 @@ dependencies = [
  "usvg",
  "xui-animation",
  "xui-assets",
+ "xui-cosmic",
  "xui-interface",
  "xui-macros",
  "xui-render-graph",
- "xui-text",
  "zune-core",
  "zune-image",
 ]
@@ -5272,10 +5272,19 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "xui",
+ "xui-cosmic",
  "xui-interface",
- "xui-text-engine",
  "zune-core",
  "zune-image",
+]
+
+[[package]]
+name = "xui-cosmic"
+version = "0.1.0"
+dependencies = [
+ "cosmic-text",
+ "sys-locale",
+ "xui-interface",
 ]
 
 [[package]]
@@ -5287,8 +5296,8 @@ dependencies = [
  "winit",
  "xui",
  "xui-components",
+ "xui-cosmic",
  "xui-skia",
- "xui-text-engine",
  "xui-winit",
 ]
 
@@ -5392,38 +5401,16 @@ dependencies = [
  "objc2-metal 0.3.2",
  "objc2-quartz-core 0.3.2",
  "raw-window-metal 1.1.0",
+ "rustc-hash 2.1.3",
  "skia-safe",
  "softbuffer",
  "thiserror 2.0.18",
  "windows",
  "winit",
  "xui",
+ "xui-cosmic",
  "xui-interface",
  "xui-render-graph",
- "xui-text-engine",
-]
-
-[[package]]
-name = "xui-text"
-version = "0.1.0"
-dependencies = [
- "arrayvec",
- "etagere",
- "fontique",
- "glam",
- "memmap2",
- "ordered-float",
- "swash",
- "xui-interface",
-]
-
-[[package]]
-name = "xui-text-engine"
-version = "0.1.0"
-dependencies = [
- "cosmic-text",
- "sys-locale",
- "xui-interface",
 ]
 
 [[package]]
@@ -5443,6 +5430,7 @@ dependencies = [
  "wgpu",
  "winit",
  "xui",
+ "xui-cosmic",
  "xui-f",
  "xui-interface",
  "xui-render-graph",

@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 memmap2.workspace = true
 moka = { version = "0.12.15", features = ["sync"] }
+rustc-hash = "2.1.3"
 skia-safe = { version = "0.99.0", features = ["gpu", "textlayout"] }
 softbuffer = "0.4.8"
 thiserror = "2.0.18"
@@ -40,4 +41,4 @@ windows = { version = "0.62", features = [
 skia-safe = { version = "0.99.0", features = ["gpu", "d3d", "textlayout"] }
 
 [dev-dependencies]
-xui-text-engine = { path = "../xui-text-engine" }
+xui-cosmic = { path = "../xui-cosmic" }

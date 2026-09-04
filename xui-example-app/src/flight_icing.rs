@@ -838,8 +838,8 @@ mod tests {
     use std::fs::File;
     use std::io::BufWriter;
     use xui::text::TextHost;
+    use xui_cosmic::CosmicEngine;
     use xui_skia::{SkiaBackend, SkiaBackendOptions};
-    use xui_text_engine::CosmicEngine;
 
     #[test]
     fn renders_dashboard_headlessly() {

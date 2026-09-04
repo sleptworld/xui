@@ -9,9 +9,9 @@ use xui::text::TextHost;
 use xui_components::VirtualItemRenderer;
 #[allow(unused_imports)]
 use xui_components::*;
+use xui_cosmic::CosmicEngine;
 use xui_interface::Translation;
 use xui_interface::events::{Modifiers, RawEvent, RawWheel, ScrollDelta};
-use xui_text_engine::CosmicEngine;
 
 const ITEM_COUNT: usize = 100_000;
 const ITEM_HEIGHT: f32 = 20.0;

@@ -61,4 +61,3 @@ pub use xui_interface::{
     VectorScene, VectorSceneBuilder, WhiteSpace, WidgetUpdateFlags,
 };
 pub use xui_macros::{component, component_fn, defaults, style, xui};
-pub use xui_text::engine::Engine;

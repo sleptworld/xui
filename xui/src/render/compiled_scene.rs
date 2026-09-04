@@ -3,6 +3,7 @@ use super::{
     RenderNodeId, SpatialNodeId,
 };
 use crate::render::render_graph::BuiltLayerProgram;
+use rustc_hash::FxHashMap;
 use slotmap::{SecondaryMap, SlotMap};
 use std::collections::HashMap;
 use xui_interface::{Affine, core::Bounds};
@@ -15,10 +16,10 @@ pub struct CompiledScene {
     pub(crate) primitives: SlotMap<PrimitiveId, CompiledPrimitive>,
     pub(crate) spatial_nodes: SlotMap<SpatialNodeId, CompiledSpatialNode>,
     pub(crate) clips: SlotMap<CompiledClipId, CompiledClip>,
-    pub(crate) picture_by_source: HashMap<RenderNodeId, PictureId>,
-    pub(crate) primitive_by_source: HashMap<RenderNodeId, PrimitiveId>,
-    pub(crate) spatial_by_source: HashMap<RenderNodeId, SpatialNodeId>,
-    pub(crate) clip_by_source: HashMap<RenderNodeId, CompiledClipId>,
+    pub(crate) picture_by_source: FxHashMap<RenderNodeId, PictureId>,
+    pub(crate) primitive_by_source: FxHashMap<RenderNodeId, PrimitiveId>,
+    pub(crate) spatial_by_source: FxHashMap<RenderNodeId, SpatialNodeId>,
+    pub(crate) clip_by_source: FxHashMap<RenderNodeId, CompiledClipId>,
     /// Source-scene metadata, stamped with `metadata_epoch` instead of being
     /// cleared: a structural rebuild bumps the epoch and restamps what it
     /// visits, so retiring the previous contents costs nothing.

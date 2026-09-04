@@ -104,7 +104,6 @@ mod tests {
         ParagraphLayout, ParagraphStyle, RasterizedGlyph, Shaper, TextBackend, TextBoxStyle,
         TextLayoutConstraints, TextLayoutInput, TextStyle,
     };
-    use xui_text::typ;
 
     use super::*;
 

@@ -3764,7 +3764,7 @@ mod tests {
             WidgetI::new(container().style(Style::new().size(Size::fill()))),
         );
 
-        let mut measurer = TextHost::new(crate::Engine::new());
+        let mut measurer = TextHost::new(xui_cosmic::CosmicEngine::new(1.0));
         arena.update_tree(Size::new(1600.0, 900.0), &mut measurer);
         let expected_width = arena.node(label).unwrap().layout.width();
         assert!(expected_width > 12.0);
@@ -3969,7 +3969,7 @@ mod tests {
         arena.append_child(tab, label);
 
         let size = Size::new(400.0, 200.0);
-        let mut measurer = TextHost::new(crate::Engine::new());
+        let mut measurer = TextHost::new(xui_cosmic::CosmicEngine::new(1.0));
         arena.update_tree(size, &mut measurer);
         let layout_passes = arena.layout_passes;
         let tab_bounds = arena.node(tab).unwrap().layout;

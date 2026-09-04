@@ -32,11 +32,11 @@ use xui::render::{
     TextPrimitive,
 };
 use xui::text::TextHost;
+use xui_cosmic::CosmicEngine;
 use xui_interface::*;
 use xui_render_graph::{
     ExternalAliasing, LayerPlanContext, LayerRenderPlan, PlanLimits, TextureClass,
 };
-use xui_text_engine::CosmicEngine;
 
 const SHAPE_RECT: f32 = 0.0;
 const SHAPE_ROUNDED_RECT: f32 = 1.0;

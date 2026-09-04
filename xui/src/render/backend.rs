@@ -23,6 +23,10 @@ pub trait RenderBackend<T> {
     fn handle_node_lifecycle(&mut self, _event: &NodeLifecycleEvent) {}
 }
 
+pub trait RenderBackendExt<T>: RenderBackend<T> {
+
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MockRenderBackend {
     pub frame_size: Option<Size<f32>>,

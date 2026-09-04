@@ -6,7 +6,7 @@ edition = "2024"
 [features]
 default = ["skia"]
 skia = ["dep:xui-skia"]
-wgpu = ["dep:wgpu"]
+wgpu = ["dep:wgpu", "dep:xui-cosmic"]
 
 [dependencies]
 bytemuck = { version = "1.25.0", features = ["derive"] }
@@ -17,7 +17,7 @@ winit = "0.30.12"
 xui = { path = "../xui" }
 xui-render-graph = { path = "../xui-render-graph" }
 xui-interface = { path = "../xui-interface" }
-# xui-text-engine = { path = "../xui-text-engine" }
+xui-cosmic = { path = "../xui-cosmic", optional = true }
 xui-f = {path="../xui-f"}
 
 glam = { workspace = true }

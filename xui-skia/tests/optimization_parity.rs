@@ -19,13 +19,13 @@ use std::time::{Duration, Instant};
 
 use xui::prelude::*;
 use xui::text::TextHost;
+use xui_cosmic::CosmicEngine;
 use xui_interface::Translation;
 use xui_interface::events::{
     Modifiers, PointerButtons, PointerKind, RawEvent, RawPointerMove, RawWheel, ScrollDelta,
     XuiPointerId,
 };
 use xui_skia::{SkiaBackend, SkiaBackendOptions, SkiaFrameStats, SkiaOptimizations};
-use xui_text_engine::CosmicEngine;
 
 const VIEWPORT: Size<f32> = Size {
     width: 480.0,

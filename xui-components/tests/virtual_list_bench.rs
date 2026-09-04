@@ -12,7 +12,7 @@ use xui::prelude::*;
 use xui::text::TextHost;
 #[allow(unused_imports)]
 use xui_components::*;
-use xui_text_engine::CosmicEngine;
+use xui_cosmic::CosmicEngine;
 
 const ITEM_HEIGHT: f32 = 20.0;
 const VIEWPORT: Size<f32> = Size {

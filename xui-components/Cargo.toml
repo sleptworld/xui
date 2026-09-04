@@ -14,4 +14,4 @@ anyhow = "1.0.102"
 
 [dev-dependencies]
 xui-interface = { path = "../xui-interface" }
-xui-text-engine = { path = "../xui-text-engine" }
+xui-cosmic = { path = "../xui-cosmic" }
