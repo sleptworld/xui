@@ -2370,6 +2370,7 @@ fn layer_descriptor_from_style(style: &ComputedStyle, bounds: Bounds) -> Option<
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::dsl::StyleProps;
@@ -2389,13 +2390,13 @@ mod tests {
     use xui_interface::core::Sizing;
     use xui_interface::events::semantic::ClickEvent;
     use xui_interface::events::{
-        Modifiers, PointerButton, PointerButtons, PointerKind, RawPointerButton, RawPointerMove,
-        XuiPointerId,
+        EventPhase, Modifiers, PointerButton, PointerButtons, PointerKind, RawPointerButton,
+        RawPointerMove, XuiPointerId,
     };
     use xui_interface::style::FlexDirectionStyle;
     use xui_interface::{
-        Affine, CanvasTextId, Color, ComputedColorStyle, FontDatabase, PathBuilder, PathFill,
-        Style, TextProps, VectorSceneBuilder, WidgetState,
+        Affine, CanvasTextId, Color, ComputedColorStyle, EdgeInsets, FontDatabase, PathBuilder,
+        PathFill, Style, TextProps, VectorSceneBuilder, WidgetState,
     };
 
     fn create_host(arena: &mut UiRuntime, widget: WidgetI) -> NodeId {
@@ -3031,6 +3032,173 @@ mod tests {
         assert!(
             !seen.iter().any(|(_, hovered)| !*hovered),
             "nothing left the hover path yet, but a leave was reported: {seen:?}"
+        );
+    }
+
+    #[test]
+    fn pointer_move_is_typed_bubbles_and_maps_current_local_per_handler() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let mut arena = UiRuntime::new();
+
+        let capture_seen = Rc::clone(&seen);
+        let bubble_seen = Rc::clone(&seen);
+        let parent = create_host(
+            &mut arena,
+            WidgetI::new(
+                container()
+                    .style(
+                        Style::new()
+                            .size(Size::fix(100.0, 100.0))
+                            .padding(EdgeInsets::all(20.0)),
+                    )
+                    .on_pointer_move_capture(move |event, _| {
+                        capture_seen.borrow_mut().push((
+                            event.meta.phase,
+                            event.pointer.coords.target_local,
+                            event.pointer.coords.current_local,
+                        ));
+                    })
+                    .on_pointer_move(move |event, _| {
+                        bubble_seen.borrow_mut().push((
+                            event.meta.phase,
+                            event.pointer.coords.target_local,
+                            event.pointer.coords.current_local,
+                        ));
+                    }),
+            ),
+        );
+
+        let target_seen = Rc::clone(&seen);
+        let child = {
+            let widget = WidgetI::new(
+                container()
+                    .style(Style::new().size(Size::fix(40.0, 40.0)))
+                    .on_pointer_move(move |event, _| {
+                        target_seen.borrow_mut().push((
+                            event.meta.phase,
+                            event.pointer.coords.target_local,
+                            event.pointer.coords.current_local,
+                        ));
+                    }),
+            );
+            let key = widget.key();
+            let props_hash = widget.props_hash();
+            let interaction = widget.take_host_interaction();
+            let id = arena.create_node(key, props_hash, widget, interaction);
+            arena.append_child(parent, id);
+            id
+        };
+
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+        let viewport = arena.node(child).unwrap().layout.min + Point::new(5.0, 7.0);
+        let expected_target_local = arena.to_local(child, viewport).unwrap();
+        let expected_parent_local = arena.to_local(parent, viewport).unwrap();
+
+        let mut translator =
+            EventTranslator::new(crate::event_system::translator::EventTranslatorConfig::default());
+        arena.dispatch_event(&measurer, &mut translator, pointer_move(viewport));
+
+        assert_eq!(
+            *seen.borrow(),
+            vec![
+                (
+                    EventPhase::Capture,
+                    expected_target_local,
+                    expected_parent_local,
+                ),
+                (
+                    EventPhase::Target,
+                    expected_target_local,
+                    expected_target_local,
+                ),
+                (
+                    EventPhase::Bubble,
+                    expected_target_local,
+                    expected_parent_local,
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn pointer_enter_and_leave_are_direct_and_report_the_other_leaf() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let mut arena = UiRuntime::new();
+
+        let parent_enter = Rc::clone(&seen);
+        let parent_leave = Rc::clone(&seen);
+        let parent = create_host(
+            &mut arena,
+            WidgetI::new(
+                container()
+                    .style(Style::new().size(Size::fix(100.0, 100.0)))
+                    .on_pointer_enter(move |event, _| {
+                        parent_enter
+                            .borrow_mut()
+                            .push(("parent", "enter", event.related_target));
+                    })
+                    .on_pointer_leave(move |event, _| {
+                        parent_leave
+                            .borrow_mut()
+                            .push(("parent", "leave", event.related_target));
+                    }),
+            ),
+        );
+
+        let add_child = |arena: &mut UiRuntime, name: &'static str| {
+            let enter_seen = Rc::clone(&seen);
+            let leave_seen = Rc::clone(&seen);
+            let widget = WidgetI::new(
+                container()
+                    .style(Style::new().size(Size::fix(40.0, 40.0)))
+                    .on_pointer_enter(move |event, _| {
+                        enter_seen
+                            .borrow_mut()
+                            .push((name, "enter", event.related_target));
+                    })
+                    .on_pointer_leave(move |event, _| {
+                        leave_seen
+                            .borrow_mut()
+                            .push((name, "leave", event.related_target));
+                    }),
+            );
+            let key = widget.key();
+            let props_hash = widget.props_hash();
+            let interaction = widget.take_host_interaction();
+            let id = arena.create_node(key, props_hash, widget, interaction);
+            arena.append_child(parent, id);
+            id
+        };
+
+        let left = add_child(&mut arena, "left");
+        let right = add_child(&mut arena, "right");
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+
+        let centre = |arena: &UiRuntime, node: NodeId| {
+            let bounds = arena.node(node).unwrap().layout;
+            Point::new(
+                (bounds.min.x + bounds.max.x) * 0.5,
+                (bounds.min.y + bounds.max.y) * 0.5,
+            )
+        };
+        let mut translator =
+            EventTranslator::new(crate::event_system::translator::EventTranslatorConfig::default());
+        let on_left = centre(&arena, left);
+        arena.dispatch_event(&measurer, &mut translator, pointer_move(on_left));
+        seen.borrow_mut().clear();
+
+        let on_right = centre(&arena, right);
+        arena.dispatch_event(&measurer, &mut translator, pointer_move(on_right));
+
+        assert_eq!(
+            *seen.borrow(),
+            vec![
+                ("left", "leave", Some(right)),
+                ("right", "enter", Some(left)),
+            ],
+            "the unchanged parent must not receive a bubbled boundary event"
         );
     }
 

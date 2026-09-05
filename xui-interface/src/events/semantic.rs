@@ -53,8 +53,12 @@ pub struct EventMeta {
 #[derive(Debug, Clone)]
 pub enum SemanticEvent {
     Command(CommandEvent),
+    PointerMove(PointerMoveEvent),
     // Hover
+    PointerEnter(PointerBoundaryEvent),
+    PointerLeave(PointerBoundaryEvent),
     /// This node entered or left the hover path. See [`HoverEvent`].
+    #[deprecated(since = "0.1.0", note = "use PointerEnter and PointerLeave instead")]
     Hovered(HoverEvent),
     // Press
     PressStart(PressEvent),
@@ -82,6 +86,10 @@ impl SemanticEvent {
     pub fn meta(&self) -> &EventMeta {
         match self {
             SemanticEvent::Command(e) => &e.meta,
+            SemanticEvent::PointerMove(e) => &e.meta,
+            SemanticEvent::PointerEnter(e) => &e.meta,
+            SemanticEvent::PointerLeave(e) => &e.meta,
+            #[allow(deprecated)]
             SemanticEvent::Hovered(e) => &e.meta,
 
             SemanticEvent::PressStart(e) => &e.meta,
@@ -109,6 +117,10 @@ impl SemanticEvent {
     pub fn meta_mut(&mut self) -> &mut EventMeta {
         match self {
             SemanticEvent::Command(e) => &mut e.meta,
+            SemanticEvent::PointerMove(e) => &mut e.meta,
+            SemanticEvent::PointerEnter(e) => &mut e.meta,
+            SemanticEvent::PointerLeave(e) => &mut e.meta,
+            #[allow(deprecated)]
             SemanticEvent::Hovered(e) => &mut e.meta,
 
             SemanticEvent::PressStart(e) => &mut e.meta,
@@ -136,10 +148,15 @@ impl SemanticEvent {
     pub fn propagation_mode(&self) -> PropagationMode {
         match self {
             SemanticEvent::Command(_) => PropagationMode::CaptureTargetBubble,
+            SemanticEvent::PointerMove(_) => PropagationMode::CaptureTargetBubble,
+            SemanticEvent::PointerEnter(_) | SemanticEvent::PointerLeave(_) => {
+                PropagationMode::Direct
+            }
             // Direct on purpose. The translator diffs the whole hover path and
             // emits one event per node that actually changed, so every hovered
             // ancestor is already reached. Bubbling would deliver a second copy
             // of a child's event to ancestors that got their own.
+            #[allow(deprecated)]
             SemanticEvent::Hovered(_) => PropagationMode::Direct,
 
             SemanticEvent::PressStart(_) => PropagationMode::CaptureTargetBubble,
@@ -185,6 +202,29 @@ pub struct CommandEvent {
     pub meta: EventMeta,
     pub command: CommandId,
     pub shortcut: Shortcut,
+}
+
+/// A pointer changed position over the event target.
+///
+/// This is a high-frequency event. Prefer hover styling or drag handlers when
+/// those more specific APIs express the interaction you need.
+#[derive(Debug, Clone)]
+pub struct PointerMoveEvent {
+    pub meta: EventMeta,
+    pub pointer: PointerSnapshot,
+}
+
+/// A pointer crossed a node's boundary.
+///
+/// Used by both [`SemanticEvent::PointerEnter`] and
+/// [`SemanticEvent::PointerLeave`]. These events are delivered directly to
+/// every node whose hover membership changed and do not bubble.
+#[derive(Debug, Clone)]
+pub struct PointerBoundaryEvent {
+    pub meta: EventMeta,
+    pub pointer: PointerSnapshot,
+    /// The leaf target the pointer came from on enter, or moved to on leave.
+    pub related_target: Option<NodeId>,
 }
 
 /// A node entered or left the hover path.

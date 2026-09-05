@@ -7,9 +7,11 @@ pub use crate::element::{
     Component, ComponentDesc, ElementDesc, IntoChildren, PortalDesc, WidgetDesc, portal,
 };
 pub use xui_animation::{Easing, Transition};
+#[allow(deprecated)]
 pub use xui_interface::events::{
     ClickEvent, ContextMenuEvent, DragEvent, Event, EventPhase, EventRequest, EventRequests,
-    EventResult, FocusEvent, HoverEvent, PointerButton, PressEvent, ScrollEvent, SemanticEvent,
+    EventResult, FocusEvent, HoverEvent, PointerBoundaryEvent, PointerButton, PointerMoveEvent,
+    PressEvent, ScrollEvent, SemanticEvent,
 };
 
 pub use crate::event_system::EventState;

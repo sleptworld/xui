@@ -203,6 +203,14 @@ fn dispatch_semantic_to_node<B: TextBackend>(
     meta.current_target = node;
     meta.phase = phase;
 
+    // `target_local` remains relative to the original target while
+    // `current_local` follows the node currently handling the event.
+    if let SemanticEvent::PointerMove(pointer_move) = event {
+        if let Some(local) = arena.to_local(node, pointer_move.pointer.coords.viewport) {
+            pointer_move.pointer.coords.current_local = local;
+        }
+    }
+
     apply_semantic_state(arena, node, event, phase);
 
     // User handlers run *before* the widget's own handling of the event, which
@@ -268,8 +276,11 @@ fn apply_semantic_state(
     arena.set_widget_state_flag(node, flag, enabled);
 }
 
+#[allow(deprecated)]
 fn semantic_state_change(event: &SemanticEvent) -> Option<(xui_interface::WidgetState, bool)> {
     match event {
+        SemanticEvent::PointerEnter(_) => Some((xui_interface::WidgetState::HOVERED, true)),
+        SemanticEvent::PointerLeave(_) => Some((xui_interface::WidgetState::HOVERED, false)),
         SemanticEvent::Hovered(event) => Some((xui_interface::WidgetState::HOVERED, event.hovered)),
         SemanticEvent::PressStart(_) => Some((xui_interface::WidgetState::PRESSED, true)),
         SemanticEvent::PressEnd(_) | SemanticEvent::PressCancel(_) => {

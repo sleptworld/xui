@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use std::time::{Duration, Instant};
 
 use rustc_hash::FxHashMap;
@@ -201,6 +203,21 @@ impl EventTranslator {
             arena,
             &mut out,
         );
+
+        if let Some(target) = hit_target {
+            let meta = self.make_meta(
+                raw.timestamp,
+                target,
+                target,
+                EventPhase::Target,
+                EventSource::Pointer,
+                raw.modifiers,
+            );
+            out.push(SemanticEvent::PointerMove(PointerMoveEvent {
+                meta,
+                pointer,
+            }));
+        }
 
         self.update_press_or_drag_on_move(
             raw.pointer_id,
@@ -803,8 +820,29 @@ impl EventTranslator {
         let old_target = old_path.last().copied();
         let new_target = new_path.last().copied();
 
-        let mut push_hovered =
+        let mut push_boundary =
             |node: NodeId, hovered: bool, related_target, out: &mut Vec<SemanticEvent>| {
+                let boundary_meta = self.make_meta(
+                    timestamp,
+                    node,
+                    node,
+                    EventPhase::Target,
+                    EventSource::Pointer,
+                    modifiers,
+                );
+                let boundary = PointerBoundaryEvent {
+                    meta: boundary_meta,
+                    pointer,
+                    related_target,
+                };
+                out.push(if hovered {
+                    SemanticEvent::PointerEnter(boundary)
+                } else {
+                    SemanticEvent::PointerLeave(boundary)
+                });
+
+                // Compatibility event. New handlers should use the explicit
+                // enter/leave variants above.
                 let meta = self.make_meta(
                     timestamp,
                     node,
@@ -822,11 +860,11 @@ impl EventTranslator {
             };
 
         for node in &left {
-            push_hovered(*node, false, new_target, out);
+            push_boundary(*node, false, new_target, out);
         }
 
         for node in &entered {
-            push_hovered(*node, true, old_target, out);
+            push_boundary(*node, true, old_target, out);
         }
 
         if new_path.is_empty() {

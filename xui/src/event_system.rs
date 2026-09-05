@@ -7,7 +7,7 @@
 //!
 //! | | raw | semantic |
 //! |---|---|---|
-//! | what it is | a device fact: the pointer moved, a key went down | an intent: click, press, drag, hover, focus |
+//! | what it is | a device fact: the pointer moved, a key went down | a normalized UI interaction: pointer move, click, press, drag, hover, focus |
 //! | who produces it | the platform | [`translator::EventTranslator`], from the raw stream plus its own gesture state |
 //! | how many | one in | zero or more out, each with its own target |
 //! | target | pointer capture, else hit test, else the focused node, else the root | carried on the event, computed by the translator |
@@ -15,11 +15,11 @@
 //! | who receives it | **widgets only** | user handlers *and* widgets |
 //!
 //! One `PointerUp` can become `PressEnd` and `Click` and `DoubleClick`, aimed at
-//! different nodes; one `PointerMove` can become a `Hovered { hovered: false }`
-//! on each node being left, a `Hovered { hovered: true }` on each node being
-//! entered, and a `DragMove` on the node the gesture started from. No single
-//! traversal could deliver that, which is why the translator sits between the
-//! layers.
+//! different nodes; one raw `PointerMove` can become a semantic `PointerMove`
+//! on the hit target, a `Hovered { hovered: false }` on each node being left, a
+//! `Hovered { hovered: true }` on each node being entered, and a `DragMove` on
+//! the node the gesture started from. No single traversal could deliver that,
+//! which is why the translator sits between the layers.
 //!
 //! # Raw events are widget-private
 //!

@@ -26,13 +26,15 @@ pub mod widget;
 
 pub use core::{Bounds, Color, EdgeInsets, Point, Rect, Size, Sizing, Translation};
 pub use dirty::{StyleDiffFlags, WidgetUpdateFlags};
+#[allow(deprecated)]
 pub use events::{
     CommandEvent, CommandId, ContextMenuTrigger, Event, EventPhase, EventRef, EventRequest,
     EventRequests, EventResult, FocusReason, KeyState, KeyText, Modifiers, NamedKey, PhysicalKey,
-    PointerButton, PointerButtons, PointerCoords, PointerKind, PointerSnapshot, RawContextMenu,
-    RawIme, RawKeyInput, RawKeyboard, RawPointerButton, RawPointerCancel, RawPointerMove, RawWheel,
-    RawWindowEvent, ScrollDelta, Shortcut, ShortcutBinding, ShortcutKey, ShortcutModifiers,
-    TextPayload, XuiDeviceId, XuiPointerId,
+    PointerBoundaryEvent, PointerButton, PointerButtons, PointerCoords, PointerKind,
+    PointerMoveEvent, PointerSnapshot, RawContextMenu, RawIme, RawKeyInput, RawKeyboard,
+    RawPointerButton, RawPointerCancel, RawPointerMove, RawWheel, RawWindowEvent, ScrollDelta,
+    Shortcut, ShortcutBinding, ShortcutKey, ShortcutModifiers, TextPayload, XuiDeviceId,
+    XuiPointerId,
 };
 pub use platform::{PlatformOutput, TextInputPurpose, TextInputSession};
 pub use render::*;

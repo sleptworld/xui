@@ -16,11 +16,13 @@
 //! runtime. Handlers now live inline on the node, in a `SmallVec` that stays on
 //! the stack for the two-or-so handlers a node typically has.
 
+#![allow(deprecated)]
+
 use smallvec::SmallVec;
 use xui_interface::EventPhase;
 use xui_interface::events::semantic::{
-    ClickEvent, CommandEvent, ContextMenuEvent, DragEvent, FocusEvent, HoverEvent, PressEvent,
-    ScrollEvent, SemanticEvent,
+    ClickEvent, CommandEvent, ContextMenuEvent, DragEvent, FocusEvent, HoverEvent,
+    PointerBoundaryEvent, PointerMoveEvent, PressEvent, ScrollEvent, SemanticEvent,
 };
 
 use super::{EventContext, Flow, Handler};
@@ -53,7 +55,8 @@ macro_rules! events {
         $(
             $kind:ident : $variant:ident($event:ty) => $method:ident
                 $(, capture = $capture_method:ident)?
-                $(, widget = $widget_stage:ident)? ;
+                $(, widget = $widget_stage:ident)?
+                $(, deprecated = $deprecated:literal)? ;
         )*
     ) => {
         /// One discriminant per handler slot.
@@ -170,10 +173,11 @@ macro_rules! events {
             }
 
             $(
-                fn $method<R: Into<Flow>>(
+                $(#[deprecated(note = $deprecated)])?
+            fn $method<R: Into<Flow>>(
                     mut self,
                     handler: impl for<'a> FnMut(&$event, &mut EventContext<'a>) -> R + 'static,
-                ) -> Self {
+            ) -> Self {
                     self.handlers_mut().set(
                         ListenPhase::Bubble,
                         AnyHandler::$kind(Handler::new(handler)),
@@ -205,7 +209,12 @@ macro_rules! events {
 events! {
     Command:      Command(CommandEvent)          => on_command;
 
-    Hovered:      Hovered(HoverEvent)            => on_hovered;
+    PointerMove:  PointerMove(PointerMoveEvent)  => on_pointer_move, capture = on_pointer_move_capture;
+    PointerEnter: PointerEnter(PointerBoundaryEvent) => on_pointer_enter;
+    PointerLeave: PointerLeave(PointerBoundaryEvent) => on_pointer_leave;
+
+    Hovered:      Hovered(HoverEvent)            => on_hovered,
+        deprecated = "use on_pointer_enter and on_pointer_leave instead";
 
     PressStart:   PressStart(PressEvent)         => on_press_start,   capture = on_press_start_capture;
     PressEnd:     PressEnd(PressEvent)           => on_press_end,     capture = on_press_end_capture;
