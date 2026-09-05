@@ -7,24 +7,20 @@
 //!
 //! # The command queue
 //!
-//! Skia's `mtl::BackendContext` wants a device *and* a command queue, and
-//! `wgpu-hal` 29 does not expose the one it uses -- `metal::Queue` keeps its
-//! `QueueShared` private, with no accessor. So Skia gets a second queue created
-//! on the shared device.
+//! Skia's `mtl::BackendContext` wants a device *and* a command queue, and it is
+//! given wgpu's own, through `metal::Queue::as_raw`. Both sides then commit to
+//! one `MTLCommandQueue`, which executes command buffers in commit order, so
+//! Skia's rendering is ordered before wgpu's `presentDrawable` with no fence,
+//! no event and no CPU wait -- the same arrangement D3D12 gets.
 //!
-//! Two `MTLCommandQueue`s on one `MTLDevice` share memory but have no ordering
-//! relative to each other, and wgpu presents from its queue while Skia rendered
-//! from ours. [`Interop::finish_frame`] therefore waits for Skia's work on the
-//! CPU before the caller presents. That is a real stall, and it is the price of
-//! the missing accessor rather than anything inherent to the design: the moment
-//! `wgpu-hal` exposes its raw queue -- or we build the wgpu device ourselves
-//! from `hal::OpenDevice { device: metal::Device::device_from_raw(..), queue:
-//! metal::Queue::queue_from_raw(..) }` so that both sides share *our* queue --
-//! the sync collapses into plain submission ordering and this comment goes
-//! away.
+//! That accessor requires **wgpu-hal 29.0.4 or newer**: it was dropped in 29.0
+//! and restored in 29.0.4, and in between there was no way to reach the queue
+//! at all. The floor is pinned by an explicit `wgpu-hal` dependency in
+//! `Cargo.toml`, because the version of the `wgpu` facade says nothing about
+//! which `wgpu-hal` resolved underneath it.
 
-use objc2::{rc::Retained, runtime::ProtocolObject};
-use objc2_metal::{MTLCommandQueue, MTLDevice};
+use objc2::{Message, rc::Retained, runtime::ProtocolObject};
+use objc2_metal::MTLCommandQueue;
 use skia_safe::{
     Image, Surface,
     gpu::{
@@ -37,8 +33,8 @@ use super::{color_space, color_type, init, present_error};
 use crate::SkiaBackendError;
 
 pub(crate) struct Interop {
-    /// Kept alive for as long as the Skia context: `mtl::BackendContext` only
-    /// borrows the raw pointer we handed it.
+    /// wgpu's queue, retained for as long as the Skia context: the
+    /// `mtl::BackendContext` only borrows the raw pointer we handed it.
     _command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
 }
 
@@ -49,19 +45,21 @@ impl Interop {
     pub(crate) fn new(
         _adapter: &wgpu::Adapter,
         device: &wgpu::Device,
-        _queue: &wgpu::Queue,
+        queue: &wgpu::Queue,
     ) -> Result<(Self, DirectContext), SkiaBackendError> {
-        // SAFETY: the guard is dropped before this function returns, and the
-        // `MTLDevice` it exposes is retained by `newCommandQueue` and by the
-        // wgpu device itself for as long as the Skia context lives.
+        // SAFETY: both guards are dropped before this function returns, and
+        // both objects are retained out of them first -- the device by the
+        // clone, the queue by `retain`.
         let hal_device = unsafe { device.as_hal::<wgpu::hal::api::Metal>() }
             .ok_or_else(|| init("the wgpu device is not Metal-backed"))?;
         let metal_device = hal_device.raw_device().clone();
         drop(hal_device);
 
-        let command_queue = metal_device
-            .newCommandQueue()
-            .ok_or_else(|| init("could not create a Metal command queue on the wgpu device"))?;
+        let hal_queue = unsafe { queue.as_hal::<wgpu::hal::api::Metal>() }
+            .ok_or_else(|| init("the wgpu queue is not Metal-backed"))?;
+        let command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>> =
+            hal_queue.as_raw().retain();
+        drop(hal_queue);
 
         // SAFETY: both pointers outlive the context -- the device through the
         // wgpu device we were handed, the queue through `Self::_command_queue`.
@@ -135,14 +133,15 @@ impl Interop {
         })
     }
 
-    /// Flushes Skia's frame and waits for it.
+    /// Flushes Skia's frame.
     ///
-    /// `BackendSurfaceAccess` is a no-op on Metal -- there are no image layouts
-    /// to hand back. The CPU sync is the cross-queue hazard described in the
-    /// module docs, not a Metal requirement.
+    /// No `BackendSurfaceAccess` -- Metal has no image layouts to hand back --
+    /// and no CPU sync: Skia and wgpu commit to the same `MTLCommandQueue`, so
+    /// the present the caller issues next is ordered after this submission by
+    /// the queue itself.
     pub(crate) fn finish_frame(&self, context: &mut DirectContext, surface: &mut Surface) {
         context.flush_and_submit_surface(surface, None);
-        context.submit(gpu::SyncCpu::Yes);
+        context.submit(gpu::SyncCpu::No);
     }
 }
 

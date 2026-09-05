@@ -41,11 +41,10 @@
 //!   `BackendSurfaceAccess::Present`, which leaves the swapchain image in
 //!   `PRESENT_SRC_KHR` / `D3D12_RESOURCE_STATE_PRESENT`, the state wgpu's
 //!   `present()` assumes because it never touched the texture itself.
-//! - **Metal** -- `wgpu-hal` 29 exposes no accessor for its `MTLCommandQueue`
-//!   (`metal::Queue` keeps `QueueShared` private), so Skia gets a *second*
-//!   queue created on the shared `MTLDevice`. Two queues on one device have no
-//!   ordering relative to each other, so the Metal path pays a CPU sync before
-//!   present. See [`metal`] for the details and the way out.
+//! - **Metal** -- Skia commits to wgpu's own `MTLCommandQueue`, reached through
+//!   `metal::Queue::as_raw`, so commit order alone orders the two. That
+//!   accessor is missing between wgpu-hal 29.0.0 and 29.0.3; see [`metal`] for
+//!   why `Cargo.toml` pins a 29.0.4 floor.
 
 use std::sync::Arc;
 
