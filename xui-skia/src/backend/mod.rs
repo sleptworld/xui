@@ -65,7 +65,7 @@ use crate::{
     SkiaBackendError, SkiaFrameStats, SkiaLayerCacheStats,
     cache::LayerSurfaceCache,
     damage::{DamageRegion, DamageTracker},
-    present::WindowPresenter,
+    present::{PresenterSetup, WindowPresenter},
 };
 
 /// `XUI_DEBUG_FRAME=1` prints a per-frame damage summary. Read once: an env
@@ -127,6 +127,10 @@ impl SkiaOptimizations {
 
 pub struct SkiaBackend<T: TextBackend = crate::SkiaTextBackend> {
     presenter: Option<WindowPresenter>,
+    /// The wgpu device the presenter is rendering on, when one was shared. Its
+    /// only job here is the canvas import path -- see [`Self::wgpu_context`].
+    #[cfg(feature = "wgpu")]
+    wgpu_host: Option<crate::wgpu_surface::WgpuHost>,
     /// Where the frame is presented from: the raster surface on the software
     /// path, the acquired swapchain image on the GPU path.
     raster: Option<Surface>,
@@ -183,9 +187,16 @@ impl<T: TextBackend> SkiaBackend<T> {
         options: SkiaBackendOptions,
     ) -> Result<Self, SkiaBackendError> {
         let scale_factor = window.scale_factor() as f32;
-        let (presenter, gpu_context) = WindowPresenter::new(window)?;
+        let PresenterSetup {
+            presenter,
+            context: gpu_context,
+            #[cfg(feature = "wgpu")]
+            wgpu,
+        } = WindowPresenter::new(window)?;
         Ok(Self {
             presenter: Some(presenter),
+            #[cfg(feature = "wgpu")]
+            wgpu_host: wgpu,
             raster: None,
             compositor: None,
             options,
@@ -225,10 +236,7 @@ impl<T: TextBackend> SkiaBackend<T> {
     /// the device access Slint hands out through its rendering notifier.
     #[cfg(feature = "wgpu")]
     pub fn wgpu_context(&self) -> Option<crate::WgpuContext> {
-        self.presenter
-            .as_ref()?
-            .wgpu()
-            .map(crate::wgpu_surface::WgpuPresenter::context)
+        Some(self.wgpu_host.as_ref()?.context())
     }
 
     /// Borrows a caller-rendered `wgpu::Texture` as an `Image` Skia can draw.
@@ -248,24 +256,22 @@ impl<T: TextBackend> SkiaBackend<T> {
         &mut self,
         texture: &wgpu::Texture,
     ) -> Result<crate::WgpuImage, SkiaBackendError> {
-        let presenter = self
-            .presenter
-            .as_ref()
-            .and_then(crate::present::WindowPresenter::wgpu)
-            .ok_or_else(|| {
-                SkiaBackendError::WgpuTextureImport(
-                    "this backend is not rendering on a wgpu device".into(),
-                )
-            })?;
+        let host = self.wgpu_host.as_ref().ok_or_else(|| {
+            SkiaBackendError::WgpuTextureImport(
+                "this backend is not rendering on a shared wgpu device".into(),
+            )
+        })?;
         let context = self.gpu_context.as_mut().ok_or_else(|| {
             SkiaBackendError::WgpuTextureImport("this backend has no GPU context".into())
         })?;
-        presenter.borrow_image(context, texture)
+        host.borrow_image(context, texture)
     }
 
     pub fn headless(scale_factor: f32, options: SkiaBackendOptions) -> Self {
         Self {
             presenter: None,
+            #[cfg(feature = "wgpu")]
+            wgpu_host: None,
             raster: None,
             compositor: None,
             options,

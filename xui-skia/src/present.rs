@@ -10,11 +10,12 @@
 //!   [`crate::vulkan::VulkanPresenter`].
 //! - Every platform — a CPU `softbuffer` blit ([`SoftwarePresenter`]).
 //!
-//! With the `wgpu` feature and `XUI_SKIA_WGPU=1` a fourth option comes first:
-//! [`crate::wgpu_surface::WgpuPresenter`], where wgpu owns the device and
-//! swapchain and Skia renders into it. It is opt-in because it replaces the
-//! bottom of the stack, and it exists because it is the only arrangement in
-//! which a caller's own `wgpu::Texture` can be composited by Skia.
+//! With the `wgpu` feature and `XUI_SKIA_WGPU=1`, the GPU presenters are built
+//! on a device wgpu opened rather than one they create themselves -- see
+//! [`crate::wgpu_surface`]. Everything above stays exactly as described:
+//! the layer, the swapchain, the present mode and the buffer count are still
+//! each presenter's own. Only the device is shared, because that is all it
+//! takes for Skia to composite a `wgpu::Texture` the application rendered.
 //!
 //! The GPU presenter is selected at runtime and falls back to the software one
 //! when initialization fails, which is the common case in VMs, remote sessions
@@ -49,9 +50,28 @@ impl SoftwarePresenter {
     }
 }
 
-pub(crate) enum WindowPresenter {
+/// What [`WindowPresenter::new`] produced: the presenter, the Skia context it
+/// created (absent for the software path), and the shared wgpu device when one
+/// was opened.
+pub(crate) struct PresenterSetup {
+    pub(crate) presenter: WindowPresenter,
+    pub(crate) context: Option<DirectContext>,
     #[cfg(feature = "wgpu")]
-    Wgpu(Box<crate::wgpu_surface::WgpuPresenter>),
+    pub(crate) wgpu: Option<crate::wgpu_surface::WgpuHost>,
+}
+
+impl PresenterSetup {
+    fn new(presenter: WindowPresenter, context: Option<DirectContext>) -> Self {
+        Self {
+            presenter,
+            context,
+            #[cfg(feature = "wgpu")]
+            wgpu: None,
+        }
+    }
+}
+
+pub(crate) enum WindowPresenter {
     #[cfg(target_os = "macos")]
     Metal(crate::metal::MetalPresenter),
     #[cfg(target_os = "windows")]
@@ -64,36 +84,92 @@ pub(crate) enum WindowPresenter {
 impl WindowPresenter {
     /// Creates the best presenter this platform offers, falling back to the
     /// software blit when the GPU one cannot be brought up.
-    pub(crate) fn new(
-        window: Arc<Window>,
-    ) -> Result<(Self, Option<DirectContext>), SkiaBackendError> {
+    pub(crate) fn new(window: Arc<Window>) -> Result<PresenterSetup, SkiaBackendError> {
         if gpu_disabled() {
-            return Ok((Self::Software(SoftwarePresenter::new(window)?), None));
+            return Ok(PresenterSetup::new(
+                Self::Software(SoftwarePresenter::new(window)?),
+                None,
+            ));
         }
         #[cfg(feature = "wgpu")]
         if crate::wgpu_surface::requested() {
-            match crate::wgpu_surface::WgpuPresenter::new(window.clone()) {
-                Ok((presenter, context)) => {
-                    return Ok((Self::Wgpu(Box::new(presenter)), Some(context)));
-                }
-                // Falling through to the native presenter rather than to
-                // software: the wgpu path failing says nothing about whether
-                // this machine can drive Metal/Vulkan/D3D directly.
+            match Self::new_shared(window.clone()) {
+                Ok(setup) => return Ok(setup),
+                // Falling through to a self-owned device rather than to
+                // software: failing to open a shared device says nothing about
+                // whether this machine can drive Metal/Vulkan/D3D at all.
                 Err(error) => eprintln!(
-                    "xui-skia: XUI_SKIA_WGPU was set but the wgpu path could not start, \
-                     using the native presenter instead ({error})"
+                    "xui-skia: XUI_SKIA_WGPU was set but no shared wgpu device could be used, \
+                     falling back to a self-owned one ({error})"
                 ),
             }
         }
         match Self::new_gpu(window.clone()) {
-            Ok((presenter, context)) => Ok((presenter, Some(context))),
+            Ok((presenter, context)) => Ok(PresenterSetup::new(presenter, Some(context))),
             Err(error) => {
                 eprintln!(
                     "xui-skia: no GPU presentation available, falling back to software rendering ({error})"
                 );
-                Ok((Self::Software(SoftwarePresenter::new(window)?), None))
+                Ok(PresenterSetup::new(
+                    Self::Software(SoftwarePresenter::new(window)?),
+                    None,
+                ))
             }
         }
+    }
+
+    /// Opens a wgpu device and builds this platform's presenter on it.
+    ///
+    /// The presenter is the same one `new_gpu` would build and behaves
+    /// identically; it just did not create the device it renders through.
+    #[cfg(feature = "wgpu")]
+    fn new_shared(window: Arc<Window>) -> Result<PresenterSetup, SkiaBackendError> {
+        let host = crate::wgpu_surface::WgpuHost::new()?;
+        let platform = host.platform_device();
+
+        #[cfg(target_os = "macos")]
+        let (presenter, context) = {
+            let (presenter, context) = crate::metal::MetalPresenter::with_device(
+                window,
+                platform.device.clone(),
+                platform.queue.clone(),
+            )?;
+            (Self::Metal(presenter), context)
+        };
+        #[cfg(target_os = "linux")]
+        let (presenter, context) = {
+            let (presenter, context) = crate::vulkan::VulkanPresenter::with_device(
+                window,
+                platform.entry.clone(),
+                platform.instance.clone(),
+                platform.physical_device,
+                platform.device.clone(),
+                platform.queue,
+                platform.queue_family,
+            )?;
+            (Self::Vulkan(Box::new(presenter)), context)
+        };
+        #[cfg(target_os = "windows")]
+        let (presenter, context) = {
+            let (presenter, context) = crate::d3d::Direct3DPresenter::with_device(
+                window,
+                platform.adapter.clone(),
+                platform.device.clone(),
+                platform.queue.clone(),
+            )?;
+            (Self::Direct3D(presenter), context)
+        };
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        let (presenter, context) = {
+            let _ = (window, platform);
+            return Err(SkiaBackendError::NoGpuPresenter);
+        };
+
+        Ok(PresenterSetup {
+            presenter,
+            context: Some(context),
+            wgpu: Some(host),
+        })
     }
 
     #[cfg(target_os = "macos")]
@@ -133,8 +209,6 @@ impl WindowPresenter {
         height: u32,
     ) -> Result<(), SkiaBackendError> {
         match self {
-            #[cfg(feature = "wgpu")]
-            Self::Wgpu(presenter) => presenter.resize(context, width, height),
             #[cfg(target_os = "macos")]
             Self::Metal(presenter) => {
                 // A `CAMetalLayer` hands out a fresh drawable a frame, so there
@@ -162,8 +236,6 @@ impl WindowPresenter {
         height: u32,
     ) -> Result<Surface, SkiaBackendError> {
         match self {
-            #[cfg(feature = "wgpu")]
-            Self::Wgpu(presenter) => presenter.acquire_surface(context, width, height),
             #[cfg(target_os = "macos")]
             Self::Metal(presenter) => presenter.acquire_surface(context, width, height),
             #[cfg(target_os = "windows")]
@@ -188,8 +260,6 @@ impl WindowPresenter {
         surface: Surface,
     ) -> Result<(), SkiaBackendError> {
         match self {
-            #[cfg(feature = "wgpu")]
-            Self::Wgpu(presenter) => presenter.present(context, surface),
             #[cfg(target_os = "macos")]
             Self::Metal(presenter) => {
                 let mut surface = surface;
@@ -213,26 +283,7 @@ impl WindowPresenter {
     pub(crate) fn software_mut(&mut self) -> Option<&mut SoftwarePresenter> {
         match self {
             Self::Software(presenter) => Some(presenter),
-            #[cfg(any(
-                feature = "wgpu",
-                target_os = "macos",
-                target_os = "windows",
-                target_os = "linux"
-            ))]
-            _ => None,
-        }
-    }
-
-    /// The wgpu presenter, when this frame is being rendered on one.
-    ///
-    /// The entry point for the canvas wgpu path: it carries the device a caller
-    /// must render its textures on, and the import that turns one into an
-    /// `SkImage`.
-    #[cfg(feature = "wgpu")]
-    pub(crate) fn wgpu(&self) -> Option<&crate::wgpu_surface::WgpuPresenter> {
-        match self {
-            Self::Wgpu(presenter) => Some(presenter),
-            #[allow(unreachable_patterns)]
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             _ => None,
         }
     }

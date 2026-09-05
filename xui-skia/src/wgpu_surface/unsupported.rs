@@ -1,17 +1,17 @@
-//! Placeholder interop for platforms with no Skia GPU backend.
+//! Placeholder for platforms with no Skia GPU backend.
 //!
 //! The crate already refuses GPU presentation outside macOS, Linux and Windows
 //! (see [`crate::present::WindowPresenter::new_gpu`]); this keeps the wgpu
 //! module compiling there rather than making the feature a build error.
 
-use skia_safe::{Image, Surface, gpu::DirectContext};
+use skia_safe::{Image, gpu::DirectContext};
 
 use super::init;
 use crate::SkiaBackendError;
 
-pub(crate) struct Interop {
-    _private: (),
-}
+pub(crate) struct PlatformDevice;
+
+pub(crate) struct Interop;
 
 impl Interop {
     pub(crate) const NAME: &'static str = "unsupported";
@@ -21,16 +21,12 @@ impl Interop {
         _adapter: &wgpu::Adapter,
         _device: &wgpu::Device,
         _queue: &wgpu::Queue,
-    ) -> Result<(Self, DirectContext), SkiaBackendError> {
+    ) -> Result<Self, SkiaBackendError> {
         Err(init("this platform has no Skia/wgpu interop backend"))
     }
 
-    pub(crate) fn wrap_render_target(
-        &self,
-        _context: &mut DirectContext,
-        _texture: &wgpu::Texture,
-    ) -> Result<Surface, SkiaBackendError> {
-        Err(init("this platform has no Skia/wgpu interop backend"))
+    pub(crate) fn platform_device(&self) -> &PlatformDevice {
+        unreachable!("`Interop::new` never succeeds on this platform")
     }
 
     pub(crate) fn borrow_image(
@@ -40,6 +36,4 @@ impl Interop {
     ) -> Result<Image, SkiaBackendError> {
         Err(init("this platform has no Skia/wgpu interop backend"))
     }
-
-    pub(crate) fn finish_frame(&self, _context: &mut DirectContext, _surface: &mut Surface) {}
 }

@@ -1,55 +1,68 @@
-//! Skia rendering on a wgpu-owned device.
+//! A wgpu device for Skia to share.
 //!
-//! Modelled on Slint's `i-slint-renderer-skia/wgpu_29_surface.rs`: wgpu creates
-//! the instance, adapter, device, queue and swapchain, Skia is handed the raw
-//! platform handles sitting behind them through `wgpu-hal`, Skia renders into
-//! the swapchain texture, and wgpu presents. The native presenters in
-//! [`crate::present`] do the opposite -- they own the device and never let
-//! anything else near it -- which is exactly why they cannot do the one thing
-//! this module exists for:
+//! wgpu creates an instance, adapter, device and queue -- **and nothing else**.
+//! No surface, no swapchain, no presentation. The native presenters in
+//! [`crate::present`] keep every bit of that: `CAMetalLayer`, the DXGI
+//! flip-model swapchain with its buffer fences, the `VK_KHR_swapchain` with its
+//! chosen present mode and image count. All they give up is the ten lines where
+//! they used to *create* a device; they now accept one.
 //!
-//! **A `wgpu::Texture` an application rendered itself can be composited by
-//! Skia**, because both now sit on the same device. That is the canvas wgpu
-//! path: the caller draws with wgpu (WGSL, compute, 3D -- whatever SkSL cannot
-//! express), hands the texture back, and [`WgpuPresenter::borrow_image`] turns
-//! it into an `SkImage` the normal draw path composites like any other image.
+//! # Why
 //!
-//! A second, quieter benefit: the device, queue and swapchain here are ordinary
-//! wgpu objects, so the `xui-winit` wgpu renderer and this one can eventually
-//! share a single surface and present path instead of each owning a private
-//! copy of the platform swapchain.
+//! Skia can only composite a `wgpu::Texture` if both sit on the same device.
+//! That is the canvas wgpu path: the caller draws with wgpu (WGSL, compute, 3D
+//! -- whatever SkSL cannot express), hands the texture back, and
+//! [`WgpuHost::borrow_image`] wraps it as an `SkImage` with no copy, which the
+//! normal draw path then composites like any other image.
+//!
+//! Sharing a device is all that requires. An earlier version of this module
+//! followed Slint's `wgpu_29_surface.rs` and let wgpu own the swapchain and
+//! presentation too, which is how Slint does it -- but Slint has one renderer,
+//! and handing wgpu the swapchain here meant bypassing three presenters that
+//! already know what they are doing, plus a CPU stall on every resize and
+//! wgpu's frame-latency defaults instead of the ones `crate::d3d` picked.
+//! None of that bought anything: the device is the only shared object the
+//! import actually needs.
+//!
+//! The direction matters and only one direction works. Building wgpu on top of
+//! *Skia's* device -- the arrangement this shape might suggest -- needs
+//! `device_from_raw`, which `wgpu-hal` 29 has for Vulkan and Metal but **not**
+//! for D3D12. Reading raw handles back out of a wgpu device works everywhere,
+//! so wgpu creates and Skia borrows.
 //!
 //! # Opting in
 //!
 //! Build `xui-skia` with the `wgpu` feature and set `XUI_SKIA_WGPU=1`. Without
-//! both, [`crate::present::WindowPresenter`] picks the native presenter as
-//! before -- this path changes the bottom of the rendering stack and is not
-//! something to switch on by default.
+//! both, the presenters create their own devices exactly as before.
 //!
-//! # What each platform costs
+//! # Platforms
 //!
-//! One backend per platform, chosen to match the Skia binary's own backends:
-//! Metal on macOS, Vulkan on Linux, D3D12 on Windows. GL is excluded on every
-//! platform (Slint hit artifacts there, and Skia's default binaries do not ship
-//! a Vulkan backend on Windows either).
+//! One backend each, matching the backends Skia's own binaries ship: Metal on
+//! macOS, Vulkan on Linux, D3D12 on Windows. GL is excluded everywhere (Slint
+//! hit artifacts there, and Skia's stock Windows binaries have no Vulkan
+//! backend either).
+//!
+//! The presenters need more than a device from wgpu, and get it:
+//!
+//! - **Metal** -- the `MTLDevice` and, through `metal::Queue::as_raw`, wgpu's
+//!   own `MTLCommandQueue`, so Skia and wgpu commit to one queue. That accessor
+//!   is missing in wgpu-hal 29.0.0 through 29.0.3; see [`interop`] for why
+//!   `Cargo.toml` pins a 29.0.4 floor.
+//! - **Vulkan** -- the `ash::Entry` and `ash::Instance` as well, because the
+//!   presenter creates its own `VkSurfaceKHR` from them. wgpu-hal enables every
+//!   platform surface extension on its instance and requires `VK_KHR_swapchain`
+//!   on every device it opens, so both are always available.
+//! - **D3D12** -- the `ID3D12Device` and `ID3D12CommandQueue`; the presenter
+//!   makes its own DXGI factory, which is independent of the device.
+//!
+//! # Synchronization
 //!
 //! Sharing a device removes cross-device memory sharing, not synchronization.
-//! wgpu keeps its own resource-state tracker and Skia keeps its own, so every
-//! handoff has to be explicit:
-//!
-//! - **Vulkan / D3D12** -- [`Interop::finish_frame`] flushes with
-//!   `BackendSurfaceAccess::Present`, which leaves the swapchain image in
-//!   `PRESENT_SRC_KHR` / `D3D12_RESOURCE_STATE_PRESENT`, the state wgpu's
-//!   `present()` assumes because it never touched the texture itself.
-//! - **Metal** -- Skia commits to wgpu's own `MTLCommandQueue`, reached through
-//!   `metal::Queue::as_raw`, so commit order alone orders the two. That
-//!   accessor is missing between wgpu-hal 29.0.0 and 29.0.3; see [`metal`] for
-//!   why `Cargo.toml` pins a 29.0.4 floor.
+//! wgpu keeps its own resource-state tracker and Skia keeps its own, so a
+//! caller must have *submitted* the work filling a texture before importing it.
+//! With a shared queue that is enough -- no CPU wait.
 
-use std::sync::Arc;
-
-use skia_safe::{Image, Surface, gpu::DirectContext};
-use winit::window::Window;
+use skia_safe::{Image, gpu::DirectContext};
 
 use crate::SkiaBackendError;
 
@@ -66,16 +79,14 @@ mod interop;
 #[path = "unsupported.rs"]
 mod interop;
 
-pub(crate) use interop::Interop;
+pub(crate) use interop::{Interop, PlatformDevice};
 
 /// The device and queue Skia is rendering on, for callers that want to draw
 /// into a texture Skia will then composite.
 ///
-/// Both handles are `wgpu`'s own reference-counted ones, so a clone keeps the
-/// device alive independently of the presenter. This is the equivalent of what
-/// Slint hands out through `Window::set_rendering_notifier` -- the point is
-/// that a caller must not create its own device, because a texture from a
-/// different device cannot be imported.
+/// Both handles are wgpu's own reference-counted ones, so a clone keeps the
+/// device alive independently of the host. A caller must not create its own
+/// device: a texture from a different device cannot be imported.
 #[derive(Clone)]
 pub struct WgpuContext {
     device: wgpu::Device,
@@ -88,11 +99,10 @@ impl WgpuContext {
         &self.device
     }
 
-    /// The queue Skia's swapchain is presented from.
+    /// The queue Skia submits on.
     ///
-    /// Work submitted here must be finished before the texture it writes is
-    /// handed to `SkiaBackend::import_wgpu_texture`; see the module docs on
-    /// synchronization.
+    /// Work submitted here must be submitted before the texture it writes is
+    /// handed to `SkiaBackend::import_wgpu_texture`.
     pub fn queue(&self) -> &wgpu::Queue {
         &self.queue
     }
@@ -106,19 +116,19 @@ impl std::fmt::Debug for WgpuContext {
 
 /// Usages a texture must declare to be importable as an `SkImage`.
 ///
-/// Same requirement Slint documents for `Image::try_from(wgpu::Texture)`:
+/// The same requirement Slint documents for `Image::try_from(wgpu::Texture)`:
 /// `RENDER_ATTACHMENT` because the caller draws into it, `TEXTURE_BINDING`
 /// because Skia samples it.
 pub const IMPORTABLE_TEXTURE_USAGES: wgpu::TextureUsages =
     wgpu::TextureUsages::RENDER_ATTACHMENT.union(wgpu::TextureUsages::TEXTURE_BINDING);
 
-/// A Skia [`Image`] borrowing a caller's `wgpu::Texture`, with the texture
-/// held alongside it.
+/// A Skia [`Image`] borrowing a caller's `wgpu::Texture`, with the texture held
+/// alongside it.
 ///
 /// Skia's `borrow_texture_from` does what its name says -- it wraps the
-/// platform handle without copying and without retaining it, and skia-safe
-/// 0.99 exposes no variant that takes a release callback. So the handle staying
-/// alive is this type's job: it keeps a clone of the `wgpu::Texture` (a
+/// platform handle without copying and without retaining it, and skia-safe 0.99
+/// exposes no variant that takes a release callback. So keeping the handle
+/// alive is this type's job: it holds a clone of the `wgpu::Texture` (a
 /// reference-counted handle, not a copy of the pixels) for exactly as long as
 /// the image can be drawn.
 ///
@@ -143,6 +153,14 @@ impl std::ops::Deref for WgpuImage {
     }
 }
 
+/// So it can be passed straight to `Canvas::draw_image` and friends, which
+/// take `impl AsRef<Image>` and do not see through `Deref`.
+impl AsRef<Image> for WgpuImage {
+    fn as_ref(&self) -> &Image {
+        &self.image
+    }
+}
+
 impl std::fmt::Debug for WgpuImage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WgpuImage")
@@ -152,40 +170,39 @@ impl std::fmt::Debug for WgpuImage {
     }
 }
 
-pub(crate) struct WgpuPresenter {
-    _window: Arc<Window>,
-    interop: Interop,
+/// The wgpu objects Skia shares, and the platform handles behind them.
+pub(crate) struct WgpuHost {
+    /// Kept alive because the adapter and device are derived from it.
+    _instance: wgpu::Instance,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    surface: wgpu::Surface<'static>,
-    config: wgpu::SurfaceConfiguration,
-    /// Held between `acquire_surface` and `present`, like the Metal presenter's
-    /// drawable and the Direct3D presenter's back-buffer index.
-    acquired: Option<wgpu::SurfaceTexture>,
+    interop: Interop,
 }
 
-impl WgpuPresenter {
-    pub(crate) fn new(window: Arc<Window>) -> Result<(Self, DirectContext), SkiaBackendError> {
-        pollster::block_on(Self::new_async(window))
+impl WgpuHost {
+    /// Opens a device on the one backend Skia can interop with here.
+    ///
+    /// No window is involved: the presenter owns presentation, so nothing here
+    /// needs a surface. The cost is that the adapter is chosen without a
+    /// `compatible_surface` hint, so on Vulkan the presenter has to verify the
+    /// chosen queue family can actually present to its window -- and fail, so
+    /// the caller falls back to a self-owned device, when it cannot.
+    pub(crate) fn new() -> Result<Self, SkiaBackendError> {
+        pollster::block_on(Self::new_async())
     }
 
-    async fn new_async(window: Arc<Window>) -> Result<(Self, DirectContext), SkiaBackendError> {
-        // Restricted to the one backend Skia can interop with on this
-        // platform: GL is excluded everywhere (Slint hit artifacts there and
-        // Skia's stock Windows binaries have no Vulkan backend), and letting
-        // wgpu pick would mean `Interop::new` failing on a device it cannot
-        // reach into. `display` stays unset -- it is only consulted by GLES.
+    async fn new_async() -> Result<Self, SkiaBackendError> {
+        // Restricted to the backend Skia can reach into on this platform.
+        // Letting wgpu pick would mean failing later on a device we cannot
+        // extract handles from.
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         descriptor.backends = Interop::BACKEND;
         let instance = wgpu::Instance::new(descriptor);
-        let surface = instance
-            .create_surface(Arc::clone(&window))
-            .map_err(|error| init(format!("could not create a wgpu surface: {error}")))?;
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
+                compatible_surface: None,
                 force_fallback_adapter: false,
             })
             .await
@@ -198,7 +215,7 @@ impl WgpuPresenter {
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                label: Some("xui-skia wgpu device"),
+                label: Some("xui-skia shared device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::Performance,
@@ -207,37 +224,20 @@ impl WgpuPresenter {
             .await
             .map_err(|error| init(format!("could not open a wgpu device: {error}")))?;
 
-        let size = window.inner_size();
-        let mut config = surface
-            .get_default_config(&adapter, size.width.max(1), size.height.max(1))
-            .ok_or_else(|| init("the wgpu adapter does not support this surface"))?;
-        // Match what the native Vulkan presenter asks of its swapchain images:
-        // colour attachment plus both transfer directions. Nothing samples the
-        // swapchain -- `IMPORTABLE_TEXTURE_USAGES` is for textures a caller
-        // hands *in* -- and asking for SAMPLED here would cost framebuffer
-        // compression on some drivers for no gain. The transfers are what
-        // Skia's readbacks and backdrop copies go through.
-        //
-        // Masked against what the surface actually supports, because
-        // `configure` rejects a usage the platform cannot give.
-        let supported = surface.get_capabilities(&adapter).usages;
-        config.usage |= supported & (wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST);
-        surface.configure(&device, &config);
+        let interop = Interop::new(&adapter, &device, &queue)?;
 
-        let (interop, context) = Interop::new(&adapter, &device, &queue)?;
+        Ok(Self {
+            _instance: instance,
+            device,
+            queue,
+            interop,
+        })
+    }
 
-        Ok((
-            Self {
-                _window: window,
-                interop,
-                device,
-                queue,
-                surface,
-                config,
-                acquired: None,
-            },
-            context,
-        ))
+    /// The platform handles a presenter needs to build its swapchain and its
+    /// Skia context on this device.
+    pub(crate) fn platform_device(&self) -> &PlatformDevice {
+        self.interop.platform_device()
     }
 
     pub(crate) fn context(&self) -> WgpuContext {
@@ -247,99 +247,12 @@ impl WgpuPresenter {
         }
     }
 
-    /// Reconfigures the swapchain.
-    ///
-    /// `context` is flushed and synced first for the same reason the Vulkan and
-    /// Direct3D presenters do it: Skia keeps wrapped render targets in its
-    /// resource cache after the wrapping surface is dropped, and those cached
-    /// references have to go before wgpu will release the old swapchain images.
-    pub(crate) fn resize(
-        &mut self,
-        context: Option<&mut DirectContext>,
-        width: u32,
-        height: u32,
-    ) -> Result<(), SkiaBackendError> {
-        let (width, height) = (width.max(1), height.max(1));
-        if self.config.width == width && self.config.height == height {
-            return Ok(());
-        }
-        self.acquired = None;
-        if let Some(context) = context {
-            context.flush_submit_and_sync_cpu();
-        }
-        self.config.width = width;
-        self.config.height = height;
-        self.surface.configure(&self.device, &self.config);
-        Ok(())
-    }
-
-    pub(crate) fn acquire_surface(
-        &mut self,
-        context: &mut DirectContext,
-        width: u32,
-        height: u32,
-    ) -> Result<Surface, SkiaBackendError> {
-        self.resize(Some(context), width, height)?;
-        let frame = self.acquire_frame(context)?;
-        let surface = self.interop.wrap_render_target(context, &frame.texture)?;
-        self.acquired = Some(frame);
-        Ok(surface)
-    }
-
-    /// One reconfigure-and-retry, matching what the `xui-winit` wgpu renderer
-    /// does. A frame that is merely occluded or timed out is not an error --
-    /// there is nothing to draw into, so the caller is told to skip it.
-    fn acquire_frame(
-        &mut self,
-        context: &mut DirectContext,
-    ) -> Result<wgpu::SurfaceTexture, SkiaBackendError> {
-        use wgpu::CurrentSurfaceTexture as Current;
-        match self.surface.get_current_texture() {
-            Current::Success(frame) | Current::Suboptimal(frame) => Ok(frame),
-            Current::Outdated | Current::Lost => {
-                context.flush_submit_and_sync_cpu();
-                self.surface.configure(&self.device, &self.config);
-                match self.surface.get_current_texture() {
-                    Current::Success(frame) | Current::Suboptimal(frame) => Ok(frame),
-                    other => Err(present_error(format!(
-                        "could not acquire a wgpu surface texture after reconfiguring: {}",
-                        describe_acquire(&other)
-                    ))),
-                }
-            }
-            other => Err(present_error(format!(
-                "could not acquire a wgpu surface texture: {}",
-                describe_acquire(&other)
-            ))),
-        }
-    }
-
-    pub(crate) fn present(
-        &mut self,
-        context: &mut DirectContext,
-        surface: Surface,
-    ) -> Result<(), SkiaBackendError> {
-        let frame = self.acquired.take().ok_or_else(|| {
-            present_error("no acquired wgpu surface texture to present".to_string())
-        })?;
-        let mut surface = surface;
-        self.interop.finish_frame(context, &mut surface);
-        // Skia holds a reference to the swapchain image through the wrapped
-        // render target; wgpu will not hand it to the presentation engine while
-        // that reference is alive.
-        drop(surface);
-        frame.present();
-        Ok(())
-    }
-
     /// Wraps a caller-rendered `wgpu::Texture` as an `SkImage`, without a copy.
     ///
     /// The texture must come from [`WgpuContext::device`] and declare
     /// [`IMPORTABLE_TEXTURE_USAGES`]. Keeping the platform handle alive is
-    /// handled by [`WgpuImage`], which holds a clone of the texture.
-    ///
-    /// The caller is responsible for having submitted the work that fills the
-    /// texture before calling this.
+    /// handled by [`WgpuImage`]. The caller is responsible for having submitted
+    /// the work that fills the texture before calling this.
     pub(crate) fn borrow_image(
         &self,
         context: &mut DirectContext,
@@ -359,21 +272,7 @@ impl WgpuPresenter {
     }
 }
 
-fn describe_acquire(texture: &wgpu::CurrentSurfaceTexture) -> &'static str {
-    use wgpu::CurrentSurfaceTexture as Current;
-    match texture {
-        Current::Success(_) => "success",
-        Current::Suboptimal(_) => "suboptimal",
-        Current::Timeout => "timeout",
-        Current::Outdated => "outdated",
-        Current::Lost => "lost",
-        Current::Occluded => "occluded",
-        Current::Validation => "validation error",
-    }
-}
-
-/// Whether the wgpu path was asked for. Off unless explicitly requested --
-/// see the module docs.
+/// Whether the shared-device path was asked for. Off unless requested.
 pub(crate) fn requested() -> bool {
     matches!(
         std::env::var("XUI_SKIA_WGPU").as_deref(),
@@ -385,15 +284,11 @@ pub(crate) fn init(message: impl Into<String>) -> SkiaBackendError {
     SkiaBackendError::WgpuInitialization(message.into())
 }
 
-pub(crate) fn present_error(message: impl Into<String>) -> SkiaBackendError {
-    SkiaBackendError::WgpuPresentation(message.into())
-}
-
-/// Skia colour type for a swapchain format.
+/// Skia colour type for a wgpu texture format.
 ///
-/// Only the formats `Surface::get_default_config` actually hands out are
-/// listed; anything else means the interop assumptions no longer hold and is
-/// better refused than silently mis-sampled.
+/// Only formats the import path can wrap without converting are listed --
+/// converting would defeat the point of borrowing the texture, so an unknown
+/// format is refused rather than silently copied.
 pub(crate) fn color_type(
     format: wgpu::TextureFormat,
 ) -> Result<skia_safe::ColorType, SkiaBackendError> {
@@ -405,22 +300,22 @@ pub(crate) fn color_type(
         Format::Rgba16Float => ColorType::RGBAF16,
         Format::Rgb10a2Unorm => ColorType::RGBA1010102,
         other => {
-            return Err(init(format!(
+            return Err(SkiaBackendError::WgpuTextureImport(format!(
                 "no Skia colour type for the wgpu texture format {other:?}"
             )));
         }
     })
 }
 
-/// The colour space to read a swapchain format through.
+/// The colour space to read a wgpu texture format through.
 ///
 /// `*UnormSrgb` formats already decode on sample, so Skia must be told the
-/// surface is sRGB or it would apply the transfer function a second time.
+/// texture is sRGB or it would apply the transfer function a second time.
 pub(crate) fn color_space(format: wgpu::TextureFormat) -> skia_safe::ColorSpace {
     if format.is_srgb() {
         skia_safe::ColorSpace::new_srgb()
     } else {
-        // A linear surface still carries sRGB primaries; only the transfer
+        // A linear texture still carries sRGB primaries; only the transfer
         // function differs.
         skia_safe::ColorSpace::new_srgb_linear()
     }
@@ -445,12 +340,12 @@ mod tests {
     /// does not address the memory wgpu wrote.
     #[test]
     fn skia_samples_a_texture_wgpu_rendered() {
-        let Some((adapter, device, queue)) = headless_device() else {
+        let Some((host, mut context)) = headless_host() else {
             eprintln!("no {} adapter available, skipping", Interop::NAME);
             return;
         };
-        let (interop, mut context) = Interop::new(&adapter, &device, &queue)
-            .expect("Skia should build a context on the wgpu device");
+        let device = host.context().device().clone();
+        let queue = host.context().queue().clone();
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("interop test target"),
@@ -531,7 +426,7 @@ mod tests {
             .poll(wgpu::PollType::wait_indefinitely())
             .expect("the clear should complete");
 
-        let image = interop
+        let image = host
             .borrow_image(&mut context, &texture)
             .expect("Skia should borrow the wgpu texture");
         assert_eq!(image.width(), SIZE as i32);
@@ -600,24 +495,33 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
 }
 "#;
 
-    fn headless_device() -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
-        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-        descriptor.backends = Interop::BACKEND;
-        let instance = wgpu::Instance::new(descriptor);
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        }))
-        .ok()?;
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("xui-skia interop test"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-            memory_hints: wgpu::MemoryHints::Performance,
-            ..Default::default()
-        }))
-        .ok()?;
-        Some((adapter, device, queue))
+    /// A [`WgpuHost`] plus a Skia context on its device, with no window
+    /// involved -- exactly the split this module is built around.
+    fn headless_host() -> Option<(WgpuHost, gpu::DirectContext)> {
+        let host = WgpuHost::new().ok()?;
+        let context = platform_context(&host)?;
+        Some((host, context))
+    }
+
+    /// Builds the Skia context the presenter would build, from the same
+    /// platform handles.
+    #[cfg(target_os = "macos")]
+    fn platform_context(host: &WgpuHost) -> Option<gpu::DirectContext> {
+        use skia_safe::gpu::mtl;
+        let platform = host.platform_device();
+        let backend = unsafe {
+            mtl::BackendContext::new(
+                objc2::rc::Retained::as_ptr(&platform.device) as mtl::Handle,
+                objc2::rc::Retained::as_ptr(&platform.queue) as mtl::Handle,
+            )
+        };
+        gpu::direct_contexts::make_metal(&backend, None)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn platform_context(_host: &WgpuHost) -> Option<gpu::DirectContext> {
+        // The other backends build their context inside their presenter, which
+        // needs a window; this test is headless.
+        None
     }
 }

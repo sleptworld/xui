@@ -27,7 +27,29 @@ pub(crate) struct MetalPresenter {
 }
 
 impl MetalPresenter {
+    /// Creates the presenter on its own system device.
     pub(crate) fn new(window: Arc<Window>) -> Result<(Self, DirectContext), SkiaBackendError> {
+        let device = MTLCreateSystemDefaultDevice().ok_or_else(|| {
+            SkiaBackendError::MetalInitialization("no system Metal device is available".into())
+        })?;
+        let command_queue = device.newCommandQueue().ok_or_else(|| {
+            SkiaBackendError::MetalInitialization("could not create a Metal command queue".into())
+        })?;
+        Self::with_device(window, device, command_queue)
+    }
+
+    /// Creates the presenter on a device someone else owns.
+    ///
+    /// Used by the shared-device path in [`crate::wgpu_surface`], where the
+    /// device and queue come from wgpu so that Skia can composite textures wgpu
+    /// rendered. Nothing else changes: the `CAMetalLayer`, its pixel format and
+    /// the presentation command buffer are still this presenter's, and the
+    /// queue being wgpu's is what orders Skia's rendering before the present.
+    pub(crate) fn with_device(
+        window: Arc<Window>,
+        device: Retained<ProtocolObject<dyn MTLDevice>>,
+        command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+    ) -> Result<(Self, DirectContext), SkiaBackendError> {
         let raw = window
             .window_handle()
             .map_err(|error| SkiaBackendError::MetalInitialization(error.to_string()))?
@@ -41,12 +63,6 @@ impl MetalPresenter {
             }
         };
         let metal_layer = unsafe { layer.as_ptr().cast::<CAMetalLayer>().as_ref() };
-        let device = MTLCreateSystemDefaultDevice().ok_or_else(|| {
-            SkiaBackendError::MetalInitialization("no system Metal device is available".into())
-        })?;
-        let command_queue = device.newCommandQueue().ok_or_else(|| {
-            SkiaBackendError::MetalInitialization("could not create a Metal command queue".into())
-        })?;
 
         metal_layer.setDevice(Some(&device));
         metal_layer.setPixelFormat(MTLPixelFormat::BGRA8Unorm);

@@ -84,6 +84,10 @@ pub(crate) struct VulkanPresenter {
     acquire_fence: vk::Fence,
     /// Index of the image handed out by `acquire_surface`, cleared by `present`.
     acquired: Option<u32>,
+    /// Whether `entry`/`instance`/`device` were created here. False on the
+    /// shared-device path, where they belong to wgpu and `Drop` must leave
+    /// them alone. The surface and swapchain are always ours.
+    owns_device: bool,
 }
 
 impl VulkanPresenter {
@@ -151,8 +155,99 @@ impl VulkanPresenter {
             }
         };
 
-        let swapchain_ext = khr::swapchain::Device::new(&instance, &device);
         let queue = unsafe { device.get_device_queue(queue_family, 0) };
+
+        Self::build(
+            window,
+            entry,
+            instance,
+            surface_ext,
+            surface,
+            physical_device,
+            device,
+            queue,
+            queue_family,
+            true,
+        )
+    }
+
+    /// Creates the presenter on a device someone else owns.
+    ///
+    /// Used by the shared-device path in [`crate::wgpu_surface`], where every
+    /// handle below comes from wgpu so that Skia can composite textures wgpu
+    /// rendered. The `VkSurfaceKHR` and the `VK_KHR_swapchain` are still this
+    /// presenter's: wgpu-hal enables every platform surface extension on its
+    /// instance and requires `VK_KHR_swapchain` on every device it opens, so
+    /// both are reachable from the handles it hands out.
+    ///
+    /// wgpu picked its adapter with no surface to be compatible with, so the
+    /// queue family it chose may not be able to present to this window. That is
+    /// checked here rather than assumed, and refusing lets the caller fall back
+    /// to a self-owned device.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn with_device(
+        window: Arc<Window>,
+        entry: Entry,
+        instance: Instance,
+        physical_device: vk::PhysicalDevice,
+        device: Device,
+        queue: vk::Queue,
+        queue_family: u32,
+    ) -> Result<(Self, DirectContext), SkiaBackendError> {
+        let display_handle = window
+            .display_handle()
+            .map_err(|error| init(error.to_string()))?
+            .as_raw();
+        let window_handle = window
+            .window_handle()
+            .map_err(|error| init(error.to_string()))?
+            .as_raw();
+
+        let surface_ext = khr::surface::Instance::new(&entry, &instance);
+        let surface = unsafe {
+            ash_window::create_surface(&entry, &instance, display_handle, window_handle, None)
+        }
+        .map_err(|error| init(format!("could not create a Vulkan surface: {error}")))?;
+
+        let presentable = unsafe {
+            surface_ext.get_physical_device_surface_support(physical_device, queue_family, surface)
+        }
+        .unwrap_or(false);
+        if !presentable {
+            unsafe { surface_ext.destroy_surface(surface, None) };
+            return Err(init(
+                "the queue family wgpu opened cannot present to this window",
+            ));
+        }
+
+        Self::build(
+            window,
+            entry,
+            instance,
+            surface_ext,
+            surface,
+            physical_device,
+            device,
+            queue,
+            queue_family,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        window: Arc<Window>,
+        entry: Entry,
+        instance: Instance,
+        surface_ext: khr::surface::Instance,
+        surface: vk::SurfaceKHR,
+        physical_device: vk::PhysicalDevice,
+        device: Device,
+        queue: vk::Queue,
+        queue_family: u32,
+        owns_device: bool,
+    ) -> Result<(Self, DirectContext), SkiaBackendError> {
+        let swapchain_ext = khr::swapchain::Device::new(&instance, &device);
 
         let surface_format = select_surface_format(&surface_ext, physical_device, surface)?;
         let present_mode = select_present_mode(&surface_ext, physical_device, surface)?;
@@ -190,6 +285,7 @@ impl VulkanPresenter {
             requested: (0, 0),
             acquire_fence,
             acquired: None,
+            owns_device,
         };
         presenter.recreate_swapchain(size.width.max(1), size.height.max(1))?;
         Ok((presenter, context))
@@ -445,13 +541,18 @@ impl Drop for VulkanPresenter {
     fn drop(&mut self) {
         unsafe {
             let _ = self.device.device_wait_idle();
+            // Always ours, on both paths.
             self.device.destroy_fence(self.acquire_fence, None);
             if self.swapchain != vk::SwapchainKHR::null() {
                 self.swapchain_ext.destroy_swapchain(self.swapchain, None);
             }
-            self.device.destroy_device(None);
             self.surface_ext.destroy_surface(self.surface, None);
-            self.instance.destroy_instance(None);
+            // wgpu's on the shared-device path, and destroying a device out
+            // from under it would take the whole renderer with it.
+            if self.owns_device {
+                self.device.destroy_device(None);
+                self.instance.destroy_instance(None);
+            }
         }
     }
 }

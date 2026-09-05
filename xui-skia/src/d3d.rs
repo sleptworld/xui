@@ -77,21 +77,11 @@ pub(crate) struct Direct3DPresenter {
 }
 
 impl Direct3DPresenter {
+    /// Creates the presenter on its own device.
     pub(crate) fn new(window: Arc<Window>) -> Result<(Self, DirectContext), SkiaBackendError> {
-        let hwnd = match window
-            .window_handle()
-            .map_err(|error| init(error.to_string()))?
-            .as_raw()
-        {
-            RawWindowHandle::Win32(handle) => HWND(handle.hwnd.get() as *mut _),
-            _ => return Err(init("winit did not expose a Win32 window handle")),
-        };
-
         let factory: IDXGIFactory4 = unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)) }
             .map_err(|error| init(format!("could not create a DXGI factory: {error}")))?;
-
         let (adapter, device) = select_adapter(&factory)?;
-
         let queue_desc = D3D12_COMMAND_QUEUE_DESC {
             Type: D3D12_COMMAND_LIST_TYPE_DIRECT,
             Priority: 0,
@@ -100,6 +90,43 @@ impl Direct3DPresenter {
         };
         let queue: ID3D12CommandQueue = unsafe { device.CreateCommandQueue(&queue_desc) }
             .map_err(|error| init(format!("could not create a D3D12 command queue: {error}")))?;
+        Self::build(window, factory, adapter, device, queue)
+    }
+
+    /// Creates the presenter on a device someone else owns.
+    ///
+    /// Used by the shared-device path in [`crate::wgpu_surface`], where the
+    /// device, queue and adapter come from wgpu so that Skia can composite
+    /// textures wgpu rendered. The swapchain is still this presenter's -- the
+    /// DXGI factory is independent of the device, and `CreateSwapChainForHwnd`
+    /// takes the queue it should present from, which is now the one Skia and
+    /// wgpu share.
+    pub(crate) fn with_device(
+        window: Arc<Window>,
+        adapter: IDXGIAdapter1,
+        device: ID3D12Device,
+        queue: ID3D12CommandQueue,
+    ) -> Result<(Self, DirectContext), SkiaBackendError> {
+        let factory: IDXGIFactory4 = unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)) }
+            .map_err(|error| init(format!("could not create a DXGI factory: {error}")))?;
+        Self::build(window, factory, adapter, device, queue)
+    }
+
+    fn build(
+        window: Arc<Window>,
+        factory: IDXGIFactory4,
+        adapter: IDXGIAdapter1,
+        device: ID3D12Device,
+        queue: ID3D12CommandQueue,
+    ) -> Result<(Self, DirectContext), SkiaBackendError> {
+        let hwnd = match window
+            .window_handle()
+            .map_err(|error| init(error.to_string()))?
+            .as_raw()
+        {
+            RawWindowHandle::Win32(handle) => HWND(handle.hwnd.get() as *mut _),
+            _ => return Err(init("winit did not expose a Win32 window handle")),
+        };
 
         let size = window.inner_size();
         let width = size.width.max(1);
