@@ -143,6 +143,15 @@ impl WgpuImage {
     pub fn image(&self) -> &Image {
         &self.image
     }
+
+    /// Splits into the image and the handle that keeps it valid.
+    ///
+    /// Only for callers that store the two together and so preserve the
+    /// invariant themselves -- dropping the texture while keeping the image
+    /// leaves the image pointing at freed memory.
+    pub(crate) fn into_parts(self) -> (Image, wgpu::Texture) {
+        (self.image, self._texture)
+    }
 }
 
 impl std::ops::Deref for WgpuImage {

@@ -404,7 +404,15 @@ impl VectorRenderer {
                 // Shapes and text never arrive here: the canvas lowers both to
                 // their own primitives before a vector run is formed, so a
                 // vector scene is paths only by construction.
-                VectorCommand::Shape { .. } | VectorCommand::TextBox { .. } => None,
+                // TODO: the wgpu renderer has no external-texture path yet.
+                // `xui-skia` resolves `VectorCommand::Texture` against textures
+                // registered with the backend; this renderer would want the
+                // same registry before it can draw one, so for now a canvas
+                // that places a texture simply shows nothing there instead of
+                // failing the frame.
+                VectorCommand::Shape { .. }
+                | VectorCommand::TextBox { .. }
+                | VectorCommand::Texture { .. } => None,
             })
             .collect::<Vec<_>>()
             .into();

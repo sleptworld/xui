@@ -35,9 +35,10 @@ use crate::render::{
 use crate::text::TextLayoutSlot;
 use xui_interface::{
     Affine, Bounds, CanvasTextId, Color, ComputedColorStyle, ComputedStrokeStyle, ComputedStyle,
-    EventRef, EventResult, Key, NodeId, PathData, PathFill, PathStroke, Point, Shape, Size,
-    StrokeLineStyle, Style, TextContent, TextLayoutConstraints, TextPaintProps, TextPaintStyle,
-    TextProps, Theme, VectorCommand, VectorScene, WidgetType, WidgetUpdateFlags,
+    EventRef, EventResult, ExternalTextureId, Key, NodeId, PathData, PathFill, PathStroke, Point,
+    Sampling, Shape, Size, StrokeLineStyle, Style, TextContent, TextLayoutConstraints,
+    TextPaintProps, TextPaintStyle, TextProps, Theme, VectorCommand, VectorScene, WidgetType,
+    WidgetUpdateFlags,
 };
 
 use super::{props_hash, widget_element_desc};
@@ -422,6 +423,46 @@ impl<'a> CanvasPainter<'a> {
             .push(VectorCommand::TextBox { id, bounds, props });
     }
 
+    /// Draws a GPU texture the application rendered itself.
+    ///
+    /// This is the wgpu path: render into a texture with your own pipeline --
+    /// WGSL, compute, 3D, whatever the vector commands above cannot express --
+    /// register it with the backend once, and place it here. The backend
+    /// composites it with no copy, so it takes part in the surrounding drawing
+    /// like any other image: clipped, transformed, blended, filtered.
+    ///
+    /// `id` must already be registered with the renderer (under `xui-skia`,
+    /// `SkiaBackend::set_wgpu_texture`), and must stay stable across frames so
+    /// the registration is reused. `revision` is what tells the renderer the
+    /// *contents* changed -- bump it whenever you redraw into the texture, or
+    /// the canvas will keep showing the frame it already painted.
+    ///
+    /// An unregistered id draws nothing rather than failing the frame: a
+    /// texture that is not ready yet is a normal state during startup, and
+    /// dropping a frame's worth of the whole canvas for it would be worse.
+    pub fn texture(&mut self, id: ExternalTextureId, revision: u64, bounds: Bounds) -> &mut Self {
+        self.texture_with(id, revision, bounds, 1.0, Sampling::Linear)
+    }
+
+    /// [`CanvasPainter::texture`] with an explicit opacity and sampling mode.
+    pub fn texture_with(
+        &mut self,
+        id: ExternalTextureId,
+        revision: u64,
+        bounds: Bounds,
+        opacity: f32,
+        sampling: Sampling,
+    ) -> &mut Self {
+        self.commands.push(VectorCommand::Texture {
+            id,
+            revision,
+            bounds,
+            opacity,
+            sampling,
+        });
+        self
+    }
+
     /// Records a region that [`CanvasController::pick`] can hit-test.
     ///
     /// Bounds-level, and last emitted wins, which is what a tooltip or a hover
@@ -515,7 +556,13 @@ fn compile_commands(
                     shadow: None,
                 });
             }
-            VectorCommand::FillPath { .. } | VectorCommand::StrokePath { .. } => {
+            // Textures join the vector run rather than opening a batch of
+            // their own: they are drawn by the same backend pass as paths, and
+            // keeping them in one run preserves the order a drawing was
+            // emitted in without costing an extra flush.
+            VectorCommand::FillPath { .. }
+            | VectorCommand::StrokePath { .. }
+            | VectorCommand::Texture { .. } => {
                 flush_shapes(&mut batches, &mut shapes);
                 vectors.push(command.clone());
             }

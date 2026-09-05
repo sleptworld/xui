@@ -1,14 +1,16 @@
 //! Shapes, paths, vector scenes and mask geometry.
 
+use rustc_hash::FxHashMap;
 use skia_safe::{
-    Canvas, ClipOp, Matrix, Paint, PaintStyle, Path, PathBuilder, RRect, Rect as SkRect, Shader,
+    Canvas, ClipOp, Image, Matrix, Paint, PaintStyle, Path, PathBuilder, RRect, Rect as SkRect,
+    SamplingOptions, Shader,
     paint::{Cap as SkCap, Join as SkJoin},
 };
 use std::sync::Arc;
 use xui::render::{ClipShape, Shape};
 use xui_interface::{
-    Affine, Bounds, LineCap, LineJoin, PathData, PathFill, PathSegment, PathStroke, TextBackend,
-    VectorCommand, VectorScene,
+    Affine, Bounds, ExternalTextureId, LineCap, LineJoin, PathData, PathFill, PathSegment,
+    PathStroke, Sampling, TextBackend, VectorCommand, VectorScene,
 };
 use xui_render_graph::MaskShape;
 
@@ -31,7 +33,27 @@ pub(super) enum CompiledVectorCommand {
         transform: Affine,
         stroke: PathStroke,
     },
+    /// Resolved against [`ExternalTextures`] at draw time, not here: the id is
+    /// stable across frames and the compiled scene is cached, so binding the
+    /// image now would pin the contents this scene was first compiled with.
+    Texture {
+        id: ExternalTextureId,
+        bounds: Bounds,
+        opacity: f32,
+        sampling: Sampling,
+    },
 }
+
+/// GPU textures the application registered, drawn by id from a canvas.
+///
+/// The `Image` borrows a platform handle it does not own; `_owner` is whatever
+/// keeps that handle alive -- a `wgpu::Texture` today -- and is never read.
+pub(crate) struct ExternalTexture {
+    pub(super) image: Image,
+    pub(super) _owner: Box<dyn std::any::Any>,
+}
+
+pub(super) type ExternalTextures = FxHashMap<ExternalTextureId, ExternalTexture>;
 
 impl<T: TextBackend> SkiaBackend<T> {
     pub(super) fn compiled_vector_scene(
@@ -63,7 +85,23 @@ impl<T: TextBackend> SkiaBackend<T> {
                     transform: *transform,
                     stroke: *stroke,
                 }),
-                // See the vello backend: a vector scene only ever holds paths.
+                VectorCommand::Texture {
+                    id,
+                    bounds,
+                    opacity,
+                    sampling,
+                    // Only there to make a content change visible to scene
+                    // diffing; by the time a scene is compiled the diff has
+                    // already happened and the image is looked up live.
+                    revision: _,
+                } => Some(CompiledVectorCommand::Texture {
+                    id: *id,
+                    bounds: *bounds,
+                    opacity: *opacity,
+                    sampling: *sampling,
+                }),
+                // A vector scene otherwise only ever holds paths; shapes and
+                // text are lowered into batches of their own.
                 VectorCommand::Shape { .. } | VectorCommand::TextBox { .. } => None,
             })
             .collect::<Vec<_>>()
@@ -276,6 +314,7 @@ fn draw_shape_geometry(
 pub(super) fn draw_vector(
     canvas: &Canvas,
     commands: &[CompiledVectorCommand],
+    textures: &ExternalTextures,
     primitive_transform: Affine,
     transform: Affine,
     opacity: f32,
@@ -333,6 +372,154 @@ pub(super) fn draw_vector(
                 canvas.restore_to_count(save);
             }
             CompiledVectorCommand::StrokePath { .. } => {}
+            CompiledVectorCommand::Texture {
+                id,
+                bounds,
+                opacity: texture_opacity,
+                sampling,
+            } => {
+                // An unregistered id draws nothing. A texture that is not ready
+                // yet is a normal startup state, and losing the rest of the
+                // canvas over it would be the worse failure.
+                let Some(texture) = textures.get(id) else {
+                    continue;
+                };
+                let save = canvas.save();
+                canvas.concat(&sk_matrix(outer));
+                let mut paint = Paint::default();
+                paint.set_alpha_f(opacity * texture_opacity);
+                canvas.draw_image_rect_with_sampling_options(
+                    &texture.image,
+                    None,
+                    sk_bounds(*bounds),
+                    sk_sampling(*sampling),
+                    &paint,
+                );
+                canvas.restore_to_count(save);
+            }
         }
+    }
+}
+
+fn sk_sampling(sampling: Sampling) -> SamplingOptions {
+    match sampling {
+        Sampling::Nearest => {
+            SamplingOptions::new(skia_safe::FilterMode::Nearest, skia_safe::MipmapMode::None)
+        }
+        Sampling::Linear => {
+            SamplingOptions::new(skia_safe::FilterMode::Linear, skia_safe::MipmapMode::None)
+        }
+        // Mitchell, the same cubic Skia uses for high-quality image scaling.
+        Sampling::Cubic => SamplingOptions::from(skia_safe::CubicResampler::mitchell()),
+    }
+}
+
+#[cfg(test)]
+mod texture_tests {
+    use skia_safe::{AlphaType, ColorSpace, ColorType, ImageInfo, surfaces};
+    use xui_cosmic::CosmicEngine;
+    use xui_interface::VectorScene;
+
+    use super::*;
+    use crate::{SkiaBackendOptions, backend::SkiaBackend};
+
+    type TestBackend = SkiaBackend<CosmicEngine>;
+
+    const SIZE: i32 = 8;
+
+    /// A solid-red raster image standing in for an imported GPU texture.
+    ///
+    /// The registry does not care where an `Image` came from -- the wgpu import
+    /// is covered by `crate::wgpu_surface`'s own test -- so this exercises the
+    /// half that runs on every backend: compile, look up, draw.
+    fn red_image() -> Image {
+        let info = ImageInfo::new(
+            (SIZE, SIZE),
+            ColorType::RGBA8888,
+            AlphaType::Premul,
+            ColorSpace::new_srgb(),
+        );
+        let mut surface = surfaces::raster(&info, None, None).unwrap();
+        surface.canvas().clear(skia_safe::Color::RED);
+        surface.image_snapshot()
+    }
+
+    fn texture_scene(id: ExternalTextureId, revision: u64) -> VectorScene {
+        VectorScene::new(vec![VectorCommand::Texture {
+            id,
+            revision,
+            bounds: Bounds::new(
+                xui_interface::Point::new(0.0, 0.0),
+                xui_interface::Point::new(SIZE as f32, SIZE as f32),
+            ),
+            opacity: 1.0,
+            sampling: Sampling::Nearest,
+        }])
+    }
+
+    fn draw_scene(backend: &mut TestBackend, scene: &VectorScene) -> Vec<u8> {
+        let info = ImageInfo::new(
+            (SIZE, SIZE),
+            ColorType::RGBA8888,
+            AlphaType::Premul,
+            ColorSpace::new_srgb(),
+        );
+        let mut surface = surfaces::raster(&info, None, None).unwrap();
+        surface.canvas().clear(skia_safe::Color::TRANSPARENT);
+        let commands = backend.compiled_vector_scene(scene);
+        draw_vector(
+            surface.canvas(),
+            &commands,
+            &backend.external_textures,
+            Affine::IDENTITY,
+            Affine::IDENTITY,
+            1.0,
+        );
+        let row_bytes = SIZE as usize * 4;
+        let mut pixels = vec![0u8; row_bytes * SIZE as usize];
+        assert!(surface.read_pixels(&info, &mut pixels, row_bytes, (0, 0)));
+        pixels
+    }
+
+    #[test]
+    fn a_registered_texture_is_drawn_by_id() {
+        let mut backend = TestBackend::headless(1.0, SkiaBackendOptions::default());
+        let id = ExternalTextureId::next();
+        backend.external_textures.insert(
+            id,
+            ExternalTexture {
+                image: red_image(),
+                _owner: Box::new(()),
+            },
+        );
+
+        let pixels = draw_scene(&mut backend, &texture_scene(id, 1));
+        assert_eq!(&pixels[..4], &[255, 0, 0, 255]);
+    }
+
+    /// A canvas may name a texture that is not registered yet -- during
+    /// startup, or after the application dropped it. That has to leave the rest
+    /// of the drawing intact rather than fail the frame.
+    #[test]
+    fn an_unregistered_texture_draws_nothing() {
+        let mut backend = TestBackend::headless(1.0, SkiaBackendOptions::default());
+        let pixels = draw_scene(&mut backend, &texture_scene(ExternalTextureId::next(), 1));
+        assert_eq!(&pixels[..4], &[0, 0, 0, 0]);
+    }
+
+    /// The id is stable across frames so the backend keeps one registration, so
+    /// nothing about a redraw of the same texture is visible to scene diffing.
+    /// `revision` is what makes it visible.
+    #[test]
+    fn a_new_revision_reports_a_paint_change() {
+        let id = ExternalTextureId::next();
+        let before = texture_scene(id, 1);
+        let after = texture_scene(id, 2);
+        let change = before.diff(&after);
+        assert!(change.paint, "new contents must repaint");
+        assert!(
+            !change.geometry,
+            "new contents in the same rectangle must not re-emit geometry"
+        );
     }
 }

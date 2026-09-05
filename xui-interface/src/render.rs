@@ -683,6 +683,43 @@ pub enum VectorCommand {
         bounds: Bounds,
         props: Arc<TextProps>,
     },
+    /// A GPU texture the application rendered itself, drawn by reference.
+    ///
+    /// The backend resolves `id` against textures registered with it, so this
+    /// crate stays free of any graphics API: what the id refers to is a
+    /// `wgpu::Texture` under `xui-skia`'s `wgpu` feature, and could be
+    /// something else under another backend.
+    Texture {
+        id: ExternalTextureId,
+        /// Bumped by the caller whenever the texture's *contents* change.
+        ///
+        /// The id is deliberately stable across frames, so the backend can keep
+        /// one registration alive rather than re-importing every frame. That
+        /// makes a redraw of the same texture invisible to scene diffing --
+        /// nothing about the command moved -- and a canvas that animates would
+        /// simply never repaint. This field is what makes the change visible.
+        revision: u64,
+        bounds: Bounds,
+        opacity: f32,
+        sampling: Sampling,
+    },
+}
+
+/// Identifies a GPU texture registered with the renderer.
+///
+/// Allocate one per texture the application intends to draw and keep it: the
+/// backend caches its import against this id, so a fresh id every frame would
+/// re-import every frame. Signal new *contents* with `VectorCommand::Texture`'s
+/// `revision` instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ExternalTextureId(pub u64);
+
+impl ExternalTextureId {
+    /// A process-unique id, for callers with nowhere natural to get one.
+    pub fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
 }
 
 impl VectorCommand {
@@ -702,6 +739,7 @@ impl VectorCommand {
                 stroke,
             } => transform.transform_bounds(path.bounds().expand(stroke.width.max(0.0) * 0.5)),
             Self::TextBox { bounds, .. } => *bounds,
+            Self::Texture { bounds, .. } => *bounds,
         }
     }
 
@@ -788,6 +826,27 @@ impl VectorCommand {
                 paint: a_id != b_id
                     || a_props.style.color != b_props.style.color
                     || a_props.style.decoration != b_props.style.decoration,
+            },
+            (
+                Self::Texture {
+                    id: a_id,
+                    revision: a_revision,
+                    bounds: a_bounds,
+                    opacity: a_opacity,
+                    sampling: a_sampling,
+                },
+                Self::Texture {
+                    id: b_id,
+                    revision: b_revision,
+                    bounds: b_bounds,
+                    opacity: b_opacity,
+                    sampling: b_sampling,
+                },
+            ) => VectorSceneChange {
+                geometry: a_id != b_id || a_bounds != b_bounds || a_sampling != b_sampling,
+                // A new revision is new pixels in the same rectangle: repaint,
+                // but nothing about the geometry moved.
+                paint: a_id != b_id || a_revision != b_revision || a_opacity != b_opacity,
             },
             _ => VectorSceneChange {
                 geometry: true,

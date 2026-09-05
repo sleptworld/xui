@@ -237,6 +237,7 @@ impl<T: TextBackend> SkiaBackend<T> {
                             draw_vector(
                                 canvas,
                                 &commands,
+                                &self.external_textures,
                                 value.primitive.transform,
                                 transform,
                                 1.0,

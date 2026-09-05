@@ -59,7 +59,7 @@ use self::{
     paint::GradientKey,
     surface::{SurfacePool, copy_surface_damage, full_softbuffer_rect, physical_damage_rects},
     text::CachedTextBlob,
-    vector::CompiledVectorCommand,
+    vector::{CompiledVectorCommand, ExternalTextures},
 };
 use crate::{
     SkiaBackendError, SkiaFrameStats, SkiaLayerCacheStats,
@@ -151,6 +151,10 @@ pub struct SkiaBackend<T: TextBackend = crate::SkiaTextBackend> {
     source_images: Cache<ImageKey, CachedSourceImage>,
     vector_paths: LocalLru<PathDataId, Path>,
     vector_scenes: LocalLru<VectorSceneId, Arc<[CompiledVectorCommand]>>,
+    /// GPU textures the application registered, drawn from a canvas by id.
+    /// Not an LRU: an entry is here because the application asked for it and
+    /// leaves when the application says so, not when the cache feels pressure.
+    external_textures: ExternalTextures,
     gradients: LocalLru<GradientKey, Shader>,
     runtime_effects: FxHashMap<&'static str, RuntimeEffect>,
     damage_tracker: DamageTracker,
@@ -207,6 +211,7 @@ impl<T: TextBackend> SkiaBackend<T> {
             source_images: source_image_cache(),
             vector_paths: LocalLru::new(4096),
             vector_scenes: LocalLru::new(1024),
+            external_textures: ExternalTextures::default(),
             gradients: LocalLru::new(256),
             runtime_effects: HashMap::default(),
             damage_tracker: DamageTracker::default(),
@@ -251,6 +256,43 @@ impl<T: TextBackend> SkiaBackend<T> {
     /// submitted the work that fills it before calling -- wgpu and Skia keep
     /// separate resource trackers, so nothing here can infer that ordering for
     /// them.
+    /// Registers a `wgpu::Texture` under `id`, for a canvas to draw with
+    /// [`xui::widgets::CanvasPainter::texture`].
+    ///
+    /// Import happens once, here: the resulting `SkImage` and the texture
+    /// keeping its handle alive are held until [`Self::remove_texture`] or a
+    /// re-registration under the same id. Redrawing into the same texture needs
+    /// no call here at all -- bump the canvas command's `revision` instead, so
+    /// the damage tracker sees new pixels.
+    ///
+    /// Call it again with the same id only when the *texture object* changes,
+    /// as it does on a resize.
+    #[cfg(feature = "wgpu")]
+    pub fn set_wgpu_texture(
+        &mut self,
+        id: xui_interface::ExternalTextureId,
+        texture: &wgpu::Texture,
+    ) -> Result<(), SkiaBackendError> {
+        let imported = self.import_wgpu_texture(texture)?;
+        let (image, owner) = imported.into_parts();
+        self.external_textures.insert(
+            id,
+            crate::backend::vector::ExternalTexture {
+                image,
+                _owner: Box::new(owner),
+            },
+        );
+        Ok(())
+    }
+
+    /// Drops a registration made by [`Self::set_wgpu_texture`].
+    ///
+    /// A canvas still referring to the id draws nothing there rather than
+    /// failing, so removing a texture mid-frame is safe.
+    pub fn remove_texture(&mut self, id: xui_interface::ExternalTextureId) -> bool {
+        self.external_textures.remove(&id).is_some()
+    }
+
     #[cfg(feature = "wgpu")]
     pub fn import_wgpu_texture(
         &mut self,
@@ -282,6 +324,7 @@ impl<T: TextBackend> SkiaBackend<T> {
             source_images: source_image_cache(),
             vector_paths: LocalLru::new(4096),
             vector_scenes: LocalLru::new(1024),
+            external_textures: ExternalTextures::default(),
             gradients: LocalLru::new(256),
             runtime_effects: HashMap::default(),
             damage_tracker: DamageTracker::default(),
