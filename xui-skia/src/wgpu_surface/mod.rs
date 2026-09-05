@@ -171,9 +171,17 @@ impl WgpuPresenter {
         let mut config = surface
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
             .ok_or_else(|| init("the wgpu adapter does not support this surface"))?;
-        // Skia has to be able to render into the swapchain image, and the
-        // canvas path samples imported textures alongside it.
-        config.usage |= IMPORTABLE_TEXTURE_USAGES;
+        // Match what the native Vulkan presenter asks of its swapchain images:
+        // colour attachment plus both transfer directions. Nothing samples the
+        // swapchain -- `IMPORTABLE_TEXTURE_USAGES` is for textures a caller
+        // hands *in* -- and asking for SAMPLED here would cost framebuffer
+        // compression on some drivers for no gain. The transfers are what
+        // Skia's readbacks and backdrop copies go through.
+        //
+        // Masked against what the surface actually supports, because
+        // `configure` rejects a usage the platform cannot give.
+        let supported = surface.get_capabilities(&adapter).usages;
+        config.usage |= supported & (wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST);
         surface.configure(&device, &config);
 
         let (interop, context) = Interop::new(&adapter, &device, &queue)?;

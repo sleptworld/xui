@@ -121,10 +121,14 @@ impl Interop {
         texture: &wgpu::Texture,
     ) -> Result<Surface, SkiaBackendError> {
         let (width, height) = (texture.width() as i32, texture.height() as i32);
+        // The same flags the native presenter declares in `crate::vulkan`, and
+        // the same ones `WgpuPresenter::new` asked the surface for.
         let info = self.image_info(
             texture,
             skia_vk::ImageLayout::UNDEFINED,
-            ash::vk::ImageUsageFlags::COLOR_ATTACHMENT | ash::vk::ImageUsageFlags::SAMPLED,
+            ash::vk::ImageUsageFlags::COLOR_ATTACHMENT
+                | ash::vk::ImageUsageFlags::TRANSFER_SRC
+                | ash::vk::ImageUsageFlags::TRANSFER_DST,
         )?;
         let target = backend_render_targets::make_vk((width, height), &info);
         gpu::surfaces::wrap_backend_render_target(
