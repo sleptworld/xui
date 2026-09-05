@@ -112,6 +112,46 @@ impl std::fmt::Debug for WgpuContext {
 pub const IMPORTABLE_TEXTURE_USAGES: wgpu::TextureUsages =
     wgpu::TextureUsages::RENDER_ATTACHMENT.union(wgpu::TextureUsages::TEXTURE_BINDING);
 
+/// A Skia [`Image`] borrowing a caller's `wgpu::Texture`, with the texture
+/// held alongside it.
+///
+/// Skia's `borrow_texture_from` does what its name says -- it wraps the
+/// platform handle without copying and without retaining it, and skia-safe
+/// 0.99 exposes no variant that takes a release callback. So the handle staying
+/// alive is this type's job: it keeps a clone of the `wgpu::Texture` (a
+/// reference-counted handle, not a copy of the pixels) for exactly as long as
+/// the image can be drawn.
+///
+/// Deref gives the `Image`, so it draws like any other.
+pub struct WgpuImage {
+    image: Image,
+    /// Not read. Its only purpose is to outlive `image`.
+    _texture: wgpu::Texture,
+}
+
+impl WgpuImage {
+    pub fn image(&self) -> &Image {
+        &self.image
+    }
+}
+
+impl std::ops::Deref for WgpuImage {
+    type Target = Image;
+
+    fn deref(&self) -> &Image {
+        &self.image
+    }
+}
+
+impl std::fmt::Debug for WgpuImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WgpuImage")
+            .field("width", &self.image.width())
+            .field("height", &self.image.height())
+            .finish_non_exhaustive()
+    }
+}
+
 pub(crate) struct WgpuPresenter {
     _window: Arc<Window>,
     interop: Interop,
@@ -292,12 +332,11 @@ impl WgpuPresenter {
         Ok(())
     }
 
-    /// Wraps a caller-rendered `wgpu::Texture` as an `SkImage`.
+    /// Wraps a caller-rendered `wgpu::Texture` as an `SkImage`, without a copy.
     ///
-    /// The texture must come from [`WgpuContext::device`], declare
-    /// [`IMPORTABLE_TEXTURE_USAGES`], and stay alive for as long as the
-    /// returned image: Skia only borrows the underlying platform handle and
-    /// does not take ownership of it.
+    /// The texture must come from [`WgpuContext::device`] and declare
+    /// [`IMPORTABLE_TEXTURE_USAGES`]. Keeping the platform handle alive is
+    /// handled by [`WgpuImage`], which holds a clone of the texture.
     ///
     /// The caller is responsible for having submitted the work that fills the
     /// texture before calling this.
@@ -305,7 +344,7 @@ impl WgpuPresenter {
         &self,
         context: &mut DirectContext,
         texture: &wgpu::Texture,
-    ) -> Result<Image, SkiaBackendError> {
+    ) -> Result<WgpuImage, SkiaBackendError> {
         if !texture.usage().contains(IMPORTABLE_TEXTURE_USAGES) {
             return Err(SkiaBackendError::WgpuTextureImport(format!(
                 "a texture imported into Skia must declare RENDER_ATTACHMENT | TEXTURE_BINDING, \
@@ -313,7 +352,10 @@ impl WgpuPresenter {
                 texture.usage()
             )));
         }
-        self.interop.borrow_image(context, texture)
+        Ok(WgpuImage {
+            image: self.interop.borrow_image(context, texture)?,
+            _texture: texture.clone(),
+        })
     }
 }
 
@@ -393,12 +435,14 @@ mod tests {
     const SIZE: u32 = 64;
     const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-    /// wgpu clears a texture, Skia samples it, and the colour comes back.
+    /// A real wgpu pipeline renders into a texture, Skia samples it, and the
+    /// shader's output comes back.
     ///
-    /// This is the whole interop in one assertion. If the platform device Skia
-    /// was handed did not address the same memory wgpu wrote -- the failure
-    /// mode every `as_hal` call in this module exists to avoid -- the drawn
-    /// pixel is not the one wgpu cleared to.
+    /// This is the canvas wgpu path end to end: a WGSL fragment shader writes a
+    /// pattern Skia could not have produced by accident -- red on the left half
+    /// of the texture, blue on the right -- and Skia draws the borrowed texture
+    /// without a copy. A pixel that is neither means the handle Skia was given
+    /// does not address the memory wgpu wrote.
     #[test]
     fn skia_samples_a_texture_wgpu_rendered() {
         let Some((adapter, device, queue)) = headless_device() else {
@@ -423,31 +467,63 @@ mod tests {
             view_formats: &[],
         });
 
-        // Solid red, written by wgpu and by nothing else.
+        // A fullscreen triangle whose fragment shader splits the texture down
+        // the middle. Written by wgpu and by nothing else.
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("interop test shader"),
+            source: wgpu::ShaderSource::Wgsl(SPLIT_WGSL.into()),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("interop test pipeline"),
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("interop test clear"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 1.0,
-                        g: 0.0,
-                        b: 0.0,
-                        a: 1.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("interop test pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        // Green: a colour the shader never writes, so a pixel
+                        // that comes back green means the draw did not land.
+                        load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.draw(0..3, 0..1);
+        }
         queue.submit([encoder.finish()]);
         // Skia and wgpu track resources separately, so the caller -- here, the
         // test -- is the one that has to make the write visible first.
@@ -490,12 +566,39 @@ mod tests {
             surface.read_pixels(&info, &mut pixels, row_bytes, (0, 0)),
             "reading back the Skia surface should succeed"
         );
+        let pixel = |x: usize| &pixels[x * 4..x * 4 + 4];
         assert_eq!(
-            &pixels[..4],
+            pixel(0),
             &[255, 0, 0, 255],
-            "Skia should have sampled the red wgpu cleared, not uninitialized memory"
+            "the left half should be the red the WGSL fragment shader wrote"
+        );
+        assert_eq!(
+            pixel(SIZE as usize - 1),
+            &[0, 0, 255, 255],
+            "the right half should be the blue the WGSL fragment shader wrote"
         );
     }
+
+    /// A fullscreen triangle, split red/blue at the halfway column.
+    const SPLIT_WGSL: &str = r#"
+@vertex
+fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+    var corners = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>( 3.0, -1.0),
+        vec2<f32>(-1.0,  3.0),
+    );
+    return vec4<f32>(corners[index], 0.0, 1.0);
+}
+
+@fragment
+fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    if (position.x < 32.0) {
+        return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+    }
+    return vec4<f32>(0.0, 0.0, 1.0, 1.0);
+}
+"#;
 
     fn headless_device() -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();

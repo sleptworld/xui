@@ -148,11 +148,14 @@ impl Interop {
         texture: &wgpu::Texture,
     ) -> Result<Image, SkiaBackendError> {
         let (width, height) = (texture.width() as i32, texture.height() as i32);
-        // The caller rendered into this texture with wgpu, which leaves it in
-        // the layout wgpu picked for a sampled render target.
+        // wgpu transitions lazily, by last use. The contract on
+        // `WgpuPresenter::borrow_image` is that the caller *rendered into* this
+        // texture, so wgpu left it as a colour attachment -- declaring
+        // shader-read here would describe a transition that never happened.
+        // Skia transitions to shader-read itself from what it is told.
         let info = self.image_info(
             texture,
-            skia_vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            skia_vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             ash::vk::ImageUsageFlags::COLOR_ATTACHMENT | ash::vk::ImageUsageFlags::SAMPLED,
         )?;
         // SAFETY: the `VkImage` is only borrowed; the contract on

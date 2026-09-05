@@ -233,17 +233,21 @@ impl<T: TextBackend> SkiaBackend<T> {
 
     /// Borrows a caller-rendered `wgpu::Texture` as an `Image` Skia can draw.
     ///
-    /// The texture must come from [`Self::wgpu_context`]'s device, declare
-    /// [`crate::IMPORTABLE_TEXTURE_USAGES`], and outlive the returned image:
-    /// Skia borrows the platform handle rather than taking ownership of it. The
-    /// caller must also have submitted the work that fills the texture before
-    /// calling -- wgpu and Skia keep separate resource trackers, so nothing
-    /// here can infer that ordering for them.
+    /// No copy: Skia wraps the same platform texture wgpu rendered into. The
+    /// returned [`crate::WgpuImage`] holds a clone of the `wgpu::Texture` so
+    /// the handle cannot outlive the image, and derefs to `Image` so it draws
+    /// like any other -- through paints, runtime effects, layer composition.
+    ///
+    /// The texture must come from [`Self::wgpu_context`]'s device and declare
+    /// [`crate::IMPORTABLE_TEXTURE_USAGES`]. The caller must also have
+    /// submitted the work that fills it before calling -- wgpu and Skia keep
+    /// separate resource trackers, so nothing here can infer that ordering for
+    /// them.
     #[cfg(feature = "wgpu")]
     pub fn import_wgpu_texture(
         &mut self,
         texture: &wgpu::Texture,
-    ) -> Result<Image, SkiaBackendError> {
+    ) -> Result<crate::WgpuImage, SkiaBackendError> {
         let presenter = self
             .presenter
             .as_ref()

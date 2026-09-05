@@ -43,4 +43,4 @@ pub use error::SkiaBackendError;
 pub use stats::SkiaFrameStats;
 pub use text::{SkiaFontId, SkiaGlyphKey, SkiaParagraphState, SkiaTextBackend};
 #[cfg(feature = "wgpu")]
-pub use wgpu_surface::{IMPORTABLE_TEXTURE_USAGES, WgpuContext};
+pub use wgpu_surface::{IMPORTABLE_TEXTURE_USAGES, WgpuContext, WgpuImage};
