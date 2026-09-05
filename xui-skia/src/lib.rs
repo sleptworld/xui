@@ -8,6 +8,10 @@
 //! macOS, Direct3D 12 on Windows, Vulkan on Linux, and a `softbuffer` CPU blit
 //! everywhere as the fallback when no GPU context can be created.
 //!
+//! With the optional `wgpu` feature and `XUI_SKIA_WGPU=1`, Skia instead runs on
+//! a wgpu-owned device and swapchain, which is what lets a caller's own
+//! `wgpu::Texture` be composited by Skia. See [`wgpu_surface`].
+//!
 //! - `SkiaBackend` — the render backend; generic over a `TextBackend`
 //!   (defaults to `SkiaTextBackend`).
 //! - `SkiaBackendOptions` — clear color and layer-cache budget.
@@ -30,9 +34,13 @@ mod stats;
 mod text;
 #[cfg(target_os = "linux")]
 mod vulkan;
+#[cfg(feature = "wgpu")]
+mod wgpu_surface;
 
 pub use backend::{SkiaBackend, SkiaBackendOptions, SkiaOptimizations};
 pub use cache::SkiaLayerCacheStats;
 pub use error::SkiaBackendError;
 pub use stats::SkiaFrameStats;
 pub use text::{SkiaFontId, SkiaGlyphKey, SkiaParagraphState, SkiaTextBackend};
+#[cfg(feature = "wgpu")]
+pub use wgpu_surface::{IMPORTABLE_TEXTURE_USAGES, WgpuContext};

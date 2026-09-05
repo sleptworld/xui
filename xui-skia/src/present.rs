@@ -10,6 +10,12 @@
 //!   [`crate::vulkan::VulkanPresenter`].
 //! - Every platform — a CPU `softbuffer` blit ([`SoftwarePresenter`]).
 //!
+//! With the `wgpu` feature and `XUI_SKIA_WGPU=1` a fourth option comes first:
+//! [`crate::wgpu_surface::WgpuPresenter`], where wgpu owns the device and
+//! swapchain and Skia renders into it. It is opt-in because it replaces the
+//! bottom of the stack, and it exists because it is the only arrangement in
+//! which a caller's own `wgpu::Texture` can be composited by Skia.
+//!
 //! The GPU presenter is selected at runtime and falls back to the software one
 //! when initialization fails, which is the common case in VMs, remote sessions
 //! and CI containers with no usable driver. Set `XUI_SKIA_GPU=0` to force the
@@ -44,6 +50,8 @@ impl SoftwarePresenter {
 }
 
 pub(crate) enum WindowPresenter {
+    #[cfg(feature = "wgpu")]
+    Wgpu(Box<crate::wgpu_surface::WgpuPresenter>),
     #[cfg(target_os = "macos")]
     Metal(crate::metal::MetalPresenter),
     #[cfg(target_os = "windows")]
@@ -61,6 +69,21 @@ impl WindowPresenter {
     ) -> Result<(Self, Option<DirectContext>), SkiaBackendError> {
         if gpu_disabled() {
             return Ok((Self::Software(SoftwarePresenter::new(window)?), None));
+        }
+        #[cfg(feature = "wgpu")]
+        if crate::wgpu_surface::requested() {
+            match crate::wgpu_surface::WgpuPresenter::new(window.clone()) {
+                Ok((presenter, context)) => {
+                    return Ok((Self::Wgpu(Box::new(presenter)), Some(context)));
+                }
+                // Falling through to the native presenter rather than to
+                // software: the wgpu path failing says nothing about whether
+                // this machine can drive Metal/Vulkan/D3D directly.
+                Err(error) => eprintln!(
+                    "xui-skia: XUI_SKIA_WGPU was set but the wgpu path could not start, \
+                     using the native presenter instead ({error})"
+                ),
+            }
         }
         match Self::new_gpu(window.clone()) {
             Ok((presenter, context)) => Ok((presenter, Some(context))),
@@ -110,6 +133,8 @@ impl WindowPresenter {
         height: u32,
     ) -> Result<(), SkiaBackendError> {
         match self {
+            #[cfg(feature = "wgpu")]
+            Self::Wgpu(presenter) => presenter.resize(context, width, height),
             #[cfg(target_os = "macos")]
             Self::Metal(presenter) => {
                 // A `CAMetalLayer` hands out a fresh drawable a frame, so there
@@ -137,6 +162,8 @@ impl WindowPresenter {
         height: u32,
     ) -> Result<Surface, SkiaBackendError> {
         match self {
+            #[cfg(feature = "wgpu")]
+            Self::Wgpu(presenter) => presenter.acquire_surface(context, width, height),
             #[cfg(target_os = "macos")]
             Self::Metal(presenter) => presenter.acquire_surface(context, width, height),
             #[cfg(target_os = "windows")]
@@ -161,6 +188,8 @@ impl WindowPresenter {
         surface: Surface,
     ) -> Result<(), SkiaBackendError> {
         match self {
+            #[cfg(feature = "wgpu")]
+            Self::Wgpu(presenter) => presenter.present(context, surface),
             #[cfg(target_os = "macos")]
             Self::Metal(presenter) => {
                 let mut surface = surface;
@@ -184,7 +213,26 @@ impl WindowPresenter {
     pub(crate) fn software_mut(&mut self) -> Option<&mut SoftwarePresenter> {
         match self {
             Self::Software(presenter) => Some(presenter),
-            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            #[cfg(any(
+                feature = "wgpu",
+                target_os = "macos",
+                target_os = "windows",
+                target_os = "linux"
+            ))]
+            _ => None,
+        }
+    }
+
+    /// The wgpu presenter, when this frame is being rendered on one.
+    ///
+    /// The entry point for the canvas wgpu path: it carries the device a caller
+    /// must render its textures on, and the import that turns one into an
+    /// `SkImage`.
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn wgpu(&self) -> Option<&crate::wgpu_surface::WgpuPresenter> {
+        match self {
+            Self::Wgpu(presenter) => Some(presenter),
+            #[allow(unreachable_patterns)]
             _ => None,
         }
     }

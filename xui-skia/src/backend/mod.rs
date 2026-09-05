@@ -216,6 +216,49 @@ impl<T: TextBackend> SkiaBackend<T> {
         })
     }
 
+    /// The wgpu device and queue Skia is rendering on, or `None` when this
+    /// frame is not going through the wgpu path.
+    ///
+    /// A texture that is to be composited by Skia must be created on *this*
+    /// device -- a texture from a device the caller made itself belongs to a
+    /// different GPU context and cannot be imported. This is the equivalent of
+    /// the device access Slint hands out through its rendering notifier.
+    #[cfg(feature = "wgpu")]
+    pub fn wgpu_context(&self) -> Option<crate::WgpuContext> {
+        self.presenter
+            .as_ref()?
+            .wgpu()
+            .map(crate::wgpu_surface::WgpuPresenter::context)
+    }
+
+    /// Borrows a caller-rendered `wgpu::Texture` as an `Image` Skia can draw.
+    ///
+    /// The texture must come from [`Self::wgpu_context`]'s device, declare
+    /// [`crate::IMPORTABLE_TEXTURE_USAGES`], and outlive the returned image:
+    /// Skia borrows the platform handle rather than taking ownership of it. The
+    /// caller must also have submitted the work that fills the texture before
+    /// calling -- wgpu and Skia keep separate resource trackers, so nothing
+    /// here can infer that ordering for them.
+    #[cfg(feature = "wgpu")]
+    pub fn import_wgpu_texture(
+        &mut self,
+        texture: &wgpu::Texture,
+    ) -> Result<Image, SkiaBackendError> {
+        let presenter = self
+            .presenter
+            .as_ref()
+            .and_then(crate::present::WindowPresenter::wgpu)
+            .ok_or_else(|| {
+                SkiaBackendError::WgpuTextureImport(
+                    "this backend is not rendering on a wgpu device".into(),
+                )
+            })?;
+        let context = self.gpu_context.as_mut().ok_or_else(|| {
+            SkiaBackendError::WgpuTextureImport("this backend has no GPU context".into())
+        })?;
+        presenter.borrow_image(context, texture)
+    }
+
     pub fn headless(scale_factor: f32, options: SkiaBackendOptions) -> Self {
         Self {
             presenter: None,

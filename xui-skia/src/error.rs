@@ -40,6 +40,15 @@ pub enum SkiaBackendError {
     Direct3DInitialization(String),
     #[error("failed to acquire or present a Direct3D 12 back buffer: {0}")]
     Direct3DPresentation(String),
+    #[cfg(feature = "wgpu")]
+    #[error("failed to initialize Skia on a wgpu device: {0}")]
+    WgpuInitialization(String),
+    #[cfg(feature = "wgpu")]
+    #[error("failed to acquire or present a wgpu surface texture: {0}")]
+    WgpuPresentation(String),
+    #[cfg(feature = "wgpu")]
+    #[error("failed to import a wgpu texture into Skia: {0}")]
+    WgpuTextureImport(String),
     #[error("this platform has no GPU presentation backend")]
     NoGpuPresenter,
     #[error("Font Data load error: {0}")]
