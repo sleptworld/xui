@@ -10,6 +10,7 @@ use xui_interface::{Point, Rect, Size, TextPosition, TextRange};
 pub(crate) struct TextLayoutMetrics {
     pub size: Size<f32>,
     pub first_baseline: Option<f32>,
+    pub line_count: usize,
 }
 
 /// Geometry queries supported by a resident shaped-text layout.

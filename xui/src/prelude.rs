@@ -42,12 +42,13 @@ pub use crate::style::{
 };
 pub use crate::ui_runtime::{NodeView, RenderFrame, RenderFrameError, UiRuntime};
 pub use crate::widgets::{
-    CanvasContent, CanvasController, CanvasPainter, CanvasPick, CanvasPickTag, CanvasWidget,
-    ContainerWidget, GridFlow, GridTrackSize, GridTracks, GridWidget, IconData, IconLayer,
-    IconStroke, IconWidget, ImageWidget, OverlayChild, OverlayEntry, OverlayEntryId,
-    OverlayEntryOptions, OverlayModelError, OverlayScope, OverlayScopeId, SvgIconError,
-    TextCommand, TextController, TextInputChange, TextKeymap, TextWidget, WidgetI, WithChildren,
-    ZStackWidget, canvas, column, component, container, grid, icon, image, row, text, z_stack,
+    CanvasContent, CanvasController, CanvasPainter, CanvasPick, CanvasPickTag, CanvasTextLayout,
+    CanvasTextMetrics, CanvasWidget, ContainerWidget, GridFlow, GridTrackSize, GridTracks,
+    GridWidget, IconData, IconLayer, IconStroke, IconWidget, ImageWidget, OverlayChild,
+    OverlayEntry, OverlayEntryId, OverlayEntryOptions, OverlayModelError, OverlayScope,
+    OverlayScopeId, SvgIconError, TextCommand, TextController, TextInputChange, TextKeymap,
+    TextWidget, WidgetI, WithChildren, ZStackWidget, canvas, column, component, container, grid,
+    icon, image, row, text, z_stack,
 };
 pub use xui_interface::{
     AccessibilityProperties, AccessibilityRole, Affine, Alignment, CanvasTextId, ColorSpace,
@@ -57,7 +58,7 @@ pub use xui_interface::{
     NamedKey, NodeId, OverflowWrap, ParagraphStyle, PathBuilder, PathData, PathFill, PathSegment,
     PathStroke, PhysicalKey, Sampling, Shape, Shortcut, ShortcutBinding, ShortcutKey,
     ShortcutModifiers, Sizing, StyleDiffFlags, TextAlign, TextBoxStyle, TextContent,
-    TextDecoration, TextOverflow, TextProps, TextStyle, TextVerticalAlign, VectorCommand,
-    VectorScene, VectorSceneBuilder, WhiteSpace, WidgetUpdateFlags,
+    TextDecoration, TextLayoutConstraints, TextOverflow, TextProps, TextStyle, TextVerticalAlign,
+    VectorCommand, VectorScene, VectorSceneBuilder, WhiteSpace, WidgetUpdateFlags,
 };
 pub use xui_macros::{component, component_fn, defaults, style, xui};

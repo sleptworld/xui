@@ -24,7 +24,7 @@
 //! so a repaint reuses the scenes it built, and with them every compiled path
 //! the backend has cached.
 
-use std::{cell::RefCell, fmt, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc, sync::Arc};
 
 use crate::element::ElementDesc;
 use crate::event_system::interaction::InteractionProperties;
@@ -36,8 +36,8 @@ use crate::text::TextLayoutSlot;
 use xui_interface::{
     Affine, Bounds, CanvasTextId, Color, ComputedColorStyle, ComputedStrokeStyle, ComputedStyle,
     EventRef, EventResult, Key, NodeId, PathData, PathFill, PathStroke, Point, Shape, Size,
-    StrokeLineStyle, Style, TextContent, TextPaintProps, TextPaintStyle, TextProps, Theme,
-    VectorCommand, VectorScene, WidgetType, WidgetUpdateFlags,
+    StrokeLineStyle, Style, TextContent, TextLayoutConstraints, TextPaintProps, TextPaintStyle,
+    TextProps, Theme, VectorCommand, VectorScene, WidgetType, WidgetUpdateFlags,
 };
 
 use super::{props_hash, widget_element_desc};
@@ -90,6 +90,59 @@ pub struct CanvasPick {
     pub bounds: Bounds,
 }
 
+/// Geometry produced by shaping text for a canvas.
+///
+/// Values are in logical pixels and describe layout geometry, not rasterized
+/// glyph (ink) bounds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CanvasTextMetrics {
+    pub size: Size<f32>,
+    pub first_baseline: Option<f32>,
+    pub line_count: usize,
+}
+
+/// A shaped canvas text layout ready to be positioned and drawn.
+///
+/// Construct one with [`CanvasPainter::layout_text`] or
+/// [`CanvasPainter::layout_text_keyed`]. Keeping measurement and drawing in one
+/// value guarantees that both operations use the same text slot and wrapping
+/// constraint.
+#[derive(Debug)]
+pub struct CanvasTextLayout {
+    id: CanvasTextId,
+    props: Arc<TextProps>,
+    constraints: TextLayoutConstraints,
+    metrics: CanvasTextMetrics,
+}
+
+impl CanvasTextLayout {
+    pub fn id(&self) -> CanvasTextId {
+        self.id
+    }
+
+    pub fn metrics(&self) -> CanvasTextMetrics {
+        self.metrics
+    }
+
+    pub fn constraints(&self) -> TextLayoutConstraints {
+        self.constraints
+    }
+
+    /// Size of the layout box used when drawing at an origin.
+    ///
+    /// A definite width is preserved even when the visible text is narrower,
+    /// so paragraph alignment behaves exactly as it did during shaping.
+    pub fn box_size(&self) -> Size<f32> {
+        let width = match self.constraints {
+            TextLayoutConstraints::Definate(width) => width.max(0.0),
+            TextLayoutConstraints::Unbound | TextLayoutConstraints::MinSize => {
+                self.metrics.size.width
+            }
+        };
+        Size::new(width, self.metrics.size.height)
+    }
+}
+
 /// The drawing surface handed to a [`CanvasContent::Painter`].
 ///
 /// Everything here is in canvas-local coordinates: the origin is the node's
@@ -102,10 +155,23 @@ pub struct CanvasPainter<'a> {
     theme: &'a Theme,
     scale_factor: f32,
     next_text_id: u32,
+    text_constraints: HashMap<CanvasTextId, TextLayoutConstraints>,
+    measure_text:
+        &'a mut dyn FnMut(CanvasTextId, &TextProps, TextLayoutConstraints) -> CanvasTextMetrics,
 }
 
 impl<'a> CanvasPainter<'a> {
-    fn new(size: Size<f32>, style: &'a ComputedStyle, theme: &'a Theme, scale_factor: f32) -> Self {
+    fn new(
+        size: Size<f32>,
+        style: &'a ComputedStyle,
+        theme: &'a Theme,
+        scale_factor: f32,
+        measure_text: &'a mut dyn FnMut(
+            CanvasTextId,
+            &TextProps,
+            TextLayoutConstraints,
+        ) -> CanvasTextMetrics,
+    ) -> Self {
         Self {
             commands: Vec::new(),
             picks: Vec::new(),
@@ -114,7 +180,19 @@ impl<'a> CanvasPainter<'a> {
             theme,
             scale_factor,
             next_text_id: 1,
+            text_constraints: HashMap::new(),
+            measure_text,
         }
+    }
+
+    fn next_text_id(&mut self) -> CanvasTextId {
+        let id = CanvasTextId::new(self.next_text_id);
+        self.next_text_id = self.next_text_id.wrapping_add(1) & !KEYED_TEXT_ID_BIT;
+        id
+    }
+
+    fn keyed_text_id(key: u32) -> CanvasTextId {
+        CanvasTextId::new((key & !KEYED_TEXT_ID_BIT) | KEYED_TEXT_ID_BIT)
     }
 
     /// The node's measured size. This is the whole point of a painter.
@@ -272,8 +350,7 @@ impl<'a> CanvasPainter<'a> {
     /// in the drawing keeps its shaping slot across repaints. Use
     /// [`CanvasPainter::text_keyed`] when the order itself moves.
     pub fn text(&mut self, bounds: Bounds, props: TextProps) -> CanvasTextId {
-        let id = CanvasTextId::new(self.next_text_id);
-        self.next_text_id = self.next_text_id.wrapping_add(1) & !KEYED_TEXT_ID_BIT;
+        let id = self.next_text_id();
         self.push_text(id, bounds, props);
         id
     }
@@ -282,17 +359,67 @@ impl<'a> CanvasPainter<'a> {
     /// order changes between frames. Keys are namespaced away from the
     /// automatic ids, so the two schemes can be mixed in one drawing.
     pub fn text_keyed(&mut self, key: u32, bounds: Bounds, props: TextProps) -> CanvasTextId {
-        let id = CanvasTextId::new((key & !KEYED_TEXT_ID_BIT) | KEYED_TEXT_ID_BIT);
+        let id = Self::keyed_text_id(key);
         self.push_text(id, bounds, props);
         id
     }
 
-    fn push_text(&mut self, id: CanvasTextId, bounds: Bounds, props: TextProps) {
-        self.commands.push(VectorCommand::TextBox {
+    /// Shapes text without drawing it and returns its layout geometry.
+    ///
+    /// The returned layout owns the same stable slot that
+    /// [`CanvasPainter::draw_text`] later activates for paint. Measurement uses
+    /// the application's real text backend and font fallback rules.
+    pub fn layout_text(
+        &mut self,
+        props: TextProps,
+        constraints: TextLayoutConstraints,
+    ) -> CanvasTextLayout {
+        let id = self.next_text_id();
+        self.layout_text_with_id(id, props, constraints)
+    }
+
+    /// Keyed form of [`CanvasPainter::layout_text`] for labels whose call order
+    /// changes between canvas compilations.
+    pub fn layout_text_keyed(
+        &mut self,
+        key: u32,
+        props: TextProps,
+        constraints: TextLayoutConstraints,
+    ) -> CanvasTextLayout {
+        self.layout_text_with_id(Self::keyed_text_id(key), props, constraints)
+    }
+
+    fn layout_text_with_id(
+        &mut self,
+        id: CanvasTextId,
+        props: TextProps,
+        constraints: TextLayoutConstraints,
+    ) -> CanvasTextLayout {
+        let metrics = (self.measure_text)(id, &props, constraints);
+        CanvasTextLayout {
             id,
-            bounds,
-            props: std::sync::Arc::new(props),
-        });
+            props: Arc::new(props),
+            constraints,
+            metrics,
+        }
+    }
+
+    /// Draws a previously shaped layout with its layout-box origin at `origin`.
+    pub fn draw_text(&mut self, origin: Point, layout: CanvasTextLayout) -> CanvasTextId {
+        let id = layout.id;
+        let bounds = Bounds::from_origin_size(origin, layout.box_size());
+        self.text_constraints.insert(id, layout.constraints);
+        self.push_text_arc(id, bounds, layout.props);
+        id
+    }
+
+    fn push_text(&mut self, id: CanvasTextId, bounds: Bounds, props: TextProps) {
+        self.push_text_arc(id, bounds, Arc::new(props));
+    }
+
+    fn push_text_arc(&mut self, id: CanvasTextId, bounds: Bounds, props: Arc<TextProps>) {
+        self.commands
+            .push(VectorCommand::TextBox { id, bounds, props });
     }
 
     /// Records a region that [`CanvasController::pick`] can hit-test.
@@ -319,6 +446,7 @@ enum CanvasBatch {
         id: CanvasTextId,
         bounds: Bounds,
         props: std::sync::Arc<TextProps>,
+        constraints: TextLayoutConstraints,
     },
 }
 
@@ -334,15 +462,25 @@ struct CompiledCanvas {
 }
 
 impl CompiledCanvas {
-    fn text_boxes(&self) -> impl Iterator<Item = (CanvasTextId, Bounds, &TextProps)> {
+    fn text_boxes(
+        &self,
+    ) -> impl Iterator<Item = (CanvasTextId, Bounds, &TextProps, TextLayoutConstraints)> {
         self.batches.iter().filter_map(|batch| match batch {
-            CanvasBatch::Text { id, bounds, props } => Some((*id, *bounds, props.as_ref())),
+            CanvasBatch::Text {
+                id,
+                bounds,
+                props,
+                constraints,
+            } => Some((*id, *bounds, props.as_ref(), *constraints)),
             _ => None,
         })
     }
 }
 
-fn compile_commands(commands: &[VectorCommand]) -> Vec<CanvasBatch> {
+fn compile_commands(
+    commands: &[VectorCommand],
+    text_constraints: &HashMap<CanvasTextId, TextLayoutConstraints>,
+) -> Vec<CanvasBatch> {
     let mut batches = Vec::new();
     let mut shapes: Vec<ShapePrimitive> = Vec::new();
     let mut vectors: Vec<VectorCommand> = Vec::new();
@@ -388,6 +526,9 @@ fn compile_commands(commands: &[VectorCommand]) -> Vec<CanvasBatch> {
                     id: *id,
                     bounds: *bounds,
                     props: props.clone(),
+                    constraints: text_constraints.get(id).copied().unwrap_or_else(|| {
+                        TextLayoutConstraints::max_width(bounds.width().max(0.0))
+                    }),
                 });
             }
         }
@@ -761,6 +902,11 @@ impl CanvasWidget {
         style: &ComputedStyle,
         theme: &Theme,
         scale_factor: f32,
+        measure_text: &mut dyn FnMut(
+            CanvasTextId,
+            &TextProps,
+            TextLayoutConstraints,
+        ) -> CanvasTextMetrics,
     ) {
         let content = self.controller.content();
         let revision = self.controller.revision();
@@ -779,12 +925,16 @@ impl CanvasWidget {
         }
 
         let (batches, picks) = match content {
-            CanvasContent::Scene(scene) => (compile_commands(scene.commands()), Vec::new()),
+            CanvasContent::Scene(scene) => (
+                compile_commands(scene.commands(), &HashMap::new()),
+                Vec::new(),
+            ),
             CanvasContent::Painter(painter) => {
-                let mut painter_cx = CanvasPainter::new(size, style, theme, scale_factor);
+                let mut painter_cx =
+                    CanvasPainter::new(size, style, theme, scale_factor, measure_text);
                 painter(&mut painter_cx);
                 (
-                    compile_commands(&painter_cx.commands),
+                    compile_commands(&painter_cx.commands, &painter_cx.text_constraints),
                     std::mem::take(&mut painter_cx.picks),
                 )
             }
@@ -810,10 +960,12 @@ impl CanvasWidget {
         }
     }
 
-    pub(crate) fn text_boxes(&self) -> Vec<(CanvasTextId, Bounds, TextProps)> {
+    pub(crate) fn text_boxes(
+        &self,
+    ) -> Vec<(CanvasTextId, Bounds, TextProps, TextLayoutConstraints)> {
         self.compiled
             .text_boxes()
-            .map(|(id, bounds, props)| (id, bounds, props.clone()))
+            .map(|(id, bounds, props, constraints)| (id, bounds, props.clone(), constraints))
             .collect()
     }
 
@@ -849,7 +1001,9 @@ impl CanvasWidget {
                                 transform: Affine::translate(rect.x(), rect.y()),
                             }))?;
                         }
-                        CanvasBatch::Text { id, bounds, props } => {
+                        CanvasBatch::Text {
+                            id, bounds, props, ..
+                        } => {
                             let bounds = bounds.translate(origin);
                             let paint = TextPaintProps::new(TextPaintStyle {
                                 color: props.style.color,
@@ -959,7 +1113,12 @@ mod tests {
     fn compile(widget: &mut CanvasWidget, size: Size<f32>) {
         let theme = StyleTheme::default();
         let style = ComputedStyle::initial(&theme);
-        widget.compile(size, &style, &theme, 2.0);
+        let mut measure_text = |_, _: &TextProps, _| CanvasTextMetrics {
+            size: Size::<f32>::ZERO,
+            first_baseline: None,
+            line_count: 0,
+        };
+        widget.compile(size, &style, &theme, 2.0, &mut measure_text);
     }
 
     #[test]
@@ -1084,7 +1243,7 @@ mod tests {
         let first: Vec<_> = widget
             .text_boxes()
             .into_iter()
-            .map(|(id, _, _)| id.get())
+            .map(|(id, _, _, _)| id.get())
             .collect();
         assert_eq!(first, vec![1, 2, KEYED_TEXT_ID_BIT | 1]);
 
@@ -1092,9 +1251,65 @@ mod tests {
         let second: Vec<_> = widget
             .text_boxes()
             .into_iter()
-            .map(|(id, _, _)| id.get())
+            .map(|(id, _, _, _)| id.get())
             .collect();
         assert_eq!(first, second, "a recompile must not move shaping slots");
+    }
+
+    #[test]
+    fn laid_out_text_uses_measured_geometry_and_preserves_its_constraint() {
+        let observed = Rc::new(RefCell::new(None));
+        let sink = observed.clone();
+        let controller = CanvasController::with_painter(move |p| {
+            let layout = p.layout_text_keyed(
+                7,
+                TextProps::new("measured"),
+                TextLayoutConstraints::max_width(80.0),
+            );
+            *sink.borrow_mut() = Some(layout.metrics());
+            p.draw_text(Point::new(12.0, 20.0), layout);
+        });
+        let mut widget = CanvasWidget::new(controller);
+        let theme = StyleTheme::default();
+        let style = ComputedStyle::initial(&theme);
+        let mut measure_text =
+            |id: CanvasTextId, props: &TextProps, constraints: TextLayoutConstraints| {
+                assert_eq!(id, CanvasTextId::new(KEYED_TEXT_ID_BIT | 7));
+                assert_eq!(props.text.as_str(), "measured");
+                assert_eq!(constraints, TextLayoutConstraints::max_width(80.0));
+                CanvasTextMetrics {
+                    size: Size::new(54.0, 18.0),
+                    first_baseline: Some(13.0),
+                    line_count: 1,
+                }
+            };
+
+        widget.compile(
+            Size::new(200.0, 100.0),
+            &style,
+            &theme,
+            2.0,
+            &mut measure_text,
+        );
+
+        assert_eq!(
+            *observed.borrow(),
+            Some(CanvasTextMetrics {
+                size: Size::new(54.0, 18.0),
+                first_baseline: Some(13.0),
+                line_count: 1,
+            })
+        );
+        let text_boxes = widget.text_boxes();
+        let [(id, bounds, _, constraints)] = text_boxes.as_slice() else {
+            panic!("expected exactly one laid-out text box");
+        };
+        assert_eq!(*id, CanvasTextId::new(KEYED_TEXT_ID_BIT | 7));
+        assert_eq!(
+            *bounds,
+            Bounds::from_origin_size((12.0, 20.0), (80.0, 18.0))
+        );
+        assert_eq!(*constraints, TextLayoutConstraints::max_width(80.0));
     }
 
     #[test]

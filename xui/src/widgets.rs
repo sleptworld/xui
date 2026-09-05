@@ -202,7 +202,8 @@ mod z_stack;
 pub(crate) use canvas::CanvasInvalidator;
 pub(crate) use canvas::canvas_text_slot;
 pub use canvas::{
-    CanvasContent, CanvasController, CanvasPainter, CanvasPick, CanvasPickTag, CanvasWidget,
+    CanvasContent, CanvasController, CanvasPainter, CanvasPick, CanvasPickTag, CanvasTextLayout,
+    CanvasTextMetrics, CanvasWidget,
 };
 pub use container::ContainerWidget;
 pub use grid::*;

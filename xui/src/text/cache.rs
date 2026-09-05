@@ -1250,6 +1250,7 @@ fn text_layout_metrics<F, K>(layout: &ParagraphLayout<F, K>) -> TextLayoutMetric
     TextLayoutMetrics {
         size: layout.size(),
         first_baseline: layout.lines.first().map(|line| line.baseline),
+        line_count: layout.lines.len(),
     }
 }
 

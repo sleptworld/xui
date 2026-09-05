@@ -34,8 +34,8 @@ use xui_interface::events::RawEvent;
 use xui_interface::{
     AccessibilityProperties, Affine, Bounds, ComputedColorStyle, ComputedScrollStyle,
     ComputedScrollbarStyle, ComputedStyle, EventResult, Focusability, NodeId, NodeLifecycleEvent,
-    ScrollbarVisibilityStyle, TextBackend, TextLayoutConstraints, TextLayoutInput, Theme,
-    WidgetState, WidgetUpdateFlags,
+    ScrollbarVisibilityStyle, TextBackend, TextLayoutConstraints, TextLayoutInput, TextProps,
+    Theme, WidgetState, WidgetUpdateFlags,
 };
 
 impl UiRuntime {
@@ -2241,10 +2241,28 @@ impl UiRuntime {
         let theme = self.theme.clone();
         let scale_factor = self.scale_factor;
         let widget = self.hosts[id].widget.clone();
+        let font_context = measurer.backend().epoch();
 
         let text_boxes = widget.with_widgets_mut(|node| match node {
             Widgets::Canvas(canvas) => {
-                canvas.compile(size, &style, &theme, scale_factor);
+                let mut measure_text = |text_id, props: &TextProps, constraints| {
+                    let input = TextLayoutInput::new(
+                        props.text.clone(),
+                        constraints,
+                        (&props.style).into(),
+                        props.paragraph.clone(),
+                        props.text_box.clone(),
+                        font_context,
+                    );
+                    let metrics =
+                        measurer.measure_slot_metrics(id, canvas_text_slot(text_id), input);
+                    crate::widgets::CanvasTextMetrics {
+                        size: metrics.size,
+                        first_baseline: metrics.first_baseline,
+                        line_count: metrics.line_count,
+                    }
+                };
+                canvas.compile(size, &style, &theme, scale_factor, &mut measure_text);
                 canvas.text_boxes()
             }
             _ => Vec::new(),
@@ -2254,13 +2272,12 @@ impl UiRuntime {
             id,
             text_boxes
                 .iter()
-                .map(|(text_id, _, _)| canvas_text_slot(*text_id)),
+                .map(|(text_id, _, _, _)| canvas_text_slot(*text_id)),
         );
-        let font_context = measurer.backend().epoch();
-        for (text_id, bounds, props) in text_boxes {
+        for (text_id, _bounds, props, constraints) in text_boxes {
             let input = TextLayoutInput::new(
                 props.text,
-                TextLayoutConstraints::max_width(bounds.width().max(0.0)),
+                constraints,
                 props.style.into(),
                 props.paragraph,
                 props.text_box,
@@ -2543,6 +2560,47 @@ mod tests {
                 .active_slot(id, canvas_text_slot(CanvasTextId::new(1)))
                 .is_some(),
             "a painter's text box has to reach the shaper in the same frame it is drawn"
+        );
+    }
+
+    #[test]
+    fn canvas_text_layout_is_measured_and_activated_in_the_same_compile() {
+        let observed = Rc::new(RefCell::new(None));
+        let sink = observed.clone();
+        let controller = CanvasController::with_painter(move |painter| {
+            let layout = painter.layout_text_keyed(
+                9,
+                TextProps::new("measure then draw"),
+                TextLayoutConstraints::max_width(painter.width()),
+            );
+            *sink.borrow_mut() = Some(layout.metrics());
+            painter.draw_text(Point::new(4.0, 6.0), layout);
+        });
+
+        let mut arena = UiRuntime::new();
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        let id = create_host(
+            &mut arena,
+            WidgetI::new(
+                canvas()
+                    .controller(controller)
+                    .style(Style::new().width(120.0).height(40.0)),
+            ),
+        );
+
+        arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
+
+        let metrics = observed
+            .borrow()
+            .expect("the painter should receive shaped text metrics");
+        assert_eq!(metrics.size, Size::<f32>::ZERO);
+        assert_eq!(metrics.first_baseline, None);
+        assert_eq!(metrics.line_count, 0);
+        assert!(
+            measurer
+                .active_slot(id, canvas_text_slot(CanvasTextId::new((1 << 31) | 9)))
+                .is_some(),
+            "the measured variant must also become the active paint layout"
         );
     }
 
