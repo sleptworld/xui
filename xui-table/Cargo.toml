@@ -1,0 +1,11 @@
+[package]
+name = "xui-table"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+xui = { path = "../xui" }
+
+[dev-dependencies]
+xui-cosmic = { path = "../xui-cosmic" }
+
