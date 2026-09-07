@@ -93,18 +93,22 @@ impl Interop {
                 "xui-skia imported wgpu texture",
             )
         };
+        let color_type = color_type(texture.format())?;
         gpu::images::borrow_texture_from(
             context,
             &backend,
             SurfaceOrigin::TopLeft,
-            color_type(texture.format())?,
+            color_type,
             skia_safe::AlphaType::Premul,
             color_space(texture.format()),
         )
         .ok_or_else(|| {
-            SkiaBackendError::WgpuTextureImport(
-                "Skia could not borrow the imported Metal texture".into(),
-            )
+            SkiaBackendError::WgpuTextureImport(format!(
+                "Skia could not borrow the imported Metal texture: {width}x{height} {:?} \
+                 as {color_type:?}. Skia validates the colour type against the texture's \
+                 platform format, so a mismatch there is the usual cause",
+                texture.format(),
+            ))
         })
     }
 }

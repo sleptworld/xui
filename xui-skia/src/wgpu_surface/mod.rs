@@ -321,10 +321,26 @@ pub(crate) fn color_type(
     use skia_safe::ColorType;
     use wgpu::TextureFormat as Format;
     Ok(match format {
-        Format::Bgra8Unorm | Format::Bgra8UnormSrgb => ColorType::BGRA8888,
-        Format::Rgba8Unorm | Format::Rgba8UnormSrgb => ColorType::RGBA8888,
+        Format::Bgra8Unorm => ColorType::BGRA8888,
+        Format::Rgba8Unorm => ColorType::RGBA8888,
+        // Not `RGBA8888` with an sRGB colour space. Skia validates the colour
+        // type against the texture's *platform* format, and `RGBA8888` resolves
+        // to `MTLPixelFormatRGBA8Unorm` / `VK_FORMAT_R8G8B8A8_UNORM`, which an
+        // sRGB texture is not -- the import is refused rather than converted.
+        // `SRGBA8888` is the one that resolves to the `_sRGB` variants.
+        Format::Rgba8UnormSrgb => ColorType::SRGBA8888,
         Format::Rgba16Float => ColorType::RGBAF16,
         Format::Rgb10a2Unorm => ColorType::RGBA1010102,
+        // Skia has `kSRGBA_8888` but no BGRA counterpart, so there is no colour
+        // type that matches a `BGRA8Unorm_sRGB` texture. Refused here, where the
+        // reason is visible, rather than deep inside Skia's validation.
+        Format::Bgra8UnormSrgb => {
+            return Err(SkiaBackendError::WgpuTextureImport(
+                "Skia has no sRGB BGRA colour type, so a Bgra8UnormSrgb texture cannot be \
+                 imported; use Rgba8UnormSrgb or the non-sRGB Bgra8Unorm"
+                    .into(),
+            ));
+        }
         other => {
             return Err(SkiaBackendError::WgpuTextureImport(format!(
                 "no Skia colour type for the wgpu texture format {other:?}"
@@ -354,7 +370,6 @@ mod tests {
     use super::*;
 
     const SIZE: u32 = 64;
-    const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
     /// A real wgpu pipeline renders into a texture, Skia samples it, and the
     /// shader's output comes back.
@@ -364,8 +379,24 @@ mod tests {
     /// of the texture, blue on the right -- and Skia draws the borrowed texture
     /// without a copy. A pixel that is neither means the handle Skia was given
     /// does not address the memory wgpu wrote.
+    /// Linear, and the format a canvas GPU painter's target is *not*.
     #[test]
-    fn skia_samples_a_texture_wgpu_rendered() {
+    fn skia_samples_a_linear_texture_wgpu_rendered() {
+        skia_samples_a_texture_wgpu_rendered(wgpu::TextureFormat::Rgba8Unorm);
+    }
+
+    /// The format `xui::widgets::CANVAS_GPU_FORMAT` actually allocates.
+    ///
+    /// Kept separate because it is a different Skia colour type -- `SRGBA8888`,
+    /// not `RGBA8888` -- and Skia refuses the import outright when that is
+    /// wrong. Testing only the linear format is what let a canvas GPU painter
+    /// ship unable to import its own target.
+    #[test]
+    fn skia_samples_an_srgb_texture_wgpu_rendered() {
+        skia_samples_a_texture_wgpu_rendered(wgpu::TextureFormat::Rgba8UnormSrgb);
+    }
+
+    fn skia_samples_a_texture_wgpu_rendered(format: wgpu::TextureFormat) {
         let Some((host, mut context)) = headless_host() else {
             eprintln!("no {} adapter available, skipping", Interop::NAME);
             return;
@@ -383,7 +414,7 @@ mod tests {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: FORMAT,
+            format,
             usage: IMPORTABLE_TEXTURE_USAGES,
             view_formats: &[],
         });
@@ -408,7 +439,7 @@ mod tests {
                 entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: FORMAT,
+                    format,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -464,7 +495,7 @@ mod tests {
             (SIZE as i32, SIZE as i32),
             ColorType::RGBA8888,
             AlphaType::Premul,
-            color_space(FORMAT),
+            color_space(format),
         );
         let mut surface = gpu::surfaces::render_target(
             &mut context,
