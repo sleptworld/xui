@@ -33,6 +33,8 @@ use crate::render::{
     ClipShape, Primitive, RenderTreeWriter, ShapePrimitive, TextPrimitive, VectorPrimitive,
 };
 use crate::text::TextLayoutSlot;
+#[cfg(feature = "wgpu")]
+use xui_interface::ExternalTextureHandle;
 use xui_interface::{
     Affine, Bounds, CanvasTextId, Color, ComputedColorStyle, ComputedStrokeStyle, ComputedStyle,
     EventRef, EventResult, ExternalTextureId, Key, NodeId, PathData, PathFill, PathStroke, Point,
@@ -60,12 +62,23 @@ const KEYED_TEXT_ID_BIT: u32 = 1 << 31;
 pub enum CanvasContent {
     Scene(VectorScene),
     Painter(Rc<dyn Fn(&mut CanvasPainter<'_>)>),
+    /// Drawn by the application's own GPU code. See
+    /// [`CanvasController::with_gpu_painter`].
+    #[cfg(feature = "wgpu")]
+    GpuPainter(Rc<dyn Fn(&mut CanvasGpuPainter<'_>)>),
 }
 
 impl CanvasContent {
     /// Whether a change in the node's measured size invalidates the drawing.
     fn is_size_dependent(&self) -> bool {
-        matches!(self, Self::Painter(_))
+        match self {
+            Self::Scene(_) => false,
+            Self::Painter(_) => true,
+            // The target is allocated to the node's measured size, so a resize
+            // is a reallocation and a redraw.
+            #[cfg(feature = "wgpu")]
+            Self::GpuPainter(_) => true,
+        }
     }
 }
 
@@ -74,6 +87,8 @@ impl fmt::Debug for CanvasContent {
         match self {
             Self::Scene(scene) => f.debug_tuple("Scene").field(scene).finish(),
             Self::Painter(_) => f.write_str("Painter(..)"),
+            #[cfg(feature = "wgpu")]
+            Self::GpuPainter(_) => f.write_str("GpuPainter(..)"),
         }
     }
 }
@@ -81,6 +96,151 @@ impl fmt::Debug for CanvasContent {
 impl Default for CanvasContent {
     fn default() -> Self {
         Self::Scene(VectorScene::default())
+    }
+}
+
+/// The GPU device a canvas GPU painter draws with.
+///
+/// Handed to the runtime by the renderer at startup, because it must be the
+/// *renderer's* device: a texture from any other one cannot be composited
+/// without a copy, which is the whole point of this path. Without the `wgpu`
+/// feature the type still exists but cannot be built, so a GPU painter simply
+/// never runs.
+#[derive(Clone)]
+pub struct CanvasGpuContext {
+    #[cfg(feature = "wgpu")]
+    device: wgpu::Device,
+    #[cfg(feature = "wgpu")]
+    queue: wgpu::Queue,
+}
+
+#[cfg(feature = "wgpu")]
+impl CanvasGpuContext {
+    /// Wraps the renderer's device. Under `xui-skia`, the two handles come from
+    /// `SkiaBackend::wgpu_context`.
+    pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
+        Self { device, queue }
+    }
+
+    pub fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+}
+
+impl fmt::Debug for CanvasGpuContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("CanvasGpuContext")
+    }
+}
+
+/// The format a canvas GPU target is allocated with, and the one a pipeline
+/// drawing into it must declare.
+///
+/// sRGB rather than linear so that a shader writing `1.0` produces the same
+/// colour as `Color::WHITE` elsewhere in the UI: the hardware encodes on write
+/// and the renderer decodes on sample, so values round-trip instead of being
+/// gamma-shifted by the compositing step.
+#[cfg(feature = "wgpu")]
+pub const CANVAS_GPU_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+/// Usages a canvas GPU target is allocated with: the painter renders into it
+/// and the renderer samples it.
+#[cfg(feature = "wgpu")]
+pub const CANVAS_GPU_USAGES: wgpu::TextureUsages =
+    wgpu::TextureUsages::RENDER_ATTACHMENT.union(wgpu::TextureUsages::TEXTURE_BINDING);
+
+/// The GPU drawing surface handed to a [`CanvasContent::GpuPainter`].
+///
+/// The target is the framework's: it is allocated at the node's measured size
+/// in physical pixels, reallocated when that changes, and composited into the
+/// surrounding UI afterwards. A painter renders into [`Self::target`] and
+/// submits on [`Self::queue`]; nothing has to be registered by hand.
+///
+/// ```ignore
+/// CanvasController::with_gpu_painter(|gpu| {
+///     let mut encoder = gpu.device().create_command_encoder(&Default::default());
+///     {
+///         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+///             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+///                 view: gpu.target(),
+///                 ..
+///             })],
+///             ..
+///         });
+///         pass.set_pipeline(&my_pipeline);
+///         pass.draw(0..3, 0..1);
+///     }
+///     gpu.queue().submit([encoder.finish()]);
+/// })
+/// ```
+#[cfg(feature = "wgpu")]
+pub struct CanvasGpuPainter<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    target: &'a wgpu::TextureView,
+    size: Size<u32>,
+    logical_size: Size<f32>,
+    scale_factor: f32,
+    style: &'a ComputedStyle,
+    theme: &'a Theme,
+    picks: Vec<CanvasPick>,
+}
+
+#[cfg(feature = "wgpu")]
+impl<'a> CanvasGpuPainter<'a> {
+    /// The renderer's device. Pipelines and buffers must be created on it.
+    pub fn device(&self) -> &'a wgpu::Device {
+        self.device
+    }
+
+    /// The renderer's queue. Submitting here is enough -- the renderer samples
+    /// the target on the same queue, so submission order does the ordering.
+    pub fn queue(&self) -> &'a wgpu::Queue {
+        self.queue
+    }
+
+    /// The colour attachment to render into, in [`CANVAS_GPU_FORMAT`].
+    pub fn target(&self) -> &'a wgpu::TextureView {
+        self.target
+    }
+
+    pub fn format(&self) -> wgpu::TextureFormat {
+        CANVAS_GPU_FORMAT
+    }
+
+    /// The target's size in physical pixels -- the viewport a pipeline should
+    /// assume.
+    pub fn size(&self) -> Size<u32> {
+        self.size
+    }
+
+    /// The node's measured size in logical pixels, which is the rectangle the
+    /// result is composited into.
+    pub fn logical_size(&self) -> Size<f32> {
+        self.logical_size
+    }
+
+    pub fn scale_factor(&self) -> f32 {
+        self.scale_factor
+    }
+
+    pub fn style(&self) -> &'a ComputedStyle {
+        self.style
+    }
+
+    pub fn theme(&self) -> &'a Theme {
+        self.theme
+    }
+
+    /// Records a region that [`CanvasController::pick`] can hit-test, in
+    /// logical pixels. Same semantics as [`CanvasPainter::pick`].
+    pub fn pick(&mut self, tag: CanvasPickTag, bounds: Bounds) -> &mut Self {
+        self.picks.push(CanvasPick { tag, bounds });
+        self
     }
 }
 
@@ -455,6 +615,8 @@ impl<'a> CanvasPainter<'a> {
     ) -> &mut Self {
         self.commands.push(VectorCommand::Texture {
             id,
+            // The caller registered this texture with the renderer itself.
+            source: None,
             revision,
             bounds,
             opacity,
@@ -670,6 +832,22 @@ impl CanvasController {
         Self::with_content(CanvasContent::Painter(Rc::new(painter)))
     }
 
+    /// Builds a controller whose drawing is produced by the application's own
+    /// GPU code, on the device the renderer runs on.
+    ///
+    /// The painter is handed a target sized to the node and composited
+    /// afterwards, so a shader becomes a widget without any texture bookkeeping
+    /// on the caller's side. It runs after layout, like
+    /// [`CanvasController::with_painter`], and again whenever the node resizes
+    /// or [`CanvasController::invalidate`] is called.
+    ///
+    /// Hold this in a `use_ref` rather than rebuilding it each render: a new
+    /// controller handle is a new identity, which reallocates the target.
+    #[cfg(feature = "wgpu")]
+    pub fn with_gpu_painter(painter: impl Fn(&mut CanvasGpuPainter<'_>) + 'static) -> Self {
+        Self::with_content(CanvasContent::GpuPainter(Rc::new(painter)))
+    }
+
     pub fn with_content(content: CanvasContent) -> Self {
         Self {
             inner: Rc::new(RefCell::new(CanvasControllerState {
@@ -692,6 +870,8 @@ impl CanvasController {
         match &self.inner.borrow().content {
             CanvasContent::Scene(scene) => Some(scene.clone()),
             CanvasContent::Painter(_) => None,
+            #[cfg(feature = "wgpu")]
+            CanvasContent::GpuPainter(_) => None,
         }
     }
 
@@ -827,10 +1007,29 @@ pub struct CanvasWidget {
     pub event_handlers: EventHandlers,
     pub interaction: InteractionProperties,
     compiled: CompiledCanvas,
+    /// The target a GPU painter draws into, kept across compiles and
+    /// reallocated when the node's physical size changes.
+    #[cfg(feature = "wgpu")]
+    gpu_target: Option<GpuTarget>,
+    /// Bumped every time a GPU painter runs. The texture id is stable so the
+    /// renderer keeps one import, which means new contents are invisible to
+    /// scene diffing without this.
+    #[cfg(feature = "wgpu")]
+    gpu_revision: u64,
     /// The host node this widget is mounted on, and the channel its controller
     /// invalidates through. Held here so that swapping the controller can move
     /// the binding without the pipeline having to know it happened.
     binding: Option<(NodeId, CanvasInvalidator)>,
+}
+
+/// A canvas GPU painter's render target.
+#[cfg(feature = "wgpu")]
+struct GpuTarget {
+    id: ExternalTextureId,
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    handle: ExternalTextureHandle,
+    size: Size<u32>,
 }
 
 impl fmt::Debug for CanvasWidget {
@@ -853,6 +1052,10 @@ impl CanvasWidget {
             event_handlers: EventHandlers::default(),
             interaction: InteractionProperties::default(),
             compiled: CompiledCanvas::default(),
+            #[cfg(feature = "wgpu")]
+            gpu_target: None,
+            #[cfg(feature = "wgpu")]
+            gpu_revision: 0,
             binding: None,
         }
     }
@@ -954,7 +1157,9 @@ impl CanvasWidget {
             &TextProps,
             TextLayoutConstraints,
         ) -> CanvasTextMetrics,
+        gpu: Option<&CanvasGpuContext>,
     ) {
+        let _ = &gpu;
         let content = self.controller.content();
         let revision = self.controller.revision();
 
@@ -985,6 +1190,17 @@ impl CanvasWidget {
                     std::mem::take(&mut painter_cx.picks),
                 )
             }
+            // No device means the renderer is not on the shared-device path, so
+            // there is nothing to draw with. An empty canvas is the right
+            // answer: the rest of the UI is unaffected, and the painter runs as
+            // soon as a device does arrive.
+            #[cfg(feature = "wgpu")]
+            CanvasContent::GpuPainter(_) if gpu.is_none() => (Vec::new(), Vec::new()),
+            #[cfg(feature = "wgpu")]
+            CanvasContent::GpuPainter(painter) => {
+                let gpu = gpu.expect("guarded by the arm above");
+                self.run_gpu_painter(&painter, gpu, size, style, theme, scale_factor)
+            }
         };
 
         self.controller.publish_compiled(size, Some(picks));
@@ -994,6 +1210,97 @@ impl CanvasWidget {
             revision,
             generation: self.compiled.generation.wrapping_add(1),
         };
+    }
+
+    /// Allocates the target if needed, runs the painter, and lowers the result
+    /// to the single texture command that draws it.
+    #[cfg(feature = "wgpu")]
+    fn run_gpu_painter(
+        &mut self,
+        painter: &Rc<dyn Fn(&mut CanvasGpuPainter<'_>)>,
+        gpu: &CanvasGpuContext,
+        size: Size<f32>,
+        style: &ComputedStyle,
+        theme: &Theme,
+        scale_factor: f32,
+    ) -> (Vec<CanvasBatch>, Vec<CanvasPick>) {
+        // Physical pixels, rounded up so a fractional layout never loses a
+        // column, and never zero -- wgpu rejects a zero-sized texture, and a
+        // canvas can legitimately measure to nothing mid-layout.
+        let physical = Size::new(
+            ((size.width * scale_factor).ceil() as u32).max(1),
+            ((size.height * scale_factor).ceil() as u32).max(1),
+        );
+
+        let stale = self
+            .gpu_target
+            .as_ref()
+            .is_none_or(|target| target.size != physical);
+        if stale {
+            // The id outlives the texture: keeping it stable across resizes
+            // means the renderer replaces one entry instead of leaking one per
+            // size the window passed through.
+            let id = self
+                .gpu_target
+                .as_ref()
+                .map(|target| target.id)
+                .unwrap_or_else(ExternalTextureId::next);
+            let texture = gpu.device().create_texture(&wgpu::TextureDescriptor {
+                label: Some("xui canvas gpu painter target"),
+                size: wgpu::Extent3d {
+                    width: physical.width,
+                    height: physical.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: CANVAS_GPU_FORMAT,
+                usage: CANVAS_GPU_USAGES,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.gpu_target = Some(GpuTarget {
+                id,
+                handle: ExternalTextureHandle::new(texture.clone()),
+                texture,
+                view,
+                size: physical,
+            });
+        }
+        let target = self.gpu_target.as_ref().expect("just allocated");
+
+        let mut painter_cx = CanvasGpuPainter {
+            device: gpu.device(),
+            queue: gpu.queue(),
+            target: &target.view,
+            size: physical,
+            logical_size: size,
+            scale_factor,
+            style,
+            theme,
+            picks: Vec::new(),
+        };
+        painter(&mut painter_cx);
+        let picks = std::mem::take(&mut painter_cx.picks);
+
+        self.gpu_revision = self.gpu_revision.wrapping_add(1);
+        let command = VectorCommand::Texture {
+            id: target.id,
+            source: Some(target.handle.clone()),
+            revision: self.gpu_revision,
+            bounds: Bounds::from_zero_size(size),
+            opacity: 1.0,
+            sampling: Sampling::Linear,
+        };
+        (compile_commands(&[command], &HashMap::new()), picks)
+    }
+
+    /// The texture a GPU painter last drew into, if any. Exposed for tests and
+    /// for callers that want to sample the canvas's own output.
+    #[cfg(feature = "wgpu")]
+    pub fn gpu_texture(&self) -> Option<&wgpu::Texture> {
+        self.gpu_target.as_ref().map(|target| &target.texture)
     }
 
     pub(crate) fn bind(&mut self, id: NodeId, invalidator: CanvasInvalidator) {
@@ -1165,7 +1472,7 @@ mod tests {
             first_baseline: None,
             line_count: 0,
         };
-        widget.compile(size, &style, &theme, 2.0, &mut measure_text);
+        widget.compile(size, &style, &theme, 2.0, &mut measure_text, None);
     }
 
     #[test]
@@ -1337,6 +1644,7 @@ mod tests {
             &theme,
             2.0,
             &mut measure_text,
+            None,
         );
 
         assert_eq!(
@@ -1619,5 +1927,191 @@ mod tests {
             text.bounds,
             Bounds::from_origin_size((12.0, 15.0), (80.0, 24.0))
         );
+    }
+
+    /// The GPU painter path, on a real device.
+    ///
+    /// Covers the three invariants the design rests on: the painter gets a
+    /// usable device and a target sized to the node, redrawing reuses the same
+    /// texture (so the renderer keeps one import), and a resize reallocates it.
+    #[cfg(feature = "wgpu")]
+    mod gpu {
+        use super::*;
+        use std::cell::Cell;
+
+        fn context() -> Option<CanvasGpuContext> {
+            let instance =
+                wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+            let adapter =
+                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: None,
+                    force_fallback_adapter: false,
+                }))
+                .ok()?;
+            let (device, queue) =
+                pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                    label: Some("xui canvas gpu test"),
+                    required_features: wgpu::Features::empty(),
+                    required_limits: wgpu::Limits::default(),
+                    memory_hints: wgpu::MemoryHints::Performance,
+                    ..Default::default()
+                }))
+                .ok()?;
+            Some(CanvasGpuContext::new(device, queue))
+        }
+
+        fn compile_gpu(widget: &mut CanvasWidget, size: Size<f32>, gpu: &CanvasGpuContext) {
+            let theme = StyleTheme::default();
+            let style = ComputedStyle::initial(&theme);
+            let mut measure_text = |_, _: &TextProps, _| CanvasTextMetrics {
+                size: Size::<f32>::ZERO,
+                first_baseline: None,
+                line_count: 0,
+            };
+            widget.compile(size, &style, &theme, 2.0, &mut measure_text, Some(gpu));
+        }
+
+        /// The single texture command a GPU painter lowers to.
+        fn texture_command(widget: &CanvasWidget) -> VectorCommand {
+            let batch = widget
+                .compiled
+                .batches
+                .first()
+                .expect("a gpu painter lowers to one batch");
+            let CanvasBatch::Vector(scene) = batch else {
+                panic!("a gpu painter lowers to a vector batch");
+            };
+            scene
+                .commands()
+                .first()
+                .expect("one command in the batch")
+                .clone()
+        }
+
+        #[test]
+        fn a_gpu_painter_draws_into_a_target_sized_to_the_node() {
+            let Some(gpu) = context() else {
+                eprintln!("no wgpu adapter available, skipping");
+                return;
+            };
+            let seen = Rc::new(Cell::new(None));
+            let recorded = Rc::clone(&seen);
+            let mut widget =
+                CanvasWidget::new(CanvasController::with_gpu_painter(move |painter| {
+                    recorded.set(Some(painter.size()));
+                    // A real pipeline would render here; clearing is enough to
+                    // prove the target and queue are usable.
+                    let mut encoder = painter
+                        .device()
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+                    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: None,
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: painter.target(),
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLUE),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    painter.queue().submit([encoder.finish()]);
+                }));
+
+            compile_gpu(&mut widget, Size::new(30.0, 20.0), &gpu);
+
+            // Logical size times the scale factor, in physical pixels.
+            assert_eq!(seen.get(), Some(Size::new(60, 40)));
+            let texture = widget.gpu_texture().expect("a target was allocated");
+            assert_eq!((texture.width(), texture.height()), (60, 40));
+
+            let VectorCommand::Texture { source, bounds, .. } = texture_command(&widget) else {
+                panic!("a gpu painter lowers to a texture command");
+            };
+            assert!(
+                source.is_some(),
+                "the framework owns this target, so it travels with the command"
+            );
+            // Composited at the node's logical size, not the target's.
+            assert_eq!(bounds.size(), Size::new(30.0, 20.0));
+        }
+
+        #[test]
+        fn redrawing_reuses_the_texture_and_resizing_replaces_it() {
+            let Some(gpu) = context() else {
+                eprintln!("no wgpu adapter available, skipping");
+                return;
+            };
+            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(|_| {}));
+
+            compile_gpu(&mut widget, Size::new(10.0, 10.0), &gpu);
+            let VectorCommand::Texture {
+                id: first_id,
+                source: first_source,
+                revision: first_revision,
+                ..
+            } = texture_command(&widget)
+            else {
+                panic!("expected a texture command");
+            };
+
+            // Same size: the painter runs again, but into the same texture.
+            compile_gpu(&mut widget, Size::new(10.0, 10.0), &gpu);
+            let VectorCommand::Texture {
+                id: second_id,
+                source: second_source,
+                revision: second_revision,
+                ..
+            } = texture_command(&widget)
+            else {
+                panic!("expected a texture command");
+            };
+            assert_eq!(first_id, second_id, "the id is stable across redraws");
+            assert_eq!(
+                first_source, second_source,
+                "the same texture, so the renderer keeps its import"
+            );
+            assert_ne!(
+                first_revision, second_revision,
+                "new contents have to be visible to scene diffing"
+            );
+
+            // A resize reallocates, which the renderer must notice.
+            compile_gpu(&mut widget, Size::new(20.0, 10.0), &gpu);
+            let VectorCommand::Texture {
+                id: third_id,
+                source: third_source,
+                ..
+            } = texture_command(&widget)
+            else {
+                panic!("expected a texture command");
+            };
+            assert_eq!(
+                first_id, third_id,
+                "the id outlives the texture, so the renderer replaces one entry"
+            );
+            assert_ne!(
+                second_source, third_source,
+                "a new texture object must re-import"
+            );
+        }
+
+        #[test]
+        fn without_a_device_a_gpu_painter_draws_nothing() {
+            let ran = Rc::new(Cell::new(false));
+            let recorded = Rc::clone(&ran);
+            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(move |_| {
+                recorded.set(true);
+            }));
+            compile(&mut widget, Size::new(10.0, 10.0));
+            assert!(!ran.get(), "there is nothing to draw with");
+            assert!(widget.compiled.batches.is_empty());
+        }
     }
 }

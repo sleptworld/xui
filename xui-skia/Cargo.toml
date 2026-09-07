@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = []
+default = ["wgpu"]
 # Run Skia on a wgpu-owned device instead of the crate's own native ones. See
 # `src/wgpu_surface/mod.rs`.
 wgpu = ["dep:wgpu", "dep:wgpu-hal", "dep:pollster"]

@@ -79,6 +79,7 @@ impl UiRuntime {
             canvas_nodes: slotmap::SparseSecondaryMap::new(),
             canvas_invalidations: crate::widgets::CanvasInvalidator::default(),
             scale_factor: 1.0,
+            gpu_context: None,
             raw_event_listeners: 0,
             theme,
             update_visits: 0,
@@ -2152,6 +2153,16 @@ impl UiRuntime {
             .expect("failed to update taffy context");
     }
     /// Physical pixels per logical pixel, for canvas painters.
+    /// Hands the runtime the renderer's GPU device, so canvases with a GPU
+    /// painter can draw on it.
+    ///
+    /// Called once by the renderer at startup. It must be the *renderer's*
+    /// device: a texture from any other one cannot be composited without a
+    /// copy, which is the point of this path.
+    pub fn set_gpu_context(&mut self, context: crate::widgets::CanvasGpuContext) {
+        self.gpu_context = Some(context);
+    }
+
     pub fn set_scale_factor(&mut self, scale_factor: f32) {
         if self.scale_factor == scale_factor {
             return;
@@ -2240,6 +2251,7 @@ impl UiRuntime {
             .clone();
         let theme = self.theme.clone();
         let scale_factor = self.scale_factor;
+        let gpu_context = self.gpu_context.clone();
         let widget = self.hosts[id].widget.clone();
         let font_context = measurer.backend().epoch();
 
@@ -2262,7 +2274,14 @@ impl UiRuntime {
                         line_count: metrics.line_count,
                     }
                 };
-                canvas.compile(size, &style, &theme, scale_factor, &mut measure_text);
+                canvas.compile(
+                    size,
+                    &style,
+                    &theme,
+                    scale_factor,
+                    &mut measure_text,
+                    gpu_context.as_ref(),
+                );
                 canvas.text_boxes()
             }
             _ => Vec::new(),

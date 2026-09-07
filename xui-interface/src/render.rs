@@ -3,6 +3,7 @@ use crate::{
     Rect, Size, TextDecoration, TextProps, TextRange,
 };
 use std::{
+    any::Any,
     collections::{HashSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
     path::PathBuf,
@@ -691,6 +692,13 @@ pub enum VectorCommand {
     /// something else under another backend.
     Texture {
         id: ExternalTextureId,
+        /// The texture itself, when the framework owns it.
+        ///
+        /// A canvas GPU painter allocates its own target and sends it along
+        /// here, so nothing has to be registered by hand. `None` means the
+        /// application registered the texture with the renderer itself and
+        /// `id` is the only way to find it.
+        source: Option<ExternalTextureHandle>,
         /// Bumped by the caller whenever the texture's *contents* change.
         ///
         /// The id is deliberately stable across frames, so the backend can keep
@@ -703,6 +711,38 @@ pub enum VectorCommand {
         opacity: f32,
         sampling: Sampling,
     },
+}
+
+/// A backend-specific texture handle, type-erased so this crate stays free of
+/// any graphics API.
+///
+/// The renderer downcasts it to whatever it understands -- a `wgpu::Texture`
+/// under `xui-skia`'s `wgpu` feature. Compared by pointer: two handles are the
+/// same texture only when they are the same allocation, which is what lets
+/// `VectorCommand` keep its derived `PartialEq`.
+#[derive(Clone)]
+pub struct ExternalTextureHandle(Arc<dyn Any + Send + Sync>);
+
+impl ExternalTextureHandle {
+    pub fn new(texture: impl Any + Send + Sync) -> Self {
+        Self(Arc::new(texture))
+    }
+
+    pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
+        self.0.downcast_ref::<T>()
+    }
+}
+
+impl PartialEq for ExternalTextureHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl std::fmt::Debug for ExternalTextureHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ExternalTextureHandle(..)")
+    }
 }
 
 /// Identifies a GPU texture registered with the renderer.
@@ -830,6 +870,7 @@ impl VectorCommand {
             (
                 Self::Texture {
                     id: a_id,
+                    source: a_source,
                     revision: a_revision,
                     bounds: a_bounds,
                     opacity: a_opacity,
@@ -837,6 +878,7 @@ impl VectorCommand {
                 },
                 Self::Texture {
                     id: b_id,
+                    source: b_source,
                     revision: b_revision,
                     bounds: b_bounds,
                     opacity: b_opacity,
@@ -845,8 +887,13 @@ impl VectorCommand {
             ) => VectorSceneChange {
                 geometry: a_id != b_id || a_bounds != b_bounds || a_sampling != b_sampling,
                 // A new revision is new pixels in the same rectangle: repaint,
-                // but nothing about the geometry moved.
-                paint: a_id != b_id || a_revision != b_revision || a_opacity != b_opacity,
+                // but nothing about the geometry moved. A different handle is
+                // a different texture object -- a resize reallocates one --
+                // which the renderer has to re-import.
+                paint: a_id != b_id
+                    || a_revision != b_revision
+                    || a_source != b_source
+                    || a_opacity != b_opacity,
             },
             _ => VectorSceneChange {
                 geometry: true,

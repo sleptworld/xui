@@ -201,9 +201,11 @@ mod z_stack;
 
 pub(crate) use canvas::CanvasInvalidator;
 pub(crate) use canvas::canvas_text_slot;
+#[cfg(feature = "wgpu")]
+pub use canvas::{CANVAS_GPU_FORMAT, CANVAS_GPU_USAGES, CanvasGpuPainter};
 pub use canvas::{
-    CanvasContent, CanvasController, CanvasPainter, CanvasPick, CanvasPickTag, CanvasTextLayout,
-    CanvasTextMetrics, CanvasWidget,
+    CanvasContent, CanvasController, CanvasGpuContext, CanvasPainter, CanvasPick, CanvasPickTag,
+    CanvasTextLayout, CanvasTextMetrics, CanvasWidget,
 };
 pub use container::ContainerWidget;
 pub use grid::*;

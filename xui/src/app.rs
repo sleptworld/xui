@@ -165,6 +165,15 @@ impl App {
 
     /// Physical pixels per logical pixel. Canvas painters use it to size
     /// hairlines and snap to the device grid.
+    /// Hands the runtime the renderer's GPU device, so canvases built with
+    /// [`crate::widgets::CanvasController::with_gpu_painter`] can draw on it.
+    ///
+    /// Called once by the renderer at startup. Until it is, a GPU painter
+    /// draws nothing rather than failing.
+    pub fn set_gpu_context(&mut self, context: crate::widgets::CanvasGpuContext) {
+        self.ui_runtime.set_gpu_context(context);
+    }
+
     pub fn set_scale_factor(&mut self, scale_factor: f32) {
         self.ui_runtime.set_scale_factor(scale_factor);
     }

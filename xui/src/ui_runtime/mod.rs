@@ -46,6 +46,10 @@ pub struct UiRuntime {
     /// Physical pixels per logical pixel, forwarded to canvas painters so they
     /// can size hairlines and snap to the device grid.
     pub(crate) scale_factor: f32,
+    /// The renderer's GPU device, when it has one to share. Set once at
+    /// startup; a canvas GPU painter draws with it and draws nothing without
+    /// it. See [`crate::widgets::CanvasGpuContext`].
+    pub(crate) gpu_context: Option<crate::widgets::CanvasGpuContext>,
     /// How many live hosts read raw device events. Almost always zero, which is
     /// what lets raw dispatch skip its whole ancestor walk.
     pub(crate) raw_event_listeners: usize,

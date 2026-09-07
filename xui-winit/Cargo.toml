@@ -9,7 +9,7 @@ skia = ["dep:xui-skia"]
 # Skia rendering on a wgpu-owned device (opt in at runtime with
 # `XUI_SKIA_WGPU=1`). Orthogonal to `wgpu`, which selects the standalone wgpu
 # renderer instead of Skia.
-skia-wgpu = ["skia", "xui-skia/wgpu"]
+skia-wgpu = ["skia", "xui-skia/wgpu", "xui/wgpu"]
 wgpu = ["dep:wgpu", "dep:xui-cosmic"]
 
 [dependencies]

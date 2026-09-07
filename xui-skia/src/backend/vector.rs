@@ -9,8 +9,8 @@ use skia_safe::{
 use std::sync::Arc;
 use xui::render::{ClipShape, Shape};
 use xui_interface::{
-    Affine, Bounds, ExternalTextureId, LineCap, LineJoin, PathData, PathFill, PathSegment,
-    PathStroke, Sampling, TextBackend, VectorCommand, VectorScene,
+    Affine, Bounds, ExternalTextureHandle, ExternalTextureId, LineCap, LineJoin, PathData,
+    PathFill, PathSegment, PathStroke, Sampling, TextBackend, VectorCommand, VectorScene,
 };
 use xui_render_graph::MaskShape;
 
@@ -51,6 +51,14 @@ pub(super) enum CompiledVectorCommand {
 pub(crate) struct ExternalTexture {
     pub(super) image: Image,
     pub(super) _owner: Box<dyn std::any::Any>,
+    /// The handle this was imported from, for framework-owned targets.
+    ///
+    /// The import is keyed on handle *identity*, not on the command's
+    /// `revision`: a revision changes every time a painter redraws, while the
+    /// texture object only changes when the node resizes. Re-importing per
+    /// frame would churn Skia's resource cache for nothing -- the image already
+    /// points at the memory the painter just wrote.
+    pub(super) source: Option<ExternalTextureHandle>,
 }
 
 pub(super) type ExternalTextures = FxHashMap<ExternalTextureId, ExternalTexture>;
@@ -87,19 +95,23 @@ impl<T: TextBackend> SkiaBackend<T> {
                 }),
                 VectorCommand::Texture {
                     id,
+                    source,
                     bounds,
                     opacity,
                     sampling,
-                    // Only there to make a content change visible to scene
-                    // diffing; by the time a scene is compiled the diff has
-                    // already happened and the image is looked up live.
+                    // Only there to make a redraw visible to scene diffing. By
+                    // the time a scene is compiled the diff has happened, and
+                    // the import below keys on the handle instead.
                     revision: _,
-                } => Some(CompiledVectorCommand::Texture {
-                    id: *id,
-                    bounds: *bounds,
-                    opacity: *opacity,
-                    sampling: *sampling,
-                }),
+                } => {
+                    self.sync_external_texture(*id, source);
+                    Some(CompiledVectorCommand::Texture {
+                        id: *id,
+                        bounds: *bounds,
+                        opacity: *opacity,
+                        sampling: *sampling,
+                    })
+                }
                 // A vector scene otherwise only ever holds paths; shapes and
                 // text are lowered into batches of their own.
                 VectorCommand::Shape { .. } | VectorCommand::TextBox { .. } => None,
@@ -108,6 +120,53 @@ impl<T: TextBackend> SkiaBackend<T> {
             .into();
         self.vector_scenes.insert(scene.id(), Arc::clone(&compiled));
         compiled
+    }
+
+    /// Imports a framework-owned canvas target, if this is one and it is not
+    /// already imported.
+    ///
+    /// A failure here is deliberately silent: the command still compiles and
+    /// draws nothing, which is the same as an unregistered id. The alternative
+    /// -- failing the frame because one canvas could not import -- would lose
+    /// the whole window over it.
+    fn sync_external_texture(
+        &mut self,
+        id: ExternalTextureId,
+        source: &Option<ExternalTextureHandle>,
+    ) {
+        let Some(handle) = source else {
+            // Application-registered: `set_wgpu_texture` put it there, and
+            // replacing it from here would fight that.
+            return;
+        };
+        if self
+            .external_textures
+            .get(&id)
+            .is_some_and(|existing| existing.source.as_ref() == Some(handle))
+        {
+            return;
+        }
+        #[cfg(feature = "wgpu")]
+        if let Some(texture) = handle.downcast_ref::<wgpu::Texture>() {
+            match self.import_wgpu_texture(texture) {
+                Ok(imported) => {
+                    let (image, owner) = imported.into_parts();
+                    self.external_textures.insert(
+                        id,
+                        ExternalTexture {
+                            image,
+                            _owner: Box::new(owner),
+                            source: Some(handle.clone()),
+                        },
+                    );
+                }
+                Err(error) => {
+                    log_import_failure(id, &error);
+                }
+            }
+        }
+        #[cfg(not(feature = "wgpu"))]
+        let _ = handle;
     }
 
     fn compiled_vector_path(&mut self, path: &PathData) -> Path {
@@ -401,6 +460,19 @@ pub(super) fn draw_vector(
     }
 }
 
+/// Reported once per id: a canvas that cannot import re-tries every frame, and
+/// a per-frame log line would bury everything else.
+fn log_import_failure(id: ExternalTextureId, error: &crate::SkiaBackendError) {
+    use std::sync::{Mutex, OnceLock};
+    static REPORTED: OnceLock<Mutex<rustc_hash::FxHashSet<ExternalTextureId>>> = OnceLock::new();
+    let reported = REPORTED.get_or_init(Default::default);
+    if let Ok(mut reported) = reported.lock()
+        && reported.insert(id)
+    {
+        eprintln!("xui-skia: could not import canvas texture {id:?}: {error}");
+    }
+}
+
 fn sk_sampling(sampling: Sampling) -> SamplingOptions {
     match sampling {
         Sampling::Nearest => {
@@ -447,6 +519,7 @@ mod texture_tests {
     fn texture_scene(id: ExternalTextureId, revision: u64) -> VectorScene {
         VectorScene::new(vec![VectorCommand::Texture {
             id,
+            source: None,
             revision,
             bounds: Bounds::new(
                 xui_interface::Point::new(0.0, 0.0),
@@ -490,6 +563,7 @@ mod texture_tests {
             ExternalTexture {
                 image: red_image(),
                 _owner: Box::new(()),
+                source: None,
             },
         );
 

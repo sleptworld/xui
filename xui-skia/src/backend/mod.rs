@@ -280,6 +280,7 @@ impl<T: TextBackend> SkiaBackend<T> {
             crate::backend::vector::ExternalTexture {
                 image,
                 _owner: Box::new(owner),
+                source: None,
             },
         );
         Ok(())

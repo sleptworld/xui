@@ -496,8 +496,21 @@ pub fn runner(
     let options = options.unwrap_or_default();
     WinitRunner::with_fallible_options(
         move |window| -> Result<_, std::io::Error> {
+            #[allow(unused_mut)]
+            let mut app = app;
             let backend = xui_skia::SkiaBackend::<FBackend>::new(window.clone())
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
+            // Hand the app the renderer's device, so a canvas GPU painter draws
+            // on the device Skia composites from. `None` means Skia is on a
+            // self-owned device (the default, or the shared path failing to
+            // start), and a GPU painter then draws nothing.
+            #[cfg(feature = "skia-wgpu")]
+            if let Some(context) = backend.wgpu_context() {
+                app.set_gpu_context(xui::widgets::CanvasGpuContext::new(
+                    context.device().clone(),
+                    context.queue().clone(),
+                ));
+            }
             Ok((app, FBackend::new(), backend))
         },
         options,

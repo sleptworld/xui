@@ -3,7 +3,15 @@ name = "xui"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+# Lets a canvas draw with the GPU device the renderer runs on -- see
+# `CanvasController::with_gpu_painter`. Enabled through `xui-winit`'s
+# `skia-wgpu`.
+wgpu = ["dep:wgpu"]
+
 [dependencies]
+wgpu = { version = "29.0.3", optional = true }
 rustc-hash = "2.1.2"
 slotmap = "1.1.1"
 smallstr = "0.3.1"
@@ -26,5 +34,6 @@ quick_cache = { version = "0.7.0", default-features = false }
 xui-render-graph = { path = "../xui-render-graph" }
 
 [dev-dependencies]
+pollster = "0.4.0"
 trybuild = "1.0.120"
 xui-cosmic = { path = "../xui-cosmic" }
