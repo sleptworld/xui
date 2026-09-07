@@ -226,6 +226,13 @@ impl App {
     }
 
     #[inline(always)]
+    /// Tells the runtime whether the window is on screen, which stops the
+    /// canvas animation loop while it is not. See
+    /// [`crate::ui_runtime::UiRuntime::set_window_visible`].
+    pub fn set_window_visible(&mut self, visible: bool) {
+        self.ui_runtime.set_window_visible(visible);
+    }
+
     /// Marks every canvas that asked to animate dirty for this frame.
     ///
     /// Called once a frame beside [`Self::tick_style_animations`], for the same

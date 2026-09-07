@@ -78,6 +78,7 @@ impl UiRuntime {
             text_nodes: slotmap::SparseSecondaryMap::new(),
             canvas_nodes: slotmap::SparseSecondaryMap::new(),
             canvases_wanting_repaint: slotmap::SparseSecondaryMap::new(),
+            window_visible: true,
             canvas_invalidations: crate::widgets::CanvasInvalidator::default(),
             scale_factor: 1.0,
             gpu_context: None,
@@ -2034,7 +2035,7 @@ impl UiRuntime {
     /// `is_dirty` is consulted after every batch of events, and it should stay
     /// a handful of flag checks rather than borrowing every canvas widget.
     pub fn has_animating_canvases(&self) -> bool {
-        !self.canvases_wanting_repaint.is_empty()
+        self.window_visible && !self.canvases_wanting_repaint.is_empty()
     }
 
     /// Marks every canvas that asked for another frame dirty, once per frame.
@@ -2044,6 +2045,9 @@ impl UiRuntime {
     /// it. A painter that stops asking is dropped from the set as it compiles,
     /// so the loop ends on its own.
     pub fn tick_animating_canvases(&mut self) {
+        if !self.window_visible {
+            return;
+        }
         let animating: Vec<_> = self.canvases_wanting_repaint.keys().collect();
         for id in animating {
             self.invalidate_canvas(id);
@@ -2190,6 +2194,21 @@ impl UiRuntime {
     /// copy, which is the point of this path.
     pub fn set_gpu_context(&mut self, context: crate::widgets::CanvasGpuContext) {
         self.gpu_context = Some(context);
+    }
+
+    /// Tells the runtime whether the window is on screen.
+    ///
+    /// Deliberately narrow: it gates the animation loop and nothing else. An
+    /// ordinary change still repaints while hidden, so the window is already
+    /// correct the instant it is revealed -- and a platform that reports
+    /// occlusion spuriously costs a few wasted frames rather than freezing the
+    /// UI, which is the failure worth being asymmetric about.
+    ///
+    /// The set of canvases wanting another frame is left alone: it is only
+    /// rewritten when a canvas compiles, and none do while hidden, so becoming
+    /// visible resumes exactly where it stopped.
+    pub fn set_window_visible(&mut self, visible: bool) {
+        self.window_visible = visible;
     }
 
     pub fn set_scale_factor(&mut self, scale_factor: f32) {

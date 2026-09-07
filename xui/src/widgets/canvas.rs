@@ -2290,6 +2290,41 @@ mod tests {
             assert_eq!(draws.get(), 4);
         }
 
+        /// Nothing can be seen, so nothing should be drawn -- but the request
+        /// has to survive, or revealing the window would leave a dead canvas.
+        #[test]
+        fn an_occluded_window_stops_the_animation_and_resuming_restarts_it() {
+            let Some(gpu) = context() else {
+                eprintln!("no wgpu adapter available, skipping");
+                return;
+            };
+            let mut runtime = crate::ui_runtime::UiRuntime::default();
+            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
+                |_state: &mut Option<()>, painter: &mut CanvasGpuPainter<'_>| {
+                    painter.request_repaint();
+                },
+            ));
+            compile_gpu(&mut widget, Size::new(10.0, 10.0), &gpu);
+            assert!(widget.wants_repaint());
+
+            // Stand in for the compile pass recording what the painter asked.
+            let id = runtime.root();
+            runtime.canvases_wanting_repaint.insert(id, ());
+            assert!(runtime.has_animating_canvases());
+
+            runtime.set_window_visible(false);
+            assert!(
+                !runtime.has_animating_canvases(),
+                "a hidden window must not keep asking for frames"
+            );
+
+            runtime.set_window_visible(true);
+            assert!(
+                runtime.has_animating_canvases(),
+                "the request survives being hidden, so revealing resumes it"
+            );
+        }
+
         /// The flag is per-draw, so a painter that asked once and then stopped
         /// must not leave the canvas scheduled forever.
         #[test]

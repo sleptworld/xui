@@ -45,6 +45,11 @@ pub struct UiRuntime {
     /// `is_dirty` -- consulted after every batch of events -- stays O(1)
     /// instead of borrowing every canvas widget to ask.
     pub(crate) canvases_wanting_repaint: SparseSecondaryMap<NodeId, ()>,
+    /// Whether the window is on screen. Only the animation loop consults it:
+    /// a canvas that asked for another frame gets none while nothing can be
+    /// seen. Defaults to true, so a platform that never reports occlusion
+    /// behaves exactly as before.
+    pub(crate) window_visible: bool,
     /// Repaints requested by a `CanvasController` outside of any rebuild.
     pub(crate) canvas_invalidations: crate::widgets::CanvasInvalidator,
     /// Physical pixels per logical pixel, forwarded to canvas painters so they

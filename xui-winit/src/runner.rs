@@ -602,6 +602,16 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackend> ApplicationHandler<WinitUser
             self.handle_runtime_event(event_loop, event);
         }
 
+        if let WindowEvent::Occluded(occluded) = &event {
+            // Stops the canvas animation loop while nothing can be seen. Only
+            // macOS and Wayland report this; elsewhere the flag stays true and
+            // behaviour is unchanged. Asking for a redraw on the way back is
+            // what restarts the loop -- the canvases that wanted another frame
+            // are still recorded, so it resumes where it stopped.
+            self.runtime_mut().app_mut().set_window_visible(!*occluded);
+            self.request_redraw_if_dirty();
+        }
+
         if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = &event {
             let _ = self
                 .runtime_mut()
