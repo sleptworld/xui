@@ -811,6 +811,8 @@ struct CanvasControllerState {
     invalidator: Option<CanvasInvalidator>,
     picks: Vec<CanvasPick>,
     size: Size<f32>,
+    /// Repaint every frame, for a drawing that moves on its own.
+    animating: bool,
 }
 
 /// Shared retained content for a [`CanvasWidget`].
@@ -907,6 +909,7 @@ impl CanvasController {
                 invalidator: None,
                 picks: Vec::new(),
                 size: Size::new(0.0, 0.0),
+                animating: false,
             })),
         }
     }
@@ -970,6 +973,44 @@ impl CanvasController {
 
     pub fn clear(&self) {
         self.set_scene(VectorScene::default());
+    }
+
+    /// Repaints every frame, for a drawing that animates on its own.
+    ///
+    /// The runtime then marks this controller's canvases dirty once per frame,
+    /// exactly the way a running style animation keeps itself scheduled, so the
+    /// painter re-runs on the presenter's own cadence -- vsync -- rather than
+    /// on a timer of the caller's that drifts against it.
+    ///
+    /// It is a real cost: a frame every refresh, forever, whether or not
+    /// anything about the drawing changed. Turn it off when the animation ends.
+    /// A one-off change wants [`CanvasController::invalidate`] instead.
+    ///
+    /// The painter gets no clock from this -- it does not need one. The state
+    /// it already keeps is the natural place for a start `Instant`, which also
+    /// makes pausing and scrubbing the caller's to decide:
+    ///
+    /// ```ignore
+    /// struct Shader { pipeline: wgpu::RenderPipeline, started: Instant }
+    /// // ...
+    /// let elapsed = shader.started.elapsed().as_secs_f32();
+    /// ```
+    pub fn set_animating(&self, animating: bool) {
+        let should_wake = {
+            let mut state = self.inner.borrow_mut();
+            let changed = state.animating != animating;
+            state.animating = animating;
+            changed && animating
+        };
+        // Starting mid-idle needs one nudge to get a frame scheduled; after
+        // that the per-frame tick keeps it going.
+        if should_wake {
+            self.invalidate();
+        }
+    }
+
+    pub fn is_animating(&self) -> bool {
+        self.inner.borrow().animating
     }
 
     /// Marks every canvas drawing this controller for a repaint, re-running the
@@ -2219,6 +2260,37 @@ mod tests {
             clear_next.set(true);
             compile_gpu(&mut widget, Size::new(10.0, 10.0), &gpu);
             assert_eq!(inits.get(), 2, "clearing the state rebuilds it");
+        }
+
+        /// An animating canvas has to keep asking for the next frame, the way a
+        /// running style animation does, or it repaints once and stops.
+        #[test]
+        fn animating_keeps_the_canvas_dirty_and_stopping_releases_it() {
+            let Some(gpu) = context() else {
+                eprintln!("no wgpu adapter available, skipping");
+                return;
+            };
+            let draws = Rc::new(Cell::new(0u32));
+            let drawn = Rc::clone(&draws);
+            let controller = CanvasController::with_gpu_painter(
+                move |_state: &mut Option<()>, _painter: &mut CanvasGpuPainter<'_>| {
+                    drawn.set(drawn.get() + 1);
+                },
+            );
+            assert!(!controller.is_animating());
+            controller.set_animating(true);
+            assert!(controller.is_animating());
+
+            // Each frame the runtime marks it dirty, so the painter re-runs --
+            // here compiled directly, which is what a dirty canvas gets.
+            let mut widget = CanvasWidget::new(controller.clone());
+            for _ in 0..3 {
+                compile_gpu(&mut widget, Size::new(10.0, 10.0), &gpu);
+            }
+            assert_eq!(draws.get(), 3, "an animating canvas repaints every frame");
+
+            controller.set_animating(false);
+            assert!(!controller.is_animating());
         }
 
         #[test]

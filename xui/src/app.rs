@@ -226,6 +226,15 @@ impl App {
     }
 
     #[inline(always)]
+    /// Marks every canvas that asked to animate dirty for this frame.
+    ///
+    /// Called once a frame beside [`Self::tick_style_animations`], for the same
+    /// reason: the work is scheduled by being dirty, and something has to
+    /// re-dirty it each frame for the loop to continue.
+    pub fn tick_animating_canvases(&mut self) {
+        self.ui_runtime.tick_animating_canvases();
+    }
+
     pub fn has_running_style_animations(&self) -> bool {
         self.ui_runtime.has_running_style_animations()
     }

@@ -183,6 +183,9 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
     pub fn frame(&mut self) -> Result<FrameReport, AppRenderError<B::Error>> {
         self.app.drain_async_messages();
         self.tick_style_animations();
+        // Before `is_dirty`, so a canvas that animates is part of this frame
+        // rather than of the one after it.
+        self.app.tick_animating_canvases();
         let should_render = self.app.is_dirty();
         if should_render {
             self.app.render(&mut self.backend, &mut self.text_backend)?;

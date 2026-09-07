@@ -1982,6 +1982,7 @@ impl UiRuntime {
             || self.render_system.scene.is_dirty()
             || self.render_system.properties.is_dirty()
             || self.has_running_style_animations()
+            || self.has_animating_canvases()
             || self.style_system.has_dirty()
             || !self.ui_state.layout_dirty_list.is_empty()
             || !self.hosts[self.root].work.is_empty()
@@ -2019,6 +2020,44 @@ impl UiRuntime {
         self.refresh_taffy_context(id);
         self.mark_dirty(id, flags);
         current_widget
+    }
+
+    /// Whether any canvas asked to repaint every frame.
+    ///
+    /// Reported by `is_dirty` for the same reason a running style animation is:
+    /// after a frame renders and drains the dirty list, this is what tells the
+    /// runner to ask for the next one, so the loop sustains itself.
+    pub fn has_animating_canvases(&self) -> bool {
+        self.canvas_nodes
+            .keys()
+            .any(|id| self.canvas_is_animating(id))
+    }
+
+    /// Marks every animating canvas dirty, once per frame.
+    ///
+    /// The sibling of `tick_style_animations`: `has_animating_canvases` gets a
+    /// frame scheduled, and this is what makes the painter actually re-run in
+    /// it. Walks the canvas index rather than keeping a second set in sync --
+    /// there are a handful of canvases, and a set that drifts from the
+    /// controllers would animate the wrong ones.
+    pub fn tick_animating_canvases(&mut self) {
+        let animating: Vec<_> = self
+            .canvas_nodes
+            .keys()
+            .filter(|id| self.canvas_is_animating(*id))
+            .collect();
+        for id in animating {
+            self.invalidate_canvas(id);
+        }
+    }
+
+    fn canvas_is_animating(&self, id: NodeId) -> bool {
+        self.hosts.get(id).is_some_and(|host| {
+            host.widget.with_widgets(|node| match node {
+                Widgets::Canvas(canvas) => canvas.controller.is_animating(),
+                _ => false,
+            })
+        })
     }
 
     /// Re-runs a canvas's drawing on the next frame.
