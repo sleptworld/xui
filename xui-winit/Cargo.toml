@@ -6,9 +6,9 @@ edition = "2024"
 [features]
 default = ["skia"]
 skia = ["dep:xui-skia"]
-# Skia rendering on a wgpu-owned device (opt in at runtime with
-# `XUI_SKIA_WGPU=1`). Orthogonal to `wgpu`, which selects the standalone wgpu
-# renderer instead of Skia.
+# Skia rendering on a device wgpu opened, which is what lets a canvas GPU
+# painter composite its own shader output. Orthogonal to `wgpu`, which selects
+# the standalone wgpu renderer instead of Skia.
 skia-wgpu = ["skia", "xui-skia/wgpu", "xui/wgpu"]
 wgpu = ["dep:wgpu", "dep:xui-cosmic"]
 

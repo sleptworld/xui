@@ -10,8 +10,8 @@
 //!   [`crate::vulkan::VulkanPresenter`].
 //! - Every platform — a CPU `softbuffer` blit ([`SoftwarePresenter`]).
 //!
-//! With the `wgpu` feature and `XUI_SKIA_WGPU=1`, the GPU presenters are built
-//! on a device wgpu opened rather than one they create themselves -- see
+//! With the `wgpu` feature, the GPU presenters are built on a device wgpu
+//! opened rather than one they create themselves -- see
 //! [`crate::wgpu_surface`]. Everything above stays exactly as described:
 //! the layer, the swapchain, the present mode and the buffer count are still
 //! each presenter's own. Only the device is shared, because that is all it
@@ -92,15 +92,17 @@ impl WindowPresenter {
             ));
         }
         #[cfg(feature = "wgpu")]
-        if crate::wgpu_surface::requested() {
+        if !crate::wgpu_surface::disabled() {
             match Self::new_shared(window.clone()) {
                 Ok(setup) => return Ok(setup),
                 // Falling through to a self-owned device rather than to
                 // software: failing to open a shared device says nothing about
-                // whether this machine can drive Metal/Vulkan/D3D at all.
+                // whether this machine can drive Metal/Vulkan/D3D at all. The
+                // UI renders exactly as before -- only a canvas GPU painter
+                // loses anything, and it draws nothing rather than failing.
                 Err(error) => eprintln!(
-                    "xui-skia: XUI_SKIA_WGPU was set but no shared wgpu device could be used, \
-                     falling back to a self-owned one ({error})"
+                    "xui-skia: could not open a shared wgpu device, using a self-owned one; \
+                     canvases with a GPU painter will not draw ({error})"
                 ),
             }
         }

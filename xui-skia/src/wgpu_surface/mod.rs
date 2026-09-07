@@ -32,8 +32,19 @@
 //!
 //! # Opting in
 //!
-//! Build `xui-skia` with the `wgpu` feature and set `XUI_SKIA_WGPU=1`. Without
-//! both, the presenters create their own devices exactly as before.
+//! Building `xui-skia` with the `wgpu` feature is the whole opt-in: the
+//! presenters then take their device from here instead of creating one, and a
+//! canvas GPU painter has something to draw with. Without the feature they
+//! create their own devices exactly as before.
+//!
+//! Opening a wgpu device costs startup time (instance, adapter, device --
+//! tens of milliseconds), and it is paid whether or not any canvas uses it,
+//! because the device has to be chosen before Skia's context is built and long
+//! before any widget exists. That is what the Cargo feature is for.
+//!
+//! `XUI_SKIA_WGPU=0` forces the self-owned path back on without a rebuild, for
+//! working around a driver that misbehaves on the shared one -- the same
+//! escape hatch `XUI_SKIA_GPU=0` is for the GPU presenters as a whole.
 //!
 //! # Platforms
 //!
@@ -281,11 +292,17 @@ impl WgpuHost {
     }
 }
 
-/// Whether the shared-device path was asked for. Off unless requested.
-pub(crate) fn requested() -> bool {
+/// An escape hatch, in the shape of the `XUI_SKIA_GPU=0` one next to it.
+///
+/// The Cargo feature is the switch: building with `wgpu` is the decision to
+/// share a device, and requiring a second runtime opt-in on top of it meant a
+/// build that asked for the feature silently got nothing. This exists only so a
+/// driver that misbehaves on the shared path can be worked around without a
+/// rebuild.
+pub(crate) fn disabled() -> bool {
     matches!(
         std::env::var("XUI_SKIA_WGPU").as_deref(),
-        Ok("1") | Ok("on") | Ok("true")
+        Ok("0") | Ok("off") | Ok("false")
     )
 }
 

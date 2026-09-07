@@ -103,9 +103,11 @@ impl Default for CanvasContent {
 ///
 /// Handed to the runtime by the renderer at startup, because it must be the
 /// *renderer's* device: a texture from any other one cannot be composited
-/// without a copy, which is the whole point of this path. Without the `wgpu`
-/// feature the type still exists but cannot be built, so a GPU painter simply
-/// never runs.
+/// without a copy, which is the whole point of this path.
+///
+/// The renderer has one to share only when it was built for it -- under
+/// `xui-winit` that is the `skia-wgpu` feature. Without it the type still
+/// exists but cannot be built, and a GPU painter simply never runs.
 #[derive(Clone)]
 pub struct CanvasGpuContext {
     #[cfg(feature = "wgpu")]

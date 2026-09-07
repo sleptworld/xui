@@ -8,9 +8,9 @@
 //! macOS, Direct3D 12 on Windows, Vulkan on Linux, and a `softbuffer` CPU blit
 //! everywhere as the fallback when no GPU context can be created.
 //!
-//! With the optional `wgpu` feature and `XUI_SKIA_WGPU=1`, Skia instead runs on
-//! a wgpu-owned device and swapchain, which is what lets a caller's own
-//! `wgpu::Texture` be composited by Skia. See [`wgpu_surface`].
+//! With the optional `wgpu` feature, those same presenters run on a device wgpu
+//! opened rather than one they create themselves, which is what lets a caller's
+//! own `wgpu::Texture` be composited by Skia. See [`wgpu_surface`].
 //!
 //! - `SkiaBackend` — the render backend; generic over a `TextBackend`
 //!   (defaults to `SkiaTextBackend`).
