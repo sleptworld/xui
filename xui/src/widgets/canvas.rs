@@ -161,8 +161,8 @@ pub const CANVAS_GPU_USAGES: wgpu::TextureUsages =
 /// [`Self::target`] and submits on [`Self::queue`]; nothing has to be
 /// registered by hand.
 ///
-/// Pipelines belong in the setup closure, not here -- see
-/// [`CanvasController::with_gpu_painter`].
+/// The painter's own state -- pipelines, layouts, buffers -- is kept by the
+/// canvas across draws; see [`CanvasController::with_gpu_painter`].
 #[cfg(feature = "wgpu")]
 pub struct CanvasGpuPainter<'a> {
     device: &'a wgpu::Device,
@@ -230,72 +230,34 @@ impl<'a> CanvasGpuPainter<'a> {
     }
 }
 
-/// What a canvas GPU painter is given to build its pipelines with, once.
+/// A canvas GPU painter, with its state type erased.
 ///
-/// Everything expensive belongs here: shader modules, render pipelines, bind
-/// group layouts, samplers, immutable buffers. Building a pipeline compiles a
-/// shader, which is milliseconds -- far too much to repeat per frame, and the
-/// reason a GPU painter is two closures rather than one.
-#[cfg(feature = "wgpu")]
-pub struct CanvasGpuSetup<'a> {
-    device: &'a wgpu::Device,
-    queue: &'a wgpu::Queue,
-}
-
-#[cfg(feature = "wgpu")]
-impl<'a> CanvasGpuSetup<'a> {
-    pub fn device(&self) -> &'a wgpu::Device {
-        self.device
-    }
-
-    pub fn queue(&self) -> &'a wgpu::Queue {
-        self.queue
-    }
-
-    /// The format a pipeline's colour target must declare, the same one
-    /// [`CanvasGpuPainter::target`] is allocated with.
-    pub fn format(&self) -> wgpu::TextureFormat {
-        CANVAS_GPU_FORMAT
-    }
-}
-
-/// A canvas GPU painter, with its setup and its per-frame state erased.
-///
-/// Implemented once, for the pair of closures
-/// [`CanvasController::with_gpu_painter`] takes. It exists so that
-/// [`CanvasContent`] can hold a painter without naming the caller's state type.
+/// Implemented once, for the closure [`CanvasController::with_gpu_painter`]
+/// takes. It exists so that [`CanvasContent`] can hold a painter without naming
+/// the caller's state type.
 #[cfg(feature = "wgpu")]
 pub trait GpuPainter {
     fn draw(&self, painter: &mut CanvasGpuPainter<'_>);
 }
 
-/// The state a GPU painter built in its setup, held for as long as the painter.
+/// A GPU painter's closure and the state it keeps between draws.
 ///
-/// Living inside the `Rc` that holds the closures is what keeps it correct:
+/// Living inside the `Rc` that holds the closure is what keeps it correct:
 /// replacing a controller's content drops the state with it, so nothing has to
-/// track which pipelines belong to which painter.
+/// track which pipelines belonged to which painter.
 #[cfg(feature = "wgpu")]
-struct GpuPainterFns<S, Setup, Draw> {
-    setup: Setup,
+struct GpuPainterFn<S, Draw> {
     draw: Draw,
     state: RefCell<Option<S>>,
 }
 
 #[cfg(feature = "wgpu")]
-impl<S, Setup, Draw> GpuPainter for GpuPainterFns<S, Setup, Draw>
+impl<S, Draw> GpuPainter for GpuPainterFn<S, Draw>
 where
-    Setup: Fn(&CanvasGpuSetup<'_>) -> S,
-    Draw: Fn(&mut S, &mut CanvasGpuPainter<'_>),
+    Draw: Fn(&mut Option<S>, &mut CanvasGpuPainter<'_>),
 {
     fn draw(&self, painter: &mut CanvasGpuPainter<'_>) {
-        let mut state = self.state.borrow_mut();
-        let state = state.get_or_insert_with(|| {
-            (self.setup)(&CanvasGpuSetup {
-                device: painter.device,
-                queue: painter.queue,
-            })
-        });
-        (self.draw)(state, painter);
+        (self.draw)(&mut self.state.borrow_mut(), painter);
     }
 }
 
@@ -890,49 +852,45 @@ impl CanvasController {
     /// Builds a controller whose drawing is produced by the application's own
     /// GPU code, on the device the renderer runs on.
     ///
-    /// Two closures, because the two halves have different lifetimes:
+    /// The painter runs after layout with the node's measured size, again on
+    /// resize and on [`CanvasController::invalidate`], and records a render
+    /// pass into a target the framework allocated and composites afterwards.
+    /// So a shader becomes a widget with no texture bookkeeping.
     ///
-    /// - `setup` runs **once**, the first time a device is available, and
-    ///   builds whatever is expensive -- pipelines above all, since creating
-    ///   one compiles a shader. Whatever it returns is kept and handed back to
-    ///   every draw.
-    /// - `draw` runs after layout with the node's measured size, again on
-    ///   resize and on [`CanvasController::invalidate`], and records a render
-    ///   pass into a target the framework allocated and composites afterwards.
-    ///
-    /// So a shader becomes a widget with no texture bookkeeping and no
-    /// per-frame pipeline creation:
+    /// It is handed `&mut Option<S>` -- state the canvas keeps between draws.
+    /// Anything expensive belongs there, pipelines above all: creating one
+    /// compiles a shader, which is milliseconds, and there is nothing about a
+    /// pipeline that a resize invalidates. Only the render target is
+    /// size-dependent, and the framework reallocates that.
     ///
     /// ```ignore
-    /// CanvasController::with_gpu_painter(
-    ///     |setup| Pipelines::new(setup.device(), setup.format()),
-    ///     |pipelines, gpu| {
-    ///         let mut encoder = gpu.device().create_command_encoder(&Default::default());
-    ///         {
-    ///             let mut pass = encoder.begin_render_pass(&/* gpu.target() */);
-    ///             pass.set_pipeline(&pipelines.shader);
-    ///             pass.draw(0..3, 0..1);
-    ///         }
-    ///         gpu.queue().submit([encoder.finish()]);
-    ///     },
-    /// )
+    /// CanvasController::with_gpu_painter(|state, gpu| {
+    ///     let pipelines = state.get_or_insert_with(|| {
+    ///         Pipelines::new(gpu.device(), gpu.format())
+    ///     });
+    ///
+    ///     let mut encoder = gpu.device().create_command_encoder(&Default::default());
+    ///     {
+    ///         let mut pass = encoder.begin_render_pass(&/* gpu.target() */);
+    ///         pass.set_pipeline(&pipelines.shader);
+    ///         pass.draw(0..3, 0..1);
+    ///     }
+    ///     gpu.queue().submit([encoder.finish()]);
+    /// })
     /// ```
     ///
-    /// State that depends on the node's size -- a depth buffer, say -- belongs
-    /// in `draw`, which can compare [`CanvasGpuPainter::size`] against what it
-    /// built last time. `setup` never sees a size, because it runs before there
-    /// is a stable one.
+    /// Because initialization happens inside the draw, it sees everything a
+    /// draw sees -- the size, the style, the theme -- and rebuilding is just
+    /// `*state = None`, which is what a format or theme change would need.
     ///
     /// Hold the controller in a `use_ref` rather than rebuilding it each
-    /// render: a new controller is a new identity, which throws away the state
-    /// `setup` built and reallocates the target.
+    /// render: a new controller is a new identity, which drops the state and
+    /// reallocates the target.
     #[cfg(feature = "wgpu")]
     pub fn with_gpu_painter<S: 'static>(
-        setup: impl Fn(&CanvasGpuSetup<'_>) -> S + 'static,
-        draw: impl Fn(&mut S, &mut CanvasGpuPainter<'_>) + 'static,
+        draw: impl Fn(&mut Option<S>, &mut CanvasGpuPainter<'_>) + 'static,
     ) -> Self {
-        Self::with_content(CanvasContent::GpuPainter(Rc::new(GpuPainterFns {
-            setup,
+        Self::with_content(CanvasContent::GpuPainter(Rc::new(GpuPainterFn {
             draw,
             state: RefCell::new(None),
         })))
@@ -2088,8 +2046,7 @@ mod tests {
             let seen = Rc::new(Cell::new(None));
             let recorded = Rc::clone(&seen);
             let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
-                |_setup| (),
-                move |_state: &mut (), painter: &mut CanvasGpuPainter<'_>| {
+                move |_state: &mut Option<()>, painter: &mut CanvasGpuPainter<'_>| {
                     recorded.set(Some(painter.size()));
                     // A real pipeline would render here; clearing is enough to
                     // prove the target and queue are usable.
@@ -2141,8 +2098,7 @@ mod tests {
                 return;
             };
             let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
-                |_setup| (),
-                |_state: &mut (), _painter: &mut CanvasGpuPainter<'_>| {},
+                |_state: &mut Option<()>, _painter: &mut CanvasGpuPainter<'_>| {},
             ));
 
             compile_gpu(&mut widget, Size::new(10.0, 10.0), &gpu);
@@ -2197,38 +2153,70 @@ mod tests {
             );
         }
 
-        /// The reason a GPU painter is two closures: creating a pipeline
-        /// compiles a shader, so it must happen once, not once a frame.
+        /// The reason the canvas keeps state at all: creating a pipeline
+        /// compiles a shader, so it must happen once, not once a frame -- and
+        /// a resize, which reallocates the target, must not disturb it.
         #[test]
-        fn setup_runs_once_across_redraws_and_resizes() {
+        fn state_survives_redraws_and_resizes() {
             let Some(gpu) = context() else {
                 eprintln!("no wgpu adapter available, skipping");
                 return;
             };
-            let setups = Rc::new(Cell::new(0u32));
+            let inits = Rc::new(Cell::new(0u32));
             let draws = Rc::new(Cell::new(0u32));
-            let counted = Rc::clone(&setups);
+            let counted = Rc::clone(&inits);
             let drawn = Rc::clone(&draws);
             let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
-                move |_setup| {
-                    counted.set(counted.get() + 1);
-                    // Stands in for a pipeline: state built once and handed
-                    // back to every draw.
-                    7u32
-                },
-                move |state: &mut u32, _painter: &mut CanvasGpuPainter<'_>| {
-                    assert_eq!(*state, 7, "the setup's state reaches every draw");
+                move |state: &mut Option<u32>, _painter: &mut CanvasGpuPainter<'_>| {
+                    // Stands in for a pipeline: built once, reached every draw.
+                    let built = state.get_or_insert_with(|| {
+                        counted.set(counted.get() + 1);
+                        7
+                    });
+                    assert_eq!(*built, 7, "the same state reaches every draw");
                     drawn.set(drawn.get() + 1);
                 },
             ));
 
             compile_gpu(&mut widget, Size::new(10.0, 10.0), &gpu);
             compile_gpu(&mut widget, Size::new(10.0, 10.0), &gpu);
-            // A resize reallocates the target, but not the pipelines.
+            // A resize reallocates the target, but nothing about a pipeline
+            // depends on size, so the state has to come through untouched.
             compile_gpu(&mut widget, Size::new(20.0, 10.0), &gpu);
 
-            assert_eq!(setups.get(), 1, "setup must not run per draw");
+            assert_eq!(inits.get(), 1, "state must not be rebuilt per draw");
             assert_eq!(draws.get(), 3);
+        }
+
+        /// `*state = None` is the whole rebuild story -- what a format or theme
+        /// change would use.
+        #[test]
+        fn clearing_the_state_rebuilds_it() {
+            let Some(gpu) = context() else {
+                eprintln!("no wgpu adapter available, skipping");
+                return;
+            };
+            let inits = Rc::new(Cell::new(0u32));
+            let counted = Rc::clone(&inits);
+            let clear_next = Rc::new(Cell::new(false));
+            let clear = Rc::clone(&clear_next);
+            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
+                move |state: &mut Option<u32>, _painter: &mut CanvasGpuPainter<'_>| {
+                    if clear.replace(false) {
+                        *state = None;
+                    }
+                    state.get_or_insert_with(|| {
+                        counted.set(counted.get() + 1);
+                        7
+                    });
+                },
+            ));
+
+            compile_gpu(&mut widget, Size::new(10.0, 10.0), &gpu);
+            assert_eq!(inits.get(), 1);
+            clear_next.set(true);
+            compile_gpu(&mut widget, Size::new(10.0, 10.0), &gpu);
+            assert_eq!(inits.get(), 2, "clearing the state rebuilds it");
         }
 
         #[test]
@@ -2236,8 +2224,7 @@ mod tests {
             let ran = Rc::new(Cell::new(false));
             let recorded = Rc::clone(&ran);
             let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
-                |_setup| (),
-                move |_state: &mut (), _painter: &mut CanvasGpuPainter<'_>| {
+                move |_state: &mut Option<()>, _painter: &mut CanvasGpuPainter<'_>| {
                     recorded.set(true);
                 },
             ));
