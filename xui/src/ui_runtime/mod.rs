@@ -41,6 +41,10 @@ pub struct UiRuntime {
     /// `text_nodes`: the post-layout pass has to find them without walking the
     /// whole tree.
     pub(crate) canvas_nodes: SparseSecondaryMap<NodeId, ()>,
+    /// Canvases whose last drawing asked to be drawn again. Kept as a set so
+    /// `is_dirty` -- consulted after every batch of events -- stays O(1)
+    /// instead of borrowing every canvas widget to ask.
+    pub(crate) canvases_wanting_repaint: SparseSecondaryMap<NodeId, ()>,
     /// Repaints requested by a `CanvasController` outside of any rebuild.
     pub(crate) canvas_invalidations: crate::widgets::CanvasInvalidator,
     /// Physical pixels per logical pixel, forwarded to canvas painters so they

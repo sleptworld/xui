@@ -77,6 +77,7 @@ impl UiRuntime {
             interaction_system: InteractionSystem::new(),
             text_nodes: slotmap::SparseSecondaryMap::new(),
             canvas_nodes: slotmap::SparseSecondaryMap::new(),
+            canvases_wanting_repaint: slotmap::SparseSecondaryMap::new(),
             canvas_invalidations: crate::widgets::CanvasInvalidator::default(),
             scale_factor: 1.0,
             gpu_context: None,
@@ -972,6 +973,7 @@ impl UiRuntime {
                     .expect("failed to remove host render subtree");
             }
             self.text_nodes.remove(removed);
+            self.canvases_wanting_repaint.remove(removed);
             if self.canvas_nodes.remove(removed).is_some() {
                 self.unbind_canvas_controller(removed);
             }
@@ -2022,42 +2024,30 @@ impl UiRuntime {
         current_widget
     }
 
-    /// Whether any canvas asked to repaint every frame.
+    /// Whether any canvas asked, as it drew, to be drawn again.
     ///
     /// Reported by `is_dirty` for the same reason a running style animation is:
     /// after a frame renders and drains the dirty list, this is what tells the
     /// runner to ask for the next one, so the loop sustains itself.
+    ///
+    /// A set maintained as canvases compile, not a walk of the widget tree:
+    /// `is_dirty` is consulted after every batch of events, and it should stay
+    /// a handful of flag checks rather than borrowing every canvas widget.
     pub fn has_animating_canvases(&self) -> bool {
-        self.canvas_nodes
-            .keys()
-            .any(|id| self.canvas_is_animating(id))
+        !self.canvases_wanting_repaint.is_empty()
     }
 
-    /// Marks every animating canvas dirty, once per frame.
+    /// Marks every canvas that asked for another frame dirty, once per frame.
     ///
     /// The sibling of `tick_style_animations`: `has_animating_canvases` gets a
     /// frame scheduled, and this is what makes the painter actually re-run in
-    /// it. Walks the canvas index rather than keeping a second set in sync --
-    /// there are a handful of canvases, and a set that drifts from the
-    /// controllers would animate the wrong ones.
+    /// it. A painter that stops asking is dropped from the set as it compiles,
+    /// so the loop ends on its own.
     pub fn tick_animating_canvases(&mut self) {
-        let animating: Vec<_> = self
-            .canvas_nodes
-            .keys()
-            .filter(|id| self.canvas_is_animating(*id))
-            .collect();
+        let animating: Vec<_> = self.canvases_wanting_repaint.keys().collect();
         for id in animating {
             self.invalidate_canvas(id);
         }
-    }
-
-    fn canvas_is_animating(&self, id: NodeId) -> bool {
-        self.hosts.get(id).is_some_and(|host| {
-            host.widget.with_widgets(|node| match node {
-                Widgets::Canvas(canvas) => canvas.controller.is_animating(),
-                _ => false,
-            })
-        })
     }
 
     /// Re-runs a canvas's drawing on the next frame.
@@ -2294,6 +2284,7 @@ impl UiRuntime {
         let widget = self.hosts[id].widget.clone();
         let font_context = measurer.backend().epoch();
 
+        let mut wants_repaint = false;
         let text_boxes = widget.with_widgets_mut(|node| match node {
             Widgets::Canvas(canvas) => {
                 let mut measure_text = |text_id, props: &TextProps, constraints| {
@@ -2321,10 +2312,16 @@ impl UiRuntime {
                     &mut measure_text,
                     gpu_context.as_ref(),
                 );
+                wants_repaint = canvas.wants_repaint();
                 canvas.text_boxes()
             }
             _ => Vec::new(),
         });
+        if wants_repaint {
+            self.canvases_wanting_repaint.insert(id, ());
+        } else {
+            self.canvases_wanting_repaint.remove(id);
+        }
 
         measurer.retain_direct_slots(
             id,

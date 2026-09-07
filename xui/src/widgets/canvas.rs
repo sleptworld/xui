@@ -176,10 +176,34 @@ pub struct CanvasGpuPainter<'a> {
     style: &'a ComputedStyle,
     theme: &'a Theme,
     picks: Vec<CanvasPick>,
+    repaint: bool,
 }
 
 #[cfg(feature = "wgpu")]
 impl<'a> CanvasGpuPainter<'a> {
+    /// Asks for another frame after this one.
+    ///
+    /// This is how a canvas animates: the painter says, each time it draws,
+    /// whether it wants to draw again. The runtime schedules the next frame,
+    /// the presenter paces it at vsync, and the loop stops the moment a draw
+    /// goes by without asking.
+    ///
+    /// Per-frame rather than a flag left on somewhere, because the painter is
+    /// the only place that knows whether the animation is finished:
+    ///
+    /// ```ignore
+    /// let elapsed = shader.started.elapsed();
+    /// if elapsed < Duration::from_secs(2) {
+    ///     gpu.request_repaint();
+    /// }
+    /// ```
+    ///
+    /// A canvas that animates forever calls it unconditionally. Nothing else
+    /// has to remember to turn it off.
+    pub fn request_repaint(&mut self) -> &mut Self {
+        self.repaint = true;
+        self
+    }
     /// The renderer's device. Pipelines and buffers must be created on it.
     pub fn device(&self) -> &'a wgpu::Device {
         self.device
@@ -811,8 +835,6 @@ struct CanvasControllerState {
     invalidator: Option<CanvasInvalidator>,
     picks: Vec<CanvasPick>,
     size: Size<f32>,
-    /// Repaint every frame, for a drawing that moves on its own.
-    animating: bool,
 }
 
 /// Shared retained content for a [`CanvasWidget`].
@@ -909,7 +931,6 @@ impl CanvasController {
                 invalidator: None,
                 picks: Vec::new(),
                 size: Size::new(0.0, 0.0),
-                animating: false,
             })),
         }
     }
@@ -973,44 +994,6 @@ impl CanvasController {
 
     pub fn clear(&self) {
         self.set_scene(VectorScene::default());
-    }
-
-    /// Repaints every frame, for a drawing that animates on its own.
-    ///
-    /// The runtime then marks this controller's canvases dirty once per frame,
-    /// exactly the way a running style animation keeps itself scheduled, so the
-    /// painter re-runs on the presenter's own cadence -- vsync -- rather than
-    /// on a timer of the caller's that drifts against it.
-    ///
-    /// It is a real cost: a frame every refresh, forever, whether or not
-    /// anything about the drawing changed. Turn it off when the animation ends.
-    /// A one-off change wants [`CanvasController::invalidate`] instead.
-    ///
-    /// The painter gets no clock from this -- it does not need one. The state
-    /// it already keeps is the natural place for a start `Instant`, which also
-    /// makes pausing and scrubbing the caller's to decide:
-    ///
-    /// ```ignore
-    /// struct Shader { pipeline: wgpu::RenderPipeline, started: Instant }
-    /// // ...
-    /// let elapsed = shader.started.elapsed().as_secs_f32();
-    /// ```
-    pub fn set_animating(&self, animating: bool) {
-        let should_wake = {
-            let mut state = self.inner.borrow_mut();
-            let changed = state.animating != animating;
-            state.animating = animating;
-            changed && animating
-        };
-        // Starting mid-idle needs one nudge to get a frame scheduled; after
-        // that the per-frame tick keeps it going.
-        if should_wake {
-            self.invalidate();
-        }
-    }
-
-    pub fn is_animating(&self) -> bool {
-        self.inner.borrow().animating
     }
 
     /// Marks every canvas drawing this controller for a repaint, re-running the
@@ -1107,6 +1090,9 @@ pub struct CanvasWidget {
     /// scene diffing without this.
     #[cfg(feature = "wgpu")]
     gpu_revision: u64,
+    /// Whether the last painter asked to draw again. Read once a frame by the
+    /// runtime, which is what keeps an animating canvas scheduled.
+    wants_repaint: bool,
     /// The host node this widget is mounted on, and the channel its controller
     /// invalidates through. Held here so that swapping the controller can move
     /// the binding without the pipeline having to know it happened.
@@ -1147,6 +1133,7 @@ impl CanvasWidget {
             gpu_target: None,
             #[cfg(feature = "wgpu")]
             gpu_revision: 0,
+            wants_repaint: false,
             binding: None,
         }
     }
@@ -1267,6 +1254,7 @@ impl CanvasWidget {
             return;
         }
 
+        self.wants_repaint = false;
         let (batches, picks) = match content {
             CanvasContent::Scene(scene) => (
                 compile_commands(scene.commands(), &HashMap::new()),
@@ -1371,9 +1359,11 @@ impl CanvasWidget {
             style,
             theme,
             picks: Vec::new(),
+            repaint: false,
         };
         painter.draw(&mut painter_cx);
         let picks = std::mem::take(&mut painter_cx.picks);
+        self.wants_repaint = painter_cx.repaint;
 
         self.gpu_revision = self.gpu_revision.wrapping_add(1);
         let command = VectorCommand::Texture {
@@ -1385,6 +1375,11 @@ impl CanvasWidget {
             sampling: Sampling::Linear,
         };
         (compile_commands(&[command], &HashMap::new()), picks)
+    }
+
+    /// Whether the last drawing asked to be drawn again.
+    pub(crate) fn wants_repaint(&self) -> bool {
+        self.wants_repaint
     }
 
     /// The texture a GPU painter last drew into, if any. Exposed for tests and
@@ -2265,32 +2260,59 @@ mod tests {
         /// An animating canvas has to keep asking for the next frame, the way a
         /// running style animation does, or it repaints once and stops.
         #[test]
-        fn animating_keeps_the_canvas_dirty_and_stopping_releases_it() {
+        fn a_painter_that_asks_keeps_animating_and_one_that_stops_does_not() {
             let Some(gpu) = context() else {
                 eprintln!("no wgpu adapter available, skipping");
                 return;
             };
+            // Asks for three more frames, then stops -- a finite animation.
             let draws = Rc::new(Cell::new(0u32));
             let drawn = Rc::clone(&draws);
-            let controller = CanvasController::with_gpu_painter(
-                move |_state: &mut Option<()>, _painter: &mut CanvasGpuPainter<'_>| {
-                    drawn.set(drawn.get() + 1);
+            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
+                move |_state: &mut Option<()>, painter: &mut CanvasGpuPainter<'_>| {
+                    let n = drawn.get() + 1;
+                    drawn.set(n);
+                    if n < 4 {
+                        painter.request_repaint();
+                    }
                 },
-            );
-            assert!(!controller.is_animating());
-            controller.set_animating(true);
-            assert!(controller.is_animating());
+            ));
 
-            // Each frame the runtime marks it dirty, so the painter re-runs --
-            // here compiled directly, which is what a dirty canvas gets.
-            let mut widget = CanvasWidget::new(controller.clone());
-            for _ in 0..3 {
+            for frame in 1..=4 {
                 compile_gpu(&mut widget, Size::new(10.0, 10.0), &gpu);
+                assert_eq!(
+                    widget.wants_repaint(),
+                    frame < 4,
+                    "frame {frame} should{} ask for another",
+                    if frame < 4 { "" } else { " not" }
+                );
             }
-            assert_eq!(draws.get(), 3, "an animating canvas repaints every frame");
+            assert_eq!(draws.get(), 4);
+        }
 
-            controller.set_animating(false);
-            assert!(!controller.is_animating());
+        /// The flag is per-draw, so a painter that asked once and then stopped
+        /// must not leave the canvas scheduled forever.
+        #[test]
+        fn a_repaint_request_does_not_stick() {
+            let Some(gpu) = context() else {
+                eprintln!("no wgpu adapter available, skipping");
+                return;
+            };
+            let ask = Rc::new(Cell::new(true));
+            let asking = Rc::clone(&ask);
+            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
+                move |_state: &mut Option<()>, painter: &mut CanvasGpuPainter<'_>| {
+                    if asking.get() {
+                        painter.request_repaint();
+                    }
+                },
+            ));
+
+            compile_gpu(&mut widget, Size::new(10.0, 10.0), &gpu);
+            assert!(widget.wants_repaint());
+            ask.set(false);
+            compile_gpu(&mut widget, Size::new(10.0, 10.0), &gpu);
+            assert!(!widget.wants_repaint(), "the request must not carry over");
         }
 
         #[test]
