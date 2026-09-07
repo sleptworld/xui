@@ -118,7 +118,20 @@ impl<T: TextBackend> SkiaBackend<T> {
             })
             .collect::<Vec<_>>()
             .into();
-        self.vector_scenes.insert(scene.id(), Arc::clone(&compiled));
+        // The cache exists to avoid re-running `sk_path`, so a scene with no
+        // paths has nothing to save by being in it -- and a canvas GPU painter
+        // mints a fresh scene id every frame it draws. Caching those would
+        // evict a full 1024 entries of real path work every ~17 seconds at
+        // 60fps, to keep results nothing will ever look up again.
+        let has_paths = compiled.iter().any(|command| {
+            matches!(
+                command,
+                CompiledVectorCommand::FillPath { .. } | CompiledVectorCommand::StrokePath { .. }
+            )
+        });
+        if has_paths {
+            self.vector_scenes.insert(scene.id(), Arc::clone(&compiled));
+        }
         compiled
     }
 
@@ -552,6 +565,36 @@ mod texture_tests {
         let mut pixels = vec![0u8; row_bytes * SIZE as usize];
         assert!(surface.read_pixels(&info, &mut pixels, row_bytes, (0, 0)));
         pixels
+    }
+
+    /// A canvas GPU painter mints a new scene id every frame, so caching its
+    /// scenes would push everything else out of a 1024-entry cache in seconds.
+    /// Nothing in one is worth caching anyway.
+    #[test]
+    fn texture_only_scenes_stay_out_of_the_scene_cache() {
+        let mut backend = TestBackend::headless(1.0, SkiaBackendOptions::default());
+        let id = ExternalTextureId::next();
+        for revision in 0..64 {
+            backend.compiled_vector_scene(&texture_scene(id, revision));
+        }
+        assert_eq!(
+            backend.vector_scenes.len(),
+            0,
+            "a scene with no paths has nothing to cache"
+        );
+
+        // A scene that does compile paths is still cached, which is what the
+        // cache is for.
+        let mut path = xui_interface::PathBuilder::new();
+        path.move_to(xui_interface::Point::new(0.0, 0.0))
+            .line_to(xui_interface::Point::new(4.0, 4.0));
+        let scene = VectorScene::new(vec![VectorCommand::FillPath {
+            path: path.build(),
+            transform: Affine::IDENTITY,
+            fill: PathFill::new(xui_interface::Color::BLACK),
+        }]);
+        backend.compiled_vector_scene(&scene);
+        assert_eq!(backend.vector_scenes.len(), 1);
     }
 
     #[test]

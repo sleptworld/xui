@@ -18,6 +18,10 @@ impl<K: Copy + Eq + Hash, V: Clone> LocalLru<K, V> {
         }
     }
 
+    pub(super) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
     pub(super) fn get(&mut self, key: &K) -> Option<V> {
         self.clock = self.clock.wrapping_add(1);
         let (value, used) = self.entries.get_mut(key)?;
