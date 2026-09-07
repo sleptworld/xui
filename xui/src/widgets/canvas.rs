@@ -65,7 +65,7 @@ pub enum CanvasContent {
     /// Drawn by the application's own GPU code. See
     /// [`CanvasController::with_gpu_painter`].
     #[cfg(feature = "wgpu")]
-    GpuPainter(Rc<dyn Fn(&mut CanvasGpuPainter<'_>)>),
+    GpuPainter(Rc<dyn GpuPainter>),
 }
 
 impl CanvasContent {
@@ -153,30 +153,16 @@ pub const CANVAS_GPU_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Uno
 pub const CANVAS_GPU_USAGES: wgpu::TextureUsages =
     wgpu::TextureUsages::RENDER_ATTACHMENT.union(wgpu::TextureUsages::TEXTURE_BINDING);
 
-/// The GPU drawing surface handed to a [`CanvasContent::GpuPainter`].
+/// The GPU drawing surface handed to a [`CanvasContent::GpuPainter`] each draw.
 ///
-/// The target is the framework's: it is allocated at the node's measured size
-/// in physical pixels, reallocated when that changes, and composited into the
-/// surrounding UI afterwards. A painter renders into [`Self::target`] and
-/// submits on [`Self::queue`]; nothing has to be registered by hand.
+/// The target is the framework's: allocated at the node's measured size in
+/// physical pixels, reallocated when that changes, and composited into the
+/// surrounding UI afterwards. A draw records a render pass into
+/// [`Self::target`] and submits on [`Self::queue`]; nothing has to be
+/// registered by hand.
 ///
-/// ```ignore
-/// CanvasController::with_gpu_painter(|gpu| {
-///     let mut encoder = gpu.device().create_command_encoder(&Default::default());
-///     {
-///         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-///             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-///                 view: gpu.target(),
-///                 ..
-///             })],
-///             ..
-///         });
-///         pass.set_pipeline(&my_pipeline);
-///         pass.draw(0..3, 0..1);
-///     }
-///     gpu.queue().submit([encoder.finish()]);
-/// })
-/// ```
+/// Pipelines belong in the setup closure, not here -- see
+/// [`CanvasController::with_gpu_painter`].
 #[cfg(feature = "wgpu")]
 pub struct CanvasGpuPainter<'a> {
     device: &'a wgpu::Device,
@@ -241,6 +227,75 @@ impl<'a> CanvasGpuPainter<'a> {
     pub fn pick(&mut self, tag: CanvasPickTag, bounds: Bounds) -> &mut Self {
         self.picks.push(CanvasPick { tag, bounds });
         self
+    }
+}
+
+/// What a canvas GPU painter is given to build its pipelines with, once.
+///
+/// Everything expensive belongs here: shader modules, render pipelines, bind
+/// group layouts, samplers, immutable buffers. Building a pipeline compiles a
+/// shader, which is milliseconds -- far too much to repeat per frame, and the
+/// reason a GPU painter is two closures rather than one.
+#[cfg(feature = "wgpu")]
+pub struct CanvasGpuSetup<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+}
+
+#[cfg(feature = "wgpu")]
+impl<'a> CanvasGpuSetup<'a> {
+    pub fn device(&self) -> &'a wgpu::Device {
+        self.device
+    }
+
+    pub fn queue(&self) -> &'a wgpu::Queue {
+        self.queue
+    }
+
+    /// The format a pipeline's colour target must declare, the same one
+    /// [`CanvasGpuPainter::target`] is allocated with.
+    pub fn format(&self) -> wgpu::TextureFormat {
+        CANVAS_GPU_FORMAT
+    }
+}
+
+/// A canvas GPU painter, with its setup and its per-frame state erased.
+///
+/// Implemented once, for the pair of closures
+/// [`CanvasController::with_gpu_painter`] takes. It exists so that
+/// [`CanvasContent`] can hold a painter without naming the caller's state type.
+#[cfg(feature = "wgpu")]
+pub trait GpuPainter {
+    fn draw(&self, painter: &mut CanvasGpuPainter<'_>);
+}
+
+/// The state a GPU painter built in its setup, held for as long as the painter.
+///
+/// Living inside the `Rc` that holds the closures is what keeps it correct:
+/// replacing a controller's content drops the state with it, so nothing has to
+/// track which pipelines belong to which painter.
+#[cfg(feature = "wgpu")]
+struct GpuPainterFns<S, Setup, Draw> {
+    setup: Setup,
+    draw: Draw,
+    state: RefCell<Option<S>>,
+}
+
+#[cfg(feature = "wgpu")]
+impl<S, Setup, Draw> GpuPainter for GpuPainterFns<S, Setup, Draw>
+where
+    Setup: Fn(&CanvasGpuSetup<'_>) -> S,
+    Draw: Fn(&mut S, &mut CanvasGpuPainter<'_>),
+{
+    fn draw(&self, painter: &mut CanvasGpuPainter<'_>) {
+        let mut state = self.state.borrow_mut();
+        let state = state.get_or_insert_with(|| {
+            (self.setup)(&CanvasGpuSetup {
+                device: painter.device,
+                queue: painter.queue,
+            })
+        });
+        (self.draw)(state, painter);
     }
 }
 
@@ -835,17 +890,52 @@ impl CanvasController {
     /// Builds a controller whose drawing is produced by the application's own
     /// GPU code, on the device the renderer runs on.
     ///
-    /// The painter is handed a target sized to the node and composited
-    /// afterwards, so a shader becomes a widget without any texture bookkeeping
-    /// on the caller's side. It runs after layout, like
-    /// [`CanvasController::with_painter`], and again whenever the node resizes
-    /// or [`CanvasController::invalidate`] is called.
+    /// Two closures, because the two halves have different lifetimes:
     ///
-    /// Hold this in a `use_ref` rather than rebuilding it each render: a new
-    /// controller handle is a new identity, which reallocates the target.
+    /// - `setup` runs **once**, the first time a device is available, and
+    ///   builds whatever is expensive -- pipelines above all, since creating
+    ///   one compiles a shader. Whatever it returns is kept and handed back to
+    ///   every draw.
+    /// - `draw` runs after layout with the node's measured size, again on
+    ///   resize and on [`CanvasController::invalidate`], and records a render
+    ///   pass into a target the framework allocated and composites afterwards.
+    ///
+    /// So a shader becomes a widget with no texture bookkeeping and no
+    /// per-frame pipeline creation:
+    ///
+    /// ```ignore
+    /// CanvasController::with_gpu_painter(
+    ///     |setup| Pipelines::new(setup.device(), setup.format()),
+    ///     |pipelines, gpu| {
+    ///         let mut encoder = gpu.device().create_command_encoder(&Default::default());
+    ///         {
+    ///             let mut pass = encoder.begin_render_pass(&/* gpu.target() */);
+    ///             pass.set_pipeline(&pipelines.shader);
+    ///             pass.draw(0..3, 0..1);
+    ///         }
+    ///         gpu.queue().submit([encoder.finish()]);
+    ///     },
+    /// )
+    /// ```
+    ///
+    /// State that depends on the node's size -- a depth buffer, say -- belongs
+    /// in `draw`, which can compare [`CanvasGpuPainter::size`] against what it
+    /// built last time. `setup` never sees a size, because it runs before there
+    /// is a stable one.
+    ///
+    /// Hold the controller in a `use_ref` rather than rebuilding it each
+    /// render: a new controller is a new identity, which throws away the state
+    /// `setup` built and reallocates the target.
     #[cfg(feature = "wgpu")]
-    pub fn with_gpu_painter(painter: impl Fn(&mut CanvasGpuPainter<'_>) + 'static) -> Self {
-        Self::with_content(CanvasContent::GpuPainter(Rc::new(painter)))
+    pub fn with_gpu_painter<S: 'static>(
+        setup: impl Fn(&CanvasGpuSetup<'_>) -> S + 'static,
+        draw: impl Fn(&mut S, &mut CanvasGpuPainter<'_>) + 'static,
+    ) -> Self {
+        Self::with_content(CanvasContent::GpuPainter(Rc::new(GpuPainterFns {
+            setup,
+            draw,
+            state: RefCell::new(None),
+        })))
     }
 
     pub fn with_content(content: CanvasContent) -> Self {
@@ -1217,7 +1307,7 @@ impl CanvasWidget {
     #[cfg(feature = "wgpu")]
     fn run_gpu_painter(
         &mut self,
-        painter: &Rc<dyn Fn(&mut CanvasGpuPainter<'_>)>,
+        painter: &Rc<dyn GpuPainter>,
         gpu: &CanvasGpuContext,
         size: Size<f32>,
         style: &ComputedStyle,
@@ -1281,7 +1371,7 @@ impl CanvasWidget {
             theme,
             picks: Vec::new(),
         };
-        painter(&mut painter_cx);
+        painter.draw(&mut painter_cx);
         let picks = std::mem::take(&mut painter_cx.picks);
 
         self.gpu_revision = self.gpu_revision.wrapping_add(1);
@@ -1997,8 +2087,9 @@ mod tests {
             };
             let seen = Rc::new(Cell::new(None));
             let recorded = Rc::clone(&seen);
-            let mut widget =
-                CanvasWidget::new(CanvasController::with_gpu_painter(move |painter| {
+            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
+                |_setup| (),
+                move |_state: &mut (), painter: &mut CanvasGpuPainter<'_>| {
                     recorded.set(Some(painter.size()));
                     // A real pipeline would render here; clearing is enough to
                     // prove the target and queue are usable.
@@ -2022,7 +2113,8 @@ mod tests {
                         multiview_mask: None,
                     });
                     painter.queue().submit([encoder.finish()]);
-                }));
+                },
+            ));
 
             compile_gpu(&mut widget, Size::new(30.0, 20.0), &gpu);
 
@@ -2048,7 +2140,10 @@ mod tests {
                 eprintln!("no wgpu adapter available, skipping");
                 return;
             };
-            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(|_| {}));
+            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
+                |_setup| (),
+                |_state: &mut (), _painter: &mut CanvasGpuPainter<'_>| {},
+            ));
 
             compile_gpu(&mut widget, Size::new(10.0, 10.0), &gpu);
             let VectorCommand::Texture {
@@ -2102,13 +2197,50 @@ mod tests {
             );
         }
 
+        /// The reason a GPU painter is two closures: creating a pipeline
+        /// compiles a shader, so it must happen once, not once a frame.
+        #[test]
+        fn setup_runs_once_across_redraws_and_resizes() {
+            let Some(gpu) = context() else {
+                eprintln!("no wgpu adapter available, skipping");
+                return;
+            };
+            let setups = Rc::new(Cell::new(0u32));
+            let draws = Rc::new(Cell::new(0u32));
+            let counted = Rc::clone(&setups);
+            let drawn = Rc::clone(&draws);
+            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
+                move |_setup| {
+                    counted.set(counted.get() + 1);
+                    // Stands in for a pipeline: state built once and handed
+                    // back to every draw.
+                    7u32
+                },
+                move |state: &mut u32, _painter: &mut CanvasGpuPainter<'_>| {
+                    assert_eq!(*state, 7, "the setup's state reaches every draw");
+                    drawn.set(drawn.get() + 1);
+                },
+            ));
+
+            compile_gpu(&mut widget, Size::new(10.0, 10.0), &gpu);
+            compile_gpu(&mut widget, Size::new(10.0, 10.0), &gpu);
+            // A resize reallocates the target, but not the pipelines.
+            compile_gpu(&mut widget, Size::new(20.0, 10.0), &gpu);
+
+            assert_eq!(setups.get(), 1, "setup must not run per draw");
+            assert_eq!(draws.get(), 3);
+        }
+
         #[test]
         fn without_a_device_a_gpu_painter_draws_nothing() {
             let ran = Rc::new(Cell::new(false));
             let recorded = Rc::clone(&ran);
-            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(move |_| {
-                recorded.set(true);
-            }));
+            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
+                |_setup| (),
+                move |_state: &mut (), _painter: &mut CanvasGpuPainter<'_>| {
+                    recorded.set(true);
+                },
+            ));
             compile(&mut widget, Size::new(10.0, 10.0));
             assert!(!ran.get(), "there is nothing to draw with");
             assert!(widget.compiled.batches.is_empty());
