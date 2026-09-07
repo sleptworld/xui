@@ -509,7 +509,10 @@ impl EventTranslator {
             return out;
         };
 
-        let mut remaining = normalize_scroll_delta(raw.delta);
+        // Accelerate once, here, so every level of the chain spends the same
+        // currency: `consumed` is subtracted from `remaining` below, and a
+        // per-node acceleration would make that subtraction mix units.
+        let mut remaining = ergonomic_scroll_delta(normalize_scroll_delta(raw.delta));
         let mut cursor = Some(hit);
 
         while let Some(node) = cursor {
@@ -564,8 +567,14 @@ impl EventTranslator {
                 }),
             }));
 
-            // remaining = remaining_after;
-            if remaining.is_zero() {
+            // A node that scrolled takes its share out of the delta; one that
+            // did not — not scrollable, or already at its end — passes the
+            // whole thing on, which is what makes a chained scroll continue in
+            // the outer container.
+            if let Some(remaining_after) = remaining_after {
+                remaining = remaining_after;
+            }
+            if scroll_delta_is_spent(remaining) {
                 break;
             }
         }
@@ -1344,10 +1353,10 @@ fn consume_scroll_delta(
     }
 
     let offset_before = node.scroll_offset;
-    let scroll_delta = ergonomic_scroll_delta(delta);
+    // `delta` arrives already accelerated, from `translate_wheel`.
     let offset_after = Point::new(
-        (offset_before.x - scroll_delta.x).clamp(0.0, max_x),
-        (offset_before.y - scroll_delta.y).clamp(0.0, max_y),
+        (offset_before.x - delta.x).clamp(0.0, max_x),
+        (offset_before.y - delta.y).clamp(0.0, max_y),
     );
     if offset_after == offset_before {
         return None;
@@ -1360,6 +1369,15 @@ fn consume_scroll_delta(
     arena.set_scroll_offset(node_id, offset_after);
 
     Some((offset_before.into(), offset_after.into(), consumed))
+}
+
+/// Whether what is left of a wheel delta is too small to move anything, per
+/// axis. Exact zero is the wrong test: `remaining - consumed` carries float
+/// residue, and a leftover of 1e-6 would keep walking the chain and nudge every
+/// scrollable ancestor by a sub-pixel.
+fn scroll_delta_is_spent(delta: Translation) -> bool {
+    const EPSILON: f32 = 0.01;
+    delta.x.abs() < EPSILON && delta.y.abs() < EPSILON
 }
 
 fn ergonomic_scroll_delta(delta: Translation) -> Translation {
@@ -1425,6 +1443,137 @@ mod tests {
         assert_eq!(
             next_focusable(&arena, Some(programmatic), true),
             Some(second)
+        );
+    }
+
+    // ---- nested scrolling -------------------------------------------------
+
+    use crate::app::App;
+    use crate::element::ElementDesc;
+    use crate::render::{BuiltFrame, RenderBackend};
+    use crate::state::HookContext;
+    use crate::text::{TextHost, testing::ZeroTextBackend};
+    use core::convert::Infallible;
+    use xui_interface::{Color, Size, Style};
+
+    #[derive(Default)]
+    struct NullBackend;
+
+    impl<T> RenderBackend<T> for NullBackend {
+        type Error = Infallible;
+        fn begin_frame(&mut self, _size: Size<f32>) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn submit(&mut self, _frame: &BuiltFrame, _text: &mut T) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn end_frame(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    /// A 200x200 vertical scroller holding a 200x100 vertical scroller (whose
+    /// content is 400 tall) followed by a 200x400 filler, so both levels have
+    /// somewhere to scroll.
+    fn nested_scroll_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        container()
+            .style(Style::new().width(200.0).height(200.0).scroll_vertical())
+            .into_element_desc(vec![
+                container()
+                    .style(Style::new().width(200.0).height(100.0).scroll_vertical())
+                    .into_element_desc(vec![
+                        container()
+                            .style(
+                                Style::new()
+                                    .width(200.0)
+                                    .height(400.0)
+                                    .background(Color::hex("#3b82f6")),
+                            )
+                            .into_element_desc(Vec::new()),
+                    ]),
+                container()
+                    .style(Style::new().width(200.0).height(400.0))
+                    .into_element_desc(Vec::new()),
+            ])
+    }
+
+    struct ScrollHarness {
+        app: App,
+        text: TextHost<ZeroTextBackend>,
+        backend: NullBackend,
+        outer: NodeId,
+        inner: NodeId,
+    }
+
+    impl ScrollHarness {
+        fn new() -> Self {
+            let mut app = App::new(nested_scroll_root);
+            app.resize(Size::new(200.0, 200.0));
+            let mut text = TextHost::new(ZeroTextBackend);
+            let mut backend = NullBackend;
+            for _ in 0..3 {
+                app.render(&mut backend, &mut text).expect("null backend");
+            }
+            let (outer, inner) = {
+                let rt = app.ui_runtime();
+                let outer = rt.children(rt.root()).next().expect("outer mounted");
+                let inner = rt.children(outer).next().expect("inner mounted");
+                (outer, inner)
+            };
+            Self {
+                app,
+                text,
+                backend,
+                outer,
+                inner,
+            }
+        }
+
+        fn wheel(&mut self, y: f32) {
+            let event = RawEvent::Wheel(RawWheel {
+                position: Point::new(100.0, 50.0),
+                delta: ScrollDelta::Pixels(Translation::new(0.0, y)),
+                device_id: None,
+                pointer_id: None,
+                modifiers: Modifiers::default(),
+                timestamp: Instant::now(),
+                is_inertial: false,
+            });
+            self.app.dispatch_event(event, &mut self.text);
+            self.app
+                .render(&mut self.backend, &mut self.text)
+                .expect("null backend");
+        }
+
+        fn offset_y(&self, node: NodeId) -> f32 {
+            self.app.ui_runtime().node(node).expect("node").scroll_offset.y
+        }
+    }
+
+    #[test]
+    fn a_wheel_over_an_inner_scroller_leaves_the_outer_one_alone() {
+        let mut harness = ScrollHarness::new();
+        harness.wheel(-50.0);
+
+        assert_eq!(harness.offset_y(harness.inner), 50.0);
+        assert_eq!(
+            harness.offset_y(harness.outer),
+            0.0,
+            "the inner scroller consumed the whole wheel delta"
+        );
+    }
+
+    #[test]
+    fn the_delta_chains_to_the_outer_scroller_once_the_inner_one_is_at_its_end() {
+        let mut harness = ScrollHarness::new();
+        // Inner content is 400 tall in a 100 tall box: 300 of travel.
+        for _ in 0..8 {
+            harness.wheel(-50.0);
+        }
+        assert_eq!(harness.offset_y(harness.inner), 300.0, "inner is at its end");
+        assert!(
+            harness.offset_y(harness.outer) > 0.0,
+            "the leftover delta should have moved the outer scroller"
         );
     }
 }
