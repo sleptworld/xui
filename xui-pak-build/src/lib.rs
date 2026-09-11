@@ -195,8 +195,8 @@ pub fn build_to(
     if let Some(parent) = generated_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(pak_path, pak)?;
-    fs::write(generated_path, generated)?;
+    write_if_changed(pak_path, &pak)?;
+    write_if_changed(generated_path, generated.as_bytes())?;
     Ok(BuildOutput {
         pak_path: pak_path.to_owned(),
         generated_path: generated_path.to_owned(),
@@ -355,6 +355,22 @@ fn encode_pak(assets: &[InputAsset], compression_level: i32) -> Result<Vec<u8>, 
     Ok(output)
 }
 
+/// Writes `contents` unless `path` already holds exactly that.
+///
+/// Both outputs end up inside the application crate -- the archive through
+/// `include_bytes!`, the constants through `include!` -- and Cargo decides
+/// staleness by mtime. Rewriting identical bytes would recompile the
+/// application on every build even when no asset changed.
+fn write_if_changed(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let unchanged = fs::metadata(path)
+        .is_ok_and(|metadata| metadata.len() == contents.len() as u64)
+        && fs::read(path).is_ok_and(|existing| existing == contents);
+    if unchanged {
+        return Ok(());
+    }
+    fs::write(path, contents)
+}
+
 fn pad_to_alignment(output: &mut Vec<u8>, alignment: u32) {
     let alignment = alignment as usize;
     let padding = (alignment - output.len() % alignment) % alignment;
@@ -471,6 +487,40 @@ fn validate_rust_path(value: &str) -> Result<(), BuildError> {
 mod tests {
     use super::*;
     use xui_pak::{AssetBytes, AssetError, AssetSource, EmbeddedPak, PakOpenOptions, PakSource};
+
+    #[test]
+    fn unchanged_outputs_are_not_rewritten() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("assets");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("value.bin"), b"value").unwrap();
+        let pak = temp.path().join("assets.xpak");
+        let generated = temp.path().join("assets.rs");
+        build_to(&BuildConfig::default(), &source, &pak, &generated).unwrap();
+
+        // Backdate both outputs, so a rewrite shows up as a moved mtime without
+        // the test having to wait out the filesystem's timestamp resolution.
+        let backdated = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        for path in [&pak, &generated] {
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(backdated)
+                .unwrap();
+        }
+        let modified = |path: &Path| fs::metadata(path).unwrap().modified().unwrap();
+
+        build_to(&BuildConfig::default(), &source, &pak, &generated).unwrap();
+        assert_eq!(modified(&pak), backdated);
+        assert_eq!(modified(&generated), backdated);
+
+        fs::write(source.join("value.bin"), b"changed").unwrap();
+        build_to(&BuildConfig::default(), &source, &pak, &generated).unwrap();
+        assert_ne!(modified(&pak), backdated);
+        // The constants name paths, not contents, so they are still identical.
+        assert_eq!(modified(&generated), backdated);
+    }
 
     #[test]
     fn build_is_deterministic_and_round_trips() {

@@ -537,6 +537,41 @@ impl<'a> HookContext<'a> {
         Memo { inner: value }
     }
 
+    /// Loads an asset once and keeps it for as long as this component stays
+    /// mounted.
+    ///
+    /// Builders such as [`ImageWidget::asset`](crate::widgets::ImageWidget::asset)
+    /// look their asset up on every rebuild. This looks it up only when `id`
+    /// changes or a different asset manager is installed, and otherwise hands
+    /// back the value it already has -- pass it on with a widget's
+    /// `asset_data`:
+    ///
+    /// ```ignore
+    /// use xui::assets::ImageAsset;
+    ///
+    /// let logo = cx.use_asset::<ImageAsset>(refs::images::LOGO_PNG);
+    /// image().asset_data(refs::images::LOGO_PNG, logo)
+    /// ```
+    ///
+    /// Holding the value here is also what keeps it resident. Every holder of
+    /// the same asset shares one value, which the runtime lets go of once
+    /// none are left -- see [`SharedAsset`](crate::assets::SharedAsset).
+    ///
+    /// A missing or unparseable asset is `None`, and stays `None` until `id`
+    /// or the manager changes rather than being retried on every rebuild.
+    pub fn use_asset<F>(&mut self, id: crate::assets::AssetId) -> Option<F::Output>
+    where
+        F: crate::assets::AssetFormat + 'static,
+        F::Output: crate::assets::SharedAsset,
+    {
+        let generation = crate::assets::generation();
+        self.use_memo_with((id, generation), || {
+            crate::assets::load_shared_asset::<F>(id)
+        })
+        .get()
+        .clone()
+    }
+
     pub fn use_callback<D, Args, Output>(
         &mut self,
         deps: D,

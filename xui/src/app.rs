@@ -259,14 +259,33 @@ impl App {
         // user actually sees, for as many frames as the mount takes. Every
         // later build has a previous frame on screen while it is sliced, so
         // only this first one is forced to run to completion.
-        if self.first_build_pending {
+        let committed = if self.first_build_pending {
             self.first_build_pending = false;
             self.rebuild_sync_if_needed();
             self.flush_node_lifecycle(backend, text);
+            true
         } else if self.rebuild_slice_if_needed() {
             self.flush_node_lifecycle(backend, text);
-        }
+            true
+        } else {
+            false
+        };
 
+        let drawn = self.draw(backend, text);
+        // By now a widget the commit unmounted and the frame that last drew it
+        // have both let go of their assets, so released ones can be told apart
+        // from ones still in use.
+        if committed {
+            crate::assets::collect_released();
+        }
+        drawn
+    }
+
+    fn draw<B: RenderBackend<TextHost<T>>, T: TextBackend>(
+        &mut self,
+        backend: &mut B,
+        text: &mut TextHost<T>,
+    ) -> Result<(), AppRenderError<B::Error>> {
         self.ui_runtime.update_tree(self.size, text);
 
         let Some(frame) = self

@@ -2,7 +2,7 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::assets::{SvgAsset, load_asset};
+use crate::assets::{SharedAsset, load_icon_asset};
 use crate::element::ElementDesc;
 use crate::event_system::EventContext;
 use crate::event_system::callbacks::EventHandlers;
@@ -116,6 +116,19 @@ impl std::error::Error for SvgIconError {
 pub struct IconData {
     view_box: Rect,
     layers: Arc<[IconLayer]>,
+}
+
+impl SharedAsset for IconData {
+    /// The layers are what every clone shares, so they are what is counted.
+    fn is_shared(&self) -> bool {
+        Arc::strong_count(&self.layers) > 1
+    }
+
+    /// The layer array only: the path data each layer points at is not
+    /// walked, so this undercounts a detailed icon.
+    fn resident_size(&self) -> usize {
+        std::mem::size_of_val(&*self.layers)
+    }
 }
 
 impl IconData {
@@ -233,8 +246,20 @@ impl IconWidget {
         }
     }
 
-    pub fn asset(mut self, asset: AssetId) -> Self {
-        let data = load_asset::<SvgAsset>(asset);
+    /// Loads the icon from the installed asset manager.
+    ///
+    /// This looks the asset up every time the builder runs, which is every
+    /// rebuild of the component using it. A component that rebuilds often can
+    /// load once with [`HookContext::use_asset`](crate::state::HookContext::use_asset)
+    /// and pass the result to [`Self::asset_data`] instead.
+    pub fn asset(self, asset: AssetId) -> Self {
+        let data = load_icon_asset(asset);
+        self.asset_data(asset, data)
+    }
+
+    /// Shows an icon asset that was already loaded, under the same identity
+    /// [`Self::asset`] would give it.
+    pub fn asset_data(mut self, asset: AssetId, data: Option<IconData>) -> Self {
         self.icon_key = Some(asset);
         self.data = data;
         self

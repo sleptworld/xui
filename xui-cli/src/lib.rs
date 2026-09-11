@@ -313,7 +313,7 @@ fn prepare_project(
     };
     let build = build_to(&build_config, &source, &pak_path, &refs_path)?;
     let bootstrap = generated_dir.join("xui_assets_bootstrap.rs");
-    fs::write(
+    write_if_changed(
         &bootstrap,
         bootstrap_source(
             &refs_path,
@@ -341,6 +341,19 @@ fn prepare_project(
         bootstrap,
         external_destination,
     })
+}
+
+/// Writes `contents` unless `path` already holds exactly that.
+///
+/// The bootstrap is `include!`d into the application crate and Cargo decides
+/// staleness by mtime, so rewriting identical text would recompile the
+/// application on every `cargo xui` invocation.
+fn write_if_changed(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let contents = contents.as_ref();
+    if fs::read(path).is_ok_and(|existing| existing == contents) {
+        return Ok(());
+    }
+    fs::write(path, contents)
 }
 
 fn bootstrap_source(

@@ -51,9 +51,21 @@ impl ImageWidget {
     }
 
     /// Loads an image from the asset manager installed for the current UI thread.
-    pub fn asset(mut self, asset: AssetId) -> Self {
+    ///
+    /// This looks the asset up every time the builder runs, which is every
+    /// rebuild of the component using it. A component that rebuilds often can
+    /// load once with [`HookContext::use_asset`](crate::state::HookContext::use_asset)
+    /// and pass the result to [`Self::asset_data`] instead.
+    pub fn asset(self, asset: AssetId) -> Self {
+        let data = load_image_asset(asset);
+        self.asset_data(asset, data)
+    }
+
+    /// Shows an image asset that was already loaded, under the same renderer
+    /// key [`Self::asset`] would give it.
+    pub fn asset_data(mut self, asset: AssetId, data: Option<ImageData>) -> Self {
         self.image_key = ImageKey::AssetId(*asset.as_bytes());
-        self.image_data = load_image_asset(asset);
+        self.image_data = data;
         self
     }
 
