@@ -880,8 +880,9 @@ mod tests {
 
     /// Capture each resize step into a PNG so we can visually inspect what
     /// flickers. Set XUI_FLICKER_DIR to a directory and run with
-    /// `cargo xui test --package xui-example-app -- --nocapture --ignored resize_flicker_capture`.
+    /// `cargo test --package xui-example-app -- --nocapture --ignored resize_flicker_capture`.
     #[test]
+    #[ignore = "writes PNGs into XUI_FLICKER_DIR; run explicitly"]
     fn resize_flicker_capture() {
         let dir = std::env::var("XUI_FLICKER_DIR").expect("set XUI_FLICKER_DIR");
         let mut app = App::new(flight_icing_dashboard_component);

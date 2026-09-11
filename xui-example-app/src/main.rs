@@ -5,10 +5,9 @@
 //! vector scenes, and the `xui-winit` Skia runner. This is the recommended
 //! starting point for learning the framework.
 //!
-//! Build and run with `cargo xui run` — the `#[xui::main]` entry point
-//! requires the asset bootstrap module that `cargo xui` generates (it reads the
-//! `XUI_ASSETS_BOOTSTRAP` environment variable), so plain `cargo build` will not
-//! compile this binary.
+//! Build and run with `cargo run -p xui-example-app`. Its build script packs
+//! `assets/` through `xui-build`; `cargo xui run` works too, and additionally
+//! mounts `assets/` live in release builds.
 
 mod components;
 mod flight_icing;

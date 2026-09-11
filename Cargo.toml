@@ -7,6 +7,7 @@ members = [
     "xui-pak",
     "xui-pak-build",
     "xui-pak-cli",
+    "xui-build",
     "xui",
     "xui-macros",
     "xui-winit",
@@ -20,11 +21,9 @@ members = [
     "xui-skia",
     "xui-f",
 ]
-# Library crates built by default by plain `cargo` (build/check/test/doc).
-# `xui-example-app` is a workspace member but is built via `cargo xui` (its
-# `#[xui::main]` entry point requires the asset bootstrap `cargo xui`
-# generates), so it is excluded from the default set — run `cargo xui run`
-# for it, or `cargo build -p xui-example-app` is intentionally not plain-cargo.
+# Crates built by default by plain `cargo` (build/check/test/doc).
+# `xui-example-app` packs its assets from its own build script (`xui-build`),
+# so plain `cargo` builds it like any other member.
 default-members = [
     "lucide-rs",
     "xui-assets",
@@ -32,6 +31,7 @@ default-members = [
     "xui-pak",
     "xui-pak-build",
     "xui-pak-cli",
+    "xui-build",
     "xui",
     "xui-macros",
     "xui-winit",
@@ -43,6 +43,7 @@ default-members = [
     "xui-render-graph",
     "xui-skia",
     "xui-f",
+    "xui-example-app",
 ]
 
 

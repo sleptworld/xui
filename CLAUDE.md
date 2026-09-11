@@ -9,8 +9,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-cargo build                       # library crates only (default-members)
-cargo test                        # all library-crate tests
+cargo build                       # every default member, xui-example-app included
+cargo test                        # all tests
 cargo test -p xui                 # one crate
 cargo test -p xui --test dsl      # one integration test file (xui/tests/dsl.rs)
 cargo test -p xui some_test_name  # one test by name filter
@@ -18,16 +18,18 @@ cargo test -p xui --test ui       # trybuild compile-fail suite (xui/tests/ui/)
 cargo test -p xui-components --lib --tests
 cargo doc --no-deps --open
 
-cargo xui run                     # build + launch xui-example-app (see below)
-cargo xui build --release / check / test
-cargo xui assets verify | list    # inspect the generated .xpak
+cargo run -p xui-example-app      # launch the example app
+
+cargo xui init                    # set a package up for assets (xui.toml, assets/, build.rs, xui-build dep)
+cargo xui run --release           # forwards to cargo; mounts assets/ live, copies external packages
+cargo xui assets verify | list    # inspect an .xpak
 ```
 
-`cargo xui` is the `xui-cli` crate installed as a cargo subcommand (`cargo install --path xui-cli`; already installed on this machine). It reads `xui.toml`, packs assets via `xui-pak-build`, sets `XUI_ASSETS_BOOTSTRAP`, then invokes plain cargo.
+Assets are packed by each app's `build.rs` calling `xui_build::assets()`, so plain cargo works everywhere. `cargo xui` is the optional `xui-cli` crate installed as a cargo subcommand (`cargo install --path xui-cli`); the installed binary does not track this checkout, so reinstall it after changing `xui-cli` or `xui-build`.
 
 ### Workspace gotchas
 
-- **`xui-example-app` is a workspace member but NOT in `default-members`.** Its `#[xui::main]` expands `xui::include_assets!()`, which `include!`s the file named by `XUI_ASSETS_BOOTSTRAP` — plain `cargo build -p xui-example-app` (or `--workspace`) fails without it. Always use `cargo xui run` / `cargo xui test` for that crate.
+- **A crate using `#[xui::main]` / `xui::include_assets!()` needs a build script calling `xui_build::assets()`** (with `xui-build` in `[build-dependencies]`, as `xui-example-app` has). It hands the generated bootstrap to the compiler via `cargo::rustc-env=XUI_ASSETS_BOOTSTRAP`; without it the crate only compiles through `cargo xui`. The bootstrap's generator lives in `xui-build` and its runtime half in `xui::assets::bootstrap` — change them together.
 - **`xui-table` is NOT a workspace member** (its directory exists but is absent from `Cargo.toml` `members`), so `cargo test -p xui-table` currently errors with "current package believes it's in a workspace when it's not". Add it to `members`/`default-members` before building it, or ask before doing so.
 - `xui-text` and `xui-text-engine` are referenced in docs but are not in the workspace; the live text backends are `xui-cosmic` (cosmic-text, default) and `xui-f` (HarfRust/fontique shaping, no rasterization).
 - `xui-render-graph` is `#![forbid(unsafe_code)]` — keep it that way.
@@ -50,7 +52,7 @@ app ──► xui (runtime, fiber, hooks, layout, style, widgets, render scene)
     xui-skia ─► xui, render-graph   skia-safe backend; Metal/D3D12/Vulkan, softbuffer fallback (XUI_SKIA_GPU=0)
     xui-winit ─► xui, skia|wgpu, xui-cosmic, xui-f   window/event loop, AccessKit, runner
     lucide-rs                    embedded Lucide SVG set as IconData (build.rs codegen)
-    xui-pak ◄─ xui-pak-build ◄─ xui-cli (cargo xui) / xui-pak-cli (xpak)
+    xui-pak ◄─ xui-pak-build ◄─ xui-build (build.rs) ◄─ xui-cli (cargo xui); xui-pak-build ◄─ xui-pak-cli (xpak)
 ```
 
 **Per-frame flow:** winit event → `xui_winit::translate_window_event` → `RawEvent` → `GuiRuntime`/`App` runs the event lane (EventTranslator → semantic events/callbacks) and effect lane (effects, tokio task wakeups) → render phase: dirty components re-render via `HookContext` into `ElementDesc` → fiber reconciler diffs into the retained widget/layout tree → style system merges patches+theme+`WidgetStateMatcher` rules into `ComputedStyle` → taffy layout → scene (`RenderNodeId`/`PictureId`/`PrimitiveId`) → scene compiler → render graph → backend rasterizes; text goes through `TextHost` → configured `TextBackend`.

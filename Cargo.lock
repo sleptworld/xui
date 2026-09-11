@@ -5251,18 +5251,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "xui-cli"
+name = "xui-build"
 version = "0.1.0"
 dependencies = [
  "camino",
- "clap",
  "serde",
- "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "toml 0.8.23",
  "xui-pak",
  "xui-pak-build",
+]
+
+[[package]]
+name = "xui-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "xui-build",
+ "xui-pak",
 ]
 
 [[package]]
@@ -5297,6 +5308,7 @@ dependencies = [
  "png",
  "winit",
  "xui",
+ "xui-build",
  "xui-components",
  "xui-cosmic",
  "xui-skia",

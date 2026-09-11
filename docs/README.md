@@ -24,14 +24,9 @@ Each crate's landing page is its top-level `//!` module doc; each public item's
 page is its `///` doc comment. Keep reference prose in the source so it stays in
 sync with the code.
 
-> **`xui-example-app`:** the example binary is a workspace member but is
-> **excluded from `default-members`** in `Cargo.toml`. Its `#[xui::main]` entry
-> point `include!()`s an asset bootstrap module that `cargo xui` generates (it
-> reads the `XUI_ASSETS_BOOTSTRAP` environment variable), so plain `cargo`
-> build/test/doc skip it and build only the library crates. Run
-> `cargo xui run` to build and launch the example app. `cargo <cmd> --workspace`
-> includes every member and therefore also requires `cargo xui` for that
-> binary.
+> **`xui-example-app`:** the example binary packs its assets from its own
+> build script through `xui-build`, so plain `cargo` builds, tests and documents
+> it like every other member. `cargo run -p xui-example-app` launches it.
 
 ## Crate map
 
@@ -49,6 +44,7 @@ sync with the code.
 | [`xui-assets`](../xui-assets) | asset ids + `AssetSource`/manager |
 | [`xui-pak`](../xui-pak) | `.xpak` container format + readers |
 | [`xui-pak-build`](../xui-pak-build) | archive packing + codegen |
+| [`xui-build`](../xui-build) | packs an app's assets from `build.rs` |
 | [`xui-cli`](../xui-cli) | `cargo xui` subcommand |
 | [`xui-pak-cli`](../xui-pak-cli) | `xpak` archive CLI |
 | [`xui-macros`](../xui-macros) | proc macros: `xui!`, `#[component]`, `#[main]` |
@@ -58,10 +54,10 @@ sync with the code.
 ## Building & running
 
 ```sh
-# example application (assets packed + built via the xui toolchain)
-cargo xui run
+# example application (its build script packs the assets)
+cargo run -p xui-example-app
 
-# unit tests for the library crates (default-members excludes xui-example-app)
+# tests for every crate, the example application included
 cargo test
 
 # render the API docs (library crates) and open them

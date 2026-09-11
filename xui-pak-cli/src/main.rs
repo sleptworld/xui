@@ -7,6 +7,16 @@ use std::{env, error::Error, path::Path};
 
 use xui_pak::PakSource;
 
+const USAGE: &str = "\
+Usage: xpak <COMMAND>
+
+Commands:
+  pack [CONFIG] [OUTPUT]  Build an archive from a config (default: xui-pak.toml)
+  list <PAK>              List an archive's entries
+  verify <PAK>            Check every entry against its content hash
+
+Applications usually want `cargo xui` instead, which drives this from xui.toml.";
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("xpak: {error}");
@@ -17,6 +27,11 @@ fn main() {
 fn run() -> Result<(), Box<dyn Error>> {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
+        Some("-h" | "--help" | "help") => println!("{USAGE}"),
+        None => {
+            eprintln!("{USAGE}");
+            std::process::exit(2);
+        }
         Some("pack") => {
             let config = args.next().unwrap_or_else(|| "xui-pak.toml".into());
             let output = args.next();
@@ -47,7 +62,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             pak.verify_all()?;
             println!("verified {}", path);
         }
-        _ => return Err("usage: xpak <pack|list|verify> ...".into()),
+        Some(other) => return Err(format!("unknown command `{other}`\n\n{USAGE}").into()),
     }
     Ok(())
 }

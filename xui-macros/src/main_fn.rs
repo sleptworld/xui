@@ -93,7 +93,11 @@ pub fn expand_main_function(function: MainFunction) -> Result<TokenStream2> {
                 ::std::result::Result::Ok(__xui_asset_manager) => {
                     #xui::assets::install_asset_manager(__xui_asset_manager);
                 }
-                ::std::result::Result::Err(_) => {
+                ::std::result::Result::Err(__xui_asset_error) => {
+                    ::std::eprintln!(
+                        "xui: could not open the asset bundle, so no asset will load: {}",
+                        __xui_asset_error
+                    );
                     #xui::assets::clear_asset_manager();
                 }
             }

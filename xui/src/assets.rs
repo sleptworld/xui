@@ -398,6 +398,88 @@ fn report_failure(message: impl fmt::Display) {
     }
 }
 
+/// What the generated bootstrap module calls into -- the one `xui-build`
+/// writes from a build script, or `cargo xui` writes before running Cargo.
+/// Not a stable API: it changes together with them.
+///
+/// Where the development directory and an external package are is decided
+/// when the application starts, from the environment, with a path built into
+/// debug builds as the fallback. Release builds get no fallback, so a
+/// shipped binary carries no paths from the machine that built it.
+#[doc(hidden)]
+pub mod bootstrap {
+    use std::path::{Path, PathBuf};
+
+    use super::{AssetError, AssetManager, DirectorySource, PakSource};
+
+    /// A directory to mount over the bundled assets, so edits show without a
+    /// rebuild. `cargo xui` sets it when `dev_directory` is on.
+    pub const DIR_ENV: &str = "XUI_ASSETS_DIR";
+    /// The external asset package to open, instead of the one beside the
+    /// executable. `cargo xui` sets it, which is what lets a test binary --
+    /// built somewhere under `deps/` -- find the package.
+    pub const PAK_ENV: &str = "XUI_ASSETS_PAK";
+
+    /// Mounts the directory [`DIR_ENV`] names, or else `debug_fallback`.
+    ///
+    /// A directory that cannot be mounted is reported and skipped: it is a
+    /// development convenience, and losing it must not take the bundled
+    /// assets underneath down with it.
+    pub fn mount_overlay(manager: &mut AssetManager, debug_fallback: Option<&str>) {
+        let directory = match std::env::var_os(DIR_ENV) {
+            Some(directory) => PathBuf::from(directory),
+            None => match debug_fallback {
+                Some(directory) => PathBuf::from(directory),
+                None => return,
+            },
+        };
+        match DirectorySource::new(&directory) {
+            Ok(source) => {
+                manager.mount(source);
+            }
+            Err(error) => eprintln!(
+                "xui::assets: not mounting the development directory {}: {error}",
+                directory.display()
+            ),
+        }
+    }
+
+    /// Opens an external asset package: the one [`PAK_ENV`] names, or else
+    /// `file_name` beside the executable, or else `debug_fallback`.
+    pub fn external_pak(
+        file_name: &str,
+        debug_fallback: Option<&str>,
+    ) -> Result<PakSource, AssetError> {
+        let path = match std::env::var_os(PAK_ENV) {
+            Some(path) => PathBuf::from(path),
+            None => {
+                let executable = std::env::current_exe()?;
+                let directory = executable.parent().ok_or_else(|| {
+                    AssetError::InvalidPath(executable.display().to_string())
+                })?;
+                let beside = directory.join(file_name);
+                match debug_fallback {
+                    Some(fallback) if !beside.is_file() => PathBuf::from(fallback),
+                    _ => beside,
+                }
+            }
+        };
+        open_named(&path)
+    }
+
+    fn open_named(path: &Path) -> Result<PakSource, AssetError> {
+        PakSource::open(path).map_err(|error| match error {
+            // Keep the kind, but say which file: "No such file or directory"
+            // alone does not tell anyone where the package was expected.
+            AssetError::Io(io) => AssetError::Io(std::io::Error::new(
+                io.kind(),
+                format!("{}: {io}", path.display()),
+            )),
+            other => AssetError::InvalidPak(format!("{}: {other}", path.display())),
+        })
+    }
+}
+
 /// Returns the source bytes without an additional copy.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BytesAsset;
@@ -748,6 +830,15 @@ mod tests {
         assert_eq!(replacement.loads(), 1);
 
         clear_asset_manager();
+    }
+
+    #[test]
+    fn a_missing_external_package_is_named_in_the_error() {
+        let error = bootstrap::external_pak("no-such-bundle.xpak", None)
+            .err()
+            .expect("the package does not exist")
+            .to_string();
+        assert!(error.contains("no-such-bundle.xpak"), "{error}");
     }
 
     #[test]

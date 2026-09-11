@@ -19,3 +19,6 @@ leanplot = { git = "https://github.com/sleptworld/LeanPlot.git" }
 png = "0.18.1"
 xui-skia = { path = "../xui-skia" }
 xui-cosmic = { path = "../xui-cosmic" }
+
+[build-dependencies]
+xui-build = { version = "0.1.0", path = "../xui-build" }

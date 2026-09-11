@@ -62,6 +62,5 @@ cargo test -p xui-winit
 cargo test -p xui
 ```
 
-The example application is the interactive Component Gallery. It requires its
-generated asset bootstrap and should be built with `cargo xui`, not a plain
-workspace-wide Cargo command.
+The example application is the interactive Component Gallery:
+`cargo run -p xui-example-app`.

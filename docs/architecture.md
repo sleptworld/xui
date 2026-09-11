@@ -168,17 +168,17 @@ The render path is split into three stages so backends stay thin:
 ## Asset pipeline
 
 ```text
-xui.toml  ──►  xui-cli (cargo xui)  ──►  xui-pak-build
+xui.toml + assets/  ──►  build.rs: xui_build::assets()  ──►  xui-pak-build
                                               │
-                                  writes .xpak + xui_asset_refs.rs
+                                  writes .xpak + xui_asset_refs.rs into OUT_DIR
                                               │
                                   bootstrap module (xui_assets::refs + manager())
                                               │
-                                  XUI_ASSETS_BOOTSTRAP env → xui::include_assets!()
+                                  cargo::rustc-env=XUI_ASSETS_BOOTSTRAP → xui::include_assets!()
                                               │
                                   xui_assets::manager() → AssetManager (xui-assets)
                                               │
-                                  mount order: DirectorySource (dev) → EmbeddedPak / PakSource
+                                  mount order: dev directory → EmbeddedPak / PakSource
 ```
 
 - `xui-pak` defines the `.xpak` format: fixed header, payload blobs (zstd or
@@ -189,7 +189,15 @@ xui.toml  ──►  xui-cli (cargo xui)  ──►  xui-pak-build
   (first match wins), caches decompressed immutable bytes, and parses via
   `AssetFormat`. `DirectorySource` is `Volatile` (live edits); paks are
   `Immutable` (cached, zero-copy `AssetBytes::Mapped`/`Static`).
-- `xui-cli` orchestrates all of the above from `xui.toml` and invokes Cargo.
+- `xui-build` runs the above from an application's build script. Cargo reruns
+  it when `xui.toml` or the assets directory changes. The bootstrap decides at
+  startup, from `XUI_ASSETS_DIR` / `XUI_ASSETS_PAK`, where the development
+  directory and an external package are; debug builds fall back to the paths
+  the build produced, release builds carry none.
+- `xui-cli` (`cargo xui`) sets packages up (`init`), and for forwarded Cargo
+  commands mounts the development directory and copies an external package
+  beside the executable. For a package without a build script it generates
+  the bootstrap itself and passes `XUI_ASSETS_BOOTSTRAP` to Cargo.
 
 ## State storage
 

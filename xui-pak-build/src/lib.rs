@@ -54,14 +54,14 @@ pub enum BuildError {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct BuildConfig {
     pub package: PackageConfig,
     pub rules: Vec<RuleConfig>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PackageConfig {
     pub source: Utf8PathBuf,
     pub output: String,
@@ -83,7 +83,7 @@ impl Default for PackageConfig {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RuleConfig {
     pub glob: String,
     pub compression: CompressionSetting,
@@ -114,6 +114,11 @@ pub struct BuildOutput {
     pub pak_path: PathBuf,
     pub generated_path: PathBuf,
     pub asset_count: usize,
+    /// Total size of the packed assets before compression.
+    pub source_bytes: u64,
+    /// Whether either output changed on disk. Unchanged outputs are left
+    /// untouched, so they do not invalidate anything built from them.
+    pub written: bool,
 }
 
 pub fn build(config_path: impl AsRef<Path>) -> Result<BuildOutput, BuildError> {
@@ -166,8 +171,6 @@ pub fn build_to(
     pak_path: &Path,
     generated_path: &Path,
 ) -> Result<BuildOutput, BuildError> {
-    validate_file_name(&config.package.output, "package.output")?;
-    validate_file_name(&config.package.generated, "package.generated")?;
     if !source.is_dir() {
         return Err(BuildError::InvalidConfig(format!(
             "source directory does not exist: {}",
@@ -175,7 +178,30 @@ pub fn build_to(
         )));
     }
     let compiled_rules = compile_rules(&config.rules)?;
-    let mut assets = scan_assets(source, &compiled_rules)?;
+    let assets = scan_assets(source, &compiled_rules)?;
+    write_outputs(config, assets, pak_path, generated_path)
+}
+
+/// Writes an archive with nothing in it, and an empty constants module.
+///
+/// For a project that has no assets yet: code expecting the generated files
+/// still compiles, and adding a first asset is a rebuild away.
+pub fn build_empty_to(
+    config: &BuildConfig,
+    pak_path: &Path,
+    generated_path: &Path,
+) -> Result<BuildOutput, BuildError> {
+    write_outputs(config, Vec::new(), pak_path, generated_path)
+}
+
+fn write_outputs(
+    config: &BuildConfig,
+    mut assets: Vec<InputAsset>,
+    pak_path: &Path,
+    generated_path: &Path,
+) -> Result<BuildOutput, BuildError> {
+    validate_file_name(&config.package.output, "package.output")?;
+    validate_file_name(&config.package.generated, "package.generated")?;
     assets.sort_by(|a, b| a.id.cmp(&b.id));
     for pair in assets.windows(2) {
         if pair[0].id == pair[1].id {
@@ -195,12 +221,14 @@ pub fn build_to(
     if let Some(parent) = generated_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    write_if_changed(pak_path, &pak)?;
-    write_if_changed(generated_path, generated.as_bytes())?;
+    let pak_written = write_if_changed(pak_path, &pak)?;
+    let generated_written = write_if_changed(generated_path, generated.as_bytes())?;
     Ok(BuildOutput {
         pak_path: pak_path.to_owned(),
         generated_path: generated_path.to_owned(),
         asset_count: assets.len(),
+        source_bytes: assets.iter().map(|asset| asset.bytes.len() as u64).sum(),
+        written: pak_written || generated_written,
     })
 }
 
@@ -361,14 +389,17 @@ fn encode_pak(assets: &[InputAsset], compression_level: i32) -> Result<Vec<u8>, 
 /// `include_bytes!`, the constants through `include!` -- and Cargo decides
 /// staleness by mtime. Rewriting identical bytes would recompile the
 /// application on every build even when no asset changed.
-fn write_if_changed(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+///
+/// Returns whether it wrote.
+fn write_if_changed(path: &Path, contents: &[u8]) -> std::io::Result<bool> {
     let unchanged = fs::metadata(path)
         .is_ok_and(|metadata| metadata.len() == contents.len() as u64)
         && fs::read(path).is_ok_and(|existing| existing == contents);
     if unchanged {
-        return Ok(());
+        return Ok(false);
     }
-    fs::write(path, contents)
+    fs::write(path, contents)?;
+    Ok(true)
 }
 
 fn pad_to_alignment(output: &mut Vec<u8>, alignment: u32) {
@@ -489,6 +520,29 @@ mod tests {
     use xui_pak::{AssetBytes, AssetError, AssetSource, EmbeddedPak, PakOpenOptions, PakSource};
 
     #[test]
+    fn empty_builds_have_no_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let pak = temp.path().join("assets.xpak");
+        let generated = temp.path().join("assets.rs");
+        let output = build_empty_to(&BuildConfig::default(), &pak, &generated).unwrap();
+        assert_eq!(output.asset_count, 0);
+        assert_eq!(output.source_bytes, 0);
+        assert!(output.written);
+        assert_eq!(PakSource::open(&pak).unwrap().entries().count(), 0);
+    }
+
+    #[test]
+    fn unknown_config_keys_are_rejected() {
+        // A misspelt key used to be ignored, silently leaving its default.
+        let error =
+            toml::from_str::<BuildConfig>("[[rules]]\nglob = \"*\"\ncompresion = \"none\"\n")
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("compresion"), "{error}");
+        assert!(toml::from_str::<BuildConfig>("[pakage]\n").is_err());
+    }
+
+    #[test]
     fn unchanged_outputs_are_not_rewritten() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("assets");
@@ -511,7 +565,8 @@ mod tests {
         }
         let modified = |path: &Path| fs::metadata(path).unwrap().modified().unwrap();
 
-        build_to(&BuildConfig::default(), &source, &pak, &generated).unwrap();
+        let output = build_to(&BuildConfig::default(), &source, &pak, &generated).unwrap();
+        assert!(!output.written);
         assert_eq!(modified(&pak), backdated);
         assert_eq!(modified(&generated), backdated);
 
