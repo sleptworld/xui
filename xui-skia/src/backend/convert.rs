@@ -11,25 +11,6 @@ pub(super) fn physical_extent(bounds: Bounds, scale: f32) -> (u32, u32) {
     )
 }
 
-pub(super) fn inverse_affine(value: Affine) -> Option<Affine> {
-    let determinant = value.xx * value.yy - value.xy * value.yx;
-    if !determinant.is_finite() || determinant.abs() <= f32::EPSILON {
-        return None;
-    }
-    let xx = value.yy / determinant;
-    let xy = -value.xy / determinant;
-    let yx = -value.yx / determinant;
-    let yy = value.xx / determinant;
-    Some(Affine::new(
-        xx,
-        xy,
-        yx,
-        yy,
-        -(xx * value.dx + xy * value.dy),
-        -(yx * value.dx + yy * value.dy),
-    ))
-}
-
 pub(super) fn valid_scale(value: f32) -> f32 {
     if value.is_finite() && value > 0.0 {
         value

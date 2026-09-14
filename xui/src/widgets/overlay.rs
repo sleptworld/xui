@@ -1,3 +1,4 @@
+use crate::diagnostics::invariant;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use rustc_hash::FxHashMap;
@@ -383,7 +384,10 @@ impl RootOverlayerWidget {
     }
 
     fn collect_visual_roots(&self, id: OverlayScopeId, roots: &mut Vec<NodeId>) {
-        let Some(scope) = self.scopes.get(&id) else {
+        let Some(scope) = invariant!(
+            self.scopes.get(&id),
+            "collect_visual_roots: overlay scope {id:?} is not registered"
+        ) else {
             return;
         };
         for child in &scope.children {
@@ -401,7 +405,10 @@ impl RootOverlayerWidget {
     }
 
     fn sort_scope(&mut self, id: OverlayScopeId) {
-        let Some(scope) = self.scopes.get(&id) else {
+        let Some(scope) = invariant!(
+            self.scopes.get(&id),
+            "sort_scope: overlay scope {id:?} is not registered"
+        ) else {
             return;
         };
         let mut children = scope.children.clone();

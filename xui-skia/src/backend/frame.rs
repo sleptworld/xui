@@ -11,7 +11,7 @@ use xui_render_graph::{ExternalResourceKind, LayerProgramEntry};
 
 use super::{
     SkiaBackend,
-    convert::{inverse_affine, sk_matrix},
+    convert::sk_matrix,
     image::{CachedSourceImage, RasterImage, image_bytes, make_image},
     paint::sk_color,
     surface::{configure_canvas, damage_region},
@@ -332,7 +332,10 @@ impl<T: TextBackend> SkiaBackend<T> {
                             backdrop,
                             child_layer.content_bounds,
                         )?;
-                        inverse_affine(instance.composite.transform)
+                        instance
+                            .composite
+                            .transform
+                            .invert()
                             .map(|inverse| self.transform_image(&traversed, inverse, child_bounds))
                             .transpose()?
                     } else {

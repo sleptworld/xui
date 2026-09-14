@@ -143,6 +143,34 @@ impl Affine {
     pub fn is_axis_aligned(self) -> bool {
         self.xy == 0.0 && self.yx == 0.0
     }
+
+    /// Inverse of this transform, or `None` when it has none that is usable.
+    ///
+    /// Singularity is judged by the determinant being exactly zero rather than
+    /// by an epsilon threshold, because an epsilon large enough to catch a
+    /// blow-up also rejects legitimate small scales: a uniform scale of `s` has
+    /// determinant `s * s`, so an `f32::EPSILON` cutoff would reject everything
+    /// below roughly `3.4e-4` and break transforms animating out of zero. The
+    /// real concern is an inverse that is not representable, and checking the
+    /// six output components for finiteness catches that directly -- including
+    /// the NaN inputs an `abs() <= EPSILON` comparison silently lets through.
+    pub fn invert(self) -> Option<Self> {
+        let determinant = self.xx * self.yy - self.xy * self.yx;
+        if !determinant.is_finite() || determinant == 0.0 {
+            return None;
+        }
+        let inverse = determinant.recip();
+        let xx = self.yy * inverse;
+        let yx = -self.yx * inverse;
+        let xy = -self.xy * inverse;
+        let yy = self.xx * inverse;
+        let dx = -(xx * self.dx + xy * self.dy);
+        let dy = -(yx * self.dx + yy * self.dy);
+        [xx, yx, xy, yy, dx, dy]
+            .iter()
+            .all(|value| value.is_finite())
+            .then(|| Self::new(xx, yx, xy, yy, dx, dy))
+    }
 }
 
 impl Default for Affine {
@@ -1774,4 +1802,77 @@ fn hash_f32_canonical<H: Hasher>(value: f32, state: &mut H) {
 
 pub trait FontRenderBackend {
     type Error;
+}
+
+#[cfg(test)]
+mod affine_tests {
+    use super::*;
+
+    fn approx(left: Affine, right: Affine) {
+        for (a, b) in [
+            (left.xx, right.xx),
+            (left.yx, right.yx),
+            (left.xy, right.xy),
+            (left.yy, right.yy),
+            (left.dx, right.dx),
+            (left.dy, right.dy),
+        ] {
+            let tolerance = 1.0e-5 * a.abs().max(b.abs()).max(1.0);
+            assert!((a - b).abs() <= tolerance, "{a} != {b}");
+        }
+    }
+
+    #[test]
+    fn inverts_identity_to_itself() {
+        approx(Affine::IDENTITY.invert().unwrap(), Affine::IDENTITY);
+    }
+
+    #[test]
+    fn round_trips_a_point_through_transform_and_inverse() {
+        let transform = Affine::scale(2.0, 4.0).then(Affine::translate(30.0, -7.0));
+        let inverse = transform.invert().unwrap();
+        let point = Point::new(11.0, 5.0);
+        let round_tripped = inverse.transform_point(transform.transform_point(point));
+        assert!((round_tripped.x - point.x).abs() <= 1.0e-4);
+        assert!((round_tripped.y - point.y).abs() <= 1.0e-4);
+    }
+
+    #[test]
+    fn composing_with_its_inverse_yields_identity() {
+        let transform = Affine::new(0.6, 0.8, -0.8, 0.6, 12.0, -3.0);
+        approx(
+            transform.then(transform.invert().unwrap()),
+            Affine::IDENTITY,
+        );
+    }
+
+    #[test]
+    fn rejects_a_singular_transform() {
+        assert!(Affine::scale(0.0, 1.0).invert().is_none());
+        assert!(Affine::new(1.0, 2.0, 2.0, 4.0, 0.0, 0.0).invert().is_none());
+    }
+
+    #[test]
+    fn rejects_non_finite_input() {
+        assert!(Affine::scale(f32::NAN, 1.0).invert().is_none());
+        assert!(Affine::scale(f32::INFINITY, 1.0).invert().is_none());
+        assert!(
+            Affine::new(1.0, 0.0, 0.0, 1.0, f32::NAN, 0.0)
+                .invert()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn accepts_small_scales_an_epsilon_cutoff_would_reject() {
+        // determinant is 1e-8, below f32::EPSILON, but the inverse is exact.
+        let inverse = Affine::scale(1.0e-4, 1.0e-4).invert().unwrap();
+        approx(inverse, Affine::scale(1.0e4, 1.0e4));
+    }
+
+    #[test]
+    fn rejects_a_scale_whose_inverse_overflows() {
+        // The smallest subnormal: non-zero and finite, but its reciprocal is not.
+        assert!(Affine::scale(f32::from_bits(1), 1.0).invert().is_none());
+    }
 }

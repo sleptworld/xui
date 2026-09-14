@@ -850,30 +850,10 @@ fn set_mask(uniform: &mut PassUniform, mask: &PlanMask) {
 }
 
 fn set_inverse(uniform: &mut PassUniform, transform: Affine) {
-    if let Some(inverse) = inverse_affine(transform) {
+    if let Some(inverse) = transform.invert() {
         uniform.inverse0 = [inverse.xx, inverse.yx, inverse.xy, inverse.yy];
         uniform.inverse1 = [inverse.dx, inverse.dy, 0.0, 0.0];
     }
-}
-
-fn inverse_affine(transform: Affine) -> Option<Affine> {
-    let determinant = transform.xx * transform.yy - transform.xy * transform.yx;
-    if determinant.abs() <= f32::EPSILON {
-        return None;
-    }
-    let inverse = determinant.recip();
-    let xx = transform.yy * inverse;
-    let xy = -transform.xy * inverse;
-    let yx = -transform.yx * inverse;
-    let yy = transform.xx * inverse;
-    Some(Affine::new(
-        xx,
-        yx,
-        xy,
-        yy,
-        -(xx * transform.dx + xy * transform.dy),
-        -(yx * transform.dx + yy * transform.dy),
-    ))
 }
 
 const fn attachment_shader_mode(transformed_source: bool) -> u32 {

@@ -5,6 +5,9 @@ edition = "2024"
 
 [features]
 default = []
+# Turn every reported invariant violation into a panic instead of a log line.
+# The workspace test suite runs with this on; applications should not.
+strict-invariants = []
 # Lets a canvas draw with the GPU device the renderer runs on -- see
 # `CanvasController::with_gpu_painter`. Enabled through `xui-winit`'s
 # `skia-wgpu`.
@@ -12,6 +15,7 @@ wgpu = ["dep:wgpu"]
 
 [dependencies]
 wgpu = { version = "29.0.3", optional = true }
+log = { workspace = true }
 rustc-hash = "2.1.2"
 slotmap = "1.1.1"
 smallstr = "0.3.1"

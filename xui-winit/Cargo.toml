@@ -26,7 +26,7 @@ xui-f = {path="../xui-f"}
 
 glam = { workspace = true }
 thiserror = "2.0.18"
-log = "0.4.29"
+log = { workspace = true }
 moka = { version = "0.12.15", features = ["sync"] }
 rustc-hash = "2.1.3"
 vello = { version = "0.9.0", default-features = false, features = ["wgpu"], optional=true }

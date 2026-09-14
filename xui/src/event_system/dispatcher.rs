@@ -1,3 +1,4 @@
+use crate::diagnostics::invariant;
 use crate::event_system::callbacks::EventHandlers;
 use crate::event_system::{EventContext, Flow};
 use crate::text::{TextHost, TextLayoutQuery, TextLayoutSlot};
@@ -244,7 +245,10 @@ fn dispatch_user_handlers<B: TextBackend>(
     let mut requests = EventRequests::default();
 
     let flow = {
-        let Some((view, handlers)) = arena.node_and_handlers(node) else {
+        let Some((view, handlers)) = invariant!(
+            arena.node_and_handlers(node),
+            "dispatching to node {node:?}, which has no host, layout or style node"
+        ) else {
             return Flow::empty();
         };
         if handlers.is_empty() {

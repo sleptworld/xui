@@ -1,4 +1,5 @@
 use crate::animation::{has_animatable_difference, interpolate_style};
+use crate::diagnostics::invariant;
 use slotmap::{SecondaryMap, SparseSecondaryMap};
 use std::time::Duration;
 use xui_animation::{Timeline, Transition};
@@ -210,7 +211,10 @@ impl StyleSystem {
         let mut remaining = SparseSecondaryMap::new();
         let mut changed = Vec::with_capacity(active.len());
         for (id, mut animation) in active {
-            let Some(target) = self.nodes.get(id).map(|node| &node.computed) else {
+            let Some(target) = invariant!(
+                self.nodes.get(id).map(|node| &node.computed),
+                "style animation is running for node {id:?}, which has no style node"
+            ) else {
                 continue;
             };
             let before = animation.sampled.clone();

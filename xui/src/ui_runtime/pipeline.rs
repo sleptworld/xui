@@ -2,6 +2,7 @@
 
 use crate::animation::has_animatable_difference;
 use crate::core::{Point, Size};
+use crate::diagnostics::invariant;
 use crate::event_system::callbacks::{EventHandlers, EventMask};
 use crate::event_system::interaction::HostInteraction;
 use crate::event_system::{self, EventState, translator::EventTranslator};
@@ -655,7 +656,13 @@ impl UiRuntime {
             target,
             effective,
         );
-        Some((node, &self.interaction_system.get(id)?.handlers))
+        // A node with no handlers registered has no interaction node at all,
+        // which is ordinary -- dispatch walks ancestors and most of them do not
+        // listen. Folding that into the `?` chain would make this return `None`
+        // for both "the node is gone" and "the node is quiet", and the caller
+        // cannot tell a desync from a normal miss. It reads as empty handlers
+        // instead, which the caller already treats as nothing to dispatch.
+        Some((node, self.interaction_system.handlers(id)))
     }
 
     /// Whether any live host reads raw device events at all.
@@ -716,7 +723,10 @@ impl UiRuntime {
     }
 
     pub(crate) fn is_focusable(&self, id: NodeId) -> bool {
-        let Some(node) = self.hosts.get(id) else {
+        let Some(node) = invariant!(
+            self.hosts.get(id),
+            "is_focusable: host {id:?} is not in the host tree"
+        ) else {
             return false;
         };
         let interaction = self.interaction_system.get(id);
@@ -1007,7 +1017,10 @@ impl UiRuntime {
     }
 
     pub(crate) fn set_widget_state_flag(&mut self, id: NodeId, flag: WidgetState, enabled: bool) {
-        let Some(host) = self.hosts.get_mut(id) else {
+        let Some(host) = invariant!(
+            self.hosts.get_mut(id),
+            "set_widget_state_flag: host {id:?} is not in the host tree"
+        ) else {
             return;
         };
         let before = host.state;
@@ -1019,7 +1032,10 @@ impl UiRuntime {
     }
 
     pub(crate) fn set_scroll_offset(&mut self, id: NodeId, offset: Point) -> bool {
-        let Some(layout) = self.layout_tree.host_mut(id) else {
+        let Some(layout) = invariant!(
+            self.layout_tree.host_mut(id),
+            "set_scroll_offset: host {id:?} has no layout node"
+        ) else {
             return false;
         };
         if layout.scroll_offset == offset {
@@ -1156,10 +1172,16 @@ impl UiRuntime {
         point: crate::core::Point,
         ancestor_scroll_offset: Point,
     ) -> HitTestOutcome {
-        let Some(layout) = self.layout_tree.host(id) else {
+        let Some(layout) = invariant!(
+            self.layout_tree.host(id),
+            "hit_test_from: host {id:?} has no layout node"
+        ) else {
             return HitTestOutcome::Miss;
         };
-        let Some(node_style) = self.style_system.effective(id) else {
+        let Some(node_style) = invariant!(
+            self.style_system.effective(id),
+            "hit_test_from: host {id:?} has no computed style"
+        ) else {
             return HitTestOutcome::Miss;
         };
         let visual_layout = layout.visual_bounds(ancestor_scroll_offset);
@@ -1255,7 +1277,12 @@ impl UiRuntime {
         if !self.hosts.contains_key(id) {
             return false;
         }
-        let Some(layout) = self.layout_tree.host(id) else {
+        // The host is present, so a missing layout node is a desync between
+        // the two trees -- the `expect` just below says as much for style.
+        let Some(layout) = invariant!(
+            self.layout_tree.host(id),
+            "scroll_single_node_by: host {id:?} has no layout node"
+        ) else {
             return false;
         };
 
@@ -1624,10 +1651,16 @@ impl UiRuntime {
     }
 
     fn sync_effective_transform(&mut self, id: NodeId) -> bool {
-        let Some(binding) = self.render_system.host_binding(id).copied() else {
+        let Some(binding) = invariant!(
+            self.render_system.host_binding(id).copied(),
+            "sync_effective_transform: host {id:?} has no render binding"
+        ) else {
             return false;
         };
-        let Some(style) = self.style_system.effective(id).map(|style| style.transform) else {
+        let Some(style) = invariant!(
+            self.style_system.effective(id).map(|style| style.transform),
+            "sync_effective_transform: host {id:?} has no computed style"
+        ) else {
             return false;
         };
         if style == xui_interface::TransformStyle::IDENTITY {
@@ -2254,7 +2287,10 @@ impl UiRuntime {
     }
 
     fn unbind_canvas_controller(&mut self, id: NodeId) {
-        let Some(node) = self.hosts.get(id) else {
+        let Some(node) = invariant!(
+            self.hosts.get(id),
+            "unbind_canvas_controller: host {id:?} is not in the host tree"
+        ) else {
             return;
         };
         node.widget.with_widgets_mut(|widget| {

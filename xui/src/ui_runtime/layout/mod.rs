@@ -1,3 +1,4 @@
+use crate::diagnostics::invariant;
 use slotmap::{DefaultKey, SecondaryMap, SlotMap};
 use taffy as tf;
 use taffy::{
@@ -126,7 +127,12 @@ impl<C> LayoutTree<C> {
             return;
         };
         let node_id = layout_node.taffy_node;
-        let Some(node) = self.partial_nodes.remove(key(node_id)) else {
+        // `node_id` came out of the layout node just removed, so it has to be
+        // present here; if it is not, the two maps have drifted apart.
+        let Some(node) = invariant!(
+            self.partial_nodes.remove(key(node_id)),
+            "remove_host: host {host:?} maps to taffy node {node_id:?}, which has no partial node"
+        ) else {
             return;
         };
 

@@ -443,7 +443,7 @@ impl LoweredGraph {
             .map_or(0, |index| index + 1);
         let layer_full_bounds =
             expand_bounds(context.layer_content_bounds, program.layer_expansion);
-        let composite_inverse = inverse_affine(context.composite.transform);
+        let composite_inverse = context.composite.transform.invert();
         let transformed_layer_bounds = composite_inverse.map(|_| {
             context
                 .composite
@@ -711,7 +711,7 @@ impl LoweredGraph {
                     operator,
                 } => {
                     let layer = self.mapped(node.inputs[0])?;
-                    let Some(inverse) = inverse_affine(context.composite.transform) else {
+                    let Some(inverse) = context.composite.transform.invert() else {
                         self.map(node.output, self.parent_destination);
                         continue;
                     };
@@ -1208,7 +1208,7 @@ fn propagate_inputs(
             needs[1] = demand.translate((-offset_px[0] / scale, -offset_px[1] / scale))
         }
         PassOp::LayerComposite { transform, .. } => {
-            let inverse = inverse_affine(transform).ok_or(PlanError::InternalInvariant(
+            let inverse = transform.invert().ok_or(PlanError::InternalInvariant(
                 "scheduled composite transform is singular",
             ))?;
             needs[0] = inverse.transform_bounds(demand);
@@ -1302,25 +1302,6 @@ fn bounds_is_finite(rect: Bounds) -> bool {
 }
 fn is_empty(rect: Rect) -> bool {
     rect.width <= 0.0 || rect.height <= 0.0
-}
-
-fn inverse_affine(value: Affine) -> Option<Affine> {
-    let determinant = value.xx * value.yy - value.xy * value.yx;
-    if !determinant.is_finite() || determinant == 0.0 {
-        return None;
-    }
-    let inverse = 1.0 / determinant;
-    let xx = value.yy * inverse;
-    let yx = -value.yx * inverse;
-    let xy = -value.xy * inverse;
-    let yy = value.xx * inverse;
-    let dx = -(xx * value.dx + xy * value.dy);
-    let dy = -(yx * value.dx + yy * value.dy);
-    let result = Affine::new(xx, yx, xy, yy, dx, dy);
-    [xx, yx, xy, yy, dx, dy]
-        .iter()
-        .all(|item| item.is_finite())
-        .then_some(result)
 }
 
 fn scaled(value: f32, scale: f32) -> Result<f32, PlanError> {

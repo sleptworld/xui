@@ -212,7 +212,7 @@ impl BackendDirtyRegion {
         expansion: SampleExpansion,
         child_clip: Rect,
     ) -> Self {
-        let Some(parent_to_child) = inverse_affine(child_to_parent) else {
+        let Some(parent_to_child) = child_to_parent.invert() else {
             return Self::default();
         };
         let mut result = Self::default();
@@ -257,21 +257,6 @@ impl BackendDirtyRegion {
         }
         tiles
     }
-}
-
-fn inverse_affine(value: Affine) -> Option<Affine> {
-    let determinant = value.xx * value.yy - value.xy * value.yx;
-    if !determinant.is_finite() || determinant.abs() <= f32::EPSILON {
-        return None;
-    }
-    let inverse = determinant.recip();
-    let xx = value.yy * inverse;
-    let yx = -value.yx * inverse;
-    let xy = -value.xy * inverse;
-    let yy = value.xx * inverse;
-    let dx = -(xx * value.dx + xy * value.dy);
-    let dy = -(yx * value.dx + yy * value.dy);
-    Some(Affine::new(xx, yx, xy, yy, dx, dy))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

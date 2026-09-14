@@ -1,3 +1,4 @@
+use crate::diagnostics::invariant;
 use crate::element::PortalDesc;
 use crate::event_system::interaction::HostInteraction;
 use crate::fiber::{
@@ -1451,7 +1452,10 @@ impl ComponentRuntime {
     }
 
     fn sync_host_children_at(&self, id: FiberId, arena: &mut UiRuntime) {
-        let Some(node) = self.nodes.node(id) else {
+        let Some(node) = invariant!(
+            self.nodes.node(id),
+            "sync_host_children_at: fiber {id:?} is not in the fiber arena"
+        ) else {
             return;
         };
 
@@ -1479,7 +1483,10 @@ impl ComponentRuntime {
     }
 
     fn flatten_host_child(&self, id: FiberId, output: &mut Vec<NodeId>) {
-        let Some(node) = self.nodes.node(id) else {
+        let Some(node) = invariant!(
+            self.nodes.node(id),
+            "flatten_host_child: fiber {id:?} is not in the fiber arena"
+        ) else {
             return;
         };
 

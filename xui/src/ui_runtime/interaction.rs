@@ -18,6 +18,11 @@ pub(crate) struct InteractionSystem {
     pub event_state: EventState,
     pub focus: FocusManager,
     nodes: SparseSecondaryMap<NodeId, InteractionNode>,
+    /// Handed out by [`InteractionSystem::handlers`] for nodes that registered
+    /// none. Owned rather than a `static` because `EventHandlers` holds `Rc`
+    /// callbacks and so is not `Sync`; it borrows from `&self` instead, which
+    /// is the lifetime callers want anyway.
+    no_handlers: EventHandlers,
 }
 
 impl InteractionSystem {
@@ -26,7 +31,18 @@ impl InteractionSystem {
             event_state: EventState::default(),
             focus: FocusManager::default(),
             nodes: SparseSecondaryMap::new(),
+            no_handlers: EventHandlers::EMPTY,
         }
+    }
+
+    /// The handlers registered for `id`, empty when it registered none.
+    ///
+    /// Distinct from `get(id).map(..)`: a node with no handlers has no
+    /// interaction node at all, and that ordinary case must not be reported
+    /// the same way as a node that is missing outright.
+    pub fn handlers(&self, id: NodeId) -> &EventHandlers {
+        self.get(id)
+            .map_or(&self.no_handlers, |node| &node.handlers)
     }
 
     pub fn get(&self, id: NodeId) -> Option<&InteractionNode> {

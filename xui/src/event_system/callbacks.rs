@@ -276,6 +276,12 @@ pub struct EventHandlers {
 }
 
 impl EventHandlers {
+    /// The handler set of a node that listens for nothing.
+    pub(crate) const EMPTY: Self = Self {
+        mask: EventMask::empty(),
+        entries: SmallVec::new_const(),
+    };
+
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

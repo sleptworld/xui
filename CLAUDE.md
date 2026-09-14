@@ -67,4 +67,5 @@ app ──► xui (runtime, fiber, hooks, layout, style, widgets, render scene)
 
 - Crates that need a text backend in tests use `xui-cosmic` as a dev-dependency (`xui`, `xui-table`, `xui-example-app`).
 - `xui/tests/ui.rs` drives trybuild against `xui/tests/ui/*.rs` for macro diagnostics; add a `.stderr` alongside new compile-fail cases.
+- `cargo test -p xui --features strict-invariants` turns every `invariant!` report in the runtime into a panic instead of a `log::error!`, so a host/layout/style/render desync fails the suite instead of degrading silently. It is expected to stay green; applications must not enable it.
 - `xui-components/tests/virtual_list_bench.rs` and `xui/src/frame_bench.rs` (cfg(test)) are benchmarks-as-tests; don't gate on their timings.

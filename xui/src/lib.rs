@@ -30,6 +30,7 @@ pub mod app;
 pub mod assets;
 pub mod component;
 pub mod core;
+mod diagnostics;
 pub mod dsl;
 pub mod element;
 pub mod render;

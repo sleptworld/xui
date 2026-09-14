@@ -434,8 +434,7 @@ pub fn radio_group(
 }
 
 fn clamp_step(value: f32, min: f32, max: f32, step: f32) -> f32 {
-    let min = min.min(max);
-    let max = max.max(min);
+    let (min, max) = if min <= max { (min, max) } else { (max, min) };
     let step = step.abs().max(f32::EPSILON);
     let steps = ((value - min) / step).round();
     (min + steps * step).clamp(min, max)
