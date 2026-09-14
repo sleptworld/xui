@@ -132,7 +132,16 @@ pub fn virtual_list(
     ContainerWidget::new()
         .style(style.clone().scroll_vertical())
         .on_scroll(move |event, event_cx| {
-            let offset = event.offset_after.unwrap().y;
+            // The translator emits a `Scroll` for every node on the wheel's
+            // path, and those for the rows beneath bubble through here with
+            // no offsets. Only the one describing this container matters.
+            if event.scroll_target != event_cx.node_id() {
+                return EventResult::Ignored;
+            }
+            let Some(offset_after) = event.offset_after else {
+                return EventResult::Ignored;
+            };
+            let offset = offset_after.y;
             let layout_height = event_cx.node_ref.layout.height();
             let viewport = if layout_height > 0.0 {
                 layout_height
@@ -217,5 +226,82 @@ mod tests {
         let short = visible_range(0.0, 200.0, 20.0, 100, 3).len();
         let long = visible_range(0.0, 200.0, 20.0, 1_000_000, 3).len();
         assert_eq!(short, long);
+    }
+
+    // ---- wheel dispatch ---------------------------------------------------
+
+    use std::time::Instant;
+    use xui::text::TextHost;
+    use xui_cosmic::CosmicEngine;
+    use xui_interface::Translation;
+    use xui_interface::events::{Modifiers, RawEvent, RawWheel, ScrollDelta};
+
+    fn list_root(cx: &mut HookContext<'_>) -> ElementDesc {
+        let render_item: VirtualItemRenderer = cx.use_callback((), |_index: usize| {
+            ContainerWidget::new()
+                .style(Style::new().width(Sizing::Fill).height(20.0))
+                .into_element_desc(Vec::new())
+        });
+        xui! {
+            <virtual_list
+                item_count={1_000usize}
+                item_height={20.0f32}
+                viewport_height={200.0f32}
+                render_item={render_item}
+                style={Style::new().width(Sizing::Fill).height(200.0)}
+            />
+        }
+    }
+
+    /// The translator emits a `Scroll` for every node from the hit row up to
+    /// the root, and the ones for non-scrolling nodes carry no offsets. Those
+    /// bubble through the list's own handler, which must not mistake them for
+    /// a scroll of its container.
+    #[test]
+    fn a_wheel_over_a_row_scrolls_the_list_without_panicking() {
+        let mut app = App::new(list_root);
+        app.resize(Size::new(400.0, 200.0));
+        let mut text = TextHost::new(CosmicEngine::new(1.0));
+        let mut backend = MockRenderBackend::default();
+        app.render(&mut backend, &mut text).expect("mock backend");
+
+        let scroller = {
+            let rt = app.ui_runtime();
+            rt.children(rt.root()).next().expect("the list mounted")
+        };
+        let hit = app
+            .ui_runtime()
+            .hit_test(Point::new(10.0, 10.0))
+            .expect("the wheel position hits something");
+        assert_ne!(hit, scroller, "the wheel must land on a row, not the container");
+
+        app.dispatch_event(
+            RawEvent::Wheel(RawWheel {
+                position: Point::new(10.0, 10.0),
+                delta: ScrollDelta::Pixels(Translation::new(0.0, -2_000.0)),
+                device_id: None,
+                pointer_id: None,
+                modifiers: Modifiers::default(),
+                timestamp: Instant::now(),
+                is_inertial: false,
+            }),
+            &mut text,
+        );
+        app.render(&mut backend, &mut text).expect("mock backend");
+
+        let offset = app.ui_runtime().node(scroller).expect("scroller").scroll_offset.y;
+        assert!(offset > 0.0, "the list did not scroll");
+        let spacer = app
+            .ui_runtime()
+            .children(scroller)
+            .next()
+            .expect("the spacer mounted");
+        let first_row = app.ui_runtime().children(spacer).next().expect("rows mounted");
+        let spacer_y = app.ui_runtime().node(spacer).expect("spacer").world_origin.y;
+        let row_y = app.ui_runtime().node(first_row).expect("row").world_origin.y;
+        assert!(
+            row_y - spacer_y > 0.0,
+            "the window did not follow the scroll to offset {offset}"
+        );
     }
 }
