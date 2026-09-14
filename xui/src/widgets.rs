@@ -101,6 +101,13 @@ macro_rules! event_handler_methods {
             self
         }
 
+        /// Binds `controller` to this widget's scroll position. Only has an
+        /// effect on a widget whose style makes it scrollable.
+        pub fn scroll_controller(mut self, controller: crate::scroll::ScrollController) -> Self {
+            self.interaction.scroll_controller = Some(controller);
+            self
+        }
+
         pub fn accessibility(
             mut self,
             accessibility: xui_interface::AccessibilityProperties,
@@ -200,7 +207,7 @@ mod text_input;
 mod z_stack;
 
 pub(crate) use canvas::CanvasInvalidator;
-pub(crate) use canvas::canvas_text_slot;
+pub(crate) use canvas::{CanvasFrame, canvas_text_slot};
 #[cfg(feature = "wgpu")]
 pub use canvas::{CANVAS_GPU_FORMAT, CANVAS_GPU_USAGES, CanvasGpuPainter, GpuPainter};
 pub use canvas::{

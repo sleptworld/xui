@@ -123,6 +123,10 @@ pub struct WinitRunner<B: RenderBackend<TextHost<T>>, T: TextBackend> {
     device_registry: WinitDeviceRegistry,
     event_proxy: Option<EventLoopProxy<WinitUserEvent>>,
     last_platform_output: PlatformOutput,
+    /// Last reported by `WindowEvent::Occluded`. Only macOS and Wayland send
+    /// it, so it stays false everywhere else and the other checks in
+    /// `refresh_window_visibility` carry the platform.
+    occluded: bool,
     /// True while the window is held back, waiting for its first frame. Cleared
     /// once it has been shown, and false from the start when the caller asked
     /// for a window that stays hidden.
@@ -180,6 +184,7 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackend> WinitRunner<B, T> {
             device_registry: WinitDeviceRegistry::default(),
             event_proxy: None,
             last_platform_output: PlatformOutput::default(),
+            occluded: false,
             pending_first_present: false,
         }
     }
@@ -291,6 +296,39 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackend> WinitRunner<B, T> {
         }
 
         self.last_platform_output = next;
+    }
+
+    /// Tells the runtime whether the window can be seen, from whatever the
+    /// platform is willing to say about it.
+    ///
+    /// No single event covers this. macOS and Wayland report occlusion; a
+    /// minimized window on Windows and X11 instead reports a resize to nothing
+    /// and answers `is_minimized`. So this asks all three and takes the
+    /// pessimistic answer, and is called from every event that could have
+    /// changed any of them -- including focus changes, which are not
+    /// themselves a visibility signal but are a reliable moment at which one
+    /// may have arrived unannounced.
+    ///
+    /// Every path is best-effort. A platform that reports nothing leaves the
+    /// window permanently visible, which is how all of them behaved before
+    /// this existed.
+    fn refresh_window_visibility(&mut self) {
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        let size = window.inner_size();
+        let visible = !self.occluded
+            && !window.is_minimized().unwrap_or(false)
+            && size.width > 0
+            && size.height > 0;
+
+        if self.runtime().window_visible() == visible {
+            return;
+        }
+        self.runtime_mut().set_window_visible(visible);
+        // Coming back needs a frame to restart the loop from: the animations
+        // that wanted one are still recorded, but nothing has asked since.
+        self.request_redraw_if_dirty();
     }
 
     fn request_redraw_if_dirty(&self) {
@@ -603,13 +641,16 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackend> ApplicationHandler<WinitUser
         }
 
         if let WindowEvent::Occluded(occluded) = &event {
-            // Stops the canvas animation loop while nothing can be seen. Only
-            // macOS and Wayland report this; elsewhere the flag stays true and
-            // behaviour is unchanged. Asking for a redraw on the way back is
-            // what restarts the loop -- the canvases that wanted another frame
-            // are still recorded, so it resumes where it stopped.
-            self.runtime_mut().app_mut().set_window_visible(!*occluded);
-            self.request_redraw_if_dirty();
+            self.occluded = *occluded;
+            self.refresh_window_visibility();
+        }
+
+        // A minimized window reports no occlusion on Windows or X11; what it
+        // reports is a resize to nothing. Checked here rather than only on
+        // `Resized` because restoring does not always resize back before the
+        // first frame is asked for.
+        if matches!(event, WindowEvent::Resized(_) | WindowEvent::Focused(_)) {
+            self.refresh_window_visibility();
         }
 
         if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = &event {

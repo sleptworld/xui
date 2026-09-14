@@ -6,9 +6,10 @@
 //! **Where the drawing comes from.** [`CanvasContent::Scene`] is authored by
 //! the caller before layout, so it can only use sizes the caller already knows.
 //! [`CanvasContent::Painter`] is a closure evaluated *after* layout, handed the
-//! node's measured size, its resolved style, and the scale factor -- everything
-//! a drawing needs to fill the box it was actually given instead of a box its
-//! author guessed at.
+//! node's measured size, its resolved style, the scale factor, and the frame's
+//! time -- everything a drawing needs to fill the box it was actually given
+//! instead of a box its author guessed at, and to be at the right point of an
+//! animation while doing it.
 //!
 //! **How a change reaches the screen.** A canvas is a leaf: its content changes
 //! nothing about layout or the component tree. So [`CanvasController`] marks its
@@ -26,6 +27,7 @@
 
 use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc, sync::Arc};
 
+use crate::clock::FrameTime;
 use crate::element::ElementDesc;
 use crate::event_system::interaction::InteractionProperties;
 use crate::event_system::{EventContext, callbacks::EventHandlers};
@@ -57,7 +59,8 @@ const KEYED_TEXT_ID_BIT: u32 = 1 << 31;
 /// A retained scene is authored before layout runs, so it can only use sizes
 /// the caller already knows -- which is why size-dependent drawings used to end
 /// up with their dimensions hard-coded. A painter is evaluated *after* layout
-/// with the node's measured size, so it can fill whatever box it was given.
+/// with the node's measured size, so it can fill whatever box it was given, and
+/// with the frame's time, so successive drawings animate against one clock.
 #[derive(Clone)]
 pub enum CanvasContent {
     Scene(VectorScene),
@@ -155,6 +158,29 @@ pub const CANVAS_GPU_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Uno
 pub const CANVAS_GPU_USAGES: wgpu::TextureUsages =
     wgpu::TextureUsages::RENDER_ATTACHMENT.union(wgpu::TextureUsages::TEXTURE_BINDING);
 
+/// Everything a drawing is given about the frame it is being drawn for.
+///
+/// Bundled rather than passed as a row of positional arguments because it is
+/// the same set of facts for every kind of painter, and because it is the
+/// natural home for anything later frames need to agree on -- [`Self::time`]
+/// being the first of those.
+#[derive(Clone, Copy)]
+pub(crate) struct CanvasFrame<'a> {
+    /// The node's measured size, in logical pixels.
+    pub size: Size<f32>,
+    pub style: &'a ComputedStyle,
+    pub theme: &'a Theme,
+    pub scale_factor: f32,
+    /// The frame's time, sampled once by the runtime. See
+    /// [`CanvasPainter::time`].
+    pub time: FrameTime,
+    /// The renderer's device, when it has one to share. Only a GPU painter
+    /// reads it, and that is the one kind of painter a build without `wgpu`
+    /// cannot have.
+    #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
+    pub gpu: Option<&'a CanvasGpuContext>,
+}
+
 /// The GPU drawing surface handed to a [`CanvasContent::GpuPainter`] each draw.
 ///
 /// The target is the framework's: allocated at the node's measured size in
@@ -175,6 +201,7 @@ pub struct CanvasGpuPainter<'a> {
     scale_factor: f32,
     style: &'a ComputedStyle,
     theme: &'a Theme,
+    time: FrameTime,
     picks: Vec<CanvasPick>,
     repaint: bool,
 }
@@ -192,11 +219,17 @@ impl<'a> CanvasGpuPainter<'a> {
     /// the only place that knows whether the animation is finished:
     ///
     /// ```ignore
-    /// let elapsed = shader.started.elapsed();
-    /// if elapsed < Duration::from_secs(2) {
+    /// let started = *shader.started.get_or_insert(gpu.time().timestamp());
+    /// if gpu.time().timestamp() - started < Duration::from_secs(2) {
     ///     gpu.request_repaint();
     /// }
     /// ```
+    ///
+    /// Measured against [`Self::time`] rather than an `Instant` the painter
+    /// captured itself. The two agree only while frames keep coming: a wall
+    /// clock runs through an occluded window and a stalled frame, so a painter
+    /// reading one resumes by jumping to wherever real time got to, while this
+    /// one resumes where it stopped.
     ///
     /// A canvas that animates forever calls it unconditionally. Nothing else
     /// has to remember to turn it off.
@@ -204,6 +237,11 @@ impl<'a> CanvasGpuPainter<'a> {
         self.repaint = true;
         self
     }
+    /// The time of the frame being drawn. See [`CanvasPainter::time`].
+    pub fn time(&self) -> FrameTime {
+        self.time
+    }
+
     /// The renderer's device. Pipelines and buffers must be created on it.
     pub fn device(&self) -> &'a wgpu::Device {
         self.device
@@ -358,6 +396,8 @@ pub struct CanvasPainter<'a> {
     style: &'a ComputedStyle,
     theme: &'a Theme,
     scale_factor: f32,
+    time: FrameTime,
+    repaint: bool,
     next_text_id: u32,
     text_constraints: HashMap<CanvasTextId, TextLayoutConstraints>,
     measure_text:
@@ -366,10 +406,7 @@ pub struct CanvasPainter<'a> {
 
 impl<'a> CanvasPainter<'a> {
     fn new(
-        size: Size<f32>,
-        style: &'a ComputedStyle,
-        theme: &'a Theme,
-        scale_factor: f32,
+        frame: &CanvasFrame<'a>,
         measure_text: &'a mut dyn FnMut(
             CanvasTextId,
             &TextProps,
@@ -379,10 +416,12 @@ impl<'a> CanvasPainter<'a> {
         Self {
             commands: Vec::new(),
             picks: Vec::new(),
-            size,
-            style,
-            theme,
-            scale_factor,
+            size: frame.size,
+            style: frame.style,
+            theme: frame.theme,
+            scale_factor: frame.scale_factor,
+            time: frame.time,
+            repaint: false,
             next_text_id: 1,
             text_constraints: HashMap::new(),
             measure_text,
@@ -397,6 +436,29 @@ impl<'a> CanvasPainter<'a> {
 
     fn keyed_text_id(key: u32) -> CanvasTextId {
         CanvasTextId::new((key & !KEYED_TEXT_ID_BIT) | KEYED_TEXT_ID_BIT)
+    }
+
+    /// The time of the frame being drawn.
+    ///
+    /// A drawing that moves reads its clock here rather than from an `Instant`
+    /// of its own. This one is sampled once per frame by the runtime, so every
+    /// drawing in a frame moves by the same step, and it advances only across
+    /// frames that were actually produced, so an occluded window or a stalled
+    /// frame is a pause rather than a jump.
+    pub fn time(&self) -> FrameTime {
+        self.time
+    }
+
+    /// Asks for another frame after this one.
+    ///
+    /// The vector counterpart of [`CanvasGpuPainter::request_repaint`], with
+    /// the same contract: each drawing says whether it wants another, and the
+    /// loop stops the moment one goes by without asking. Use it for a drawing
+    /// that animates itself; [`CanvasController::invalidate`] is for the other
+    /// direction, where something outside the painter changed.
+    pub fn request_repaint(&mut self) -> &mut Self {
+        self.repaint = true;
+        self
     }
 
     /// The node's measured size. This is the whole point of a painter.
@@ -1226,18 +1288,14 @@ impl CanvasWidget {
     /// same thing: a size Taffy has finished deciding.
     pub(crate) fn compile(
         &mut self,
-        size: Size<f32>,
-        style: &ComputedStyle,
-        theme: &Theme,
-        scale_factor: f32,
+        frame: CanvasFrame<'_>,
         measure_text: &mut dyn FnMut(
             CanvasTextId,
             &TextProps,
             TextLayoutConstraints,
         ) -> CanvasTextMetrics,
-        gpu: Option<&CanvasGpuContext>,
     ) {
-        let _ = &gpu;
+        let size = frame.size;
         let content = self.controller.content();
         let revision = self.controller.revision();
 
@@ -1261,9 +1319,9 @@ impl CanvasWidget {
                 Vec::new(),
             ),
             CanvasContent::Painter(painter) => {
-                let mut painter_cx =
-                    CanvasPainter::new(size, style, theme, scale_factor, measure_text);
+                let mut painter_cx = CanvasPainter::new(&frame, measure_text);
                 painter(&mut painter_cx);
+                self.wants_repaint = painter_cx.repaint;
                 (
                     compile_commands(&painter_cx.commands, &painter_cx.text_constraints),
                     std::mem::take(&mut painter_cx.picks),
@@ -1274,11 +1332,11 @@ impl CanvasWidget {
             // answer: the rest of the UI is unaffected, and the painter runs as
             // soon as a device does arrive.
             #[cfg(feature = "wgpu")]
-            CanvasContent::GpuPainter(_) if gpu.is_none() => (Vec::new(), Vec::new()),
+            CanvasContent::GpuPainter(_) if frame.gpu.is_none() => (Vec::new(), Vec::new()),
             #[cfg(feature = "wgpu")]
             CanvasContent::GpuPainter(painter) => {
-                let gpu = gpu.expect("guarded by the arm above");
-                self.run_gpu_painter(&painter, gpu, size, style, theme, scale_factor)
+                let gpu = frame.gpu.expect("guarded by the arm above");
+                self.run_gpu_painter(&painter, gpu, &frame)
             }
         };
 
@@ -1298,11 +1356,15 @@ impl CanvasWidget {
         &mut self,
         painter: &Rc<dyn GpuPainter>,
         gpu: &CanvasGpuContext,
-        size: Size<f32>,
-        style: &ComputedStyle,
-        theme: &Theme,
-        scale_factor: f32,
+        frame: &CanvasFrame<'_>,
     ) -> (Vec<CanvasBatch>, Vec<CanvasPick>) {
+        let CanvasFrame {
+            size,
+            style,
+            theme,
+            scale_factor,
+            ..
+        } = *frame;
         // Physical pixels, rounded up so a fractional layout never loses a
         // column, and never zero -- wgpu rejects a zero-sized texture, and a
         // canvas can legitimately measure to nothing mid-layout.
@@ -1358,6 +1420,7 @@ impl CanvasWidget {
             scale_factor,
             style,
             theme,
+            time: frame.time,
             picks: Vec::new(),
             repaint: false,
         };
@@ -1551,6 +1614,11 @@ mod tests {
     }
 
     fn compile(widget: &mut CanvasWidget, size: Size<f32>) {
+        compile_at(widget, size, FrameTime::ZERO);
+    }
+
+    /// `compile`, with the frame's time chosen by the caller.
+    fn compile_at(widget: &mut CanvasWidget, size: Size<f32>, time: FrameTime) {
         let theme = StyleTheme::default();
         let style = ComputedStyle::initial(&theme);
         let mut measure_text = |_, _: &TextProps, _| CanvasTextMetrics {
@@ -1558,7 +1626,17 @@ mod tests {
             first_baseline: None,
             line_count: 0,
         };
-        widget.compile(size, &style, &theme, 2.0, &mut measure_text, None);
+        widget.compile(
+            CanvasFrame {
+                size,
+                style: &style,
+                theme: &theme,
+                scale_factor: 2.0,
+                time,
+                gpu: None,
+            },
+            &mut measure_text,
+        );
     }
 
     #[test]
@@ -1725,12 +1803,15 @@ mod tests {
             };
 
         widget.compile(
-            Size::new(200.0, 100.0),
-            &style,
-            &theme,
-            2.0,
+            CanvasFrame {
+                size: Size::new(200.0, 100.0),
+                style: &style,
+                theme: &theme,
+                scale_factor: 2.0,
+                time: FrameTime::ZERO,
+                gpu: None,
+            },
             &mut measure_text,
-            None,
         );
 
         assert_eq!(
@@ -1814,6 +1895,61 @@ mod tests {
         assert_eq!(controller.revision(), before + 1);
         compile(&mut widget, Size::new(10.0, 10.0));
         assert_eq!(*runs.borrow(), 2);
+    }
+
+    #[test]
+    fn a_painter_reads_the_frames_time_rather_than_a_clock_of_its_own() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let recorder = seen.clone();
+        let controller = CanvasController::with_painter(move |painter| {
+            recorder.borrow_mut().push(painter.time());
+        });
+        let mut widget = CanvasWidget::new(controller.clone());
+
+        let start = std::time::Instant::now();
+        let mut clock = crate::clock::FrameClock::new();
+        let first = clock.tick(start);
+        let second = clock.tick(start + std::time::Duration::from_millis(16));
+
+        compile_at(&mut widget, Size::new(10.0, 10.0), first);
+        controller.invalidate();
+        compile_at(&mut widget, Size::new(10.0, 10.0), second);
+
+        let seen = seen.borrow();
+        assert_eq!(seen.as_slice(), &[first, second]);
+        assert_eq!(
+            seen[1].timestamp() - seen[0].timestamp(),
+            std::time::Duration::from_millis(16),
+            "the painter advances by the frame step, not by however long the draw took"
+        );
+    }
+
+    #[test]
+    fn a_vector_painter_sustains_its_own_animation_and_stops_on_its_own() {
+        // Asks for three more frames, then stops -- a finite animation.
+        let remaining = Rc::new(RefCell::new(3));
+        let countdown = remaining.clone();
+        let controller = CanvasController::with_painter(move |painter| {
+            let mut left = countdown.borrow_mut();
+            if *left > 0 {
+                *left -= 1;
+                painter.request_repaint();
+            }
+        });
+        let mut widget = CanvasWidget::new(controller.clone());
+
+        for expected in [true, true, true] {
+            controller.invalidate();
+            compile(&mut widget, Size::new(10.0, 10.0));
+            assert_eq!(widget.wants_repaint(), expected);
+        }
+
+        controller.invalidate();
+        compile(&mut widget, Size::new(10.0, 10.0));
+        assert!(
+            !widget.wants_repaint(),
+            "a drawing that stops asking must not leave the canvas scheduled forever"
+        );
     }
 
     #[test]
@@ -2048,6 +2184,16 @@ mod tests {
         }
 
         fn compile_gpu(widget: &mut CanvasWidget, size: Size<f32>, gpu: &CanvasGpuContext) {
+            compile_gpu_at(widget, size, gpu, FrameTime::ZERO);
+        }
+
+        /// `compile_gpu`, with the frame's time chosen by the caller.
+        fn compile_gpu_at(
+            widget: &mut CanvasWidget,
+            size: Size<f32>,
+            gpu: &CanvasGpuContext,
+            time: FrameTime,
+        ) {
             let theme = StyleTheme::default();
             let style = ComputedStyle::initial(&theme);
             let mut measure_text = |_, _: &TextProps, _| CanvasTextMetrics {
@@ -2055,7 +2201,17 @@ mod tests {
                 first_baseline: None,
                 line_count: 0,
             };
-            widget.compile(size, &style, &theme, 2.0, &mut measure_text, Some(gpu));
+            widget.compile(
+                CanvasFrame {
+                    size,
+                    style: &style,
+                    theme: &theme,
+                    scale_factor: 2.0,
+                    time,
+                    gpu: Some(gpu),
+                },
+                &mut measure_text,
+            );
         }
 
         /// The single texture command a GPU painter lowers to.
@@ -2257,6 +2413,46 @@ mod tests {
             assert_eq!(inits.get(), 2, "clearing the state rebuilds it");
         }
 
+        /// The pattern `request_repaint`'s documentation shows: a start stamped
+        /// on the first draw, and every later draw measured against it.
+        #[test]
+        fn a_gpu_painter_times_itself_off_the_frame_it_is_drawn_for() {
+            let Some(gpu) = context() else {
+                eprintln!("no wgpu adapter available, skipping");
+                return;
+            };
+            let elapsed = Rc::new(RefCell::new(Vec::new()));
+            let recorded = Rc::clone(&elapsed);
+            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
+                move |state: &mut Option<std::time::Duration>,
+                      painter: &mut CanvasGpuPainter<'_>| {
+                    let started = *state.get_or_insert(painter.time().timestamp());
+                    recorded
+                        .borrow_mut()
+                        .push(painter.time().timestamp() - started);
+                },
+            ));
+
+            let start = std::time::Instant::now();
+            let mut clock = crate::clock::FrameClock::new();
+            let frames: Vec<_> = [0u64, 16, 32]
+                .into_iter()
+                .map(|millis| clock.tick(start + std::time::Duration::from_millis(millis)))
+                .collect();
+            for frame in frames {
+                compile_gpu_at(&mut widget, Size::new(10.0, 10.0), &gpu, frame);
+            }
+
+            assert_eq!(
+                elapsed.borrow().as_slice(),
+                &[
+                    std::time::Duration::ZERO,
+                    std::time::Duration::from_millis(16),
+                    std::time::Duration::from_millis(32),
+                ]
+            );
+        }
+
         /// An animating canvas has to keep asking for the next frame, the way a
         /// running style animation does, or it repaints once and stops.
         #[test]
@@ -2310,17 +2506,21 @@ mod tests {
             // Stand in for the compile pass recording what the painter asked.
             let id = runtime.root();
             runtime.canvases_wanting_repaint.insert(id, ());
-            assert!(runtime.has_animating_canvases());
+            assert!(runtime.is_animating());
 
             runtime.set_window_visible(false);
             assert!(
-                !runtime.has_animating_canvases(),
+                !runtime.is_animating(),
                 "a hidden window must not keep asking for frames"
+            );
+            assert!(
+                runtime.has_animating_canvases(),
+                "but the request itself is kept, not cancelled"
             );
 
             runtime.set_window_visible(true);
             assert!(
-                runtime.has_animating_canvases(),
+                runtime.is_animating(),
                 "the request survives being hidden, so revealing resumes it"
             );
         }

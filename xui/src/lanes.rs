@@ -266,3 +266,106 @@ fn expiration_ms(lane: Lane) -> u64 {
 fn lane_to_index(lane: Lane) -> usize {
     lane.trailing_zeros() as usize
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A lane that has waited past its deadline is worked next whatever its
+    /// priority, which is the whole point of stamping deadlines.
+    ///
+    /// Shown with a transition lane against a sync one. Sync, continuous and
+    /// default are one batch as far as [`get_highest_priority_lanes`] is
+    /// concerned, so they can never overtake each other in the first place --
+    /// and sync's budget is the shorter of the two, so the only way to see a
+    /// starved lane win is a fresh high-priority update landing just as a
+    /// long-pending low-priority one runs out of patience.
+    #[test]
+    fn a_starved_lane_is_picked_ahead_of_higher_priority_work() {
+        let mut root = LaneRoot::default();
+
+        // t=0: a transition starts. Stamped on first sight; its budget is 5s.
+        root.mark_root_updated(TRANSITION_LANE_1);
+        root.mark_starved_lanes_as_expired(0);
+        assert_eq!(root.expired_lanes, NO_LANES);
+
+        // t=1000: a click. Nothing has starved, so priority decides and the
+        // transition waits.
+        root.mark_root_updated(SYNC_LANE);
+        root.mark_starved_lanes_as_expired(1_000);
+        assert_eq!(root.expired_lanes, NO_LANES);
+        assert_eq!(root.get_next_lanes(NO_LANES), SYNC_LANE);
+
+        // The click is handled; the transition is still pending and keeps the
+        // deadline it was stamped with.
+        root.mark_root_finished(SYNC_LANE, TRANSITION_LANE_1);
+
+        // t=5000: another click, at the moment the transition's budget runs
+        // out. Expiry outranks priority, so the starved work goes first even
+        // though a sync update is sitting right there.
+        root.mark_root_updated(SYNC_LANE);
+        root.mark_starved_lanes_as_expired(5_000);
+        assert_eq!(root.expired_lanes, TRANSITION_LANE_1);
+        assert_eq!(root.get_next_lanes(NO_LANES), TRANSITION_LANE_1);
+    }
+
+    /// The deadline is absolute and stamped once, so every later comparison is
+    /// against a clock that must only move forward. This is what a `SystemTime`
+    /// that steps backwards used to break.
+    #[test]
+    fn a_deadline_is_stamped_once_and_not_pushed_back_by_later_calls() {
+        let mut root = LaneRoot::default();
+        root.mark_root_updated(SYNC_LANE);
+        root.mark_starved_lanes_as_expired(1_000);
+
+        // Re-checked repeatedly, as every work loop does.
+        for now in [1_100, 1_200, 1_249] {
+            root.mark_starved_lanes_as_expired(now);
+            assert_eq!(root.expired_lanes, NO_LANES);
+        }
+
+        // 250ms after the stamp, not 250ms after the last check.
+        root.mark_starved_lanes_as_expired(1_250);
+        assert_eq!(root.expired_lanes, SYNC_LANE);
+    }
+
+    /// What a clock that jumped backwards did: the deadline is in the future
+    /// again, so the lane it was protecting goes back to being starved.
+    #[test]
+    fn a_clock_that_moves_backwards_un_starves_a_lane() {
+        let mut root = LaneRoot::default();
+        root.mark_root_updated(SYNC_LANE);
+        root.mark_starved_lanes_as_expired(10_000);
+        root.mark_starved_lanes_as_expired(10_250);
+        assert_eq!(root.expired_lanes, SYNC_LANE);
+
+        let mut stepped_back = LaneRoot::default();
+        stepped_back.mark_root_updated(SYNC_LANE);
+        stepped_back.mark_starved_lanes_as_expired(10_000);
+        // The same 250ms of real time, across a two second backwards step.
+        stepped_back.mark_starved_lanes_as_expired(8_250);
+        assert_eq!(
+            stepped_back.expired_lanes, NO_LANES,
+            "the deadline is only reachable by a clock that moves forward"
+        );
+    }
+
+    #[test]
+    fn finishing_a_lane_clears_its_deadline_so_the_next_update_starts_over() {
+        let mut root = LaneRoot::default();
+        root.mark_root_updated(DEFAULT_LANE);
+        root.mark_starved_lanes_as_expired(0);
+        root.mark_starved_lanes_as_expired(6_000);
+        assert_eq!(root.expired_lanes, DEFAULT_LANE);
+
+        root.mark_root_finished(DEFAULT_LANE, NO_LANES);
+        assert_eq!(root.expired_lanes, NO_LANES);
+
+        root.mark_root_updated(DEFAULT_LANE);
+        root.mark_starved_lanes_as_expired(6_000);
+        assert_eq!(
+            root.expired_lanes, NO_LANES,
+            "a fresh update gets a fresh budget, not the old lane's deadline"
+        );
+    }
+}

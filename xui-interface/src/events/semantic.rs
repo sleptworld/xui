@@ -397,6 +397,9 @@ pub enum ScrollSource {
     Keyboard,
     Scrollbar,
     Programmatic,
+    /// The runtime moved the offset back into range because the content or
+    /// the viewport changed size -- nothing asked for a scroll.
+    Layout,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

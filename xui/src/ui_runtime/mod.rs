@@ -50,8 +50,16 @@ pub struct UiRuntime {
     /// seen. Defaults to true, so a platform that never reports occlusion
     /// behaves exactly as before.
     pub(crate) window_visible: bool,
+    /// The time of the frame in progress, published once at the top of it by
+    /// [`UiRuntime::begin_frame`]. Read, never sampled: it is the reason two
+    /// animations stepped in the same frame step by the same amount.
+    pub(crate) frame_time: crate::clock::FrameTime,
     /// Repaints requested by a `CanvasController` outside of any rebuild.
     pub(crate) canvas_invalidations: crate::widgets::CanvasInvalidator,
+    /// Callbacks installed by `use_ticker`, run once per frame. Held here
+    /// rather than in the component runtime so that the one place deciding
+    /// whether animation asks for frames -- `is_animating` -- can see them.
+    pub(crate) tickers: crate::ticker::TickerRegistry,
     /// Physical pixels per logical pixel, forwarded to canvas painters so they
     /// can size hairlines and snap to the device grid.
     pub(crate) scale_factor: f32,

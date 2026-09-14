@@ -1,11 +1,13 @@
 use crate::event_system::callbacks::EventHandlers;
 use crate::focus::FocusHandle;
+use crate::scroll::ScrollController;
 use xui_interface::{AccessibilityProperties, FocusProperties, ShortcutBinding};
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct InteractionProperties {
     pub focus: FocusProperties,
     pub focus_handle: Option<FocusHandle>,
+    pub scroll_controller: Option<ScrollController>,
     pub accessibility: AccessibilityProperties,
     pub shortcuts: Vec<ShortcutBinding>,
 }

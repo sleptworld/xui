@@ -5,6 +5,9 @@ use std::time::{Duration, Instant};
 use rustc_hash::FxHashMap;
 use xui_interface::{NodeId, Point, PointerButton, Translation, XuiPointerId};
 
+use crate::scroll::{
+    AppliedScroll, SCROLL_LINE_STEP, ScrollMetrics, ScrollbarAxis, ScrollbarHit, scroll_page_step,
+};
 use crate::ui_runtime::UiRuntime;
 use xui_interface::events::*;
 
@@ -16,6 +19,10 @@ pub struct EventTranslator {
     hover_paths: FxHashMap<XuiPointerId, Vec<NodeId>>,
     active_presses: FxHashMap<(XuiPointerId, PointerButton), ActivePress>,
     active_drags: FxHashMap<XuiPointerId, ActiveDrag>,
+    /// A scrollbar thumb being dragged. Held apart from `active_drags`: the
+    /// gesture belongs to the runtime, so no press, drag or click event is
+    /// ever raised for it.
+    active_scrollbar_drag: Option<ScrollbarDrag>,
     last_click: Option<ClickRecord>,
     config: EventTranslatorConfig,
 }
@@ -60,6 +67,19 @@ pub struct ActiveDrag {
     pub previous_position: Point,
     pub current_position: Point,
     pub started_at: Instant,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScrollbarDrag {
+    pointer_id: XuiPointerId,
+    node: NodeId,
+    axis: ScrollbarAxis,
+    /// Where the pointer and the offset were, along the bar's axis, when the
+    /// thumb was grabbed. Each move is measured from these rather than from
+    /// the previous move, so clamping at an end does not make the thumb drift
+    /// away from the pointer.
+    start_pointer: f32,
+    start_offset: f32,
 }
 
 pub struct ClickRecord {
@@ -132,6 +152,7 @@ impl EventTranslator {
             hover_paths: FxHashMap::default(),
             active_presses: FxHashMap::default(),
             active_drags: FxHashMap::default(),
+            active_scrollbar_drag: None,
             last_click: None,
             config,
         }
@@ -182,6 +203,13 @@ impl EventTranslator {
         raw: &RawPointerMove,
         arena: &mut UiRuntime,
     ) -> Vec<SemanticEvent> {
+        if let Some(drag) = self
+            .active_scrollbar_drag
+            .filter(|drag| drag.pointer_id == raw.pointer_id)
+        {
+            return self.drag_scrollbar(drag, raw, arena);
+        }
+
         let mut out = Vec::new();
         let hit_target = self.resolve_pointer_target(raw.pointer_id, raw.position, arena);
         let pointer = self.make_pointer_snapshot(
@@ -236,6 +264,13 @@ impl EventTranslator {
         raw: &RawPointerButton,
         arena: &mut UiRuntime,
     ) -> Vec<SemanticEvent> {
+        if raw.button == PointerButton::Primary
+            && arena.pointer_capture_node().is_none()
+            && let Some(hit) = arena.scrollbar_hit(raw.position)
+        {
+            return self.press_scrollbar(raw, hit, arena);
+        }
+
         let mut out = Vec::new();
         let Some(target) = self.resolve_pointer_target(raw.pointer_id, raw.position, arena) else {
             return out;
@@ -311,6 +346,17 @@ impl EventTranslator {
         raw: &RawPointerButton,
         arena: &mut UiRuntime,
     ) -> Vec<SemanticEvent> {
+        if raw.button == PointerButton::Primary
+            && self
+                .active_scrollbar_drag
+                .is_some_and(|drag| drag.pointer_id == raw.pointer_id)
+        {
+            return self
+                .end_scrollbar_drag(arena, raw.timestamp, raw.modifiers)
+                .into_iter()
+                .collect();
+        }
+
         let mut out = Vec::new();
         let release_target = self.resolve_pointer_target(raw.pointer_id, raw.position, arena);
         let pointer = self.make_pointer_snapshot(
@@ -418,6 +464,13 @@ impl EventTranslator {
         arena: &mut UiRuntime,
     ) -> Vec<SemanticEvent> {
         let mut out = Vec::new();
+        if self
+            .active_scrollbar_drag
+            .is_some_and(|drag| drag.pointer_id == raw.pointer_id)
+        {
+            out.extend(self.end_scrollbar_drag(arena, raw.timestamp, raw.modifiers));
+        }
+
         let position = raw
             .position
             .or_else(|| {
@@ -676,7 +729,10 @@ impl EventTranslator {
         raw: &RawWindowEvent,
         arena: &mut UiRuntime,
     ) -> Vec<SemanticEvent> {
-        let mut out = Vec::new();
+        let mut out: Vec<SemanticEvent> = self
+            .end_scrollbar_drag(arena, raw.timestamp, raw.modifiers)
+            .into_iter()
+            .collect();
         self.cancel_active_drags(
             DragCancelReason::WindowBlur,
             raw.timestamp,
@@ -1172,6 +1228,255 @@ impl EventTranslator {
         click_count
     }
 
+    /// Scrolls for a navigation key nothing else claimed -- the default action
+    /// a browser takes for a key its page did not handle.
+    ///
+    /// Aimed at the focused node, or the hovered one when nothing has focus,
+    /// and chained like the wheel: the nearest scroll container that can still
+    /// move along the key's axis takes the step.
+    pub(crate) fn translate_keyboard_scroll(
+        &mut self,
+        raw: &RawKeyboard,
+        arena: &mut UiRuntime,
+    ) -> Vec<SemanticEvent> {
+        let mut out = Vec::new();
+        if raw.state != xui_interface::events::KeyState::Down
+            || keyboard_scroll_target(raw, &ScrollMetrics::default()).is_none()
+        {
+            return out;
+        }
+
+        let mut cursor = arena.focused_node().or_else(|| arena.hovered_node());
+        while let Some(node) = cursor {
+            cursor = parent_of(arena, node);
+            let Some(target) = arena
+                .scroll_metrics(node)
+                .and_then(|metrics| keyboard_scroll_target(raw, &metrics))
+            else {
+                continue;
+            };
+            if let Some(scroll) = arena.scroll_node_to(node, target) {
+                out.push(self.scroll_offset_event(
+                    scroll,
+                    ScrollSource::Keyboard,
+                    ScrollPhase::Move,
+                    raw.timestamp,
+                    raw.modifiers,
+                    None,
+                ));
+                break;
+            }
+        }
+        out
+    }
+
+    /// The `Scroll` event reporting a scroll the runtime already applied.
+    ///
+    /// Deltas follow the wheel's convention -- `consumed_delta` is
+    /// `before - after` -- so a handler reads a programmatic or scrollbar
+    /// scroll exactly as it reads a wheel one.
+    pub(crate) fn scroll_offset_event(
+        &mut self,
+        scroll: AppliedScroll,
+        source: ScrollSource,
+        phase: ScrollPhase,
+        timestamp: Instant,
+        modifiers: Modifiers,
+        pointer: Option<PointerSnapshot>,
+    ) -> SemanticEvent {
+        let event_source = match source {
+            ScrollSource::Programmatic | ScrollSource::Layout => EventSource::Programmatic,
+            ScrollSource::Scrollbar => EventSource::Pointer,
+            ScrollSource::Keyboard => EventSource::Keyboard,
+            ScrollSource::Wheel | ScrollSource::TouchPan | ScrollSource::Trackpad => {
+                EventSource::Scroll
+            }
+        };
+        let consumed = Translation::new(
+            scroll.before.x - scroll.after.x,
+            scroll.before.y - scroll.after.y,
+        );
+        SemanticEvent::Scroll(ScrollEvent {
+            meta: self.make_meta(
+                timestamp,
+                scroll.node,
+                scroll.node,
+                EventPhase::Target,
+                event_source,
+                modifiers,
+            ),
+            source,
+            phase,
+            delta: ScrollDelta::Pixels(consumed),
+            pixel_delta: consumed,
+            scroll_target: scroll.node,
+            offset_before: Some(scroll.before.into()),
+            offset_after: Some(scroll.after.into()),
+            consumed_delta: Some(consumed),
+            remaining_delta: Some(Translation::zero()),
+            is_inertial: false,
+            pointer,
+        })
+    }
+
+    /// A primary press on a scrollbar. It belongs to the scrollbar alone:
+    /// content underneath sees no press, click or focus change.
+    ///
+    /// On the thumb it starts a drag. On the track it pages one viewport
+    /// toward the pointer.
+    fn press_scrollbar(
+        &mut self,
+        raw: &RawPointerButton,
+        hit: ScrollbarHit,
+        arena: &mut UiRuntime,
+    ) -> Vec<SemanticEvent> {
+        let mut out = Vec::new();
+        let (Some(part), Some(metrics)) = (
+            arena.scrollbar_part(hit.node, hit.axis),
+            arena.scroll_metrics(hit.node),
+        ) else {
+            return out;
+        };
+
+        if hit.on_thumb {
+            self.active_scrollbar_drag = Some(ScrollbarDrag {
+                pointer_id: raw.pointer_id,
+                node: hit.node,
+                axis: hit.axis,
+                start_pointer: part.along(raw.position),
+                start_offset: part.along(metrics.offset),
+            });
+            // Capture keeps the cursor and every later move aimed at the
+            // container once the pointer leaves the bar.
+            arena.event_state_mut().capture_pointer(hit.node);
+            let pointer = self.make_pointer_snapshot(
+                raw.pointer_id,
+                Some(raw.button),
+                raw.buttons,
+                raw.position,
+                Some(hit.node),
+                arena,
+            );
+            out.push(self.scroll_offset_event(
+                AppliedScroll {
+                    node: hit.node,
+                    before: metrics.offset,
+                    after: metrics.offset,
+                },
+                ScrollSource::Scrollbar,
+                ScrollPhase::Start,
+                raw.timestamp,
+                raw.modifiers,
+                Some(pointer),
+            ));
+            return out;
+        }
+
+        let page = scroll_page_step(part.along(Point::new(
+            metrics.viewport_size.width,
+            metrics.viewport_size.height,
+        )));
+        let before_thumb = part
+            .thumb
+            .is_some_and(|thumb| part.along(raw.position) < part.along(thumb.min));
+        let current = part.along(metrics.offset);
+        let next = if before_thumb {
+            current - page
+        } else {
+            current + page
+        };
+        if let Some(scroll) = arena.scroll_node_to(hit.node, part.with_along(metrics.offset, next)) {
+            let pointer = self.make_pointer_snapshot(
+                raw.pointer_id,
+                Some(raw.button),
+                raw.buttons,
+                raw.position,
+                Some(hit.node),
+                arena,
+            );
+            out.push(self.scroll_offset_event(
+                scroll,
+                ScrollSource::Scrollbar,
+                ScrollPhase::Move,
+                raw.timestamp,
+                raw.modifiers,
+                Some(pointer),
+            ));
+        }
+        out
+    }
+
+    fn drag_scrollbar(
+        &mut self,
+        drag: ScrollbarDrag,
+        raw: &RawPointerMove,
+        arena: &mut UiRuntime,
+    ) -> Vec<SemanticEvent> {
+        let mut out = Vec::new();
+        let (Some(part), Some(metrics)) = (
+            arena.scrollbar_part(drag.node, drag.axis),
+            arena.scroll_metrics(drag.node),
+        ) else {
+            // The container unmounted, or stopped scrolling, mid-drag.
+            out.extend(self.end_scrollbar_drag(arena, raw.timestamp, raw.modifiers));
+            return out;
+        };
+
+        let travel = part.travel();
+        if travel <= 0.0 {
+            return out;
+        }
+        let moved = part.along(raw.position) - drag.start_pointer;
+        let next = drag.start_offset + moved * (part.max_offset / travel);
+        if let Some(scroll) = arena.scroll_node_to(drag.node, part.with_along(metrics.offset, next))
+        {
+            let pointer = self.make_pointer_snapshot(
+                raw.pointer_id,
+                raw.button,
+                raw.buttons,
+                raw.position,
+                Some(drag.node),
+                arena,
+            );
+            out.push(self.scroll_offset_event(
+                scroll,
+                ScrollSource::Scrollbar,
+                ScrollPhase::Move,
+                raw.timestamp,
+                raw.modifiers,
+                Some(pointer),
+            ));
+        }
+        out
+    }
+
+    /// Ends a thumb drag and reports its `End` phase, unless the container is
+    /// gone or no longer scrolls -- there is then no offset left to report.
+    fn end_scrollbar_drag(
+        &mut self,
+        arena: &mut UiRuntime,
+        timestamp: Instant,
+        modifiers: Modifiers,
+    ) -> Option<SemanticEvent> {
+        let drag = self.active_scrollbar_drag.take()?;
+        if arena.pointer_capture_node() == Some(drag.node) {
+            arena.event_state_mut().release_pointer_capture();
+        }
+        let offset = arena.scroll_metrics(drag.node)?.offset;
+        Some(self.scroll_offset_event(
+            AppliedScroll {
+                node: drag.node,
+                before: offset,
+                after: offset,
+            },
+            ScrollSource::Scrollbar,
+            ScrollPhase::End,
+            timestamp,
+            modifiers,
+            None,
+        ))
+    }
+
     fn make_meta(
         &mut self,
         timestamp: Instant,
@@ -1190,6 +1495,36 @@ impl EventTranslator {
             source,
             modifiers,
         )
+    }
+}
+
+/// Where a scroll key moves a container with `metrics`, or `None` when `raw` is
+/// not a scroll key.
+///
+/// Keys held with Ctrl, Alt or Meta are left alone: those combinations belong
+/// to the platform and to application shortcuts. Shift only turns Space into
+/// a page back.
+fn keyboard_scroll_target(raw: &RawKeyboard, metrics: &ScrollMetrics) -> Option<Point> {
+    let modifiers = raw.modifiers;
+    if modifiers.ctrl || modifiers.alt || modifiers.meta {
+        return None;
+    }
+    let offset = metrics.offset;
+    let page = scroll_page_step(metrics.viewport_size.height);
+    let vertical = |y: f32| Some(Point::new(offset.x, y));
+    match raw.named_key? {
+        NamedKey::Space if modifiers.shift => vertical(offset.y - page),
+        NamedKey::Space => vertical(offset.y + page),
+        _ if modifiers.shift => None,
+        NamedKey::ArrowDown => vertical(offset.y + SCROLL_LINE_STEP),
+        NamedKey::ArrowUp => vertical(offset.y - SCROLL_LINE_STEP),
+        NamedKey::ArrowRight => Some(Point::new(offset.x + SCROLL_LINE_STEP, offset.y)),
+        NamedKey::ArrowLeft => Some(Point::new(offset.x - SCROLL_LINE_STEP, offset.y)),
+        NamedKey::PageDown => vertical(offset.y + page),
+        NamedKey::PageUp => vertical(offset.y - page),
+        NamedKey::Home => vertical(0.0),
+        NamedKey::End => vertical(f32::INFINITY),
+        _ => None,
     }
 }
 
@@ -1495,6 +1830,120 @@ mod tests {
                     .style(Style::new().width(200.0).height(400.0))
                     .into_element_desc(Vec::new()),
             ])
+    }
+
+    thread_local! {
+        static SCROLL_CONTROLLER: crate::scroll::ScrollController =
+            crate::scroll::ScrollController::new();
+        static SCROLL_SOURCES: std::cell::RefCell<Vec<(ScrollSource, f32)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn controlled_scroll_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        use crate::event_system::callbacks::EventProps;
+
+        container()
+            .style(Style::new().width(200.0).height(100.0).scroll_vertical())
+            .scroll_controller(SCROLL_CONTROLLER.with(Clone::clone))
+            .on_scroll(|event, _| {
+                if let Some(after) = event.offset_after {
+                    SCROLL_SOURCES.with(|sources| {
+                        sources.borrow_mut().push((event.source, after.y));
+                    });
+                }
+            })
+            .into_element_desc(vec![
+                container()
+                    .style(Style::new().width(200.0).height(400.0))
+                    .into_element_desc(Vec::new()),
+            ])
+    }
+
+    #[test]
+    fn a_controller_request_applies_on_the_next_render_as_a_programmatic_scroll() {
+        let mut app = App::new(controlled_scroll_root);
+        app.resize(Size::new(200.0, 200.0));
+        let mut text = TextHost::new(ZeroTextBackend);
+        let mut backend = NullBackend;
+        for _ in 0..3 {
+            app.render(&mut backend, &mut text).expect("null backend");
+        }
+
+        let controller = SCROLL_CONTROLLER.with(Clone::clone);
+        assert!(controller.is_bound());
+        assert!(controller.scroll_to_y(120.0));
+        assert!(app.is_dirty(), "a pending request must schedule a frame");
+
+        app.render(&mut backend, &mut text).expect("null backend");
+
+        let node = controller.node_id().expect("still bound");
+        assert_eq!(app.ui_runtime().node(node).unwrap().scroll_offset.y, 120.0);
+        assert_eq!(controller.offset().y, 120.0);
+        SCROLL_SOURCES.with(|sources| {
+            assert_eq!(*sources.borrow(), vec![(ScrollSource::Programmatic, 120.0)]);
+        });
+    }
+
+    thread_local! {
+        static CLAMP_CONTROLLER: crate::scroll::ScrollController =
+            crate::scroll::ScrollController::new();
+        static CLAMP_SCROLLS: std::cell::RefCell<Vec<(ScrollSource, f32)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// A scroller as tall as the window over 400px of content.
+    fn filling_scroll_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        use crate::event_system::callbacks::EventProps;
+
+        container()
+            .style(
+                Style::new()
+                    .width(200.0)
+                    .height(xui_interface::core::Sizing::Fill)
+                    .scroll_vertical(),
+            )
+            .scroll_controller(CLAMP_CONTROLLER.with(Clone::clone))
+            .on_scroll(|event, _| {
+                if let Some(after) = event.offset_after {
+                    CLAMP_SCROLLS.with(|scrolls| {
+                        scrolls.borrow_mut().push((event.source, after.y));
+                    });
+                }
+            })
+            .into_element_desc(vec![
+                container()
+                    .style(Style::new().width(200.0).height(400.0))
+                    .into_element_desc(Vec::new()),
+            ])
+    }
+
+    #[test]
+    fn growing_the_viewport_under_a_scrolled_container_reports_a_layout_scroll() {
+        let mut app = App::new(filling_scroll_root);
+        app.resize(Size::new(200.0, 200.0));
+        let mut text = TextHost::new(ZeroTextBackend);
+        let mut backend = NullBackend;
+        for _ in 0..3 {
+            app.render(&mut backend, &mut text).expect("null backend");
+        }
+
+        let controller = CLAMP_CONTROLLER.with(Clone::clone);
+        assert_eq!(controller.metrics().max_offset.y, 200.0);
+        assert!(controller.scroll_to_end());
+        app.render(&mut backend, &mut text).expect("null backend");
+        assert_eq!(controller.offset().y, 200.0);
+
+        // 350px of viewport over 400px of content leaves only 50px of offset.
+        app.resize(Size::new(200.0, 350.0));
+        app.render(&mut backend, &mut text).expect("null backend");
+
+        assert_eq!(controller.offset().y, 50.0);
+        CLAMP_SCROLLS.with(|scrolls| {
+            assert_eq!(
+                *scrolls.borrow(),
+                vec![(ScrollSource::Programmatic, 200.0), (ScrollSource::Layout, 50.0)]
+            );
+        });
     }
 
     struct ScrollHarness {

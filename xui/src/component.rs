@@ -7,6 +7,7 @@ use crate::fiber::{
 };
 use crate::lanes::{Lanes, NO_LANES, current_update_lane, includes_some_lane, should_interrupt};
 use crate::state::{AsyncDispatcher, HookContext, HookStorage, Scheduler};
+use crate::ticker::TickerRegistry;
 use crate::ui_runtime::UiRuntime;
 use crate::widgets::{OverlayEntryOptions, OverlayScopeId};
 use crate::widgets::{RootComponentRender, WidgetI};
@@ -16,7 +17,7 @@ use smallvec::SmallVec;
 use std::fmt;
 use std::ops::RangeBounds;
 use std::rc::Rc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use tokio::runtime::Handle as TokioHandle;
 use xui_interface::NodeId;
 
@@ -421,6 +422,9 @@ pub struct ComponentRuntime {
     scheduler: Scheduler,
     async_dispatcher: AsyncDispatcher,
     tokio_handle: Option<TokioHandle>,
+    /// Handed to every `HookContext`, so `use_ticker` can install into the
+    /// list the runtime walks each frame.
+    tickers: TickerRegistry,
     hooks: FxHashMap<FiberId, HookStorage>,
     root_widget: NodeId,
     budget: Duration,
@@ -438,6 +442,7 @@ impl ComponentRuntime {
             scheduler,
             AsyncDispatcher::noop(),
             None,
+            TickerRegistry::default(),
             root_render,
         )
     }
@@ -447,6 +452,7 @@ impl ComponentRuntime {
         scheduler: Scheduler,
         async_dispatcher: AsyncDispatcher,
         tokio_handle: Option<TokioHandle>,
+        tickers: TickerRegistry,
         root_render: fn(&mut HookContext) -> ElementDesc,
     ) -> Self {
         let arena = FiberArena::new();
@@ -463,6 +469,7 @@ impl ComponentRuntime {
             scheduler,
             async_dispatcher,
             tokio_handle,
+            tickers,
             hooks: FxHashMap::default(),
             budget: Duration::from_millis(4),
             wip_nodes: WipArena::new(),
@@ -520,7 +527,7 @@ impl ComponentRuntime {
     }
 
     fn work_loop(&mut self, arena: &mut UiRuntime, deadline: Option<Instant>) -> bool {
-        self.scheduler.mark_starved_lanes_as_expired(now_ms());
+        self.scheduler.mark_starved_lanes_as_expired();
         loop {
             if self.scheduler.pending_lanes() == NO_LANES && self.work_in_progress.is_none() {
                 return true;
@@ -615,6 +622,7 @@ impl ComponentRuntime {
                     render_lanes,
                     self.async_dispatcher.clone(),
                     self.tokio_handle.clone(),
+                    self.tickers.clone(),
                 );
                 cx
             }};
@@ -1506,13 +1514,6 @@ pub enum Diff {
     ReuseClean,
     Update,
     Replace,
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 struct ChildMatch {

@@ -21,9 +21,12 @@ pub use crate::event_system::callbacks::{
 pub use crate::event_system::{Flow, Handler};
 pub use crate::fiber::{ComponentCall, ComponentRender, ComponentType, ErasedPropsRef};
 pub use crate::focus::{FocusHandle, FocusManager, FocusRequest, FocusTransition};
+pub use crate::scroll::{ScrollController, ScrollMetrics};
 pub use crate::render::{MockRenderBackend, RenderBackend};
+pub use crate::clock::{FrameClock, FrameTime};
 pub use crate::runtime::{ControlFlow, FrameReport, GuiRuntime, QueueEventSource, RuntimeEvent};
 pub use crate::shortcut::{ShortcutManager, ShortcutRegistrationId};
+pub use crate::ticker::{Tick, Ticker};
 pub use crate::state::{
     AsyncStateSetter, AsyncValue, Callback, HookContext, HookRef, Memo, Resource, ResourceContext,
     TaskContext,

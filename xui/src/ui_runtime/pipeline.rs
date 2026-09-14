@@ -31,6 +31,9 @@ use crate::widgets::{
 use std::time::Duration;
 use taffy::prelude as tf;
 use xui_interface::CursorIcon;
+use crate::scroll::{
+    AppliedScroll, ScrollMetrics, ScrollRequestQueue, ScrollbarAxis, ScrollbarHit, ScrollbarPart,
+};
 use xui_interface::events::RawEvent;
 use xui_interface::{
     AccessibilityProperties, Affine, Bounds, ComputedColorStyle, ComputedScrollStyle,
@@ -80,7 +83,9 @@ impl UiRuntime {
             canvas_nodes: slotmap::SparseSecondaryMap::new(),
             canvases_wanting_repaint: slotmap::SparseSecondaryMap::new(),
             window_visible: true,
+            frame_time: crate::clock::FrameTime::ZERO,
             canvas_invalidations: crate::widgets::CanvasInvalidator::default(),
+            tickers: crate::ticker::TickerRegistry::default(),
             scale_factor: 1.0,
             gpu_context: None,
             raw_event_listeners: 0,
@@ -1043,7 +1048,149 @@ impl UiRuntime {
         }
         layout.scroll_offset = offset;
         self.mark_work(id, HostWorkFlags::SYNC_RENDER);
+        self.publish_scroll_metrics(id);
         true
+    }
+
+    /// The scroll state of `id`, or `None` when it is not a scroll container.
+    pub(crate) fn scroll_metrics(&self, id: NodeId) -> Option<ScrollMetrics> {
+        let layout = self.layout_tree.host(id)?;
+        let direction = self.style_system.computed(id)?.scroll.direction;
+        if !direction.is_scrollable() {
+            return None;
+        }
+        let viewport_size = layout.layout.size();
+        let max_offset = Point::new(
+            if direction.allows_horizontal() {
+                (layout.content_size.width - viewport_size.width).max(0.0)
+            } else {
+                0.0
+            },
+            if direction.allows_vertical() {
+                (layout.content_size.height - viewport_size.height).max(0.0)
+            } else {
+                0.0
+            },
+        );
+        Some(ScrollMetrics {
+            offset: layout.scroll_offset,
+            content_size: layout.content_size,
+            viewport_size,
+            max_offset,
+        })
+    }
+
+    /// Moves `id` to `target`, clamped into its scrollable range.
+    ///
+    /// Returns what moved, or `None` when `id` does not scroll or is already
+    /// there. The caller owns reporting it: this does not dispatch an event.
+    pub(crate) fn scroll_node_to(&mut self, id: NodeId, target: Point) -> Option<AppliedScroll> {
+        let metrics = self.scroll_metrics(id)?;
+        let after = metrics.clamp(target);
+        if after == metrics.offset {
+            return None;
+        }
+        self.set_scroll_offset(id, after);
+        Some(AppliedScroll {
+            node: id,
+            before: metrics.offset,
+            after,
+        })
+    }
+
+    fn publish_scroll_metrics(&self, id: NodeId) {
+        if let Some(controller) = self.interaction_system.scroll_controller(id) {
+            // A controller on a widget that does not scroll reads as empty
+            // rather than keeping whatever it last saw.
+            controller.publish(id, self.scroll_metrics(id).unwrap_or_default());
+        }
+    }
+
+    fn publish_all_scroll_metrics(&self) {
+        for id in self.interaction_system.scroll_controller_nodes() {
+            self.publish_scroll_metrics(id);
+        }
+    }
+
+    pub(crate) fn scroll_request_queue(&self) -> ScrollRequestQueue {
+        self.interaction_system.scroll_requests.clone()
+    }
+
+    /// Offsets layout clamped since the last call, for nodes still mounted.
+    pub(crate) fn take_clamped_scrolls(&mut self) -> Vec<AppliedScroll> {
+        let mut clamped = self.interaction_system.take_clamped_scrolls();
+        clamped.retain(|scroll| self.hosts.contains_key(scroll.node));
+        clamped
+    }
+
+    pub(crate) fn has_pending_scroll_requests(&self) -> bool {
+        !self.interaction_system.scroll_requests.is_empty()
+    }
+
+    /// Applies every queued `ScrollController` request, in order.
+    ///
+    /// Resolved against the current layout, so the caller brings layout up to
+    /// date first. Returns the scrolls that moved something; dispatching their
+    /// events is the caller's job, since this layer has no translator.
+    pub(crate) fn apply_scroll_requests(&mut self) -> Vec<AppliedScroll> {
+        let mut applied = Vec::new();
+        for (id, request) in self.interaction_system.scroll_requests.drain() {
+            if !self.hosts.contains_key(id) {
+                continue;
+            }
+            let Some(metrics) = self.scroll_metrics(id) else {
+                continue;
+            };
+            if let Some(scroll) = self.scroll_node_to(id, request.target(&metrics)) {
+                applied.push(scroll);
+            }
+        }
+        applied
+    }
+
+    /// The scrollbar `id` paints along `axis`, in window coordinates.
+    pub(crate) fn scrollbar_part(&self, id: NodeId, axis: ScrollbarAxis) -> Option<ScrollbarPart> {
+        self.scrollbar_parts(id)?
+            .into_iter()
+            .flatten()
+            .find(|part| part.axis == axis)
+    }
+
+    fn scrollbar_parts(&self, id: NodeId) -> Option<[Option<ScrollbarPart>; 2]> {
+        let scroll = self.style_system.effective(id)?.scroll;
+        if !scroll.direction.is_scrollable() {
+            return None;
+        }
+        let layout = self.layout_tree.host(id)?;
+        let rect = self.visual_layout(id)?;
+        Some(scrollbar_parts(
+            rect,
+            scroll,
+            layout.content_size,
+            layout.scroll_offset,
+        ))
+    }
+
+    /// The scrollbar under `point`, if any.
+    ///
+    /// Only containers on the hit path are candidates, which is what keeps a
+    /// bar that is clipped away or covered by an overlay from being grabbed.
+    /// Outermost wins: a container paints its bars above all of its content,
+    /// nested scroll containers included.
+    pub(crate) fn scrollbar_hit(&self, point: Point) -> Option<ScrollbarHit> {
+        let target = self.hit_test(point)?;
+        self.event_path(target).into_iter().find_map(|id| {
+            self.scrollbar_parts(id)?
+                .into_iter()
+                .flatten()
+                .filter(|part| part.max_offset > 0.0)
+                .find(|part| part.hit_track().contains(point))
+                .map(|part| ScrollbarHit {
+                    node: id,
+                    axis: part.axis,
+                    on_thumb: part.hit_thumb().is_some_and(|thumb| thumb.contains(point)),
+                })
+        })
     }
 
     fn mark_work(&mut self, id: NodeId, flags: HostWorkFlags) {
@@ -1324,6 +1471,7 @@ impl UiRuntime {
             .expect("checked layout existence")
             .scroll_offset = next;
         self.mark_work(id, HostWorkFlags::SYNC_RENDER);
+        self.publish_scroll_metrics(id);
         true
     }
 
@@ -1346,6 +1494,17 @@ impl UiRuntime {
         event: RawEvent,
     ) -> EventResult {
         event_system::dispatch_event(self, text, translator, event)
+    }
+
+    /// Publishes the time of the frame about to run. See
+    /// [`crate::app::App::begin_frame`].
+    pub fn begin_frame(&mut self, frame: crate::clock::FrameTime) {
+        self.frame_time = frame;
+    }
+
+    /// The time of the frame in progress.
+    pub fn frame_time(&self) -> crate::clock::FrameTime {
+        self.frame_time
     }
 
     pub fn tick_style_animations(&mut self, delta: Duration) -> bool {
@@ -1428,6 +1587,10 @@ impl UiRuntime {
         self.sync_render_scene()
             .expect("host tree must produce a valid render scene");
         self.clear_work_subtree(self.root, HostWorkFlags::all());
+        // Layout can move an offset without anything scrolling -- content
+        // shrinking under a scrolled container clamps it -- so controllers are
+        // refreshed from the settled tree rather than only on scroll.
+        self.publish_all_scroll_metrics();
     }
 
     fn recompute_node_state(&mut self, id: NodeId) {
@@ -1835,7 +1998,7 @@ impl UiRuntime {
         }
 
         let content_size = self.content_size_from_children(id, taffy_content_size);
-        let scroll_dirty = {
+        let (scroll_dirty, clamped) = {
             let scroll = self
                 .style_system
                 .computed(id)
@@ -1847,12 +2010,21 @@ impl UiRuntime {
             let scroll_offset_before_clamp = layout.scroll_offset;
             layout.content_size = content_size;
             clamp_scroll_offset(layout, scroll);
-            direction.is_scrollable()
-                && (content_size_changed || layout.scroll_offset != scroll_offset_before_clamp)
+            let clamped = (direction.is_scrollable()
+                && layout.scroll_offset != scroll_offset_before_clamp)
+                .then_some((scroll_offset_before_clamp, layout.scroll_offset));
+            (
+                direction.is_scrollable() && (content_size_changed || clamped.is_some()),
+                clamped,
+            )
         };
         if scroll_dirty {
             let node = self.hosts.get_mut(id).expect("node removed during layout");
             node.work.insert(HostWorkFlags::SYNC_RENDER);
+        }
+        if let Some((before, after)) = clamped {
+            self.interaction_system
+                .record_clamped_scroll(id, before, after);
         }
         let node = self.hosts.get_mut(id).expect("node removed during layout");
         node.subtree_work = subtree_work;
@@ -2014,11 +2186,11 @@ impl UiRuntime {
 
     pub fn is_dirty(&self) -> bool {
         !self.canvas_invalidations.is_empty()
+            || self.has_pending_scroll_requests()
             || !self.ui_state.canvas_dirty_list.is_empty()
             || self.render_system.scene.is_dirty()
             || self.render_system.properties.is_dirty()
-            || self.has_running_style_animations()
-            || self.has_animating_canvases()
+            || self.is_animating()
             || self.style_system.has_dirty()
             || !self.ui_state.layout_dirty_list.is_empty()
             || !self.hosts[self.root].work.is_empty()
@@ -2060,15 +2232,54 @@ impl UiRuntime {
 
     /// Whether any canvas asked, as it drew, to be drawn again.
     ///
-    /// Reported by `is_dirty` for the same reason a running style animation is:
-    /// after a frame renders and drains the dirty list, this is what tells the
-    /// runner to ask for the next one, so the loop sustains itself.
-    ///
     /// A set maintained as canvases compile, not a walk of the widget tree:
     /// `is_dirty` is consulted after every batch of events, and it should stay
     /// a handful of flag checks rather than borrowing every canvas widget.
     pub fn has_animating_canvases(&self) -> bool {
-        self.window_visible && !self.canvases_wanting_repaint.is_empty()
+        !self.canvases_wanting_repaint.is_empty()
+    }
+
+    /// Whether anything wants the next frame for its own sake.
+    ///
+    /// Reported by `is_dirty`, and the reason an animation sustains itself:
+    /// after a frame renders and drains the dirty list, this is what tells the
+    /// runner to ask for the next one.
+    ///
+    /// The single place visibility is applied. An animation that nobody can see
+    /// must not keep the loop running, and it is the *asking* that stops, not
+    /// the animation -- every request is still recorded, so coming back on
+    /// screen resumes exactly what was going on. Pairing that with a clock that
+    /// does not advance while off screen (`FrameClock::hold`) is what makes the
+    /// pause continuous rather than a skip.
+    pub fn is_animating(&self) -> bool {
+        self.window_visible
+            && (self.has_running_style_animations()
+                || self.has_animating_canvases()
+                || self.tickers.is_running())
+    }
+
+    /// The handle `use_ticker` installs into. Cloned once, at startup, into the
+    /// component runtime.
+    pub(crate) fn tickers(&self) -> crate::ticker::TickerRegistry {
+        self.tickers.clone()
+    }
+
+    /// Runs every live ticker once, for this frame.
+    ///
+    /// Beside [`Self::tick_animating_canvases`] and under the same rule: no
+    /// frame is produced for a window nobody can see, and a frame that is
+    /// produced anyway -- something invalidated the window while it was
+    /// hidden -- must not advance anything through it.
+    pub fn tick_tickers(&mut self, frame: crate::clock::FrameTime) {
+        if !self.window_visible {
+            return;
+        }
+        self.tickers.tick(frame);
+    }
+
+    /// Whether the window is on screen. See [`Self::set_window_visible`].
+    pub fn window_visible(&self) -> bool {
+        self.window_visible
     }
 
     /// Marks every canvas that asked for another frame dirty, once per frame.
@@ -2231,15 +2442,21 @@ impl UiRuntime {
 
     /// Tells the runtime whether the window is on screen.
     ///
-    /// Deliberately narrow: it gates the animation loop and nothing else. An
-    /// ordinary change still repaints while hidden, so the window is already
-    /// correct the instant it is revealed -- and a platform that reports
-    /// occlusion spuriously costs a few wasted frames rather than freezing the
-    /// UI, which is the failure worth being asymmetric about.
+    /// Deliberately narrow: it gates the animation loop -- see
+    /// [`Self::is_animating`] -- and nothing else. An ordinary change still
+    /// repaints while hidden, so the window is already correct the instant it
+    /// is revealed, and a platform that reports occlusion spuriously costs a
+    /// few wasted frames rather than freezing the UI, which is the failure
+    /// worth being asymmetric about.
     ///
-    /// The set of canvases wanting another frame is left alone: it is only
-    /// rewritten when a canvas compiles, and none do while hidden, so becoming
-    /// visible resumes exactly where it stopped.
+    /// Nothing already in flight is touched. The set of canvases wanting
+    /// another frame is only rewritten when a canvas compiles, and none do
+    /// while hidden; a style animation keeps its elapsed time because the
+    /// clock stops with it. So becoming visible resumes exactly where it
+    /// stopped, however long that took.
+    ///
+    /// Drive it through [`crate::runtime::GuiRuntime::set_window_visible`],
+    /// which stops the frame clock at the same moment.
     pub fn set_window_visible(&mut self, visible: bool) {
         self.window_visible = visible;
     }
@@ -2335,6 +2552,7 @@ impl UiRuntime {
             .clone();
         let theme = self.theme.clone();
         let scale_factor = self.scale_factor;
+        let frame_time = self.frame_time;
         let gpu_context = self.gpu_context.clone();
         let widget = self.hosts[id].widget.clone();
         let font_context = measurer.backend().epoch();
@@ -2360,12 +2578,15 @@ impl UiRuntime {
                     }
                 };
                 canvas.compile(
-                    size,
-                    &style,
-                    &theme,
-                    scale_factor,
+                    crate::widgets::CanvasFrame {
+                        size,
+                        style: &style,
+                        theme: &theme,
+                        scale_factor,
+                        time: frame_time,
+                        gpu: gpu_context.as_ref(),
+                    },
                     &mut measure_text,
-                    gpu_context.as_ref(),
                 );
                 wants_repaint = canvas.wants_repaint();
                 canvas.text_boxes()
@@ -3423,6 +3644,250 @@ mod tests {
 
         assert_eq!(arena.hovered_node(), Some(inner));
         assert_eq!(arena.resolved_cursor(), CursorIcon::Pointer);
+    }
+
+    type ScrollLog = Rc<
+        RefCell<
+            Vec<(
+                xui_interface::events::ScrollSource,
+                xui_interface::events::ScrollPhase,
+                f32,
+            )>,
+        >,
+    >;
+
+    /// A 100x100 vertical scroller over 400px of content, whose default 8px
+    /// scrollbar has a 25px thumb and 75px of travel for 300px of offset.
+    fn scrollbar_fixture(
+        arena: &mut UiRuntime,
+        controller: &crate::scroll::ScrollController,
+        log: &ScrollLog,
+        presses: &Rc<Cell<usize>>,
+    ) -> NodeId {
+        let log = Rc::clone(log);
+        let presses = Rc::clone(presses);
+        let scroll = create_host(
+            arena,
+            WidgetI::new(
+                container()
+                    .style(Style::new().width(100.0).height(100.0).scroll_vertical())
+                    .scroll_controller(controller.clone())
+                    .on_scroll(move |event, _| {
+                        // A wheel also reports, and bubbles, a scroll for each
+                        // non-scrolling node on its chain; those carry no offset.
+                        if let Some(after) = event.offset_after {
+                            log.borrow_mut().push((event.source, event.phase, after.y));
+                        }
+                    }),
+            ),
+        );
+        let content = create_host(
+            arena,
+            WidgetI::new(
+                container()
+                    .style(Style::new().width(100.0).height(400.0))
+                    .on_press_start(move |_, _| presses.set(presses.get() + 1)),
+            ),
+        );
+        arena.append_child(scroll, content);
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+        scroll
+    }
+
+    #[test]
+    fn a_scroll_controller_reads_metrics_and_applies_requests_in_order() {
+        let mut arena = UiRuntime::new();
+        let controller = crate::scroll::ScrollController::new();
+        let scroll = scrollbar_fixture(
+            &mut arena,
+            &controller,
+            &ScrollLog::default(),
+            &Rc::default(),
+        );
+
+        assert_eq!(controller.node_id(), Some(scroll));
+        let metrics = controller.metrics();
+        assert_eq!(metrics.viewport_size, Size::new(100.0, 100.0));
+        assert_eq!(metrics.max_offset, Point::new(0.0, 300.0));
+
+        assert!(controller.scroll_to_end());
+        assert!(controller.scroll_by((0.0, -20.0)));
+        assert!(arena.is_dirty(), "a pending request must schedule a frame");
+
+        let applied = arena.apply_scroll_requests();
+        assert_eq!(applied.len(), 2);
+        assert_eq!(controller.offset(), Point::new(0.0, 280.0));
+        assert_eq!(arena.node(scroll).unwrap().scroll_offset.y, 280.0);
+        assert!(!arena.has_pending_scroll_requests());
+
+        controller.scroll_to_y(-50.0);
+        arena.apply_scroll_requests();
+        assert_eq!(controller.offset().y, 0.0, "requests clamp to the range");
+    }
+
+    #[test]
+    fn a_removed_scroller_unbinds_its_controller() {
+        let mut arena = UiRuntime::new();
+        let controller = crate::scroll::ScrollController::new();
+        let scroll = scrollbar_fixture(
+            &mut arena,
+            &controller,
+            &ScrollLog::default(),
+            &Rc::default(),
+        );
+
+        arena.remove_subtree(scroll);
+        assert!(!controller.is_bound());
+        assert!(!controller.scroll_to_end());
+    }
+
+    #[test]
+    fn a_wheel_scroll_is_visible_through_the_controller_at_once() {
+        let mut arena = UiRuntime::new();
+        let controller = crate::scroll::ScrollController::new();
+        scrollbar_fixture(
+            &mut arena,
+            &controller,
+            &ScrollLog::default(),
+            &Rc::default(),
+        );
+
+        let measurer = TextHost::new(ZeroTextBackend);
+        let mut translator = EventTranslator::default();
+        arena.dispatch_event(
+            &measurer,
+            &mut translator,
+            RawEvent::Wheel(xui_interface::events::RawWheel {
+                position: Point::new(50.0, 50.0),
+                delta: xui_interface::events::ScrollDelta::Pixels(xui_interface::Translation::new(
+                    0.0, -40.0,
+                )),
+                device_id: None,
+                pointer_id: None,
+                modifiers: Modifiers::default(),
+                timestamp: Instant::now(),
+                is_inertial: false,
+            }),
+        );
+
+        assert_eq!(controller.offset().y, 40.0);
+    }
+
+    #[test]
+    fn dragging_the_scrollbar_thumb_scrolls_without_pressing_content() {
+        use xui_interface::events::{ScrollPhase, ScrollSource};
+
+        let mut arena = UiRuntime::new();
+        let log = ScrollLog::default();
+        let presses = Rc::new(Cell::new(0));
+        let scroll = scrollbar_fixture(
+            &mut arena,
+            &crate::scroll::ScrollController::new(),
+            &log,
+            &presses,
+        );
+        let measurer = TextHost::new(ZeroTextBackend);
+        let mut translator = EventTranslator::default();
+        let offset = |arena: &UiRuntime| arena.node(scroll).unwrap().scroll_offset.y;
+
+        arena.dispatch_event(
+            &measurer,
+            &mut translator,
+            RawEvent::PointerDown(pointer_at(Point::new(96.0, 10.0))),
+        );
+        assert_eq!(arena.pointer_capture_node(), Some(scroll));
+
+        // 25px of thumb movement over 75px of travel is a third of 300px.
+        arena.dispatch_event(&measurer, &mut translator, pointer_move(Point::new(96.0, 35.0)));
+        assert_eq!(offset(&arena), 100.0);
+
+        // Leaving the bar keeps dragging; running past the end clamps.
+        arena.dispatch_event(&measurer, &mut translator, pointer_move(Point::new(10.0, 500.0)));
+        assert_eq!(offset(&arena), 300.0);
+
+        arena.dispatch_event(
+            &measurer,
+            &mut translator,
+            RawEvent::PointerUp(pointer_at(Point::new(10.0, 500.0))),
+        );
+        assert_eq!(arena.pointer_capture_node(), None);
+        arena.dispatch_event(&measurer, &mut translator, pointer_move(Point::new(96.0, 10.0)));
+        assert_eq!(offset(&arena), 300.0, "the drag ended with the release");
+
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                (ScrollSource::Scrollbar, ScrollPhase::Start, 0.0),
+                (ScrollSource::Scrollbar, ScrollPhase::Move, 100.0),
+                (ScrollSource::Scrollbar, ScrollPhase::Move, 300.0),
+                (ScrollSource::Scrollbar, ScrollPhase::End, 300.0),
+            ],
+            "a drag reports Start, its moves, then End on release"
+        );
+        assert_eq!(presses.get(), 0, "content under the bar was pressed");
+    }
+
+    #[test]
+    fn a_press_on_the_scrollbar_track_pages_toward_the_pointer() {
+        use xui_interface::events::{ScrollPhase, ScrollSource};
+
+        let mut arena = UiRuntime::new();
+        let log = ScrollLog::default();
+        let presses = Rc::new(Cell::new(0));
+        let scroll = scrollbar_fixture(
+            &mut arena,
+            &crate::scroll::ScrollController::new(),
+            &log,
+            &presses,
+        );
+        let measurer = TextHost::new(ZeroTextBackend);
+        let mut translator = EventTranslator::default();
+        let mut press = |arena: &mut UiRuntime, at: Point| {
+            arena.dispatch_event(&measurer, &mut translator, RawEvent::PointerDown(pointer_at(at)));
+            arena.dispatch_event(&measurer, &mut translator, RawEvent::PointerUp(pointer_at(at)));
+        };
+
+        // A page is 87.5% of the 100px viewport.
+        press(&mut arena, Point::new(96.0, 90.0));
+        assert_eq!(arena.node(scroll).unwrap().scroll_offset.y, 87.5);
+        assert_eq!(arena.pointer_capture_node(), None, "a track press is not a drag");
+
+        // The thumb now starts at 21.875, so a press above it pages back.
+        press(&mut arena, Point::new(96.0, 5.0));
+        assert_eq!(arena.node(scroll).unwrap().scroll_offset.y, 0.0);
+
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                (ScrollSource::Scrollbar, ScrollPhase::Move, 87.5),
+                (ScrollSource::Scrollbar, ScrollPhase::Move, 0.0),
+            ]
+        );
+        assert_eq!(presses.get(), 0);
+    }
+
+    #[test]
+    fn a_press_beside_the_scrollbar_still_reaches_content() {
+        let mut arena = UiRuntime::new();
+        let presses = Rc::new(Cell::new(0));
+        let scroll = scrollbar_fixture(
+            &mut arena,
+            &crate::scroll::ScrollController::new(),
+            &ScrollLog::default(),
+            &presses,
+        );
+        let measurer = TextHost::new(ZeroTextBackend);
+        let mut translator = EventTranslator::default();
+
+        arena.dispatch_event(
+            &measurer,
+            &mut translator,
+            RawEvent::PointerDown(pointer_at(Point::new(50.0, 50.0))),
+        );
+
+        assert_eq!(presses.get(), 1);
+        assert_eq!(arena.node(scroll).unwrap().scroll_offset.y, 0.0);
     }
 
     /// A captured pointer keeps its own cursor even once it has left the
@@ -4671,60 +5136,80 @@ fn needs_scrollbar_overlay(node: NodeView<'_>) -> bool {
 }
 
 fn render_scrollbars_in_rect(node: NodeView<'_>, rect: Bounds, writer: &mut RenderTreeWriter<'_>) {
-    let direction = node.effective_style.scroll.direction;
-    let scrollbar = node.effective_style.scroll.scrollbar;
-    if scrollbar.visibility == ScrollbarVisibilityStyle::Hidden || scrollbar.width <= 0.0 {
-        return;
-    }
-
-    let max_x = (node.content_size.width - node.layout.width()).max(0.0);
-    let max_y = (node.content_size.height - node.layout.height()).max(0.0);
-
-    if direction.allows_vertical()
-        && should_paint_scrollbar(scrollbar, max_y)
-        && scrollbar.thumb_color.is_visible()
-    {
-        let track = vertical_scrollbar_track(rect, scrollbar.width);
-        render_scrollbar_part(track, scrollbar.track_color, scrollbar.radius, writer);
-
-        if max_y > 0.0 {
-            let ratio = (node.layout.height() / node.content_size.height).clamp(0.0, 1.0);
-            let thumb_height = (track.height() * ratio)
-                .max(scrollbar.width * 2.0)
-                .min(track.height());
-            let travel = (track.height() - thumb_height).max(0.0);
-            let top = track.y() + travel * (node.scroll_offset.y / max_y);
-            render_scrollbar_part(
-                Bounds::from_origin_size((track.x(), top), (track.width(), thumb_height)),
-                scrollbar.thumb_color,
-                scrollbar.radius,
-                writer,
-            );
+    let scroll = node.effective_style.scroll;
+    let scrollbar = scroll.scrollbar;
+    let parts = scrollbar_parts(rect, scroll, node.content_size, node.scroll_offset);
+    for part in parts.into_iter().flatten() {
+        render_scrollbar_part(part.track, scrollbar.track_color, scrollbar.radius, writer);
+        if let Some(thumb) = part.thumb {
+            render_scrollbar_part(thumb, scrollbar.thumb_color, scrollbar.radius, writer);
         }
     }
+}
 
-    if direction.allows_horizontal()
-        && should_paint_scrollbar(scrollbar, max_x)
-        && scrollbar.thumb_color.is_visible()
+/// The scrollbars a container with viewport `rect` paints, vertical first.
+///
+/// The single source of scrollbar geometry: painting and hit testing both call
+/// it, with `rect` in local and window space respectively.
+fn scrollbar_parts(
+    rect: Bounds,
+    scroll: ComputedScrollStyle,
+    content_size: Size<f32>,
+    scroll_offset: Point,
+) -> [Option<ScrollbarPart>; 2] {
+    let direction = scroll.direction;
+    let scrollbar = scroll.scrollbar;
+    if scrollbar.visibility == ScrollbarVisibilityStyle::Hidden
+        || scrollbar.width <= 0.0
+        || !scrollbar.thumb_color.is_visible()
     {
-        let track = horizontal_scrollbar_track(rect, scrollbar.width);
-        render_scrollbar_part(track, scrollbar.track_color, scrollbar.radius, writer);
-
-        if max_x > 0.0 {
-            let ratio = (node.layout.width() / node.content_size.width).clamp(0.0, 1.0);
-            let thumb_width = (track.width() * ratio)
-                .max(scrollbar.width * 2.0)
-                .min(track.width());
-            let travel = (track.width() - thumb_width).max(0.0);
-            let left = track.x() + travel * (node.scroll_offset.x / max_x);
-            render_scrollbar_part(
-                Bounds::from_origin_size((left, track.y()), (thumb_width, track.height())),
-                scrollbar.thumb_color,
-                scrollbar.radius,
-                writer,
-            );
-        }
+        return [None, None];
     }
+
+    let max_x = (content_size.width - rect.width()).max(0.0);
+    let max_y = (content_size.height - rect.height()).max(0.0);
+
+    let vertical = (direction.allows_vertical() && should_paint_scrollbar(scrollbar, max_y))
+        .then(|| {
+            let track = vertical_scrollbar_track(rect, scrollbar.width);
+            let thumb = (max_y > 0.0).then(|| {
+                let ratio = (rect.height() / content_size.height).clamp(0.0, 1.0);
+                let thumb_height = (track.height() * ratio)
+                    .max(scrollbar.width * 2.0)
+                    .min(track.height());
+                let travel = (track.height() - thumb_height).max(0.0);
+                let top = track.y() + travel * (scroll_offset.y / max_y);
+                Bounds::from_origin_size((track.x(), top), (track.width(), thumb_height))
+            });
+            ScrollbarPart {
+                axis: ScrollbarAxis::Vertical,
+                track,
+                thumb,
+                max_offset: max_y,
+            }
+        });
+
+    let horizontal = (direction.allows_horizontal() && should_paint_scrollbar(scrollbar, max_x))
+        .then(|| {
+            let track = horizontal_scrollbar_track(rect, scrollbar.width);
+            let thumb = (max_x > 0.0).then(|| {
+                let ratio = (rect.width() / content_size.width).clamp(0.0, 1.0);
+                let thumb_width = (track.width() * ratio)
+                    .max(scrollbar.width * 2.0)
+                    .min(track.width());
+                let travel = (track.width() - thumb_width).max(0.0);
+                let left = track.x() + travel * (scroll_offset.x / max_x);
+                Bounds::from_origin_size((left, track.y()), (thumb_width, track.height()))
+            });
+            ScrollbarPart {
+                axis: ScrollbarAxis::Horizontal,
+                track,
+                thumb,
+                max_offset: max_x,
+            }
+        });
+
+    [vertical, horizontal]
 }
 
 fn should_paint_scrollbar(scrollbar: ComputedScrollbarStyle, max_offset: f32) -> bool {

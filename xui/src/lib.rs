@@ -11,6 +11,9 @@
 //! - `app` — `App` owns the component root, async runtime, scheduler, theme,
 //!   and text host.
 //! - `runtime` — `GuiRuntime` drives the event/render loop.
+//! - `clock` — `FrameClock`/`FrameTime`, the one time source a frame is
+//!   animated against.
+//! - `ticker` — `use_ticker`'s per-frame callbacks, paced by the frame loop.
 //! - `fiber` — retained fiber tree that reconciles `ElementDesc` trees.
 //! - `state` — hooks: `HookContext`, `Memo`, `Resource`, `Callback`,
 //!   `AsyncValue`, `TaskContext`, with lanes for batched updates.
@@ -28,6 +31,7 @@
 pub mod animation;
 pub mod app;
 pub mod assets;
+pub mod clock;
 pub mod component;
 pub mod core;
 mod diagnostics;
@@ -45,9 +49,11 @@ pub mod lanes;
 pub mod layout;
 pub mod prelude;
 pub mod runtime;
+pub mod scroll;
 pub mod shortcut;
 pub mod state;
 pub mod style;
+pub mod ticker;
 pub mod widgets;
 pub use crate::prelude::*;
 pub use xui_macros::main;

@@ -1,8 +1,10 @@
 use crate::ElementDesc;
+use crate::clock::FrameTime;
 use crate::component::ComponentRuntime;
 use crate::core::Size;
+use crate::event_system::dispatcher;
 use crate::event_system::translator::EventTranslator;
-use crate::lanes::{event_lane, with_update_lane};
+use crate::lanes::{DEFAULT_LANE, event_lane, with_update_lane};
 use crate::render::RenderBackend;
 use crate::state::{AsyncDispatcher, AsyncMessage, HookContext, Scheduler};
 use crate::style::Theme;
@@ -16,7 +18,8 @@ use tokio::runtime::{
 };
 use tokio::task::JoinHandle;
 use xui_interface::TextBackend;
-use xui_interface::events::{EventResult, RawEvent};
+use crate::scroll::AppliedScroll;
+use xui_interface::events::{EventResult, RawEvent, ScrollPhase, ScrollSource};
 
 pub type ComponentFn = for<'a, 'b> fn(&'a mut HookContext<'b>) -> ElementDesc;
 
@@ -96,6 +99,7 @@ impl App {
             scheduler,
             async_dispatcher.clone(),
             Some(tokio_runtime.handle().clone()),
+            ui_runtime.tickers(),
             root_component,
         );
         Self {
@@ -159,6 +163,10 @@ impl App {
         self.ui_runtime
             .canvas_invalidator()
             .set_wake(std::rc::Rc::new(move || canvas_wake()));
+        let scroll_wake = wake.clone();
+        self.ui_runtime
+            .scroll_request_queue()
+            .set_wake(std::rc::Rc::new(move || scroll_wake()));
         self.async_dispatcher
             .set_wake_callback(move || wake.as_ref()());
     }
@@ -209,6 +217,8 @@ impl App {
     ) -> EventResult {
         self.rebuild_sync_if_needed();
         self.ui_runtime.update_tree(self.size, text);
+        // Before the input: a clamp that layout just made happened first.
+        self.dispatch_clamped_scrolls(text);
         let lane = event_lane(&event);
         let result = with_update_lane(lane, || {
             self.ui_runtime
@@ -220,17 +230,46 @@ impl App {
         result
     }
 
+    /// Publishes the frame's time, before anything in it is stepped or drawn.
+    ///
+    /// Everything that animates during the frame -- style transitions, canvas
+    /// painters, and the hooks that will be layered on top of them -- reads
+    /// this one value rather than a clock of its own, so they cannot disagree
+    /// about when the frame is. Driven by [`crate::runtime::GuiRuntime`]; an
+    /// embedder running its own loop calls it once per frame, or leaves it
+    /// alone and gets [`FrameTime::ZERO`] throughout.
+    #[inline(always)]
+    pub fn begin_frame(&mut self, frame: FrameTime) {
+        self.ui_runtime.begin_frame(frame);
+    }
+
+    /// The time published by the last [`Self::begin_frame`].
+    #[inline(always)]
+    pub fn frame_time(&self) -> FrameTime {
+        self.ui_runtime.frame_time()
+    }
+
     #[inline(always)]
     pub fn tick_style_animations(&mut self, delta: Duration) -> bool {
         self.ui_runtime.tick_style_animations(delta)
     }
 
-    #[inline(always)]
     /// Tells the runtime whether the window is on screen, which stops the
-    /// canvas animation loop while it is not. See
+    /// animation loop while it is not. See
     /// [`crate::ui_runtime::UiRuntime::set_window_visible`].
-    pub fn set_window_visible(&mut self, visible: bool) {
+    ///
+    /// Not public: stopping the loop without also stopping the frame clock
+    /// would turn the pause into a jump on the way back, and the clock belongs
+    /// to the runtime driving the loop. Go through
+    /// [`crate::runtime::GuiRuntime::set_window_visible`].
+    #[inline(always)]
+    pub(crate) fn set_window_visible(&mut self, visible: bool) {
         self.ui_runtime.set_window_visible(visible);
+    }
+
+    #[inline(always)]
+    pub fn window_visible(&self) -> bool {
+        self.ui_runtime.window_visible()
     }
 
     /// Marks every canvas that asked to animate dirty for this frame.
@@ -240,6 +279,17 @@ impl App {
     /// re-dirty it each frame for the loop to continue.
     pub fn tick_animating_canvases(&mut self) {
         self.ui_runtime.tick_animating_canvases();
+    }
+
+    /// Runs the callbacks installed by
+    /// [`crate::state::HookContext::use_ticker`], once for this frame.
+    ///
+    /// The third of the frame's animation steps, beside
+    /// [`Self::tick_style_animations`] and [`Self::tick_animating_canvases`].
+    /// Runs before the tree is rebuilt, so anything a ticker invalidates is
+    /// part of this frame rather than the one after it.
+    pub fn tick_tickers(&mut self, frame: FrameTime) {
+        self.ui_runtime.tick_tickers(frame);
     }
 
     pub fn has_running_style_animations(&self) -> bool {
@@ -252,6 +302,7 @@ impl App {
         text: &mut TextHost<T>,
     ) -> Result<(), AppRenderError<B::Error>> {
         self.drain_async_messages();
+        self.flush_scroll_requests(text);
 
         // The initial mount is the one build with nothing to fall back on. A
         // sliced build that runs out of budget commits nothing, so the frame
@@ -281,7 +332,114 @@ impl App {
         drawn
     }
 
+    /// Applies `ScrollController` requests and reports each as a `Scroll`
+    /// event.
+    ///
+    /// Runs before the rebuild, not inside `update_tree`, for two reasons.
+    /// Dispatching needs the translator, which the host layer does not own.
+    /// And a handler that answers the scroll with a state change -- a virtual
+    /// list mounting the rows it jumped to -- gets that change committed in
+    /// this same frame instead of showing the gap for one.
+    fn flush_scroll_requests<T: TextBackend>(&mut self, text: &mut TextHost<T>) {
+        if !self.ui_runtime.has_pending_scroll_requests() {
+            return;
+        }
+        // Requests resolve against layout, so bring it up to date first: a
+        // `scroll_to_end` after adding content has to see that content.
+        self.ui_runtime.update_tree(self.size, text);
+        self.dispatch_clamped_scrolls(text);
+        let applied = self.ui_runtime.apply_scroll_requests();
+        self.dispatch_applied_scrolls(applied, ScrollSource::Programmatic, text);
+    }
+
+    /// Reports the offsets layout moved back into range as `Scroll` events
+    /// with `ScrollSource::Layout`, so a listener tracking the offset -- a
+    /// virtual list choosing its rows -- does not keep a stale one.
+    ///
+    /// Called after every `update_tree` the app runs, which is every place a
+    /// layout can have clamped something.
+    fn dispatch_clamped_scrolls<T: TextBackend>(&mut self, text: &TextHost<T>) {
+        let clamped = self.ui_runtime.take_clamped_scrolls();
+        self.dispatch_applied_scrolls(clamped, ScrollSource::Layout, text);
+    }
+
+    fn dispatch_applied_scrolls<T: TextBackend>(
+        &mut self,
+        scrolls: Vec<AppliedScroll>,
+        source: ScrollSource,
+        text: &TextHost<T>,
+    ) {
+        if scrolls.is_empty() {
+            return;
+        }
+        let now = std::time::Instant::now();
+        let ui_runtime = &mut self.ui_runtime;
+        let translator = &mut self.event_translator;
+        with_update_lane(DEFAULT_LANE, || {
+            for scroll in scrolls {
+                let event = translator.scroll_offset_event(
+                    scroll,
+                    source,
+                    ScrollPhase::Move,
+                    now,
+                    xui_interface::Modifiers::default(),
+                    None,
+                );
+                dispatcher::dispatch_semantic(ui_runtime, text, event);
+            }
+        });
+        if self.scheduler().is_dirty() {
+            self.components.mark_root_dirty();
+        }
+    }
+
+    /// Scrolls for a navigation key -- arrows, Page Up/Down, Home/End, Space --
+    /// that nothing else claimed.
+    ///
+    /// This is a default action, so it must run last: [`GuiRuntime`] calls it
+    /// only once widgets and shortcuts have declined the key, which is what
+    /// keeps a focused tab list's arrows or a text input's Home/End from also
+    /// scrolling the container around them.
+    ///
+    /// [`GuiRuntime`]: crate::runtime::GuiRuntime
+    pub fn dispatch_keyboard_scroll<T: TextBackend>(
+        &mut self,
+        raw: &xui_interface::RawKeyboard,
+        text: &mut TextHost<T>,
+    ) -> EventResult {
+        let events = self
+            .event_translator
+            .translate_keyboard_scroll(raw, &mut self.ui_runtime);
+        if events.is_empty() {
+            return EventResult::Ignored;
+        }
+        let ui_runtime = &mut self.ui_runtime;
+        with_update_lane(event_lane(&RawEvent::Keyboard(*raw)), || {
+            for event in events {
+                dispatcher::dispatch_semantic(ui_runtime, text, event);
+            }
+        });
+        if self.scheduler().is_dirty() {
+            self.components.mark_root_dirty();
+        }
+        EventResult::Consumed
+    }
+
     fn draw<B: RenderBackend<TextHost<T>>, T: TextBackend>(
+        &mut self,
+        backend: &mut B,
+        text: &mut TextHost<T>,
+    ) -> Result<(), AppRenderError<B::Error>> {
+        let drawn = self.draw_frame(backend, text);
+        // After the frame, not between its layout and its build: a handler may
+        // invalidate nodes, and the frame being built must not see that half
+        // done. Whatever it changes is picked up by the next frame, which
+        // `is_dirty` then asks for.
+        self.dispatch_clamped_scrolls(text);
+        drawn
+    }
+
+    fn draw_frame<B: RenderBackend<TextHost<T>>, T: TextBackend>(
         &mut self,
         backend: &mut B,
         text: &mut TextHost<T>,

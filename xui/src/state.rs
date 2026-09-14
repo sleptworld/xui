@@ -7,13 +7,16 @@ use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, mpsc};
+use std::time::Instant;
 
 use crate::event_system::{EventContext, Flow, Handler};
+use crate::ticker::{Tick, Ticker, TickerHandle, TickerRegistry};
 use slot::unsync::Slot;
 use slot::{Pointer, RenderPhase as SlotRenderPhase, Runtime as SlotRuntime, Scope};
 use tokio::runtime::Handle as TokioHandle;
 use tokio::task::JoinHandle;
 
+use crate::clock::FrameTime;
 use crate::fiber::FiberId;
 use crate::lanes::{
     DEFAULT_LANE, Lane, LaneRoot, Lanes, NO_LANES, RETRY_LANE, current_update_lane,
@@ -166,6 +169,12 @@ impl<T: 'static> HookRef<T> {
     pub fn update(&self, update: impl FnOnce(&mut T)) {
         write_slot(self.inner, update);
     }
+}
+
+/// Owns the ticker. Dropped with the component's hook storage, which is what
+/// unregisters it.
+struct TickerSlot {
+    handle: TickerHandle,
 }
 
 struct MemoSlot<T> {
@@ -422,9 +431,13 @@ pub struct HookContext<'a> {
     render_lanes: Lanes,
     dispatcher: AsyncDispatcher,
     tokio_handle: Option<TokioHandle>,
+    tickers: TickerRegistry,
 }
 
 impl<'a> HookContext<'a> {
+    /// A context detached from an application: no async runtime, and no frame
+    /// loop, so [`Self::use_ticker`] installs a ticker that nothing will ever
+    /// run. For tests and for embedders driving a fiber tree by hand.
     pub fn new(
         storage: &'a mut HookStorage,
         owner: FiberId,
@@ -439,6 +452,7 @@ impl<'a> HookContext<'a> {
             render_lanes,
             AsyncDispatcher::noop(),
             None,
+            TickerRegistry::default(),
         )
     }
 
@@ -449,6 +463,7 @@ impl<'a> HookContext<'a> {
         render_lanes: Lanes,
         dispatcher: AsyncDispatcher,
         tokio_handle: Option<TokioHandle>,
+        tickers: TickerRegistry,
     ) -> Self {
         storage.begin();
         Self {
@@ -458,6 +473,7 @@ impl<'a> HookContext<'a> {
             render_lanes,
             dispatcher,
             tokio_handle,
+            tickers,
         }
     }
 
@@ -719,6 +735,51 @@ impl<'a> HookContext<'a> {
         }
     }
 
+    /// Installs a callback the frame loop runs once per frame.
+    ///
+    /// The callback is handed the frame's [`FrameTime`] -- the same value every
+    /// other animation in that frame is sampled against -- and says, by its
+    /// return, whether it wants the frame after it. See [`crate::ticker`] for
+    /// why this is not a timer, and for the shape a per-frame callback should
+    /// have.
+    ///
+    /// ```ignore
+    /// let model = cx.use_ref(Simulation::new);
+    /// let canvas = cx.use_memo(CanvasController::new);
+    /// let ticker = cx.use_ticker(move |frame| {
+    ///     model.update(|model| model.advance(frame.delta()));
+    ///     canvas.get().invalidate();
+    ///     Tick::Continue
+    /// });
+    /// ```
+    ///
+    /// The returned [`Ticker`] is for driving it from elsewhere -- a pause
+    /// button -- and can be ignored otherwise. The ticker lives as long as the
+    /// component: unmounting drops it, and nothing has to be cleaned up by
+    /// hand.
+    ///
+    /// The callback is replaced on every render, so it always sees the values
+    /// of the most recent one. Note what it is *not* given: no setter, no
+    /// context. Writing state from it every frame would make each frame a full
+    /// reconcile, which is the cost a per-frame callback exists to avoid.
+    pub fn use_ticker(&mut self, callback: impl FnMut(FrameTime) -> Tick + 'static) -> Ticker {
+        let tickers = self.tickers.clone();
+        let mut next = Some(callback);
+        let (_, slot) = self.storage.next_slot(|_| {
+            let callback = next
+                .take()
+                .expect("ticker callback should be available for new hook slot");
+            TickerSlot {
+                handle: tickers.install(Box::new(callback)),
+            }
+        });
+
+        if let Some(callback) = next.take() {
+            read_slot(slot).handle.set_callback(Box::new(callback));
+        }
+        read_slot(slot).handle.handle()
+    }
+
     pub fn use_resource<D, T, E, F>(
         &mut self,
         deps: D,
@@ -937,7 +998,6 @@ pub struct Scheduler {
     inner: Rc<RefCell<SchedulerState>>,
 }
 
-#[derive(Default)]
 struct SchedulerState {
     lane_root: LaneRoot,
     dirty_components: HashMap<FiberId, Lanes>,
@@ -945,11 +1005,45 @@ struct SchedulerState {
     async_scopes: HashMap<HookKey, u64>,
     mounted_components: HashSet<FiberId>,
     root: Option<FiberId>,
+    /// What lane expiration deadlines are measured from.
+    ///
+    /// Deadlines are absolute -- a lane is stamped with the time it must be
+    /// worked by, and later compared against the clock -- so the whole scheme
+    /// assumes a clock that only moves forward. `SystemTime` does not: NTP
+    /// steps it, sleep and resume step it, and a step backwards leaves a
+    /// stamped lane unable to expire for as long as the step, while a step
+    /// forwards expires every pending lane at once and puts them ahead of
+    /// fresher, higher-priority work.
+    ///
+    /// Kept per scheduler rather than per process because nothing compares
+    /// deadlines across schedulers, and a process-wide clock would be one more
+    /// thing a test cannot control.
+    origin: Instant,
+}
+
+impl Default for SchedulerState {
+    fn default() -> Self {
+        Self {
+            lane_root: LaneRoot::default(),
+            dirty_components: HashMap::new(),
+            hook_updates: HashMap::new(),
+            async_scopes: HashMap::new(),
+            mounted_components: HashSet::new(),
+            root: None,
+            origin: Instant::now(),
+        }
+    }
 }
 
 struct HookUpdate {
     lane: Lane,
     apply: HookApply,
+}
+
+impl SchedulerState {
+    fn now_ms(&self) -> u64 {
+        self.origin.elapsed().as_millis() as u64
+    }
 }
 
 impl Scheduler {
@@ -1121,11 +1215,24 @@ impl Scheduler {
             .mark_root_finished(finished_lanes, remaining);
     }
 
-    pub fn mark_starved_lanes_as_expired(&self, now_ms: u64) {
-        self.inner
-            .borrow_mut()
-            .lane_root
-            .mark_starved_lanes_as_expired(now_ms);
+    /// Stamps deadlines on newly pending lanes and expires the ones that have
+    /// waited past theirs.
+    ///
+    /// Reads its own clock rather than taking the time from the caller, so
+    /// there is one place that decides what clock lane expiration runs on --
+    /// and so that it cannot accidentally be handed the frame clock, which
+    /// pauses with the window and would switch starvation protection off for
+    /// as long as the window is hidden. See [`SchedulerState::origin`].
+    pub fn mark_starved_lanes_as_expired(&self) {
+        let mut inner = self.inner.borrow_mut();
+        let now_ms = inner.now_ms();
+        inner.lane_root.mark_starved_lanes_as_expired(now_ms);
+    }
+
+    /// Milliseconds since this scheduler was created. Test seam for the above.
+    #[cfg(test)]
+    pub(crate) fn now_ms(&self) -> u64 {
+        self.inner.borrow().now_ms()
     }
 
     #[inline]
@@ -1240,8 +1347,58 @@ mod tests {
             SYNC_LANE | DEFAULT_LANE,
             dispatcher,
             None,
+            TickerRegistry::default(),
         );
         cx.use_state(init)
+    }
+
+    #[test]
+    fn lane_expiry_runs_on_a_clock_that_starts_at_the_scheduler() {
+        // The guard against going back to a wall clock. Deadlines are absolute
+        // and the budgets are in the hundreds of milliseconds, so a clock
+        // measured from the Unix epoch is not merely inelegant -- it is a
+        // clock something else is free to step out from under the scheduler.
+        let scheduler = Scheduler::default();
+
+        let now = scheduler.now_ms();
+        assert!(
+            now < 60_000,
+            "the clock must be measured from this scheduler, not from 1970 (got {now})"
+        );
+        assert!(scheduler.now_ms() >= now, "and it must not run backwards");
+    }
+
+    #[test]
+    fn dropping_a_components_hook_storage_unregisters_its_ticker() {
+        // The link between a fiber unmounting -- which drops its `HookStorage`
+        // -- and the ticker registry forgetting about it. Nothing calls the
+        // registry on unmount; the hook slot owning the only strong reference
+        // is what makes it automatic.
+        let registry = TickerRegistry::default();
+        let scheduler = Scheduler::default();
+        let owner = FiberArena::new().root();
+        scheduler.set_root(owner);
+
+        let mut storage = HookStorage::default();
+        let ticker = {
+            let mut cx = HookContext::new_with_async(
+                &mut storage,
+                owner,
+                scheduler.clone(),
+                SYNC_LANE | DEFAULT_LANE,
+                AsyncDispatcher::noop(),
+                None,
+                registry.clone(),
+            );
+            cx.use_ticker(|_| Tick::Continue)
+        };
+        assert!(registry.is_running());
+        assert!(ticker.is_running());
+
+        drop(storage);
+
+        assert!(!registry.is_running());
+        assert!(!ticker.is_running());
     }
 
     #[test]
@@ -1438,6 +1595,7 @@ mod tests {
             SYNC_LANE | DEFAULT_LANE,
             dispatcher.clone(),
             Some(runtime.handle().clone()),
+            TickerRegistry::default(),
         );
         let state = cx.use_state(|| 0);
         let setter = state.setter();
@@ -1470,6 +1628,7 @@ mod tests {
             SYNC_LANE | RETRY_LANE,
             dispatcher.clone(),
             Some(runtime.handle().clone()),
+            TickerRegistry::default(),
         );
         let resource = cx.use_resource(1usize, |_| async move { Ok::<_, ()>(9usize) });
         assert_eq!(resource.get(), AsyncValue::Pending);
@@ -1484,6 +1643,7 @@ mod tests {
             SYNC_LANE | RETRY_LANE,
             dispatcher,
             Some(runtime.handle().clone()),
+            TickerRegistry::default(),
         );
         let resource = cx.use_resource(1usize, |_| async move { Ok::<_, ()>(0usize) });
         assert_eq!(resource.get(), AsyncValue::Ready(9));
