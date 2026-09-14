@@ -49,8 +49,8 @@ pub use crate::widgets::{
     GridWidget, IconData, IconLayer, IconStroke, IconWidget, ImageWidget, OverlayChild,
     OverlayEntry, OverlayEntryId, OverlayEntryOptions, OverlayModelError, OverlayScope,
     OverlayScopeId, SvgIconError, TextCommand, TextController, TextInputChange, TextKeymap,
-    TextWidget, WidgetI, WithChildren, ZStackWidget, canvas, column, component, container, grid,
-    icon, image, row, text, z_stack,
+    TextWidget, WidgetI, WithChildren, ZStackWidget, canvas, center, column, component, container,
+    grid, icon, image, row, text, z_stack,
 };
 pub use xui_interface::{
     AccessibilityProperties, AccessibilityRole, Affine, Alignment, CanvasTextId, ColorSpace,
