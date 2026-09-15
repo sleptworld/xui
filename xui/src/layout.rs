@@ -178,26 +178,41 @@ fn computed_layout_style_for_parent(
         }
     }
 
-    // Zero, not taffy's `auto`. CSS gives a flex item an automatic minimum size
-    // equal to its content, which means a pane told to fill the leftover space
-    // grows past it as soon as its content is too tall — a two-pane shell in a
-    // 300pt window lays out 560pt tall. Pinning the minimum to zero makes
-    // `Sizing::Fill` mean "exactly the space available", and content that does
-    // not fit overflows (and scrolls, if the pane scrolls) instead of pushing
-    // the window's own layout out of shape. `max_size` keeps taffy's `auto`
+    // Zero, not taffy's `auto`, for a pane told to fill. CSS gives a flex item
+    // an automatic minimum size equal to its content, which means a pane told
+    // to fill the leftover space grows past it as soon as its content is too
+    // tall — a two-pane shell in a 300pt window lays out 560pt tall. Pinning
+    // the minimum to zero makes `Sizing::Fill` mean "exactly the space
+    // available", and content that does not fit overflows (and scrolls, if the
+    // pane scrolls) instead of pushing the window's own layout out of shape.
+    //
+    // Everything else along a flex main axis keeps the automatic minimum. With
+    // zero there, a column too short for its children crushed every content-
+    // sized child — three wrapped paragraphs 42pt tall each were given 7pt
+    // boxes and painted over one another. Taffy already resolves the automatic
+    // minimum of a scroll container to zero. `max_size` keeps taffy's `auto`
     // because an absent maximum genuinely means "no limit".
     //
-    // `a_filling_pane_is_capped_even_when_its_content_does_not_fit` pins this.
+    // `a_filling_pane_is_capped_even_when_its_content_does_not_fit` and
+    // `wrapped_text_keeps_its_height_in_a_column_too_short_for_it` pin this.
     let min_size = layout.min_size();
+    let default_min = |axis: Axis, sizing: Sizing| match parent_layout {
+        ParentLayout::Flex(direction)
+            if is_main_axis(axis, direction) && !matches!(sizing, Sizing::Fill) =>
+        {
+            taffy::Dimension::auto()
+        }
+        _ => taffy::Dimension::ZERO,
+    };
     style.min_size = tf::Size {
         width: min_size
             .width()
             .map(|w| dimension_for_axis(w, Axis::Horizontal, parent_layout))
-            .unwrap_or(taffy::Dimension::ZERO),
+            .unwrap_or_else(|| default_min(Axis::Horizontal, size.width())),
         height: min_size
             .height()
             .map(|h| dimension_for_axis(h, Axis::Vertical, parent_layout))
-            .unwrap_or(taffy::Dimension::ZERO),
+            .unwrap_or_else(|| default_min(Axis::Vertical, size.height())),
     };
 
     let max_size = layout.max_size();

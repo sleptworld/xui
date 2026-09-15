@@ -145,10 +145,20 @@ impl TextWidget {
         style: &ComputedStyle,
         writer: &mut RenderTreeWriter<'_>,
     ) {
+        // The paragraph was measured and wrapped inside the content box, so it
+        // is painted there too; backends place glyphs at the bounds' origin.
+        let padding = style.layout.padding;
+        let content = Bounds::from_origin_size(
+            xui_interface::Point::new(rect.x() + padding.left(), rect.y() + padding.top()),
+            xui_interface::Size::new(
+                (rect.width() - padding.left() - padding.right()).max(0.0),
+                (rect.height() - padding.top() - padding.bottom()).max(0.0),
+            ),
+        );
         writer
             .primitive(Primitive::Text(TextPrimitive {
                 node_id,
-                bounds: rect,
+                bounds: content,
                 slot: TextLayoutSlot::PRIMARY,
                 layout_revision: self.props_hash(),
                 vertical_align: self.props.paragraph.vertical_align,

@@ -1911,19 +1911,23 @@ impl UiRuntime {
             .keys()
             .filter_map(|id| {
                 let node = self.hosts.get(id)?;
-                let props = node.widget.with_widgets(|widget| {
-                    widget.text_layout_props(
-                        self.style_system.effective(id).expect("style node missing"),
-                    )
-                })?;
+                let effective = self.style_system.effective(id).expect("style node missing");
+                let props = node
+                    .widget
+                    .with_widgets(|widget| widget.text_layout_props(effective))?;
                 let layout = self
                     .layout_tree
                     .host(id)
                     .expect("layout node missing")
                     .layout;
+                // Taffy measured the paragraph against the content box. Wrapping
+                // the painted variant at the border-box width instead gave a
+                // padded paragraph fewer, longer lines than its box was sized for.
+                let padding = effective.layout.padding;
+                let content_width = layout.width() - padding.left() - padding.right();
                 let input = TextLayoutInput::new(
                     props.text,
-                    TextLayoutConstraints::max_width(layout.width().max(0.0)),
+                    TextLayoutConstraints::max_width(content_width.max(0.0)),
                     props.style.into(),
                     props.paragraph,
                     props.text_box,
@@ -4009,6 +4013,96 @@ mod tests {
     /// staying content-sized, and on the scrolling pane being allowed to be
     /// shorter than its content. The last one is why `min_size` is pinned to
     /// zero rather than taffy's `auto` — see `taffy_style_for_widget`.
+    const WRAPPING_PARAGRAPH: &str = "The quick brown fox jumps over the lazy dog again and again";
+
+    fn active_text_size(measurer: &TextHost<xui_cosmic::CosmicEngine>, id: NodeId) -> Size<f32> {
+        measurer
+            .active_slot(id, TextLayoutSlot::PRIMARY)
+            .and_then(|handle| measurer.layout(handle))
+            .expect("final text layout must be active")
+            .size()
+    }
+
+    /// A column shorter than its content used to crush every content-sized
+    /// child: three paragraphs shaped 42pt tall got 7pt boxes and painted over
+    /// one another. They now keep their height and overflow the column.
+    #[test]
+    fn wrapped_text_keeps_its_height_in_a_column_too_short_for_it() {
+        let mut arena = UiRuntime::new();
+        let column = create_host(
+            &mut arena,
+            WidgetI::new(
+                container()
+                    .flex_direction(FlexDirectionStyle::Column)
+                    .style(Style::new().width(120.0).height(40.0)),
+            ),
+        );
+        let texts: Vec<_> = (0..3)
+            .map(|_| {
+                child_of(
+                    &mut arena,
+                    column,
+                    WidgetI::new(TextWidget::new(WRAPPING_PARAGRAPH)),
+                )
+            })
+            .collect();
+        let mut measurer = TextHost::new(xui_cosmic::CosmicEngine::new(1.0));
+        arena.update_tree(Size::new(400.0, 400.0), &mut measurer);
+
+        assert_eq!(arena.node(column).unwrap().layout.height(), 40.0);
+        let mut previous_bottom = 0.0;
+        for id in texts {
+            let rect = arena.node(id).unwrap().layout;
+            let shaped = active_text_size(&measurer, id);
+            assert!(shaped.height > 20.0, "the paragraph must wrap: {shaped:?}");
+            assert!(
+                (rect.height() - shaped.height).abs() < 0.01,
+                "text box {rect:?} is not as tall as its shaped paragraph {shaped:?}"
+            );
+            assert!(
+                rect.min.y >= previous_bottom - 0.01,
+                "text box {rect:?} overlaps the sibling above it ending at {previous_bottom}"
+            );
+            previous_bottom = rect.max.y;
+        }
+    }
+
+    /// Taffy measures a paragraph against its content box; the painted variant
+    /// used to wrap at the border-box width and so disagreed with its own box.
+    #[test]
+    fn padded_text_wraps_at_its_content_width() {
+        let mut arena = UiRuntime::new();
+        let column = create_host(
+            &mut arena,
+            WidgetI::new(
+                container()
+                    .flex_direction(FlexDirectionStyle::Column)
+                    .style(Style::new().width(120.0)),
+            ),
+        );
+        let text = child_of(
+            &mut arena,
+            column,
+            WidgetI::new(
+                TextWidget::new(WRAPPING_PARAGRAPH)
+                    .style(Style::new().padding(xui_interface::EdgeInsets::symmetric(16.0, 4.0))),
+            ),
+        );
+        let mut measurer = TextHost::new(xui_cosmic::CosmicEngine::new(1.0));
+        arena.update_tree(Size::new(400.0, 400.0), &mut measurer);
+
+        let rect = arena.node(text).unwrap().layout;
+        let shaped = active_text_size(&measurer, text);
+        assert!(
+            shaped.width <= rect.width() - 32.0 + 0.01,
+            "paragraph {shaped:?} is wider than the content box of {rect:?}"
+        );
+        assert!(
+            (rect.height() - 8.0 - shaped.height).abs() < 0.01,
+            "text box {rect:?} does not fit its shaped paragraph {shaped:?} plus padding"
+        );
+    }
+
     fn build_two_pane_shell(scrollable: bool) -> (UiRuntime, NodeId, NodeId, NodeId) {
         let mut arena = UiRuntime::new();
         let vcol = || container().flex_direction(FlexDirectionStyle::Column);
