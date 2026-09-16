@@ -1,4 +1,4 @@
-use xui::prelude::*;
+use xui_core::prelude::*;
 
 #[component]
 #[defaults(label = "Label".to_string(), name = "Name".to_string())]

@@ -8,17 +8,16 @@ name = "xui-example-app"
 path = "src/main.rs"
 
 [dependencies]
-winit = "0.30.12"
-xui = { path = "../xui" }
-xui-winit = { path = "../xui-winit", features=["skia"] }
+xui-core = { path = "../crates/xui-core" }
+xui-macos = { path = "../crates/xui-macos", features=["skia"] }
 xui-components = { path = "../xui-components" }
 leanplot = { git = "https://github.com/sleptworld/LeanPlot.git" }
 
 
 [dev-dependencies]
 png = "0.18.1"
-xui-skia = { path = "../xui-skia" }
-xui-cosmic = { path = "../xui-cosmic" }
+xui-skia = { path = "../crates/xui-skia" }
+xui-cosmic = { path = "../crates/xui-cosmic" }
 
 [build-dependencies]
-xui-build = { version = "0.1.0", path = "../xui-build" }
+xui-build = { version = "0.1.0", path = "../crates/xui-build" }

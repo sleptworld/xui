@@ -2,7 +2,7 @@
 //!
 //! Demonstrates the `xui!` macro, `#[component]` functions, the
 //! `xui-components` widget set, asset loading, icons (path/SVG), text, layouts,
-//! vector scenes, and the `xui-winit` Skia runner. This is the recommended
+//! vector scenes, and the `xui-macos` Skia runner. This is the recommended
 //! starting point for learning the framework.
 //!
 //! Build and run with `cargo run -p xui-example-app`. Its build script packs
@@ -11,16 +11,13 @@
 
 mod components;
 mod flight_icing;
-use winit::dpi::PhysicalSize;
-use winit::platform::macos::WindowAttributesExtMacOS;
-use winit::window::Window;
-use xui::core::Bounds;
-use xui::prelude::*;
 use xui_components::*;
-// Explicit: disambiguates the `<image>` tag from the `xui::image` host widget.
+use xui_core::core::Bounds;
+use xui_core::prelude::*;
+// Explicit: disambiguates the `<image>` tag from the `xui_core::image` host widget.
 use xui_components::image::image;
-use xui_winit::WinitRunnerOptions;
-use xui_winit::runner;
+use xui_macos::runner;
+use xui_macos::{MacOsWindowOptions, MacRunnerOptions, PhysicalSize, WindowOptions};
 
 fn filled_icon() -> IconData {
     static ICON: std::sync::OnceLock<IconData> = std::sync::OnceLock::new();
@@ -345,15 +342,17 @@ fn editor() {
     }
 }
 
-#[xui::main]
+#[xui_core::main]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let options = WinitRunnerOptions {
-        window_attributes: Window::default_attributes()
+    let options = MacRunnerOptions {
+        window: WindowOptions::default()
             .with_title("飞机积冰协同态势监测与预测系统")
-            .with_title_hidden(true)
-            .with_fullsize_content_view(true)
-            .with_titlebar_transparent(true)
-            .with_inner_size(PhysicalSize::new(1600, 900)),
+            .with_inner_size(PhysicalSize::new(1600, 900))
+            .with_macos(MacOsWindowOptions {
+                title_hidden: true,
+                titlebar_transparent: true,
+                fullsize_content_view: true,
+            }),
         ..Default::default()
     };
 

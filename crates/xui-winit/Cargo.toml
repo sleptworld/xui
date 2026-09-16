@@ -1,0 +1,37 @@
+[package]
+name = "xui-winit"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["skia"]
+skia = ["dep:xui-skia"]
+# Skia rendering on a device wgpu opened, which is what lets a canvas GPU
+# painter composite its own shader output. Orthogonal to `wgpu`, which selects
+# the standalone wgpu renderer instead of Skia.
+skia-wgpu = ["skia", "xui-skia/wgpu", "xui-core/wgpu"]
+wgpu = ["dep:wgpu", "dep:xui-cosmic"]
+
+[dependencies]
+bytemuck = { version = "1.25.0", features = ["derive"] }
+etagere = {version="0.3.0", optional=true}
+pollster = {version="0.4.0",optional=true}
+wgpu = { version="29.0.3", optional=true}
+winit = "0.30.12"
+xui-core = { path = "../xui-core" }
+xui-render-graph = { path = "../xui-render-graph" }
+xui-interface = { path = "../xui-interface" }
+xui-cosmic = { path = "../xui-cosmic", optional = true }
+xui-f = {path="../xui-f"}
+xui-shell = { path = "../xui-shell" }
+
+glam = { workspace = true }
+thiserror = "2.0.18"
+log = { workspace = true }
+moka = { version = "0.12.15", features = ["sync"] }
+rustc-hash = "2.1.3"
+vello = { version = "0.9.0", default-features = false, features = ["wgpu"], optional=true }
+xui-skia = { path = "../xui-skia", optional = true }
+
+[dev-dependencies]
+naga = { version = "29.0.3", features = ["wgsl-in"] }

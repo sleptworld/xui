@@ -4,8 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-xui = { path = "../xui" }
+xui-core = { path = "../xui-core" }
 
 [dev-dependencies]
 xui-cosmic = { path = "../xui-cosmic" }
-

@@ -1,4 +1,4 @@
-use xui::prelude::*;
+use xui_core::prelude::*;
 
 use crate::{
     ColumnAccess, FilterRule, Pagination, SortDirection, SortRule, TableModel, TableQuery, TableRow,

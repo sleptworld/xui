@@ -1,4 +1,4 @@
-use xui::prelude::*;
+use xui_core::prelude::*;
 
 /// Builds the row at a given index. Only indices near the viewport are ever
 /// asked for, so the cost of a list stops depending on how long it is.
@@ -231,7 +231,7 @@ mod tests {
     // ---- wheel dispatch ---------------------------------------------------
 
     use std::time::Instant;
-    use xui::text::TextHost;
+    use xui_core::text::TextHost;
     use xui_cosmic::CosmicEngine;
     use xui_interface::Translation;
     use xui_interface::events::{Modifiers, RawEvent, RawWheel, ScrollDelta};
@@ -273,7 +273,10 @@ mod tests {
             .ui_runtime()
             .hit_test(Point::new(10.0, 10.0))
             .expect("the wheel position hits something");
-        assert_ne!(hit, scroller, "the wheel must land on a row, not the container");
+        assert_ne!(
+            hit, scroller,
+            "the wheel must land on a row, not the container"
+        );
 
         app.dispatch_event(
             RawEvent::Wheel(RawWheel {
@@ -289,16 +292,35 @@ mod tests {
         );
         app.render(&mut backend, &mut text).expect("mock backend");
 
-        let offset = app.ui_runtime().node(scroller).expect("scroller").scroll_offset.y;
+        let offset = app
+            .ui_runtime()
+            .node(scroller)
+            .expect("scroller")
+            .scroll_offset
+            .y;
         assert!(offset > 0.0, "the list did not scroll");
         let spacer = app
             .ui_runtime()
             .children(scroller)
             .next()
             .expect("the spacer mounted");
-        let first_row = app.ui_runtime().children(spacer).next().expect("rows mounted");
-        let spacer_y = app.ui_runtime().node(spacer).expect("spacer").world_origin.y;
-        let row_y = app.ui_runtime().node(first_row).expect("row").world_origin.y;
+        let first_row = app
+            .ui_runtime()
+            .children(spacer)
+            .next()
+            .expect("rows mounted");
+        let spacer_y = app
+            .ui_runtime()
+            .node(spacer)
+            .expect("spacer")
+            .world_origin
+            .y;
+        let row_y = app
+            .ui_runtime()
+            .node(first_row)
+            .expect("row")
+            .world_origin
+            .y;
         assert!(
             row_y - spacer_y > 0.0,
             "the window did not follow the scroll to offset {offset}"

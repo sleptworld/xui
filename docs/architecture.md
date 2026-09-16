@@ -23,15 +23,27 @@ application crate
     │
     ├──► xui-text-engine          cosmic-text impl of interface text traits
     │
-    ├──► xui-skia                 Skia backend (depends on xui, interface, render-graph)
+    ├──► xui-shell                platform host contract + driver (depends on xui, interface)
     │
-    └──► xui-winit                winit window/event loop (depends on xui, interface,
-                                 render-graph, text-engine; selects skia or wgpu)
+    ├──► xui-skia                 Skia backend (depends on xui, interface, render-graph, shell)
+    │
+    ├──► xui-winit                winit host for xui-shell (depends on xui, interface,
+    │                            shell, render-graph, text-engine; selects skia or wgpu)
+    │
+    └──► xui-macos                native AppKit host for xui-shell (depends on xui,
+                                 interface, shell, skia; macOS only)
 ```
 
 Backends (`xui-skia`, optional `wgpu` in `xui-winit`) implement the
-`xui::render::RenderBackend` and `xui_interface::TextBackend` traits. The core
+`xui_core::render::RenderBackend` and `xui_interface::TextBackend` traits. The core
 runtime never names a GPU library directly.
+
+Window hosts are split along `xui-shell`. A host owns the event loop and the
+window, translates native events into `ShellEvent`s, and implements
+`PlatformWindow`; `Shell` does the rest (input state, window visibility,
+first-frame reveal, cursor/IME output). Backends only see a `SurfaceTarget`
+(raw handles, size, scale factor), so they never name winit, and a native
+AppKit or Win32 host can replace `xui-winit` without touching them.
 
 ## Crate roles by concern
 
@@ -113,10 +125,13 @@ Built-in widgets built on top of `xui`: `button`, `input` (wraps
 ## Per-frame data flow
 
 ```text
-winit events
+platform events (winit)
     │
     ▼
-xui_winit::translate_window_event   ──►  RawEvent (xui_interface::events)
+xui-winit WinitRunner               ──►  ShellEvent (xui_shell)
+    │
+    ▼
+xui_shell::Shell                    ──►  RawEvent (xui_interface::events)
     │
     ▼
 GuiRuntime  ──►  App
@@ -152,7 +167,7 @@ Debug builds assert this.
 
 The render path is split into three stages so backends stay thin:
 
-1. **Scene** (`xui::render::scene`) — a retained, backend-independent tree of
+1. **Scene** (`xui_core::render::scene`) — a retained, backend-independent tree of
    layers, pictures, and primitives. Spatial nodes track transforms/clips.
 2. **Render graph** (`xui-render-graph`) — `compile_layer` normalizes static
    style into a reusable `LayerProgram`; `LayerProgram::instantiate` applies
@@ -174,7 +189,7 @@ xui.toml + assets/  ──►  build.rs: xui_build::assets()  ──►  xui-pak
                                               │
                                   bootstrap module (xui_assets::refs + manager())
                                               │
-                                  cargo::rustc-env=XUI_ASSETS_BOOTSTRAP → xui::include_assets!()
+                                  cargo::rustc-env=XUI_ASSETS_BOOTSTRAP → xui_core::include_assets!()
                                               │
                                   xui_assets::manager() → AssetManager (xui-assets)
                                               │
@@ -205,7 +220,7 @@ Two cooperating primitives back hook state:
 
 - **`slot`** — `Scope`/`Pointer`/`Storage` with a thread-local `RenderPhase`
   (`Render`/`Event`/`Effect`/`Commit`). Debug builds assert reads/writes happen
-  in a legal phase. Used directly by `xui::state`.
+  in a legal phase. Used directly by `xui_core::state`.
 - **`xui-slot`** — `GenerationalBox<T, S>` with `UnsyncStorage`/`SyncStorage`
   and an `Owner` that drops its boxes on drop. Reference-counted variants and
   `Owner::insert_reference` support signal-style sharing.

@@ -1,4 +1,4 @@
-use xui::prelude::*;
+use xui_core::prelude::*;
 
 #[component]
 #[defaults(width = Sizing::Fill, height = Sizing::fix(16.0), style = Style::new())]

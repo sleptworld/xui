@@ -1,11 +1,11 @@
-use xui::prelude::*;
+use xui_core::prelude::*;
 
 use crate::BoolChangeCallback;
 
 fn notify_open(
     next: bool,
     controlled: bool,
-    state: xui::state::State<bool>,
+    state: xui_core::state::State<bool>,
     callback: &Option<BoolChangeCallback>,
 ) {
     if !controlled {

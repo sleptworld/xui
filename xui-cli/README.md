@@ -21,7 +21,7 @@ compression = "zstd"
 alignment = 1
 ```
 
-Invoke `xui::include_assets!();` once at the application crate root, then use
+Invoke `xui_core::include_assets!();` once at the application crate root, then use
 `xui_assets::refs` and `xui_assets::manager()`.
 
 ```sh

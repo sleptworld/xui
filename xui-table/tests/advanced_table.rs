@@ -1,5 +1,5 @@
-use xui::prelude::*;
-use xui::text::TextHost;
+use xui_core::prelude::*;
+use xui_core::text::TextHost;
 use xui_cosmic::CosmicEngine;
 use xui_table::*;
 

@@ -1,5 +1,5 @@
-use xui::prelude::*;
 use xui_components::*;
+use xui_core::prelude::*;
 
 const PAGE: Color = Color::rgb(10.0 / 255.0, 10.0 / 255.0, 11.0 / 255.0);
 const PANEL: Color = Color::rgb(18.0 / 255.0, 18.0 / 255.0, 20.0 / 255.0);
@@ -837,7 +837,7 @@ mod tests {
     use super::*;
     use std::fs::File;
     use std::io::BufWriter;
-    use xui::text::TextHost;
+    use xui_core::text::TextHost;
     use xui_cosmic::CosmicEngine;
     use xui_skia::{SkiaBackend, SkiaBackendOptions};
 

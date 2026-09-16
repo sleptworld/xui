@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use xui::prelude::*;
+use xui_core::prelude::*;
 
 const ACTIVATE_BUTTON: CommandId = CommandId("xui.button.activate");
 
@@ -207,12 +207,12 @@ pub fn button(
         children.push(
             loading_indicator
                 .clone()
-                .unwrap_or_else(|| xui::widgets::TextWidget::new("…").into_element_desc()),
+                .unwrap_or_else(|| xui_core::widgets::TextWidget::new("…").into_element_desc()),
         );
     } else if let Some(leading) = leading {
         children.push(leading.clone());
     }
-    children.push(xui::widgets::TextWidget::new(text.clone()).into_element_desc());
+    children.push(xui_core::widgets::TextWidget::new(text.clone()).into_element_desc());
     if !*loading && let Some(trailing) = trailing {
         children.push(trailing.clone());
     }

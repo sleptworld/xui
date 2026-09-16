@@ -1,5 +1,5 @@
-use xui::prelude::*;
-use xui::state::State;
+use xui_core::prelude::*;
+use xui_core::state::State;
 
 const PREVIOUS_TAB: CommandId = CommandId("xui.tabs.previous");
 const NEXT_TAB: CommandId = CommandId("xui.tabs.next");

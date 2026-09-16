@@ -1,10 +1,10 @@
 use thiserror::Error;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
-use xui::assets::AssetId;
-use xui::assets::load_image_asset;
-use xui::component;
-use xui::prelude::*;
+use xui_core::assets::AssetId;
+use xui_core::assets::load_image_asset;
+use xui_core::component;
+use xui_core::prelude::*;
 use zune_core::bytestream::ZCursor;
 use zune_core::colorspace::ColorSpace;
 use zune_core::options::DecoderOptions;

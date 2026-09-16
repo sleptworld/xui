@@ -8,10 +8,10 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
-use xui::prelude::*;
-use xui::text::TextHost;
 #[allow(unused_imports)]
 use xui_components::*;
+use xui_core::prelude::*;
+use xui_core::text::TextHost;
 use xui_cosmic::CosmicEngine;
 
 const ITEM_HEIGHT: f32 = 20.0;

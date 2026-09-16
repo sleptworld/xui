@@ -1,0 +1,12 @@
+[package]
+name = "xui-shell"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+raw-window-handle = "0.6.2"
+xui-core = { path = "../xui-core" }
+xui-interface = { path = "../xui-interface" }
+
+[dev-dependencies]
+xui-f = { path = "../xui-f" }

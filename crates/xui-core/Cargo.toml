@@ -1,0 +1,43 @@
+[package]
+name = "xui-core"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+# Turn every reported invariant violation into a panic instead of a log line.
+# The workspace test suite runs with this on; applications should not.
+strict-invariants = []
+# Lets a canvas draw with the GPU device the renderer runs on -- see
+# `CanvasController::with_gpu_painter`. Enabled through `xui-winit`'s
+# `skia-wgpu`.
+wgpu = ["dep:wgpu"]
+
+[dependencies]
+wgpu = { version = "29.0.3", optional = true }
+log = { workspace = true }
+rustc-hash = "2.1.2"
+slotmap = "1.1.1"
+smallstr = "0.3.1"
+smallvec = "1.15.1"
+moka = { version = "0.12.15", features = ["sync"] }
+taffy = "0.13.0"
+xui-animation = { path = "../xui-animation" }
+xui-assets = { path = "../xui-assets" }
+xui-interface = { path = "../xui-interface" }
+xui-macros = { path = "../xui-macros" }
+slot = { path = "../slot" }
+bitflags = "2.13.0"
+ropey = "1.6.1"
+zune-core = { workspace = true }
+zune-image = { workspace = true }
+tokio.workspace = true
+num-traits = "0.2.19"
+usvg = { version = "0.47.0", default-features = false }
+quick_cache = { version = "0.7.0", default-features = false }
+xui-render-graph = { path = "../xui-render-graph" }
+
+[dev-dependencies]
+pollster = "0.4.0"
+trybuild = "1.0.120"
+xui-cosmic = { path = "../xui-cosmic" }

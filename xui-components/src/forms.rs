@@ -1,4 +1,4 @@
-use xui::prelude::*;
+use xui_core::prelude::*;
 
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 pub enum FieldStatus {

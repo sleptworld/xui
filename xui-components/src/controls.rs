@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use xui::prelude::*;
+use xui_core::prelude::*;
 
 use crate::{SelectionItem, SelectionModel, SelectionOrientation};
 
@@ -11,7 +11,7 @@ pub type ValueChangeCallback = Callback<f32>;
 fn commit_bool(
     value: bool,
     controlled: bool,
-    state: xui::state::State<bool>,
+    state: xui_core::state::State<bool>,
     callback: &Option<BoolChangeCallback>,
 ) {
     if !controlled {
@@ -62,7 +62,7 @@ pub fn checkbox(
         AccessibilityChecked::False
     };
 
-    let box_style = style!{
+    let box_style = style! {
         size: Size::fix(20.0, 20.0),
         border_width: 1.0,
         border_color: if value || *indeterminate {
@@ -78,9 +78,9 @@ pub fn checkbox(
         border_radius: RadiusToken::Sm,
     };
 
-    let children = xui!{
+    let children = xui! {
 
-        <center 
+        <center
             style={box_style}>
                 <text>
                 {
@@ -90,7 +90,7 @@ pub fn checkbox(
         </center>
 
     };
-    
+
     // let mut children = vec![
     //     ContainerWidget::new()
     //         .style(box_style)
@@ -133,7 +133,7 @@ pub fn checkbox(
     // }
     // root.into_element_desc(children);
 
-    xui!{
+    xui! {
         <center
             gap={8.0}
             min_height={32.}
@@ -171,8 +171,7 @@ pub const SWITCH_THUMB_SIZE: f32 = 20.0;
 pub const SWITCH_TRACK_PADDING: f32 = 2.0;
 
 /// 滑块从关到开要走的距离：轨道内宽减去滑块本身。
-const SWITCH_TRAVEL: f32 =
-    SWITCH_TRACK_WIDTH - SWITCH_THUMB_SIZE - SWITCH_TRACK_PADDING * 2.0;
+const SWITCH_TRAVEL: f32 = SWITCH_TRACK_WIDTH - SWITCH_THUMB_SIZE - SWITCH_TRACK_PADDING * 2.0;
 
 #[component]
 #[defaults(
@@ -201,7 +200,7 @@ pub fn switch(
 
     let motion = Transition::new(Duration::from_millis(180)).ease(Easing::CubicOut);
 
-    let track_style = style!{
+    let track_style = style! {
         size: Size::fix(SWITCH_TRACK_WIDTH, SWITCH_TRACK_HEIGHT),
         padding: EdgeInsets::all(SWITCH_TRACK_PADDING),
         border_radius: SWITCH_TRACK_HEIGHT / 2.0,
@@ -212,16 +211,18 @@ pub fn switch(
         } else {
             ColorStyle::from(ColorToken::MutedSurface)
         },
-    }.transition(motion);
+    }
+    .transition(motion);
 
-    let thumb_style = style!{
+    let thumb_style = style! {
         size: Size::fix(SWITCH_THUMB_SIZE, SWITCH_THUMB_SIZE),
         border_radius: SWITCH_THUMB_SIZE / 2.0,
         background: Color::WHITE,
         translate_x: if value { SWITCH_TRAVEL } else { 0.0 },
-    }.transition(motion);
+    }
+    .transition(motion);
 
-    let track = xui!{
+    let track = xui! {
         <container style={track_style}>
             <container style={thumb_style} />
         </container>
@@ -238,7 +239,7 @@ pub fn switch(
         .min_height(32.0)
         .merge_clone(style);
 
-    xui!{
+    xui! {
         <center
             style={root_style}
 
@@ -275,7 +276,6 @@ pub fn switch(
         </center>
     }
 }
-
 
 #[derive(Clone, Debug)]
 pub struct RadioItem {

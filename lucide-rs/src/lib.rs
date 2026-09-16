@@ -1,4 +1,4 @@
-//! The complete Lucide icon set, embedded as SVG and exposed as XUI [`IconData`](xui::IconData).
+//! The complete Lucide icon set, embedded as SVG and exposed as XUI [`IconData`](xui_core::IconData).
 //!
 //! Each accessor parses its SVG once, on first use, and cheaply clones the cached icon data:
 //!

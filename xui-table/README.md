@@ -25,7 +25,7 @@ horizontal scrolling are not part of the current contract.
 ## Example
 
 ```rust
-use xui::prelude::*;
+use xui_core::prelude::*;
 use xui_table::*;
 
 let columns = vec![

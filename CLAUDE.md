@@ -29,7 +29,7 @@ Assets are packed by each app's `build.rs` calling `xui_build::assets()`, so pla
 
 ### Workspace gotchas
 
-- **A crate using `#[xui::main]` / `xui::include_assets!()` needs a build script calling `xui_build::assets()`** (with `xui-build` in `[build-dependencies]`, as `xui-example-app` has). It hands the generated bootstrap to the compiler via `cargo::rustc-env=XUI_ASSETS_BOOTSTRAP`; without it the crate only compiles through `cargo xui`. The bootstrap's generator lives in `xui-build` and its runtime half in `xui::assets::bootstrap` — change them together.
+- **A crate using `#[xui_core::main]` / `xui_core::include_assets!()` needs a build script calling `xui_build::assets()`** (with `xui-build` in `[build-dependencies]`, as `xui-example-app` has). It hands the generated bootstrap to the compiler via `cargo::rustc-env=XUI_ASSETS_BOOTSTRAP`; without it the crate only compiles through `cargo xui`. The bootstrap's generator lives in `xui-build` and its runtime half in `xui_core::assets::bootstrap` — change them together.
 - **`xui-table` is NOT a workspace member** (its directory exists but is absent from `Cargo.toml` `members`), so `cargo test -p xui-table` currently errors with "current package believes it's in a workspace when it's not". Add it to `members`/`default-members` before building it, or ask before doing so.
 - `xui-text` and `xui-text-engine` are referenced in docs but are not in the workspace; the live text backends are `xui-cosmic` (cosmic-text, default) and `xui-f` (HarfRust/fontique shaping, no rasterization).
 - `xui-render-graph` is `#![forbid(unsafe_code)]` — keep it that way.
@@ -49,17 +49,21 @@ app ──► xui (runtime, fiber, hooks, layout, style, widgets, render scene)
           └─► slot            phase-guarded generational storage backing hook state
     xui-components ─► xui        built-in widgets (button, input, dialog, data_table, …)
     xui-table ─► xui             advanced_table + pure, window-free TableModel
-    xui-skia ─► xui, render-graph   skia-safe backend; Metal/D3D12/Vulkan, softbuffer fallback (XUI_SKIA_GPU=0)
-    xui-winit ─► xui, skia|wgpu, xui-cosmic, xui-f   window/event loop, AccessKit, runner
+    xui-shell ─► xui             host contract: PlatformWindow/SurfaceTarget/WindowOptions + Shell driver
+    xui-skia ─► xui, render-graph, shell   skia-safe backend; Metal/D3D12/Vulkan, softbuffer fallback (XUI_SKIA_GPU=0)
+    xui-winit ─► xui, shell, skia|wgpu, xui-cosmic, xui-f   winit host for xui-shell, runner
+    xui-macos ─► xui, shell, skia, xui-f   native AppKit host for xui-shell (objc2 0.6); empty off macOS, not yet used by any app
     lucide-rs                    embedded Lucide SVG set as IconData (build.rs codegen)
     xui-pak ◄─ xui-pak-build ◄─ xui-build (build.rs) ◄─ xui-cli (cargo xui); xui-pak-build ◄─ xui-pak-cli (xpak)
 ```
 
-**Per-frame flow:** winit event → `xui_winit::translate_window_event` → `RawEvent` → `GuiRuntime`/`App` runs the event lane (EventTranslator → semantic events/callbacks) and effect lane (effects, tokio task wakeups) → render phase: dirty components re-render via `HookContext` into `ElementDesc` → fiber reconciler diffs into the retained widget/layout tree → style system merges patches+theme+`WidgetStateMatcher` rules into `ComputedStyle` → taffy layout → scene (`RenderNodeId`/`PictureId`/`PrimitiveId`) → scene compiler → render graph → backend rasterizes; text goes through `TextHost` → configured `TextBackend`.
+**Window hosts:** a host (`xui-winit`, or the native `xui-macos`) owns the event loop and window, translates native events into `xui_shell::ShellEvent`, and implements `PlatformWindow`; `xui_shell::Shell` holds all platform-independent host state (modifiers, buttons, visibility, first-frame reveal, cursor/IME sync). Render backends take `Arc<dyn SurfaceTarget>`, never a winit type — keep winit out of `xui-shell` and `xui-skia`.
+
+**Per-frame flow:** winit event → `WinitRunner` → `ShellEvent` → `Shell` → `RawEvent` → `GuiRuntime`/`App` runs the event lane (EventTranslator → semantic events/callbacks) and effect lane (effects, tokio task wakeups) → render phase: dirty components re-render via `HookContext` into `ElementDesc` → fiber reconciler diffs into the retained widget/layout tree → style system merges patches+theme+`WidgetStateMatcher` rules into `ComputedStyle` → taffy layout → scene (`RenderNodeId`/`PictureId`/`PrimitiveId`) → scene compiler → render graph → backend rasterizes; text goes through `TextHost` → configured `TextBackend`.
 
 **Phase guards:** `slot` keeps a thread-local `RenderPhase` (`Render`/`Event`/`Effect`/`Commit`). Hook storage may only be written in `Event`/`Effect`; debug builds assert this. If a test or new code panics on a phase assertion, the fix is usually where the write happens, not the guard.
 
-**Backend feature flags (`xui-winit`):** `skia` (default) → `xui-skia`; `wgpu` → standalone wgpu renderer; `skia-wgpu` → Skia running on a wgpu-owned device so a `CanvasController::with_gpu_painter` canvas can composite its own shader output (enables `xui/wgpu` and `xui-skia/wgpu`). `xui-skia` itself defaults to its `wgpu` feature; `wgpu-hal` is pinned to `>=29.0.4` deliberately (see comment in `xui-skia/Cargo.toml`).
+**Backend feature flags (`xui-winit`):** `skia` (default) → `xui-skia`; `wgpu` → standalone wgpu renderer; `skia-wgpu` → Skia running on a wgpu-owned device so a `CanvasController::with_gpu_painter` canvas can composite its own shader output (enables `xui-core/wgpu` and `xui-skia/wgpu`). `xui-skia` itself defaults to its `wgpu` feature; `wgpu-hal` is pinned to `>=29.0.4` deliberately (see comment in `xui-skia/Cargo.toml`).
 
 **Components contract** (`docs/components.md`): stateful controls take an optional controlled value + `default_*` + `on_*` callback; controlled values are the source of truth. Layout primitives (`ContainerWidget`, `GridWidget`, portals) stay in `xui`, not `xui-components`. Disabled items are removed from focus navigation; modal overlays trap/restore focus and render in a portal.
 

@@ -14,7 +14,7 @@ fn embedded_and_external_projects_compile_and_load_assets() {
     fs::write(
         project.join("Cargo.toml"),
         format!(
-            "[package]\nname = \"xui-assets-smoke\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nxui = {{ path = {:?} }}\n",
+            "[package]\nname = \"xui-assets-smoke\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nxui-core = {{ path = {:?} }}\n",
             xui_path.to_str().unwrap()
         ),
     )
@@ -22,7 +22,7 @@ fn embedded_and_external_projects_compile_and_load_assets() {
     fs::write(
         project.join("src/main.rs"),
         r#"
-xui::include_assets!();
+xui_core::include_assets!();
 
 fn main() {
     let manager = xui_assets::manager().unwrap();

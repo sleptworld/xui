@@ -1,4 +1,4 @@
-use xui::prelude::*;
+use xui_core::prelude::*;
 
 use crate::{BoolChangeCallback, IndexChangeCallback};
 
@@ -607,7 +607,7 @@ pub type StringSelectCallback = Callback<String>;
 fn tree_nodes(
     nodes: &[TreeNode],
     depth: usize,
-    expanded: xui::state::State<Vec<String>>,
+    expanded: xui_core::state::State<Vec<String>>,
     selected: &Option<String>,
     on_select: &Option<StringSelectCallback>,
 ) -> Vec<ElementDesc> {

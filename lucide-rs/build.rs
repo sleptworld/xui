@@ -74,7 +74,7 @@ fn generate(icons: &BTreeMap<String, String>) -> String {
         "/// Returns an icon by its original kebab-case Lucide name.\n\
          ///\n\
          /// The SVG is parsed only on the first call for that icon.\n\
-         pub fn get(name: &str) -> Option<xui::IconData> {\n    match name {\n",
+         pub fn get(name: &str) -> Option<xui_core::IconData> {\n    match name {\n",
     );
     for (ident, name) in icons {
         writeln!(output, "        {name:?} => Some(icons::{ident}()),").unwrap();
@@ -93,7 +93,7 @@ fn generate(icons: &BTreeMap<String, String>) -> String {
 
     output.push_str(
         "/// Type-safe accessors for every Lucide icon.\n\
-         pub mod icons {\n    use std::sync::OnceLock;\n    use xui::IconData;\n\n",
+         pub mod icons {\n    use std::sync::OnceLock;\n    use xui_core::IconData;\n\n",
     );
     for (ident, name) in icons {
         let svg_ident = svg_ident(ident);

@@ -1,4 +1,4 @@
-use xui::prelude::*;
+use xui_core::prelude::*;
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Default)]
 pub enum ComponentLength {

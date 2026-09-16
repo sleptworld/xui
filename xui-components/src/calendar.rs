@@ -1,4 +1,4 @@
-use xui::prelude::*;
+use xui_core::prelude::*;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct CalendarMonth {

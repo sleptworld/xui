@@ -1,4 +1,4 @@
-use xui::prelude::*;
+use xui_core::prelude::*;
 
 pub type DropDownChangeCallback = Callback<usize>;
 
@@ -95,8 +95,8 @@ fn normalized_selection(items: &[DropDownItem], requested: usize) -> Option<usiz
 fn select_item(
     index: usize,
     controlled: bool,
-    selection: xui::state::State<usize>,
-    open: xui::state::State<bool>,
+    selection: xui_core::state::State<usize>,
+    open: xui_core::state::State<bool>,
     on_change: &Option<DropDownChangeCallback>,
 ) {
     if !controlled {

@@ -4,7 +4,7 @@
 //! use them through the `xui!` macro just like user components:
 //!
 //! - `button` — `ButtonVariant` (Primary/Secondary/Outline), `on_click`, label.
-//! - `input` — wraps `xui::widgets::text_input`; `TextController`, sizing.
+//! - `input` — wraps `xui_core::widgets::text_input`; `TextController`, sizing.
 //! - `dropdown` — `DropDownItem` list, `on_change`.
 //! - `tabs` — `TabItem` with label and content, keyboard navigation.
 //! - `image` — loads from `AssetId` or URL/path; decodes jpeg/png.
@@ -13,7 +13,7 @@
 //!   `ComponentSizing`, `ComponentInsets`, `ComponentColor`).
 //!
 //! Most modules are re-exported at the crate root. `image` is not: its
-//! component shares a name with the `xui::image` host widget, so importing it
+//! component shares a name with the `xui_core::image` host widget, so importing it
 //! explicitly (`use xui_components::image::image;`) is what disambiguates the
 //! `<image>` tag — an explicit import wins over both globs.
 

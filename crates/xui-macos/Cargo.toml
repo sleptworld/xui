@@ -1,0 +1,28 @@
+[package]
+name = "xui-macos"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["skia"]
+# A ready-made `runner` on the Skia backend with the `xui-f` text backend, the
+# pairing `xui-winit` defaults to.
+skia = ["dep:xui-skia", "dep:xui-f"]
+# Skia on a wgpu-owned device, so a canvas GPU painter can composite its own
+# shader output. Same meaning as `xui-winit`'s feature of that name.
+skia-wgpu = ["skia", "xui-skia/wgpu", "xui-core/wgpu"]
+
+[dependencies]
+raw-window-handle = "0.6.2"
+xui-core = { path = "../xui-core" }
+xui-f = { path = "../xui-f", optional = true }
+xui-interface = { path = "../xui-interface" }
+xui-shell = { path = "../xui-shell" }
+xui-skia = { path = "../xui-skia", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+dispatch2 = "0.3.1"
+objc2 = "0.6.4"
+objc2-app-kit = "0.3.2"
+objc2-foundation = "0.3.2"
+objc2-quartz-core = { version = "0.3.2", features = ["CADisplayLink"] }
