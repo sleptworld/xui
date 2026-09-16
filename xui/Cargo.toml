@@ -6,3 +6,7 @@ edition = "2024"
 [dependencies]
 xui-core = {path="../crates/xui-core"}
 xui-interface = {path="../crates/xui-interface"}
+xui-macros = {path="../crates/xui-macros"}
+
+[target.'cfg(target_os = "macos")'.dependencies]
+xui-macos = {path="../crates/xui-macos" ,features=["skia"]}

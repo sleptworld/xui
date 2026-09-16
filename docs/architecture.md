@@ -30,8 +30,11 @@ application crate
     ├──► xui-winit                winit host for xui-shell (depends on xui, interface,
     │                            shell, render-graph, text-engine; selects skia or wgpu)
     │
-    └──► xui-macos                native AppKit host for xui-shell (depends on xui,
-                                 interface, shell, skia; macOS only)
+    ├──► xui-macos                native AppKit host for xui-shell (depends on xui,
+    │                            interface, shell, skia; macOS only)
+    │
+    └──► xui-windows              native Win32 host for xui-shell (depends on xui,
+                                 interface, shell, skia; Windows only)
 ```
 
 Backends (`xui-skia`, optional `wgpu` in `xui-winit`) implement the
@@ -42,8 +45,9 @@ Window hosts are split along `xui-shell`. A host owns the event loop and the
 window, translates native events into `ShellEvent`s, and implements
 `PlatformWindow`; `Shell` does the rest (input state, window visibility,
 first-frame reveal, cursor/IME output). Backends only see a `SurfaceTarget`
-(raw handles, size, scale factor), so they never name winit, and a native
-AppKit or Win32 host can replace `xui-winit` without touching them.
+(raw handles, size, scale factor), so they never name winit. That is what lets
+the native hosts -- `xui-macos` on AppKit, `xui-windows` on Win32 -- stand in
+for `xui-winit` without the runtime or the backends changing at all.
 
 ## Crate roles by concern
 

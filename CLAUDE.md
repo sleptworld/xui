@@ -52,7 +52,8 @@ app ──► xui (runtime, fiber, hooks, layout, style, widgets, render scene)
     xui-shell ─► xui             host contract: PlatformWindow/SurfaceTarget/WindowOptions + Shell driver
     xui-skia ─► xui, render-graph, shell   skia-safe backend; Metal/D3D12/Vulkan, softbuffer fallback (XUI_SKIA_GPU=0)
     xui-winit ─► xui, shell, skia|wgpu, xui-cosmic, xui-f   winit host for xui-shell, runner
-    xui-macos ─► xui, shell, skia, xui-f   native AppKit host for xui-shell (objc2 0.6); empty off macOS, not yet used by any app
+    xui-macos ─► xui, shell, skia, xui-f   native AppKit host for xui-shell (objc2 0.6); empty off macOS; xui-example-app runs on it
+    xui-windows ─► xui, shell, skia, xui-f   native Win32 host for xui-shell (windows 0.62, IMM32 IME); empty off Windows; never built or run — see its lib.rs
     lucide-rs                    embedded Lucide SVG set as IconData (build.rs codegen)
     xui-pak ◄─ xui-pak-build ◄─ xui-build (build.rs) ◄─ xui-cli (cargo xui); xui-pak-build ◄─ xui-pak-cli (xpak)
 ```

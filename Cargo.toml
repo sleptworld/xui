@@ -21,7 +21,8 @@ members = [
     "crates/xui-skia",
     "crates/xui-f",
     "crates/xui-shell",
-    "crates/xui-macos", "xui",
+    "crates/xui-macos",
+    "crates/xui-windows", "xui",
 ]
 # Crates built by default by plain `cargo` (build/check/test/doc).
 # `xui-example-app` packs its assets from its own build script (`xui-build`),
@@ -47,6 +48,7 @@ default-members = [
     "crates/xui-f",
     "crates/xui-shell",
     "crates/xui-macos",
+    "crates/xui-windows",
     "xui-example-app",
 ]
 

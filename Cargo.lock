@@ -5261,6 +5261,8 @@ version = "0.1.0"
 dependencies = [
  "xui-core",
  "xui-interface",
+ "xui-macos",
+ "xui-macros",
 ]
 
 [[package]]
@@ -5522,6 +5524,19 @@ dependencies = [
  "xui-interface",
  "xui-render-graph",
  "xui-shell",
+]
+
+[[package]]
+name = "xui-windows"
+version = "0.1.0"
+dependencies = [
+ "raw-window-handle",
+ "windows",
+ "xui-core",
+ "xui-f",
+ "xui-interface",
+ "xui-shell",
+ "xui-skia",
 ]
 
 [[package]]

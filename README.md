@@ -45,7 +45,8 @@ on its own if you only want the shared type vocabulary.
 | [`xui-skia`](xui-skia/src/lib.rs) | Skia rendering backend (`skia-safe`); Metal on macOS, Direct3D 12 on Windows, Vulkan on Linux, `softbuffer` fallback |
 | [`xui-shell`](xui-shell/src/lib.rs) | Platform host contract (`PlatformWindow`, `SurfaceTarget`, `WindowOptions`) and the platform-independent `Shell` driver |
 | [`xui-winit`](xui-winit/src/lib.rs) | `winit` host for `xui-shell`; `skia` (default) or `wgpu` backend |
-| [`xui-macos`](xui-macos/src/lib.rs) | Native AppKit host for `xui-shell` (NSWindow/NSView, `NSTextInputClient` IME, trackpad momentum); macOS only |
+| [`xui-macos`](crates/xui-macos/src/lib.rs) | Native AppKit host for `xui-shell` (NSWindow/NSView, `NSTextInputClient` IME, trackpad momentum); macOS only |
+| [`xui-windows`](crates/xui-windows/src/lib.rs) | Native Win32 host for `xui-shell` (window class + message loop, IMM32 IME, Per-Monitor V2 DPI); Windows only |
 | [`xui-assets`](xui-assets/src/lib.rs) | `AssetManager`, source mounting, caching, `AssetFormat` |
 | [`xui-pak`](xui-pak/src/lib.rs) | Versioned `.xpak` container format and readers |
 | [`xui-pak-build`](xui-pak-build/src/lib.rs) | Build-time archive writer + Rust asset-ref codegen |
