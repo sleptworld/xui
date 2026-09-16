@@ -10,7 +10,6 @@ use xui_interface::core::Bounds;
 use xui_interface::style::FlexDirectionStyle;
 use xui_interface::{EventRef, EventResult, TextContent, TextProps, WidgetUpdateFlags};
 pub use xui_interface::{Style, WidgetType};
-use xui_macros::style;
 
 mod utils;
 
@@ -635,10 +634,11 @@ pub fn column() -> ContainerWidget {
 pub fn center() -> ContainerWidget {
     ContainerWidget::new()
         .flex_direction(FlexDirectionStyle::Column)
-        .style(style! {
-            justify: xui_interface::JustifyStyle::Center,
-            align: xui_interface::AlignStyle::Center
-        })
+        .style(Style::from_patch(
+            xui_interface::StylePatch::default()
+                .justify(xui_interface::JustifyStyle::Center)
+                .align(xui_interface::AlignStyle::Center),
+        ))
 }
 
 pub fn z_stack() -> ZStackWidget {

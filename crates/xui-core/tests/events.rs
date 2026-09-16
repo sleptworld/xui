@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use xui_core::event_system::EventContext;
 use xui_core::prelude::*;
-use xui_core::{component, xui};
+use xui_macros::{component, xui};
 
 /// A component that takes a real host event handler and forwards it to the
 /// widget it renders.

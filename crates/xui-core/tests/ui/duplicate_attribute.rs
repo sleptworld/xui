@@ -1,5 +1,5 @@
 use xui_core::prelude::*;
-use xui_core::xui;
+use xui_macros::xui;
 
 fn main() {}
 

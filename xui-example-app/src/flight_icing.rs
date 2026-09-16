@@ -1,5 +1,6 @@
 use xui_components::*;
 use xui_core::prelude::*;
+use xui_macros::{component, xui};
 
 const PAGE: Color = Color::rgb(10.0 / 255.0, 10.0 / 255.0, 11.0 / 255.0);
 const PANEL: Color = Color::rgb(18.0 / 255.0, 18.0 / 255.0, 20.0 / 255.0);

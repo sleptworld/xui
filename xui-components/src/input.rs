@@ -1,4 +1,5 @@
 use xui_core::prelude::*;
+use xui_macros::component;
 use xui_core::widgets::text_input;
 
 use crate::layout::{ComponentColor, ComponentInsets, ComponentLength, ComponentSizing};

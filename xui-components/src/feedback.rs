@@ -1,4 +1,5 @@
 use xui_core::prelude::*;
+use xui_macros::{component, defaults};
 
 #[component]
 #[defaults(width = Sizing::Fill, height = Sizing::fix(16.0), style = Style::new())]

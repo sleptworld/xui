@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 xui-core = { path = "../crates/xui-core" }
+xui-macros = { path = "../crates/xui-macros" }
 xui-macos = { path = "../crates/xui-macos", features=["skia"] }
 xui-components = { path = "../xui-components" }
 leanplot = { git = "https://github.com/sleptworld/LeanPlot.git" }

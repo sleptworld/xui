@@ -1,4 +1,5 @@
 use xui_core::prelude::*;
+use xui_macros::{component, xui};
 
 #[component]
 fn forwarding_component(children: &Vec<ElementDesc>) {

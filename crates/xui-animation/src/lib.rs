@@ -3,8 +3,8 @@
 //! Re-exports `Easing`, `Transition`, and `AnimationProgress` from
 //! `xui-interface` and adds:
 //!
-//! - the `Animatable` trait and `#[derive(Animatable)]` plumbing (the derive
-//!   lives in `xui-macros`),
+//! - the `Animatable` trait, which `#[derive(Animatable)]` implements (the
+//!   derive lives in `xui-macros` and is re-exported by `xui`),
 //! - `Tween<T>` / `PropertyAnimation<T>` for sampling a value over a transition,
 //! - `Timeline` and `AnimationClock` for phase-accurate progress tracking,
 //! - built-in interpolations for `f32`, `NotNan<f32>`, `Point`, `Size`,
@@ -23,7 +23,6 @@ use xui_interface::{
     Color, ColorStyle, ColorValue, EdgeInsets, LengthValue, LinearGradientStyle, Point,
     RadialGradientStyle, ScrollbarStyle, ShadowStyle, Size, Sizing, StrokeStyle, StyleValue,
 };
-pub use xui_macros::Animatable;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AnimationClock {
@@ -432,6 +431,7 @@ fn clamp_unit(value: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use xui_macros::Animatable;
     use xui_interface::{
         ColorToken, FontSizeToken, ScrollbarVisibilityStyle, SpacingToken, StrokeLineStyle,
     };

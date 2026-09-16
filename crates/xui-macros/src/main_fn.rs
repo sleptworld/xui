@@ -1,4 +1,4 @@
-//! `#[xui_core::main]` — installs the generated asset bootstrap before `main` runs.
+//! `#[xui::main]` — installs the generated asset bootstrap before `main` runs.
 
 use proc_macro2::Span;
 use proc_macro2::{Delimiter, TokenStream as TokenStream2, TokenTree};

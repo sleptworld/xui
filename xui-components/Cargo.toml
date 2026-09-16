@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 reqwest = "0.13.4"
 xui-core = { path = "../crates/xui-core" }
+xui-macros = { path = "../crates/xui-macros" }
 tokio = { version = "1", features = ["full"] }
 thiserror.workspace = true
 zune-core.workspace = true

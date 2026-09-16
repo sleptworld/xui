@@ -3,7 +3,7 @@ use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use xui_core::assets::AssetId;
 use xui_core::assets::load_image_asset;
-use xui_core::component;
+use xui_macros::component;
 use xui_core::prelude::*;
 use zune_core::bytestream::ZCursor;
 use zune_core::colorspace::ColorSpace;

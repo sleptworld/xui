@@ -5,6 +5,8 @@
 
 use xui_core::prelude::*;
 
+use xui_macros::{component, xui};
+
 #[component]
 fn one_prop(label: &String) {
     TextWidget::new(label.clone()).into_element_desc()

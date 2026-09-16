@@ -286,13 +286,13 @@ pub fn expand_component_function(
             if let Pat::Ident(pat) = arg.pat.as_mut() {
                 pat.ident = TokenIdent::new("cx", pat.ident.span());
             }
-            *arg.ty = parse_quote!(&mut ::xui_core::HookContext<'_>);
+            *arg.ty = parse_quote!(&mut #xui_core::HookContext<'_>);
         }
     } else {
         function
             .sig
             .inputs
-            .insert(0, parse_quote!(cx: &mut ::xui_core::HookContext<'_>));
+            .insert(0, parse_quote!(cx: &mut #xui_core::HookContext<'_>));
         function.input_defaults.insert(0, None);
     }
 
@@ -329,7 +329,7 @@ pub fn expand_component_function(
     let component_call = if let Some(props_type) = props_type {
         quote! {
             fn #component_call_name(
-                cx: &mut ::xui_core::HookContext<'_>,
+                cx: &mut #xui_core::HookContext<'_>,
                 props: ::std::option::Option<#xui_core::ErasedPropsRef<'_>>,
             ) -> #xui_core::ElementDesc {
                 let props = props
@@ -342,7 +342,7 @@ pub fn expand_component_function(
     } else {
         quote! {
             fn #component_call_name(
-                cx: &mut ::xui_core::HookContext<'_>,
+                cx: &mut #xui_core::HookContext<'_>,
                 props: ::std::option::Option<#xui_core::ErasedPropsRef<'_>>,
             ) -> #xui_core::ElementDesc {
                 let _ = props;
@@ -741,10 +741,10 @@ fn generate_component_props(
 
     let children_impl = has_children.then(|| {
         quote! {
-            impl ::xui_core::WithChildren for #props_name {
+            impl #xui_core::WithChildren for #props_name {
                 fn with_children(
                     mut self,
-                    children: ::std::vec::Vec<::xui_core::ElementDesc>,
+                    children: ::std::vec::Vec<#xui_core::ElementDesc>,
                 ) -> Self {
                     self.children = children;
                     self

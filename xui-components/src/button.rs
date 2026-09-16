@@ -2,6 +2,8 @@ use std::time::Duration;
 
 use xui_core::prelude::*;
 
+use xui_macros::component;
+
 const ACTIVATE_BUTTON: CommandId = CommandId("xui.button.activate");
 
 pub type ButtonClickCallback = Callback<()>;

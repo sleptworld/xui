@@ -66,4 +66,3 @@ pub use xui_interface::{
     TextDecoration, TextLayoutConstraints, TextOverflow, TextProps, TextStyle, TextVerticalAlign,
     VectorCommand, VectorScene, VectorSceneBuilder, WhiteSpace, WidgetUpdateFlags,
 };
-pub use xui_macros::{component, component_fn, defaults, style, xui};

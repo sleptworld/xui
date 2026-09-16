@@ -1,4 +1,5 @@
 use xui_core::prelude::*;
+use xui_macros::component;
 
 /// Builds the row at a given index. Only indices near the viewport are ever
 /// asked for, so the cost of a list stops depending on how long it is.
@@ -232,6 +233,7 @@ mod tests {
 
     use std::time::Instant;
     use xui_core::text::TextHost;
+    use xui_macros::xui;
     use xui_cosmic::CosmicEngine;
     use xui_interface::Translation;
     use xui_interface::events::{Modifiers, RawEvent, RawWheel, ScrollDelta};

@@ -1,5 +1,6 @@
 use std::time::Duration;
 use xui_core::prelude::*;
+use xui_macros::{style, xui};
 
 #[test]
 fn style_owned_transition_compiles_for_builder_and_xui_sugar() {

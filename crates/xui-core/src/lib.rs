@@ -56,7 +56,6 @@ pub mod style;
 pub mod ticker;
 pub mod widgets;
 pub use crate::prelude::*;
-pub use xui_macros::main;
 pub mod text;
 pub mod ui_runtime;
 

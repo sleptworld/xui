@@ -29,10 +29,11 @@ Assets are packed by each app's `build.rs` calling `xui_build::assets()`, so pla
 
 ### Workspace gotchas
 
-- **A crate using `#[xui_core::main]` / `xui_core::include_assets!()` needs a build script calling `xui_build::assets()`** (with `xui-build` in `[build-dependencies]`, as `xui-example-app` has). It hands the generated bootstrap to the compiler via `cargo::rustc-env=XUI_ASSETS_BOOTSTRAP`; without it the crate only compiles through `cargo xui`. The bootstrap's generator lives in `xui-build` and its runtime half in `xui_core::assets::bootstrap` — change them together.
+- **A crate using `#[xui::main]` (or `#[xui_macros::main]`) / `xui_core::include_assets!()` needs a build script calling `xui_build::assets()`** (with `xui-build` in `[build-dependencies]`, as `xui-example-app` has). It hands the generated bootstrap to the compiler via `cargo::rustc-env=XUI_ASSETS_BOOTSTRAP`; without it the crate only compiles through `cargo xui`. The bootstrap's generator lives in `xui-build` and its runtime half in `xui_core::assets::bootstrap` — change them together.
 - **`xui-table` is NOT a workspace member** (its directory exists but is absent from `Cargo.toml` `members`), so `cargo test -p xui-table` currently errors with "current package believes it's in a workspace when it's not". Add it to `members`/`default-members` before building it, or ask before doing so.
 - `xui-text` and `xui-text-engine` are referenced in docs but are not in the workspace; the live text backends are `xui-cosmic` (cosmic-text, default) and `xui-f` (HarfRust/fontique shaping, no rasterization).
 - `xui-render-graph` is `#![forbid(unsafe_code)]` — keep it that way.
+- **`xui-core` and `xui-animation` do not depend on `xui-macros`.** The macros (`xui!`, `style!`, `#[component]`, `#[defaults]`, `#[main]`, `derive(Animatable)`) are re-exported by the `xui` facade (`xui::prelude::*`); workspace crates on `xui-core` import them from `xui_macros` directly. Generated code names the runtime as `xui_core` when that is a direct dependency and falls back to `xui` otherwise — `krate.rs` in `xui-macros` for the macros, `runtime_crate` in `xui-build` for the asset bootstrap — so anything a macro expands to must stay reachable through `xui`'s `pub use xui_core::*`. Don't add `xui-macros` back to `xui-core`.
 
 ## Architecture (big picture)
 

@@ -383,7 +383,7 @@ fn run_init(args: &ProjectArgs) -> Result<(), CliError> {
     }
     println!(
         "\nFiles under {}/ are named by constants in `xui_assets::refs`, in a crate that \
-         uses `#[xui_core::main]`. Plain `cargo` builds it from here on.",
+         uses `#[xui::main]`. Plain `cargo` builds it from here on.",
         assets_config.source()
     );
     Ok(())

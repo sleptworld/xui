@@ -6,8 +6,9 @@
 //! is covered separately by `tests/ui`.
 
 use xui_core::prelude::*;
+
 use xui_core::widgets::{container, WidgetType};
-use xui_core::{component, xui};
+use xui_macros::{component, xui};
 
 fn host(element: &ElementDesc) -> &WidgetDesc {
     match element {
@@ -155,7 +156,7 @@ fn a_path_can_be_used_as_a_tag() {
 /// It has no call sites in the workspace, so without this it has no coverage.
 #[test]
 fn style_macro_lowers_state_conditions_to_rules() {
-    let style = xui_core::style!(
+    let style = xui_macros::style!(
         background: Color::BLACK,
         color: if hovered { Color::BLACK } else { Color::WHITE },
     );
@@ -173,7 +174,7 @@ fn style_macro_lowers_state_conditions_to_rules() {
 
 #[test]
 fn style_macro_without_conditions_has_no_state_dependencies() {
-    let style = xui_core::style!(background: Color::BLACK, font_size: 12.0);
+    let style = xui_macros::style!(background: Color::BLACK, font_size: 12.0);
     assert!(style.state_deps().is_empty());
 }
 
@@ -230,7 +231,7 @@ fn row_and_column_are_hosts_with_opposite_directions() {
 fn a_style_attribute_merges_with_the_attributes_around_it() {
     let before_and_after = container()
         .padding(EdgeInsets::all(12.0))
-        .style(xui_core::style!(border_color: if hovered { Color::WHITE } else { Color::BLACK }))
+        .style(xui_macros::style!(border_color: if hovered { Color::WHITE } else { Color::BLACK }))
         .border_width(1.0);
 
     let patch = before_and_after.style.patch_for_state(WidgetState::empty());
@@ -249,7 +250,7 @@ fn a_style_attribute_merges_with_the_attributes_around_it() {
 fn merging_a_style_keeps_its_state_rules() {
     let widget = container()
         .padding(EdgeInsets::all(12.0))
-        .style(xui_core::style!(border_color: if hovered { Color::WHITE } else { Color::BLACK }));
+        .style(xui_macros::style!(border_color: if hovered { Color::WHITE } else { Color::BLACK }));
 
     assert!(
         widget.style.state_deps().contains(WidgetState::HOVERED),

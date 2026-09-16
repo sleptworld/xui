@@ -1,4 +1,5 @@
 use xui_core::prelude::*;
+use xui_macros::{component, xui};
 
 #[component]
 fn callback_component_prop(label: &String, on_select: &Callback<usize>) {

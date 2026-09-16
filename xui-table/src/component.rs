@@ -1,4 +1,5 @@
 use xui_core::prelude::*;
+use xui_macros::{component, defaults};
 
 use crate::{
     ColumnAccess, FilterRule, Pagination, SortDirection, SortRule, TableModel, TableQuery, TableRow,

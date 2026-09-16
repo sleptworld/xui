@@ -1,4 +1,5 @@
 use xui_core::prelude::*;
+use xui_macros::component;
 use xui_core::state::State;
 
 const PREVIOUS_TAB: CommandId = CommandId("xui.tabs.previous");

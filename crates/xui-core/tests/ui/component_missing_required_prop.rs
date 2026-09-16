@@ -1,5 +1,5 @@
 use xui_core::prelude::*;
-use xui_core::{component, xui};
+use xui_macros::{component, xui};
 
 fn main() {}
 

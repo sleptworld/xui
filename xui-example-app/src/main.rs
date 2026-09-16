@@ -14,6 +14,7 @@ mod flight_icing;
 use xui_components::*;
 use xui_core::core::Bounds;
 use xui_core::prelude::*;
+use xui_macros::{component, xui};
 // Explicit: disambiguates the `<image>` tag from the `xui_core::image` host widget.
 use xui_components::image::image;
 use xui_macos::runner;
@@ -342,7 +343,7 @@ fn editor() {
     }
 }
 
-#[xui_core::main]
+#[xui_macros::main]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let options = MacRunnerOptions {
         window: WindowOptions::default()

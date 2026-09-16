@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+xui-animation = {path="../crates/xui-animation"}
 xui-core = {path="../crates/xui-core"}
 xui-interface = {path="../crates/xui-interface"}
 xui-macros = {path="../crates/xui-macros"}

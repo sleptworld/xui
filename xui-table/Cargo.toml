@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 xui-core = { path = "../xui-core" }
+xui-macros = { path = "../xui-macros" }
 
 [dev-dependencies]
 xui-cosmic = { path = "../xui-cosmic" }
