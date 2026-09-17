@@ -10,7 +10,7 @@ default = ["skia"]
 skia = ["dep:xui-skia", "dep:xui-f"]
 # Skia on a wgpu-owned device, so a canvas GPU painter can composite its own
 # shader output. Same meaning as `xui-winit`'s feature of that name.
-skia-wgpu = ["skia", "xui-skia/wgpu", "xui-core/wgpu"]
+skia-wgpu = ["skia", "xui-skia/wgpu"]
 
 [dependencies]
 raw-window-handle = "0.6.2"

@@ -90,6 +90,8 @@ mod interop;
 #[path = "unsupported.rs"]
 mod interop;
 
+pub use wgpu;
+
 pub(crate) use interop::{Interop, PlatformDevice};
 
 /// The device and queue Skia is rendering on, for callers that want to draw

@@ -7,18 +7,18 @@ use std::sync::Arc;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{
-    define_class, msg_send, sel, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly,
+    ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
 };
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
     NSApplicationTerminateReply, NSEvent, NSEventModifierFlags, NSEventType, NSMenu, NSMenuItem,
     NSResponder,
 };
-use objc2_foundation::{ns_string, NSNotification, NSObject, NSObjectProtocol};
+use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol, ns_string};
+use xui_core::App;
 use xui_core::app::AppRenderError;
 use xui_core::render::RenderBackend;
 use xui_core::text::TextHost;
-use xui_core::App;
 use xui_interface::TextBackend;
 use xui_shell::{Shell, ShellEvent, ShellOptions, WindowOptions};
 

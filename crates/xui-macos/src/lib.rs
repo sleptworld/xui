@@ -45,3 +45,6 @@ pub use app::runner;
 pub use app::{MacBackendInitError, MacRunError, MacRunner, MacRunnerOptions};
 pub use window::MacWindow;
 pub use xui_shell::{MacOsWindowOptions, PhysicalSize, WindowOptions, WindowSize};
+
+#[cfg(feature = "skia-wgpu")]
+pub use xui_skia::{WgpuContext, WgpuImage, wgpu};

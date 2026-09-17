@@ -11,3 +11,8 @@ xui-macros = {path="../crates/xui-macros"}
 
 [target.'cfg(target_os = "macos")'.dependencies]
 xui-macos = {path="../crates/xui-macos" ,features=["skia"]}
+
+[features]
+default = ["skia-wgpu"]
+skia = ["xui-macos/skia"]
+skia-wgpu = ["xui-macos/skia-wgpu"]

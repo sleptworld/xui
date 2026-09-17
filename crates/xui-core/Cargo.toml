@@ -14,7 +14,7 @@ strict-invariants = []
 wgpu = ["dep:wgpu"]
 
 [dependencies]
-wgpu = { version = "29.0.3", optional = true }
+# wgpu = { version = "29.0.3", optional = true }
 log = { workspace = true }
 rustc-hash = "2.1.2"
 slotmap = "1.1.1"
@@ -35,9 +35,10 @@ num-traits = "0.2.19"
 usvg = { version = "0.47.0", default-features = false }
 quick_cache = { version = "0.7.0", default-features = false }
 xui-render-graph = { path = "../xui-render-graph" }
+wgpu = {workspace=true, optional=true}
 
 [dev-dependencies]
-pollster = "0.4.0"
+pollster = {workspace=true}
 trybuild = "1.0.120"
 xui-macros = { path = "../xui-macros" }
 xui-cosmic = { path = "../xui-cosmic" }
