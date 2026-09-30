@@ -1,0 +1,47 @@
+error: expected `(` or `{` after `rows`: write `rows()` for an element, or `..rows` to insert an expression
+ --> tests/ui/view_syntax_errors.rs:7:22
+  |
+7 |     view! { column { rows } }
+  |                      ^^^^
+
+error: an element takes either an unnamed content argument or a `{ .. }` body, not both
+  --> tests/ui/view_syntax_errors.rs:11:32
+   |
+11 |     view! { column { text("a") {rows} } }
+   |                                ^^^^^^
+
+error: content argument given here; if the `{ .. }` was meant as the next sibling, insert it with `..expr` instead
+  --> tests/ui/view_syntax_errors.rs:11:27
+   |
+11 |     view! { column { text("a") {rows} } }
+   |                           ^^^
+
+error: an element takes either an unnamed content argument or a `{ .. }` body, not both
+  --> tests/ui/view_syntax_errors.rs:15:25
+   |
+15 |     view! { column("x") { text("a") } }
+   |                         ^^^^^^^^^^^^^
+
+error: content argument given here; if the `{ .. }` was meant as the next sibling, insert it with `..expr` instead
+  --> tests/ui/view_syntax_errors.rs:15:20
+   |
+15 |     view! { column("x") { text("a") } }
+   |                    ^^^
+
+error: the unnamed content argument must come before named arguments
+  --> tests/ui/view_syntax_errors.rs:19:39
+   |
+19 |     view! { text(color: Color::BLACK, "x") }
+   |                                       ^^^
+
+error: `view!` takes exactly one root element; wrap siblings in a container such as `column { .. }`
+  --> tests/ui/view_syntax_errors.rs:23:23
+   |
+23 |     view! { text("a") text("b") }
+   |                       ^^^^
+
+error: modifier `.clip()` needs a value, as in `.clip(true)`
+  --> tests/ui/view_syntax_errors.rs:27:29
+   |
+27 |     view! { container().clip() }
+   |                             ^^

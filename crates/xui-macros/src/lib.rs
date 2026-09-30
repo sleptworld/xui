@@ -3,6 +3,9 @@
 //! - `xui! { <tag attr={expr}>{children}</tag> }` — the element DSL. It is a
 //!   purely syntactic transform into a builder chain; see [`element`] for what
 //!   that buys and what it costs.
+//! - `view! { column(gap: 8.0) { text("hi").color(c) } }` — the same DSL
+//!   spelled like SwiftUI, with `if`/`for`/`match`/`let` among children. A
+//!   second parser over the same tree; see [`view`].
 //! - `style!(padding: 16.0, background: if hovered { .. })` — a `Style` with
 //!   state-conditioned rules lowered to `WidgetStateMatcher` at compile time.
 //! - `#[component]` / `component_fn!` — props struct, typed builder, render
@@ -31,6 +34,7 @@ mod errors;
 mod krate;
 mod main_fn;
 mod style;
+mod view;
 
 use proc_macro::TokenStream;
 use syn::{parse_macro_input, DeriveInput};
@@ -39,11 +43,27 @@ use crate::component::{ComponentFunction, ComponentFunctions};
 use crate::element::Element;
 use crate::main_fn::MainFunction;
 use crate::style::StyleInput;
+use crate::view::View;
 
 /// `xui! { <container padding={16.0}><text>{label}</text></container> }`
 #[proc_macro]
 pub fn xui(input: TokenStream) -> TokenStream {
     let element = parse_macro_input!(input as Element);
+    let expanded = krate::xui().and_then(|xui| element.expand(&xui));
+    match expanded {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+/// `view! { column(gap: 8.0) { text("hi").color(Color::BLUE_500) } }`
+///
+/// The SwiftUI-style spelling of [`xui!`]: `tag(content, name: value) { children }`
+/// followed by `.name(value)` modifiers, with `if`, `for`, `match` and `let`
+/// allowed among children. Expands exactly like the equivalent `xui!`.
+#[proc_macro]
+pub fn view(input: TokenStream) -> TokenStream {
+    let View(element) = parse_macro_input!(input as View);
     let expanded = krate::xui().and_then(|xui| element.expand(&xui));
     match expanded {
         Ok(tokens) => tokens.into(),

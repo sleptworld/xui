@@ -20,6 +20,11 @@
 //!
 //! The one thing this module *does* enforce is what it can see without types:
 //! an attribute must not be written twice.
+//!
+//! [`Element`] is also the tree `view!` parses into (see [`crate::view`]), so
+//! the two syntaxes share one expansion and cannot drift apart. The control
+//! flow children ([`Child::If`], [`Child::For`], [`Child::Match`],
+//! [`Child::Let`]) only have a `view!` spelling today.
 
 use std::collections::HashMap;
 
@@ -27,24 +32,67 @@ use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{ToTokens, quote, quote_spanned};
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
-use syn::{Error, Expr, Ident, LitStr, Path, Result, Token, braced};
+use syn::{Error, Expr, Ident, LitStr, Pat, Path, Result, Stmt, Token, braced};
 
 use crate::errors::Errors;
 
 pub struct Element {
-    tag: Path,
-    attrs: Vec<Attribute>,
-    children: Vec<Child>,
+    pub tag: Path,
+    pub attrs: Vec<Attribute>,
+    pub body: Body,
 }
 
-struct Attribute {
-    name: Ident,
-    value: TokenStream2,
+pub struct Attribute {
+    pub name: Ident,
+    pub value: TokenStream2,
 }
 
-enum Child {
+/// What the element was given besides attributes. Each variant is one of the
+/// `xui_core::dsl` body marker types.
+pub enum Body {
+    /// `NoChildren`
+    None,
+    /// `Content(expr)` — meaning is up to the receiving widget.
+    Content(Expr),
+    /// `Children(vec)`
+    Children(Vec<Child>),
+}
+
+pub enum Child {
     Element(Element),
+    /// Spliced through `IntoChildren`, so one element or any iterator of them.
     Expr(Expr),
+    If(IfChild),
+    For(ForChild),
+    Match(MatchChild),
+    /// A `let` statement, in scope for the siblings after it.
+    Let(Stmt),
+}
+
+pub struct IfChild {
+    pub if_token: Token![if],
+    pub cond: Expr,
+    pub then: Vec<Child>,
+    pub otherwise: Option<Vec<Child>>,
+}
+
+pub struct ForChild {
+    pub for_token: Token![for],
+    pub pat: Pat,
+    pub iter: Expr,
+    pub body: Vec<Child>,
+}
+
+pub struct MatchChild {
+    pub match_token: Token![match],
+    pub scrutinee: Expr,
+    pub arms: Vec<MatchArm>,
+}
+
+pub struct MatchArm {
+    pub pat: Pat,
+    pub guard: Option<Expr>,
+    pub body: Vec<Child>,
 }
 
 impl Parse for Element {
@@ -59,18 +107,24 @@ impl Parse for Element {
             return Ok(Self {
                 tag,
                 attrs,
-                children: Vec::new(),
+                body: Body::None,
             });
         }
 
         input.parse::<Token![>]>()?;
-        let children = parse_children(input, &tag)?;
+        let mut children = parse_children(input, &tag)?;
+        // A lone braced expression is intentionally left ambiguous here and
+        // resolved by the receiving type.
+        let body = match children.as_slice() {
+            [] => Body::None,
+            [Child::Expr(_)] => match children.pop() {
+                Some(Child::Expr(expr)) => Body::Content(expr),
+                _ => unreachable!(),
+            },
+            _ => Body::Children(children),
+        };
 
-        Ok(Self {
-            tag,
-            attrs,
-            children,
-        })
+        Ok(Self { tag, attrs, body })
     }
 }
 
@@ -179,13 +233,10 @@ impl Element {
     }
 
     fn body_span(&self) -> Option<Span> {
-        match self.children.as_slice() {
-            [] => None,
-            [Child::Expr(expr)] => Some(expr.span()),
-            children => children.first().map(|child| match child {
-                Child::Element(element) => element.tag.span(),
-                Child::Expr(expr) => expr.span(),
-            }),
+        match &self.body {
+            Body::None => None,
+            Body::Content(expr) => Some(expr.span()),
+            Body::Children(children) => children.first().map(Child::span),
         }
     }
 
@@ -211,31 +262,107 @@ impl Element {
     /// this macro. That is what makes `<canvas>{x}</canvas>` a type error and
     /// `<text>{x}</text>` a text assignment without either being special-cased.
     fn expand_children(&self, xui_core: &TokenStream2, errors: &mut Errors) -> TokenStream2 {
-        match self.children.as_slice() {
-            [] => quote!(#xui_core::dsl::NoChildren),
-            // A lone braced expression is intentionally left ambiguous here and
-            // resolved by the receiving type.
-            [Child::Expr(expr)] => {
+        match &self.body {
+            Body::None => quote!(#xui_core::dsl::NoChildren),
+            Body::Content(expr) => {
                 quote_spanned!(expr.span()=> #xui_core::dsl::Content(#expr))
             }
-            children => {
-                let pushes = children.iter().map(|child| match child {
-                    Child::Element(element) => {
-                        let element = element.expand_inner(xui_core, errors);
-                        quote!(__xui_children.push(#element);)
-                    }
-                    Child::Expr(expr) => quote_spanned! {expr.span()=>
-                        #xui_core::IntoChildren::append_children(#expr, &mut __xui_children);
-                    },
-                });
+            Body::Children(children) => {
+                let statements = expand_statements(children, xui_core, errors);
                 quote! {
                     #xui_core::dsl::Children({
                         let mut __xui_children = ::std::vec::Vec::new();
-                        #(#pushes)*
+                        #statements
                         __xui_children
                     })
                 }
             }
         }
     }
+}
+
+impl Child {
+    fn span(&self) -> Span {
+        match self {
+            Child::Element(element) => element.tag.span(),
+            Child::Expr(expr) => expr.span(),
+            Child::If(child) => child.if_token.span,
+            Child::For(child) => child.for_token.span,
+            Child::Match(child) => child.match_token.span,
+            Child::Let(stmt) => stmt.span(),
+        }
+    }
+}
+
+/// Lowers a child list to statements that push onto `__xui_children`. Control
+/// flow children become the same control flow around their own pushes, so a
+/// branch that is not taken contributes nothing and a loop contributes one
+/// entry per iteration.
+fn expand_statements(
+    children: &[Child],
+    xui_core: &TokenStream2,
+    errors: &mut Errors,
+) -> TokenStream2 {
+    let statements = children.iter().map(|child| match child {
+        Child::Element(element) => {
+            let element = element.expand_inner(xui_core, errors);
+            quote!(__xui_children.push(#element);)
+        }
+        Child::Expr(expr) => quote_spanned! {expr.span()=>
+            #xui_core::IntoChildren::append_children(#expr, &mut __xui_children);
+        },
+        Child::If(child) => expand_if(child, xui_core, errors),
+        Child::For(ForChild {
+            for_token,
+            pat,
+            iter,
+            body,
+            ..
+        }) => {
+            let body = expand_statements(body, xui_core, errors);
+            quote!(#for_token #pat in #iter { #body })
+        }
+        Child::Match(MatchChild {
+            match_token,
+            scrutinee,
+            arms,
+        }) => {
+            let arms = arms.iter().map(|arm| {
+                let pat = &arm.pat;
+                let guard = arm.guard.as_ref().map(|guard| quote!(if #guard));
+                let body = expand_statements(&arm.body, xui_core, errors);
+                quote!(#pat #guard => { #body })
+            });
+            let arms: Vec<_> = arms.collect();
+            quote!(#match_token #scrutinee { #(#arms)* })
+        }
+        Child::Let(stmt) => stmt.to_token_stream(),
+    });
+    let statements: Vec<_> = statements.collect();
+    quote!(#(#statements)*)
+}
+
+fn expand_if(child: &IfChild, xui_core: &TokenStream2, errors: &mut Errors) -> TokenStream2 {
+    let IfChild {
+        if_token,
+        cond,
+        then,
+        otherwise,
+    } = child;
+    let then = expand_statements(then, xui_core, errors);
+    let otherwise = otherwise.as_ref().map(|otherwise| {
+        // `else if` arrives as an `else` holding a single `if` child; emitting
+        // it without the extra block keeps the expansion readable.
+        match otherwise.as_slice() {
+            [Child::If(nested)] => {
+                let nested = expand_if(nested, xui_core, errors);
+                quote!(else #nested)
+            }
+            otherwise => {
+                let otherwise = expand_statements(otherwise, xui_core, errors);
+                quote!(else { #otherwise })
+            }
+        }
+    });
+    quote!(#if_token #cond { #then } #otherwise)
 }

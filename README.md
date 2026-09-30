@@ -14,8 +14,10 @@ on its own if you only want the shared type vocabulary.
 
 ## Highlights
 
-- **Declarative UI** — `xui! { <Column>{ /* children */ }</Column> }` macro and
-  `#[component]` functions with typed, builder-style props.
+- **Declarative UI** — `xui! { <Column>{ /* children */ }</Column> }` macro, or
+  the same DSL spelled like SwiftUI with `if`/`for`/`match` among children —
+  `view! { column(gap: 8.0) { text("hi").color(c) } }` — and `#[component]`
+  functions with typed, builder-style props.
 - **Hook runtime** — state, memo, resources, effects, and async tasks with a
   fiber-based reconciler and lane scheduling.
 - **Style system** — tokens (color, spacing, font-size, radius), themes,
@@ -36,7 +38,7 @@ on its own if you only want the shared type vocabulary.
 | --- | --- |
 | [`xui`](xui/src/lib.rs) | Core framework: runtime, fiber, hooks, layout, style, widgets, render scene |
 | [`xui-interface`](xui-interface/src/lib.rs) | Shared types: geometry, style, events, widgets, transitions, text traits |
-| [`xui-macros`](xui-macros/src/lib.rs) | Procedural macros: `xui!`, `style!`, `#[component]`, `#[main]`, `component_fn!`, `#[derive(Animatable)]` |
+| [`xui-macros`](xui-macros/src/lib.rs) | Procedural macros: `xui!`, `view!`, `style!`, `#[component]`, `#[main]`, `component_fn!`, `#[derive(Animatable)]` |
 | [`xui-animation`](xui-animation/src/lib.rs) | `Animatable`, `Tween`, `Timeline`, `AnimationClock`, field interpolation |
 | [`xui-components`](xui-components/src/lib.rs) | Built-in widgets: button, input, dropdown, tabs, image, icon, virtual list |
 | [`xui-text`](xui-text/src/lib.rs) | `swash`/`fontique` text shaping, atlas, bidi, layout |

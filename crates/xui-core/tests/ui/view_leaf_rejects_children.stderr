@@ -1,15 +1,15 @@
 error[E0277]: `<CanvasWidget>` does not accept this kind of body
- --> tests/ui/leaf_rejects_children.rs:7:13
+ --> tests/ui/view_leaf_rejects_children.rs:7:13
   |
-7 |     xui! { <canvas controller={controller}>{"canvas takes no body"}</canvas> }
-  |     --------^^^^^^^^^^^^^^^^^-------------------------------------------------
+7 |     view! { canvas(controller: controller) { text("canvas takes no body") } }
+  |     --------^^^^^^^^^^^^^^^^^------------------------------------------------
   |     |       |
   |     |       not a valid body for this element
   |     required by a bound introduced by this call
   |
   = note: `NoChildren` = `<tag />` or `tag()`, `Children` = `<tag><a /><b /></tag>` or `tag { a() b() }`, `Content<T>` = `<tag>{expr}</tag>` or `tag(expr)`
   = note: a leaf element such as `canvas` or `icon` accepts no body at all
-help: the trait `IntoElement<Content<&str>>` is not implemented for `CanvasWidget`
+help: the trait `IntoElement<Children>` is not implemented for `CanvasWidget`
       but trait `IntoElement<NoChildren>` is implemented for it
  --> src/dsl.rs
   |
@@ -18,7 +18,7 @@ help: the trait `IntoElement<Content<&str>>` is not implemented for `CanvasWidge
 ...
   | impl_host_element!(leaf CanvasWidget);
   | ------------------------------------- in this macro invocation
-  = help: for that trait implementation, expected `NoChildren`, found `Content<&str>`
+  = help: for that trait implementation, expected `NoChildren`, found `Children`
 note: required by a bound in `build`
  --> src/dsl.rs
   |

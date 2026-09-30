@@ -5,14 +5,14 @@
 //! must stay reachable through the re-exports below.
 
 pub use xui_core::*;
-pub use xui_macros::{Animatable, component, component_fn, defaults, main, style, xui};
+pub use xui_macros::{Animatable, component, component_fn, defaults, main, style, view, xui};
 
 #[doc(hidden)]
 pub use xui_animation;
 
 pub mod prelude {
     pub use xui_core::prelude::*;
-    pub use xui_macros::{component, component_fn, defaults, style, xui};
+    pub use xui_macros::{component, component_fn, defaults, style, view, xui};
 }
 
 #[cfg(target_os = "macos")]

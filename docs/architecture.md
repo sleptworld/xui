@@ -104,6 +104,10 @@ The heart of the framework:
 Compile-time DSLs that produce `ElementDesc` / `Style` / components:
 
 - `xui! { <Tag attr={expr}>{children}</Tag> }` → `ElementDesc`.
+- `view! { tag(content, attr: expr) { children }.attr(expr) }` → the same
+  `ElementDesc`: a second, SwiftUI-style parser over `xui!`'s element tree and
+  expansion, adding `if`/`for`/`match`/`let` and `..expr` splices among
+  children.
 - `style!(padding: 16.0, background: if hovered { ... })` → `Style` with
   state-conditioned rules lowered to `WidgetStateMatcher`.
 - `#[component]` / `component_fn!` — generates a props struct, a typed builder,

@@ -1,4 +1,8 @@
-//! The runtime contract behind the `xui!` macro.
+//! The runtime contract behind the `xui!` and `view!` macros.
+//!
+//! `view!` is the same DSL spelled like SwiftUI and lowers to the same calls:
+//! `tag(name: v)` / `tag().name(v)` is `.name(v)`, `tag(expr)` is
+//! [`Content`], and `tag { .. }` is [`Children`].
 //!
 //! `xui!` is a *purely syntactic* transform: `<tag attr={expr}>children</tag>`
 //! becomes `tag().attr(expr).into_element(children)`. It knows no tag names and
@@ -60,8 +64,9 @@ pub struct Content<T>(pub T);
 #[diagnostic::on_unimplemented(
     message = "`<{Self}>` does not accept this kind of body",
     label = "not a valid body for this element",
-    note = "`NoChildren` = `<tag />`, `Children` = `<tag><a /><b /></tag>`, \
-            `Content<T>` = `<tag>{{expr}}</tag>`",
+    note = "`NoChildren` = `<tag />` or `tag()`, \
+            `Children` = `<tag><a /><b /></tag>` or `tag {{ a() b() }}`, \
+            `Content<T>` = `<tag>{{expr}}</tag>` or `tag(expr)`",
     note = "a leaf element such as `canvas` or `icon` accepts no body at all"
 )]
 pub trait IntoElement<C> {

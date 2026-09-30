@@ -7,7 +7,7 @@ error[E0277]: `<LeafPropsBuilder<LeafPropsLabelSet>>` does not accept this kind 
    |     |       not a valid body for this element
    |     required by a bound introduced by this call
    |
-   = note: `NoChildren` = `<tag />`, `Children` = `<tag><a /><b /></tag>`, `Content<T>` = `<tag>{expr}</tag>`
+   = note: `NoChildren` = `<tag />` or `tag()`, `Children` = `<tag><a /><b /></tag>` or `tag { a() b() }`, `Content<T>` = `<tag>{expr}</tag>` or `tag(expr)`
    = note: a leaf element such as `canvas` or `icon` accepts no body at all
 help: the trait `IntoElement<Content<&str>>` is not implemented for `LeafPropsBuilder<LeafPropsLabelSet>`
       but trait `IntoElement<NoChildren>` is implemented for it

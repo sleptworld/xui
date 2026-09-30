@@ -1,0 +1,10 @@
+error[E0599]: no method named `paddin` found for struct `ContainerWidget` in the current scope
+ --> tests/ui/view_unknown_modifier.rs:7:25
+  |
+7 |     view! { container().paddin(EdgeInsets::all(8.0)) }
+  |                         ^^^^^^
+  |
+help: there is a method `padding` with a similar name
+  |
+7 |     view! { container().padding(EdgeInsets::all(8.0)) }
+  |                               +
