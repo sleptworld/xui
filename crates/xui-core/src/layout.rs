@@ -20,10 +20,14 @@ pub(crate) fn computed_style_for_widget(
         if let Some(scope) = widget.style_scope() {
             computed.apply(parent, scope, theme);
         }
-        let default_style = widget.default_style().patch_for_state(WidgetState::empty());
-        let style = widget.style().patch_for_state(state);
-        computed.apply(parent, &default_style, theme);
-        computed.apply(parent, &style, theme);
+        widget
+            .default_style()
+            .with_patch_for_state(WidgetState::empty(), |patch| {
+                computed.apply(parent, patch, theme)
+            });
+        widget
+            .style()
+            .with_patch_for_state(state, |patch| computed.apply(parent, patch, theme));
         match widget {
             Widgets::Container(widget) => {
                 if let Some(direction) = widget.flex_direction {
@@ -91,8 +95,7 @@ fn computed_layout_style_for_parent(
     // let is_root = widget.with_widgets(|w| matches!(w, Widgets::Root(_)));
     let mut style = widget.with_widgets(|w| match w {
         Widgets::Container(widget) => match widget.flex_direction {
-            Some(FlexDirectionStyle::Column) => flex_style(FlexDirectionStyle::Column, layout),
-            Some(FlexDirectionStyle::Row) => flex_style(FlexDirectionStyle::Row, layout),
+            Some(direction) => flex_style(direction, widget.flex_wrap, layout),
             None => tf::Style {
                 display: tf::Display::Block,
                 ..Default::default()
@@ -243,9 +246,10 @@ fn stack_alignment(value: f32) -> tf::AlignItems {
 
 fn flex_style(
     direction: FlexDirectionStyle,
+    wrap: bool,
     layout: xui_interface::ComputedLayoutStyle,
 ) -> tf::Style {
-    let (flex_direction, gap) = match direction {
+    let (flex_direction, mut gap) = match direction {
         FlexDirectionStyle::Column => (
             tf::FlexDirection::Column,
             tf::Size {
@@ -262,9 +266,22 @@ fn flex_style(
         ),
     };
 
+    // Wrapped lines are spaced by the same gap as the items within a line.
+    if wrap {
+        gap = tf::Size {
+            width: length_percentage(layout.gap),
+            height: length_percentage(layout.gap),
+        };
+    }
+
     tf::Style {
         display: tf::Display::Flex,
         flex_direction,
+        flex_wrap: if wrap {
+            tf::FlexWrap::Wrap
+        } else {
+            tf::FlexWrap::NoWrap
+        },
         align_items: Some(align_items(layout.align)),
         justify_content: Some(justify_content(layout.justify)),
         gap,

@@ -16,7 +16,7 @@ pub struct EventTranslator {
     next_press_id: u64,
     next_drag_id: u64,
 
-    hover_paths: FxHashMap<XuiPointerId, Vec<NodeId>>,
+    hover_paths: FxHashMap<XuiPointerId, crate::ui_runtime::EventPath>,
     active_presses: FxHashMap<(XuiPointerId, PointerButton), ActivePress>,
     active_drags: FxHashMap<XuiPointerId, ActiveDrag>,
     /// A scrollbar thumb being dragged. Held apart from `active_drags`: the
@@ -24,6 +24,9 @@ pub struct EventTranslator {
     /// ever raised for it.
     active_scrollbar_drag: Option<ScrollbarDrag>,
     last_click: Option<ClickRecord>,
+    /// Whether the latest key-or-pointer input was a key press; decides if a
+    /// programmatic focus change shows a focus indicator.
+    keyboard_modality: bool,
     config: EventTranslatorConfig,
 }
 
@@ -154,6 +157,7 @@ impl EventTranslator {
             active_drags: FxHashMap::default(),
             active_scrollbar_drag: None,
             last_click: None,
+            keyboard_modality: false,
             config,
         }
     }
@@ -271,6 +275,7 @@ impl EventTranslator {
             return self.press_scrollbar(raw, hit, arena);
         }
 
+        self.keyboard_modality = false;
         let mut out = Vec::new();
         let Some(target) = self.resolve_pointer_target(raw.pointer_id, raw.position, arena) else {
             return out;
@@ -285,17 +290,18 @@ impl EventTranslator {
             arena,
         );
 
-        if let Some(focus_target) = nearest_focusable_ancestor(arena, target) {
-            self.change_focus(
-                arena,
-                Some(focus_target),
-                FocusReason::Pointer,
-                EventSource::Pointer,
-                raw.timestamp,
-                raw.modifiers,
-                &mut out,
-            );
-        }
+        // Pressing anywhere that has no focusable ancestor clears focus, as a
+        // browser moves focus to the body: otherwise a text input stays focused
+        // (caret, IME session, focus ring) after clicking empty space.
+        self.change_focus(
+            arena,
+            nearest_focusable_ancestor(arena, target),
+            FocusReason::Pointer,
+            EventSource::Pointer,
+            raw.timestamp,
+            raw.modifiers,
+            &mut out,
+        );
 
         let press_id = self.alloc_press_id();
         let path = arena.event_path(target);
@@ -308,7 +314,7 @@ impl EventTranslator {
                 kind: raw.kind,
                 button: raw.button,
                 target,
-                path,
+                path: path.to_vec(),
                 start_position: raw.position,
                 current_position: raw.position,
                 started_at: raw.timestamp,
@@ -640,6 +646,7 @@ impl EventTranslator {
         raw: &RawKeyboard,
         arena: &mut UiRuntime,
     ) -> Vec<SemanticEvent> {
+        self.keyboard_modality = true;
         let mut out = Vec::new();
 
         match raw.named_key {
@@ -801,7 +808,6 @@ impl EventTranslator {
     ) -> Option<NodeId> {
         arena
             .pointer_capture_node()
-            .filter(|target| arena.contains(*target))
             .or_else(|| arena.hit_test(position))
     }
 
@@ -814,9 +820,7 @@ impl EventTranslator {
         target: Option<NodeId>,
         arena: &UiRuntime,
     ) -> PointerSnapshot {
-        let target_local = target
-            .and_then(|node| arena.to_local(node, position))
-            .unwrap_or(position);
+        let target_local = target.map_or(position, |node| arena.to_local(node, position));
 
         PointerSnapshot {
             pointer_id,
@@ -1079,6 +1083,14 @@ impl EventTranslator {
         };
         let old_focused = transition.old;
         let new_focused = transition.new;
+        let focus_visible = match reason {
+            FocusReason::Keyboard => true,
+            FocusReason::Pointer | FocusReason::Window => false,
+            // e.g. a tab list moving focus on an arrow key.
+            FocusReason::Programmatic | FocusReason::NodeRemoved | FocusReason::Disabled => {
+                self.keyboard_modality
+            }
+        };
 
         if let Some(old) = old_focused {
             let blur_meta =
@@ -1089,6 +1101,7 @@ impl EventTranslator {
                 new_focused,
                 related_target: new_focused,
                 reason,
+                focus_visible: false,
             }));
 
             let focus_out_meta =
@@ -1099,6 +1112,7 @@ impl EventTranslator {
                 new_focused,
                 related_target: new_focused,
                 reason,
+                focus_visible: false,
             }));
         }
 
@@ -1111,6 +1125,7 @@ impl EventTranslator {
                 new_focused,
                 related_target: old_focused,
                 reason,
+                focus_visible,
             }));
 
             let focus_meta =
@@ -1121,6 +1136,7 @@ impl EventTranslator {
                 new_focused,
                 related_target: old_focused,
                 reason,
+                focus_visible,
             }));
         }
     }
@@ -1385,7 +1401,8 @@ impl EventTranslator {
         } else {
             current + page
         };
-        if let Some(scroll) = arena.scroll_node_to(hit.node, part.with_along(metrics.offset, next)) {
+        if let Some(scroll) = arena.scroll_node_to(hit.node, part.with_along(metrics.offset, next))
+        {
             let pointer = self.make_pointer_snapshot(
                 raw.pointer_id,
                 Some(raw.button),
@@ -1654,12 +1671,11 @@ fn focusable_nodes(arena: &UiRuntime) -> Vec<NodeId> {
 }
 
 fn node_center(arena: &UiRuntime, node_id: NodeId) -> Option<Point> {
-    arena.visual_layout(node_id).map(|layout| {
-        Point::new(
-            layout.x() + layout.width() * 0.5,
-            layout.y() + layout.height() * 0.5,
-        )
-    })
+    let layout = arena.visual_layout(node_id);
+    Some(Point::new(
+        layout.x() + layout.width() * 0.5,
+        layout.y() + layout.height() * 0.5,
+    ))
 }
 
 fn consume_scroll_delta(
@@ -1746,7 +1762,7 @@ mod tests {
         let props_hash = widget.props_hash();
         let handlers = widget.take_host_interaction();
         let node = arena.create_node(None, props_hash, widget, handlers);
-        arena.append_child(arena.root(), node);
+        arena.place(arena.root(), node, None);
         node
     }
 
@@ -1941,7 +1957,10 @@ mod tests {
         CLAMP_SCROLLS.with(|scrolls| {
             assert_eq!(
                 *scrolls.borrow(),
-                vec![(ScrollSource::Programmatic, 200.0), (ScrollSource::Layout, 50.0)]
+                vec![
+                    (ScrollSource::Programmatic, 200.0),
+                    (ScrollSource::Layout, 50.0)
+                ]
             );
         });
     }
@@ -1995,7 +2014,12 @@ mod tests {
         }
 
         fn offset_y(&self, node: NodeId) -> f32 {
-            self.app.ui_runtime().node(node).expect("node").scroll_offset.y
+            self.app
+                .ui_runtime()
+                .node(node)
+                .expect("node")
+                .scroll_offset
+                .y
         }
     }
 
@@ -2019,7 +2043,11 @@ mod tests {
         for _ in 0..8 {
             harness.wheel(-50.0);
         }
-        assert_eq!(harness.offset_y(harness.inner), 300.0, "inner is at its end");
+        assert_eq!(
+            harness.offset_y(harness.inner),
+            300.0,
+            "inner is at its end"
+        );
         assert!(
             harness.offset_y(harness.outer) > 0.0,
             "the leftover delta should have moved the outer scroller"

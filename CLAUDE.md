@@ -18,7 +18,8 @@ cargo test -p xui --test ui       # trybuild compile-fail suite (xui/tests/ui/)
 cargo test -p xui-components --lib --tests
 cargo doc --no-deps --open
 
-cargo run -p xui-example-app      # launch the example app
+cargo run -p xui-example-app      # launch the example app (Component Gallery; XUI_THEME=dark)
+cargo run -p xui-example-app --bin flight-icing   # the aircraft icing dashboard demo
 
 cargo xui init                    # set a package up for assets (xui.toml, assets/, build.rs, xui-build dep)
 cargo xui run --release           # forwards to cargo; mounts assets/ live, copies external packages
@@ -62,6 +63,8 @@ app ──► xui (runtime, fiber, hooks, layout, style, widgets, render scene)
 **Window hosts:** a host (`xui-winit`, or the native `xui-macos`) owns the event loop and window, translates native events into `xui_shell::ShellEvent`, and implements `PlatformWindow`; `xui_shell::Shell` holds all platform-independent host state (modifiers, buttons, visibility, first-frame reveal, cursor/IME sync). Render backends take `Arc<dyn SurfaceTarget>`, never a winit type — keep winit out of `xui-shell` and `xui-skia`.
 
 **Per-frame flow:** winit event → `WinitRunner` → `ShellEvent` → `Shell` → `RawEvent` → `GuiRuntime`/`App` runs the event lane (EventTranslator → semantic events/callbacks) and effect lane (effects, tokio task wakeups) → render phase: dirty components re-render via `HookContext` into `ElementDesc` → fiber reconciler diffs into the retained widget/layout tree → style system merges patches+theme+`WidgetStateMatcher` rules into `ComputedStyle` → taffy layout → scene (`RenderNodeId`/`PictureId`/`PrimitiveId`) → scene compiler → render graph → backend rasterizes; text goes through `TextHost` → configured `TextBackend`.
+
+**UiRuntime contract** (`crates/xui-core/src/ui_runtime/`, design in `docs/ui-runtime-api.md`): files are split by caller — `commit.rs` (fiber commit; the only code that changes tree shape, via `place`/`remove_subtree`), `query.rs`/`input.rs` (event system), `frame.rs`/`config.rs` (`App`), `scroll.rs`; `work.rs`/`style_pass.rs`/`layout_pass.rs`/`paint_pass.rs` are private stages. Every `NodeId` taken is a live-id precondition (`debug_assert!`, dense subsystems index directly and return no `Option`); ids that can go stale (dirty queues, controller requests, overlay order) are filtered once where they are drained (`live()`), nowhere else. Don't add `contains_key` guards to internal functions — fix the caller. Paint transforms are never set directly either: mark `HostWorkFlags::SYNC_TRANSFORM` and the render sync derives it once, after layout.
 
 **Phase guards:** `slot` keeps a thread-local `RenderPhase` (`Render`/`Event`/`Effect`/`Commit`). Hook storage may only be written in `Event`/`Effect`; debug builds assert this. If a test or new code panics on a phase assertion, the fix is usually where the write happens, not the guard.
 

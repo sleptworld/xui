@@ -63,6 +63,24 @@ impl std::fmt::Debug for TextInputWidget {
     }
 }
 
+/// The top of the single text line inside a content box `box_height` tall,
+/// matching `TextVerticalAlign::Middle` in the render backends.
+fn text_y_offset(box_height: f32, text_height: f32) -> f32 {
+    ((box_height - text_height) * 0.5).max(0.0)
+}
+
+/// `rect` minus `padding`: the area the text is laid out, painted, and clipped
+/// in. Padding stays part of the node, so pressing it still focuses the input.
+pub(crate) fn text_input_content_box(rect: Bounds, padding: xui_interface::EdgeInsets) -> Bounds {
+    Bounds::from_origin_size(
+        Point::new(rect.x() + padding.left(), rect.y() + padding.top()),
+        (
+            (rect.width() - padding.left() - padding.right()).max(0.0),
+            (rect.height() - padding.top() - padding.bottom()).max(0.0),
+        ),
+    )
+}
+
 impl TextInputWidget {
     pub fn new() -> Self {
         Self {
@@ -120,16 +138,19 @@ impl TextInputWidget {
 
     event_handler_methods!();
 
+    /// `content_rect` is the node's rect inside its padding
+    /// ([`text_input_content_box`]).
     pub(crate) fn platform_text_input_session(
         &self,
-        node_rect: Bounds,
+        content_rect: Bounds,
         text_layout: &dyn crate::text::TextLayoutQuery,
     ) -> TextInputSession {
         let mut cursor_area = text_layout
             .caret_rect(self.controller.selection().extent)
-            .unwrap_or_else(|| Rect::new(0.0, 0.0, 1.0, node_rect.height().max(1.0)));
-        cursor_area.x += node_rect.x() - self.scroll_x;
-        cursor_area.y += node_rect.y();
+            .unwrap_or_else(|| Rect::new(0.0, 0.0, 1.0, content_rect.height().max(1.0)));
+        cursor_area.x += content_rect.x() - self.scroll_x;
+        cursor_area.y +=
+            content_rect.y() + text_y_offset(content_rect.height(), text_layout.size().height);
         cursor_area.width = cursor_area.width.max(1.0);
         cursor_area.height = cursor_area.height.max(1.0);
 
@@ -161,8 +182,17 @@ impl TextInputWidget {
         props
     }
 
+    /// The text area in window coordinates.
+    fn content_box(&self, cx: &EventContext<'_>) -> Bounds {
+        let layout = cx.node_ref.layout;
+        text_input_content_box(
+            Bounds::from_origin_size(cx.node_ref.world_origin, (layout.width(), layout.height())),
+            cx.node_ref.effective_style.layout.padding,
+        )
+    }
+
     fn viewport_width(&self, cx: &EventContext<'_>) -> f32 {
-        cx.node_ref.layout.width().max(0.0)
+        self.content_box(cx).width()
     }
 
     fn max_scroll_x(&self, cx: &EventContext<'_>) -> f32 {
@@ -234,9 +264,14 @@ impl TextInputWidget {
     }
 
     fn event_point_to_text_point(&self, cx: &EventContext<'_>, position: Point) -> Point {
+        let content = self.content_box(cx);
+        let y_offset = cx
+            .text_layout()
+            .map(|layout| text_y_offset(content.height(), layout.size().height))
+            .unwrap_or(0.0);
         Point::new(
-            position.x - cx.node_ref.world_origin.x + self.scroll_x,
-            position.y - cx.node_ref.world_origin.y,
+            position.x - content.x() + self.scroll_x,
+            position.y - content.y() - y_offset,
         )
     }
 
@@ -291,7 +326,7 @@ impl TextInputWidget {
         if viewport_width <= 0.0 {
             return false;
         }
-        let local_x = position.x - cx.node_ref.layout.x();
+        let local_x = position.x - self.content_box(cx).x();
         let old = self.scroll_x;
         if local_x < 0.0 {
             self.scroll_x += local_x;
@@ -505,6 +540,7 @@ impl TextInputWidget {
         style: &ComputedStyle,
         writer: &mut RenderTreeWriter<'_>,
     ) {
+        let rect = text_input_content_box(rect, style.layout.padding);
         let mut paint = TextPaintProps::new(TextPaintStyle::from_computed(&style.text));
         paint.caret = self.focused.then_some(TextCaret {
             char_index: self.controller.selection().extent,
@@ -532,7 +568,9 @@ impl TextInputWidget {
                         ),
                         slot: crate::text::TextLayoutSlot::PRIMARY,
                         layout_revision: self.controller.revision(),
-                        vertical_align: xui_interface::TextVerticalAlign::Baseline,
+                        // Centered, so a box taller than one line keeps
+                        // its text, caret, and selection on the midline.
+                        vertical_align: xui_interface::TextVerticalAlign::Middle,
                         paint,
                     }))?;
                     Ok(())

@@ -17,6 +17,9 @@ pub struct ContainerWidget {
     pub key: Option<Key>,
     pub style: Style,
     pub flex_direction: Option<FlexDirectionStyle>,
+    /// Whether a `row`/`column` wraps children onto new lines when they
+    /// overflow, like CSS `flex-wrap: wrap`. Ignored without a flex direction.
+    pub flex_wrap: bool,
     pub event_handlers: EventHandlers,
     pub interaction: InteractionProperties,
 }
@@ -26,6 +29,7 @@ impl std::fmt::Debug for ContainerWidget {
         f.debug_struct("ContainerWidget")
             .field("key", &self.key)
             .field("flex_direction", &self.flex_direction)
+            .field("flex_wrap", &self.flex_wrap)
             .finish()
     }
 }
@@ -36,6 +40,7 @@ impl ContainerWidget {
             key: None,
             style: Style::default(),
             flex_direction: None,
+            flex_wrap: false,
             event_handlers: EventHandlers::default(),
             interaction: InteractionProperties::default(),
         }
@@ -56,6 +61,13 @@ impl ContainerWidget {
 
     pub fn flex_direction(mut self, direction: FlexDirectionStyle) -> Self {
         self.flex_direction = Some(direction);
+        self
+    }
+
+    /// Wraps overflowing children onto new lines; `gap` then spaces the lines
+    /// as well as the items within a line.
+    pub fn flex_wrap(mut self, wrap: bool) -> Self {
+        self.flex_wrap = wrap;
         self
     }
 
@@ -123,7 +135,7 @@ impl ContainerWidget {
     }
 
     pub(super) fn props_hash(&self) -> u64 {
-        props_hash(&(&self.style, self.flex_direction))
+        props_hash(&(&self.style, self.flex_direction, self.flex_wrap))
     }
 
     pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
@@ -132,8 +144,9 @@ impl ContainerWidget {
             self.style = next.style.clone();
             flags |= WidgetUpdateFlags::STYLE_TARGET;
         }
-        if self.flex_direction != next.flex_direction {
+        if self.flex_direction != next.flex_direction || self.flex_wrap != next.flex_wrap {
             self.flex_direction = next.flex_direction;
+            self.flex_wrap = next.flex_wrap;
             flags |= WidgetUpdateFlags::LAYOUT_INPUT;
         }
         if flags.is_empty() {

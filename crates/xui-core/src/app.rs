@@ -126,7 +126,8 @@ impl App {
         &self.ui_runtime
     }
 
-    pub fn ui_runtime_mut(&mut self) -> &mut UiRuntime {
+    #[cfg(test)]
+    pub(crate) fn ui_runtime_mut(&mut self) -> &mut UiRuntime {
         &mut self.ui_runtime
     }
 

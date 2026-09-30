@@ -837,12 +837,23 @@ fn transparent_color(value: ComputedColorStyle) -> ComputedColorStyle {
     }
 }
 
+/// Interpolates in premultiplied alpha. Mixing straight RGB would drag a
+/// fade from `Color::TRANSPARENT` (transparent *black*) through a visibly dark
+/// midpoint on its way to a light color; a transparent endpoint's RGB should
+/// carry no weight.
 fn rgba(from: Color, to: Color, progress: f32) -> Color {
+    let a = lerp(from.a, to.a, progress);
+    if a <= f32::EPSILON {
+        return Color { a: 0.0, ..to };
+    }
+    let channel = |from_c: f32, to_c: f32| {
+        lerp(from_c * from.a, to_c * to.a, progress) / a
+    };
     Color {
-        r: lerp(from.r, to.r, progress),
-        g: lerp(from.g, to.g, progress),
-        b: lerp(from.b, to.b, progress),
-        a: lerp(from.a, to.a, progress),
+        r: channel(from.r, to.r),
+        g: channel(from.g, to.g),
+        b: channel(from.b, to.b),
+        a,
     }
 }
 
@@ -910,6 +921,14 @@ mod tests {
         let sampled = interpolate_style(&from, &to, 0.25);
         assert_eq!(sampled.layout.width, Sizing::Fill);
         assert!(sampled.paint.clip);
+    }
+
+    #[test]
+    fn fading_in_from_transparent_black_does_not_darken() {
+        let sampled = rgba(Color::TRANSPARENT, Color::rgb(0.96, 0.96, 0.96), 0.5);
+        assert!((sampled.r - 0.96).abs() < 1e-4, "{sampled:?}");
+        assert!((sampled.a - 0.5).abs() < 1e-4);
+        assert_eq!(rgba(Color::BLACK, Color::WHITE, 0.5), Color::rgb(0.5, 0.5, 0.5));
     }
 
     #[test]

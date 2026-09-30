@@ -34,6 +34,19 @@ viewport-bounded row rendering. Its pure `TableModel` can be tested without a
 window or renderer. Start/end pinning currently controls column order; sticky
 horizontal pinning is intentionally not claimed.
 
+## Theme
+
+Component styles are written against semantic `ColorToken`s modeled on
+shadcn/ui (`Background`/`Foreground`, `Primary`, `Secondary`, `Muted`,
+`Accent`, `Destructive`, each with a `*Foreground`, plus `Border`, `Input`, and
+`Ring`), so they follow the runtime theme instead of hard-coding colors.
+`Theme::light()` (the default) and `Theme::dark()` are the shadcn neutral
+palettes; switch with `App::set_theme`. `ColorToken::Primary.alpha(0.9)`
+expresses Tailwind-style `bg-primary/90` hover states.
+
+`cargo run -p xui-example-app`, the Component Gallery, shows the styled
+controls (`XUI_THEME=dark` for the dark palette).
+
 ## Engineering contract
 
 - Controlled and uncontrolled state never compete. Controlled values are the
@@ -63,4 +76,6 @@ cargo test -p xui
 ```
 
 The example application is the interactive Component Gallery:
-`cargo run -p xui-example-app`.
+`cargo run -p xui-example-app`. Its test renders every page headlessly in both
+palettes; set `XUI_GALLERY_SNAPSHOT_DIR` to write the frames as PNGs. The
+aircraft icing dashboard demo is `cargo run -p xui-example-app --bin flight-icing`.

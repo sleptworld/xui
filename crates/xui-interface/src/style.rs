@@ -15,16 +15,51 @@ thread_local! {
     static BASIC_STYLE: ComputedStyle = ComputedStyle::initial(&Theme::default());
 }
 
-/// Tokens
+/// Semantic color roles, modeled on the shadcn/ui palette: each surface role
+/// (`Primary`, `Secondary`, `Muted`, `Accent`, `Destructive`, `Card`, `Popover`)
+/// pairs with a `*Foreground` role for the content drawn on top of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ColorToken {
-    Text,
-    InverseText,
     Background,
-    Surface,
-    MutedSurface,
-    Border,
+    Foreground,
+    Card,
+    CardForeground,
+    Popover,
+    PopoverForeground,
     Primary,
+    PrimaryForeground,
+    Secondary,
+    SecondaryForeground,
+    /// Subdued surfaces such as a tab list or skeleton.
+    Muted,
+    /// Secondary text: descriptions, placeholders, inactive tabs.
+    MutedForeground,
+    /// Hover and highlight surface for menu items and ghost buttons.
+    Accent,
+    AccentForeground,
+    Destructive,
+    DestructiveForeground,
+    Border,
+    /// Border of form controls.
+    Input,
+    /// Focus ring.
+    Ring,
+    /// Alias of `Foreground`.
+    Text,
+    /// Alias of `PrimaryForeground`.
+    InverseText,
+    /// Alias of `Card`.
+    Surface,
+    /// Alias of `Muted`.
+    MutedSurface,
+}
+
+impl ColorToken {
+    /// This token with its alpha multiplied by `alpha`, like Tailwind's
+    /// `bg-primary/90`.
+    pub fn alpha(self, alpha: f32) -> ColorValue {
+        ColorValue::TokenAlpha(self, alpha)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -41,6 +76,7 @@ pub enum RadiusToken {
     Sm,
     Md,
     Lg,
+    Xl,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -71,6 +107,8 @@ impl<T> StyleValue<T> {
 pub enum ColorValue {
     Color(Color),
     Token(ColorToken),
+    /// A token whose resolved alpha is multiplied by the given factor.
+    TokenAlpha(ColorToken, f32),
 }
 
 impl From<Color> for ColorValue {
@@ -1268,13 +1306,28 @@ impl Style {
     }
 
     pub fn patch_for_state(&self, state: WidgetState) -> StylePatch {
-        if let Some((_, patch)) = self
-            .patch_cache
-            .borrow()
-            .iter()
-            .find(|(cached_state, _)| *cached_state == state)
+        self.with_patch_for_state(state, StylePatch::clone)
+    }
+
+    /// Runs `f` on the patch for `state`, borrowed from the cache rather than
+    /// cloned out of it — the difference matters on paths that visit every
+    /// node, since a patch owns strings and effect lists.
+    ///
+    /// The cache stays borrowed while `f` runs, so `f` must not look up a patch
+    /// on this same `Style`.
+    pub fn with_patch_for_state<R>(
+        &self,
+        state: WidgetState,
+        f: impl FnOnce(&StylePatch) -> R,
+    ) -> R {
         {
-            return patch.clone();
+            let cache = self.patch_cache.borrow();
+            if let Some((_, patch)) = cache
+                .iter()
+                .find(|(cached_state, _)| *cached_state == state)
+            {
+                return f(patch);
+            }
         }
 
         let mut patch = self.base.clone();
@@ -1283,8 +1336,10 @@ impl Style {
                 patch.merge(&rule.patch);
             }
         }
-        self.patch_cache.borrow_mut().push((state, patch.clone()));
-        patch
+        self.patch_cache.borrow_mut().push((state, patch));
+        let cache = self.patch_cache.borrow();
+        let (_, patch) = cache.last().expect("patch was just cached");
+        f(patch)
     }
 }
 
@@ -2081,6 +2136,10 @@ impl ComputedStyle {
             flags |= StyleDiffFlags::SCROLL;
         }
 
+        if !self.inherited_eq(other) {
+            flags |= StyleDiffFlags::INHERITED;
+        }
+
         // `cursor` is intentionally not compared. It has no scene output, so a
         // change must not dirty layout, paint, or text; the platform layer picks
         // the current value up on its next pull. Adding it here would make
@@ -2088,32 +2147,97 @@ impl ComputedStyle {
 
         flags
     }
-
-    pub fn inherited_from(&self, theme: &Theme) -> Self {
-        let mut computed = Self::initial(theme);
-
-        computed.text.color = self.text.color;
-        computed.text.font_family = self.text.font_family.clone();
-        computed.text.font_size = self.text.font_size;
-        computed.text.font_weight = self.text.font_weight;
-        computed.text.font_style = self.text.font_style;
-        computed.text.line_height = self.text.line_height;
-        computed.text.letter_spacing = self.text.letter_spacing;
-        computed.text.decoration = self.text.decoration;
-
-        computed
-    }
 }
 
+/// Declares the properties a node takes from its parent when its own patch
+/// leaves them unset, and derives every inheritance helper from that one list.
+///
+/// Adding a property here is the whole job of making it inherited: the
+/// runtime only ever asks through these helpers and
+/// [`StyleDiffFlags::INHERITED`], never names a field. Resolving an explicit
+/// `StyleValue::Inherit` in the property's `apply_*` function is separate —
+/// that is where it picks its `resolve_*` variant.
+macro_rules! inherited_properties {
+    ($($group:ident . $field:ident),+ $(,)?) => {
+        impl ComputedStyle {
+            /// The initial style with every inherited property taken from
+            /// `self`: what a child starts from before its own patch applies.
+            pub fn inherited_from(&self, theme: &Theme) -> Self {
+                let mut computed = Self::initial(theme);
+                $(computed.$group.$field = self.$group.$field.clone();)+
+                computed
+            }
+
+            /// Whether both styles agree on every inherited property, which is
+            /// exactly when a child resolves the same against either.
+            pub fn inherited_eq(&self, other: &Self) -> bool {
+                true $(&& self.$group.$field == other.$group.$field)+
+            }
+
+            /// Whether [`inherit_unset_from`](Self::inherit_unset_from) would
+            /// change anything, answered without cloning or writing.
+            pub fn inherits_differently_from(&self, parent: &Self, patch: &StylePatch) -> bool {
+                false $(
+                    || (matches!(
+                        &patch.$group.$field,
+                        StyleValue::Unset | StyleValue::Inherit
+                    ) && self.$group.$field != parent.$group.$field)
+                )+
+            }
+
+            /// Copies from `parent` each inherited property `patch` leaves to
+            /// the parent, and keeps the ones it sets. Lets a style that was
+            /// resolved against one parent value follow another — an animated
+            /// sample, say — without resolving the whole patch again.
+            pub fn inherit_unset_from(&mut self, parent: &Self, patch: &StylePatch) {
+                $(
+                    if matches!(
+                        &patch.$group.$field,
+                        StyleValue::Unset | StyleValue::Inherit
+                    ) {
+                        self.$group.$field = parent.$group.$field.clone();
+                    }
+                )+
+            }
+        }
+    };
+}
+
+inherited_properties! {
+    text.color,
+    text.font_family,
+    text.font_size,
+    text.font_weight,
+    text.font_style,
+    text.line_height,
+    text.letter_spacing,
+    text.decoration,
+}
+
+/// Design tokens resolved by `ColorToken`, `SpacingToken`, `RadiusToken`, and
+/// `FontSizeToken`. The defaults follow shadcn/ui's neutral palette;
+/// [`Theme::light`] is the default and [`Theme::dark`] its dark counterpart.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Theme {
-    pub text: Color,
-    pub inverse_text: Color,
     pub background: Color,
-    pub surface: Color,
-    pub muted_surface: Color,
-    pub border: Color,
+    pub foreground: Color,
+    pub card: Color,
+    pub card_foreground: Color,
+    pub popover: Color,
+    pub popover_foreground: Color,
     pub primary: Color,
+    pub primary_foreground: Color,
+    pub secondary: Color,
+    pub secondary_foreground: Color,
+    pub muted: Color,
+    pub muted_foreground: Color,
+    pub accent: Color,
+    pub accent_foreground: Color,
+    pub destructive: Color,
+    pub destructive_foreground: Color,
+    pub border: Color,
+    pub input: Color,
+    pub ring: Color,
     pub spacing_xs: f32,
     pub spacing_sm: f32,
     pub spacing_md: f32,
@@ -2122,6 +2246,7 @@ pub struct Theme {
     pub radius_sm: f32,
     pub radius_md: f32,
     pub radius_lg: f32,
+    pub radius_xl: f32,
     pub font_size_sm: f32,
     pub font_size_md: f32,
     pub font_size_lg: f32,
@@ -2130,40 +2255,99 @@ pub struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
+        Self::light()
+    }
+}
+
+impl Theme {
+    /// shadcn/ui "neutral", light.
+    pub fn light() -> Self {
         Self {
-            text: Color::BLACK,
-            inverse_text: Color::WHITE,
-            background: Color::WHITE,
-            surface: Color::GRAY_100,
-            muted_surface: Color::GRAY_300,
-            border: Color::GRAY_300,
-            primary: Color::BLUE_500,
+            background: Color::hex("#ffffff"),
+            foreground: Color::hex("#0a0a0a"),
+            card: Color::hex("#ffffff"),
+            card_foreground: Color::hex("#0a0a0a"),
+            popover: Color::hex("#ffffff"),
+            popover_foreground: Color::hex("#0a0a0a"),
+            primary: Color::hex("#171717"),
+            primary_foreground: Color::hex("#fafafa"),
+            secondary: Color::hex("#f5f5f5"),
+            secondary_foreground: Color::hex("#171717"),
+            muted: Color::hex("#f5f5f5"),
+            muted_foreground: Color::hex("#737373"),
+            accent: Color::hex("#f5f5f5"),
+            accent_foreground: Color::hex("#171717"),
+            destructive: Color::hex("#e7000b"),
+            destructive_foreground: Color::hex("#ffffff"),
+            border: Color::hex("#e5e5e5"),
+            input: Color::hex("#e5e5e5"),
+            ring: Color::hex("#a1a1a1"),
+            // Radii derive from a 10px base radius, as in shadcn/ui.
             spacing_xs: 4.0,
             spacing_sm: 8.0,
             spacing_md: 12.0,
             spacing_lg: 16.0,
             spacing_xl: 24.0,
-            radius_sm: 2.0,
-            radius_md: 4.0,
-            radius_lg: 8.0,
+            radius_sm: 6.0,
+            radius_md: 8.0,
+            radius_lg: 10.0,
+            radius_xl: 14.0,
             font_size_sm: 12.0,
             font_size_md: 14.0,
             font_size_lg: 16.0,
             font_size_xl: 20.0,
         }
     }
-}
 
-impl Theme {
+    /// shadcn/ui "neutral", dark.
+    pub fn dark() -> Self {
+        Self {
+            background: Color::hex("#0a0a0a"),
+            foreground: Color::hex("#fafafa"),
+            card: Color::hex("#171717"),
+            card_foreground: Color::hex("#fafafa"),
+            popover: Color::hex("#171717"),
+            popover_foreground: Color::hex("#fafafa"),
+            primary: Color::hex("#e5e5e5"),
+            primary_foreground: Color::hex("#171717"),
+            secondary: Color::hex("#262626"),
+            secondary_foreground: Color::hex("#fafafa"),
+            muted: Color::hex("#262626"),
+            muted_foreground: Color::hex("#a1a1a1"),
+            accent: Color::hex("#262626"),
+            accent_foreground: Color::hex("#fafafa"),
+            // shadcn uses #ff6467 at 60% for dark fills; red-600 keeps white
+            // text legible on a solid fill.
+            destructive: Color::hex("#dc2626"),
+            destructive_foreground: Color::hex("#ffffff"),
+            border: Color::rgba(1.0, 1.0, 1.0, 0.10),
+            input: Color::rgba(1.0, 1.0, 1.0, 0.15),
+            ring: Color::hex("#737373"),
+            ..Self::light()
+        }
+    }
+
     pub fn color(&self, token: ColorToken) -> Color {
         match token {
-            ColorToken::Text => self.text,
-            ColorToken::InverseText => self.inverse_text,
             ColorToken::Background => self.background,
-            ColorToken::Surface => self.surface,
-            ColorToken::MutedSurface => self.muted_surface,
-            ColorToken::Border => self.border,
+            ColorToken::Foreground | ColorToken::Text => self.foreground,
+            ColorToken::Card | ColorToken::Surface => self.card,
+            ColorToken::CardForeground => self.card_foreground,
+            ColorToken::Popover => self.popover,
+            ColorToken::PopoverForeground => self.popover_foreground,
             ColorToken::Primary => self.primary,
+            ColorToken::PrimaryForeground | ColorToken::InverseText => self.primary_foreground,
+            ColorToken::Secondary => self.secondary,
+            ColorToken::SecondaryForeground => self.secondary_foreground,
+            ColorToken::Muted | ColorToken::MutedSurface => self.muted,
+            ColorToken::MutedForeground => self.muted_foreground,
+            ColorToken::Accent => self.accent,
+            ColorToken::AccentForeground => self.accent_foreground,
+            ColorToken::Destructive => self.destructive,
+            ColorToken::DestructiveForeground => self.destructive_foreground,
+            ColorToken::Border => self.border,
+            ColorToken::Input => self.input,
+            ColorToken::Ring => self.ring,
         }
     }
 
@@ -2182,6 +2366,7 @@ impl Theme {
             RadiusToken::Sm => self.radius_sm,
             RadiusToken::Md => self.radius_md,
             RadiusToken::Lg => self.radius_lg,
+            RadiusToken::Xl => self.radius_xl,
         }
     }
 
@@ -2695,6 +2880,10 @@ fn color_value(value: ColorValue, theme: &Theme) -> Color {
     match value {
         ColorValue::Color(color) => color,
         ColorValue::Token(token) => theme.color(token),
+        ColorValue::TokenAlpha(token, alpha) => {
+            let color = theme.color(token);
+            color.alpha(color.a * alpha)
+        }
     }
 }
 
@@ -2864,6 +3053,10 @@ impl Hash for ColorValue {
         match self {
             Self::Color(color) => hash_color(*color, state),
             Self::Token(token) => token.hash(state),
+            Self::TokenAlpha(token, alpha) => {
+                token.hash(state);
+                hash_f32(*alpha, state);
+            }
         }
     }
 }
@@ -3478,7 +3671,49 @@ mod tests {
         let flags = current.diff(&next);
 
         assert!(flags.contains(StyleDiffFlags::TEXT));
+        assert!(flags.contains(StyleDiffFlags::INHERITED));
         assert!(!flags.contains(StyleDiffFlags::PAINT));
+    }
+
+    #[test]
+    fn non_inherited_changes_leave_the_subtree_alone() {
+        let theme = Theme::default();
+        let current = ComputedStyle::initial(&theme);
+        let mut next = current.clone();
+        next.paint.background = ComputedColorStyle::Solid(Color::BLACK);
+        next.layout.padding = EdgeInsets::all(4.0);
+
+        let flags = current.diff(&next);
+
+        assert!(flags.contains(StyleDiffFlags::PAINT | StyleDiffFlags::LAYOUT));
+        assert!(!flags.contains(StyleDiffFlags::INHERITED));
+        assert!(current.inherited_eq(&next));
+    }
+
+    /// Following a new parent value must not override what the child's own
+    /// patch sets, and must match resolving the patch from scratch.
+    #[test]
+    fn inherit_unset_from_follows_the_parent_only_where_the_patch_is_silent() {
+        let theme = Theme::default();
+        let initial = ComputedStyle::initial(&theme);
+        let old_parent = ComputedStyle::compute(
+            &initial,
+            &StylePatch::new().color(Color::BLACK).font_size(12.0),
+            &theme,
+        );
+        let new_parent = ComputedStyle::compute(
+            &initial,
+            &StylePatch::new().color(Color::WHITE).font_size(24.0),
+            &theme,
+        );
+        let patch = StylePatch::new().font_size(16.0);
+
+        let mut child = ComputedStyle::compute(&old_parent, &patch, &theme);
+        child.inherit_unset_from(&new_parent, &patch);
+
+        assert_eq!(child.text.color, Color::WHITE);
+        assert_eq!(child.text.font_size, 16.0);
+        assert_eq!(child, ComputedStyle::compute(&new_parent, &patch, &theme));
     }
 
     #[test]
@@ -3519,6 +3754,39 @@ mod tests {
         child.apply(&parent, &patch, &theme);
 
         assert_eq!(child.text.font_size, theme.font_size(FontSizeToken::Md));
+    }
+
+    #[test]
+    fn token_alpha_scales_the_theme_color_alpha() {
+        let mut theme = Theme::default();
+        theme.primary = Color::rgba(0.2, 0.3, 0.4, 0.8);
+
+        let initial = ComputedStyle::initial(&theme);
+        let mut computed = initial.inherited_from(&theme);
+        computed.apply(
+            &initial,
+            &StylePatch::new().background(ColorToken::Primary.alpha(0.5)),
+            &theme,
+        );
+
+        assert_eq!(
+            computed.paint.background,
+            ComputedColorStyle::Solid(Color::rgba(0.2, 0.3, 0.4, 0.4))
+        );
+        assert_ne!(
+            ColorToken::Primary.alpha(0.5),
+            ColorToken::Primary.alpha(0.9)
+        );
+    }
+
+    #[test]
+    fn legacy_color_tokens_alias_semantic_roles() {
+        for theme in [Theme::light(), Theme::dark()] {
+            assert_eq!(theme.color(ColorToken::Text), theme.foreground);
+            assert_eq!(theme.color(ColorToken::InverseText), theme.primary_foreground);
+            assert_eq!(theme.color(ColorToken::Surface), theme.card);
+            assert_eq!(theme.color(ColorToken::MutedSurface), theme.muted);
+        }
     }
 
     #[test]
@@ -3686,6 +3954,27 @@ mod tests {
         assert_eq!(
             second.text.color,
             StyleValue::Value(ColorValue::from(Color::BLACK))
+        );
+    }
+
+    /// The borrowed lookup resolves on a miss, caches what it resolved, and
+    /// hands back the same patch the owning lookup does.
+    #[test]
+    fn with_patch_for_state_resolves_once_and_matches_patch_for_state() {
+        let style = Style::new()
+            .color(Color::BLACK)
+            .when(WidgetState::HOVERED, |patch| patch.color(Color::WHITE));
+
+        let color = |patch: &StylePatch| patch.text.color.clone();
+        let miss = style.with_patch_for_state(WidgetState::HOVERED, color);
+        let hit = style.with_patch_for_state(WidgetState::HOVERED, color);
+
+        assert_eq!(miss, StyleValue::Value(ColorValue::from(Color::WHITE)));
+        assert_eq!(hit, miss);
+        assert_eq!(style.patch_cache.borrow().len(), 1);
+        assert_eq!(
+            style.with_patch_for_state(WidgetState::HOVERED, StylePatch::clone),
+            style.patch_for_state(WidgetState::HOVERED)
         );
     }
 

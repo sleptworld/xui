@@ -5377,11 +5377,13 @@ name = "xui-example-app"
 version = "0.1.0"
 dependencies = [
  "leanplot",
+ "lucide-rs",
  "png",
  "xui-build",
  "xui-components",
  "xui-core",
  "xui-cosmic",
+ "xui-f",
  "xui-macos",
  "xui-macros",
  "xui-skia",

@@ -17,7 +17,7 @@
 use ordered_float::NotNan;
 use std::time::Duration;
 
-use palette::{LinSrgba, Mix};
+use palette::{LinSrgba, Mix, blend::PreAlpha};
 pub use xui_interface::{AnimationProgress, Easing, Transition};
 use xui_interface::{
     Color, ColorStyle, ColorValue, EdgeInsets, LengthValue, LinearGradientStyle, Point,
@@ -220,10 +220,13 @@ impl Animatable for EdgeInsets {
 }
 
 impl Animatable for Color {
+    /// Mixes in premultiplied alpha, so a transparent endpoint's RGB carries no
+    /// weight: fading in from `Color::TRANSPARENT` (transparent black) does not
+    /// pass through a dark midpoint.
     fn interpolate(from: &Self, to: &Self, progress: f32) -> Self {
-        let from = LinSrgba::new(from.r, from.g, from.b, from.a);
-        let to = LinSrgba::new(to.r, to.g, to.b, to.a);
-        let mixed = from.mix(to, clamp_unit(progress));
+        let from = PreAlpha::from(LinSrgba::new(from.r, from.g, from.b, from.a));
+        let to = PreAlpha::from(LinSrgba::new(to.r, to.g, to.b, to.a));
+        let mixed = LinSrgba::from(from.mix(to, clamp_unit(progress)));
         Color::rgba(mixed.red, mixed.green, mixed.blue, mixed.alpha)
     }
 }
@@ -562,10 +565,16 @@ mod tests {
             &Color::rgba(1.0, 1.0, 1.0, 0.8),
             0.5,
         );
-        assert_near(color.r, 0.5);
-        assert_near(color.g, 0.5);
-        assert_near(color.b, 0.5);
+        // Premultiplied: (0.0 * 0.2 + 1.0 * 0.8) / 2 = 0.4 of coverage over
+        // an alpha of 0.5, so the white endpoint dominates.
+        assert_near(color.r, 0.8);
+        assert_near(color.g, 0.8);
+        assert_near(color.b, 0.8);
         assert_near(color.a, 0.5);
+
+        let fade_in = Color::interpolate(&Color::TRANSPARENT, &Color::rgb(0.96, 0.96, 0.96), 0.5);
+        assert_near(fade_in.r, 0.96);
+        assert_near(fade_in.a, 0.5);
     }
 
     #[test]

@@ -12,6 +12,7 @@ use crate::HookContext;
 use crate::element::{ComponentDesc, ElementDesc};
 use crate::lanes::{Lanes, NO_LANES};
 use crate::widgets::WidgetI;
+use crate::element::PortalBehavior;
 use crate::widgets::{OverlayEntryId, OverlayEntryOptions, OverlayScopeId};
 
 pub type ErasedProps = Rc<dyn Any>;
@@ -110,7 +111,6 @@ bitflags::bitflags! {
 pub struct HostState {
     pub node_id: Option<NodeId>,
     pub widget: Option<WidgetI>,
-    pub taffy_node: Option<tf::NodeId>,
     pub style: tf::Style,
     pub computed_style: ComputedStyle,
     pub layout: Bounds,
@@ -127,6 +127,7 @@ pub struct ComponentState {
 pub struct PortalState {
     pub scope: Option<OverlayScopeId>,
     pub options: OverlayEntryOptions,
+    pub behavior: PortalBehavior,
     pub entry: Option<OverlayEntryId>,
     pub visual_root: Option<NodeId>,
 }
@@ -229,9 +230,7 @@ impl<'a> Iterator for NodeChildren<'a, Node> {
 pub struct FiberArena {
     ids: SlotMap<FiberId, ()>,
     nodes: SecondaryMap<FiberId, Node>,
-    taffy: tf::TaffyTree,
     root: FiberId,
-    root_taffy: tf::NodeId,
     next_work: Option<FiberId>,
     deletions: Vec<FiberId>,
     render_lanes: Lanes,
@@ -239,15 +238,6 @@ pub struct FiberArena {
 
 impl FiberArena {
     pub fn new() -> Self {
-        let mut taffy = tf::TaffyTree::new();
-        let root_style = tf::Style {
-            display: tf::Display::Flex,
-            flex_direction: tf::FlexDirection::Column,
-            ..Default::default()
-        };
-        let root_taffy = taffy
-            .new_leaf(root_style)
-            .expect("failed to create fiber root taffy node");
         let mut ids = SlotMap::with_key();
         let mut nodes = SecondaryMap::new();
         let root = ids.insert(());
@@ -255,9 +245,7 @@ impl FiberArena {
         Self {
             ids,
             nodes,
-            taffy,
             root,
-            root_taffy,
             next_work: None,
             deletions: Vec::new(),
             render_lanes: NO_LANES,
@@ -289,10 +277,6 @@ impl FiberArena {
     #[inline]
     pub fn next_work(&self) -> Option<FiberId> {
         self.next_work
-    }
-
-    pub fn taffy(&self) -> &tf::TaffyTree {
-        &self.taffy
     }
 
     pub fn children(&self, parent: FiberId) -> Vec<FiberId> {
@@ -344,11 +328,6 @@ impl FiberArena {
             self.remove_subtree_detached(child);
         }
 
-        if let Some(host) = self.nodes[id].host.as_ref()
-            && let Some(taffy_node) = host.taffy_node
-        {
-            let _ = self.taffy.remove(taffy_node);
-        }
         self.nodes.remove(id);
     }
 

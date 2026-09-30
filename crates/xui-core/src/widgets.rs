@@ -206,6 +206,7 @@ mod text_input;
 mod z_stack;
 
 pub(crate) use canvas::CanvasInvalidator;
+pub(crate) use text_input::text_input_content_box;
 #[cfg(feature = "wgpu")]
 pub use canvas::{CANVAS_GPU_FORMAT, CANVAS_GPU_USAGES, CanvasGpuPainter, GpuPainter};
 pub use canvas::{
@@ -219,8 +220,8 @@ pub use icon::{IconData, IconLayer, IconStroke, IconWidget, SvgIconError};
 pub use image::ImageWidget;
 pub(crate) use overlay::RootOverlayerWidget;
 pub use overlay::{
-    OverlayChild, OverlayEntry, OverlayEntryId, OverlayEntryOptions, OverlayModelError,
-    OverlayScope, OverlayScopeId,
+    DismissHandler, DismissReason, OverlayChild, OverlayEntry, OverlayEntryId,
+    OverlayEntryOptions, OverlayModelError, OverlayScope, OverlayScopeId,
 };
 pub use root::RootWidget;
 pub use text::TextWidget;
@@ -416,12 +417,12 @@ macro_rules! define_widgets {
 
             pub(crate) fn platform_text_input_session(
                 &self,
-                node_rect: Bounds,
+                content_rect: Bounds,
                 text_layout: &dyn crate::text::TextLayoutQuery,
             ) -> Option<xui_interface::TextInputSession> {
                 match self {
                     Self::TextInput(widget) => {
-                        Some(widget.platform_text_input_session(node_rect, text_layout))
+                        Some(widget.platform_text_input_session(content_rect, text_layout))
                     }
                     _ => None,
                 }
@@ -492,10 +493,10 @@ impl WidgetI {
 
     pub(crate) fn platform_text_input_session(
         &self,
-        node_rect: Bounds,
+        content_rect: Bounds,
         text_layout: &dyn crate::text::TextLayoutQuery,
     ) -> Option<xui_interface::TextInputSession> {
-        self.with_widgets(|widget| widget.platform_text_input_session(node_rect, text_layout))
+        self.with_widgets(|widget| widget.platform_text_input_session(content_rect, text_layout))
     }
 
     pub fn intrinsic_size(&self) -> Option<Size<f32>> {

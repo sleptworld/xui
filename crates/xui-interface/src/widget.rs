@@ -173,12 +173,5 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeLifecycleEvent {
     Created(NodeId),
-    Moved {
-        id: NodeId,
-        old_parent: Option<NodeId>,
-        new_parent: Option<NodeId>,
-        old_position: usize,
-        new_position: usize,
-    },
     Removed(NodeId),
 }

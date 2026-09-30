@@ -4,7 +4,8 @@ pub use crate::component::ComponentRuntime;
 pub use crate::core::{Color, EdgeInsets, Point, Rect, Size};
 pub use crate::dsl::{Children, Content, IntoElement, NoChildren, StyleProps, Styled};
 pub use crate::element::{
-    Component, ComponentDesc, ElementDesc, IntoChildren, PortalDesc, WidgetDesc, portal,
+    Component, ComponentDesc, ElementDesc, IntoChildren, PortalBehavior, PortalDesc, WidgetDesc,
+    portal,
 };
 pub use xui_animation::{Easing, Transition};
 #[allow(deprecated)]
@@ -20,6 +21,7 @@ pub use crate::event_system::callbacks::{
 };
 pub use crate::event_system::{Flow, Handler};
 pub use crate::fiber::{ComponentCall, ComponentRender, ComponentType, ErasedPropsRef};
+pub use crate::anchor::{AnchorAlign, AnchorPlacement, AnchorSide};
 pub use crate::focus::{FocusHandle, FocusManager, FocusRequest, FocusTransition};
 pub use crate::scroll::{ScrollController, ScrollMetrics};
 pub use crate::render::{MockRenderBackend, RenderBackend};
@@ -45,10 +47,10 @@ pub use crate::style::{
     StylePatch, StyleValue, TextStylePatch, Theme, TransformStyle, TransformStylePatch,
     WidgetState, WidgetStateMatcher,
 };
-pub use crate::ui_runtime::{NodeView, RenderFrame, RenderFrameError, UiRuntime};
+pub use crate::ui_runtime::{NodeView, RenderFrameError, UiRuntime};
 pub use crate::widgets::{
     CanvasContent, CanvasController, CanvasPainter, CanvasPick, CanvasPickTag, CanvasTextLayout,
-    CanvasTextMetrics, CanvasWidget, ContainerWidget, GridFlow, GridTrackSize, GridTracks,
+    CanvasTextMetrics, CanvasWidget, ContainerWidget, DismissReason, GridFlow, GridTrackSize, GridTracks,
     GridWidget, IconData, IconLayer, IconStroke, IconWidget, ImageWidget, OverlayChild,
     OverlayEntry, OverlayEntryId, OverlayEntryOptions, OverlayModelError, OverlayScope,
     OverlayScopeId, SvgIconError, TextCommand, TextController, TextInputChange, TextKeymap,

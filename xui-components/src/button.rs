@@ -8,15 +8,20 @@ const ACTIVATE_BUTTON: CommandId = CommandId("xui.button.activate");
 
 pub type ButtonClickCallback = Callback<()>;
 
-/// The semantic emphasis of a `button`.
+/// The semantic emphasis of a `button`, after shadcn/ui's button variants.
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 pub enum ButtonVariant {
+    /// Solid `Primary` fill; the main call to action.
     Primary,
     #[default]
     Secondary,
+    /// Background-colored with a border; highlights on hover.
     Outline,
+    /// No chrome until hovered.
     Ghost,
     Danger,
+    /// Text-only, underlined on hover.
+    Link,
 }
 
 /// The density of a `button`. All sizes retain a practical pointer target.
@@ -26,6 +31,8 @@ pub enum ButtonSize {
     #[default]
     Medium,
     Large,
+    /// A square button sized for a single icon.
+    Icon,
 }
 
 fn size_style(size: ButtonSize) -> Style {
@@ -34,104 +41,127 @@ fn size_style(size: ButtonSize) -> Style {
             .min_height(32.0)
             .padding(EdgeInsets::symmetric(12.0, 6.0))
             .gap(6.0)
-            .font_size(FontSizeToken::Sm),
+            .border_radius(RadiusToken::Md),
         ButtonSize::Medium => Style::new()
-            .min_height(40.0)
-            .padding(EdgeInsets::symmetric(16.0, 9.0))
+            .min_height(36.0)
+            .padding(EdgeInsets::symmetric(16.0, 8.0))
             .gap(8.0)
-            .font_size(FontSizeToken::Md),
+            .border_radius(RadiusToken::Md),
         ButtonSize::Large => Style::new()
-            .min_height(48.0)
-            .padding(EdgeInsets::symmetric(20.0, 12.0))
-            .gap(10.0)
-            .font_size(FontSizeToken::Lg),
+            .min_height(40.0)
+            .padding(EdgeInsets::symmetric(24.0, 8.0))
+            .gap(8.0)
+            .border_radius(RadiusToken::Md),
+        ButtonSize::Icon => Style::new()
+            .size(Size::fix(36.0, 36.0))
+            .min_width(36.0)
+            .border_radius(RadiusToken::Md),
     }
 }
 
+/// shadcn's `shadow-xs`.
+fn shadow_xs() -> ShadowStyle {
+    ShadowStyle::new()
+        .color(Color::rgba(0.0, 0.0, 0.0, 0.05))
+        .offset(Point::new(0.0, 1.0))
+        .blur(2.0)
+}
+
+/// shadcn's `focus-visible:ring-[3px] ring-ring/50`.
+fn focus_ring() -> ShadowStyle {
+    ShadowStyle::new()
+        .color(ColorToken::Ring.alpha(0.5))
+        .blur(0.0)
+        .spread(3.0)
+}
+
 fn variant_style(variant: ButtonVariant, interactive: bool) -> Style {
-    let focus_ring = Color::rgba(0.24, 0.52, 1.0, 0.42);
-    let mut style = match variant {
-        ButtonVariant::Primary => Style::new()
-            .background(ColorToken::Primary)
-            .color(ColorToken::InverseText)
-            .border_color(Color::TRANSPARENT),
-        ButtonVariant::Secondary => Style::new()
-            .background(ColorToken::Surface)
-            .color(ColorToken::Text)
-            .border_color(ColorToken::Border),
-        ButtonVariant::Outline => Style::new()
-            .background(Color::TRANSPARENT)
-            .color(ColorToken::Primary)
-            .border_color(ColorToken::Primary),
-        ButtonVariant::Ghost => Style::new()
-            .background(Color::TRANSPARENT)
-            .color(ColorToken::Text)
-            .border_color(Color::TRANSPARENT),
-        ButtonVariant::Danger => Style::new()
-            .background(Color::hex("#dc2626"))
-            .color(Color::WHITE)
-            .border_color(Color::TRANSPARENT),
+    let (background, foreground, border): (ColorValue, ColorValue, ColorValue) = match variant {
+        ButtonVariant::Primary => (
+            ColorToken::Primary.into(),
+            ColorToken::PrimaryForeground.into(),
+            Color::TRANSPARENT.into(),
+        ),
+        ButtonVariant::Secondary => (
+            ColorToken::Secondary.into(),
+            ColorToken::SecondaryForeground.into(),
+            Color::TRANSPARENT.into(),
+        ),
+        ButtonVariant::Outline => (
+            ColorToken::Background.into(),
+            ColorToken::Foreground.into(),
+            ColorToken::Border.into(),
+        ),
+        ButtonVariant::Ghost => (
+            Color::TRANSPARENT.into(),
+            ColorToken::Foreground.into(),
+            Color::TRANSPARENT.into(),
+        ),
+        ButtonVariant::Danger => (
+            ColorToken::Destructive.into(),
+            ColorToken::DestructiveForeground.into(),
+            Color::TRANSPARENT.into(),
+        ),
+        ButtonVariant::Link => (
+            Color::TRANSPARENT.into(),
+            ColorToken::Primary.into(),
+            Color::TRANSPARENT.into(),
+        ),
     };
+    let mut style = Style::new()
+        .background(background)
+        .color(foreground)
+        .border_color(border);
+    if matches!(
+        variant,
+        ButtonVariant::Primary | ButtonVariant::Danger | ButtonVariant::Outline
+    ) {
+        style = style.shadow(shadow_xs());
+    }
 
     if !interactive {
-        return match variant {
-            ButtonVariant::Primary | ButtonVariant::Danger => style
-                .background(Color::hex("#a3a3a3"))
-                .color(Color::rgba(1.0, 1.0, 1.0, 0.82)),
-            ButtonVariant::Secondary => style
-                .background(Color::hex("#e5e5e5"))
-                .color(Color::rgba(0.0, 0.0, 0.0, 0.42))
-                .border_color(Color::hex("#d4d4d4")),
-            ButtonVariant::Outline | ButtonVariant::Ghost => style
-                .color(Color::rgba(0.0, 0.0, 0.0, 0.36))
-                .border_color(if variant == ButtonVariant::Outline {
-                    Color::rgba(0.0, 0.0, 0.0, 0.22)
-                } else {
-                    Color::TRANSPARENT
-                }),
+        // shadcn dims a disabled button to 50% opacity; halving each paint
+        // alpha gives the same result without an offscreen layer.
+        let dim = |value: ColorValue| match value {
+            ColorValue::Token(token) => token.alpha(0.5),
+            ColorValue::TokenAlpha(token, alpha) => token.alpha(alpha * 0.5),
+            ColorValue::Color(color) => color.alpha(color.a * 0.5).into(),
         };
+        return Style::new()
+            .background(dim(background))
+            .color(dim(foreground))
+            .border_color(dim(border));
     }
 
     style = match variant {
         ButtonVariant::Primary => style
-            .when(WidgetState::HOVERED, |s| {
-                s.background(Color::hex("#245ac8"))
-            })
-            .when(WidgetState::PRESSED, |s| {
-                s.background(Color::hex("#1e4ca9"))
-            }),
+            .when(WidgetState::HOVERED, |s| s.background(ColorToken::Primary.alpha(0.9)))
+            .when(WidgetState::PRESSED, |s| s.background(ColorToken::Primary.alpha(0.8))),
         ButtonVariant::Secondary => style
+            .when(WidgetState::HOVERED, |s| s.background(ColorToken::Secondary.alpha(0.8)))
+            .when(WidgetState::PRESSED, |s| s.background(ColorToken::Secondary.alpha(0.65))),
+        ButtonVariant::Outline | ButtonVariant::Ghost => style
             .when(WidgetState::HOVERED, |s| {
-                s.background(ColorToken::MutedSurface)
+                s.background(ColorToken::Accent)
+                    .color(ColorToken::AccentForeground)
             })
             .when(WidgetState::PRESSED, |s| {
-                s.background(Color::hex("#a3a3a3"))
-            }),
-        ButtonVariant::Outline => style
-            .when(WidgetState::HOVERED, |s| {
-                s.background(Color::rgba(0.18, 0.42, 0.88, 0.10))
-            })
-            .when(WidgetState::PRESSED, |s| {
-                s.background(Color::rgba(0.18, 0.42, 0.88, 0.18))
-            }),
-        ButtonVariant::Ghost => style
-            .when(WidgetState::HOVERED, |s| {
-                s.background(Color::rgba(0.0, 0.0, 0.0, 0.06))
-            })
-            .when(WidgetState::PRESSED, |s| {
-                s.background(Color::rgba(0.0, 0.0, 0.0, 0.12))
+                s.background(ColorToken::Accent.alpha(0.8))
+                    .color(ColorToken::AccentForeground)
             }),
         ButtonVariant::Danger => style
-            .when(WidgetState::HOVERED, |s| {
-                s.background(Color::hex("#b91c1c"))
+            .when(WidgetState::HOVERED, |s| s.background(ColorToken::Destructive.alpha(0.9)))
+            .when(WidgetState::PRESSED, |s| s.background(ColorToken::Destructive.alpha(0.8))),
+        ButtonVariant::Link => style.when(WidgetState::HOVERED, |s| {
+            s.decoration(TextDecoration {
+                underline: true,
+                line_through: false,
             })
-            .when(WidgetState::PRESSED, |s| {
-                s.background(Color::hex("#991b1b"))
-            }),
+        }),
     };
 
-    style.when(WidgetState::FOCUSED, |s| {
-        s.shadow(ShadowStyle::new().color(focus_ring).blur(0.0).spread(3.0))
+    style.when(WidgetState::FOCUS_VISIBLE, |s| {
+        s.border_color(ColorToken::Ring).shadow(focus_ring())
     })
 }
 
@@ -147,7 +177,7 @@ fn resolved_style(
         .align(AlignStyle::Center)
         .justify(JustifyStyle::Center)
         .border_width(1.0)
-        .border_radius(RadiusToken::Md)
+        .font_size(FontSizeToken::Md)
         .font_weight(FontWeight::Medium)
         .line_height(LineHeight::Normal);
     style.merge(&size_style(size));
@@ -220,7 +250,7 @@ pub fn button(
     }
 
     let mut root = ContainerWidget::new()
-        .style(root_style.transition(Transition::new(Duration::from_millis(120))))
+        .style(root_style.transition(Transition::new(Duration::from_millis(150))))
         .flex_direction(FlexDirectionStyle::Row)
         .focusable(interactive)
         .tab_index(if interactive { 0 } else { -1 })
@@ -273,6 +303,7 @@ mod tests {
             ButtonVariant::Outline,
             ButtonVariant::Ghost,
             ButtonVariant::Danger,
+            ButtonVariant::Link,
         ];
         for (index, variant) in variants.iter().enumerate() {
             for other in &variants[index + 1..] {

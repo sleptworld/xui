@@ -1,7 +1,8 @@
 use crate::{
     ComponentRender,
+    anchor::AnchorPlacement,
     fiber::{ErasedProps, Key},
-    widgets::{OverlayEntryOptions, OverlayScopeId, WidgetI},
+    widgets::{DismissHandler, DismissReason, OverlayEntryOptions, OverlayScopeId, WidgetI},
 };
 use xui_interface::WidgetType;
 
@@ -34,7 +35,18 @@ pub struct PortalDesc {
     pub key: Option<Key>,
     pub scope: Option<OverlayScopeId>,
     pub options: OverlayEntryOptions,
+    pub behavior: PortalBehavior,
     pub children: Vec<ElementDesc>,
+}
+
+/// What a Portal does beyond stacking. Each part goes to its own runtime
+/// subsystem when the Portal commits: the anchor to anchoring, the dismiss
+/// handler to the overlay model.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PortalBehavior {
+    /// Places the content's root against the host the Portal is written under.
+    pub anchor: Option<AnchorPlacement>,
+    pub on_dismiss: Option<DismissHandler>,
 }
 
 impl PortalDesc {
@@ -43,6 +55,7 @@ impl PortalDesc {
             key: None,
             scope: None,
             options: OverlayEntryOptions::default(),
+            behavior: PortalBehavior::default(),
             children,
         }
     }
@@ -69,6 +82,31 @@ impl PortalDesc {
 
     pub fn modal(mut self, modal: bool) -> Self {
         self.options.modal = modal;
+        self
+    }
+
+    /// Places the Portal's content next to the host it is written under -- the
+    /// nearest host above the `portal(..)` in the component tree -- like a
+    /// Flutter `CompositedTransformFollower` following its target.
+    ///
+    /// The content's root is taken out of flow and translated at paint and
+    /// hit-test time, not in layout, so it stays attached through resizes and
+    /// scrolling alike. `match_width` is the one part that reaches layout.
+    /// A Portal directly under the root, or under another Portal, has no host
+    /// to follow and is not moved.
+    pub fn anchor(mut self, placement: AnchorPlacement) -> Self {
+        self.behavior.anchor = Some(placement);
+        self
+    }
+
+    /// Called when the Portal should close: a pointer went down outside its
+    /// content, or Escape was pressed and nothing focused handled it.
+    ///
+    /// Only the topmost Portal with a handler is asked, and not through a modal
+    /// Portal above it that has none. The Portal is not removed: the handler
+    /// closes it by no longer rendering it.
+    pub fn on_dismiss(mut self, handler: impl Fn(DismissReason) + 'static) -> Self {
+        self.behavior.on_dismiss = Some(DismissHandler::new(handler));
         self
     }
 }

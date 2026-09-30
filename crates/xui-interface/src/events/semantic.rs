@@ -339,6 +339,9 @@ pub struct FocusEvent {
     /// FocusIn / FocusOut 同理。
     pub related_target: Option<NodeId>,
     pub reason: FocusReason,
+    /// Whether the newly focused node should show a focus indicator
+    /// (`WidgetState::FOCUS_VISIBLE`). Always false on `Blur`/`FocusOut`.
+    pub focus_visible: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -1,5 +1,4 @@
-use crate::diagnostics::invariant;
-use slotmap::{DefaultKey, SecondaryMap, SlotMap};
+use slotmap::{Key, KeyData, SecondaryMap};
 use taffy as tf;
 use taffy::{
     CacheTree, LayoutBlockContainer, LayoutFlexboxContainer, LayoutGridContainer,
@@ -29,9 +28,9 @@ impl MeasuredLeaf {
     }
 }
 
+/// Host-facing geometry, written back after every layout pass.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LayoutNode {
-    pub taffy_node: tf::NodeId,
     pub layout: Bounds,
     pub previous_layout: Bounds,
     pub world_origin: Point,
@@ -40,16 +39,13 @@ pub(crate) struct LayoutNode {
 }
 
 impl LayoutNode {
-    fn new(taffy_node: tf::NodeId) -> Self {
-        Self {
-            taffy_node,
-            layout: Bounds::ZERO,
-            previous_layout: Bounds::ZERO,
-            world_origin: Point::zero(),
-            content_size: Size::<f32>::ZERO,
-            scroll_offset: Point::zero(),
-        }
-    }
+    const EMPTY: Self = Self {
+        layout: Bounds::ZERO,
+        previous_layout: Bounds::ZERO,
+        world_origin: Point::zero(),
+        content_size: Size::<f32>::ZERO,
+        scroll_offset: Point::zero(),
+    };
 
     #[inline(always)]
     pub(crate) fn visual_bounds(&self, ancestor_scroll_offset: Point) -> Bounds {
@@ -60,211 +56,181 @@ impl LayoutNode {
     }
 }
 
+/// What Taffy reads and writes for one node.
 struct PartialNode<C> {
     style: tf::Style,
     context: Option<C>,
-    parent: Option<tf::NodeId>,
+    parent: Option<NodeId>,
     children: Vec<tf::NodeId>,
     cache: tf::Cache,
     unrounded_layout: tf::Layout,
     final_layout: tf::Layout,
 }
 
-impl<C> PartialNode<C> {
-    fn new(style: tf::Style) -> Self {
-        Self {
-            style,
-            context: None,
-            parent: None,
-            children: Vec::new(),
-            cache: tf::Cache::new(),
-            unrounded_layout: tf::Layout::with_order(0),
-            final_layout: tf::Layout::with_order(0),
-        }
-    }
+/// XUI-owned tree storage for Taffy's low-level layout algorithms.
+///
+/// Keyed by host id: Taffy's `NodeId` for a host is that host id's FFI bits,
+/// so there is no second id space to map through.
+///
+/// Geometry and Taffy's own per-node state live in separate maps: hit testing
+/// and `visual_layout` walk geometry for many nodes at once, and should not
+/// stride over Taffy's style and cache to do it.
+///
+/// # Preconditions
+///
+/// Every live host has exactly one entry, created with the host and removed
+/// with it. Every method taking a `NodeId` requires one, and panics without.
+pub(crate) struct LayoutTree<C> {
+    geometry: SecondaryMap<NodeId, LayoutNode>,
+    partials: SecondaryMap<NodeId, PartialNode<C>>,
+    use_rounding: bool,
 }
 
-/// XUI-owned tree storage for Taffy's low-level layout algorithms.
-pub(crate) struct LayoutTree<C> {
-    partial_nodes: SlotMap<DefaultKey, PartialNode<C>>,
-    hosts: SecondaryMap<NodeId, LayoutNode>,
-    use_rounding: bool,
+#[inline(always)]
+fn taffy_id(id: NodeId) -> tf::NodeId {
+    tf::NodeId::from(id.data().as_ffi())
+}
+
+#[inline(always)]
+fn host_id(id: tf::NodeId) -> NodeId {
+    NodeId::from(KeyData::from_ffi(u64::from(id)))
 }
 
 impl<C> LayoutTree<C> {
     pub fn new() -> Self {
         Self {
-            partial_nodes: SlotMap::with_key(),
-            hosts: SecondaryMap::new(),
+            geometry: SecondaryMap::new(),
+            partials: SecondaryMap::new(),
             use_rounding: true,
         }
     }
 
-    pub fn create_host(&mut self, host: NodeId, style: tf::Style) -> tf::NodeId {
-        let taffy_node = tf::NodeId::from(self.partial_nodes.insert(PartialNode::new(style)));
-        self.hosts.insert(host, LayoutNode::new(taffy_node));
-        taffy_node
+    pub fn create(&mut self, id: NodeId, style: tf::Style, context: Option<C>) {
+        self.geometry.insert(id, LayoutNode::EMPTY);
+        self.partials.insert(
+            id,
+            PartialNode {
+                style,
+                context,
+                parent: None,
+                children: Vec::new(),
+                cache: tf::Cache::new(),
+                unrounded_layout: tf::Layout::with_order(0),
+                final_layout: tf::Layout::with_order(0),
+            },
+        );
     }
 
-    pub fn node_id(&self, host: NodeId) -> tf::NodeId {
-        self.hosts[host].taffy_node
+    /// Drops `id`'s entry without touching its parent's child list.
+    ///
+    /// For removing a whole subtree: detach its root first, then forget every
+    /// node in it, children before parents or not -- none of them is looked
+    /// at again.
+    pub fn forget(&mut self, id: NodeId) {
+        self.geometry.remove(id);
+        self.partials.remove(id);
     }
 
-    pub(crate) fn host(&self, host: NodeId) -> Option<&LayoutNode> {
-        self.hosts.get(host)
+    #[cfg(test)]
+    pub fn contains(&self, id: NodeId) -> bool {
+        self.geometry.contains_key(id)
     }
 
-    pub(crate) fn host_mut(&mut self, host: NodeId) -> Option<&mut LayoutNode> {
-        self.hosts.get_mut(host)
+    #[inline]
+    pub(crate) fn node(&self, id: NodeId) -> &LayoutNode {
+        &self.geometry[id]
     }
 
-    pub fn contains_host(&self, host: NodeId) -> bool {
-        self.hosts.contains_key(host)
+    #[inline]
+    pub(crate) fn node_mut(&mut self, id: NodeId) -> &mut LayoutNode {
+        &mut self.geometry[id]
     }
 
-    pub fn remove_host(&mut self, host: NodeId) {
-        let Some(layout_node) = self.hosts.remove(host) else {
+    /// Replaces `id`'s style. Returns whether it changed; only then is the
+    /// cached layout thrown away.
+    pub fn set_style(&mut self, id: NodeId, style: tf::Style) -> bool {
+        let partial = &mut self.partials[id];
+        if partial.style == style {
+            return false;
+        }
+        partial.style = style;
+        self.invalidate(id);
+        true
+    }
+
+    pub fn set_context(&mut self, id: NodeId, context: Option<C>) {
+        self.partials[id].context = context;
+        self.invalidate(id);
+    }
+
+    /// Inserts `child` under `parent`, before `before` or last. `child` must
+    /// not have a parent.
+    pub fn insert(&mut self, parent: NodeId, child: NodeId, before: Option<NodeId>) {
+        debug_assert!(self.partials[child].parent.is_none());
+        self.partials[child].parent = Some(parent);
+        let children = &mut self.partials[parent].children;
+        let index = before
+            .and_then(|before| {
+                let before = taffy_id(before);
+                children.iter().position(|id| *id == before)
+            })
+            .unwrap_or(children.len());
+        children.insert(index, taffy_id(child));
+        self.invalidate(parent);
+    }
+
+    /// Takes `child` out of its parent's child list, if it has a parent.
+    pub fn detach(&mut self, child: NodeId) {
+        let Some(parent) = self.partials[child].parent.take() else {
             return;
         };
-        let node_id = layout_node.taffy_node;
-        // `node_id` came out of the layout node just removed, so it has to be
-        // present here; if it is not, the two maps have drifted apart.
-        let Some(node) = invariant!(
-            self.partial_nodes.remove(key(node_id)),
-            "remove_host: host {host:?} maps to taffy node {node_id:?}, which has no partial node"
-        ) else {
-            return;
-        };
-
-        if let Some(parent) = node.parent {
-            if let Some(parent_node) = self.partial_node_mut(parent) {
-                parent_node.children.retain(|child| *child != node_id);
-            }
-            let _ = self.mark_dirty(parent);
-        }
-        for child in node.children {
-            if let Some(child_node) = self.partial_node_mut(child)
-                && child_node.parent == Some(node_id)
-            {
-                child_node.parent = None;
-            }
-        }
+        let child = taffy_id(child);
+        self.partials[parent].children.retain(|id| *id != child);
+        self.invalidate(parent);
     }
 
-    pub fn style(&self, node: tf::NodeId) -> tf::TaffyResult<&tf::Style> {
-        self.partial_node(node)
-            .map(|node| &node.style)
-            .ok_or(tf::TaffyError::InvalidInputNode(node))
-    }
-
-    pub fn set_style(&mut self, node: tf::NodeId, style: tf::Style) -> tf::TaffyResult<()> {
-        self.partial_node_mut(node)
-            .ok_or(tf::TaffyError::InvalidInputNode(node))?
-            .style = style;
-        self.mark_dirty(node)
-    }
-
-    pub fn set_node_context(
-        &mut self,
-        node: tf::NodeId,
-        context: Option<C>,
-    ) -> tf::TaffyResult<()> {
-        self.partial_node_mut(node)
-            .ok_or(tf::TaffyError::InvalidInputNode(node))?
-            .context = context;
-        self.mark_dirty(node)
-    }
-
-    pub fn set_children(
-        &mut self,
-        parent: tf::NodeId,
-        children: &[tf::NodeId],
-    ) -> tf::TaffyResult<()> {
-        if self.partial_node(parent).is_none() {
-            return Err(tf::TaffyError::InvalidParentNode(parent));
-        }
-        if let Some(child) = children
-            .iter()
-            .copied()
-            .find(|child| self.partial_node(*child).is_none())
-        {
-            return Err(tf::TaffyError::InvalidChildNode(child));
-        }
-
-        let old_children = self.partial_node(parent).unwrap().children.clone();
-        for child in old_children {
-            if let Some(child_node) = self.partial_node_mut(child)
-                && child_node.parent == Some(parent)
-            {
-                child_node.parent = None;
-            }
-        }
-
-        for child in children.iter().copied() {
-            let old_parent = self.partial_node(child).and_then(|node| node.parent);
-            if let Some(old_parent) = old_parent.filter(|old| *old != parent) {
-                if let Some(old) = self.partial_node_mut(old_parent) {
-                    old.children.retain(|candidate| *candidate != child);
-                }
-                self.mark_dirty(old_parent)?;
-            }
-            self.partial_node_mut(child).unwrap().parent = Some(parent);
-        }
-
-        self.partial_node_mut(parent).unwrap().children = children.to_vec();
-        self.mark_dirty(parent)
-    }
-
-    pub fn mark_dirty(&mut self, node: tf::NodeId) -> tf::TaffyResult<()> {
-        if self.partial_node(node).is_none() {
-            return Err(tf::TaffyError::InvalidInputNode(node));
-        }
-        let mut current = Some(node);
+    /// Throws away the cached layout of `id` and every ancestor.
+    pub fn invalidate(&mut self, id: NodeId) {
+        let mut current = Some(id);
         while let Some(id) = current {
-            let partial = self.partial_node_mut(id).unwrap();
+            let partial = &mut self.partials[id];
             partial.cache.clear();
             current = partial.parent;
         }
-        Ok(())
     }
 
-    pub fn layout(&self, node: tf::NodeId) -> tf::TaffyResult<&tf::Layout> {
-        let partial = self
-            .partial_node(node)
-            .ok_or(tf::TaffyError::InvalidInputNode(node))?;
-        Ok(if self.use_rounding {
+    /// The layout result `id` paints with: pixel-rounded unless rounding is off.
+    #[inline]
+    pub fn layout(&self, id: NodeId) -> &tf::Layout {
+        let partial = &self.partials[id];
+        if self.use_rounding {
             &partial.final_layout
         } else {
             &partial.unrounded_layout
-        })
+        }
     }
 
-    pub fn unrounded_layout(&self, node: tf::NodeId) -> &tf::Layout {
-        &self
-            .partial_node(node)
-            .expect("unrounded layout requested for an invalid node")
-            .unrounded_layout
+    #[inline]
+    pub fn unrounded_layout(&self, id: NodeId) -> &tf::Layout {
+        &self.partials[id].unrounded_layout
     }
 
     pub fn compute_layout_with_measure<MeasureFunction>(
         &mut self,
-        root: tf::NodeId,
+        root: NodeId,
         available_space: tf::Size<tf::AvailableSpace>,
         measure_function: MeasureFunction,
-    ) -> tf::TaffyResult<()>
-    where
+    ) where
         MeasureFunction: FnMut(
             tf::Size<Option<f32>>,
             tf::Size<tf::AvailableSpace>,
-            tf::NodeId,
+            NodeId,
             Option<&mut C>,
             &tf::Style,
         ) -> MeasuredLeaf,
     {
-        if self.partial_node(root).is_none() {
-            return Err(tf::TaffyError::InvalidInputNode(root));
-        }
         let use_rounding = self.use_rounding;
+        let root = taffy_id(root);
         let mut view = LayoutView {
             tree: self,
             measure_function,
@@ -273,15 +239,16 @@ impl<C> LayoutTree<C> {
         if use_rounding {
             tf::round_layout(&mut view, root);
         }
-        Ok(())
     }
 
-    fn partial_node(&self, node: tf::NodeId) -> Option<&PartialNode<C>> {
-        self.partial_nodes.get(key(node))
+    #[inline(always)]
+    fn partial(&self, id: tf::NodeId) -> &PartialNode<C> {
+        &self.partials[host_id(id)]
     }
 
-    fn partial_node_mut(&mut self, node: tf::NodeId) -> Option<&mut PartialNode<C>> {
-        self.partial_nodes.get_mut(key(node))
+    #[inline(always)]
+    fn partial_mut(&mut self, id: tf::NodeId) -> &mut PartialNode<C> {
+        &mut self.partials[host_id(id)]
     }
 }
 
@@ -289,10 +256,6 @@ impl<C> Default for LayoutTree<C> {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn key(node: tf::NodeId) -> DefaultKey {
-    node.into()
 }
 
 struct ChildIter<'a>(std::slice::Iter<'a, tf::NodeId>);
@@ -315,7 +278,7 @@ where
     MeasureFunction: FnMut(
         tf::Size<Option<f32>>,
         tf::Size<tf::AvailableSpace>,
-        tf::NodeId,
+        NodeId,
         Option<&mut C>,
         &tf::Style,
     ) -> MeasuredLeaf,
@@ -331,7 +294,7 @@ where
         }
 
         tf::compute_cached_layout(self, node_id, inputs, |tree, node_id, inputs| {
-            let display = tree.tree.partial_node(node_id).unwrap().style.display;
+            let display = tree.tree.partial(node_id).style.display;
             let has_children = tree.child_count(node_id) > 0;
             match (display, has_children) {
                 (tf::Display::None, _) => tf::compute_hidden_layout(tree, node_id),
@@ -344,7 +307,7 @@ where
                 (tf::Display::Flex, true) => tf::compute_flexbox_layout(tree, node_id, inputs),
                 (tf::Display::Grid, true) => tf::compute_grid_layout(tree, node_id, inputs),
                 (_, false) => {
-                    let partial = tree.tree.partial_nodes.get_mut(key(node_id)).unwrap();
+                    let partial = tree.tree.partial_mut(node_id);
                     let PartialNode { style, context, .. } = partial;
                     let measure_function = &mut tree.measure_function;
                     let mut first_baseline = None;
@@ -356,7 +319,7 @@ where
                             let measured = measure_function(
                                 known_dimensions,
                                 available_space,
-                                node_id,
+                                host_id(node_id),
                                 context.as_mut(),
                                 style,
                             );
@@ -377,7 +340,7 @@ where
     M: FnMut(
         tf::Size<Option<f32>>,
         tf::Size<tf::AvailableSpace>,
-        tf::NodeId,
+        NodeId,
         Option<&mut C>,
         &tf::Style,
     ) -> MeasuredLeaf,
@@ -388,15 +351,15 @@ where
         Self: 'a;
 
     fn child_ids(&self, parent: tf::NodeId) -> Self::ChildIter<'_> {
-        ChildIter(self.tree.partial_node(parent).unwrap().children.iter())
+        ChildIter(self.tree.partial(parent).children.iter())
     }
 
     fn child_count(&self, parent: tf::NodeId) -> usize {
-        self.tree.partial_node(parent).unwrap().children.len()
+        self.tree.partial(parent).children.len()
     }
 
     fn get_child_id(&self, parent: tf::NodeId, index: usize) -> tf::NodeId {
-        self.tree.partial_node(parent).unwrap().children[index]
+        self.tree.partial(parent).children[index]
     }
 }
 
@@ -404,7 +367,7 @@ impl<C, M> TraverseTree for LayoutView<'_, C, M> where
     M: FnMut(
         tf::Size<Option<f32>>,
         tf::Size<tf::AvailableSpace>,
-        tf::NodeId,
+        NodeId,
         Option<&mut C>,
         &tf::Style,
     ) -> MeasuredLeaf
@@ -416,7 +379,7 @@ where
     M: FnMut(
         tf::Size<Option<f32>>,
         tf::Size<tf::AvailableSpace>,
-        tf::NodeId,
+        NodeId,
         Option<&mut C>,
         &tf::Style,
     ) -> MeasuredLeaf,
@@ -428,11 +391,11 @@ where
     type CustomIdent = String;
 
     fn get_core_container_style(&self, node: tf::NodeId) -> Self::CoreContainerStyle<'_> {
-        &self.tree.partial_node(node).unwrap().style
+        &self.tree.partial(node).style
     }
 
     fn set_unrounded_layout(&mut self, node: tf::NodeId, layout: &tf::Layout) {
-        self.tree.partial_node_mut(node).unwrap().unrounded_layout = *layout;
+        self.tree.partial_mut(node).unrounded_layout = *layout;
     }
 
     fn resolve_calc_value(&self, _value: *const (), _basis: f32) -> f32 {
@@ -453,25 +416,21 @@ where
     M: FnMut(
         tf::Size<Option<f32>>,
         tf::Size<tf::AvailableSpace>,
-        tf::NodeId,
+        NodeId,
         Option<&mut C>,
         &tf::Style,
     ) -> MeasuredLeaf,
 {
     fn cache_get(&self, node: tf::NodeId, input: &tf::LayoutInput) -> Option<tf::LayoutOutput> {
-        self.tree.partial_node(node).unwrap().cache.get(input)
+        self.tree.partial(node).cache.get(input)
     }
 
     fn cache_store(&mut self, node: tf::NodeId, input: &tf::LayoutInput, output: tf::LayoutOutput) {
-        self.tree
-            .partial_node_mut(node)
-            .unwrap()
-            .cache
-            .store(input, output);
+        self.tree.partial_mut(node).cache.store(input, output);
     }
 
     fn cache_clear(&mut self, node: tf::NodeId) {
-        self.tree.partial_node_mut(node).unwrap().cache.clear();
+        self.tree.partial_mut(node).cache.clear();
     }
 }
 
@@ -480,7 +439,7 @@ where
     M: FnMut(
         tf::Size<Option<f32>>,
         tf::Size<tf::AvailableSpace>,
-        tf::NodeId,
+        NodeId,
         Option<&mut C>,
         &tf::Style,
     ) -> MeasuredLeaf,
@@ -517,7 +476,7 @@ where
     M: FnMut(
         tf::Size<Option<f32>>,
         tf::Size<tf::AvailableSpace>,
-        tf::NodeId,
+        NodeId,
         Option<&mut C>,
         &tf::Style,
     ) -> MeasuredLeaf,
@@ -545,7 +504,7 @@ where
     M: FnMut(
         tf::Size<Option<f32>>,
         tf::Size<tf::AvailableSpace>,
-        tf::NodeId,
+        NodeId,
         Option<&mut C>,
         &tf::Style,
     ) -> MeasuredLeaf,
@@ -573,17 +532,17 @@ where
     M: FnMut(
         tf::Size<Option<f32>>,
         tf::Size<tf::AvailableSpace>,
-        tf::NodeId,
+        NodeId,
         Option<&mut C>,
         &tf::Style,
     ) -> MeasuredLeaf,
 {
     fn get_unrounded_layout(&self, node: tf::NodeId) -> tf::Layout {
-        self.tree.partial_node(node).unwrap().unrounded_layout
+        self.tree.partial(node).unrounded_layout
     }
 
     fn set_final_layout(&mut self, node: tf::NodeId, layout: &tf::Layout) {
-        self.tree.partial_node_mut(node).unwrap().final_layout = *layout;
+        self.tree.partial_mut(node).final_layout = *layout;
     }
 }
 
@@ -593,26 +552,26 @@ mod tests {
 
     #[test]
     fn partial_tree_passes_leaf_baselines_to_flexbox() {
-        let mut host_ids = SlotMap::<NodeId, ()>::with_key();
-        let root_host = host_ids.insert(());
-        let first_host = host_ids.insert(());
-        let second_host = host_ids.insert(());
+        let mut host_ids = slotmap::SlotMap::<NodeId, ()>::with_key();
+        let root = host_ids.insert(());
+        let first = host_ids.insert(());
+        let second = host_ids.insert(());
         let mut tree = LayoutTree::<u8>::new();
 
-        let root = tree.create_host(
-            root_host,
+        tree.create(
+            root,
             tf::Style {
                 display: tf::Display::Flex,
                 flex_direction: tf::FlexDirection::Row,
                 align_items: Some(tf::AlignItems::BASELINE),
                 ..Default::default()
             },
+            None,
         );
-        let first = tree.create_host(first_host, tf::Style::default());
-        let second = tree.create_host(second_host, tf::Style::default());
-        tree.set_node_context(first, Some(0)).unwrap();
-        tree.set_node_context(second, Some(1)).unwrap();
-        tree.set_children(root, &[first, second]).unwrap();
+        tree.create(first, tf::Style::default(), Some(0));
+        tree.create(second, tf::Style::default(), Some(1));
+        tree.insert(root, first, None);
+        tree.insert(root, second, None);
 
         tree.compute_layout_with_measure(
             root,
@@ -636,8 +595,7 @@ mod tests {
                     first_baseline: Some(12.0),
                 },
             },
-        )
-        .unwrap();
+        );
 
         assert_eq!(tree.unrounded_layout(first).location.y, 0.0);
         assert_eq!(tree.unrounded_layout(second).location.y, 8.0);

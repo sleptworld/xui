@@ -66,6 +66,12 @@ impl HostNode {
 }
 
 /// Generational host identity/topology plus a secondary core-data cache.
+///
+/// # Preconditions
+///
+/// Every method taking a `NodeId` requires it to be live -- present in the
+/// tree -- and panics otherwise, except the one that exists to ask:
+/// [`Self::contains_key`].
 pub(crate) struct HostTree<D> {
     nodes: SlotMap<NodeId, HostNode>,
     data: SecondaryMap<NodeId, D>,
@@ -85,193 +91,116 @@ impl<D> HostTree<D> {
         id
     }
 
+    #[inline]
     pub fn contains_key(&self, id: NodeId) -> bool {
         self.nodes.contains_key(id)
     }
 
-    pub fn get(&self, id: NodeId) -> Option<&D> {
-        self.data.get(id)
+    #[inline]
+    pub fn link(&self, id: NodeId) -> &HostNode {
+        &self.nodes[id]
     }
 
-    pub fn get_mut(&mut self, id: NodeId) -> Option<&mut D> {
-        self.data.get_mut(id)
-    }
-
-    pub fn link(&self, id: NodeId) -> Option<&HostNode> {
-        self.nodes.get(id)
-    }
-
+    #[inline]
     pub fn parent(&self, id: NodeId) -> Option<NodeId> {
-        self.nodes.get(id).and_then(|node| node.parent)
-    }
-
-    pub fn position(&self, id: NodeId) -> Option<usize> {
-        let mut position = 0;
-        let mut cursor = self.nodes.get(id)?.prev_sibling;
-        while let Some(sibling) = cursor {
-            position += 1;
-            cursor = self.nodes.get(sibling)?.prev_sibling;
-        }
-        Some(position)
+        self.nodes[id].parent
     }
 
     pub fn children(&self, parent: NodeId) -> Children<'_> {
         let node = &self.nodes[parent];
         Children {
-            tree: self,
+            links: &self.nodes,
             front: node.first_child,
             back: node.last_child,
             remaining: node.child_count,
         }
     }
 
+    /// `id` and then each of its ancestors, root last.
     pub fn ancestors(&self, id: NodeId) -> Ancestors<'_> {
+        debug_assert!(self.nodes.contains_key(id));
         Ancestors {
-            tree: self,
-            next: self.nodes.contains_key(id).then_some(id),
+            links: &self.nodes,
+            next: Some(id),
         }
     }
 
+    /// `root` and everything under it, in document order.
     pub fn subtree(&self, root: NodeId) -> Dfs<'_> {
+        debug_assert!(self.nodes.contains_key(root));
         Dfs {
-            tree: self,
-            stack: self
-                .nodes
-                .contains_key(root)
-                .then_some(root)
-                .into_iter()
-                .collect(),
+            links: &self.nodes,
+            stack: vec![root],
         }
     }
 
-    pub fn walk<F>(&self, root: NodeId, control: F) -> Walker<'_, F>
-    where
-        F: FnMut(NodeId) -> WalkControl,
-    {
-        Walker {
-            tree: self,
-            stack: self
-                .nodes
-                .contains_key(root)
-                .then_some(root)
-                .into_iter()
-                .collect(),
-            control,
-        }
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (NodeId, &D)> {
-        self.nodes
-            .keys()
-            .filter_map(|id| self.data.get(id).map(|data| (id, data)))
-    }
-
-    pub fn values(&self) -> impl Iterator<Item = &D> {
-        self.iter().map(|(_, data)| data)
-    }
-
-    pub fn append_child(&mut self, parent: NodeId, child: NodeId) {
-        self.assert_attachable(parent, child);
-        self.detach(child);
-
-        let previous = self.nodes[parent].last_child;
-        {
-            let child_node = &mut self.nodes[child];
-            child_node.parent = Some(parent);
-            child_node.prev_sibling = previous;
-            child_node.next_sibling = None;
-        }
-        if let Some(previous) = previous {
-            self.nodes[previous].next_sibling = Some(child);
-        } else {
-            self.nodes[parent].first_child = Some(child);
-        }
-        self.nodes[parent].last_child = Some(child);
-        self.nodes[parent].child_count += 1;
-    }
-
-    pub fn insert_before(&mut self, parent: NodeId, child: NodeId, before: NodeId) {
-        self.assert_attachable(parent, child);
-        assert_eq!(
-            self.nodes[before].parent,
-            Some(parent),
-            "before node is not a child"
+    /// Links `child` under `parent`, before `before` or last.
+    ///
+    /// # Preconditions
+    /// - `child` has no parent.
+    /// - `before`, if given, is a child of `parent`.
+    /// - `child` is not `parent` or one of its ancestors.
+    pub fn insert(&mut self, parent: NodeId, child: NodeId, before: Option<NodeId>) {
+        debug_assert!(
+            self.nodes[child].parent.is_none(),
+            "detach before inserting"
         );
-        if child == before {
-            return;
-        }
-        self.detach(child);
-
-        let previous = self.nodes[before].prev_sibling;
-        {
-            let child_node = &mut self.nodes[child];
-            child_node.parent = Some(parent);
-            child_node.prev_sibling = previous;
-            child_node.next_sibling = Some(before);
-        }
-        self.nodes[before].prev_sibling = Some(child);
-        if let Some(previous) = previous {
-            self.nodes[previous].next_sibling = Some(child);
-        } else {
-            self.nodes[parent].first_child = Some(child);
+        debug_assert!(
+            !self.ancestors(parent).any(|ancestor| ancestor == child),
+            "attaching would create a cycle"
+        );
+        let previous = match before {
+            Some(before) => {
+                debug_assert_eq!(self.nodes[before].parent, Some(parent));
+                let previous = self.nodes[before].prev_sibling;
+                self.nodes[before].prev_sibling = Some(child);
+                previous
+            }
+            None => {
+                let previous = self.nodes[parent].last_child;
+                self.nodes[parent].last_child = Some(child);
+                previous
+            }
+        };
+        let child_node = &mut self.nodes[child];
+        child_node.parent = Some(parent);
+        child_node.prev_sibling = previous;
+        child_node.next_sibling = before;
+        match previous {
+            Some(previous) => self.nodes[previous].next_sibling = Some(child),
+            None => self.nodes[parent].first_child = Some(child),
         }
         self.nodes[parent].child_count += 1;
     }
 
+    /// Unlinks `child` from its parent. Returns the parent it had.
     pub fn detach(&mut self, child: NodeId) -> Option<NodeId> {
-        let parent = self.nodes.get(child)?.parent?;
-        let previous = self.nodes[child].prev_sibling;
-        let next = self.nodes[child].next_sibling;
+        let node = &mut self.nodes[child];
+        let parent = node.parent.take()?;
+        let previous = node.prev_sibling.take();
+        let next = node.next_sibling.take();
 
-        if let Some(previous) = previous {
-            self.nodes[previous].next_sibling = next;
-        } else {
-            self.nodes[parent].first_child = next;
+        match previous {
+            Some(previous) => self.nodes[previous].next_sibling = next,
+            None => self.nodes[parent].first_child = next,
         }
-        if let Some(next) = next {
-            self.nodes[next].prev_sibling = previous;
-        } else {
-            self.nodes[parent].last_child = previous;
+        match next {
+            Some(next) => self.nodes[next].prev_sibling = previous,
+            None => self.nodes[parent].last_child = previous,
         }
         self.nodes[parent].child_count -= 1;
-        let child_node = &mut self.nodes[child];
-        child_node.parent = None;
-        child_node.prev_sibling = None;
-        child_node.next_sibling = None;
         Some(parent)
     }
 
-    pub fn set_children(&mut self, parent: NodeId, children: &[NodeId]) {
-        let old: Vec<_> = self.children(parent).collect();
-        for child in old {
-            self.detach(child);
-        }
-        for &child in children {
-            self.append_child(parent, child);
-        }
-    }
-
-    pub fn remove(&mut self, id: NodeId) -> Option<D> {
-        if !self.nodes.contains_key(id) {
-            return None;
-        }
-        assert_eq!(
+    /// Removes `id`, which must have no children left.
+    pub fn remove(&mut self, id: NodeId) -> D {
+        debug_assert_eq!(
             self.nodes[id].child_count, 0,
             "remove children before their parent"
         );
         self.detach(id);
         self.nodes.remove(id);
-        self.data.remove(id)
-    }
-
-    fn assert_attachable(&self, parent: NodeId, child: NodeId) {
-        assert!(self.nodes.contains_key(parent), "parent is missing");
-        assert!(self.nodes.contains_key(child), "child is missing");
-        assert_ne!(parent, child, "a node cannot parent itself");
-        assert!(
-            !self.ancestors(parent).any(|ancestor| ancestor == child),
-            "attaching would create a cycle"
-        );
+        self.data.remove(id).expect("host data is dense")
     }
 }
 
@@ -284,32 +213,26 @@ impl<D> Default for HostTree<D> {
 impl<D> Index<NodeId> for HostTree<D> {
     type Output = D;
 
+    #[inline]
     fn index(&self, index: NodeId) -> &Self::Output {
         &self.data[index]
     }
 }
 
 impl<D> IndexMut<NodeId> for HostTree<D> {
+    #[inline]
     fn index_mut(&mut self, index: NodeId) -> &mut Self::Output {
         &mut self.data[index]
     }
 }
 
+type Links = SlotMap<NodeId, HostNode>;
+
 pub struct Children<'a> {
-    tree: &'a dyn HostLinks,
+    links: &'a Links,
     front: Option<NodeId>,
     back: Option<NodeId>,
     remaining: usize,
-}
-
-trait HostLinks {
-    fn host_link(&self, id: NodeId) -> &HostNode;
-}
-
-impl<D> HostLinks for HostTree<D> {
-    fn host_link(&self, id: NodeId) -> &HostNode {
-        &self.nodes[id]
-    }
 }
 
 impl Iterator for Children<'_> {
@@ -317,7 +240,7 @@ impl Iterator for Children<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let id = self.front?;
-        self.front = self.tree.host_link(id).next_sibling;
+        self.front = self.links[id].next_sibling;
         self.remaining -= 1;
         if self.remaining == 0 {
             self.front = None;
@@ -334,7 +257,7 @@ impl Iterator for Children<'_> {
 impl DoubleEndedIterator for Children<'_> {
     fn next_back(&mut self) -> Option<Self::Item> {
         let id = self.back?;
-        self.back = self.tree.host_link(id).prev_sibling;
+        self.back = self.links[id].prev_sibling;
         self.remaining -= 1;
         if self.remaining == 0 {
             self.front = None;
@@ -347,7 +270,7 @@ impl DoubleEndedIterator for Children<'_> {
 impl ExactSizeIterator for Children<'_> {}
 
 pub struct Ancestors<'a> {
-    tree: &'a dyn HostLinks,
+    links: &'a Links,
     next: Option<NodeId>,
 }
 
@@ -356,13 +279,13 @@ impl Iterator for Ancestors<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let id = self.next?;
-        self.next = self.tree.host_link(id).parent;
+        self.next = self.links[id].parent;
         Some(id)
     }
 }
 
 pub struct Dfs<'a> {
-    tree: &'a dyn HostLinks,
+    links: &'a Links,
     stack: Vec<NodeId>,
 }
 
@@ -371,49 +294,10 @@ impl Iterator for Dfs<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let id = self.stack.pop()?;
-        let mut child = self.tree.host_link(id).last_child;
+        let mut child = self.links[id].last_child;
         while let Some(current) = child {
             self.stack.push(current);
-            child = self.tree.host_link(current).prev_sibling;
-        }
-        Some(id)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WalkControl {
-    Continue,
-    SkipChildren,
-    Break,
-}
-
-pub struct Walker<'a, F>
-where
-    F: FnMut(NodeId) -> WalkControl,
-{
-    tree: &'a dyn HostLinks,
-    stack: Vec<NodeId>,
-    control: F,
-}
-
-impl<F> Iterator for Walker<'_, F>
-where
-    F: FnMut(NodeId) -> WalkControl,
-{
-    type Item = NodeId;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let id = self.stack.pop()?;
-        match (self.control)(id) {
-            WalkControl::Break => self.stack.clear(),
-            WalkControl::SkipChildren => {}
-            WalkControl::Continue => {
-                let mut child = self.tree.host_link(id).last_child;
-                while let Some(current) = child {
-                    self.stack.push(current);
-                    child = self.tree.host_link(current).prev_sibling;
-                }
-            }
+            child = self.links[current].prev_sibling;
         }
         Some(id)
     }
@@ -429,56 +313,35 @@ mod tests {
         let a = tree.insert_with_key(|_| "a");
         let b = tree.insert_with_key(|_| "b");
         let c = tree.insert_with_key(|_| "c");
-        tree.append_child(root, a);
-        tree.append_child(root, b);
-        tree.append_child(a, c);
+        tree.insert(root, a, None);
+        tree.insert(root, b, None);
+        tree.insert(a, c, None);
         (tree, root, a, b, c)
     }
 
     #[test]
     fn maintains_links_when_moving_and_inserting() {
         let (mut tree, root, a, b, c) = fixture();
-        tree.insert_before(root, c, b);
+        tree.detach(c);
+        tree.insert(root, c, Some(b));
         assert_eq!(tree.children(root).collect::<Vec<_>>(), vec![a, c, b]);
         assert_eq!(tree.children(root).rev().collect::<Vec<_>>(), vec![b, c, a]);
         assert_eq!(tree.parent(c), Some(root));
-        assert_eq!(tree.position(c), Some(1));
         assert_eq!(tree.children(a).len(), 0);
     }
 
     #[test]
-    fn traversals_honor_document_order_and_control() {
+    fn traversals_follow_document_order() {
         let (tree, root, a, b, c) = fixture();
         assert_eq!(tree.subtree(root).collect::<Vec<_>>(), vec![root, a, c, b]);
         assert_eq!(tree.ancestors(c).collect::<Vec<_>>(), vec![c, a, root]);
-        let visited = tree
-            .walk(root, |id| {
-                if id == a {
-                    WalkControl::SkipChildren
-                } else {
-                    WalkControl::Continue
-                }
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(visited, vec![root, a, b]);
-
-        let stopped = tree
-            .walk(root, |id| {
-                if id == a {
-                    WalkControl::Break
-                } else {
-                    WalkControl::Continue
-                }
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(stopped, vec![root, a]);
     }
 
     #[test]
     fn child_first_removal_invalidates_data_and_identity() {
         let (mut tree, root, a, _b, c) = fixture();
-        assert_eq!(tree.remove(c), Some("c"));
-        assert_eq!(tree.remove(a), Some("a"));
+        assert_eq!(tree.remove(c), "c");
+        assert_eq!(tree.remove(a), "a");
         assert!(!tree.contains_key(c));
         assert_eq!(tree.children(root).len(), 1);
     }

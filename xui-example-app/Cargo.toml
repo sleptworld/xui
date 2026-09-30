@@ -7,17 +7,23 @@ edition = "2024"
 name = "xui-example-app"
 path = "src/main.rs"
 
+[[bin]]
+name = "flight-icing"
+path = "src/bin/flight_icing/main.rs"
+
 [dependencies]
 xui-core = { path = "../crates/xui-core" }
 xui-macros = { path = "../crates/xui-macros" }
 xui-macos = { path = "../crates/xui-macos", features=["skia"] }
 xui-components = { path = "../xui-components" }
+xui-skia = { path = "../crates/xui-skia" }
+xui-f = { path = "../crates/xui-f" }
+lucide-rs = { path = "../lucide-rs" }
 leanplot = { git = "https://github.com/sleptworld/LeanPlot.git" }
 
 
 [dev-dependencies]
 png = "0.18.1"
-xui-skia = { path = "../crates/xui-skia" }
 xui-cosmic = { path = "../crates/xui-cosmic" }
 
 [build-dependencies]

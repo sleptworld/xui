@@ -43,12 +43,20 @@ impl RenderSystem {
         self.bindings.remove(host)
     }
 
-    pub(crate) fn host_binding(&self, host: NodeId) -> Option<&HostRenderBinding> {
-        self.bindings.get(host)
+    /// The scene nodes `host` renders through. Every live host has one.
+    #[inline]
+    pub(crate) fn binding(&self, host: NodeId) -> HostRenderBinding {
+        self.bindings[host]
     }
 
-    pub(crate) fn host_binding_mut(&mut self, host: NodeId) -> Option<&mut HostRenderBinding> {
-        self.bindings.get_mut(host)
+    #[cfg(test)]
+    pub(crate) fn has_binding(&self, host: NodeId) -> bool {
+        self.bindings.contains_key(host)
+    }
+
+    #[inline]
+    pub(crate) fn binding_mut(&mut self, host: NodeId) -> &mut HostRenderBinding {
+        &mut self.bindings[host]
     }
 }
 

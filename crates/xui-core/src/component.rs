@@ -1,4 +1,4 @@
-use crate::diagnostics::invariant;
+use crate::element::PortalBehavior;
 use crate::element::PortalDesc;
 use crate::event_system::interaction::HostInteraction;
 use crate::fiber::{
@@ -9,7 +9,7 @@ use crate::lanes::{Lanes, NO_LANES, current_update_lane, includes_some_lane, sho
 use crate::state::{AsyncDispatcher, HookContext, HookStorage, Scheduler};
 use crate::ticker::TickerRegistry;
 use crate::ui_runtime::UiRuntime;
-use crate::widgets::{OverlayEntryOptions, OverlayScopeId};
+use crate::widgets::{OverlayEntryId, OverlayEntryOptions, OverlayScopeId};
 use crate::widgets::{RootComponentRender, WidgetI};
 use crate::{ComponentDesc, ElementDesc, ErasedPropsRef};
 use rustc_hash::FxHashMap;
@@ -67,6 +67,7 @@ struct ComponentWork {
 struct PortalWork {
     scope: Option<OverlayScopeId>,
     options: OverlayEntryOptions,
+    behavior: PortalBehavior,
     pending_children: Vec<ElementDesc>,
     entry: Option<crate::widgets::OverlayEntryId>,
     visual_root: Option<NodeId>,
@@ -186,10 +187,12 @@ impl WorkNode {
             PreparedPending::Portal {
                 scope,
                 options,
+                behavior,
                 children,
             } => Work::PortalWork(PortalWork {
                 scope,
                 options,
+                behavior,
                 pending_children: children,
                 entry: current
                     .and_then(|id| nodes.node(id))
@@ -281,26 +284,6 @@ impl WorkNode {
         self.binding.current.is_none()
     }
 
-    #[inline(always)]
-    fn need_update(&self) -> bool {
-        self.effect.intersects(EffectTag::UPDATE)
-    }
-
-    #[inline(always)]
-    fn need_placement(&self) -> bool {
-        self.effect.intersects(EffectTag::PLACEMENT)
-    }
-
-    #[inline(always)]
-    fn need_move(&self) -> bool {
-        self.effect.intersects(EffectTag::MOVE)
-    }
-
-    #[inline(always)]
-    fn is_from_current(&self) -> bool {
-        self.binding.current.is_some()
-    }
-
     fn component_render_props<'a, 'b: 'a>(
         &'a self,
         fiber_tree: &'b FiberArena,
@@ -338,6 +321,7 @@ enum PreparedPending {
     Portal {
         scope: Option<OverlayScopeId>,
         options: OverlayEntryOptions,
+        behavior: PortalBehavior,
         children: Vec<ElementDesc>,
     },
 }
@@ -824,6 +808,7 @@ impl ComponentRuntime {
             pending: PreparedPending::Portal {
                 scope: portal.scope,
                 options: portal.options,
+                behavior: portal.behavior,
                 children: portal.children,
             },
         }
@@ -884,7 +869,7 @@ impl ComponentRuntime {
         self.hooks.remove(&id);
 
         if let Some(entry) = portal_entry {
-            let _ = arena.unmount_overlay_entry(entry);
+            let _ = detach_portal(arena, entry);
         }
 
         if remove_host && let Some(host_node) = host_node {
@@ -923,7 +908,7 @@ impl ComponentRuntime {
 
         if effect.contains(EffectTag::UPDATE) {
             self.commit_update_if_host(wip_id, arena);
-            self.commit_update_if_portal(wip_id, arena);
+            self.commit_update_if_portal(wip_id, parent_host, arena);
         }
 
         let child_parent_host = match tag {
@@ -939,7 +924,7 @@ impl ComponentRuntime {
         }
 
         if matches!(tag, FiberTag::Portal) {
-            self.sync_portal_visual_root(wip_id, arena);
+            self.sync_portal_visual_root(wip_id, parent_host, arena);
         }
     }
 
@@ -993,11 +978,7 @@ impl ComponentRuntime {
 
         if matches!(tag, FiberTag::Host(_)) {
             let host_id = self.ensure_host_created(wip_id, arena).expect("missing");
-            if let Some(before) = before {
-                arena.insert_before(parent_host, host_id, before);
-            } else {
-                arena.append_child(parent_host, host_id);
-            }
+            arena.place(parent_host, host_id, before);
             if let Some(node) = self.wip_nodes.get_mut(wip_id) {
                 node.effect.remove(EffectTag::PLACEMENT);
                 node.effect.remove(EffectTag::MOVE);
@@ -1010,11 +991,18 @@ impl ComponentRuntime {
                 self.commit_placement_subtree(child, arena.root_overlayer(), None, arena);
             }
             let visual_root = self.first_host_in_wip_subtree(wip_id);
-            let (scope, options, existing_entry) = self
+            let (scope, options, behavior, existing_entry) = self
                 .wip_nodes
                 .get_mut(wip_id)
                 .and_then(WorkNode::portal_work_mut)
-                .map(|portal| (portal.scope, portal.options, portal.entry))
+                .map(|portal| {
+                    (
+                        portal.scope,
+                        portal.options,
+                        portal.behavior.clone(),
+                        portal.entry,
+                    )
+                })
                 .expect("Portal placement is missing its model");
             let entry = if let Some(entry) = existing_entry {
                 arena
@@ -1028,6 +1016,9 @@ impl ComponentRuntime {
                         .expect("Portal entry could not be mounted")
                 })
             };
+            if let (Some(entry), Some(visual_root)) = (entry, visual_root) {
+                apply_portal_behavior(arena, entry, visual_root, parent_host, &behavior);
+            }
             let portal = self
                 .wip_nodes
                 .get_mut(wip_id)
@@ -1067,17 +1058,16 @@ impl ComponentRuntime {
         let widget = host_work.widget.take().expect("host update missing widget");
         let interaction = host_work.interaction.take();
 
-        arena.update_widget_node_from_parts(
-            node_id,
-            key,
-            host_work.props_hash,
-            widget,
-            interaction,
-        );
+        arena.update_node(node_id, key, host_work.props_hash, widget, interaction);
         wip.binding.current_host = Some(node_id);
     }
 
-    fn commit_update_if_portal(&mut self, wip_id: WipId, arena: &mut UiRuntime) {
+    fn commit_update_if_portal(
+        &mut self,
+        wip_id: WipId,
+        parent_host: NodeId,
+        arena: &mut UiRuntime,
+    ) {
         let Some(portal) = self
             .wip_nodes
             .get_mut(wip_id)
@@ -1086,16 +1076,22 @@ impl ComponentRuntime {
         else {
             return;
         };
-        if let Some(entry) = portal.entry {
+        if let (Some(entry), Some(visual_root)) = (portal.entry, portal.visual_root) {
             arena
                 .update_overlay_entry(entry, portal.scope, portal.options)
                 .expect("Portal entry update failed");
+            apply_portal_behavior(arena, entry, visual_root, parent_host, &portal.behavior);
         }
     }
 
-    fn sync_portal_visual_root(&mut self, wip_id: WipId, arena: &mut UiRuntime) {
+    fn sync_portal_visual_root(
+        &mut self,
+        wip_id: WipId,
+        parent_host: NodeId,
+        arena: &mut UiRuntime,
+    ) {
         let next_visual_root = self.first_host_in_wip_subtree(wip_id);
-        let Some((scope, options, current_entry, current_visual_root)) = self
+        let Some((scope, options, behavior, current_entry, current_visual_root)) = self
             .wip_nodes
             .get(wip_id)
             // .filter(|node| matches!(node.tag, FiberTag::Portal))
@@ -1104,6 +1100,7 @@ impl ComponentRuntime {
                 (
                     portal.scope,
                     portal.options,
+                    portal.behavior.clone(),
                     portal.entry,
                     portal.visual_root,
                 )
@@ -1116,14 +1113,14 @@ impl ComponentRuntime {
         }
 
         if let Some(entry) = current_entry {
-            arena
-                .unmount_overlay_entry(entry)
-                .expect("Portal's previous entry could not be unmounted");
+            detach_portal(arena, entry).expect("Portal's previous entry could not be unmounted");
         }
         let next_entry = next_visual_root.map(|visual_root| {
-            arena
+            let entry = arena
                 .mount_overlay_entry(visual_root, scope, options)
-                .expect("Portal's replacement entry could not be mounted")
+                .expect("Portal's replacement entry could not be mounted");
+            apply_portal_behavior(arena, entry, visual_root, parent_host, &behavior);
+            entry
         });
         let portal = self
             .wip_nodes
@@ -1269,7 +1266,6 @@ impl ComponentRuntime {
         Some(HostState {
             node_id: Some(node_id),
             widget: Some(arena_node.widget.clone()),
-            taffy_node: Some(arena.layout_node_id(node_id)),
             style: current_host
                 .as_ref()
                 .map(|host| host.style.clone())
@@ -1304,6 +1300,7 @@ impl ComponentRuntime {
             return Some(PortalState {
                 scope: portal.scope,
                 options: portal.options,
+                behavior: portal.behavior,
                 entry: portal.entry,
                 visual_root: portal.visual_root,
             });
@@ -1454,59 +1451,6 @@ impl ComponentRuntime {
                 .is_some_and(|node| node.needs_begin_work(work.render_lanes))
         })
     }
-
-    fn sync_host_children(&self, arena: &mut UiRuntime) {
-        self.sync_host_children_at(self.current, arena);
-    }
-
-    fn sync_host_children_at(&self, id: FiberId, arena: &mut UiRuntime) {
-        let Some(node) = invariant!(
-            self.nodes.node(id),
-            "sync_host_children_at: fiber {id:?} is not in the fiber arena"
-        ) else {
-            return;
-        };
-
-        if id == self.current {
-            let children = self.flatten_host_children(id);
-            arena.set_children(self.root_widget, children);
-        } else if let Some(host_node) = node.host.as_ref().and_then(|host| host.node_id) {
-            let children = self.flatten_host_children(id);
-            arena.set_children(host_node, children);
-        }
-
-        for child in node.children(&self.nodes) {
-            self.sync_host_children_at(child.id, arena);
-        }
-    }
-
-    fn flatten_host_children(&self, parent: FiberId) -> Vec<NodeId> {
-        let mut output = Vec::new();
-        if let Some(parent) = self.nodes.node(parent) {
-            for child in parent.children(&self.nodes) {
-                self.flatten_host_child(child.id, &mut output);
-            }
-        }
-        output
-    }
-
-    fn flatten_host_child(&self, id: FiberId, output: &mut Vec<NodeId>) {
-        let Some(node) = invariant!(
-            self.nodes.node(id),
-            "flatten_host_child: fiber {id:?} is not in the fiber arena"
-        ) else {
-            return;
-        };
-
-        if let Some(host_node) = node.host.as_ref().and_then(|host| host.node_id) {
-            output.push(host_node);
-            return;
-        }
-
-        for child in node.children(&self.nodes) {
-            self.flatten_host_child(child.id, output);
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -1616,12 +1560,55 @@ fn prepared_needs_update(current: &Node, prepared: &PreparedElement) -> bool {
             host_state.props_hash != *props_hash
         }
         (_, Some(_), PreparedPending::Component { .. }) => false,
-        (_, _, PreparedPending::Portal { scope, options, .. }) => current
-            .portal
-            .as_ref()
-            .is_none_or(|portal| portal.scope != *scope || portal.options != *options),
+        (
+            _,
+            _,
+            PreparedPending::Portal {
+                scope,
+                options,
+                behavior,
+                ..
+            },
+        ) => current.portal.as_ref().is_none_or(|portal| {
+            portal.scope != *scope || portal.options != *options || portal.behavior != *behavior
+        }),
         _ => true,
     }
+}
+
+/// Hands each part of a Portal's behavior to the runtime subsystem that runs
+/// it. `owner` is the host the Portal is written under.
+///
+/// A Portal's lifecycle touches three subsystems -- the overlay entry, its
+/// dismiss handler, and anchoring -- and this and [`detach_portal`] are the
+/// only places that keep them in step.
+fn apply_portal_behavior(
+    arena: &mut UiRuntime,
+    entry: OverlayEntryId,
+    visual_root: NodeId,
+    owner: NodeId,
+    behavior: &PortalBehavior,
+) {
+    arena
+        .set_overlay_entry_dismiss(entry, behavior.on_dismiss.clone())
+        .expect("Portal entry disappeared while recording its dismiss handler");
+    // Directly under the root or another Portal there is no host to follow.
+    let target = (owner != arena.root_overlayer() && owner != arena.root()).then_some(owner);
+    arena.set_anchor(
+        visual_root,
+        behavior.anchor.map(|placement| (target, placement)),
+    );
+}
+
+/// Takes a Portal's entry off the overlayer and releases its visual root from
+/// anchoring, which may outlive the entry when the Portal swaps roots.
+fn detach_portal(
+    arena: &mut UiRuntime,
+    entry: OverlayEntryId,
+) -> Result<NodeId, crate::widgets::OverlayModelError> {
+    let visual_root = arena.unmount_overlay_entry(entry)?;
+    arena.set_anchor(visual_root, None);
+    Ok(visual_root)
 }
 
 fn child_tree_lanes(
@@ -1647,6 +1634,7 @@ mod portal_tests {
     use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
     static PORTAL_MODE: AtomicU8 = AtomicU8::new(0);
+    static ANCHOR_MODE: AtomicUsize = AtomicUsize::new(0);
     static CHILD_RENDER_COUNT: AtomicUsize = AtomicUsize::new(0);
     static LEAF_RENDER_COUNT: AtomicUsize = AtomicUsize::new(0);
     /// The fixtures below drive process-wide counters, so they cannot overlap.
@@ -1785,6 +1773,138 @@ mod portal_tests {
         assert!(arena.children(arena.root_overlayer()).next().is_none());
     }
 
+    fn anchored_portal_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        use crate::anchor::AnchorPlacement;
+        use xui_interface::{EdgeInsets, Size, Style};
+
+        let menu = container()
+            .key("menu")
+            .style(Style::new().size(Size::fix(60.0, 40.0)))
+            .into_element_desc(Vec::new());
+        // Written inside the trigger, so the trigger owns the Portal.
+        let trigger = container()
+            .key("trigger")
+            .style(Style::new().size(Size::fix(80.0, 20.0)))
+            .into_element_desc(vec![
+                portal(vec![menu])
+                    .key("portal")
+                    .anchor(AnchorPlacement::default().offset(0.0))
+                    .on_dismiss(|_| {})
+                    .into(),
+            ]);
+        container()
+            .style(
+                Style::new()
+                    .size(Size::fill())
+                    .padding(EdgeInsets::new(30.0, 0.0, 50.0, 0.0)),
+            )
+            .into_element_desc(vec![trigger])
+    }
+
+    /// 0: anchored. 1: the same Portal without an anchor. 2: anchored again,
+    /// on a new root. 3: gone.
+    fn anchor_lifecycle_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        use crate::anchor::AnchorPlacement;
+
+        let mode = ANCHOR_MODE.load(Ordering::SeqCst);
+        let mut children = Vec::new();
+        if mode < 3 {
+            let menu = container()
+                .key(if mode < 2 { "menu" } else { "replacement" })
+                .into_element_desc(Vec::new());
+            let mut desc = portal(vec![menu]).key("portal");
+            if mode != 1 {
+                desc = desc.anchor(AnchorPlacement::default());
+            }
+            children.push(desc.into());
+        }
+        container().key("trigger").into_element_desc(children)
+    }
+
+    /// Every commit path keeps anchoring in step with the Portal: placement,
+    /// an update that drops or restores the anchor, a swapped visual root,
+    /// and deletion.
+    #[test]
+    fn a_portal_keeps_its_anchor_in_step_through_every_commit_path() {
+        ANCHOR_MODE.store(0, Ordering::SeqCst);
+        let mut arena = UiRuntime::new();
+        let mut runtime =
+            ComponentRuntime::new(arena.root(), Scheduler::default(), anchor_lifecycle_root);
+        runtime.flush_sync(&mut arena);
+        let overlay_root = |arena: &UiRuntime| arena.children(arena.root_overlayer()).next();
+        let trigger = arena
+            .children(arena.root())
+            .find(|id| *id != arena.root_overlayer())
+            .unwrap();
+
+        let menu = overlay_root(&arena).unwrap();
+        let anchor = arena.anchors().get(menu).expect("placement anchors");
+        assert_eq!(anchor.target, Some(trigger));
+
+        ANCHOR_MODE.store(1, Ordering::SeqCst);
+        runtime.mark_root_dirty();
+        runtime.flush_sync(&mut arena);
+        assert_eq!(overlay_root(&arena), Some(menu));
+        assert!(
+            arena.anchors().get(menu).is_none(),
+            "an update without an anchor must release it"
+        );
+
+        ANCHOR_MODE.store(2, Ordering::SeqCst);
+        runtime.mark_root_dirty();
+        runtime.flush_sync(&mut arena);
+        let replacement = overlay_root(&arena).unwrap();
+        assert_ne!(replacement, menu);
+        assert_eq!(
+            arena.anchors().get(replacement).map(|anchor| anchor.target),
+            Some(Some(trigger))
+        );
+
+        ANCHOR_MODE.store(3, Ordering::SeqCst);
+        runtime.mark_root_dirty();
+        runtime.flush_sync(&mut arena);
+        assert!(overlay_root(&arena).is_none());
+        assert!(arena.anchors().is_empty());
+    }
+
+    #[test]
+    fn a_portal_anchors_its_content_to_the_host_it_is_written_in() {
+        use crate::text::{TextHost, testing::ZeroTextBackend};
+        use xui_interface::{Point, Size};
+
+        let mut arena = UiRuntime::new();
+        let mut runtime =
+            ComponentRuntime::new(arena.root(), Scheduler::default(), anchored_portal_root);
+        runtime.flush_sync(&mut arena);
+        let mut measurer = TextHost::new(ZeroTextBackend);
+        arena.update_tree(Size::new(400.0, 300.0), &mut measurer);
+
+        let find = |key: &str| {
+            let mut stack = vec![arena.root()];
+            while let Some(id) = stack.pop() {
+                if arena.node(id).unwrap().key == Some(&Key::from(key)) {
+                    return id;
+                }
+                stack.extend(arena.children(id));
+            }
+            panic!("no host keyed {key}");
+        };
+        let menu = find("menu");
+        assert_eq!(
+            arena.children(arena.root_overlayer()).collect::<Vec<_>>(),
+            [menu]
+        );
+        assert_eq!(
+            arena.visual_layout(menu).min,
+            Point::new(30.0, 70.0),
+            "placed below the trigger at (30, 50)"
+        );
+        assert_eq!(
+            arena.dismissable_overlay().map(|(root, _)| root),
+            Some(menu)
+        );
+    }
+
     /// The bailout must not fire when the parent built fresh props, even
     /// though their contents are identical: only pointer equality counts.
     #[test]
@@ -1880,264 +2000,3 @@ mod portal_tests {
         );
     }
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use crate::fiber::{ComponentType, ErasedPropsRef};
-//     use crate::widgets::{component as component_desc, text};
-//     use std::sync::atomic::{AtomicUsize, Ordering};
-
-//     static HOST_REORDER_STEP: AtomicUsize = AtomicUsize::new(0);
-//     static COMPONENT_REORDER_STEP: AtomicUsize = AtomicUsize::new(0);
-//     static INSERT_STEP: AtomicUsize = AtomicUsize::new(0);
-//     static APPEND_STEP: AtomicUsize = AtomicUsize::new(0);
-//     static DELETE_STEP: AtomicUsize = AtomicUsize::new(0);
-//     static MOVE_UPDATE_STEP: AtomicUsize = AtomicUsize::new(0);
-
-//     #[derive(Hash)]
-//     struct ItemProps {
-//         text: &'static str,
-//     }
-
-//     fn item_call(cx: &mut HookContext<'_>, props: Option<ErasedPropsRef<'_>>) -> ElementDesc {
-//         let _state = cx.use_state(|| 1usize);
-//         let props = props
-//             .expect("item props missing")
-//             .downcast_ref::<ItemProps>()
-//             .expect("item props type changed");
-//         TextWidget::new(props.text).into_element_desc()
-//     }
-
-//     fn item_render() -> ComponentRender {
-//         ComponentRender::new(ComponentType::new("__xui_test_item"), item_call)
-//     }
-
-//     fn item(key: &'static str, label: &'static str) -> ElementDesc {
-//         component_desc(item_render())
-//             .key(key)
-//             .props(ItemProps { text: label })
-//             .into()
-//     }
-
-//     fn keyed_text(key: &'static str, label: &'static str) -> ElementDesc {
-//         TextWidget::new(label).key(key).into_element_desc()
-//     }
-
-//     fn column_with(children: Vec<ElementDesc>) -> ElementDesc {
-//         column().into_element_desc(children)
-//     }
-
-//     fn runtime(root: RootComponentRender) -> (UiRuntime, ComponentRuntime) {
-//         let arena = UiRuntime::new();
-//         let runtime = ComponentRuntime::new(arena.root(), Scheduler::default(), root);
-//         (arena, runtime)
-//     }
-
-//     fn rerender(runtime: &mut ComponentRuntime, arena: &mut UiRuntime) {
-//         runtime.mark_root_dirty();
-//         runtime.flush_sync(arena);
-//     }
-
-//     fn column_fiber(runtime: &ComponentRuntime) -> FiberId {
-//         let root_children = runtime.nodes.children(runtime.root());
-//         assert_eq!(root_children.len(), 1);
-//         root_children[0]
-//     }
-
-//     fn column_host(runtime: &ComponentRuntime) -> NodeId {
-//         runtime
-//             .nodes
-//             .node(column_fiber(runtime))
-//             .and_then(|node| node.host.as_ref())
-//             .and_then(|host| host.node_id)
-//             .expect("column host missing")
-//     }
-
-//     fn fiber_key_order(runtime: &ComponentRuntime, parent: FiberId) -> Vec<Key> {
-//         runtime
-//             .nodes
-//             .children(parent)
-//             .into_iter()
-//             .map(|id| runtime.nodes.node(id).unwrap().key.clone().unwrap())
-//             .collect()
-//     }
-
-//     fn host_text_order(arena: &UiRuntime, parent: NodeId) -> Vec<String> {
-//         arena
-//             .children(parent)
-//             .iter()
-//             .map(|id| {
-//                 arena
-//                     .node(*id)
-//                     .and_then(|node| node.widget.text())
-//                     .expect("text node missing text")
-//                     .as_str()
-//                     .to_owned()
-//             })
-//             .collect()
-//     }
-
-//     fn host_reorder_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-//         if HOST_REORDER_STEP.load(Ordering::SeqCst) == 0 {
-//             column_with(vec![keyed_text("a", "A"), keyed_text("b", "B")])
-//         } else {
-//             column_with(vec![keyed_text("b", "B"), keyed_text("a", "A")])
-//         }
-//     }
-
-//     #[test]
-//     fn host_children_reorder_updates_fiber_and_host_order() {
-//         HOST_REORDER_STEP.store(0, Ordering::SeqCst);
-//         let (mut arena, mut runtime) = runtime(host_reorder_root);
-//         runtime.flush_sync(&mut arena);
-
-//         HOST_REORDER_STEP.store(1, Ordering::SeqCst);
-//         rerender(&mut runtime, &mut arena);
-
-//         let column = column_fiber(&runtime);
-//         let column_host = column_host(&runtime);
-//         assert_eq!(
-//             fiber_key_order(&runtime, column),
-//             vec![Key::from("b"), Key::from("a")]
-//         );
-//         assert_eq!(host_text_order(&arena, column_host), ["B", "A"]);
-//     }
-
-//     fn component_reorder_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-//         if COMPONENT_REORDER_STEP.load(Ordering::SeqCst) == 0 {
-//             column_with(vec![item("a", "A"), item("b", "B")])
-//         } else {
-//             column_with(vec![item("b", "B"), item("a", "A")])
-//         }
-//     }
-
-//     #[test]
-//     fn component_children_reorder_moves_descendant_hosts() {
-//         COMPONENT_REORDER_STEP.store(0, Ordering::SeqCst);
-//         let (mut arena, mut runtime) = runtime(component_reorder_root);
-//         runtime.flush_sync(&mut arena);
-
-//         COMPONENT_REORDER_STEP.store(1, Ordering::SeqCst);
-//         rerender(&mut runtime, &mut arena);
-
-//         let column = column_fiber(&runtime);
-//         let column_host = column_host(&runtime);
-//         assert_eq!(
-//             fiber_key_order(&runtime, column),
-//             vec![Key::from("b"), Key::from("a")]
-//         );
-//         assert_eq!(host_text_order(&arena, column_host), ["B", "A"]);
-//     }
-
-//     fn insert_before_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-//         if INSERT_STEP.load(Ordering::SeqCst) == 0 {
-//             column_with(vec![keyed_text("a", "A"), keyed_text("c", "C")])
-//         } else {
-//             column_with(vec![
-//                 keyed_text("a", "A"),
-//                 keyed_text("b", "B"),
-//                 keyed_text("c", "C"),
-//             ])
-//         }
-//     }
-
-//     #[test]
-//     fn insertion_uses_stable_host_sibling() {
-//         INSERT_STEP.store(0, Ordering::SeqCst);
-//         let (mut arena, mut runtime) = runtime(insert_before_root);
-//         runtime.flush_sync(&mut arena);
-//         let column_host = column_host(&runtime);
-//         let c_node = arena.children(column_host)[1];
-
-//         INSERT_STEP.store(1, Ordering::SeqCst);
-//         rerender(&mut runtime, &mut arena);
-
-//         let children = arena.children(column_host);
-//         assert_eq!(host_text_order(&arena, column_host), ["A", "B", "C"]);
-//         assert_eq!(children[2], c_node);
-//     }
-
-//     fn append_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-//         if APPEND_STEP.load(Ordering::SeqCst) == 0 {
-//             column_with(vec![keyed_text("a", "A")])
-//         } else {
-//             column_with(vec![keyed_text("a", "A"), keyed_text("b", "B")])
-//         }
-//     }
-
-//     #[test]
-//     fn insertion_appends_when_no_stable_sibling_exists() {
-//         APPEND_STEP.store(0, Ordering::SeqCst);
-//         let (mut arena, mut runtime) = runtime(append_root);
-//         runtime.flush_sync(&mut arena);
-//         let column_host = column_host(&runtime);
-//         let a_node = arena.children(column_host)[0];
-
-//         APPEND_STEP.store(1, Ordering::SeqCst);
-//         rerender(&mut runtime, &mut arena);
-
-//         let children = arena.children(column_host);
-//         assert_eq!(host_text_order(&arena, column_host), ["A", "B"]);
-//         assert_eq!(children[0], a_node);
-//     }
-
-//     fn delete_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-//         if DELETE_STEP.load(Ordering::SeqCst) == 0 {
-//             column_with(vec![item("a", "A"), item("b", "B")])
-//         } else {
-//             column_with(vec![item("b", "B")])
-//         }
-//     }
-
-//     #[test]
-//     fn deleting_component_subtree_removes_descendant_host_and_state() {
-//         DELETE_STEP.store(0, Ordering::SeqCst);
-//         let (mut arena, mut runtime) = runtime(delete_root);
-//         runtime.flush_sync(&mut arena);
-//         let column = column_fiber(&runtime);
-//         let column_host = column_host(&runtime);
-//         let item_a = runtime.nodes.children(column)[0];
-//         let text_a = arena.children(column_host)[0];
-
-//         DELETE_STEP.store(1, Ordering::SeqCst);
-//         rerender(&mut runtime, &mut arena);
-
-//         assert!(!runtime.nodes.contains(item_a));
-//         assert!(!runtime.hooks.contains_key(&item_a));
-//         assert!(!arena.contains(text_a));
-//         assert_eq!(
-//             fiber_key_order(&runtime, column_fiber(&runtime)),
-//             vec![Key::from("b")]
-//         );
-//         assert_eq!(host_text_order(&arena, column_host), ["B"]);
-//     }
-
-//     fn move_update_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-//         if MOVE_UPDATE_STEP.load(Ordering::SeqCst) == 0 {
-//             column_with(vec![keyed_text("a", "A"), keyed_text("b", "B")])
-//         } else {
-//             column_with(vec![keyed_text("b", "B2"), keyed_text("a", "A")])
-//         }
-//     }
-
-//     #[test]
-//     fn moving_host_can_also_update_it() {
-//         MOVE_UPDATE_STEP.store(0, Ordering::SeqCst);
-//         let (mut arena, mut runtime) = runtime(move_update_root);
-//         runtime.flush_sync(&mut arena);
-//         let column_host = column_host(&runtime);
-//         let b_node = arena.children(column_host)[1];
-
-//         MOVE_UPDATE_STEP.store(1, Ordering::SeqCst);
-//         rerender(&mut runtime, &mut arena);
-
-//         let children = arena.children(column_host);
-//         assert_eq!(children[0], b_node);
-//         assert_eq!(host_text_order(&arena, column_host), ["B2", "A"]);
-//         assert_eq!(
-//             fiber_key_order(&runtime, column_fiber(&runtime)),
-//             vec![Key::from("b"), Key::from("a")]
-//         );
-//     }
-// }

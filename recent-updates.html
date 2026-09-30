@@ -1,0 +1,1637 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>xui · 最近更新</title>
+    <style>
+      :root {
+        --bg: #0d1117;
+        --bg-soft: #161b22;
+        --bg-card: #1a2029;
+        --border: #2a3340;
+        --text: #e6edf3;
+        --text-dim: #8b98a5;
+        --text-faint: #5c6670;
+        --accent: #2dd4bf;
+        --accent-soft: #14b8a6;
+        --warn: #f59e0b;
+        --danger: #f87171;
+        --info: #60a5fa;
+        --purple: #c084fc;
+        --mono:
+          "SF Mono", "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+        --sans:
+          -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei",
+          system-ui, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--sans);
+        line-height: 1.65;
+        font-size: 16px;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+      header.hero {
+        padding: 72px 0 48px;
+        border-bottom: 1px solid var(--border);
+        background: radial-gradient(
+          ellipse at top,
+          rgba(45, 212, 191, 0.08),
+          transparent 60%
+        );
+      }
+      .hero h1 {
+        font-size: 40px;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+      }
+      .hero h1 .grad {
+        background: linear-gradient(135deg, var(--accent), var(--info));
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .hero p {
+        color: var(--text-dim);
+        margin-top: 14px;
+        max-width: 680px;
+        font-size: 17px;
+      }
+      .hero .badges {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 22px;
+      }
+      .badge {
+        font: 500 12px/1 var(--mono);
+        padding: 6px 10px;
+        border-radius: 6px;
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        color: var(--text-dim);
+      }
+      .badge.accent {
+        color: var(--accent);
+        border-color: rgba(45, 212, 191, 0.35);
+        background: rgba(45, 212, 191, 0.08);
+      }
+
+      nav.toc {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        background: rgba(13, 17, 23, 0.85);
+        backdrop-filter: blur(8px);
+        border-bottom: 1px solid var(--border);
+        padding: 14px 0;
+      }
+      nav.toc .wrap {
+        display: flex;
+        gap: 4px;
+        overflow-x: auto;
+      }
+      nav.toc a {
+        color: var(--text-dim);
+        text-decoration: none;
+        font-size: 13px;
+        padding: 6px 12px;
+        border-radius: 6px;
+        white-space: nowrap;
+        transition: 0.15s;
+      }
+      nav.toc a:hover {
+        color: var(--text);
+        background: var(--bg-soft);
+      }
+      nav.toc a.cur {
+        color: var(--accent);
+        background: rgba(45, 212, 191, 0.08);
+      }
+
+      section {
+        padding: 56px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      section .num {
+        font: 700 13px/1 var(--mono);
+        color: var(--accent);
+        letter-spacing: 0.08em;
+      }
+      h2 {
+        font-size: 28px;
+        margin: 8px 0 6px;
+        letter-spacing: -0.01em;
+      }
+      h3 {
+        font-size: 17px;
+        margin: 28px 0 10px;
+        color: var(--text);
+      }
+      .lede {
+        color: var(--text-dim);
+        max-width: 760px;
+        margin-bottom: 24px;
+        font-size: 16px;
+      }
+      p {
+        margin: 12px 0;
+        color: #c9d1d9;
+      }
+      p.dim {
+        color: var(--text-dim);
+      }
+
+      pre,
+      code {
+        font-family: var(--mono);
+      }
+      code.inline {
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        padding: 1px 6px;
+        border-radius: 5px;
+        font-size: 0.88em;
+        color: var(--accent);
+      }
+      pre {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 16px 18px;
+        overflow-x: auto;
+        font-size: 13px;
+        line-height: 1.6;
+        margin: 16px 0;
+      }
+      pre .kw {
+        color: var(--purple);
+      }
+      pre .ty {
+        color: var(--info);
+      }
+      pre .fn {
+        color: var(--accent);
+      }
+      pre .st {
+        color: #fcd34d;
+      }
+      pre .cm {
+        color: var(--text-faint);
+        font-style: italic;
+      }
+      pre .nm {
+        color: #f0a36b;
+      }
+
+      .cards {
+        display: grid;
+        gap: 16px;
+        margin: 20px 0;
+      }
+      .card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 20px 22px;
+      }
+      .card h4 {
+        font-size: 15px;
+        color: var(--accent);
+        margin-bottom: 8px;
+        font-family: var(--mono);
+      }
+      .card p {
+        color: var(--text-dim);
+        margin: 6px 0;
+        font-size: 14px;
+      }
+      .grid2 {
+        grid-template-columns: 1fr 1fr;
+      }
+      @media (max-width: 760px) {
+        .grid2 {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .demo {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--accent);
+        border-radius: 10px;
+        padding: 20px 22px;
+        margin: 20px 0;
+      }
+      .demo .label {
+        font: 600 11px/1 var(--mono);
+        color: var(--text-faint);
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        margin-bottom: 14px;
+      }
+      .row {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: center;
+        margin: 10px 0;
+      }
+      button.btn {
+        background: var(--bg-soft);
+        color: var(--text);
+        border: 1px solid var(--border);
+        padding: 8px 14px;
+        border-radius: 7px;
+        font: 500 13px var(--sans);
+        cursor: pointer;
+        transition: 0.12s;
+      }
+      button.btn:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      button.btn.primary {
+        background: rgba(45, 212, 191, 0.12);
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      button.btn.danger:hover {
+        border-color: var(--danger);
+        color: var(--danger);
+      }
+      button.btn.warn:hover {
+        border-color: var(--warn);
+        color: var(--warn);
+      }
+      button.btn:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 10px;
+        margin: 14px 0;
+      }
+      .stat {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px;
+      }
+      .stat .k {
+        font: 600 10px/1 var(--mono);
+        color: var(--text-faint);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .stat .v {
+        font: 700 22px/1.1 var(--mono);
+        color: var(--text);
+        margin-top: 6px;
+      }
+      .stat .v.accent {
+        color: var(--accent);
+      }
+      .stat .v.warn {
+        color: var(--warn);
+      }
+      .stat .v.dim {
+        color: var(--text-dim);
+      }
+      .stat .sub {
+        font: 400 10px var(--mono);
+        color: var(--text-faint);
+        margin-top: 3px;
+      }
+
+      .pills {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin: 10px 0;
+      }
+      .pill {
+        font: 500 11px/1 var(--mono);
+        padding: 5px 9px;
+        border-radius: 20px;
+        border: 1px solid var(--border);
+      }
+      .pill.on {
+        background: rgba(45, 212, 191, 0.12);
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      .pill.off {
+        color: var(--text-faint);
+      }
+      .pill.warn {
+        background: rgba(245, 158, 11, 0.12);
+        border-color: var(--warn);
+        color: var(--warn);
+      }
+      .pill.danger {
+        background: rgba(248, 113, 113, 0.12);
+        border-color: var(--danger);
+        color: var(--danger);
+      }
+
+      .log {
+        background: #000;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px 14px;
+        font: 12px/1.5 var(--mono);
+        color: #a1a8b0;
+        height: 150px;
+        overflow-y: auto;
+        margin-top: 12px;
+      }
+      .log .err {
+        color: var(--warn);
+      }
+      .log .panic {
+        color: var(--danger);
+      }
+      .log .ok {
+        color: var(--accent);
+      }
+      .log .ts {
+        color: var(--text-faint);
+      }
+      .log .m-warn {
+        color: var(--warn);
+      }
+      .log .m-ok {
+        color: var(--accent);
+      }
+      .log .m-err {
+        color: var(--danger);
+      }
+      .log .m-dim {
+        color: var(--text-faint);
+      }
+
+      .timeline {
+        position: relative;
+        padding-left: 28px;
+      }
+      .timeline::before {
+        content: "";
+        position: absolute;
+        left: 7px;
+        top: 6px;
+        bottom: 6px;
+        width: 2px;
+        background: var(--border);
+      }
+      .tl-item {
+        position: relative;
+        padding: 0 0 26px 18px;
+      }
+      .tl-item::before {
+        content: "";
+        position: absolute;
+        left: -25px;
+        top: 6px;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: var(--bg);
+        border: 2px solid var(--accent);
+      }
+      .tl-item .hash {
+        font: 600 12px var(--mono);
+        color: var(--accent-soft);
+      }
+      .tl-item .msg {
+        font-weight: 600;
+        margin-left: 8px;
+      }
+      .tl-item .meta {
+        color: var(--text-faint);
+        font-size: 13px;
+        margin-top: 2px;
+      }
+
+      .scrollbox {
+        height: 180px;
+        overflow: auto;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px;
+        font: 13px var(--mono);
+        position: relative;
+      }
+      .scrollbox .item {
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--border);
+        color: var(--text-dim);
+      }
+      .scrollbox .item.hl {
+        color: var(--accent);
+      }
+
+      .table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+        margin: 16px 0;
+      }
+      .table th,
+      .table td {
+        text-align: left;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+      }
+      .table th {
+        color: var(--text-dim);
+        font: 600 11px var(--mono);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .table td {
+        color: var(--text);
+      }
+      .table td code {
+        color: var(--accent);
+        font-size: 12px;
+      }
+
+      footer {
+        padding: 48px 0 64px;
+        color: var(--text-faint);
+        font-size: 13px;
+      }
+      footer a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="hero">
+      <div class="wrap">
+        <h1><span class="grad">xui</span> · 最近更新</h1>
+        <p>
+          一份带可交互演示的变更说明。涵盖帧时钟、ticker、移除墙钟、画布时间统一、可见性闸门、滚动控制器、invariant
+          上报、资产打包与 interning、以及组件批合并。
+        </p>
+        <div class="badges">
+          <span class="badge accent">2b95c7b</span>
+          <span class="badge">frame clock</span>
+          <span class="badge">tickers</span>
+          <span class="badge">scroll controllers</span>
+          <span class="badge">strict-invariants</span>
+          <span class="badge">build.rs assets</span>
+          <span class="badge">asset interning</span>
+        </div>
+      </div>
+    </header>
+
+    <nav class="toc" id="toc">
+      <div class="wrap">
+        <a href="#frame-clock">① 帧时钟</a>
+        <a href="#ticker">② Ticker</a>
+        <a href="#wall-clock">③ 移除墙钟</a>
+        <a href="#canvas-time">④ 画布时间</a>
+        <a href="#visibility">⑤ 可见性闸门</a>
+        <a href="#scroll">⑥ 滚动控制器</a>
+        <a href="#invariant">⑦ Invariant 上报</a>
+        <a href="#assets">⑧ 资产流水线</a>
+        <a href="#components">⑨ 组件批</a>
+      </div>
+    </nav>
+
+    <!-- ───────────────────────────── ① 帧时钟 ───────────────────────────── -->
+    <section id="frame-clock">
+      <div class="wrap">
+        <div class="num">01 · CLOCK</div>
+        <h2>全局帧时钟 <code class="inline">FrameClock</code></h2>
+        <p class="lede">
+          一帧采样一次时间并冻结整帧，下游全部"读"这同一个
+          <code class="inline">FrameTime</code>。它是 presentation
+          clock——只在真正产出帧时前进，所以离屏/卡顿是"暂停"而非"跳变"。
+        </p>
+
+        <pre><span class="kw">pub struct</span> <span class="ty">FrameTime</span> {
+    index: <span class="ty">u64</span>,        <span class="cm">// 第几帧（首帧为 1，ZERO 为 0）</span>
+    timestamp: <span class="ty">Duration</span>, <span class="cm">// == Σ delta，恒等式即便 clamp 后也成立</span>
+    delta: <span class="ty">Duration</span>,     <span class="cm">// 自上一帧，受 100ms 钳制</span>
+}
+
+<span class="kw">pub struct</span> <span class="ty">FrameClock</span> { last: <span class="ty">Option&lt;Instant&gt;</span>, frame: <span class="ty">FrameTime</span>, max_delta: <span class="ty">Duration</span> }
+
+<span class="kw">impl</span> <span class="ty">FrameClock</span> {
+    <span class="kw">pub fn</span> <span class="fn">tick</span>(&<span class="kw">mut</span> self, now: <span class="ty">Instant</span>) -> <span class="ty">FrameTime</span> { <span class="cm">// 正常推进，delta 被 clamp</span> }
+    <span class="kw">pub fn</span> <span class="fn">hold</span>(&<span class="kw">mut</span> self) -> <span class="ty">FrameTime</span> { <span class="cm">// 离屏重绘：index++ 但 timestamp/delta 不动</span> }
+    <span class="kw">pub fn</span> <span class="fn">suspend</span>(&<span class="kw">mut</span> self) { <span class="cm">// 进入 idle；gap 变 0 delta</span> }
+}</pre>
+
+        <div class="demo">
+          <div class="label">交互演示 · 帧时钟行为</div>
+          <p class="dim" style="font-size: 14px">
+            下面用一个 ~700ms 的 JS 计时器模拟帧循环。观察
+            <code class="inline">delta</code> 与
+            <code class="inline">timestamp</code> 在隐藏、卡顿、空闲后的行为。
+          </p>
+          <div class="stats" id="clock-stats">
+            <div class="stat">
+              <div class="k">index</div>
+              <div class="v accent" id="ck-index">0</div>
+              <div class="sub">已产出帧数</div>
+            </div>
+            <div class="stat">
+              <div class="k">timestamp</div>
+              <div class="v" id="ck-ts">0.0ms</div>
+              <div class="sub">Σ delta</div>
+            </div>
+            <div class="stat">
+              <div class="k">delta</div>
+              <div class="v" id="ck-delta">0.0ms</div>
+              <div class="sub">本帧步长</div>
+            </div>
+            <div class="stat">
+              <div class="k">状态</div>
+              <div class="v dim" id="ck-state" style="font-size: 14px">
+                未启动
+              </div>
+              <div class="sub">&nbsp;</div>
+            </div>
+          </div>
+          <div class="pills" id="ck-pills">
+            <span class="pill off" id="ck-p-visible">window_visible</span>
+            <span class="pill off" id="ck-p-suspended">suspended</span>
+            <span class="pill off" id="ck-p-animating">is_animating</span>
+          </div>
+          <div class="row">
+            <button class="btn primary" id="ck-start">开始/恢复帧循环</button>
+            <button class="btn warn" id="ck-hide">隐藏窗口</button>
+            <button class="btn danger" id="ck-stall">卡顿一帧 (2s)</button>
+            <button class="btn" id="ck-idle">空闲 3s</button>
+            <button class="btn" id="ck-reset">重置</button>
+          </div>
+          <div class="log" id="ck-log"></div>
+        </div>
+
+        <h3>要解决的两个老问题</h3>
+        <div class="cards grid2">
+          <div class="card">
+            <h4>同帧漂移</h4>
+            <p>
+              过去每个动画各自读
+              <code class="inline">Instant::now()</code
+              >，同一帧里两个本该同步的动画会因帧耗时产生相对漂移。
+            </p>
+          </div>
+          <div class="card">
+            <h4>离屏跳变</h4>
+            <p>
+              墙钟在窗口被遮挡时继续走，恢复时画面一下子跳到"墙钟走到哪"，而不是从停下的地方继续。
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────────────────────────── ② Ticker ───────────────────────────── -->
+    <section id="ticker">
+      <div class="wrap">
+        <div class="num">02 · TICKER</div>
+        <h2>每帧回调 <code class="inline">use_ticker</code></h2>
+        <p class="lede">
+          不是 timer，是帧循环自己的回调：每帧至多一次、拿到当帧
+          <code class="inline">FrameTime</code
+          >、随窗口离屏而停。组件卸载即自动注销。
+        </p>
+
+        <pre><span class="cm">// 推荐形态：模型在 HookRef 里，画布 invalidate —— 不重建组件</span>
+<span class="kw">let</span> model = cx.<span class="fn">use_ref</span>(Simulation::new);
+<span class="kw">let</span> canvas = cx.<span class="fn">use_memo</span>(CanvasController::new);
+<span class="kw">let</span> ticker = cx.<span class="fn">use_ticker</span>(<span class="kw">move</span> |frame| {
+    model.<span class="fn">update</span>(|m| m.<span class="fn">advance</span>(frame.<span class="fn">delta</span>()));
+    canvas.<span class="fn">get</span>().<span class="fn">invalidate</span>();
+    <span class="ty">Tick</span>::Continue
+});
+<span class="cm">// ticker.clone() 可被 play/pause 按钮捕获</span></pre>
+
+        <div class="demo">
+          <div class="label">交互演示 · ticker 不重建组件</div>
+          <p class="dim" style="font-size: 14px">
+            ticker 每帧 +1，但"渲染次数"始终是 1——这是 retained tree
+            的全部意义：帧循环 ≠ 全量 reconcile。
+          </p>
+          <div class="stats">
+            <div class="stat">
+              <div class="k">ticks</div>
+              <div class="v accent" id="tk-ticks">0</div>
+              <div class="sub">回调执行次数</div>
+            </div>
+            <div class="stat">
+              <div class="k">renders</div>
+              <div class="v" id="tk-renders">1</div>
+              <div class="sub">组件重建次数</div>
+            </div>
+            <div class="stat">
+              <div class="k">state</div>
+              <div class="v dim" id="tk-state" style="font-size: 14px">
+                未启动
+              </div>
+              <div class="sub">running?</div>
+            </div>
+            <div class="stat">
+              <div class="k">last frame.delta</div>
+              <div class="v" id="tk-delta">0ms</div>
+              <div class="sub">来自帧时钟</div>
+            </div>
+          </div>
+          <div class="row">
+            <button class="btn primary" id="tk-start">start()</button>
+            <button class="btn danger" id="tk-stop">stop()</button>
+            <button class="btn" id="tk-rebuild">强制 setState 重建一次</button>
+          </div>
+          <div class="log" id="tk-log"></div>
+        </div>
+
+        <h3>关键设计</h3>
+        <div class="cards grid2">
+          <div class="card">
+            <h4>弱句柄</h4>
+            <p>
+              返回的 <code class="inline">Ticker</code> 是
+              <code class="inline">Weak</code
+              >；钩子槽持有强引用，组件卸载即注销，遗留的句柄变 no-op。
+            </p>
+          </div>
+          <div class="card">
+            <h4>回调每帧替换</h4>
+            <p>
+              不设 deps 列表：每帧 render 替换回调，始终捕获最新 render
+              的值。把"陈旧捕获"从默认行为变成不可能。
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────────────────────────── ③ 移除墙钟 ───────────────────────────── -->
+    <section id="wall-clock">
+      <div class="wrap">
+        <div class="num">03 · NO WALL CLOCK</div>
+        <h2>移除组件层的墙钟</h2>
+        <p class="lede">
+          组件运行时不再自己读 <code class="inline">SystemTime</code>。lane
+          饥饿截止期改用
+          <code class="inline">SchedulerState::origin</code>（单调
+          <code class="inline">Instant</code>，从 scheduler 创建起算）。
+        </p>
+
+        <pre><span class="cm">// 旧：会倒退的墙钟</span>
+<span class="kw">fn</span> <span class="fn">now_ms</span>() -> <span class="ty">u64</span> {
+    <span class="ty">SystemTime</span>::now().<span class="fn">duration_since</span>(<span class="ty">UNIX_EPOCH</span>).<span class="fn">unwrap_or</span>(0).<span class="fn">as_millis</span>()
+}
+self.scheduler.<span class="fn">mark_starved_lanes_as_expired</span>(<span class="fn">now_ms</span>());   <span class="cm">// ← 调用方传时间</span>
+
+<span class="cm">// 新：单调钟，scheduler 自己读自己的 origin</span>
+<span class="kw">struct</span> <span class="ty">SchedulerState</span> { ... origin: <span class="ty">Instant</span> }
+<span class="kw">impl</span> <span class="ty">SchedulerState</span> { <span class="kw">fn</span> <span class="fn">now_ms</span>(&self) -> <span class="ty">u64</span> { self.origin.<span class="fn">elapsed</span>().<span class="fn">as_millis</span>() } }
+
+<span class="kw">pub fn</span> <span class="fn">mark_starved_lanes_as_expired</span>(&self) { <span class="cm">// 不再接收外部 now</span>
+    <span class="kw">let</span> now_ms = self.inner.<span class="fn">borrow</span>().<span class="fn">now_ms</span>();
+    ...
+}</pre>
+
+        <h3>
+          <code class="inline">Instant</code> vs
+          <code class="inline">SystemTime</code> —— 本来就是两个东西
+        </h3>
+        <table class="table">
+          <tr>
+            <th></th>
+            <th><code>Instant</code></th>
+            <th><code>SystemTime</code></th>
+          </tr>
+          <tr>
+            <td>底层 OS 钟</td>
+            <td>
+              <code>CLOCK_MONOTONIC</code> / <code>mach_absolute_time</code> /
+              QPC
+            </td>
+            <td><code>CLOCK_REALTIME</code> / <code>gettimeofday</code></td>
+          </tr>
+          <tr>
+            <td>语义</td>
+            <td>测时长（程序内）</td>
+            <td>测日期（对外）</td>
+          </tr>
+          <tr>
+            <td>能被 NTP/手动/DST 调</td>
+            <td><span style="color: var(--accent)">否</span></td>
+            <td><span style="color: var(--danger)">能，可前跳可后跳</span></td>
+          </tr>
+          <tr>
+            <td><code>duration_since</code> 返回</td>
+            <td><code>Duration</code></td>
+            <td><code>Result&lt;Duration, SystemTimeError&gt;</code></td>
+          </tr>
+        </table>
+
+        <div class="demo">
+          <div class="label">交互演示 · 墙钟倒退如何破坏截止期</div>
+          <p class="dim" style="font-size: 14px">
+            截止期盖戳在 <code class="inline">now=1000</code>，budget=250 →
+            截止期 1250。把"墙钟"往回拨，观察截止期是否又变"未来"。
+          </p>
+          <div class="stats">
+            <div class="stat">
+              <div class="k">now_ms</div>
+              <div class="v" id="wc-now">1000</div>
+              <div class="sub">当前时钟读数</div>
+            </div>
+            <div class="stat">
+              <div class="k">截止期</div>
+              <div class="v accent" id="wc-dl">1250</div>
+              <div class="sub">盖戳一次</div>
+            </div>
+            <div class="stat">
+              <div class="k">expired?</div>
+              <div class="v" id="wc-exp">否</div>
+              <div class="sub">now ≥ 截止期 ?</div>
+            </div>
+            <div class="stat">
+              <div class="k">用的钟</div>
+              <div class="v" id="wc-clock" style="font-size: 14px">
+                SystemTime
+              </div>
+              <div class="sub">切换下方</div>
+            </div>
+          </div>
+          <div class="row">
+            <button class="btn warn" id="wc-back">墙钟回拨 300ms</button>
+            <button class="btn danger" id="wc-fwd">墙钟前跳 2s</button>
+            <button class="btn primary" id="wc-switch">
+              切换为 Instant（单调）
+            </button>
+            <button class="btn" id="wc-reset2">重置</button>
+          </div>
+          <div class="log" id="wc-log"></div>
+        </div>
+
+        <p class="dim">
+          注：<code class="inline">component.rs</code> 里仍剩两处
+          <code class="inline">Instant::now()</code>，是 work-loop
+          时间片预算（reconcile 别阻塞超过 4ms），与动画/截止期无关，保留。
+        </p>
+      </div>
+    </section>
+
+    <!-- ───────────────────────────── ④ 画布时间 ───────────────────────────── -->
+    <section id="canvas-time">
+      <div class="wrap">
+        <div class="num">04 · CANVAS</div>
+        <h2>画布时间统一 <code class="inline">CanvasFrame</code></h2>
+        <p class="lede">
+          画布绘制不再自己捕 <code class="inline">Instant</code>，而是从
+          <code class="inline">CanvasPainter::time()</code>
+          读帧时间。所有绘制在同一帧用同一时间步。
+        </p>
+
+        <pre><span class="kw">pub(crate) struct</span> <span class="ty">CanvasFrame</span>&lt;'a&gt; {
+    <span class="kw">pub</span> size: <span class="ty">Size</span>&lt;<span class="ty">f32</span>&gt;,
+    <span class="kw">pub</span> style: &<span class="ty">'a</span> <span class="ty">ComputedStyle</span>,
+    <span class="kw">pub</span> theme: &<span class="ty">'a</span> <span class="ty">Theme</span>,
+    <span class="kw">pub</span> scale_factor: <span class="ty">f32</span>,
+    <span class="kw">pub</span> time: <span class="ty">FrameTime</span>,          <span class="cm">// ← 新增</span>
+    <span class="kw">pub</span> gpu: <span class="ty">Option</span>&lt;&<span class="ty">CanvasGpuContext</span>&gt;,
+}
+
+<span class="cm">// 矢量 painter 也补了 request_repaint —— 与 GPU painter 对齐</span>
+<span class="kw">impl</span>&lt;'a&gt; <span class="ty">CanvasPainter</span>&lt;'a&gt; {
+    <span class="kw">pub fn</span> <span class="fn">time</span>(&self) -> <span class="ty">FrameTime</span> { self.time }
+    <span class="kw">pub fn</span> <span class="fn">request_repaint</span>(&<span class="kw">mut</span> self) -> &<span class="kw">mut</span> Self { self.repaint = <span class="kw">true</span>; self }
+}</pre>
+
+        <pre><span class="cm">// GPU painter 的推荐写法：起点存 state，之后都用帧时间戳度量</span>
+<span class="kw">move</span> |state: &<span class="kw">mut</span> <span class="ty">Option</span>&lt;<span class="ty">Duration</span>&gt;, painter: &<span class="kw">mut</span> <span class="ty">CanvasGpuPainter</span>| {
+    <span class="kw">let</span> started = *state.<span class="fn">get_or_insert</span>(painter.<span class="fn">time</span>().<span class="fn">timestamp</span>());
+    <span class="kw">if</span> painter.<span class="fn">time</span>().<span class="fn">timestamp</span>() - started &lt; <span class="ty">Duration</span>::<span class="fn">from_secs</span>(2) {
+        painter.<span class="fn">request_repaint</span>();
+    }
+}</pre>
+      </div>
+    </section>
+
+    <!-- ───────────────────────────── ⑤ 可见性 ───────────────────────────── -->
+    <section id="visibility">
+      <div class="wrap">
+        <div class="num">05 · VISIBILITY</div>
+        <h2>单一可见性闸门 <code class="inline">is_animating</code></h2>
+        <p class="lede">
+          可见性只在一处施加。<code class="inline">is_dirty</code> 用
+          <code class="inline">is_animating()</code>
+          替代原来的两个独立布尔。请求本身照常记录，所以"回来"时恢复原状而非从头来。
+        </p>
+
+        <pre><span class="kw">pub fn</span> <span class="fn">is_animating</span>(&self) -> <span class="ty">bool</span> {
+    self.window_visible
+        && (self.<span class="fn">has_running_style_animations</span>()
+            || self.<span class="fn">has_animating_canvases</span>()
+            || self.tickers.<span class="fn">is_running</span>())
+}</pre>
+
+        <h3>平台可见性来源</h3>
+        <p>没有单一事件能表达"窗口能不能被看到"：</p>
+        <div class="cards grid2">
+          <div class="card">
+            <h4>macOS / Wayland</h4>
+            <p>发 <code class="inline">WindowEvent::Occluded</code>。</p>
+          </div>
+          <div class="card">
+            <h4>Windows / X11 最小化</h4>
+            <p>
+              不发 occlusion，而是 resize 到 0 +
+              <code class="inline">is_minimized</code>。
+            </p>
+          </div>
+        </div>
+        <p>
+          <code class="inline">refresh_window_visibility()</code>
+          取三者悲观值（<code class="inline"
+            >!occluded && !minimized && size&gt;0</code
+          >），在
+          <code class="inline">Occluded / Resized / Focused</code>
+          都调用一次。从不可见转可见时再
+          <code class="inline">request_redraw_if_dirty()</code> 重启循环。
+        </p>
+
+        <pre><span class="cm">// 停循环必须连时钟一起停 —— 这就是为什么 set_window_visible 收成 pub(crate)</span>
+<span class="kw">pub fn</span> <span class="fn">set_window_visible</span>(&<span class="kw">mut</span> self, visible: <span class="ty">bool</span>) {
+    <span class="kw">if</span> !visible { self.frame_clock.<span class="fn">suspend</span>(); }   <span class="cm">// 时钟也停</span>
+    self.app.<span class="fn">set_window_visible</span>(visible);
+}</pre>
+      </div>
+    </section>
+
+    <!-- ───────────────────────────── ⑥ 滚动 ───────────────────────────── -->
+    <section id="scroll">
+      <div class="wrap">
+        <div class="num">06 · SCROLL</div>
+        <h2>程序化滚动 <code class="inline">ScrollController</code></h2>
+        <p class="lede">
+          挂在可滚动 widget 上：<code class="inline"
+            >widget.scroll_controller(controller.clone())</code
+          >。运行时绑定到 host 节点、保持
+          <code class="inline">metrics</code>
+          最新，并把请求<strong>推迟到下一帧布局后</strong>应用。
+        </p>
+
+        <pre><span class="kw">pub struct</span> <span class="ty">ScrollMetrics</span> {
+    <span class="kw">pub</span> offset: <span class="ty">Point</span>,            <span class="cm">// 当前偏移</span>
+    <span class="kw">pub</span> content_size: <span class="ty">Size</span>&lt;<span class="ty">f32</span>&gt;,  <span class="cm">// ≥ viewport</span>
+    <span class="kw">pub</span> viewport_size: <span class="ty">Size</span>&lt;<span class="ty">f32</span>&gt;,
+    <span class="kw">pub</span> max_offset: <span class="ty">Point</span>,        <span class="cm">// 各轴最大偏移；不滚的轴为 0</span>
+}
+
+<span class="kw">impl</span> <span class="ty">ScrollController</span> {
+    <span class="kw">pub fn</span> <span class="fn">scroll_to</span>(&self, offset: <span class="kw">impl</span> <span class="ty">Into</span>&lt;<span class="ty">Point</span>&gt;) -> <span class="ty">bool</span>;
+    <span class="kw">pub fn</span> <span class="fn">scroll_by</span>(&self, delta: <span class="kw">impl</span> <span class="ty">Into</span>&lt;<span class="ty">Point</span>&gt;) -> <span class="ty">bool</span>;
+    <span class="kw">pub fn</span> <span class="fn">scroll_to_start</span>(&self) -> <span class="ty">bool</span>;
+    <span class="kw">pub fn</span> <span class="fn">scroll_to_end</span>(&self) -> <span class="ty">bool</span>;
+}</pre>
+        <p>
+          应用后会作为 <code class="inline">ScrollSource::Programmatic</code> 的
+          <code class="inline">Scroll</code> 事件回报——所以只监听
+          <code class="inline">on_scroll</code> 的组件（如
+          virtual_list）能跟上自己没发起的跳转。另：<code class="inline"
+            >b44fd86</code
+          >
+          让 virtual_list 忽略冒泡上来的滚动事件。
+        </p>
+
+        <div class="demo">
+          <div class="label">交互演示 · ScrollController（DOM 模拟）</div>
+          <div class="scrollbox" id="sc-box">
+            <div class="item">行 00 — header</div>
+            <div class="item">行 01</div>
+            <div class="item">行 02</div>
+            <div class="item">行 03</div>
+            <div class="item">行 04</div>
+            <div class="item">行 05</div>
+            <div class="item">行 06</div>
+            <div class="item">行 07</div>
+            <div class="item">行 08</div>
+            <div class="item">行 09</div>
+            <div class="item">行 10</div>
+            <div class="item">行 11</div>
+            <div class="item">行 12</div>
+            <div class="item hl">行 13 — end</div>
+          </div>
+          <div class="stats" style="grid-template-columns: repeat(3, 1fr)">
+            <div class="stat">
+              <div class="k">offset.y</div>
+              <div class="v accent" id="sc-offset">0</div>
+            </div>
+            <div class="stat">
+              <div class="k">max_offset.y</div>
+              <div class="v" id="sc-max">0</div>
+            </div>
+            <div class="stat">
+              <div class="k">can_scroll_y</div>
+              <div class="v" id="sc-can">true</div>
+            </div>
+          </div>
+          <div class="row">
+            <button class="btn primary" id="sc-start">scroll_to_start</button>
+            <button class="btn primary" id="sc-end">scroll_to_end</button>
+            <button class="btn" id="sc-by">scroll_by(0, +40)</button>
+            <button class="btn" id="sc-to">scroll_to(0, 80)</button>
+          </div>
+          <div class="log" id="sc-log"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────────────────────────── ⑦ Invariant ───────────────────────────── -->
+    <section id="invariant">
+      <div class="wrap">
+        <div class="num">07 · INVARIANTS</div>
+        <h2>内部不变量上报 <code class="inline">invariant!</code></h2>
+        <p class="lede">
+          host 树 / layout 树 / style 系统 / render 系统按同一
+          <code class="inline">NodeId</code> 索引。一处命中、另一处 miss
+          过去是裸 <code class="inline">else { return }</code>，bug 变成不可点的
+          widget 且日志里什么都没有。<code class="inline">invariant!</code>
+          在拿回 <code class="inline">Option</code> 的同时上报 miss。
+        </p>
+
+        <pre><span class="cm">// 旧：静默吞掉</span>
+<span class="kw">let</span> host = self.hosts.<span class="fn">get</span>(id) <span class="kw">else</span> { <span class="kw">return</span>; };
+
+<span class="cm">// 新：控制流不变，但上报</span>
+<span class="kw">let</span> host = <span class="fn">invariant!</span>(self.hosts.<span class="fn">get</span>(id), "missing host for {id:?}");</pre>
+
+        <pre><span class="cm">// diagnostics.rs</span>
+<span class="kw">pub(crate) fn</span> <span class="fn">report</span>(file: &<span class="kw">static</span> <span class="ty">str</span>, line: <span class="ty">u32</span>, context: <span class="ty">Arguments</span>) {
+    <span class="kw">#[cfg</span>(feature = <span class="st">"strict-invariants"</span>)<span class="kw">]</span>
+    <span class="fn">panic!</span>(<span class="st">"xui invariant violated at {file}:{line}: {context}"</span>);
+
+    <span class="kw">#[cfg</span>(<span class="kw">not</span>(feature = <span class="st">"strict-invariants"</span>))]
+    <span class="fn">log::error!</span>(<span class="st">"xui invariant violated at {file}:{line}: {context}"</span>);
+}</pre>
+
+        <div class="demo">
+          <div class="label">交互演示 · strict-invariants 开关</div>
+          <p class="dim" style="font-size: 14px">
+            测试套件启用
+            <code class="inline">strict-invariants</code
+            >（panic）；应用默认不启用（log，非致命，因为某些 id 在 teardown
+            期会合法地变 stale）。
+          </p>
+          <div class="row">
+            <span style="font: 500 13px var(--mono); color: var(--text-dim)"
+              >strict-invariants:</span
+            >
+            <button class="btn" id="iv-toggle">关 (log::error!)</button>
+            <button class="btn warn" id="iv-trigger">
+              触发一次 invariant miss
+            </button>
+          </div>
+          <div class="log" id="iv-log"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────────────────────────── ⑧ 资产 ───────────────────────────── -->
+    <section id="assets">
+      <div class="wrap">
+        <div class="num">08 · ASSETS</div>
+        <h2>资产流水线两步演进</h2>
+
+        <h3>f8557f3 · 打包进 build.rs</h3>
+        <p class="dim">
+          资产现在由各 app 的 <code class="inline">build.rs</code> 调
+          <code class="inline">xui_build::assets()</code> 打包，于是<strong
+            >plain cargo 在任何地方都能用</strong
+          >。<code class="inline">cargo xui</code>
+          变成可选的便利子命令。bootstrap 通过
+          <code class="inline">cargo::rustc-env=XUI_ASSETS_BOOTSTRAP</code>
+          交给编译器。
+        </p>
+
+        <h3>aced3ad · 资产 interning + 共享生命周期</h3>
+        <p class="dim">
+          同名资产只解析一次、按
+          <code class="inline">ParsedAssetKey</code>
+          intern；图像/图标等共享同一底层数据，生命周期由
+          <code class="inline">SharedAsset</code> trait
+          跟踪，避免重复解码与悬挂引用。
+        </p>
+        <pre><span class="kw">impl</span> <span class="ty">AssetManager</span> {
+    <span class="kw">fn</span> <span class="fn">intern</span>&lt;T: <span class="ty">SharedAsset</span>&gt;(&<span class="kw">mut</span> self, key: <span class="ty">ParsedAssetKey</span>, value: T) -> T { ... }
+}
+<span class="kw">pub fn</span> <span class="fn">load_shared_asset</span>&lt;F&gt;(id: <span class="ty">AssetId</span>) -> <span class="ty">Option</span>&lt;F::Output&gt;</pre>
+
+        <div class="demo">
+          <div class="label">交互演示 · interning 去重</div>
+          <p class="dim" style="font-size: 14px">
+            同一 key 多次 load 只解析一次，后续命中已 intern 的条目。
+          </p>
+          <div class="row">
+            <button class="btn primary" id="as-load">
+              load_image("logo.png")
+            </button>
+            <button class="btn" id="as-load2">再 load 一次同名</button>
+            <button class="btn" id="as-load3">load 不同名</button>
+            <button class="btn" id="as-reset">清空</button>
+          </div>
+          <div class="stats" style="grid-template-columns: repeat(3, 1fr)">
+            <div class="stat">
+              <div class="k">解析次数</div>
+              <div class="v warn" id="as-decodes">0</div>
+            </div>
+            <div class="stat">
+              <div class="k">intern 命中</div>
+              <div class="v accent" id="as-hits">0</div>
+            </div>
+            <div class="stat">
+              <div class="k">条目数</div>
+              <div class="v" id="as-entries">0</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────────────────────────── ⑨ 组件 ───────────────────────────── -->
+    <section id="components">
+      <div class="wrap">
+        <div class="num">09 · COMPONENTS</div>
+        <h2>组件批合并 <code class="inline">66f6564</code></h2>
+        <p class="lede">
+          从 canvas-wgpu 分支合并回主：一大批内置组件、<code class="inline"
+            >xui-table</code
+          >、AccessKit 接入。
+        </p>
+        <div class="cards grid2">
+          <div class="card">
+            <h4>xui-components</h4>
+            <p>
+              calendar · collections · command · controls · feedback · forms ·
+              overlays · selection
+            </p>
+          </div>
+          <div class="card">
+            <h4>xui-table</h4>
+            <p>
+              advanced_table + 纯净、无窗口的
+              <code class="inline">TableModel</code>（注意：尚未加入 workspace
+              members）
+            </p>
+          </div>
+          <div class="card">
+            <h4>accessibility</h4>
+            <p>xui-winit AccessKit 接入（+256 行）</p>
+          </div>
+          <div class="card">
+            <h4>组件契约</h4>
+            <p>
+              有状态控件：受控值 + <code class="inline">default_*</code> +
+              <code class="inline">on_*</code>；受控值是真相源
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────────────────────────── timeline ───────────────────────────── -->
+    <section id="timeline">
+      <div class="wrap">
+        <div class="num">TIMELINE</div>
+        <h2>提交时间线</h2>
+        <div class="timeline">
+          <div class="tl-item">
+            <span class="hash">2b95c7b</span
+            ><span class="msg"
+              >Add frame clock, tickers, and scroll controllers</span
+            >
+            <div class="meta">
+              +3440 / −171 · clock.rs, ticker.rs, scroll.rs, runtime.rs,
+              canvas.rs …
+            </div>
+          </div>
+          <div class="tl-item">
+            <span class="hash">b44fd86</span
+            ><span class="msg"
+              >Ignore bubbled scroll events in virtual_list</span
+            >
+            <div class="meta">+87 / −1 · virtual_list.rs</div>
+          </div>
+          <div class="tl-item">
+            <span class="hash">3f044f5</span
+            ><span class="msg">Export `center` from prelude</span>
+            <div class="meta">+2 / −2 · prelude.rs</div>
+          </div>
+          <div class="tl-item">
+            <span class="hash">5f1dafd</span
+            ><span class="msg"
+              >Add invariant reporting and strict-invariants feature</span
+            >
+            <div class="meta">
+              diagnostics.rs, render.rs, 多处 else{return} → invariant!
+            </div>
+          </div>
+          <div class="tl-item">
+            <span class="hash">f8557f3</span
+            ><span class="msg">Move asset packing into build scripts</span>
+            <div class="meta">
+              xui-build 新增 lib.rs (481) + build_script 测试
+            </div>
+          </div>
+          <div class="tl-item">
+            <span class="hash">aced3ad</span
+            ><span class="msg"
+              >Add asset interning and shared asset lifetime tracking</span
+            >
+            <div class="meta">assets.rs +635 · SharedAsset trait</div>
+          </div>
+          <div class="tl-item">
+            <span class="hash">66f6564</span
+            ><span class="msg"
+              >Merge canvas-wgpu: 组件批 + xui-table + accessibility</span
+            >
+            <div class="meta">
+              +4623 · calendar/collections/command/controls/…
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <div class="wrap">
+        <p>
+          本页为
+          <code class="inline">xui</code>
+          仓库最近更新的演示性说明。所有交互演示为概念模拟，非真实运行时；准确行为以源码与
+          <code class="inline">cargo doc</code> 为准。
+        </p>
+        <p style="margin-top: 8px">
+          生成自 <code class="inline">git log</code> 与工作树源码 · 详见
+          <a href="#frame-clock">各章节</a>。
+        </p>
+      </div>
+    </footer>
+
+    <script>
+      /* ─── 通用工具（安全 DOM 构造，无 innerHTML）─── */
+      const $ = (id) => document.querySelector("#" + id);
+      function seg(t, c) {
+        return { t, c };
+      }
+      function logTo(el, cls, segs) {
+        if (!el) return;
+        const line = document.createElement("div");
+        if (cls) line.className = cls;
+        const t = new Date().toLocaleTimeString("en-GB", { hour12: false });
+        const ts = document.createElement("span");
+        ts.className = "ts";
+        ts.textContent = "[" + t + "] ";
+        line.appendChild(ts);
+        const arr = Array.isArray(segs) ? segs : [{ t: segs }];
+        for (const s of arr) {
+          if (s.c) {
+            const sp = document.createElement("span");
+            sp.className = s.c;
+            sp.textContent = s.t;
+            line.appendChild(sp);
+          } else {
+            line.appendChild(document.createTextNode(s.t));
+          }
+        }
+        el.appendChild(line);
+        el.scrollTop = el.scrollHeight;
+      }
+      function clearLog(el) {
+        if (el) el.replaceChildren();
+      }
+      function setPill(id, on, onCls, offCls) {
+        const el = $(id);
+        el.className = "pill " + (on ? onCls || "on" : offCls || "off");
+      }
+      function setState(el, on, onCls, offCls) {
+        el.className = "v " + (on ? onCls || "accent" : offCls || "dim");
+      }
+
+      /* ─── ① 帧时钟演示 ─── */
+      (function () {
+        const MAX_DELTA = 100; // ms, FrameClock::DEFAULT_MAX_DELTA
+        let state = {
+          index: 0,
+          ts: 0,
+          delta: 0,
+          suspended: true,
+          visible: true,
+          last: null,
+          running: false,
+          stallNext: false,
+          timer: null,
+        };
+        function fmt(v) {
+          return v.toFixed(1) + "ms";
+        }
+        function statusText() {
+          if (!state.running) return state.suspended ? "suspended" : "idle";
+          return state.visible ? "animating" : "hidden · hold";
+        }
+        function render() {
+          $("ck-index").textContent = state.index;
+          $("ck-ts").textContent = fmt(state.ts);
+          $("ck-delta").textContent = fmt(state.delta);
+          $("ck-state").textContent = statusText();
+          setPill("ck-p-visible", state.visible);
+          setPill("ck-p-suspended", state.suspended);
+          setPill("ck-p-animating", state.running && state.visible);
+        }
+        function frame() {
+          const now = performance.now();
+          if (!state.visible) {
+            state.index++;
+            state.delta = 0;
+            logTo($("ck-log"), "", [
+              seg("hold()", "m-ok"),
+              " frame " + state.index + " · painted, not advanced",
+            ]);
+          } else {
+            let raw = state.last == null ? 0 : now - state.last;
+            if (state.stallNext) {
+              raw = 2000;
+              state.stallNext = false;
+            }
+            const delta = Math.min(raw, MAX_DELTA);
+            state.index++;
+            state.delta = delta;
+            state.ts += delta;
+            const clamped = raw > MAX_DELTA;
+            const segs = [
+              seg("tick()", "m-ok"),
+              " frame " + state.index + " · delta=" + fmt(raw),
+            ];
+            if (clamped) {
+              segs.push(" → ", seg("clamp " + fmt(MAX_DELTA), "m-warn"));
+            }
+            segs.push(" · ts=" + fmt(state.ts));
+            logTo($("ck-log"), clamped ? "err" : "", segs);
+            state.suspended = false;
+          }
+          state.last = now;
+          render();
+        }
+        function start() {
+          if (state.timer) return;
+          state.running = true;
+          state.suspended = false;
+          logTo($("ck-log"), "", [seg("start loop", "m-ok")]);
+          state.timer = setInterval(frame, 700);
+          render();
+        }
+        function stop() {
+          state.running = false;
+          if (state.timer) {
+            clearInterval(state.timer);
+            state.timer = null;
+          }
+        }
+        $("ck-start").onclick = start;
+        $("ck-hide").onclick = () => {
+          state.visible = !state.visible;
+          if (!state.visible) {
+            state.suspended = true;
+            state.last = null;
+            logTo($("ck-log"), "", [
+              "set_window_visible(false) → ",
+              seg("clock.suspend()", "m-warn"),
+            ]);
+          } else {
+            logTo(
+              $("ck-log"),
+              "",
+              "set_window_visible(true) → request_redraw_if_dirty()",
+            );
+          }
+          render();
+        };
+        $("ck-stall").onclick = () => {
+          state.stallNext = true;
+          logTo(
+            $("ck-log"),
+            "",
+            "scheduled a 2s stall next frame → expect clamp",
+          );
+        };
+        $("ck-idle").onclick = () => {
+          stop();
+          state.suspended = true;
+          state.last = null;
+          logTo($("ck-log"), "", [
+            "idle → ",
+            seg("clock.suspend()", "m-warn"),
+            " · gap will cost nothing",
+          ]);
+          render();
+          setTimeout(() => {
+            logTo($("ck-log"), "", "…3s later, event wakes loop…");
+            start();
+          }, 3000);
+        };
+        $("ck-reset").onclick = () => {
+          stop();
+          state = {
+            index: 0,
+            ts: 0,
+            delta: 0,
+            suspended: true,
+            visible: true,
+            last: null,
+            running: false,
+            stallNext: false,
+            timer: null,
+          };
+          clearLog($("ck-log"));
+          render();
+        };
+        render();
+      })();
+
+      /* ─── ② Ticker 演示 ─── */
+      (function () {
+        let running = false,
+          ticks = 0,
+          renders = 1,
+          delta = 16,
+          timer = null;
+        function render() {
+          $("tk-ticks").textContent = ticks;
+          $("tk-renders").textContent = renders;
+          $("tk-state").textContent = running ? "running" : "stopped";
+          setState($("tk-state"), running);
+          $("tk-delta").textContent = delta + "ms";
+        }
+        function tick() {
+          ticks++;
+          delta = 16;
+          logTo($("tk-log"), "", [
+            "ticker callback · frame.delta=" +
+              delta +
+              "ms · ticks=" +
+              ticks +
+              " · ",
+            seg("renders still " + renders, "m-ok"),
+          ]);
+          render();
+        }
+        $("tk-start").onclick = () => {
+          if (running) return;
+          running = true;
+          logTo($("tk-log"), "", "ticker.start()");
+          render();
+          timer = setInterval(tick, 700);
+        };
+        $("tk-stop").onclick = () => {
+          if (!running) return;
+          running = false;
+          clearInterval(timer);
+          logTo(
+            $("tk-log"),
+            "",
+            "ticker.stop() · callback returned Tick::Stop",
+          );
+          render();
+        };
+        $("tk-rebuild").onclick = () => {
+          renders++;
+          logTo($("tk-log"), "err", [
+            "setState() → full reconcile (renders=" + renders + ") · ",
+            seg("this is what use_ticker exists to avoid", "m-warn"),
+          ]);
+          render();
+        };
+        render();
+      })();
+
+      /* ─── ③ 墙钟演示 ─── */
+      (function () {
+        let now = 1000,
+          deadline = 1250,
+          monotonic = false;
+        function render() {
+          $("wc-now").textContent = now;
+          $("wc-dl").textContent = deadline;
+          const exp = now >= deadline;
+          $("wc-exp").textContent = exp ? "是" : "否";
+          setState($("wc-exp"), exp, "accent", "warn");
+          $("wc-clock").textContent = monotonic
+            ? "Instant (单调)"
+            : "SystemTime (墙钟)";
+          setState($("wc-clock"), monotonic, "accent", "warn");
+        }
+        function apply(time) {
+          now = monotonic ? Math.max(now, time) : time;
+          render();
+          const exp = now >= deadline;
+          const segs = [
+            "now=" + now + " · deadline=" + deadline + " · expired=",
+          ];
+          segs.push(exp ? seg("是", "m-ok") : seg("否", "m-warn"));
+          if (monotonic) segs.push(" · ", seg("Instant 拒绝后退", "m-ok"));
+          logTo($("wc-log"), exp ? "ok" : "err", segs);
+        }
+        $("wc-back").onclick = () => {
+          if (monotonic) {
+            logTo(
+              $("wc-log"),
+              "err",
+              "墙钟回拨被 Instant 拒绝：now 保持 " + now,
+            );
+            return;
+          }
+          apply(now - 300);
+          logTo(
+            $("wc-log"),
+            "err",
+            "⚠ 墙钟回拨 300ms → 截止期又变“未来”，饥饿保护静默关闭",
+          );
+        };
+        $("wc-fwd").onclick = () => {
+          apply(now + 2000);
+          if (!monotonic)
+            logTo(
+              $("wc-log"),
+              "err",
+              "⚠ 墙钟前跳 2s → 所有 pending lane 一起过期",
+            );
+        };
+        $("wc-switch").onclick = () => {
+          monotonic = !monotonic;
+          const label = monotonic
+            ? [seg("Instant（单调，永不后退）", "m-ok")]
+            : ["SystemTime（墙钟）"];
+          logTo($("wc-log"), "", ["切到 ", label[0]]);
+          render();
+        };
+        $("wc-reset2").onclick = () => {
+          now = 1000;
+          deadline = 1250;
+          monotonic = false;
+          clearLog($("wc-log"));
+          render();
+        };
+        render();
+      })();
+
+      /* ─── ⑥ Scroll 演示 ─── */
+      (function () {
+        const box = $("sc-box");
+        function metrics() {
+          const max = Math.max(0, box.scrollHeight - box.clientHeight);
+          return { offset: Math.round(box.scrollTop), max, can: max > 0 };
+        }
+        function render() {
+          const m = metrics();
+          $("sc-offset").textContent = m.offset;
+          $("sc-max").textContent = m.max;
+          $("sc-can").textContent = m.can ? "true" : "false";
+          setState($("sc-can"), m.can);
+        }
+        function apply(target, src) {
+          box.scrollTo({ top: target, behavior: "smooth" });
+          setTimeout(() => {
+            render();
+            logTo(
+              $("sc-log"),
+              "",
+              (src || "scroll_by") +
+                " → offset.y=" +
+                Math.round(box.scrollTop) +
+                " · reported as ScrollSource::Programmatic",
+            );
+          }, 350);
+        }
+        $("sc-start").onclick = () => apply(0, "scroll_to_start()");
+        $("sc-end").onclick = () => apply(box.scrollHeight, "scroll_to_end()");
+        $("sc-by").onclick = () =>
+          apply(box.scrollTop + 40, "scroll_by(0, +40)");
+        $("sc-to").onclick = () => apply(80, "scroll_to(0, 80)");
+        box.addEventListener("scroll", render);
+        setTimeout(render, 100);
+      })();
+
+      /* ─── ⑦ Invariant 演示 ─── */
+      (function () {
+        let strict = false;
+        function render() {
+          $("iv-toggle").textContent = strict
+            ? "开 (panic!)"
+            : "关 (log::error!)";
+        }
+        $("iv-toggle").onclick = () => {
+          strict = !strict;
+          render();
+        };
+        $("iv-trigger").onclick = () => {
+          if (strict) {
+            logTo($("iv-log"), "panic", [
+              seg("thread panicked at", "m-err"),
+              ' "xui invariant violated at component.rs:547: missing host for NodeId(42)"',
+            ]);
+            logTo(
+              $("iv-log"),
+              "panic",
+              "note: run with strict-invariants feature; tests run this way",
+            );
+          } else {
+            logTo($("iv-log"), "err", [
+              seg("[ERROR xui]", "m-warn"),
+              " invariant violated at component.rs:547: missing host for NodeId(42)",
+            ]);
+            logTo(
+              $("iv-log"),
+              "",
+              "       → returned None, control flow unchanged (non-fatal)",
+            );
+          }
+        };
+        render();
+      })();
+
+      /* ─── ⑧ 资产 interning 演示 ─── */
+      (function () {
+        let decodes = 0,
+          hits = 0;
+        const store = new Map();
+        function load(name) {
+          if (store.has(name)) {
+            hits++;
+          } else {
+            decodes++;
+            store.set(name, true);
+          }
+          $("as-decodes").textContent = decodes;
+          $("as-hits").textContent = hits;
+          $("as-entries").textContent = store.size;
+        }
+        $("as-load").onclick = () => load("logo.png");
+        $("as-load2").onclick = () => load("logo.png");
+        $("as-load3").onclick = () => load("hero.png");
+        $("as-reset").onclick = () => {
+          decodes = 0;
+          hits = 0;
+          store.clear();
+          $("as-decodes").textContent = 0;
+          $("as-hits").textContent = 0;
+          $("as-entries").textContent = 0;
+        };
+      })();
+
+      /* ─── TOC 高亮 ─── */
+      (function () {
+        const links = Array.from(document.querySelectorAll("nav.toc a"));
+        const secs = links.map((a) =>
+          document.querySelector(a.getAttribute("href")),
+        );
+        const obs = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((e) => {
+              if (e.isIntersecting) {
+                const i = secs.indexOf(e.target);
+                links.forEach((l) => l.classList.remove("cur"));
+                if (i >= 0) links[i].classList.add("cur");
+              }
+            });
+          },
+          { rootMargin: "-30% 0px -60% 0px" },
+        );
+        secs.forEach((s) => {
+          if (s) obs.observe(s);
+        });
+      })();
+    </script>
+  </body>
+</html>

@@ -28,6 +28,7 @@
 //! See `xui-example-app` for a complete runnable application, and the workspace
 //! `README.md` for a quick start.
 
+pub mod anchor;
 pub mod animation;
 pub mod app;
 pub mod assets;
@@ -57,7 +58,7 @@ pub mod ticker;
 pub mod widgets;
 pub use crate::prelude::*;
 pub mod text;
-pub mod ui_runtime;
+pub(crate) mod ui_runtime;
 
 /// Includes the asset bootstrap module generated for this crate.
 ///

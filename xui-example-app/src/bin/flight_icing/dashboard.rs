@@ -371,7 +371,6 @@ fn icing_product_drop_down_style() -> DropDownStyle {
             })
             .when(WidgetState::FOCUSED, |style| style.border_color(ACCENT)),
         trigger_open: Style::new().border_color(ACCENT),
-        backdrop: Style::new(),
         menu: Style::new()
             .padding(EdgeInsets::all(4.0))
             .background(Color::hex("#1A1A1C"))

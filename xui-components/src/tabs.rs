@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use xui_core::prelude::*;
 use xui_macros::component;
 use xui_core::state::State;
@@ -48,50 +50,56 @@ pub struct TabsStyle {
 
 impl Default for TabsStyle {
     fn default() -> Self {
-        let focus_ring = Color::rgba(0.42, 0.65, 1.0, 0.92);
+        let trigger = Style::new()
+            .height(29.0)
+            .gap(6.0)
+            .padding(EdgeInsets::symmetric(8.0, 4.0))
+            .align(AlignStyle::Center)
+            .justify(JustifyStyle::Center)
+            .font_size(FontSizeToken::Md)
+            .font_weight(FontWeight::Medium)
+            .background(Color::TRANSPARENT)
+            .border_color(Color::TRANSPARENT)
+            .border_width(1.0)
+            .border_radius(RadiusToken::Md)
+            .transition(Transition::new(Duration::from_millis(150)));
+        let focused = |style: StylePatch| {
+            style.border_color(ColorToken::Ring).shadow(
+                ShadowStyle::new()
+                    .color(ColorToken::Ring.alpha(0.5))
+                    .blur(0.0)
+                    .spread(3.0),
+            )
+        };
         Self {
-            root: Style::new().gap(8.0),
+            root: Style::new().gap(8.0).align(AlignStyle::Start),
             list: Style::new()
-                .gap(4.0)
-                .padding(EdgeInsets::all(4.0))
-                .background(Color::rgba(1.0, 1.0, 1.0, 0.07))
-                .border_radius(10.0),
-            tab: Style::new()
-                .padding(EdgeInsets::symmetric(14.0, 8.0))
-                .color(Color::rgba(1.0, 1.0, 1.0, 0.72))
-                .border_color(Color::rgba(1.0, 1.0, 1.0, 0.0))
-                .border_width(1.0)
-                .border_radius(7.0)
+                .height(36.0)
+                .padding(EdgeInsets::all(3.0))
+                .align(AlignStyle::Center)
+                .background(ColorToken::Muted)
+                .color(ColorToken::MutedForeground)
+                .border_radius(RadiusToken::Lg),
+            tab: trigger
+                .clone()
+                .color(ColorToken::MutedForeground)
                 .when(WidgetState::HOVERED, |style| {
-                    style
-                        .background(Color::rgba(1.0, 1.0, 1.0, 0.08))
-                        .color(Color::WHITE)
+                    style.color(ColorToken::Foreground)
                 })
-                .when(WidgetState::FOCUSED, |style| style.border_color(focus_ring)),
-            selected_tab: Style::new()
-                .padding(EdgeInsets::symmetric(14.0, 8.0))
-                .background(Color::BLUE_500)
-                .color(Color::WHITE)
-                .font_weight(FontWeight::Medium)
-                .border_color(Color::rgba(0.42, 0.65, 1.0, 0.0))
-                .border_width(1.0)
-                .border_radius(7.0)
-                .when(WidgetState::FOCUSED, |style| {
-                    style.border_color(Color::WHITE)
-                }),
-            disabled_tab: Style::new()
-                .padding(EdgeInsets::symmetric(14.0, 8.0))
-                .color(Color::rgba(1.0, 1.0, 1.0, 0.3))
-                .border_color(Color::rgba(1.0, 1.0, 1.0, 0.0))
-                .border_width(1.0)
-                .border_radius(7.0),
-            panel: Style::new()
-                .min_height(72.0)
-                .padding(EdgeInsets::all(16.0))
-                .background(Color::rgba(1.0, 1.0, 1.0, 0.045))
-                .border_color(Color::rgba(1.0, 1.0, 1.0, 0.1))
-                .border_width(1.0)
-                .border_radius(10.0),
+                .when(WidgetState::FOCUS_VISIBLE, focused),
+            selected_tab: trigger
+                .clone()
+                .background(ColorToken::Background)
+                .color(ColorToken::Foreground)
+                .shadow(
+                    ShadowStyle::new()
+                        .color(Color::rgba(0.0, 0.0, 0.0, 0.1))
+                        .offset(Point::new(0.0, 1.0))
+                        .blur(3.0),
+                )
+                .when(WidgetState::FOCUS_VISIBLE, focused),
+            disabled_tab: trigger.color(ColorToken::MutedForeground.alpha(0.5)),
+            panel: Style::new().width(Sizing::fill()),
         }
     }
 }
@@ -202,6 +210,7 @@ pub fn tabs(
         let tab = ContainerWidget::new()
             .key(format!("tab-{}-{index}", item.id))
             .style(tab_style)
+            .flex_direction(FlexDirectionStyle::Row)
             .focusable(!disabled)
             .tab_index(if is_active && !disabled { 0 } else { -1 })
             .focus_handle(focus_handles.get()[index].clone())

@@ -1,4 +1,6 @@
 use crate::diagnostics::invariant;
+use std::fmt;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use rustc_hash::FxHashMap;
@@ -53,6 +55,41 @@ impl Default for OverlayEntryOptions {
     }
 }
 
+/// Why a Portal is being asked to close.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DismissReason {
+    /// A pointer went down outside it, or on a layer painted below it.
+    PointerOutside,
+    /// Escape was pressed and nothing focused handled it.
+    Escape,
+}
+
+/// A Portal's `on_dismiss` handler. Compared by identity, like event handlers.
+#[derive(Clone)]
+pub struct DismissHandler(Rc<dyn Fn(DismissReason)>);
+
+impl DismissHandler {
+    pub fn new(handler: impl Fn(DismissReason) + 'static) -> Self {
+        Self(Rc::new(handler))
+    }
+
+    pub fn call(&self, reason: DismissReason) {
+        (self.0)(reason)
+    }
+}
+
+impl PartialEq for DismissHandler {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl fmt::Debug for DismissHandler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DismissHandler").finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug)]
 pub struct OverlayScope {
     id: OverlayScopeId,
@@ -86,6 +123,7 @@ pub struct OverlayEntry {
     id: OverlayEntryId,
     scope: OverlayScopeId,
     visual_root: NodeId,
+    on_dismiss: Option<DismissHandler>,
     z_index: i32,
     insertion_order: u64,
     hit_test: bool,
@@ -103,6 +141,11 @@ impl OverlayEntry {
 
     pub fn visual_root(&self) -> NodeId {
         self.visual_root
+    }
+
+    /// What to call when the entry should close; see [`DismissReason`].
+    pub fn on_dismiss(&self) -> Option<&DismissHandler> {
+        self.on_dismiss.as_ref()
     }
 
     pub fn z_index(&self) -> i32 {
@@ -130,7 +173,11 @@ pub enum OverlayModelError {
 ///
 /// Scopes form nested stacking contexts. Entries are Portal visual roots. The
 /// component tree remains their logical owner while this model records their
-/// visual placement and ordering below the root overlayer.
+/// paint order below the root overlayer, and what they do to input: whether
+/// they are hit, whether they block what is below, and how they close.
+///
+/// Where an entry sits on screen is not recorded here. A Portal with an anchor
+/// hands its visual root to `ui_runtime::anchor::AnchorSystem` instead.
 #[derive(Debug)]
 pub struct RootOverlayerWidget {
     key: Key,
@@ -244,6 +291,7 @@ impl RootOverlayerWidget {
                 id,
                 scope,
                 visual_root,
+                on_dismiss: None,
                 z_index: options.z_index,
                 insertion_order,
                 hit_test: options.hit_test,
@@ -291,6 +339,18 @@ impl RootOverlayerWidget {
         entry.modal = options.modal;
         let scope = entry.scope;
         self.sort_scope(scope);
+        Ok(())
+    }
+
+    pub fn set_entry_dismiss(
+        &mut self,
+        id: OverlayEntryId,
+        on_dismiss: Option<DismissHandler>,
+    ) -> Result<(), OverlayModelError> {
+        self.entries
+            .get_mut(&id)
+            .ok_or(OverlayModelError::EntryNotFound(id))?
+            .on_dismiss = on_dismiss;
         Ok(())
     }
 

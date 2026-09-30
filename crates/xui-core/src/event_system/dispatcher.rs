@@ -1,7 +1,7 @@
-use crate::diagnostics::invariant;
 use crate::event_system::callbacks::EventHandlers;
 use crate::event_system::{EventContext, Flow};
 use crate::text::{TextHost, TextLayoutQuery, TextLayoutSlot};
+use crate::ui_runtime::EventPath;
 use crate::ui_runtime::UiRuntime;
 use xui_interface::events::semantic::SemanticEvent;
 use xui_interface::events::{EventPhase, PropagationMode, RawEvent};
@@ -113,7 +113,7 @@ pub fn dispatch_semantic<B: TextBackend>(
 }
 
 fn dispatch_path(
-    path: Vec<NodeId>,
+    path: EventPath,
     mode: PropagationMode,
     mut dispatch_to_node: impl FnMut(NodeId, EventPhase) -> Flow,
 ) -> DispatchReport {
@@ -156,11 +156,7 @@ fn dispatch_path(
 
 fn resolve_raw_target(arena: &UiRuntime, event: &RawEvent) -> Option<NodeId> {
     if let Some(position) = event.pointer_position() {
-        if let Some(captured) = arena
-            .event_state()
-            .pointer_capture()
-            .filter(|node| arena.contains(*node))
-        {
+        if let Some(captured) = arena.event_state().pointer_capture() {
             return Some(captured);
         }
 
@@ -169,7 +165,7 @@ fn resolve_raw_target(arena: &UiRuntime, event: &RawEvent) -> Option<NodeId> {
         }
     }
 
-    if let Some(focused) = arena.focused_node().filter(|node| arena.contains(*node)) {
+    if let Some(focused) = arena.focused_node() {
         return Some(focused);
     }
 
@@ -207,9 +203,8 @@ fn dispatch_semantic_to_node<B: TextBackend>(
     // `target_local` remains relative to the original target while
     // `current_local` follows the node currently handling the event.
     if let SemanticEvent::PointerMove(pointer_move) = event {
-        if let Some(local) = arena.to_local(node, pointer_move.pointer.coords.viewport) {
-            pointer_move.pointer.coords.current_local = local;
-        }
+        pointer_move.pointer.coords.current_local =
+            arena.to_local(node, pointer_move.pointer.coords.viewport);
     }
 
     apply_semantic_state(arena, node, event, phase);
@@ -245,15 +240,13 @@ fn dispatch_user_handlers<B: TextBackend>(
     let mut requests = EventRequests::default();
 
     let flow = {
-        let Some((view, handlers)) = invariant!(
-            arena.node_and_handlers(node),
-            "dispatching to node {node:?}, which has no host, layout or style node"
-        ) else {
-            return Flow::empty();
-        };
+        // Most nodes on a path listen for nothing: skip them before paying for
+        // a view, whose on-screen origin walks every ancestor.
+        let handlers = arena.handlers(node);
         if handlers.is_empty() {
             return Flow::empty();
         }
+        let view = arena.node_view(node);
         let text_layout = primary_text_query(host_text_cache, node);
         let mut cx =
             EventContext::new(view, text_layout, phase, &mut request_update, &mut requests);
@@ -278,6 +271,13 @@ fn apply_semantic_state(
         return;
     };
     arena.set_widget_state_flag(node, flag, enabled);
+    if flag == xui_interface::WidgetState::FOCUSED {
+        let visible = match event {
+            SemanticEvent::Focus(event) | SemanticEvent::FocusIn(event) => event.focus_visible,
+            _ => false,
+        };
+        arena.set_widget_state_flag(node, xui_interface::WidgetState::FOCUS_VISIBLE, visible);
+    }
 }
 
 #[allow(deprecated)]
@@ -345,8 +345,9 @@ fn apply_event_context(
     request_update: WidgetUpdateFlags,
     requests: &EventRequests,
 ) {
-    if !request_update.is_empty() && arena.contains(node) {
-        arena.mark_dirty(node, request_update);
+    // `node` is on the path being dispatched, which nothing removes mid-way.
+    if !request_update.is_empty() {
+        arena.request_update(node, request_update);
     }
 
     for request in requests.iter() {

@@ -83,7 +83,8 @@ use crate::event_system::translator::EventTranslator;
 use crate::text::{TextHost, TextLayoutQuery};
 use crate::ui_runtime::NodeView;
 use crate::ui_runtime::UiRuntime;
-use xui_interface::events::{EventResult, RawEvent};
+use crate::widgets::DismissReason;
+use xui_interface::events::{EventResult, KeyState, NamedKey, RawEvent};
 use xui_interface::{
     EventPhase, EventRequest, EventRequests, NodeId, TextBackend, WidgetUpdateFlags,
 };
@@ -228,11 +229,14 @@ pub fn dispatch_event<B: TextBackend>(
 pub struct EventDispatchReport {
     pub raw: DispatchReport,
     pub semantic: Vec<DispatchReport>,
+    /// Set when the event asked a Portal to close.
+    pub dismissed: Option<crate::widgets::DismissReason>,
 }
 
 impl EventDispatchReport {
     pub fn result(&self) -> EventResult {
-        if self.raw.result.is_consumed()
+        if self.dismissed.is_some()
+            || self.raw.result.is_consumed()
             || self
                 .semantic
                 .iter()
@@ -252,6 +256,14 @@ pub fn dispatch_event_pipeline<B: TextBackend>(
     event: RawEvent,
 ) -> EventDispatchReport {
     let (timestamp, modifiers) = raw_event_context(&event);
+    // Before the press reaches anything: the handler sees the tree the user
+    // pressed on. The press itself still goes on to whatever it hit.
+    let mut dismissed = match &event {
+        RawEvent::PointerDown(raw) => dismiss_overlay_if(arena, DismissReason::PointerOutside, |arena, root| {
+            !arena.overlay_contains_pointer(root, raw.position)
+        }),
+        _ => None,
+    };
     let raw = dispatcher::dispatch_raw(arena, host_text_cache, event.clone());
     let mut semantic = Vec::new();
 
@@ -277,7 +289,37 @@ pub fn dispatch_event_pipeline<B: TextBackend>(
         &mut semantic,
     );
 
-    EventDispatchReport { raw, semantic }
+    // After: Escape goes to the focused widget first, and closes a Portal only
+    // when nothing there used it.
+    if let RawEvent::Keyboard(key) = &event
+        && key.state == KeyState::Down
+        && key.named_key == Some(NamedKey::Escape)
+        && !key.is_repeat
+        && !raw.result.is_consumed()
+        && !semantic.iter().any(|report| report.result.is_consumed())
+    {
+        dismissed = dismiss_overlay_if(arena, DismissReason::Escape, |_, _| true);
+    }
+
+    EventDispatchReport {
+        raw,
+        semantic,
+        dismissed,
+    }
+}
+
+/// Asks the topmost dismissable Portal to close when `should` agrees.
+fn dismiss_overlay_if(
+    arena: &UiRuntime,
+    reason: DismissReason,
+    should: impl FnOnce(&UiRuntime, NodeId) -> bool,
+) -> Option<DismissReason> {
+    let (root, handler) = arena.dismissable_overlay()?;
+    if !should(arena, root) {
+        return None;
+    }
+    handler.call(reason);
+    Some(reason)
 }
 
 fn drain_focus_requests<B: TextBackend>(

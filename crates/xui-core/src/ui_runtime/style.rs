@@ -1,9 +1,8 @@
 use crate::animation::{has_animatable_difference, interpolate_style};
-use crate::diagnostics::invariant;
 use slotmap::{SecondaryMap, SparseSecondaryMap};
 use std::time::Duration;
 use xui_animation::{Timeline, Transition};
-use xui_interface::{ComputedStyle, NodeId, StyleDiffFlags, StylePatch, StyleValue, Theme};
+use xui_interface::{ComputedStyle, NodeId, StyleDiffFlags, StylePatch, Theme};
 
 pub(crate) struct StyleNode {
     computed: ComputedStyle,
@@ -88,6 +87,7 @@ impl StyleSystem {
         self.inherited_samples.remove(id);
     }
 
+    #[cfg(test)]
     pub(crate) fn contains(&self, id: NodeId) -> bool {
         self.nodes.contains_key(id)
     }
@@ -100,65 +100,73 @@ impl StyleSystem {
         self.default_style = style;
     }
 
-    pub(crate) fn computed(&self, id: NodeId) -> Option<&ComputedStyle> {
-        self.nodes.get(id).map(|node| &node.computed)
+    /// The style `id` is heading towards: its resolved target.
+    #[inline]
+    pub(crate) fn computed(&self, id: NodeId) -> &ComputedStyle {
+        &self.nodes[id].computed
     }
 
-    pub(crate) fn effective(&self, id: NodeId) -> Option<&ComputedStyle> {
-        let node = self.nodes.get(id)?;
-        Some(
-            self.animations
-                .get(id)
-                .map(|animation| &animation.sampled)
-                .or_else(|| self.inherited_samples.get(id))
-                .unwrap_or(&node.computed),
-        )
+    /// The style `id` shows this frame: an animation's sample, else the
+    /// target re-resolved against a sampled parent, else the target.
+    #[inline]
+    pub(crate) fn effective(&self, id: NodeId) -> &ComputedStyle {
+        self.styles(id).1
     }
 
-    pub(crate) fn styles(&self, id: NodeId) -> Option<(&ComputedStyle, &ComputedStyle)> {
-        let target = self.computed(id)?;
+    #[cfg(test)]
+    pub(crate) fn has_inherited_sample(&self, id: NodeId) -> bool {
+        self.inherited_samples.contains_key(id)
+    }
+
+    /// `(target, effective)`; see [`Self::computed`] and [`Self::effective`].
+    #[inline]
+    pub(crate) fn styles(&self, id: NodeId) -> (&ComputedStyle, &ComputedStyle) {
+        let target = self.computed(id);
         let effective = self
             .animations
             .get(id)
             .map(|animation| &animation.sampled)
             .or_else(|| self.inherited_samples.get(id))
             .unwrap_or(target);
-        Some((target, effective))
+        (target, effective)
     }
 
     pub(crate) fn set_computed(&mut self, id: NodeId, computed: ComputedStyle) {
-        self.nodes.get_mut(id).expect("style node missing").computed = computed;
+        self.nodes[id].computed = computed;
         self.inherited_samples.remove(id);
     }
 
-    /// Re-resolves inherited text values against the parent's sampled style
+    /// Re-resolves inherited properties against the parent's sampled style
     /// while leaving this node's target computed style untouched.
-    pub(crate) fn sync_inherited_text(
+    ///
+    /// Only inherited properties can move here, so the common case — the
+    /// sample already agrees with `parent` — is answered by comparing those
+    /// fields alone, before anything is cloned.
+    pub(crate) fn sync_inherited(
         &mut self,
         id: NodeId,
         parent: &ComputedStyle,
         patch: &StylePatch,
     ) -> (StyleDiffFlags, bool) {
-        let before = self.effective(id).expect("style node missing").clone();
+        let current = self.effective(id);
+        if !current.inherits_differently_from(parent, patch) {
+            return (StyleDiffFlags::empty(), false);
+        }
+        let before = current.clone();
         if let Some(animation) = self.animations.get_mut(id) {
-            apply_sampled_text_inheritance(&mut animation.sampled, parent, patch);
+            animation.sampled.inherit_unset_from(parent, patch);
             self.inherited_samples.remove(id);
         } else {
-            let computed = self
-                .nodes
-                .get(id)
-                .expect("style node missing")
-                .computed
-                .clone();
+            let computed = &self.nodes[id].computed;
             let mut sampled = computed.clone();
-            apply_sampled_text_inheritance(&mut sampled, parent, patch);
-            if sampled == computed {
+            sampled.inherit_unset_from(parent, patch);
+            if sampled.inherited_eq(computed) {
                 self.inherited_samples.remove(id);
             } else {
                 self.inherited_samples.insert(id, sampled);
             }
         }
-        let after = self.effective(id).expect("style node missing");
+        let after = self.effective(id);
         (
             before.diff(after),
             animated_sample_requires_layout(&before, after),
@@ -166,14 +174,11 @@ impl StyleSystem {
     }
 
     pub(crate) fn initialized(&self, id: NodeId) -> bool {
-        self.nodes.get(id).is_some_and(|node| node.initialized)
+        self.nodes[id].initialized
     }
 
     pub(crate) fn set_initialized(&mut self, id: NodeId) {
-        self.nodes
-            .get_mut(id)
-            .expect("style node missing")
-            .initialized = true;
+        self.nodes[id].initialized = true;
     }
 
     pub(crate) fn start_transition(
@@ -211,12 +216,8 @@ impl StyleSystem {
         let mut remaining = SparseSecondaryMap::new();
         let mut changed = Vec::with_capacity(active.len());
         for (id, mut animation) in active {
-            let Some(target) = invariant!(
-                self.nodes.get(id).map(|node| &node.computed),
-                "style animation is running for node {id:?}, which has no style node"
-            ) else {
-                continue;
-            };
+            // `remove` drops a node's animation with its style node.
+            let target = &self.nodes[id].computed;
             let before = animation.sampled.clone();
             let completed = animation.tick(delta, target);
             let diff = before.diff(&animation.sampled);
@@ -281,36 +282,6 @@ fn animated_sample_requires_layout(from: &ComputedStyle, to: &ComputedStyle) -> 
         || from.scroll.scrollbar.width != to.scroll.scrollbar.width
 }
 
-fn apply_sampled_text_inheritance(
-    sampled: &mut ComputedStyle,
-    parent: &ComputedStyle,
-    patch: &StylePatch,
-) {
-    macro_rules! inherit_text_fields {
-        ($($field:ident),+ $(,)?) => {
-            $(
-                if matches!(
-                    &patch.text.$field,
-                    StyleValue::Unset | StyleValue::Inherit
-                ) {
-                    sampled.text.$field = parent.text.$field.clone();
-                }
-            )+
-        };
-    }
-
-    inherit_text_fields!(
-        color,
-        font_family,
-        font_size,
-        font_weight,
-        font_style,
-        line_height,
-        letter_spacing,
-        decoration,
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,7 +302,7 @@ mod tests {
         let mut styles = StyleSystem::new(initial.clone());
         styles.create(id, initial.clone(), true);
 
-        assert_eq!(styles.effective(id), Some(&initial));
+        assert_eq!(styles.effective(id), &initial);
         assert!(styles.start_transition(
             id,
             Transition::new(Duration::from_millis(100)),
@@ -339,18 +310,17 @@ mod tests {
             &target,
         ));
         styles.set_computed(id, target.clone());
-        assert_eq!(styles.effective(id), Some(&initial));
+        assert_eq!(styles.effective(id), &initial);
         assert!(styles.is_animating());
 
         let changed = styles.tick(Duration::from_millis(100), &theme);
         assert_eq!(changed.len(), 1);
         assert_eq!(changed[0].0, id);
         assert!(!styles.is_animating());
-        assert_eq!(styles.effective(id), Some(&target));
+        assert_eq!(styles.effective(id), &target);
 
         styles.remove(id);
         assert!(!styles.contains(id));
-        assert!(styles.effective(id).is_none());
     }
 
     #[test]
@@ -400,12 +370,15 @@ mod tests {
         styles.sync_transition_target(id, &updated_target);
         styles.set_computed(id, updated_target);
 
-        let effective = styles.effective(id).unwrap();
+        let effective = styles.effective(id);
         assert!(effective.paint.clip);
         let ComputedColorStyle::Solid(background) = effective.paint.background else {
             panic!("expected solid background")
         };
-        assert!((background.r - 0.5).abs() < 0.0001);
+        // Halfway from transparent to white: premultiplied, that is white at
+        // half coverage rather than a half-transparent grey.
+        assert!((background.a - 0.5).abs() < 0.0001);
+        assert!((background.r - 1.0).abs() < 0.0001);
     }
 
     #[test]

@@ -15,6 +15,7 @@
 //! regression fails the test even when the timings look fine on a fast box:
 //!
 //! - an idle frame must touch no nodes at all,
+//! - an animated inherited property must re-sync only its own subtree,
 //! - repeated structural edits must not leak or over-collect compiled entities.
 //!
 //! Nothing here reaches into private state beyond what the crate already
@@ -87,14 +88,22 @@ fn long_transition() -> Transition {
 
 /// One list row: a hoverable card with a label and two swatches (4 hosts).
 fn row(index: usize) -> ElementDesc {
+    row_with(index, |patch| patch.background(Color::hex("#2a2a2a")))
+}
+
+/// A row whose hover transitions the text color its label inherits, so every
+/// animated frame has to push the parent's sample down to the label.
+fn inheriting_row(index: usize) -> ElementDesc {
+    row_with(index, |patch| patch.color(Color::WHITE))
+}
+
+fn row_with(index: usize, hovered: fn(StylePatch) -> StylePatch) -> ElementDesc {
     let style = Style::new()
         .width(Sizing::fill())
         .height(28.0)
         .padding(EdgeInsets::all(4.0))
         .background(Color::hex("#141414"))
-        .when(WidgetState::HOVERED, |patch| {
-            patch.background(Color::hex("#2a2a2a"))
-        })
+        .when(WidgetState::HOVERED, hovered)
         .transition(long_transition());
 
     container().style(style).into_element_desc(vec![
@@ -123,6 +132,14 @@ fn row(index: usize) -> ElementDesc {
 /// Scrollable list root. Flipping `TOGGLE` drops one row, which is the cheapest
 /// edit that still forces a structural scene rebuild.
 fn dashboard(cx: &mut HookContext<'_>) -> ElementDesc {
+    list_of(cx, row)
+}
+
+fn inheriting_dashboard(cx: &mut HookContext<'_>) -> ElementDesc {
+    list_of(cx, inheriting_row)
+}
+
+fn list_of(cx: &mut HookContext<'_>, row: fn(usize) -> ElementDesc) -> ElementDesc {
     let toggle = cx.use_state(|| false);
     TOGGLE.with(|slot| *slot.borrow_mut() = Some(toggle));
     let dropped = usize::from(*toggle.get());
@@ -281,7 +298,7 @@ fn idle_frame_is_free() {
         // The whole frame must bail out: no style, state, or shape recompute.
         // This is the property that keeps idle cost independent of tree size.
         assert_eq!(
-            harness.app.ui_runtime().update_visits,
+            harness.app.ui_runtime().stats.update_visits,
             0,
             "an idle frame recomputed nodes at {rows} rows"
         );
@@ -390,6 +407,69 @@ fn animation_frame_phase_split() {
     }
 }
 
+/// One row transitions the text color its label inherits. The parent's sample
+/// moves every frame, so every frame has to republish sampled inheritance —
+/// which must stay proportional to the animating subtree, not the tree.
+#[test]
+#[ignore = "benchmark; run with --release --ignored"]
+fn inherited_transition_frame_cost() {
+    let _exclusive = exclusive();
+    println!("rows,hosts,tick_ms,update_tree_ms,total_ms");
+    for rows in ROW_COUNTS {
+        let mut harness = Harness::with_root(rows, inheriting_dashboard);
+        let hosts = harness.host_count();
+
+        let first_row = harness.row_ids()[0];
+        harness
+            .app
+            .ui_runtime_mut()
+            .set_widget_state_flag(first_row, WidgetState::HOVERED, true);
+        harness.render();
+
+        let (mut tick, mut update) = (Vec::new(), Vec::new());
+        for _ in 0..120 {
+            let started = Instant::now();
+            harness.app.tick_style_animations(FRAME_DELTA);
+            tick.push(started.elapsed());
+            // The animating row and its three children, at any tree size.
+            let visits = harness.app.ui_runtime().stats.inheritance_visits;
+            assert!(
+                visits <= 4,
+                "an inherited sample re-synced {visits} nodes at {rows} rows"
+            );
+
+            let started = Instant::now();
+            harness
+                .app
+                .ui_runtime_mut()
+                .update_tree(VIEWPORT, &mut harness.text);
+            update.push(started.elapsed());
+
+            let frame = harness
+                .app
+                .ui_runtime_mut()
+                .build_render_frame()
+                .expect("scene compiles");
+            if let Some(frame) = frame {
+                harness.app.ui_runtime_mut().finish_render_frame(&frame);
+            }
+        }
+
+        assert!(
+            harness.app.has_running_style_animations(),
+            "the transition ended early, so the samples measured idle frames"
+        );
+
+        let (tick, update) = (median(&mut tick), median(&mut update));
+        println!(
+            "{rows},{hosts},{:.4},{:.4},{:.4}",
+            ms(tick),
+            ms(update),
+            ms(tick + update),
+        );
+    }
+}
+
 /// Adding and removing a single host subtree, driven straight against the
 /// runtime so the component layer stays out of the measurement. This is the
 /// path that still forces a full `rebuild_structure`, because a plain container
@@ -419,7 +499,7 @@ fn structural_frame_cost() {
                 let props_hash = widget.props_hash();
                 let interaction = widget.take_host_interaction();
                 let id = runtime.create_node(key, props_hash, widget, interaction);
-                runtime.append_child(list, id);
+                runtime.place(list, id, None);
                 Some(id)
             } else {
                 None

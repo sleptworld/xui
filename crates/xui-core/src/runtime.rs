@@ -165,8 +165,12 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
     fn refresh_platform_output(&mut self) {
         let arena = self.app.ui_runtime();
         let text_input = arena.focus_manager().focused().and_then(|id| {
-            let node = arena.node(id)?;
-            let rect = arena.visual_layout(id)?;
+            // Focus is cleared when its node is removed, so `id` is live.
+            let node = arena.node_view(id);
+            let rect = crate::widgets::text_input_content_box(
+                arena.visual_layout(id),
+                node.effective_style.layout.padding,
+            );
             let handle = self.text_backend.active_slot(id, TextLayoutSlot::PRIMARY)?;
             let layout = self.text_backend.query(handle)?;
             node.widget.platform_text_input_session(rect, layout)
@@ -488,7 +492,10 @@ mod tests {
                 runtime.handle_event(key(NamedKey::End, false)),
                 vec![EventResult::Consumed]
             );
-            assert!(offsets().is_empty(), "End reached the shortcut and still scrolled");
+            assert!(
+                offsets().is_empty(),
+                "End reached the shortcut and still scrolled"
+            );
         }
     }
 
@@ -513,9 +520,7 @@ mod tests {
         assert_eq!(runtime.app().frame_time().index(), 1);
         assert_eq!(runtime.app().frame_time().delta(), Duration::ZERO);
 
-        runtime
-            .frame_at(start + Duration::from_millis(16))
-            .unwrap();
+        runtime.frame_at(start + Duration::from_millis(16)).unwrap();
 
         let frame = runtime.app().frame_time();
         assert_eq!(frame.index(), 2);
@@ -546,9 +551,7 @@ mod tests {
         let idle_at = runtime.frame_time().timestamp();
 
         // A minute later, an event wakes the loop back up.
-        runtime
-            .frame_at(start + Duration::from_secs(60))
-            .unwrap();
+        runtime.frame_at(start + Duration::from_secs(60)).unwrap();
 
         let frame = runtime.frame_time();
         assert_eq!(
@@ -602,18 +605,14 @@ mod tests {
         // Something invalidated the window while it was hidden -- a resize, a
         // state change. It still has to paint, and it still must not move.
         runtime.app_mut().mark_needs_rebuild();
-        runtime
-            .frame_at(start + Duration::from_secs(30))
-            .unwrap();
+        runtime.frame_at(start + Duration::from_secs(30)).unwrap();
         let held = runtime.frame_time();
         assert_eq!(held.delta(), Duration::ZERO);
         assert_eq!(held.timestamp(), before.timestamp());
         assert_eq!(held.index(), before.index() + 1, "the frame still happened");
 
         runtime.set_window_visible(true);
-        runtime
-            .frame_at(start + Duration::from_secs(60))
-            .unwrap();
+        runtime.frame_at(start + Duration::from_secs(60)).unwrap();
         let resumed = runtime.frame_time();
         assert_eq!(
             resumed.delta(),
@@ -682,22 +681,19 @@ mod tests {
 
         let ticker = TICKER.with(|slot| slot.borrow().clone()).unwrap();
         ticker.stop();
-        runtime
-            .frame_at(start + Duration::from_millis(16))
-            .unwrap();
-        assert!(!runtime.app().is_dirty(), "and stopping it lets the loop idle");
+        runtime.frame_at(start + Duration::from_millis(16)).unwrap();
+        assert!(
+            !runtime.app().is_dirty(),
+            "and stopping it lets the loop idle"
+        );
 
         let before = ticks().len();
-        runtime
-            .frame_at(start + Duration::from_millis(32))
-            .unwrap();
+        runtime.frame_at(start + Duration::from_millis(32)).unwrap();
         assert_eq!(ticks().len(), before, "a stopped ticker does not run");
 
         ticker.start();
         assert!(runtime.app().is_dirty());
-        runtime
-            .frame_at(start + Duration::from_millis(48))
-            .unwrap();
+        runtime.frame_at(start + Duration::from_millis(48)).unwrap();
         assert_eq!(ticks().len(), before + 1);
     }
 
@@ -707,18 +703,14 @@ mod tests {
         let start = Instant::now();
         let mut runtime = runtime_with(ticking_root);
         runtime.frame_at(start).unwrap();
-        runtime
-            .frame_at(start + Duration::from_millis(16))
-            .unwrap();
+        runtime.frame_at(start + Duration::from_millis(16)).unwrap();
         let before = ticks().len();
         assert_eq!(before, 1);
 
         runtime.set_window_visible(false);
         // Hidden, but something invalidated the window, so a frame still runs.
         runtime.app_mut().mark_needs_rebuild();
-        runtime
-            .frame_at(start + Duration::from_secs(10))
-            .unwrap();
+        runtime.frame_at(start + Duration::from_secs(10)).unwrap();
         assert_eq!(
             ticks().len(),
             before,
@@ -726,9 +718,7 @@ mod tests {
         );
 
         runtime.set_window_visible(true);
-        runtime
-            .frame_at(start + Duration::from_secs(20))
-            .unwrap();
+        runtime.frame_at(start + Duration::from_secs(20)).unwrap();
         let resumed = ticks();
         assert_eq!(resumed.len(), before + 1);
         assert_eq!(
@@ -745,9 +735,7 @@ mod tests {
         keep_animating(&mut runtime);
 
         runtime.frame_at(start).unwrap();
-        runtime
-            .frame_at(start + Duration::from_secs(2))
-            .unwrap();
+        runtime.frame_at(start + Duration::from_secs(2)).unwrap();
 
         assert_eq!(
             runtime.frame_time().delta(),
