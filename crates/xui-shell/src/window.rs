@@ -32,6 +32,17 @@ pub trait SurfaceTarget: HasWindowHandle + HasDisplayHandle + Send + Sync + 'sta
     /// The drawable area, in physical pixels.
     fn surface_size(&self) -> PhysicalSize;
     fn scale_factor(&self) -> f64;
+
+    /// Whether the user is dragging the window's edge right now.
+    ///
+    /// A presenter whose frames reach the screen outside the window system's
+    /// own transaction (Metal's asynchronous `presentDrawable`) uses this to
+    /// switch to a synchronized present while it is true, so the frame and the
+    /// window's new geometry land together. Hosts that have no such mismatch
+    /// keep the default.
+    fn in_live_resize(&self) -> bool {
+        false
+    }
 }
 
 /// The window operations [`crate::Shell`] needs from a host.

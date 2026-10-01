@@ -178,6 +178,10 @@ impl SurfaceTarget for MacWindow {
     fn scale_factor(&self) -> f64 {
         self.metrics().1
     }
+
+    fn in_live_resize(&self) -> bool {
+        MainThreadMarker::new().is_some_and(|mtm| self.ns_view(mtm).inLiveResize())
+    }
 }
 
 impl PlatformWindow for MacWindow {

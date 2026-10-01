@@ -24,6 +24,9 @@ pub(crate) struct MetalPresenter {
     layer: Layer,
     command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     drawable: Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
+    /// Whether the drawable acquired for the current frame is presented inside
+    /// the caller's Core Animation transaction. See [`Self::acquire_surface`].
+    with_transaction: bool,
 }
 
 impl MetalPresenter {
@@ -91,6 +94,7 @@ impl MetalPresenter {
                 layer,
                 command_queue,
                 drawable: None,
+                with_transaction: false,
             },
             context,
         ))
@@ -108,6 +112,14 @@ impl MetalPresenter {
         height: u32,
     ) -> Result<Surface, SkiaBackendError> {
         self.resize(width, height);
+        // While the window's edge is being dragged, the frame has to reach the
+        // screen in the same Core Animation transaction as the new window
+        // geometry; an asynchronous present lands a transaction late, and the
+        // content visibly jitters against the edge. Outside a drag the
+        // asynchronous path is cheaper and has nothing to be out of step with.
+        self.with_transaction = self._window.in_live_resize();
+        self.metal_layer()
+            .setPresentsWithTransaction(self.with_transaction);
         let drawable = self.metal_layer().nextDrawable().ok_or_else(|| {
             SkiaBackendError::MetalPresentation("CAMetalLayer returned no drawable".into())
         })?;
@@ -141,9 +153,18 @@ impl MetalPresenter {
                 "could not create a presentation command buffer".into(),
             )
         })?;
-        let drawable: Retained<ProtocolObject<dyn MTLDrawable>> = (&drawable).into();
-        command_buffer.presentDrawable(&drawable);
-        command_buffer.commit();
+        if self.with_transaction {
+            // `presentDrawable` on the command buffer ignores the layer's
+            // transaction. The drawable has to be presented by hand, once the
+            // GPU work behind it is scheduled, inside the caller's transaction.
+            command_buffer.commit();
+            command_buffer.waitUntilScheduled();
+            drawable.present();
+        } else {
+            let drawable: Retained<ProtocolObject<dyn MTLDrawable>> = (&drawable).into();
+            command_buffer.presentDrawable(&drawable);
+            command_buffer.commit();
+        }
         Ok(())
     }
 
