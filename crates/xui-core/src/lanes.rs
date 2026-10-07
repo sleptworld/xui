@@ -62,11 +62,14 @@ pub fn claim_next_transition_lane() -> Lane {
 
 pub fn event_lane(event: &RawEvent) -> Lane {
     match event {
-        RawEvent::PointerMove(_) | RawEvent::Wheel(_) => INPUT_CONTINUOUS_LANE,
+        RawEvent::PointerMove(_) | RawEvent::Wheel(_) | RawEvent::Gesture(_) => {
+            INPUT_CONTINUOUS_LANE
+        }
         RawEvent::Ime(_)
         | RawEvent::PointerDown(_)
         | RawEvent::PointerUp(_)
         | RawEvent::PointerCancel(_)
+        | RawEvent::PointerLeave(_)
         | RawEvent::Keyboard(_)
         | RawEvent::WindowFocus(_)
         | RawEvent::WindowBlur(_)

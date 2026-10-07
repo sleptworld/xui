@@ -1,14 +1,16 @@
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Weak;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Sel};
+use objc2::runtime::{AnyObject, Bool, Sel};
 use objc2::{
-    ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
+    AllocAnyThread, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message,
+    define_class, msg_send, sel,
 };
 use objc2_app_kit::{
-    NSCursor, NSEvent, NSEventModifierFlags, NSEventPhase, NSResponder, NSTextInputClient, NSView,
+    NSCursor, NSEvent, NSEventModifierFlags, NSEventPhase, NSEventType, NSResponder,
+    NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSNotFound, NSObject, NSObjectProtocol,
@@ -18,13 +20,13 @@ use objc2_foundation::{
 use objc2_quartz_core::CADisplayLink;
 use xui_interface::events::{KeyState, KeyText, RawIme, TextPayload};
 use xui_interface::{
-    CursorIcon, Modifiers, Point, PointerButton, Rect, ScrollDelta, TextOffset, TextRange,
-    Translation,
+    ContextMenuTrigger, CursorIcon, Modifiers, Point, PointerButton, Rect, ScrollDelta, TextOffset,
+    TextRange, Translation, WindowRegion, commands,
 };
-use xui_shell::{KeyInput, ShellEvent};
+use xui_shell::{FrameInfo, KeyInput, PublishedHandle, ShellEvent, ShellOutcome};
 
 use crate::host::{self, EventSink};
-use crate::{cursor, keycode};
+use crate::{cursor, keycode, time};
 
 /// What the input context did with the key `keyDown:` is handling.
 #[derive(Default)]
@@ -52,6 +54,22 @@ pub(crate) struct ViewIvars {
     display_link: RefCell<Option<Retained<CADisplayLink>>>,
     /// Whether a frame has been asked for since the last one was delivered.
     redraw_pending: Cell<bool>,
+    /// What the runtime has published about the window, for hit tests that
+    /// cannot wait for it: is a press on the title bar?
+    published: RefCell<Option<PublishedHandle>>,
+    /// The press that is going on, which `performWindowDragWithEvent:` needs to
+    /// start a move from code.
+    last_mouse_down: RefCell<Option<Retained<NSEvent>>>,
+    /// A control-click is a right click on a Mac; its release has to be one too.
+    control_click: Cell<bool>,
+    /// A press the host kept for itself -- a title-bar drag -- so the runtime
+    /// never saw it go down and must not see it come up.
+    swallowed_press: Cell<bool>,
+    /// The key event `performKeyEquivalent:` offered to the runtime and was
+    /// refused, so `keyDown:` -- which AppKit then calls with the same event --
+    /// does not deliver it twice.
+    offered_key: Cell<Option<(u64, u16)>>,
+    tracking_area: RefCell<Option<Retained<NSTrackingArea>>>,
 }
 
 define_class!(
@@ -149,11 +167,14 @@ define_class!(
             } else {
                 ScrollDelta::Lines(delta)
             };
-            self.send(ShellEvent::Wheel {
-                delta,
-                device_id: None,
-                is_inertial: event.momentumPhase() != NSEventPhase::None,
-            });
+            self.send_native(
+                event,
+                ShellEvent::Wheel {
+                    delta,
+                    device_id: None,
+                    is_inertial: event.momentumPhase() != NSEventPhase::None,
+                },
+            );
         }
 
         #[unsafe(method(keyDown:))]
@@ -164,7 +185,10 @@ define_class!(
         #[unsafe(method(keyUp:))]
         fn key_up(&self, event: &NSEvent) {
             self.sync_modifiers(event);
-            self.send(ShellEvent::Keyboard(key_input(event, KeyState::Up, None, false)));
+            self.send_native(
+                event,
+                ShellEvent::Keyboard(key_input(event, KeyState::Up, None, false)),
+            );
         }
 
         #[unsafe(method(flagsChanged:))]
@@ -175,8 +199,109 @@ define_class!(
             if let Some(pressed) = keycode::modifier_pressed(code, flags) {
                 let state = if pressed { KeyState::Down } else { KeyState::Up };
                 // `isARepeat` raises on a flags-changed event.
-                self.send(ShellEvent::Keyboard(key_input(event, state, None, false)));
+                self.send_native(
+                    event,
+                    ShellEvent::Keyboard(key_input(event, state, None, false)),
+                );
             }
+        }
+
+        /// Tracking is what makes the pointer leaving the window a thing the
+        /// runtime can hear about: nothing moves once it is outside.
+        #[unsafe(method(updateTrackingAreas))]
+        fn update_tracking_areas(&self) {
+            unsafe { msg_send![super(self), updateTrackingAreas] }
+            let ivars = self.ivars();
+            if let Some(old) = ivars.tracking_area.take() {
+                self.removeTrackingArea(&old);
+            }
+            let area = unsafe {
+                NSTrackingArea::initWithRect_options_owner_userInfo(
+                    NSTrackingArea::alloc(),
+                    self.bounds(),
+                    NSTrackingAreaOptions::MouseEnteredAndExited
+                        | NSTrackingAreaOptions::ActiveInActiveApp
+                        | NSTrackingAreaOptions::InVisibleRect,
+                    Some(self),
+                    None,
+                )
+            };
+            self.addTrackingArea(&area);
+            ivars.tracking_area.replace(Some(area));
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, event: &NSEvent) {
+            // With a button down the pointer is captured and keeps its hover; the
+            // runtime would ignore this anyway, but it is not true to say the
+            // pointer left something it is still dragging.
+            if NSEvent::pressedMouseButtons() == 0 {
+                self.ivars().last_position.set(None);
+                self.send_native(event, ShellEvent::PointerLeft);
+            }
+        }
+
+        // The standard edit actions, which the Edit menu and the system's own
+        // key equivalents send down the responder chain. The runtime handles
+        // them as commands.
+        #[unsafe(method(undo:))]
+        fn edit_undo(&self, _sender: Option<&AnyObject>) {
+            self.send(ShellEvent::Command(commands::UNDO));
+        }
+
+        #[unsafe(method(redo:))]
+        fn edit_redo(&self, _sender: Option<&AnyObject>) {
+            self.send(ShellEvent::Command(commands::REDO));
+        }
+
+        #[unsafe(method(cut:))]
+        fn edit_cut(&self, _sender: Option<&AnyObject>) {
+            self.send(ShellEvent::Command(commands::CUT));
+        }
+
+        #[unsafe(method(copy:))]
+        fn edit_copy(&self, _sender: Option<&AnyObject>) {
+            self.send(ShellEvent::Command(commands::COPY));
+        }
+
+        #[unsafe(method(paste:))]
+        fn edit_paste(&self, _sender: Option<&AnyObject>) {
+            self.send(ShellEvent::Command(commands::PASTE));
+        }
+
+        #[unsafe(method(selectAll:))]
+        fn edit_select_all(&self, _sender: Option<&AnyObject>) {
+            self.send(ShellEvent::Command(commands::SELECT_ALL));
+        }
+
+        /// Offers a Command or Control key to the runtime before the menu bar
+        /// sees it, so a shortcut the application has bound wins over a menu
+        /// item that shows the same keys. If the runtime does not take it, AppKit
+        /// goes on to the menus, and to `keyDown:` if no menu wants it either.
+        #[unsafe(method(performKeyEquivalent:))]
+        fn perform_key_equivalent(&self, event: &NSEvent) -> Bool {
+            let flags = event.modifierFlags();
+            let command = flags.contains(NSEventModifierFlags::Command);
+            let control = flags.contains(NSEventModifierFlags::Control);
+            if event.r#type() != NSEventType::KeyDown || !(command || control) {
+                return Bool::NO;
+            }
+            // Input methods use Control chords of their own -- Ctrl+J and Ctrl+K
+            // convert kana, for one -- and while one is composing, or may be, the
+            // key has to reach `interpretKeyEvents:` in `keyDown:` first. Offering
+            // it here and skipping that later would take it from the method.
+            if self.composing() || (control && !command && self.ivars().ime_allowed.get()) {
+                return Bool::NO;
+            }
+            self.sync_modifiers(event);
+            let outcome = self.submit_native(
+                event,
+                ShellEvent::Keyboard(key_input(event, KeyState::Down, None, event.isARepeat())),
+            );
+            if !outcome.consumed {
+                self.ivars().offered_key.set(Some(key_identity(event)));
+            }
+            Bool::new(outcome.consumed)
         }
 
         #[unsafe(method(viewDidMoveToWindow))]
@@ -193,9 +318,16 @@ define_class!(
         /// One tick of the display link: the frame the display is about to
         /// show.
         #[unsafe(method(xuiDisplayLinkFired:))]
-        fn display_link_fired(&self, _link: &CADisplayLink) {
+        fn display_link_fired(&self, link: &CADisplayLink) {
             if self.ivars().redraw_pending.replace(false) {
-                self.send(ShellEvent::RedrawRequested);
+                // When this frame will be on screen, and how long a refresh
+                // lasts, so animation is paced to the display rather than to
+                // whenever the frame happened to be built.
+                let target = link.targetTimestamp();
+                self.send(ShellEvent::FrameTick(FrameInfo {
+                    target: Some(time::instant_of(target)),
+                    interval: Duration::try_from_secs_f64(target - link.timestamp()).ok(),
+                }));
             } else if let Some(link) = self.ivars().display_link.borrow().as_ref() {
                 // Nothing to draw: stop ticking until something asks again.
                 link.setPaused(true);
@@ -342,6 +474,12 @@ impl XuiView {
             key_down: RefCell::new(None),
             display_link: RefCell::new(None),
             redraw_pending: Cell::new(false),
+            published: RefCell::new(None),
+            last_mouse_down: RefCell::new(None),
+            control_click: Cell::new(false),
+            swallowed_press: Cell::new(false),
+            offered_key: Cell::new(None),
+            tracking_area: RefCell::new(None),
         });
         unsafe { msg_send![super(this), initWithFrame: frame] }
     }
@@ -436,16 +574,72 @@ impl XuiView {
         }
     }
 
-    /// Draws now instead of on the next tick, for live resize, where a frame
-    /// one turn late shows the window stretched.
-    pub(crate) fn redraw_now(&self) {
-        self.ivars().redraw_pending.set(false);
-        self.send(ShellEvent::RedrawRequested);
+    /// Delivers `event`, stamped with the time it is sent.
+    fn send(&self, event: ShellEvent) {
+        let _ = self.send_at(Instant::now(), event);
     }
 
-    fn send(&self, event: ShellEvent) {
-        if let Some(sink) = self.ivars().sink.get().and_then(Weak::upgrade) {
-            sink.send(event);
+    /// Delivers `event`, stamped with the time AppKit says `native` happened:
+    /// the time that matters for double-click spacing and scroll velocity,
+    /// rather than whenever the event got here.
+    fn send_native(&self, native: &NSEvent, event: ShellEvent) {
+        let _ = self.submit_native(native, event);
+    }
+
+    /// [`Self::send_native`], and what the runtime made of the event.
+    fn submit_native(&self, native: &NSEvent, event: ShellEvent) -> ShellOutcome {
+        self.send_at(time::instant_of(native.timestamp()), event)
+    }
+
+    fn send_at(&self, at: Instant, event: ShellEvent) -> ShellOutcome {
+        match self.ivars().sink.get().and_then(Weak::upgrade) {
+            Some(sink) => sink.send(at, event),
+            None => ShellOutcome::CONTINUE,
+        }
+    }
+
+    pub(crate) fn set_published(&self, published: PublishedHandle) {
+        self.ivars().published.replace(Some(published));
+    }
+
+    /// Whether the press at `event` is on a region the runtime says is a title
+    /// bar. If it is, the host keeps it: a drag moves the window, a
+    /// double-click zooms it, and the runtime never hears of it.
+    fn press_on_caption(&self, event: &NSEvent) -> bool {
+        let on_caption = self
+            .ivars()
+            .published
+            .borrow()
+            .as_ref()
+            .is_some_and(|published| {
+                published.region_at(self.position(event)) == WindowRegion::Caption
+            });
+        if !on_caption {
+            return false;
+        }
+        if let Some(window) = self.window() {
+            if event.clickCount() == 2 {
+                // The system setting may say minimize instead; zoom is what the
+                // default is.
+                window.zoom(None);
+            } else {
+                window.performWindowDragWithEvent(event);
+            }
+        }
+        true
+    }
+
+    /// Starts moving the window from the press that is going on, for the
+    /// runtime's `BeginMove` command. `false` if no button is down.
+    pub(crate) fn begin_window_drag(&self) -> bool {
+        let down = NSEvent::pressedMouseButtons() & 1 != 0;
+        let event = self.ivars().last_mouse_down.borrow().clone();
+        match (down, event, self.window()) {
+            (true, Some(event), Some(window)) => {
+                window.performWindowDragWithEvent(&event);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -486,10 +680,13 @@ impl XuiView {
         self.sync_modifiers(event);
         let position = self.position(event);
         self.ivars().last_position.set(Some(position));
-        self.send(ShellEvent::PointerMoved {
-            position,
-            device_id: None,
-        });
+        self.send_native(
+            event,
+            ShellEvent::PointerMoved {
+                position,
+                device_id: None,
+            },
+        );
     }
 
     /// The shell reports buttons and wheels at the last moved-to position, and
@@ -505,24 +702,67 @@ impl XuiView {
 
     fn pointer_button(&self, event: &NSEvent, pressed: bool) {
         self.track_position(event);
-        let button = match event.buttonNumber() {
-            0 => PointerButton::Primary,
-            1 => PointerButton::Secondary,
-            2 => PointerButton::Auxiliary,
-            3 => PointerButton::Back,
-            4 => PointerButton::Forward,
-            other => PointerButton::Other(other as u16),
-        };
-        self.send(ShellEvent::PointerButton {
-            button,
-            pressed,
-            device_id: None,
-        });
+        let ivars = self.ivars();
+        let mut button = button_of(event);
+
+        // A control-click is a right click on a Mac, and so is its release.
+        if button == PointerButton::Primary {
+            if pressed
+                && event
+                    .modifierFlags()
+                    .contains(NSEventModifierFlags::Control)
+            {
+                ivars.control_click.set(true);
+            }
+            if ivars.control_click.get() {
+                button = PointerButton::Secondary;
+                if !pressed {
+                    ivars.control_click.set(false);
+                }
+            }
+        }
+
+        if button == PointerButton::Primary {
+            if pressed {
+                ivars.last_mouse_down.replace(Some(event.retain()));
+                if self.press_on_caption(event) {
+                    ivars.swallowed_press.set(true);
+                    return;
+                }
+            } else if ivars.swallowed_press.replace(false) {
+                return;
+            }
+        }
+
+        self.send_native(
+            event,
+            ShellEvent::PointerButton {
+                button,
+                pressed,
+                device_id: None,
+            },
+        );
+        // The context menu comes with the press on a Mac, after the button
+        // event, the way a page sees `mousedown` and then `contextmenu`.
+        if pressed && button == PointerButton::Secondary {
+            self.send_native(
+                event,
+                ShellEvent::ContextMenuRequested {
+                    position: Some(self.position(event)),
+                    trigger: ContextMenuTrigger::PointerSecondary,
+                },
+            );
+        }
     }
 
     fn handle_key_down(&self, event: &NSEvent) {
         self.sync_modifiers(event);
         let ivars = self.ivars();
+        // `performKeyEquivalent:` already offered this one to the runtime, and
+        // nothing took it.
+        if ivars.offered_key.take() == Some(key_identity(event)) {
+            return;
+        }
         // Command shortcuts are the runtime's, never text.
         let text = if ivars.ime_allowed.get() && !ivars.modifiers.get().meta {
             let was_composing = self.composing();
@@ -536,13 +776,43 @@ impl XuiView {
         } else {
             plain_text(event)
         };
-        self.send(ShellEvent::Keyboard(key_input(
+        self.send_native(
             event,
-            KeyState::Down,
-            text.as_deref(),
-            event.isARepeat(),
-        )));
+            ShellEvent::Keyboard(key_input(
+                event,
+                KeyState::Down,
+                text.as_deref(),
+                event.isARepeat(),
+            )),
+        );
     }
+}
+
+/// Which button a mouse event is for.
+///
+/// Read from the event's type for the left and right buttons, because
+/// `buttonNumber` is only documented for the others and answers 0 for an event
+/// that did not come from the hardware.
+fn button_of(event: &NSEvent) -> PointerButton {
+    match event.r#type() {
+        NSEventType::LeftMouseDown | NSEventType::LeftMouseUp | NSEventType::LeftMouseDragged => {
+            PointerButton::Primary
+        }
+        NSEventType::RightMouseDown
+        | NSEventType::RightMouseUp
+        | NSEventType::RightMouseDragged => PointerButton::Secondary,
+        _ => match event.buttonNumber() {
+            2 => PointerButton::Auxiliary,
+            3 => PointerButton::Back,
+            4 => PointerButton::Forward,
+            other => PointerButton::Other(other as u16),
+        },
+    }
+}
+
+/// Enough to recognize one key event as the same one seen twice.
+fn key_identity(event: &NSEvent) -> (u64, u16) {
+    (event.timestamp().to_bits(), event.keyCode())
 }
 
 fn key_input(event: &NSEvent, state: KeyState, text: Option<&str>, is_repeat: bool) -> KeyInput {

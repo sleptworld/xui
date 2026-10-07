@@ -2,7 +2,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
-use std::rc::Weak;
+use std::rc::{Rc, Weak};
+use std::time::Instant;
 
 use dispatch2::DispatchQueue;
 use objc2::MainThreadMarker;
@@ -12,14 +13,22 @@ use xui_core::app::AppRenderError;
 use xui_core::render::RenderBackend;
 use xui_core::text::TextHost;
 use xui_interface::TextBackend;
-use xui_shell::{Shell, ShellControl, ShellEvent};
+use xui_shell::{PublishedHandle, ShellControl, ShellEvent, ShellHandle, ShellOutcome};
 
 use crate::window::MacWindow;
 
 /// Where AppKit callbacks deliver events. Object-safe, because the
 /// Objective-C classes holding one cannot be generic over the backend.
 pub(crate) trait EventSink {
-    fn send(&self, event: ShellEvent);
+    /// Delivers `event`, which happened at `at`, and says what became of it.
+    ///
+    /// Safe to call at any moment, including from inside a call the shell itself
+    /// is making: the event is queued and the call already running handles it.
+    fn send(&self, at: Instant, event: ShellEvent) -> ShellOutcome;
+
+    /// What the runtime has published about the window's surface, once there is
+    /// a shell to publish it.
+    fn published(&self) -> Option<PublishedHandle>;
 }
 
 thread_local! {
@@ -34,11 +43,12 @@ pub(crate) fn set_current(sink: Option<Weak<dyn EventSink>>) {
     CURRENT.with(|current| *current.borrow_mut() = sink);
 }
 
+/// Sends `event` to the running host, stamped with the time it is called.
 pub(crate) fn send_current(event: ShellEvent) {
     // Upgraded and released before sending: the sink may call back in here.
     let sink = CURRENT.with(|current| current.borrow().as_ref().and_then(Weak::upgrade));
     if let Some(sink) = sink {
-        sink.send(event);
+        let _ = sink.send(Instant::now(), event);
     }
 }
 
@@ -98,14 +108,14 @@ where
     B: RenderBackend<TextHost<T>>,
     T: TextBackend,
 {
-    shell: RefCell<Option<Shell<MacWindow, B, T>>>,
-    /// Events wait here while the shell is busy.
+    shell: RefCell<Option<Rc<ShellHandle<MacWindow, B, T>>>>,
+    /// Events that arrive before there is a shell to give them to.
     ///
-    /// AppKit calls back synchronously from inside calls the shell makes --
-    /// showing the window reports focus, turning IME off can end a
-    /// composition -- so an event can arrive while the shell is already
-    /// borrowed. It is queued, and the `drain` already running picks it up.
-    queue: RefCell<VecDeque<ShellEvent>>,
+    /// Starting the shell shows the window, and AppKit reports that
+    /// synchronously, so a focus event can arrive while `Shell::new` is still
+    /// running. Once the shell is installed, [`ShellHandle`] does this job
+    /// itself, for the events that arrive while it is busy.
+    starting: RefCell<VecDeque<(Instant, ShellEvent)>>,
     exited: Cell<bool>,
     render_error: RefCell<Option<AppRenderError<B::Error>>>,
 }
@@ -118,7 +128,7 @@ where
     pub(crate) fn new() -> Self {
         Self {
             shell: RefCell::new(None),
-            queue: RefCell::new(VecDeque::new()),
+            starting: RefCell::new(VecDeque::new()),
             exited: Cell::new(false),
             render_error: RefCell::new(None),
         }
@@ -126,10 +136,17 @@ where
 
     /// Hands the host its shell, then delivers whatever arrived while the
     /// shell was starting.
-    pub(crate) fn install(&self, mut shell: Shell<MacWindow, B, T>, control: ShellControl) {
-        self.apply(&mut shell, control);
-        *self.shell.borrow_mut() = Some(shell);
-        self.drain();
+    pub(crate) fn install(&self, shell: ShellHandle<MacWindow, B, T>, control: ShellControl) {
+        let shell = Rc::new(shell);
+        self.apply(&shell, control);
+        *self.shell.borrow_mut() = Some(Rc::clone(&shell));
+        loop {
+            let next = self.starting.borrow_mut().pop_front();
+            let Some((at, event)) = next else {
+                break;
+            };
+            let _ = self.deliver(&shell, at, event);
+        }
     }
 
     pub(crate) fn take_render_error(&self) -> Option<AppRenderError<B::Error>> {
@@ -139,37 +156,29 @@ where
     /// Drops the shell -- the backend and the window with it -- here on the
     /// main thread, instead of wherever the last reference happens to go.
     pub(crate) fn shut_down(&self) {
-        self.queue.borrow_mut().clear();
+        self.starting.borrow_mut().clear();
         let shell = self.shell.borrow_mut().take();
         drop(shell);
     }
 
-    fn drain(&self) {
-        let Ok(mut slot) = self.shell.try_borrow_mut() else {
-            return;
-        };
-        let Some(shell) = slot.as_mut() else {
-            return;
-        };
-        loop {
-            if self.exited.get() {
-                self.queue.borrow_mut().clear();
-                return;
-            }
-            let next = self.queue.borrow_mut().pop_front();
-            let Some(event) = next else {
-                break;
-            };
-            let control = shell.handle_event(event);
-            self.apply(shell, control);
-        }
-        // AppKit has no "about to wait" callback worth the trouble; a drained
-        // queue is the same moment for everything the shell does with it.
+    fn deliver(
+        &self,
+        shell: &ShellHandle<MacWindow, B, T>,
+        at: Instant,
+        event: ShellEvent,
+    ) -> ShellOutcome {
+        let outcome = shell.submit(at, event);
+        self.apply(shell, outcome.control);
+        // AppKit has no "about to wait" callback worth the trouble; the moment an
+        // event has been handled is the same moment for everything the shell does
+        // with it. A no-op if this was a nested call and the outer one is still
+        // running.
         let control = shell.about_to_wait();
         self.apply(shell, control);
+        outcome
     }
 
-    fn apply(&self, shell: &mut Shell<MacWindow, B, T>, control: ShellControl) {
+    fn apply(&self, shell: &ShellHandle<MacWindow, B, T>, control: ShellControl) {
         if control != ShellControl::Exit || self.exited.replace(true) {
             return;
         }
@@ -185,11 +194,23 @@ where
     B: RenderBackend<TextHost<T>>,
     T: TextBackend,
 {
-    fn send(&self, event: ShellEvent) {
+    fn send(&self, at: Instant, event: ShellEvent) -> ShellOutcome {
         if self.exited.get() {
-            return;
+            return ShellOutcome::CONTINUE;
         }
-        self.queue.borrow_mut().push_back(event);
-        self.drain();
+        // Cloned out so the cell is not held while the shell runs: the shell may
+        // call back in here.
+        let shell = self.shell.borrow().clone();
+        match shell {
+            Some(shell) => self.deliver(&shell, at, event),
+            None => {
+                self.starting.borrow_mut().push_back((at, event));
+                ShellOutcome::CONTINUE
+            }
+        }
+    }
+
+    fn published(&self) -> Option<PublishedHandle> {
+        self.shell.borrow().as_ref().map(|shell| shell.published())
     }
 }

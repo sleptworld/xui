@@ -3,6 +3,7 @@ use super::raw::{
 };
 use super::shortcut::{CommandId, Shortcut};
 use crate::core::{Point, Translation};
+use crate::platform::{PlatformReply, RequestId};
 use crate::widget::NodeId;
 use std::time::{Duration, Instant};
 
@@ -35,6 +36,9 @@ pub enum EventSource {
     Scroll,
     Programmatic,
     Window,
+    /// The platform raised it itself: a menu item, or a standard action such
+    /// as the system's Copy.
+    Platform,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -80,6 +84,9 @@ pub enum SemanticEvent {
     DragCancel(DragEvent),
 
     Scroll(ScrollEvent),
+
+    /// The host's answer to a request this node made. See [`PlatformReplyEvent`].
+    PlatformReply(PlatformReplyEvent),
 }
 
 impl SemanticEvent {
@@ -111,6 +118,8 @@ impl SemanticEvent {
             SemanticEvent::DragCancel(e) => &e.meta,
 
             SemanticEvent::Scroll(e) => &e.meta,
+
+            SemanticEvent::PlatformReply(e) => &e.meta,
         }
     }
 
@@ -142,6 +151,8 @@ impl SemanticEvent {
             SemanticEvent::DragCancel(e) => &mut e.meta,
 
             SemanticEvent::Scroll(e) => &mut e.meta,
+
+            SemanticEvent::PlatformReply(e) => &mut e.meta,
         }
     }
 
@@ -179,6 +190,9 @@ impl SemanticEvent {
             SemanticEvent::DragCancel(_) => PropagationMode::CaptureTargetBubble,
 
             SemanticEvent::Scroll(_) => PropagationMode::CaptureTargetBubble,
+            // To the node that asked, and no one else: the reply is that node's
+            // to act on, and an ancestor handling it too would act twice.
+            SemanticEvent::PlatformReply(_) => PropagationMode::Direct,
         }
     }
 
@@ -197,11 +211,27 @@ impl SemanticEvent {
     }
 }
 
+/// What the host answered to a request a node made with
+/// `EventContext::request_platform`: a clipboard read, a dialog.
+///
+/// Delivered to that node alone, as an ordinary event, so it is handled with the
+/// same context as anything else the node does -- it can edit itself, mark itself
+/// for layout, and so on -- rather than from a callback with none of that.
+#[derive(Debug, Clone)]
+pub struct PlatformReplyEvent {
+    pub meta: EventMeta,
+    /// The id `request_platform` returned, to tell this node's requests apart.
+    pub request: RequestId,
+    pub reply: PlatformReply,
+}
+
 #[derive(Debug, Clone)]
 pub struct CommandEvent {
     pub meta: EventMeta,
     pub command: CommandId,
-    pub shortcut: Shortcut,
+    /// The shortcut that raised the command. `None` when the platform did,
+    /// through a menu item or one of the system's standard actions.
+    pub shortcut: Option<Shortcut>,
 }
 
 /// A pointer changed position over the event target.

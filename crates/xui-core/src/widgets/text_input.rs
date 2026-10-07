@@ -1,10 +1,11 @@
 use xui_interface::CursorIcon;
 use xui_interface::events::{PointerButton, RawEvent, SemanticEvent, XuiPointerId};
 use xui_interface::{
-    Affine, Bounds, Color, ComputedStyle, EventRef, EventResult, Key, Point, RawIme, Rect, Style,
-    TextCaret, TextContent, TextInputPurpose, TextInputSession, TextOffset, TextOffsetUnit,
-    TextPaintProps, TextPaintStyle, TextProps, TextSelectionPaint, WhiteSpace, WidgetType,
-    WidgetUpdateFlags,
+    Affine, Bounds, ClipboardContent, ClipboardTarget, CommandId, Color, ComputedStyle, EventRef,
+    EventResult, Key, PlatformCommand, PlatformReply, PlatformRequest, Point, RawIme, Rect,
+    RequestId, Style, TextCaret, TextContent, TextInputPurpose, TextInputSession, TextOffset,
+    TextOffsetUnit, TextPaintProps, TextPaintStyle, TextProps, TextSelectionPaint, WhiteSpace,
+    WidgetType, WidgetUpdateFlags, commands,
 };
 
 use crate::element::ElementDesc;
@@ -39,6 +40,9 @@ pub struct TextInputWidget {
     scroll_x: f32,
     drag: Option<TextInputDrag>,
     ime_session: ImeSession,
+    /// The clipboard read a paste is waiting on. A reply carrying any other id is
+    /// not this widget's to act on.
+    pending_paste: Option<RequestId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +85,38 @@ pub(crate) fn text_input_content_box(rect: Bounds, padding: xui_interface::EdgeI
     )
 }
 
+/// `text` as one line: line breaks at either end are dropped, each run of them
+/// inside becomes a single space, and each tab becomes a space.
+///
+/// What a single-line field does with a paste. Typing already drops the
+/// characters it cannot show, but dropping them from a paste would run the last
+/// word of one line into the first of the next. The ends are different: a line
+/// copied whole usually carries its trailing break, which is not a space the
+/// user meant to paste.
+fn single_line(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_break = false;
+    for ch in text.trim_matches(['\r', '\n']).chars() {
+        match ch {
+            '\r' | '\n' => {
+                if !in_break {
+                    out.push(' ');
+                }
+                in_break = true;
+            }
+            '\t' => {
+                out.push(' ');
+                in_break = false;
+            }
+            other => {
+                out.push(other);
+                in_break = false;
+            }
+        }
+    }
+    out
+}
+
 impl TextInputWidget {
     pub fn new() -> Self {
         Self {
@@ -95,6 +131,7 @@ impl TextInputWidget {
             scroll_x: 0.0,
             drag: None,
             ime_session: ImeSession::new(),
+            pending_paste: None,
         }
     }
 
@@ -415,6 +452,110 @@ impl TextInputWidget {
         }
     }
 
+    /// The selected text, if any is selected.
+    fn selected_text(&self) -> Option<String> {
+        let range = self.controller.selection().range();
+        if range.is_empty() {
+            return None;
+        }
+        self.controller
+            .value()
+            .text
+            .get_slice(range.start..range.end)
+            .map(|slice| slice.to_string())
+    }
+
+    /// Copies the selection to the clipboard. With nothing selected it does
+    /// nothing, and leaves the clipboard as it was: a copy of nothing is not a
+    /// request to empty it.
+    fn copy_selection(&mut self, cx: &mut EventContext<'_>) -> EventResult {
+        let Some(text) = self.selected_text() else {
+            return EventResult::Consumed;
+        };
+        if cx.send_platform(PlatformCommand::WriteClipboard {
+            target: ClipboardTarget::General,
+            content: ClipboardContent::Text(text),
+        }) {
+            EventResult::Consumed
+        } else {
+            EventResult::Ignored
+        }
+    }
+
+    fn cut_selection(&mut self, cx: &mut EventContext<'_>) -> EventResult {
+        let Some(text) = self.selected_text() else {
+            return EventResult::Consumed;
+        };
+        if !cx.send_platform(PlatformCommand::WriteClipboard {
+            target: ClipboardTarget::General,
+            content: ClipboardContent::Text(text),
+        }) {
+            return EventResult::Ignored;
+        }
+        let range = self.controller.selection().range();
+        if self.controller.delete(range.as_range()).is_ok() {
+            self.apply_text_edit(cx)
+        } else {
+            EventResult::Consumed
+        }
+    }
+
+    /// Asks for the clipboard. What comes back is handled in
+    /// [`Self::insert_pasted`], when the reply arrives as an event.
+    fn request_paste(&mut self, cx: &mut EventContext<'_>) -> EventResult {
+        match cx.request_platform(PlatformRequest::ReadClipboard(ClipboardTarget::General)) {
+            Some(id) => {
+                self.pending_paste = Some(id);
+                EventResult::Consumed
+            }
+            None => EventResult::Ignored,
+        }
+    }
+
+    /// Puts pasted text at the caret, over the selection if there is one.
+    fn insert_pasted(&mut self, cx: &mut EventContext<'_>, text: &str) -> EventResult {
+        let line = single_line(text);
+        if line.is_empty() {
+            return EventResult::Ignored;
+        }
+        if self.controller.insert_text(line).is_ok() {
+            self.apply_text_edit(cx)
+        } else {
+            EventResult::Ignored
+        }
+    }
+
+    fn undo_redo(&mut self, cx: &mut EventContext<'_>, redo: bool) -> EventResult {
+        let changed = if redo {
+            self.controller.redo().unwrap_or(false)
+        } else {
+            self.controller.undo().unwrap_or(false)
+        };
+        if changed {
+            self.apply_text_edit(cx)
+        } else {
+            EventResult::Ignored
+        }
+    }
+
+    /// One of the standard edit commands, however it arrived: from the key
+    /// bound to it, or from the platform raising it through a menu item.
+    fn handle_edit_command(
+        &mut self,
+        command: CommandId,
+        cx: &mut EventContext<'_>,
+    ) -> Option<EventResult> {
+        Some(match command {
+            c if c == commands::COPY => self.copy_selection(cx),
+            c if c == commands::CUT => self.cut_selection(cx),
+            c if c == commands::PASTE => self.request_paste(cx),
+            c if c == commands::SELECT_ALL => self.select_all(cx),
+            c if c == commands::UNDO => self.undo_redo(cx, false),
+            c if c == commands::REDO => self.undo_redo(cx, true),
+            _ => return None,
+        })
+    }
+
     fn handle_key_down(
         &mut self,
         key: &xui_interface::events::RawKeyboard,
@@ -422,18 +563,8 @@ impl TextInputWidget {
     ) -> EventResult {
         match keymap::TextKeymap::platform_default().resolve(key) {
             Some(keymap::TextCommand::SelectAll) => self.select_all(cx),
-            Some(command @ (keymap::TextCommand::Undo | keymap::TextCommand::Redo)) => {
-                let changed = if matches!(command, keymap::TextCommand::Redo) {
-                    self.controller.redo().unwrap_or(false)
-                } else {
-                    self.controller.undo().unwrap_or(false)
-                };
-                if changed {
-                    self.apply_text_edit(cx)
-                } else {
-                    EventResult::Ignored
-                }
-            }
+            Some(keymap::TextCommand::Undo) => self.undo_redo(cx, false),
+            Some(keymap::TextCommand::Redo) => self.undo_redo(cx, true),
             Some(keymap::TextCommand::MoveLeft { extend }) => self.move_left(cx, extend),
             Some(keymap::TextCommand::MoveRight { extend }) => self.move_right(cx, extend),
             Some(keymap::TextCommand::MoveHome { extend }) => self.set_cursor(cx, 0, extend),
@@ -448,9 +579,9 @@ impl TextInputWidget {
                 }
             }
             Some(keymap::TextCommand::DeleteForward) => self.delete_forward(cx),
-            Some(
-                keymap::TextCommand::Copy | keymap::TextCommand::Cut | keymap::TextCommand::Paste,
-            ) => EventResult::Consumed,
+            Some(keymap::TextCommand::Copy) => self.copy_selection(cx),
+            Some(keymap::TextCommand::Cut) => self.cut_selection(cx),
+            Some(keymap::TextCommand::Paste) => self.request_paste(cx),
             None => EventResult::Ignored,
         }
     }
@@ -690,6 +821,22 @@ impl TextInputWidget {
                 }
                 EventResult::Consumed
             }
+            EventRef::Semantic(SemanticEvent::Command(event)) => self
+                .handle_edit_command(event.command, cx)
+                .unwrap_or(EventResult::Ignored),
+            EventRef::Semantic(SemanticEvent::PlatformReply(reply))
+                if self.pending_paste == Some(reply.request) =>
+            {
+                self.pending_paste = None;
+                match &reply.reply {
+                    PlatformReply::Clipboard(Some(ClipboardContent::Text(text))) => {
+                        self.insert_pasted(cx, text)
+                    }
+                    // Nothing on the clipboard, or no clipboard to ask: a paste
+                    // that has nothing to paste.
+                    _ => EventResult::Ignored,
+                }
+            }
             EventRef::Semantic(SemanticEvent::Focus(_))
             | EventRef::Semantic(SemanticEvent::FocusIn(_)) => {
                 self.focused = true;
@@ -715,5 +862,25 @@ impl TextInputWidget {
 
     pub(super) fn text_layout_props(&self, style: &ComputedStyle) -> Option<TextProps> {
         Some(self.text_props(style))
+    }
+}
+
+#[cfg(test)]
+mod single_line_tests {
+    use super::single_line;
+
+    #[test]
+    fn interior_breaks_become_one_space_and_end_breaks_vanish() {
+        assert_eq!(single_line("one\r\ntwo\n\nthree"), "one two three");
+        assert_eq!(single_line("a whole line\n"), "a whole line");
+        assert_eq!(single_line("\r\nleading"), "leading");
+        assert_eq!(single_line("\n\r\n"), "");
+    }
+
+    #[test]
+    fn tabs_become_spaces_and_spaces_are_kept() {
+        assert_eq!(single_line("a\tb"), "a b");
+        assert_eq!(single_line(" "), " ");
+        assert_eq!(single_line("  padded  "), "  padded  ");
     }
 }

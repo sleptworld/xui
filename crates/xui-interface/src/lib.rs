@@ -29,14 +29,21 @@ pub use dirty::{StyleDiffFlags, WidgetUpdateFlags};
 #[allow(deprecated)]
 pub use events::{
     CommandEvent, CommandId, ContextMenuTrigger, Event, EventPhase, EventRef, EventRequest,
-    EventRequests, EventResult, FocusReason, KeyState, KeyText, Modifiers, NamedKey, PhysicalKey,
-    PointerBoundaryEvent, PointerButton, PointerButtons, PointerCoords, PointerKind,
-    PointerMoveEvent, PointerSnapshot, RawContextMenu, RawIme, RawKeyInput, RawKeyboard,
-    RawPointerButton, RawPointerCancel, RawPointerMove, RawWheel, RawWindowEvent, ScrollDelta,
-    Shortcut, ShortcutBinding, ShortcutKey, ShortcutModifiers, TextPayload, XuiDeviceId,
-    XuiPointerId,
+    EventRequests, EventResult, FocusReason, GestureKind, GesturePhase, KeyState, KeyText,
+    Modifiers, NamedKey, PhysicalKey, PlatformReplyEvent, PointerBoundaryEvent, PointerButton, PointerButtons,
+    PointerCoords, PointerKind, PointerMoveEvent, PointerSnapshot, RawContextMenu, RawGesture,
+    RawIme, RawKeyInput, RawKeyboard, RawPointerButton, RawPointerCancel, RawPointerLeave,
+    RawPointerMove, RawWheel, RawWindowEvent, ScrollDelta, Shortcut, ShortcutBinding, ShortcutKey,
+    ShortcutModifiers, SwipeDirection, TextPayload, XuiDeviceId, XuiPointerId,
 };
-pub use platform::{PlatformOutput, TextInputPurpose, TextInputSession};
+pub use platform::{
+    Appearance, ClipboardContent, ClipboardTarget, ColorScheme, DragEvent, DragPayload,
+    DropAccepts, DropEffect, DropTarget, FileDialog, FileFilter, HostCapabilities, Menu, MenuBar,
+    MenuEntry, MenuItem, MenuRole, MessageBox, MessageLevel, PlatformCommand, PlatformError,
+    PlatformOutput, PlatformReply, PlatformRequest, PublishedSurface, RegionRect, RequestId,
+    ResizeEdge, TextDocument, TextInputPurpose, TextInputSession, WindowCommand, WindowGeometry,
+    WindowRegion, WindowState, commands,
+};
 pub use render::*;
 pub use runtime::EventSource;
 pub use style::{

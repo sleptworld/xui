@@ -5,6 +5,17 @@ use crate::ui_runtime::state::HostWorkFlags;
 use xui_interface::{ComputedStyle, Theme};
 
 impl UiRuntime {
+    /// What a widget reaches the host through while it handles an event.
+    pub(crate) fn platform(&self) -> &crate::platform::PlatformHandle {
+        &self.platform
+    }
+
+    /// Shares the application's platform handle, so a widget's commands and
+    /// requests join the ones the application makes itself.
+    pub(crate) fn set_platform(&mut self, platform: crate::platform::PlatformHandle) {
+        self.platform = platform;
+    }
+
     pub(crate) fn theme(&self) -> &Theme {
         &self.theme
     }

@@ -9,7 +9,8 @@ use crate::{
 use std::collections::VecDeque;
 use std::time::Instant;
 use xui_interface::{
-    EventSource, PlatformOutput, TextBackend as TextBackendI,
+    Appearance, CommandId, DragEvent, EventSource, HostCapabilities, PlatformCommand,
+    PlatformOutput, PlatformReply, RequestId, TextBackend as TextBackendI, WindowState,
     events::{EventResult, RawEvent},
 };
 
@@ -24,6 +25,26 @@ pub enum ControlFlow {
 pub enum RuntimeEvent {
     Resize(Size<f32>),
     Input(RawEvent),
+    /// A command the platform raised itself: a menu item, or one of the
+    /// system's standard actions (`xui_interface::commands`). Dispatched to the
+    /// focused node, like a shortcut's command.
+    Command {
+        command: CommandId,
+        timestamp: Instant,
+    },
+    /// The host's answer to a [`xui_interface::PlatformRequest`].
+    Reply(RequestId, PlatformReply),
+    /// What the host can do. Sent once, before the first frame.
+    Capabilities(HostCapabilities),
+    /// The system's appearance, at startup and whenever it changes.
+    Appearance(Appearance),
+    /// The window was made fullscreen or maximized, or left either, by someone
+    /// other than the runtime.
+    WindowState(WindowState),
+    /// A drag crossing the window. Widgets do not consume these yet; what the
+    /// platform wants to know while one is in flight is answered from
+    /// `PlatformOutput::surface`.
+    Drag(DragEvent),
     RedrawRequested,
     Exit,
 }
@@ -176,7 +197,23 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
             node.widget.platform_text_input_session(rect, layout)
         });
         let cursor = arena.resolved_cursor();
-        self.platform_output = PlatformOutput { text_input, cursor };
+        let (title, menu_bar, surface) = self.app.platform().output();
+        self.platform_output = PlatformOutput {
+            text_input,
+            cursor,
+            title,
+            menu_bar,
+            surface,
+        };
+    }
+
+    /// Takes the commands and requests the application has queued for the host,
+    /// in the order they were made.
+    ///
+    /// The shell drains this after each event and each frame. Draining is the
+    /// only way commands leave: nothing is sent until someone asks.
+    pub fn take_platform_commands(&mut self) -> Vec<PlatformCommand> {
+        self.app.platform().take_commands()
     }
 
     pub fn handle_event(&mut self, event: RuntimeEvent) -> Vec<EventResult> {
@@ -223,6 +260,36 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
                 self.refresh_platform_output();
                 vec![result]
             }
+            RuntimeEvent::Command { command, timestamp } => {
+                let result =
+                    self.app
+                        .dispatch_platform_command(command, timestamp, &mut self.text_backend);
+                self.refresh_platform_output();
+                vec![result]
+            }
+            RuntimeEvent::Reply(id, reply) => {
+                self.app.deliver_platform_reply(id, reply);
+                // A reply to a request a widget made is not a callback: it goes
+                // to that widget as an event.
+                let result = self
+                    .app
+                    .deliver_node_replies(Instant::now(), &mut self.text_backend);
+                self.refresh_platform_output();
+                vec![result]
+            }
+            RuntimeEvent::Capabilities(capabilities) => {
+                self.app.platform().set_capabilities(capabilities);
+                Vec::new()
+            }
+            RuntimeEvent::Appearance(appearance) => {
+                self.app.platform().set_appearance(appearance);
+                Vec::new()
+            }
+            RuntimeEvent::WindowState(state) => {
+                self.app.platform().set_window_state(state);
+                Vec::new()
+            }
+            RuntimeEvent::Drag(_) => Vec::new(),
             RuntimeEvent::RedrawRequested => Vec::new(),
             RuntimeEvent::Exit => {
                 self.control_flow = ControlFlow::Exit;
@@ -742,5 +809,226 @@ mod tests {
             FrameClock::DEFAULT_MAX_DELTA,
             "a two second stall must not fast-forward every animation past its end"
         );
+    }
+
+    mod platform_traffic {
+        use super::*;
+        use crate::event_system::callbacks::EventProps;
+        use xui_interface::events::{EventSource as InputSource, Modifiers, NamedKey};
+        use xui_interface::{
+            ClipboardContent, ClipboardTarget, PlatformRequest, PointerKind, RawKeyboard,
+            RawPointerLeave, RawPointerMove, XuiPointerId, commands,
+        };
+
+        thread_local! {
+            static COMMANDS: RefCell<Vec<(CommandId, bool, InputSource)>> =
+                const { RefCell::new(Vec::new()) };
+            static LEAVES: Cell<usize> = const { Cell::new(0) };
+        }
+
+        fn record(event: &xui_interface::CommandEvent) {
+            COMMANDS.with(|log| {
+                log.borrow_mut()
+                    .push((event.command, event.shortcut.is_none(), event.meta.source));
+            });
+        }
+
+        fn commands_seen() -> Vec<(CommandId, bool, InputSource)> {
+            COMMANDS.with(|log| log.borrow_mut().drain(..).collect())
+        }
+
+        /// A handler on the outer node, and a focusable inner node with none.
+        fn bubbling_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+            container()
+                .style(xui_interface::Style::new().width(100.0).height(100.0))
+                .on_command(|event, _| {
+                    record(event);
+                    xui_interface::events::EventResult::Consumed
+                })
+                .into_element_desc(vec![
+                    container()
+                        .style(xui_interface::Style::new().width(50.0).height(50.0))
+                        .tab_index(0)
+                        .into_element_desc(Vec::new()),
+                ])
+        }
+
+        fn tab() -> RuntimeEvent {
+            RuntimeEvent::Input(RawEvent::Keyboard(RawKeyboard {
+                physical_key: xui_interface::PhysicalKey::Unidentified,
+                named_key: Some(NamedKey::Tab),
+                state: xui_interface::KeyState::Down,
+                text: None,
+                modifiers: Modifiers::default(),
+                timestamp: Instant::now(),
+                is_repeat: false,
+            }))
+        }
+
+        fn command(command: CommandId) -> RuntimeEvent {
+            RuntimeEvent::Command {
+                command,
+                timestamp: Instant::now(),
+            }
+        }
+
+        #[test]
+        fn a_platform_command_bubbles_from_the_focused_node_and_has_no_shortcut() {
+            commands_seen();
+            let mut runtime = runtime_with(bubbling_root);
+            runtime.frame().unwrap();
+            runtime.handle_event(tab());
+            assert!(runtime.app().ui_runtime().focused_node().is_some());
+
+            let results = runtime.handle_event(command(commands::COPY));
+
+            assert_eq!(results, vec![xui_interface::events::EventResult::Consumed]);
+            assert_eq!(
+                commands_seen(),
+                vec![(commands::COPY, true, InputSource::Platform)],
+                "the ancestor's handler ran, and the event says no key raised it"
+            );
+        }
+
+        #[test]
+        fn a_platform_command_with_nothing_focused_goes_to_the_command_root() {
+            commands_seen();
+            let mut runtime = runtime_with(bubbling_root);
+            runtime.frame().unwrap();
+            assert!(runtime.app().ui_runtime().focused_node().is_none());
+
+            let results = runtime.handle_event(command(commands::SELECT_ALL));
+
+            assert_eq!(results, vec![xui_interface::events::EventResult::Consumed]);
+            assert_eq!(commands_seen().len(), 1);
+        }
+
+        #[test]
+        fn a_platform_command_nobody_handles_is_ignored() {
+            commands_seen();
+            let mut runtime = runtime();
+            runtime.frame().unwrap();
+
+            let results = runtime.handle_event(command(CommandId("nobody.listens")));
+
+            assert_eq!(results, vec![xui_interface::events::EventResult::Ignored]);
+        }
+
+        #[test]
+        fn a_reply_runs_the_callback_that_asked_and_an_unknown_one_is_dropped() {
+            let mut runtime = runtime();
+            let got = std::rc::Rc::new(RefCell::new(None));
+            let handle = runtime.app().platform().clone();
+            let id = handle.request(PlatformRequest::ReadClipboard(ClipboardTarget::General), {
+                let got = std::rc::Rc::clone(&got);
+                move |reply| *got.borrow_mut() = Some(reply)
+            });
+            assert_eq!(
+                runtime.take_platform_commands(),
+                vec![xui_interface::PlatformCommand::Request(
+                    id,
+                    PlatformRequest::ReadClipboard(ClipboardTarget::General)
+                )]
+            );
+            assert!(runtime.take_platform_commands().is_empty(), "drained once");
+
+            let reply = PlatformReply::Clipboard(Some(ClipboardContent::Text("pasted".into())));
+            runtime.handle_event(RuntimeEvent::Reply(id, reply.clone()));
+            assert_eq!(got.borrow().clone(), Some(reply));
+
+            // Answered already: nothing is waiting, and nothing panics.
+            runtime.handle_event(RuntimeEvent::Reply(id, PlatformReply::Unsupported));
+        }
+
+        #[test]
+        fn title_and_menu_bar_are_published_with_the_next_update() {
+            let mut runtime = runtime();
+            assert_eq!(runtime.platform_output().title, None);
+
+            let handle = runtime.app().platform().clone();
+            handle.set_title("Report");
+            handle.set_menu_bar(Some(xui_interface::MenuBar::default()));
+            runtime.frame().unwrap();
+
+            let output = runtime.platform_output();
+            assert_eq!(output.title.as_deref(), Some("Report"));
+            assert_eq!(
+                output.menu_bar.as_deref(),
+                Some(&xui_interface::MenuBar::default())
+            );
+        }
+
+        #[test]
+        fn what_the_host_reports_is_readable_by_the_application() {
+            let mut runtime = runtime();
+            let handle = runtime.app().platform().clone();
+            assert_eq!(handle.capabilities(), xui_interface::HostCapabilities::NONE);
+
+            let capabilities = xui_interface::HostCapabilities::CLIPBOARD
+                | xui_interface::HostCapabilities::FULLSCREEN;
+            let appearance = xui_interface::Appearance {
+                color_scheme: xui_interface::ColorScheme::Dark,
+                reduce_motion: true,
+                ..xui_interface::Appearance::default()
+            };
+            let state = xui_interface::WindowState {
+                fullscreen: true,
+                maximized: false,
+            };
+            runtime.handle_event(RuntimeEvent::Capabilities(capabilities));
+            runtime.handle_event(RuntimeEvent::Appearance(appearance));
+            runtime.handle_event(RuntimeEvent::WindowState(state));
+
+            assert_eq!(handle.capabilities(), capabilities);
+            assert_eq!(handle.appearance(), appearance);
+            assert_eq!(handle.window_state(), state);
+        }
+
+        fn leaving_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+            container()
+                .style(xui_interface::Style::new().width(100.0).height(100.0))
+                .on_pointer_leave(|_, _| LEAVES.with(|leaves| leaves.set(leaves.get() + 1)))
+                .into_element_desc(Vec::new())
+        }
+
+        fn pointer_at(x: f32, y: f32) -> RuntimeEvent {
+            RuntimeEvent::Input(RawEvent::PointerMove(RawPointerMove {
+                position: xui_interface::Point::new(x, y),
+                pointer_id: XuiPointerId::new(0),
+                device_id: None,
+                kind: PointerKind::Mouse,
+                button: None,
+                buttons: xui_interface::PointerButtons::default(),
+                modifiers: Modifiers::default(),
+                timestamp: Instant::now(),
+            }))
+        }
+
+        fn pointer_leaves() -> RuntimeEvent {
+            RuntimeEvent::Input(RawEvent::PointerLeave(RawPointerLeave {
+                pointer_id: XuiPointerId::new(0),
+                device_id: None,
+                kind: PointerKind::Mouse,
+                position: None,
+                modifiers: Modifiers::default(),
+                timestamp: Instant::now(),
+            }))
+        }
+
+        #[test]
+        fn leaving_the_window_clears_hover_once() {
+            LEAVES.with(|leaves| leaves.set(0));
+            let mut runtime = runtime_with(leaving_root);
+            runtime.frame().unwrap();
+
+            runtime.handle_event(pointer_at(10.0, 10.0));
+            assert_eq!(LEAVES.with(Cell::get), 0, "still hovering");
+
+            runtime.handle_event(pointer_leaves());
+            assert_eq!(LEAVES.with(Cell::get), 1, "hover ended");
+
+            runtime.handle_event(pointer_leaves());
+            assert_eq!(LEAVES.with(Cell::get), 1, "there was nothing left to end");
+        }
     }
 }

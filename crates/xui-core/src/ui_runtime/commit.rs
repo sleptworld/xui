@@ -67,6 +67,7 @@ impl UiRuntime {
             tickers: crate::ticker::TickerRegistry::default(),
             scale_factor: 1.0,
             gpu_context: None,
+            platform: crate::platform::PlatformHandle::default(),
             raw_event_listeners: 0,
             theme,
             stats: FrameStats::default(),

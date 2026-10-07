@@ -97,6 +97,9 @@ pub struct UiRuntime {
     /// startup; a canvas GPU painter draws with it and draws nothing without
     /// it. See [`crate::widgets::CanvasGpuContext`].
     pub(super) gpu_context: Option<crate::widgets::CanvasGpuContext>,
+    /// Where a widget leaves a command or a request for the host while it handles
+    /// an event. The application's own handle; see [`crate::platform`].
+    pub(super) platform: crate::platform::PlatformHandle,
     /// How many live hosts read raw device events. Almost always zero, which is
     /// what lets raw dispatch skip its whole ancestor walk.
     pub(super) raw_event_listeners: usize,

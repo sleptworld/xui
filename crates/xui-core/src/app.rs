@@ -5,6 +5,7 @@ use crate::core::Size;
 use crate::event_system::dispatcher;
 use crate::event_system::translator::EventTranslator;
 use crate::lanes::{DEFAULT_LANE, event_lane, with_update_lane};
+use crate::platform::PlatformHandle;
 use crate::render::RenderBackend;
 use crate::state::{AsyncDispatcher, AsyncMessage, HookContext, Scheduler};
 use crate::style::Theme;
@@ -53,9 +54,90 @@ pub struct App {
     async_dispatcher: AsyncDispatcher,
     async_receiver: mpsc::Receiver<AsyncMessage>,
     first_build_pending: bool,
+    platform: PlatformHandle,
 }
 
 impl App {
+    /// Where the application leaves commands and requests for the host, and
+    /// where the host's answers arrive. See [`crate::platform`].
+    pub fn platform(&self) -> &PlatformHandle {
+        &self.platform
+    }
+
+    /// Raises a command the platform itself originated -- a menu item, or one
+    /// of the system's standard actions -- at the focused node, from where it
+    /// bubbles like any command. With nothing focused it goes to the command
+    /// root, as a global shortcut does.
+    pub(crate) fn dispatch_platform_command<T: TextBackend>(
+        &mut self,
+        command: xui_interface::CommandId,
+        timestamp: std::time::Instant,
+        text: &mut TextHost<T>,
+    ) -> EventResult {
+        let target = self
+            .ui_runtime
+            .focus_manager()
+            .focused()
+            .unwrap_or_else(|| self.command_root());
+        let event = self.event_translator.platform_command_event(
+            target,
+            command,
+            timestamp,
+            xui_interface::Modifiers::default(),
+        );
+        let result =
+            crate::event_system::dispatcher::dispatch_semantic(&mut self.ui_runtime, text, event)
+                .result;
+        if self.scheduler().is_dirty() {
+            self.components.mark_root_dirty();
+        }
+        result
+    }
+
+    /// Delivers the host's answer to the request that asked for it. What the
+    /// callback changed is picked up the way any event's changes are.
+    pub(crate) fn deliver_platform_reply(
+        &mut self,
+        id: xui_interface::RequestId,
+        reply: xui_interface::PlatformReply,
+    ) {
+        let delivered = self.platform.deliver_reply(id, reply);
+        if delivered && self.scheduler().is_dirty() {
+            self.components.mark_root_dirty();
+        }
+    }
+
+    /// Hands each answer to a request a node made to that node, as an event.
+    ///
+    /// Run after the replies of a settle are delivered, so the node handles them
+    /// with its own context, like any other event. An answer for a node that has
+    /// since gone is dropped, which `dispatch_semantic` does for a target that no
+    /// longer exists.
+    pub(crate) fn deliver_node_replies<T: TextBackend>(
+        &mut self,
+        timestamp: std::time::Instant,
+        text: &mut TextHost<T>,
+    ) -> EventResult {
+        let mut result = EventResult::Ignored;
+        for reply in self.platform.take_node_replies() {
+            let event = self.event_translator.platform_reply_event(
+                reply.node,
+                reply.request,
+                reply.reply,
+                timestamp,
+            );
+            let report =
+                crate::event_system::dispatcher::dispatch_semantic(&mut self.ui_runtime, text, event);
+            if report.result.is_consumed() {
+                result = EventResult::Consumed;
+            }
+        }
+        if self.scheduler().is_dirty() {
+            self.components.mark_root_dirty();
+        }
+        result
+    }
+
     pub(crate) fn resolve_local_shortcut(
         &self,
         event: &xui_interface::RawKeyboard,
@@ -89,7 +171,9 @@ impl App {
         result
     }
     pub fn new(root_component: ComponentFn) -> Self {
-        let ui_runtime = UiRuntime::new();
+        let mut ui_runtime = UiRuntime::new();
+        let platform = PlatformHandle::default();
+        ui_runtime.set_platform(platform.clone());
         let scheduler = Scheduler::default();
         let tokio_runtime = Self::create_tokio_runtime();
         let (async_sender, async_receiver) = mpsc::channel();
@@ -111,6 +195,7 @@ impl App {
             async_dispatcher,
             async_receiver,
             first_build_pending: true,
+            platform,
         }
     }
 

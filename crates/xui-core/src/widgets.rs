@@ -228,6 +228,7 @@ pub use text::TextWidget;
 pub use text_input::TextInputWidget;
 #[doc(hidden)]
 pub use text_input::keymap::{TextCommand, TextKeymap};
+pub use text_input::value::TextSelection;
 pub use text_input::{TextController, TextInputChange};
 pub use z_stack::ZStackWidget;
 

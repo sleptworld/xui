@@ -6,23 +6,21 @@ use std::sync::Arc;
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{
-    ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
-};
+use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
-    NSApplicationTerminateReply, NSEvent, NSEventModifierFlags, NSEventType, NSMenu, NSMenuItem,
-    NSResponder,
+    NSApplicationTerminateReply, NSEvent, NSEventModifierFlags, NSEventType, NSResponder,
 };
-use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol, ns_string};
+use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol};
 use xui_core::App;
 use xui_core::app::AppRenderError;
 use xui_core::render::RenderBackend;
 use xui_core::text::TextHost;
 use xui_interface::TextBackend;
-use xui_shell::{Shell, ShellEvent, ShellOptions, WindowOptions};
+use xui_shell::{Shell, ShellEvent, ShellHandle, ShellOptions, WindowOptions};
 
 use crate::host::{self, EventSink, Host};
+use crate::menu;
 use crate::window::MacWindow;
 
 #[derive(Debug, Clone)]
@@ -133,7 +131,12 @@ where
         let mtm = MainThreadMarker::new().ok_or(MacRunError::NotMainThread)?;
         let app = XuiApplication::shared(mtm);
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-        app.setMainMenu(Some(&main_menu(mtm)));
+        // The host's application menu, and the standard Edit and Window menus. An
+        // application that supplies its own replaces everything after the first.
+        // No target is kept: the default menus have only items AppKit routes
+        // itself.
+        let default_menus = menu::complete_menu_bar(&menu::application_name(), None);
+        app.setMainMenu(Some(&menu::build_menu_bar(mtm, &default_menus).bar));
 
         let state = Rc::new(Launch::<B, T> {
             host: RefCell::new(None),
@@ -208,30 +211,14 @@ fn launch<B, T>(
         visible: options.window.visible,
         exit_on_close_requested: options.exit_on_close_requested,
     };
-    let (shell, control) = Shell::new(window, app, text, backend, shell_options);
-    host.install(shell, control);
+    let (shell, control) = Shell::new(window.clone(), app, text, backend, shell_options);
+    host.install(ShellHandle::new(shell), control);
+    // From here the view can answer "is this a title bar?" from what the runtime
+    // published, without calling into the shell.
+    if let Some(published) = host.published() {
+        window.set_published(mtm, published);
+    }
     state.host.replace(Some(host));
-}
-
-fn main_menu(mtm: MainThreadMarker) -> Retained<NSMenu> {
-    let menu_bar = NSMenu::new(mtm);
-    let app_item = NSMenuItem::new(mtm);
-    menu_bar.addItem(&app_item);
-
-    let app_menu = NSMenu::new(mtm);
-    // SAFETY: `terminate:` is an NSApplication action taking the sender, as a
-    // menu item's action must. It reaches `applicationShouldTerminate:` below.
-    let quit = unsafe {
-        NSMenuItem::initWithTitle_action_keyEquivalent(
-            NSMenuItem::alloc(mtm),
-            ns_string!("Quit"),
-            Some(sel!(terminate:)),
-            ns_string!("q"),
-        )
-    };
-    app_menu.addItem(&quit);
-    app_item.setSubmenu(Some(&app_menu));
-    menu_bar
 }
 
 define_class!(

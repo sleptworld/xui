@@ -22,7 +22,8 @@ use smallvec::SmallVec;
 use xui_interface::EventPhase;
 use xui_interface::events::semantic::{
     ClickEvent, CommandEvent, ContextMenuEvent, DragEvent, FocusEvent, HoverEvent,
-    PointerBoundaryEvent, PointerMoveEvent, PressEvent, ScrollEvent, SemanticEvent,
+    PlatformReplyEvent, PointerBoundaryEvent, PointerMoveEvent, PressEvent, ScrollEvent,
+    SemanticEvent,
 };
 
 use super::{EventContext, Flow, Handler};
@@ -235,6 +236,8 @@ events! {
     DragCancel:   DragCancel(DragEvent)          => on_drag_cancel,   capture = on_drag_cancel_capture;
 
     Scroll:       Scroll(ScrollEvent)            => on_scroll,        capture = on_scroll_capture;
+
+    PlatformReply: PlatformReply(PlatformReplyEvent) => on_platform_reply;
 }
 
 impl EventMask {

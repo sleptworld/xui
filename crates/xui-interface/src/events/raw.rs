@@ -120,6 +120,10 @@ pub enum RawEvent {
     ContextMenu(RawContextMenu),
     Keyboard(RawKeyboard),
     Ime(RawIme),
+    /// The pointer left the window with no button held. Clears hover, which a
+    /// move event cannot: nothing moves once the pointer is outside.
+    PointerLeave(RawPointerLeave),
+    Gesture(RawGesture),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -507,6 +511,52 @@ pub struct RawPointerCancel {
     pub device_id: Option<XuiDeviceId>,
     pub kind: PointerKind,
     pub position: Option<Point>,
+    pub modifiers: Modifiers,
+    pub timestamp: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawPointerLeave {
+    pub pointer_id: XuiPointerId,
+    pub device_id: Option<XuiDeviceId>,
+    pub kind: PointerKind,
+    /// Where the pointer was last seen inside the window, if the host knows.
+    pub position: Option<Point>,
+    pub modifiers: Modifiers,
+    pub timestamp: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GestureKind {
+    /// A change of scale; positive grows.
+    Magnify(f32),
+    /// A rotation in radians; counter-clockwise is positive.
+    Rotate(f32),
+    SmartMagnify,
+    Swipe(SwipeDirection),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwipeDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GesturePhase {
+    Began,
+    Changed,
+    Ended,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawGesture {
+    pub kind: GestureKind,
+    pub phase: GesturePhase,
+    pub position: Point,
     pub modifiers: Modifiers,
     pub timestamp: Instant,
 }

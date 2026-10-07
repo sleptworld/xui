@@ -19,6 +19,11 @@
 //! - key releases that AppKit drops while Command is held, recovered by
 //!   subclassing `NSApplication` -- so `NSApp` must not have been created
 //!   before [`MacRunner::run`];
+//! - the host contract in `xui-shell`, which `xui-winit` does not yet use: native
+//!   event timestamps; frames paced to the display link's target time; resizes
+//!   painted inside `windowDidResize:`; a real menu bar whose standard items
+//!   (Copy, Paste, ...) reach the runtime as commands; the pointer leaving the
+//!   window; context menus; clipboard, `set_title`, window commands;
 //! - direct access to the `NSWindow`/`NSView` ([`MacWindow::ns_window`],
 //!   [`MacWindow::ns_view`]) for anything AppKit offers beyond
 //!   `xui_shell::WindowOptions`.
@@ -37,6 +42,9 @@ mod app;
 mod cursor;
 mod host;
 mod keycode;
+mod menu;
+mod perform;
+mod time;
 mod view;
 mod window;
 

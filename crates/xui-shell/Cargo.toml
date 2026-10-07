@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+log = { workspace = true }
 raw-window-handle = "0.6.2"
 xui-core = { path = "../xui-core" }
 xui-interface = { path = "../xui-interface" }

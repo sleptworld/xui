@@ -146,6 +146,7 @@ pub struct EventContext<'a> {
     text_layout: Option<&'a dyn TextLayoutQuery>,
     request_update: &'a mut WidgetUpdateFlags,
     requests: &'a mut EventRequests,
+    platform: Option<&'a crate::platform::PlatformHandle>,
 }
 
 impl<'a> EventContext<'a> {
@@ -162,7 +163,39 @@ impl<'a> EventContext<'a> {
             phase,
             request_update,
             requests,
+            platform: None,
         }
+    }
+
+    /// Lets the handler reach the host: see [`Self::send_platform`] and
+    /// [`Self::request_platform`]. The dispatcher always sets it; a context built
+    /// by hand, as a test might, has none, and those calls report that.
+    pub fn with_platform(mut self, platform: &'a crate::platform::PlatformHandle) -> Self {
+        self.platform = Some(platform);
+        self
+    }
+
+    /// Leaves a one-shot command for the host -- a clipboard write, an open-URL.
+    /// `false` if this context has no way to reach the host.
+    pub fn send_platform(&self, command: xui_interface::PlatformCommand) -> bool {
+        match self.platform {
+            Some(platform) => {
+                platform.send(command);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Asks the host something on behalf of this node. The answer arrives later,
+    /// to this node, as a [`xui_interface::SemanticEvent::PlatformReply`] carrying
+    /// the id returned here. `None` if this context has no way to reach the host.
+    pub fn request_platform(
+        &self,
+        request: xui_interface::PlatformRequest,
+    ) -> Option<xui_interface::RequestId> {
+        self.platform
+            .map(|platform| platform.request_for_node(self.node_id(), request))
     }
 
     pub fn node_id(&self) -> NodeId {
@@ -345,6 +378,8 @@ fn raw_event_context(event: &RawEvent) -> (std::time::Instant, xui_interface::Mo
             (event.timestamp, event.modifiers)
         }
         RawEvent::PointerCancel(event) => (event.timestamp, event.modifiers),
+        RawEvent::PointerLeave(event) => (event.timestamp, event.modifiers),
+        RawEvent::Gesture(event) => (event.timestamp, event.modifiers),
         RawEvent::Wheel(event) => (event.timestamp, event.modifiers),
         RawEvent::Keyboard(event) => (event.timestamp, event.modifiers),
         RawEvent::WindowBlur(event) | RawEvent::WindowFocus(event) => {

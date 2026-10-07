@@ -144,7 +144,51 @@ impl EventTranslator {
                 raw.modifiers,
             ),
             command,
-            shortcut,
+            shortcut: Some(shortcut),
+        })
+    }
+
+    /// The host's answer to a request `node` made.
+    pub(crate) fn platform_reply_event(
+        &mut self,
+        node: NodeId,
+        request: xui_interface::RequestId,
+        reply: xui_interface::PlatformReply,
+        timestamp: Instant,
+    ) -> SemanticEvent {
+        SemanticEvent::PlatformReply(xui_interface::PlatformReplyEvent {
+            meta: self.make_meta(
+                timestamp,
+                node,
+                node,
+                EventPhase::Target,
+                EventSource::Platform,
+                Modifiers::default(),
+            ),
+            request,
+            reply,
+        })
+    }
+
+    /// A command the platform raised itself, with no key behind it.
+    pub(crate) fn platform_command_event(
+        &mut self,
+        target: NodeId,
+        command: xui_interface::CommandId,
+        timestamp: Instant,
+        modifiers: Modifiers,
+    ) -> SemanticEvent {
+        SemanticEvent::Command(xui_interface::CommandEvent {
+            meta: self.make_meta(
+                timestamp,
+                target,
+                target,
+                EventPhase::Target,
+                EventSource::Platform,
+                modifiers,
+            ),
+            command,
+            shortcut: None,
         })
     }
     pub fn new(config: EventTranslatorConfig) -> Self {
@@ -181,6 +225,10 @@ impl EventTranslator {
             RawEvent::WindowFocus(_) => Vec::new(),
             RawEvent::ContextMenu(raw) => self.translate_context_menu(raw, arena),
             RawEvent::Ime(_) => Vec::new(),
+            RawEvent::PointerLeave(raw) => self.translate_pointer_leave(raw, arena),
+            // No widget consumes a gesture yet; it reaches the raw lane and
+            // stops there.
+            RawEvent::Gesture(_) => Vec::new(),
         }
     }
 
@@ -559,6 +607,49 @@ impl EventTranslator {
             }
         }
 
+        out
+    }
+
+    /// The pointer left the window: nothing is under it any more.
+    ///
+    /// A move event cannot say this, because nothing moves once the pointer is
+    /// outside. A pointer that still holds a press or a drag keeps its capture,
+    /// so it keeps its hover too; the host sends this with no button held, but
+    /// a stray one must not strand a drag.
+    fn translate_pointer_leave(
+        &mut self,
+        raw: &RawPointerLeave,
+        arena: &mut UiRuntime,
+    ) -> Vec<SemanticEvent> {
+        let captured = self.active_drags.contains_key(&raw.pointer_id)
+            || self
+                .active_presses
+                .keys()
+                .any(|(pointer_id, _)| *pointer_id == raw.pointer_id);
+        if captured {
+            return Vec::new();
+        }
+
+        let position = raw.position.unwrap_or_else(Point::zero);
+        let pointer = self.make_pointer_snapshot(
+            raw.pointer_id,
+            None,
+            PointerButtons::default(),
+            position,
+            None,
+            arena,
+        );
+        let mut out = Vec::new();
+        self.update_hover(
+            raw.pointer_id,
+            raw.kind,
+            None,
+            pointer,
+            raw.timestamp,
+            raw.modifiers,
+            arena,
+            &mut out,
+        );
         out
     }
 

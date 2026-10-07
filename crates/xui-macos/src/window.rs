@@ -1,8 +1,10 @@
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell, RefCell};
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::rc::Weak;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use dispatch2::MainThreadBound;
 use objc2::rc::Retained;
@@ -19,12 +21,15 @@ use raw_window_handle::{
     AppKitWindowHandle, DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle,
     RawWindowHandle, WindowHandle,
 };
-use xui_interface::{CursorIcon, Rect};
+use xui_interface::{CursorIcon, HostCapabilities, MenuBar, PlatformCommand, Rect, WindowState};
 use xui_shell::{
-    PhysicalSize, PlatformWindow, ShellEvent, SurfaceTarget, WindowOptions, WindowSize,
+    Performed, PhysicalSize, PlatformWindow, PublishedHandle, ShellEvent, SurfaceTarget,
+    WindowOptions, WindowSize,
 };
 
 use crate::host::{self, EventSink};
+use crate::menu::{self, BuiltMenuBar};
+use crate::perform;
 use crate::view::XuiView;
 
 /// An `NSWindow` with an `xui` content view.
@@ -42,6 +47,13 @@ pub struct MacWindow {
     view: MainThreadBound<Retained<XuiView>>,
     delegate: MainThreadBound<Retained<WindowDelegate>>,
     metrics: Mutex<(PhysicalSize, f64)>,
+    /// True while the delegate is inside `windowDidResize:`, where the shell
+    /// paints the new size before AppKit shows it. See
+    /// [`SurfaceTarget::in_live_resize`].
+    resizing: Arc<AtomicBool>,
+    /// The menu bar the application supplied, and the target its items point
+    /// at, which AppKit does not retain.
+    menu_bar: MainThreadBound<RefCell<Option<BuiltMenuBar>>>,
 }
 
 impl MacWindow {
@@ -100,7 +112,8 @@ impl MacWindow {
         window.setContentView(Some(view.as_super()));
         window.makeFirstResponder(Some(view.as_super().as_super()));
 
-        let delegate = WindowDelegate::new(mtm);
+        let resizing = Arc::new(AtomicBool::new(false));
+        let delegate = WindowDelegate::new(mtm, Arc::clone(&resizing));
         window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         window.center();
         if options.maximized {
@@ -113,6 +126,8 @@ impl MacWindow {
             view: MainThreadBound::new(view, mtm),
             delegate: MainThreadBound::new(delegate, mtm),
             metrics: Mutex::new((PhysicalSize::default(), 1.0)),
+            resizing,
+            menu_bar: MainThreadBound::new(RefCell::new(None), mtm),
         };
         this.metrics();
         Arc::new(this)
@@ -122,6 +137,18 @@ impl MacWindow {
     pub(crate) fn attach(&self, mtm: MainThreadMarker, sink: Weak<dyn EventSink>) {
         self.view.get(mtm).set_sink(sink.clone());
         self.delegate.get(mtm).set_sink(sink);
+    }
+
+    /// Lets the view answer hit tests -- is this point a title bar? -- from what
+    /// the runtime has published, without calling into the shell.
+    pub(crate) fn set_published(&self, mtm: MainThreadMarker, published: PublishedHandle) {
+        self.view.get(mtm).set_published(published);
+    }
+
+    /// Starts moving the window with the pointer, from the press that is going
+    /// on. `false` if no button is down.
+    pub(crate) fn begin_window_drag(&self, mtm: MainThreadMarker) -> bool {
+        self.view.get(mtm).begin_window_drag()
     }
 
     pub fn ns_window(&self, mtm: MainThreadMarker) -> &NSWindow {
@@ -180,7 +207,11 @@ impl SurfaceTarget for MacWindow {
     }
 
     fn in_live_resize(&self) -> bool {
-        MainThreadMarker::new().is_some_and(|mtm| self.ns_view(mtm).inLiveResize())
+        // Both: the resize callback covers a resize that is not a drag -- a zoom,
+        // a fullscreen transition -- and `inLiveResize` covers the frames a drag
+        // paints between callbacks.
+        self.resizing.load(Ordering::Relaxed)
+            || MainThreadMarker::new().is_some_and(|mtm| self.ns_view(mtm).inLiveResize())
     }
 }
 
@@ -238,6 +269,40 @@ impl PlatformWindow for MacWindow {
             self.view.get(mtm).set_ime_cursor_area(area);
         }
     }
+
+    fn capabilities(&self) -> HostCapabilities {
+        HostCapabilities::CLIPBOARD
+            | HostCapabilities::FULLSCREEN
+            | HostCapabilities::WINDOW_DRAG
+            | HostCapabilities::NATIVE_MENU_BAR
+            | HostCapabilities::OPEN_URL
+    }
+
+    fn set_title(&self, title: &str) {
+        if let Some(mtm) = MainThreadMarker::new() {
+            self.window.get(mtm).setTitle(&NSString::from_str(title));
+        }
+    }
+
+    fn set_menu_bar(&self, menu_bar: Option<&MenuBar>) {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let menus = menu::complete_menu_bar(&menu::application_name(), menu_bar);
+        let built = menu::build_menu_bar(mtm, &menus);
+        NSApplication::sharedApplication(mtm).setMainMenu(Some(&built.bar));
+        // The previous bar goes now that nothing shows it; its target with it.
+        self.menu_bar.get(mtm).replace(Some(built));
+    }
+
+    fn perform(&self, command: PlatformCommand) -> Performed {
+        match MainThreadMarker::new() {
+            Some(mtm) => perform::perform(mtm, self, command),
+            None => Performed::Failed(xui_interface::PlatformError::new(
+                "AppKit can only be driven from the main thread",
+            )),
+        }
+    }
 }
 
 /// A requested window size in points.
@@ -265,19 +330,18 @@ fn notification_window(notification: &NSNotification) -> Option<Retained<NSWindo
     notification.object()?.downcast::<NSWindow>().ok()
 }
 
-fn content_view(window: &NSWindow) -> Option<Retained<XuiView>> {
-    window.contentView()?.downcast::<XuiView>().ok()
-}
-
 fn content_size(window: &NSWindow) -> PhysicalSize {
     window
         .contentView()
         .map_or_else(PhysicalSize::default, |view| backing_size(&view))
 }
 
-#[derive(Default)]
 struct WindowDelegateIvars {
     sink: OnceCell<Weak<dyn EventSink>>,
+    /// See [`MacWindow::resizing`].
+    resizing: Arc<AtomicBool>,
+    /// The last window state the shell was told about.
+    state: Cell<WindowState>,
 }
 
 define_class!(
@@ -302,14 +366,48 @@ define_class!(
 
         #[unsafe(method(windowDidResize:))]
         fn window_did_resize(&self, notification: &NSNotification) {
+            let Some(window) = notification_window(notification) else {
+                return;
+            };
+            // The shell paints a resize at once while one is "live", so that the
+            // new picture and the window's new edge reach the screen together
+            // instead of the old frame stretched over the new size. AppKit says
+            // so for a drag; any other resize -- a zoom, a fullscreen transition
+            // -- is the same situation, so it is wrapped the same way.
+            let drag = window.inLiveResize();
+            self.ivars().resizing.store(true, Ordering::Relaxed);
+            if !drag {
+                self.send(ShellEvent::LiveResize(true));
+            }
+            self.send(ShellEvent::Resized(content_size(&window)));
+            if !drag {
+                self.send(ShellEvent::LiveResize(false));
+            }
+            self.ivars().resizing.store(false, Ordering::Relaxed);
+            self.report_window_state(&window);
+        }
+
+        #[unsafe(method(windowWillStartLiveResize:))]
+        fn window_will_start_live_resize(&self, _notification: &NSNotification) {
+            self.send(ShellEvent::LiveResize(true));
+        }
+
+        #[unsafe(method(windowDidEndLiveResize:))]
+        fn window_did_end_live_resize(&self, _notification: &NSNotification) {
+            self.send(ShellEvent::LiveResize(false));
+        }
+
+        #[unsafe(method(windowDidEnterFullScreen:))]
+        fn window_did_enter_full_screen(&self, notification: &NSNotification) {
             if let Some(window) = notification_window(notification) {
-                self.send(ShellEvent::Resized(content_size(&window)));
-                // Paint at the new size before AppKit shows the resized
-                // window, rather than on the next tick with the old frame
-                // stretched over it.
-                if let Some(view) = content_view(&window) {
-                    view.redraw_now();
-                }
+                self.report_window_state(&window);
+            }
+        }
+
+        #[unsafe(method(windowDidExitFullScreen:))]
+        fn window_did_exit_full_screen(&self, notification: &NSNotification) {
+            if let Some(window) = notification_window(notification) {
+                self.report_window_state(&window);
             }
         }
 
@@ -344,8 +442,12 @@ define_class!(
 );
 
 impl WindowDelegate {
-    fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(WindowDelegateIvars::default());
+    fn new(mtm: MainThreadMarker, resizing: Arc<AtomicBool>) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(WindowDelegateIvars {
+            sink: OnceCell::new(),
+            resizing,
+            state: Cell::new(WindowState::default()),
+        });
         unsafe { msg_send![super(this), init] }
     }
 
@@ -355,7 +457,20 @@ impl WindowDelegate {
 
     fn send(&self, event: ShellEvent) {
         if let Some(sink) = self.ivars().sink.get().and_then(Weak::upgrade) {
-            sink.send(event);
+            let _ = sink.send(Instant::now(), event);
+        }
+    }
+
+    /// Tells the shell when the window went fullscreen or was zoomed by someone
+    /// other than the runtime -- the green button, a double-click on the title
+    /// bar -- so what the application reads from the platform handle is true.
+    fn report_window_state(&self, window: &NSWindow) {
+        let state = WindowState {
+            fullscreen: window.styleMask().contains(NSWindowStyleMask::FullScreen),
+            maximized: window.isZoomed(),
+        };
+        if self.ivars().state.replace(state) != state {
+            self.send(ShellEvent::WindowStateChanged(state));
         }
     }
 }

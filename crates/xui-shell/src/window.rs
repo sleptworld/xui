@@ -1,5 +1,8 @@
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use xui_interface::{CursorIcon, Rect, Size};
+use xui_interface::{
+    Appearance, CursorIcon, HostCapabilities, MenuBar, PlatformCommand, PlatformError,
+    PlatformReply, Rect, Size, WindowGeometry,
+};
 
 /// A size in physical pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -48,7 +51,12 @@ pub trait SurfaceTarget: HasWindowHandle + HasDisplayHandle + Send + Sync + 'sta
 /// The window operations [`crate::Shell`] needs from a host.
 ///
 /// Every method is a request the platform may honour late or not at all;
-/// none of them report failure.
+/// none of them report failure, except [`Self::perform`], which says what it did.
+///
+/// The methods after [`Self::set_ime_cursor_area`] all have defaults, so a host
+/// adopts them one capability at a time: it overrides what it can do, reports it
+/// through [`Self::capabilities`], and leaves the rest as the "not supported"
+/// the defaults amount to.
 pub trait PlatformWindow: SurfaceTarget {
     /// Asks for a [`crate::ShellEvent::RedrawRequested`] to be delivered.
     fn request_redraw(&self);
@@ -62,6 +70,65 @@ pub trait PlatformWindow: SurfaceTarget {
     fn set_ime_allowed(&self, allowed: bool);
     /// Anchors the IME candidate window, in logical window coordinates.
     fn set_ime_cursor_area(&self, area: Rect);
+
+    /// What this host can do. Read once, before the first frame, and handed to
+    /// the application so it can hide or degrade UI the host cannot back.
+    fn capabilities(&self) -> HostCapabilities {
+        HostCapabilities::NONE
+    }
+
+    /// The system's appearance now. Later changes arrive as
+    /// [`crate::ShellEvent::AppearanceChanged`].
+    fn appearance(&self) -> Appearance {
+        Appearance::default()
+    }
+
+    /// Applied when the title the runtime wants changes, never repeated.
+    fn set_title(&self, _title: &str) {}
+
+    /// Applied when the menu bar the runtime wants changes. `None` returns to
+    /// the host's default.
+    fn set_menu_bar(&self, _menu_bar: Option<&MenuBar>) {}
+
+    /// Where the window is, for saving and restoring it.
+    fn geometry(&self) -> Option<WindowGeometry> {
+        None
+    }
+
+    /// Carries out something the application asked for that is not per-frame
+    /// state: a clipboard write, a dialog, a window command.
+    ///
+    /// The one entry point for all of them, so adding a command never changes
+    /// this trait: a host that does not know a variant answers
+    /// [`Performed::Unsupported`] and keeps building.
+    ///
+    /// A host that shows something that outlives this call (a sheet, a portal
+    /// dialog) must not block here. Blocking runs the platform's nested event
+    /// loop, which delivers events while the shell is busy; answer
+    /// [`Performed::Pending`] instead and reply later with
+    /// [`crate::ShellEvent::Reply`].
+    fn perform(&self, _command: PlatformCommand) -> Performed {
+        Performed::Unsupported
+    }
+}
+
+/// What a host did with a [`PlatformCommand`].
+#[derive(Debug, Clone, PartialEq)]
+#[must_use]
+pub enum Performed {
+    /// A command was carried out.
+    Done,
+    /// The host does not implement it. For a request the shell turns this into
+    /// [`PlatformReply::Unsupported`], so whoever is waiting is never left
+    /// hanging.
+    Unsupported,
+    /// A request answered on the spot.
+    Reply(PlatformReply),
+    /// A request the host will answer later, with
+    /// [`crate::ShellEvent::Reply`]: a dialog shown as a sheet, a Wayland
+    /// clipboard read.
+    Pending,
+    Failed(PlatformError),
 }
 
 /// A window size in either unit.

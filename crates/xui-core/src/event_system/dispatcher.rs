@@ -249,7 +249,8 @@ fn dispatch_user_handlers<B: TextBackend>(
         let view = arena.node_view(node);
         let text_layout = primary_text_query(host_text_cache, node);
         let mut cx =
-            EventContext::new(view, text_layout, phase, &mut request_update, &mut requests);
+            EventContext::new(view, text_layout, phase, &mut request_update, &mut requests)
+                .with_platform(arena.platform());
         handlers.dispatch(event, &mut cx)
     };
 
@@ -321,7 +322,8 @@ fn dispatch_builtin_event<B: TextBackend>(
             .map(|node| {
                 let text_layout = primary_text_query(host_text_cache, node_id);
                 let mut cx =
-                    EventContext::new(node, text_layout, phase, &mut update, &mut requests);
+                    EventContext::new(node, text_layout, phase, &mut update, &mut requests)
+                        .with_platform(arena.platform());
                 node.widget.handle_event(event, &mut cx)
             })
             .unwrap_or(EventResult::Ignored)

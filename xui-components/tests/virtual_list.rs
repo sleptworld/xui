@@ -1,8 +1,7 @@
 //! End-to-end checks that `virtual_list` mounts only the rows near the
 //! viewport and still reports the full scrollable height.
 
-use std::cell::RefCell;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::{Cell, RefCell};
 use std::time::Instant;
 use xui_components::VirtualItemRenderer;
 #[allow(unused_imports)]
@@ -24,12 +23,14 @@ const VIEWPORT: Size<f32> = Size {
 thread_local! {
     /// Indices the list actually asked for, most recent render last.
     static RENDERED: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    /// Total item-renderer invocations. Thread-local (like `RENDERED`) so
+    /// tests running in parallel threads cannot disturb each other's counts.
+    static RENDER_CALLS: Cell<usize> = const { Cell::new(0) };
 }
-static RENDER_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 fn list_root(cx: &mut HookContext<'_>) -> ElementDesc {
     let render_item: VirtualItemRenderer = cx.use_callback((), |index: usize| {
-        RENDER_CALLS.fetch_add(1, Ordering::Relaxed);
+        RENDER_CALLS.with(|calls| calls.set(calls.get() + 1));
         RENDERED.with(|slot| slot.borrow_mut().push(index));
         TextWidget::new(format!("row {index}"))
             .style(Style::new().width(Sizing::Fill).height(ITEM_HEIGHT))
@@ -123,9 +124,13 @@ fn rendered_indices() -> Vec<usize> {
     RENDERED.with(|slot| slot.borrow().clone())
 }
 
+fn render_calls() -> usize {
+    RENDER_CALLS.with(Cell::get)
+}
+
 fn reset_tracking() {
     RENDERED.with(|slot| slot.borrow_mut().clear());
-    RENDER_CALLS.store(0, Ordering::Relaxed);
+    RENDER_CALLS.with(|calls| calls.set(0));
 }
 
 #[test]
@@ -244,14 +249,14 @@ fn scrolling_slides_the_window_without_growing_it() {
 fn a_scroll_too_small_to_change_the_window_does_not_rebuild_rows() {
     reset_tracking();
     let mut harness = Harness::new();
-    let calls_after_mount = RENDER_CALLS.load(Ordering::Relaxed);
+    let calls_after_mount = render_calls();
 
     // One pixel cannot bring a new row into range given the overscan, so the
     // runtime should move the content without asking the component again.
     harness.scroll_by(1.0);
 
     assert_eq!(
-        RENDER_CALLS.load(Ordering::Relaxed),
+        render_calls(),
         calls_after_mount,
         "a sub-row scroll rebuilt the list"
     );

@@ -22,6 +22,8 @@
 //! - `render` — scene, scene compiler, and the `RenderBackend` trait.
 //! - `widgets` — primitive widget interface and built-in widgets.
 //! - `event_system`, `focus`, `shortcut` — input, focus, and shortcuts.
+//! - `platform` — `PlatformHandle`, where the application leaves commands and
+//!   requests for the host and receives its answers.
 //! - `assets` — process-global `AssetManager` installation and loaders.
 //! - `text` — `TextHost` and the configured text backend.
 //!
@@ -48,6 +50,7 @@ pub mod focus;
 mod frame_bench;
 pub mod lanes;
 pub mod layout;
+pub mod platform;
 pub mod prelude;
 pub mod runtime;
 pub mod scroll;
