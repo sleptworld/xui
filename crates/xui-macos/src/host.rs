@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::rc::{Rc, Weak};
 use std::time::Instant;
 
-use dispatch2::DispatchQueue;
+use dispatch2::{DispatchQueue, DispatchTime};
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType};
 use objc2_foundation::NSPoint;
@@ -37,6 +37,9 @@ thread_local! {
     /// find it here.
     static CURRENT: RefCell<Option<Weak<dyn EventSink>>> = const { RefCell::new(None) };
     static REDRAW_PENDING: Cell<bool> = const { Cell::new(false) };
+    /// Bumped by every [`request_redraw_at`], so a block scheduled for a
+    /// deadline that has since been replaced does nothing when it runs.
+    static TIMED_REDRAW: Cell<u64> = const { Cell::new(0) };
 }
 
 pub(crate) fn set_current(sink: Option<Weak<dyn EventSink>>) {
@@ -71,6 +74,31 @@ pub(crate) fn request_redraw() {
     }
     DispatchQueue::main().exec_async(|| {
         if REDRAW_PENDING.replace(false) {
+            send_current(ShellEvent::RedrawRequested);
+        }
+    });
+}
+
+/// Schedules a [`ShellEvent::RedrawRequested`] for `at`, replacing the one
+/// scheduled before.
+///
+/// A block on the main queue rather than a frame from the display link: the
+/// link is for frames wanted continuously, and keeping it running until a
+/// deadline half a second away is exactly the cost this exists to avoid.
+pub(crate) fn request_redraw_at(at: Instant) {
+    if MainThreadMarker::new().is_none() {
+        DispatchQueue::main().exec_async(move || request_redraw_at(at));
+        return;
+    }
+    let generation = TIMED_REDRAW.with(|current| {
+        let next = current.get().wrapping_add(1);
+        current.set(next);
+        next
+    });
+    let delay = at.saturating_duration_since(Instant::now());
+    let when = DispatchTime::try_from(delay).unwrap_or(DispatchTime::NOW);
+    let _ = DispatchQueue::main().after(when, move || {
+        if TIMED_REDRAW.with(Cell::get) == generation {
             send_current(ShellEvent::RedrawRequested);
         }
     });

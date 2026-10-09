@@ -32,6 +32,7 @@ mod frame;
 mod input;
 mod query;
 mod scroll;
+mod wake;
 
 // The pipeline's private stages.
 mod layout_pass;
@@ -90,6 +91,9 @@ pub struct UiRuntime {
     /// rather than in the component runtime so that the one place deciding
     /// whether animation asks for frames -- `is_animating` -- can see them.
     pub(super) tickers: crate::ticker::TickerRegistry,
+    /// The deadline each node asked to be woken at, at most one per node. See
+    /// [`UiRuntime::next_wake`].
+    pub(super) wakes: SparseSecondaryMap<NodeId, std::time::Instant>,
     /// Physical pixels per logical pixel, forwarded to canvas painters so they
     /// can size hairlines and snap to the device grid.
     pub(super) scale_factor: f32,

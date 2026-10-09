@@ -65,6 +65,7 @@ impl UiRuntime {
             frame_time: crate::clock::FrameTime::ZERO,
             canvas_invalidations: crate::widgets::CanvasInvalidator::default(),
             tickers: crate::ticker::TickerRegistry::default(),
+            wakes: slotmap::SparseSecondaryMap::new(),
             scale_factor: 1.0,
             gpu_context: None,
             platform: crate::platform::PlatformHandle::default(),
@@ -337,6 +338,7 @@ impl UiRuntime {
             self.unbind_canvas_controller(id);
         }
         self.canvases_wanting_repaint.remove(id);
+        self.wakes.remove(id);
         self.text_nodes.remove(id);
         self.interaction_system.remove(id);
         self.style_system.remove(id);

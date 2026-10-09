@@ -170,6 +170,26 @@ impl EventTranslator {
         })
     }
 
+    /// A deadline `node` asked for, delivered in the frame at `timestamp`.
+    pub(crate) fn wake_event(
+        &mut self,
+        node: NodeId,
+        deadline: Instant,
+        timestamp: Instant,
+    ) -> SemanticEvent {
+        SemanticEvent::Wake(xui_interface::WakeEvent {
+            meta: self.make_meta(
+                timestamp,
+                node,
+                node,
+                EventPhase::Target,
+                EventSource::Programmatic,
+                Modifiers::default(),
+            ),
+            deadline,
+        })
+    }
+
     /// A command the platform raised itself, with no key behind it.
     pub(crate) fn platform_command_event(
         &mut self,

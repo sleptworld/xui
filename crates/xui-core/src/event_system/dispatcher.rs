@@ -368,6 +368,10 @@ fn apply_event_context(
             EventRequest::ReleasePointerCapture => {
                 arena.event_state_mut().release_pointer_capture()
             }
+            EventRequest::WakeAt(node, at) if arena.contains(node) => {
+                arena.schedule_wake(node, at);
+            }
+            EventRequest::CancelWake(node) => arena.cancel_wake(node),
             _ => {}
         }
     }

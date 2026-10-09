@@ -198,6 +198,31 @@ impl<'a> EventContext<'a> {
             .map(|platform| platform.request_for_node(self.node_id(), request))
     }
 
+    /// What the host can do, or [`xui_interface::HostCapabilities::NONE`] if
+    /// this context has no way to reach it.
+    pub fn host_capabilities(&self) -> xui_interface::HostCapabilities {
+        self.platform
+            .map(|platform| platform.capabilities())
+            .unwrap_or(xui_interface::HostCapabilities::NONE)
+    }
+
+    /// Asks for a [`xui_interface::SemanticEvent::Wake`] at `at`, delivered to
+    /// this node at the top of the first frame at or after it. Replaces any
+    /// wake this node already asked for; one is delivered once.
+    ///
+    /// Only a host with [`xui_interface::HostCapabilities::TIMED_REDRAW`]
+    /// produces a frame for the deadline itself. Elsewhere the wake waits for
+    /// whatever frame comes next, so something that would look broken arriving
+    /// late should check [`Self::host_capabilities`] first.
+    pub fn request_wake_at(&mut self, at: std::time::Instant) {
+        self.requests.push(EventRequest::WakeAt(self.node_id(), at));
+    }
+
+    /// Drops the wake this node asked for, if any.
+    pub fn cancel_wake(&mut self) {
+        self.requests.push(EventRequest::CancelWake(self.node_id()));
+    }
+
     pub fn node_id(&self) -> NodeId {
         self.node_ref.id
     }

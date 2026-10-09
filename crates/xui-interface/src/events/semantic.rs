@@ -87,6 +87,9 @@ pub enum SemanticEvent {
 
     /// The host's answer to a request this node made. See [`PlatformReplyEvent`].
     PlatformReply(PlatformReplyEvent),
+
+    /// A deadline this node asked for has passed. See [`WakeEvent`].
+    Wake(WakeEvent),
 }
 
 impl SemanticEvent {
@@ -120,6 +123,7 @@ impl SemanticEvent {
             SemanticEvent::Scroll(e) => &e.meta,
 
             SemanticEvent::PlatformReply(e) => &e.meta,
+            SemanticEvent::Wake(e) => &e.meta,
         }
     }
 
@@ -153,6 +157,7 @@ impl SemanticEvent {
             SemanticEvent::Scroll(e) => &mut e.meta,
 
             SemanticEvent::PlatformReply(e) => &mut e.meta,
+            SemanticEvent::Wake(e) => &mut e.meta,
         }
     }
 
@@ -193,6 +198,8 @@ impl SemanticEvent {
             // To the node that asked, and no one else: the reply is that node's
             // to act on, and an ancestor handling it too would act twice.
             SemanticEvent::PlatformReply(_) => PropagationMode::Direct,
+            // The same: the deadline is the asking node's.
+            SemanticEvent::Wake(_) => PropagationMode::Direct,
         }
     }
 
@@ -223,6 +230,22 @@ pub struct PlatformReplyEvent {
     /// The id `request_platform` returned, to tell this node's requests apart.
     pub request: RequestId,
     pub reply: PlatformReply,
+}
+
+/// A deadline a node asked for with `EventContext::request_wake_at` has passed.
+///
+/// Delivered to that node alone, at the top of the first frame at or after the
+/// deadline -- never from a timer callback -- so whatever it changes is painted
+/// in that same frame. `meta.timestamp` is when the frame is for, which may be
+/// well after `deadline`: a window off screen gets no frames, and its wakes
+/// arrive together when it comes back.
+#[derive(Debug, Clone)]
+pub struct WakeEvent {
+    pub meta: EventMeta,
+    /// The instant that was asked for. Scheduling the next deadline from this
+    /// rather than from `meta.timestamp` keeps a periodic wake from drifting by
+    /// however late each frame was.
+    pub deadline: Instant,
 }
 
 #[derive(Debug, Clone)]

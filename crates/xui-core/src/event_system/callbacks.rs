@@ -23,7 +23,7 @@ use xui_interface::EventPhase;
 use xui_interface::events::semantic::{
     ClickEvent, CommandEvent, ContextMenuEvent, DragEvent, FocusEvent, HoverEvent,
     PlatformReplyEvent, PointerBoundaryEvent, PointerMoveEvent, PressEvent, ScrollEvent,
-    SemanticEvent,
+    SemanticEvent, WakeEvent,
 };
 
 use super::{EventContext, Flow, Handler};
@@ -238,6 +238,8 @@ events! {
     Scroll:       Scroll(ScrollEvent)            => on_scroll,        capture = on_scroll_capture;
 
     PlatformReply: PlatformReply(PlatformReplyEvent) => on_platform_reply;
+
+    Wake:         Wake(WakeEvent)                => on_wake;
 }
 
 impl EventMask {

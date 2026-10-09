@@ -12,7 +12,7 @@ use crate::window::{window_attributes, WinitWindow};
 use winit::application::ApplicationHandler;
 use winit::error::{EventLoopError, OsError};
 use winit::event::{ElementState, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
 use xui_core::app::{AppRenderError, ComponentFn};
@@ -417,6 +417,13 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackend> ApplicationHandler<WinitUser
             return;
         };
         let control = shell.about_to_wait();
+        // Sleep until the next timed frame, if one is pending. When it comes
+        // the loop wakes, comes back here, and the due deadline becomes a
+        // redraw request.
+        event_loop.set_control_flow(match shell.window().take_due_redraw(Instant::now()) {
+            Some(at) => ControlFlow::WaitUntil(at),
+            None => ControlFlow::Wait,
+        });
         self.apply(event_loop, control);
     }
 

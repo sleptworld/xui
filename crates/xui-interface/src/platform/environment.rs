@@ -24,6 +24,10 @@ impl HostCapabilities {
     pub const OPEN_URL: Self = Self(1 << 11);
     pub const NOTIFICATIONS: Self = Self(1 << 12);
     pub const SYSTEM_APPEARANCE: Self = Self(1 << 13);
+    /// The host can deliver a frame at a time it is given, rather than only
+    /// as soon as possible. Without it nothing that waits on a deadline -- a
+    /// blinking caret -- gets its frame, so such UI holds still instead.
+    pub const TIMED_REDRAW: Self = Self(1 << 14);
 
     /// Whether every capability in `other` is present.
     pub const fn contains(self, other: Self) -> bool {

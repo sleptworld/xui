@@ -107,6 +107,34 @@ impl App {
         }
     }
 
+    /// Delivers every wake due at `now` to the node that asked for it.
+    ///
+    /// Called by the frame loop before anything is stepped, so what a wake
+    /// changes is painted in the frame that delivered it.
+    pub(crate) fn deliver_due_wakes<T: TextBackend>(
+        &mut self,
+        now: std::time::Instant,
+        text: &mut TextHost<T>,
+    ) {
+        let due = self.ui_runtime.take_due_wakes(now);
+        if due.is_empty() {
+            return;
+        }
+        for (node, deadline) in due {
+            let event = self.event_translator.wake_event(node, deadline, now);
+            crate::event_system::dispatcher::dispatch_semantic(&mut self.ui_runtime, text, event);
+        }
+        if self.scheduler().is_dirty() {
+            self.components.mark_root_dirty();
+        }
+    }
+
+    /// When the next frame is owed to a wake, if one is. See
+    /// [`crate::runtime::GuiRuntime::next_wake`].
+    pub fn next_wake(&self) -> Option<std::time::Instant> {
+        self.ui_runtime.next_wake()
+    }
+
     /// Hands each answer to a request a node made to that node, as an event.
     ///
     /// Run after the replies of a settle are delivered, so the node handles them

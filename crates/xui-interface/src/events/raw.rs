@@ -595,6 +595,27 @@ pub struct RawKeyInput {
 }
 
 impl RawEvent {
+    /// When the event happened, on the clock input is measured against.
+    pub fn timestamp(&self) -> Instant {
+        match self {
+            Self::PointerMove(event) => event.timestamp,
+            Self::PointerDown(event) | Self::PointerUp(event) => event.timestamp,
+            Self::PointerCancel(event) => event.timestamp,
+            Self::Wheel(event) => event.timestamp,
+            Self::WindowBlur(event) | Self::WindowFocus(event) => event.timestamp,
+            Self::ContextMenu(event) => event.timestamp,
+            Self::Keyboard(event) => event.timestamp,
+            Self::Ime(
+                RawIme::Enabled { timestamp }
+                | RawIme::Preedit { timestamp, .. }
+                | RawIme::Commit { timestamp, .. }
+                | RawIme::Disabled { timestamp },
+            ) => *timestamp,
+            Self::PointerLeave(event) => event.timestamp,
+            Self::Gesture(event) => event.timestamp,
+        }
+    }
+
     pub fn pointer_position(&self) -> Option<Point> {
         match self {
             Self::PointerMove(event) => Some(event.position),
@@ -613,6 +634,11 @@ pub enum EventRequest {
     ClearFocus,
     CapturePointer(NodeId),
     ReleasePointerCapture,
+    /// Deliver a `SemanticEvent::Wake` to the node at `at`, replacing any wake
+    /// it already asked for.
+    WakeAt(NodeId, Instant),
+    /// Drop the wake the node asked for, if any.
+    CancelWake(NodeId),
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

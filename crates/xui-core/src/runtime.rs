@@ -160,6 +160,17 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
         self.app.window_visible()
     }
 
+    /// When a frame is next owed to a deadline someone asked for with
+    /// [`crate::event_system::EventContext::request_wake_at`], or `None`.
+    ///
+    /// Separate from [`App::is_dirty`], which says a frame is owed *now*. A host
+    /// that is about to wait with nothing dirty schedules a frame for this
+    /// instant instead of waiting indefinitely; the frame then delivers the
+    /// wake. `None` while the window is off screen.
+    pub fn next_wake(&self) -> Option<Instant> {
+        self.app.next_wake()
+    }
+
     /// Tells the runtime whether the window is on screen.
     ///
     /// Two things stop together, which is why this is one call and not two.
@@ -309,6 +320,14 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
     /// and get the same animation out of them every run.
     pub fn frame_at(&mut self, now: Instant) -> Result<FrameReport, AppRenderError<B::Error>> {
         self.app.drain_async_messages();
+        // First, so what a wake changes is part of this frame. Against `now`
+        // itself rather than the frame clock: a wake is a deadline on the
+        // input clock, and the frame clock stands still across the idle gap a
+        // wake exists to end. Off screen nothing is delivered; the wakes wait,
+        // and come due together in the first frame back.
+        if self.app.window_visible() {
+            self.app.deliver_due_wakes(now, &mut self.text_backend);
+        }
         // Sampled once and published before anything is stepped: two
         // animations in one frame have to agree on when that frame is.
         //
@@ -1031,4 +1050,5 @@ mod tests {
             assert_eq!(LEAVES.with(Cell::get), 1, "there was nothing left to end");
         }
     }
+
 }

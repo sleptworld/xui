@@ -34,7 +34,7 @@ pub use events::{
     PointerCoords, PointerKind, PointerMoveEvent, PointerSnapshot, RawContextMenu, RawGesture,
     RawIme, RawKeyInput, RawKeyboard, RawPointerButton, RawPointerCancel, RawPointerLeave,
     RawPointerMove, RawWheel, RawWindowEvent, ScrollDelta, Shortcut, ShortcutBinding, ShortcutKey,
-    ShortcutModifiers, SwipeDirection, TextPayload, XuiDeviceId, XuiPointerId,
+    ShortcutModifiers, SwipeDirection, TextPayload, WakeEvent, XuiDeviceId, XuiPointerId,
 };
 pub use platform::{
     Appearance, ClipboardContent, ClipboardTarget, ColorScheme, DragEvent, DragPayload,

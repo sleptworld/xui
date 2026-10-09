@@ -236,6 +236,11 @@ where
     /// once it has been shown, and false from the start when the caller asked
     /// for a window that stays hidden.
     pending_first_present: bool,
+    /// The deadline last handed to [`PlatformWindow::request_redraw_at`], so a
+    /// settle that finds the same one does not ask again. Forgotten at every
+    /// frame: a timed frame that came before its deadline leaves the deadline
+    /// pending, and it has to be asked for again rather than assumed.
+    timed_redraw: Option<Instant>,
     render_error: Option<AppRenderError<B::Error>>,
 }
 
@@ -280,6 +285,7 @@ where
             published: PublishedHandle::default(),
             live_resize: false,
             occluded: false,
+            timed_redraw: None,
             render_error: None,
         };
         // Paint before handing control back to the event loop: a hidden
@@ -561,6 +567,7 @@ where
     }
 
     fn render_at(&mut self, now: Instant) -> ShellControl {
+        self.timed_redraw = None;
         match self.runtime.frame_at(now) {
             Err(error) => {
                 self.render_error = Some(error);
@@ -740,9 +747,16 @@ where
         self.request_redraw_if_dirty();
     }
 
-    fn request_redraw_if_dirty(&self) {
+    /// Asks for a frame now if one is owed, and otherwise for one at the next
+    /// deadline anything is waiting on.
+    fn request_redraw_if_dirty(&mut self) {
         if self.runtime.app().is_dirty() {
             self.window.request_redraw();
+        } else if let Some(at) = self.runtime.next_wake()
+            && self.timed_redraw != Some(at)
+        {
+            self.timed_redraw = Some(at);
+            self.window.request_redraw_at(at);
         }
     }
 }

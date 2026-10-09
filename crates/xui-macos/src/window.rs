@@ -276,6 +276,11 @@ impl PlatformWindow for MacWindow {
             | HostCapabilities::WINDOW_DRAG
             | HostCapabilities::NATIVE_MENU_BAR
             | HostCapabilities::OPEN_URL
+            | HostCapabilities::TIMED_REDRAW
+    }
+
+    fn request_redraw_at(&self, at: Instant) {
+        host::request_redraw_at(at);
     }
 
     fn set_title(&self, title: &str) {

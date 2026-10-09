@@ -64,6 +64,7 @@ fn set_title(&self, title: &str) {}
 fn set_menu_bar(&self, menu_bar: Option<&MenuBar>) {}   // None: the host's default
 fn geometry(&self) -> Option<WindowGeometry> { None }
 fn perform(&self, command: PlatformCommand) -> Performed { Performed::Unsupported }
+fn request_redraw_at(&self, at: Instant) {}             // with HostCapabilities::TIMED_REDRAW
 ```
 
 `perform` is the single entry point for commands and requests. Adding a command
@@ -191,6 +192,23 @@ code" case.
 `frame_at`, so animation is paced to when the frame will be *shown*, not when it
 was built. On macOS the display link supplies `targetTimestamp`. `RedrawRequested`
 remains for hosts without one.
+
+### 4a. Deadlines get a timed frame, not the display link
+
+Something that changes rarely -- a caret blinking twice a second -- must not keep
+the loop at the display's rate. A node asks with
+`EventContext::request_wake_at(Instant)` (one per node, replacing the last);
+`GuiRuntime::next_wake()` is the earliest of them (`None` off screen); and when a
+settle finds nothing dirty, `Shell` hands that instant to
+`PlatformWindow::request_redraw_at`, once per distinct deadline. The frame at or
+after it delivers `SemanticEvent::Wake` to the node before anything is stepped,
+so the change is painted in that frame. The deadline is on the input clock, not
+the frame clock, which stands still across exactly the idle gap a wake ends.
+
+`xui-macos` schedules a main-queue block for the instant; `xui-winit` waits with
+`ControlFlow::WaitUntil`. Both report `HostCapabilities::TIMED_REDRAW`. A host
+without it gets no timed frames, and UI that would look broken arriving late
+checks the capability first: the text input then keeps a steady caret.
 
 ### 5. Timestamps are the host's
 

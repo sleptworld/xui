@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use xui_interface::{
     Appearance, CursorIcon, HostCapabilities, MenuBar, PlatformCommand, PlatformError,
@@ -82,6 +84,19 @@ pub trait PlatformWindow: SurfaceTarget {
     fn appearance(&self) -> Appearance {
         Appearance::default()
     }
+
+    /// Asks for a [`crate::ShellEvent::RedrawRequested`] (or a
+    /// [`crate::ShellEvent::FrameTick`]) at or soon after `at`, replacing any
+    /// time asked for before.
+    ///
+    /// What a blinking caret waits on: the shell calls this when nothing needs a
+    /// frame now but something has asked to change at a later instant, so the
+    /// loop can sleep until then instead of polling. A frame that arrives for a
+    /// replaced request is harmless; one that never arrives leaves the
+    /// deadline waiting for the next event. A host that implements it reports
+    /// [`HostCapabilities::TIMED_REDRAW`], which is what UI checks before
+    /// relying on it.
+    fn request_redraw_at(&self, _at: Instant) {}
 
     /// Applied when the title the runtime wants changes, never repeated.
     fn set_title(&self, _title: &str) {}

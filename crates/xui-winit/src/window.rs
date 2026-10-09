@@ -1,13 +1,15 @@
 //! The winit side of the `xui-shell` window contract.
 
 use std::ops::Deref;
+use std::sync::Mutex;
+use std::time::Instant;
 
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
 };
 use winit::window::{Window, WindowAttributes};
-use xui_interface::{CursorIcon, Rect};
+use xui_interface::{CursorIcon, HostCapabilities, Rect};
 use xui_shell::{PhysicalSize, PlatformWindow, SurfaceTarget, WindowOptions, WindowSize};
 
 /// A winit window as a [`PlatformWindow`].
@@ -15,15 +17,41 @@ use xui_shell::{PhysicalSize, PlatformWindow, SurfaceTarget, WindowOptions, Wind
 /// A newtype rather than an impl on `winit::window::Window` directly, which the
 /// orphan rule forbids. Derefs to the winit window for everything else.
 #[derive(Debug)]
-pub struct WinitWindow(Window);
+pub struct WinitWindow {
+    window: Window,
+    /// When the shell last asked for a timed frame. A window cannot set the
+    /// event loop's control flow itself, so the runner reads this when the loop
+    /// is about to wait. See [`Self::take_due_redraw`].
+    redraw_at: Mutex<Option<Instant>>,
+}
 
 impl WinitWindow {
     pub fn new(window: Window) -> Self {
-        Self(window)
+        Self {
+            window,
+            redraw_at: Mutex::new(None),
+        }
     }
 
     pub fn winit(&self) -> &Window {
-        &self.0
+        &self.window
+    }
+
+    /// Where the event loop should wait until: the pending timed frame, or
+    /// `None` to wait for the next event.
+    ///
+    /// A deadline that has already passed is taken, and turned into an ordinary
+    /// redraw request, so the loop never waits on a time that is behind it.
+    pub(crate) fn take_due_redraw(&self, now: Instant) -> Option<Instant> {
+        let mut redraw_at = self.redraw_at.lock().unwrap();
+        match *redraw_at {
+            Some(at) if at <= now => {
+                *redraw_at = None;
+                self.window.request_redraw();
+                None
+            }
+            pending => pending,
+        }
     }
 }
 
@@ -31,66 +59,74 @@ impl Deref for WinitWindow {
     type Target = Window;
 
     fn deref(&self) -> &Window {
-        &self.0
+        &self.window
     }
 }
 
 impl HasWindowHandle for WinitWindow {
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
-        self.0.window_handle()
+        self.window.window_handle()
     }
 }
 
 impl HasDisplayHandle for WinitWindow {
     fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
-        self.0.display_handle()
+        self.window.display_handle()
     }
 }
 
 impl SurfaceTarget for WinitWindow {
     fn surface_size(&self) -> PhysicalSize {
-        let size = self.0.inner_size();
+        let size = self.window.inner_size();
         PhysicalSize::new(size.width, size.height)
     }
 
     fn scale_factor(&self) -> f64 {
-        self.0.scale_factor()
+        self.window.scale_factor()
     }
 }
 
 impl PlatformWindow for WinitWindow {
     fn request_redraw(&self) {
-        self.0.request_redraw();
+        self.window.request_redraw();
+    }
+
+    fn request_redraw_at(&self, at: Instant) {
+        *self.redraw_at.lock().unwrap() = Some(at);
+    }
+
+    fn capabilities(&self) -> HostCapabilities {
+        HostCapabilities::TIMED_REDRAW
     }
 
     fn set_visible(&self, visible: bool) {
-        self.0.set_visible(visible);
+        self.window.set_visible(visible);
     }
 
     fn focus(&self) {
-        self.0.focus_window();
+        self.window.focus_window();
     }
 
     fn is_minimized(&self) -> Option<bool> {
-        self.0.is_minimized()
+        self.window.is_minimized()
     }
 
     fn set_cursor(&self, cursor: CursorIcon) {
         match to_winit_cursor(cursor) {
             Some(icon) => {
-                self.0.set_cursor_visible(true);
-                self.0.set_cursor(icon);
+                self.window.set_cursor_visible(true);
+                self.window.set_cursor(icon);
             }
-            None => self.0.set_cursor_visible(false),
+            None => self.window.set_cursor_visible(false),
         }
     }
 
     fn set_ime_allowed(&self, allowed: bool) {
-        self.0.set_ime_allowed(allowed);
+        self.window.set_ime_allowed(allowed);
     }
 
     fn set_ime_cursor_area(&self, area: Rect) {
-        self.0.set_ime_cursor_area(
+        self.window.set_ime_cursor_area(
             LogicalPosition::new(area.x as f64, area.y as f64),
             LogicalSize::new(area.width as f64, area.height as f64),
         );
