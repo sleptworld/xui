@@ -3,6 +3,7 @@
 use crate::core::Size;
 use crate::text::TextHost;
 use crate::ui_runtime::state::HostWorkFlags;
+use crate::ui_runtime::style::animated_sample_requires_layout;
 use crate::ui_runtime::{RenderFrame, RenderFrameError, UiRuntime};
 use std::time::Duration;
 use xui_interface::{Bounds, NodeId, TextBackend};
@@ -33,7 +34,26 @@ impl UiRuntime {
             return false;
         }
         self.stats.inheritance_visits = 0;
-        let changed = self.style_system.tick(delta, &self.theme);
+        // What each node *shows*, before and after: a transition moving under
+        // a keyframe animation is only a change where the animation lets it
+        // through.
+        let before: Vec<_> = self
+            .style_system
+            .animating_nodes()
+            .into_iter()
+            .map(|id| (id, self.style_system.effective(id).clone()))
+            .collect();
+        self.style_system.tick(delta);
+        let mut changed = Vec::with_capacity(before.len());
+        for (id, before) in before {
+            // A transition just moved the base under it.
+            self.rebase_keyframes(id, false);
+            let after = self.style_system.effective(id);
+            let diff = before.diff(after);
+            if !diff.is_empty() {
+                changed.push((id, diff, animated_sample_requires_layout(&before, after)));
+            }
+        }
         for (id, diff, requires_layout) in changed.iter().copied() {
             if diff.intersects(xui_interface::StyleDiffFlags::INHERITED) {
                 self.ui_state.mark_inheritance_sync(id, true);

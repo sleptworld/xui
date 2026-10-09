@@ -2,7 +2,7 @@ use crate::animation::{has_animatable_difference, interpolate_style};
 use slotmap::{SecondaryMap, SparseSecondaryMap};
 use std::time::Duration;
 use xui_animation::{Timeline, Transition};
-use xui_interface::{ComputedStyle, NodeId, StyleDiffFlags, StylePatch, Theme};
+use xui_interface::{Animation, ComputedStyle, NodeId, StylePatch};
 
 pub(crate) struct StyleNode {
     computed: ComputedStyle,
@@ -48,11 +48,64 @@ impl ActiveStyleTransition {
     }
 }
 
+/// A style that moves on its own: see [`Animation`].
+///
+/// The top layer of a node's style. Its keyframes are what lies under it --
+/// the node's [`StyleSystem::base`] -- with each keyframe's patch applied, so
+/// a property no keyframe names shows the layer below, transition and all,
+/// and only the named ones are the animation's.
+///
+/// Resolving a patch needs the parent and the theme, which this system does
+/// not have, so the runtime resolves the keyframes and hands them in
+/// ([`StyleSystem::rebase_animation`]) whenever the base moves; a tick only
+/// interpolates between them.
+struct ActiveKeyframeAnimation {
+    config: Animation,
+    elapsed: Duration,
+    /// The base `from` and `to` were resolved against. When the node's base
+    /// no longer equals it, they are stale.
+    base: ComputedStyle,
+    from: ComputedStyle,
+    to: ComputedStyle,
+    sampled: ComputedStyle,
+}
+
+impl ActiveKeyframeAnimation {
+    /// Not yet resolved: both keyframes are `base` until the runtime rebases
+    /// it, which it does before anything reads the sample.
+    fn unresolved(config: Animation, base: &ComputedStyle) -> Self {
+        Self {
+            config,
+            elapsed: Duration::ZERO,
+            base: base.clone(),
+            from: base.clone(),
+            to: base.clone(),
+            sampled: base.clone(),
+        }
+    }
+
+    /// Samples at the current elapsed time. Returns whether the animation has
+    /// played out.
+    fn sample(&mut self) -> bool {
+        let progress = self.config.progress_at(self.elapsed);
+        self.sampled = interpolate_style(&self.from, &self.to, progress.eased);
+        progress.completed
+    }
+
+    fn tick(&mut self, delta: Duration) -> bool {
+        self.elapsed = self.elapsed.saturating_add(delta);
+        self.sample()
+    }
+}
+
 /// Dense computed-style cache plus sparse animation overrides. Topology always
 /// comes from `HostTree`; this system never stores parent or child links.
 pub(crate) struct StyleSystem {
     nodes: SecondaryMap<NodeId, StyleNode>,
     animations: SparseSecondaryMap<NodeId, ActiveStyleTransition>,
+    /// Keyframe animations. Over a node's transition when it has both: see
+    /// [`Self::styles`].
+    keyframes: SparseSecondaryMap<NodeId, ActiveKeyframeAnimation>,
     inherited_samples: SparseSecondaryMap<NodeId, ComputedStyle>,
     style_dirty_list: Vec<NodeId>,
     subtree_dirty_list: Vec<NodeId>,
@@ -64,6 +117,7 @@ impl StyleSystem {
         Self {
             nodes: SecondaryMap::new(),
             animations: SparseSecondaryMap::new(),
+            keyframes: SparseSecondaryMap::new(),
             inherited_samples: SparseSecondaryMap::new(),
             style_dirty_list: Vec::new(),
             subtree_dirty_list: Vec::new(),
@@ -84,6 +138,7 @@ impl StyleSystem {
     pub(crate) fn remove(&mut self, id: NodeId) {
         self.nodes.remove(id);
         self.animations.remove(id);
+        self.keyframes.remove(id);
         self.inherited_samples.remove(id);
     }
 
@@ -106,11 +161,27 @@ impl StyleSystem {
         &self.nodes[id].computed
     }
 
-    /// The style `id` shows this frame: an animation's sample, else the
-    /// target re-resolved against a sampled parent, else the target.
+    /// The style `id` shows this frame: its keyframe animation's sample, else
+    /// its [`Self::base`].
     #[inline]
     pub(crate) fn effective(&self, id: NodeId) -> &ComputedStyle {
         self.styles(id).1
+    }
+
+    /// What lies under `id`'s keyframe animation: a transition's sample, else
+    /// the target re-resolved against a sampled parent, else the target.
+    ///
+    /// The layers stack per property. A keyframe animation overrides only what
+    /// its keyframes name and shows this for everything else, and a transition
+    /// starts from this, not from a keyframe sample it would otherwise carry on
+    /// unwinding after the animation is over.
+    #[inline]
+    pub(crate) fn base(&self, id: NodeId) -> &ComputedStyle {
+        self.animations
+            .get(id)
+            .map(|animation| &animation.sampled)
+            .or_else(|| self.inherited_samples.get(id))
+            .unwrap_or_else(|| self.computed(id))
     }
 
     #[cfg(test)]
@@ -123,11 +194,10 @@ impl StyleSystem {
     pub(crate) fn styles(&self, id: NodeId) -> (&ComputedStyle, &ComputedStyle) {
         let target = self.computed(id);
         let effective = self
-            .animations
+            .keyframes
             .get(id)
             .map(|animation| &animation.sampled)
-            .or_else(|| self.inherited_samples.get(id))
-            .unwrap_or(target);
+            .unwrap_or_else(|| self.base(id));
         (target, effective)
     }
 
@@ -136,23 +206,24 @@ impl StyleSystem {
         self.inherited_samples.remove(id);
     }
 
-    /// Re-resolves inherited properties against the parent's sampled style
-    /// while leaving this node's target computed style untouched.
+    /// Re-resolves the inherited properties of `id`'s [`Self::base`] against
+    /// the parent's sampled style, leaving its target untouched.
     ///
     /// Only inherited properties can move here, so the common case — the
-    /// sample already agrees with `parent` — is answered by comparing those
-    /// fields alone, before anything is cloned.
+    /// base already agrees with `parent` — is answered by comparing those
+    /// fields alone, before anything is cloned. When the base did move, returns
+    /// what the node showed before: the caller re-resolves a keyframe
+    /// animation on top of the new base before diffing against it.
     pub(crate) fn sync_inherited(
         &mut self,
         id: NodeId,
         parent: &ComputedStyle,
         patch: &StylePatch,
-    ) -> (StyleDiffFlags, bool) {
-        let current = self.effective(id);
-        if !current.inherits_differently_from(parent, patch) {
-            return (StyleDiffFlags::empty(), false);
+    ) -> Option<ComputedStyle> {
+        if !self.base(id).inherits_differently_from(parent, patch) {
+            return None;
         }
-        let before = current.clone();
+        let before = self.effective(id).clone();
         if let Some(animation) = self.animations.get_mut(id) {
             animation.sampled.inherit_unset_from(parent, patch);
             self.inherited_samples.remove(id);
@@ -166,11 +237,7 @@ impl StyleSystem {
                 self.inherited_samples.insert(id, sampled);
             }
         }
-        let after = self.effective(id);
-        (
-            before.diff(after),
-            animated_sample_requires_layout(&before, after),
-        )
+        Some(before)
     }
 
     pub(crate) fn initialized(&self, id: NodeId) -> bool {
@@ -207,37 +274,84 @@ impl StyleSystem {
         }
     }
 
-    pub(crate) fn tick(
+    /// The keyframe animation `id` is playing, if any.
+    pub(crate) fn animation_config(&self, id: NodeId) -> Option<&Animation> {
+        self.keyframes.get(id).map(|animation| &animation.config)
+    }
+
+    /// Starts `config` on `id` from its first frame, replacing whatever was
+    /// playing. Unresolved until the next [`Self::rebase_animation`], which
+    /// the caller makes before anything reads the node's style.
+    pub(crate) fn start_animation(&mut self, id: NodeId, config: Animation) {
+        let animation = ActiveKeyframeAnimation::unresolved(config, self.base(id));
+        self.keyframes.insert(id, animation);
+    }
+
+    /// Whether the base under `id`'s keyframe animation moved since its
+    /// keyframes were resolved. False when it has none.
+    pub(crate) fn keyframe_base_moved(&self, id: NodeId) -> bool {
+        self.keyframes
+            .get(id)
+            .is_some_and(|animation| animation.base != *self.base(id))
+    }
+
+    /// Hands `id`'s keyframe animation keyframes resolved against `base`,
+    /// keeping how far it has got, and resamples it.
+    ///
+    /// Returns whether the keyframes moved. They can without the base moving:
+    /// a theme switch changes what a token in a keyframe resolves to, and the
+    /// node's own style may name no token at all.
+    pub(crate) fn rebase_animation(
         &mut self,
-        delta: Duration,
-        _theme: &Theme,
-    ) -> Vec<(NodeId, StyleDiffFlags, bool)> {
-        let active = std::mem::take(&mut self.animations);
-        let mut remaining = SparseSecondaryMap::new();
-        let mut changed = Vec::with_capacity(active.len());
-        for (id, mut animation) in active {
-            // `remove` drops a node's animation with its style node.
-            let target = &self.nodes[id].computed;
-            let before = animation.sampled.clone();
-            let completed = animation.tick(delta, target);
-            let diff = before.diff(&animation.sampled);
-            if !diff.is_empty() {
-                changed.push((
-                    id,
-                    diff,
-                    animated_sample_requires_layout(&before, &animation.sampled),
-                ));
-            }
-            if !completed {
-                remaining.insert(id, animation);
-            }
+        id: NodeId,
+        base: ComputedStyle,
+        from: ComputedStyle,
+        to: ComputedStyle,
+    ) -> bool {
+        let Some(animation) = self.keyframes.get_mut(id) else {
+            return false;
+        };
+        animation.base = base;
+        if animation.from == from && animation.to == to {
+            return false;
         }
-        self.animations = remaining;
-        changed
+        animation.from = from;
+        animation.to = to;
+        animation.sample();
+        true
+    }
+
+    pub(crate) fn remove_animation(&mut self, id: NodeId) -> bool {
+        self.keyframes.remove(id).is_some()
+    }
+
+    /// Every node with a transition or a keyframe animation, once each.
+    pub(crate) fn animating_nodes(&self) -> Vec<NodeId> {
+        let mut nodes: Vec<_> = self.animations.keys().collect();
+        nodes.extend(
+            self.keyframes
+                .keys()
+                .filter(|id| !self.animations.contains_key(*id)),
+        );
+        nodes
+    }
+
+    /// Steps every transition and keyframe animation by `delta`, dropping the
+    /// ones that finish.
+    ///
+    /// A keyframe animation is resampled between the keyframes it has; one
+    /// whose base a transition just moved is stale until the caller rebases it
+    /// ([`Self::keyframe_base_moved`]).
+    pub(crate) fn tick(&mut self, delta: Duration) {
+        let nodes = &self.nodes;
+        // `remove` drops a node's animation with its style node.
+        self.animations
+            .retain(|id, animation| !animation.tick(delta, &nodes[id].computed));
+        self.keyframes.retain(|_, animation| !animation.tick(delta));
     }
 
     pub(crate) fn is_animating(&self) -> bool {
-        !self.animations.is_empty()
+        !self.animations.is_empty() || !self.keyframes.is_empty()
     }
 
     pub(crate) fn mark_dirty(&mut self, id: NodeId) {
@@ -267,7 +381,7 @@ macro_rules! any_field_changed {
     };
 }
 
-fn animated_sample_requires_layout(from: &ComputedStyle, to: &ComputedStyle) -> bool {
+pub(crate) fn animated_sample_requires_layout(from: &ComputedStyle, to: &ComputedStyle) -> bool {
     from.layout != to.layout
         || any_field_changed!(
             from.text,
@@ -286,7 +400,7 @@ fn animated_sample_requires_layout(from: &ComputedStyle, to: &ComputedStyle) -> 
 mod tests {
     use super::*;
     use slotmap::SlotMap;
-    use xui_interface::{Color, ComputedColorStyle, StylePatch};
+    use xui_interface::{Color, ComputedColorStyle, StylePatch, Theme};
 
     #[test]
     fn animation_override_is_sparse_and_falls_back_to_computed_style() {
@@ -313,9 +427,8 @@ mod tests {
         assert_eq!(styles.effective(id), &initial);
         assert!(styles.is_animating());
 
-        let changed = styles.tick(Duration::from_millis(100), &theme);
-        assert_eq!(changed.len(), 1);
-        assert_eq!(changed[0].0, id);
+        assert_eq!(styles.animating_nodes(), vec![id]);
+        styles.tick(Duration::from_millis(100));
         assert!(!styles.is_animating());
         assert_eq!(styles.effective(id), &target);
 
@@ -363,7 +476,7 @@ mod tests {
             &target,
         ));
         styles.set_computed(id, target.clone());
-        styles.tick(Duration::from_millis(50), &theme);
+        styles.tick(Duration::from_millis(50));
 
         let mut updated_target = target;
         updated_target.paint.clip = true;

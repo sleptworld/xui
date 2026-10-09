@@ -1,7 +1,7 @@
 use crate::{
-    Affine, Bounds, Color, EdgeInsets, FontFamily, FontStyle, FontWeight, ImageData, ImageKey,
-    LineHeight, Point, Size, StyleDiffFlags, TextDecoration, Transition, WidgetState, core::Sizing,
-    text::TextStyle,
+    Affine, Animation, Bounds, Color, EdgeInsets, FontFamily, FontStyle, FontWeight, ImageData,
+    ImageKey, LineHeight, Point, Size, StyleDiffFlags, TextDecoration, Transition, WidgetState,
+    core::Sizing, text::TextStyle,
 };
 use std::{
     cell::RefCell,
@@ -913,6 +913,7 @@ pub struct Style {
     pub base: StylePatch,
     pub rules: Vec<StateStyleRule>,
     transition: Option<Transition>,
+    animation: Option<Animation>,
     state_deps: WidgetState,
     patch_cache: RefCell<Vec<(WidgetState, StylePatch)>>,
 }
@@ -923,6 +924,7 @@ impl fmt::Debug for Style {
             .field("base", &self.base)
             .field("rules", &self.rules)
             .field("transition", &self.transition)
+            .field("animation", &self.animation)
             .field("state_deps", &self.state_deps)
             .finish()
     }
@@ -934,6 +936,7 @@ impl Clone for Style {
             base: self.base.clone(),
             rules: self.rules.clone(),
             transition: self.transition,
+            animation: self.animation.clone(),
             state_deps: self.state_deps,
             patch_cache: RefCell::default(),
         }
@@ -945,6 +948,7 @@ impl PartialEq for Style {
         self.base == other.base
             && self.rules == other.rules
             && self.transition == other.transition
+            && self.animation == other.animation
             && self.state_deps == other.state_deps
     }
 }
@@ -959,6 +963,7 @@ impl Style {
             base,
             rules: Vec::new(),
             transition: None,
+            animation: None,
             state_deps: WidgetState::empty(),
             patch_cache: RefCell::default(),
         }
@@ -980,6 +985,22 @@ impl Style {
 
     pub fn transition_config(&self) -> Option<Transition> {
         self.transition
+    }
+
+    /// Plays `animation` on the node: a style that moves on its own, such as a
+    /// spinner's rotation. See [`Animation`].
+    pub fn animation(mut self, animation: Animation) -> Self {
+        self.animation = Some(animation);
+        self
+    }
+
+    pub fn clear_animation(mut self) -> Self {
+        self.animation = None;
+        self
+    }
+
+    pub fn animation_config(&self) -> Option<&Animation> {
+        self.animation.as_ref()
     }
 
     fn map_base(mut self, f: impl FnOnce(StylePatch) -> StylePatch) -> Self {
@@ -1368,6 +1389,9 @@ impl StyleMerge for Style {
         target.rules.extend(self.rules.iter().cloned());
         if self.transition.is_some() {
             target.transition = self.transition;
+        }
+        if self.animation.is_some() {
+            target.animation = self.animation.clone();
         }
         target.state_deps |= self.state_deps;
         target.patch_cache.borrow_mut().clear();
@@ -3231,6 +3255,7 @@ impl Hash for Style {
         self.base.hash(state);
         self.rules.hash(state);
         self.transition.hash(state);
+        self.animation.hash(state);
     }
 }
 

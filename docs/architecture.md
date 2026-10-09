@@ -66,7 +66,14 @@ The shared vocabulary every other crate agrees on:
   (`EventRequest`, `EventRequests`), shortcuts (`Shortcut`, `ShortcutBinding`).
 - **Widget** — `Component`, `NodeId`, `Key`, `WidgetType`, `AccessibilityRole`.
 - **Platform** — `TextInputSession`, `PlatformOutput`.
-- **Transition** — `Easing`, `Transition`, `AnimationProgress`.
+- **Transition** — `Easing`, `Transition`, `AnimationProgress`, and the looping
+  keyframe `Animation` (`Iterations`, `AnimationDirection`). A `Style` carries
+  either or both: a transition animates a change of target and stops; an
+  animation moves on its own (a spinner) and keeps the loop asking for frames
+  while it runs. They stack per property -- target, then transition sample,
+  then the properties the keyframes name -- so a transition shows through
+  wherever the animation does not reach. Transform-only animations stay on the
+  frame-properties path -- no layout, no repaint.
 - **Text traits** — `TextBackend`, `Shaper`, `FontDatabase`, `GlyphRasterizer`,
   plus layout data (`ParagraphLayout`, `LineLayout`, `GlyphRun`, …).
 - **Dirty tracking** — `WidgetUpdateFlags`, `StyleDiffFlags`.

@@ -3177,3 +3177,369 @@ fn direct_transform_update_skips_layout_and_repaint() {
     assert_eq!(arena.stats.layout_passes, layout_passes);
     assert_eq!(arena.stats.repaint_passes, repaint_passes);
 }
+
+fn spinning(duration_ms: u64) -> Style {
+    Style::new().width(20.0).height(20.0).animation(
+        xui_interface::Animation::new(
+            xui_interface::StylePatch::new().rotate(0.0),
+            xui_interface::StylePatch::new().rotate(std::f32::consts::TAU),
+            Duration::from_millis(duration_ms),
+        )
+        .infinite(),
+    )
+}
+
+fn rotation(arena: &UiRuntime, node: NodeId) -> f32 {
+    arena.style_system.effective(node).transform.rotate
+}
+
+/// A looping rotation is the spinner case: it keeps the loop running, and
+/// every frame of it is a transform on the frame properties -- no layout, no
+/// repaint.
+#[test]
+fn a_looping_rotation_spins_on_frame_properties_alone() {
+    let mut arena = UiRuntime::new();
+    let node = create_host(&mut arena, WidgetI::new(container().style(spinning(1000))));
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    assert!(arena.is_animating(), "mounting with an animation starts it");
+    assert_eq!(rotation(&arena, node), 0.0);
+    let layout_passes = arena.stats.layout_passes;
+    let repaint_passes = arena.stats.repaint_passes;
+    let transform_node = arena.render_system.binding(node).transform;
+
+    assert!(arena.tick_style_animations(Duration::from_millis(250)));
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    assert!((rotation(&arena, node) - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
+    let quarter = arena
+        .render_system
+        .properties
+        .transform(transform_node)
+        .expect("the rotation reaches the frame properties")
+        .value;
+
+    // A whole turn later it is back where it was -- nothing to report for the
+    // frame -- and still going.
+    arena.tick_style_animations(Duration::from_millis(1000));
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    assert!((rotation(&arena, node) - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
+    assert!(arena.is_animating());
+    let again = arena
+        .render_system
+        .properties
+        .transform(transform_node)
+        .unwrap()
+        .value;
+    let coefficients = |a: Affine| [a.xx, a.yx, a.xy, a.yy, a.dx, a.dy];
+    assert!(
+        coefficients(quarter)
+            .iter()
+            .zip(coefficients(again))
+            .all(|(q, a)| (q - a).abs() < 1e-3),
+        "{quarter:?} vs {again:?}"
+    );
+
+    assert_eq!(arena.stats.layout_passes, layout_passes);
+    assert_eq!(arena.stats.repaint_passes, repaint_passes);
+}
+
+#[test]
+fn the_same_animation_keeps_its_place_and_a_different_one_starts_over() {
+    let mut arena = UiRuntime::new();
+    let node = create_host(&mut arena, WidgetI::new(container().style(spinning(1000))));
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    arena.tick_style_animations(Duration::from_millis(250));
+
+    // A re-render that changes something else keeps the animation running.
+    update_host(
+        &mut arena,
+        node,
+        WidgetI::new(container().style(spinning(1000).background(Color::BLACK))),
+    );
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    assert!((rotation(&arena, node) - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
+
+    update_host(
+        &mut arena,
+        node,
+        WidgetI::new(container().style(spinning(500).background(Color::BLACK))),
+    );
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    assert_eq!(
+        rotation(&arena, node),
+        0.0,
+        "a new animation plays from its start"
+    );
+
+    update_host(
+        &mut arena,
+        node,
+        WidgetI::new(container().style(Style::new().width(20.0).height(20.0))),
+    );
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    assert!(!arena.is_animating(), "a style that stops asking stops it");
+    assert_eq!(rotation(&arena, node), 0.0);
+}
+
+#[test]
+fn a_finite_animation_ends_at_the_target_and_stops_asking_for_frames() {
+    let mut arena = UiRuntime::new();
+    let pulse = xui_interface::Animation::new(
+        xui_interface::StylePatch::new().background(Color::WHITE),
+        xui_interface::StylePatch::new().background(Color::BLACK),
+        Duration::from_millis(100),
+    )
+    .iterations(xui_interface::Iterations::Count(2))
+    .direction(xui_interface::AnimationDirection::Alternate);
+    let node = create_host(
+        &mut arena,
+        WidgetI::new(container().style(Style::new().width(20.0).height(20.0).animation(pulse))),
+    );
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    let target = arena.style_system.computed(node).clone();
+    assert_ne!(arena.style_system.effective(node), &target);
+
+    assert!(arena.tick_style_animations(Duration::from_millis(150)));
+    assert!(arena.is_animating());
+    assert!(arena.tick_style_animations(Duration::from_millis(50)));
+    assert!(!arena.is_animating());
+    assert_eq!(arena.style_system.effective(node), &target);
+}
+
+#[test]
+fn removing_an_animating_node_drops_its_animation() {
+    let mut arena = UiRuntime::new();
+    let node = create_host(&mut arena, WidgetI::new(container().style(spinning(1000))));
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    assert!(arena.is_animating());
+    arena.remove_subtree(node);
+    assert!(!arena.is_animating());
+}
+
+/// A keyframe can name a token the node's own style does not, so a theme
+/// switch that leaves the node's target alone must still move its keyframes.
+#[test]
+fn a_theme_switch_reaches_tokens_only_a_keyframe_names() {
+    let mut arena = UiRuntime::new();
+    arena.set_theme(Theme::light());
+    let primary =
+        || xui_interface::StylePatch::new().background(xui_interface::ColorToken::Primary);
+    let pulse =
+        xui_interface::Animation::new(primary(), primary(), Duration::from_millis(100)).infinite();
+    let node = create_host(
+        &mut arena,
+        WidgetI::new(container().style(Style::new().width(20.0).height(20.0).animation(pulse))),
+    );
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+
+    let mut retinted = Theme::light();
+    retinted.primary = Color::rgba(1.0, 0.0, 0.0, 1.0);
+    arena.set_theme(retinted.clone());
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+
+    assert_eq!(
+        arena.style_system.effective(node).paint.background,
+        xui_interface::ComputedColorStyle::Solid(retinted.primary)
+    );
+}
+
+fn background(arena: &UiRuntime, node: NodeId) -> Color {
+    match arena.style_system.effective(node).paint.background {
+        xui_interface::ComputedColorStyle::Solid(color) => color,
+        ref other => panic!("expected a solid background, got {other:?}"),
+    }
+}
+
+/// The layers stack per property: a keyframe animation turning the node does
+/// not stop a transition on its background from showing.
+#[test]
+fn a_transition_shows_through_on_properties_the_animation_does_not_name() {
+    let mut arena = UiRuntime::new();
+    let transition = Transition::new(Duration::from_millis(100)).ease(Easing::Linear);
+    let style = |color: Color| spinning(1000).background(color).transition(transition);
+    let node = create_host(
+        &mut arena,
+        WidgetI::new(container().style(style(Color::BLACK))),
+    );
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+
+    update_host(
+        &mut arena,
+        node,
+        WidgetI::new(container().style(style(Color::WHITE))),
+    );
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    assert_eq!(
+        background(&arena, node),
+        Color::BLACK,
+        "the transition starts where it was"
+    );
+
+    arena.tick_style_animations(Duration::from_millis(250));
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    assert!(
+        (rotation(&arena, node) - std::f32::consts::FRAC_PI_2).abs() < 1e-4,
+        "the animation kept turning"
+    );
+    assert_eq!(
+        background(&arena, node),
+        Color::WHITE,
+        "and the transition ran under it"
+    );
+
+    let mut arena = UiRuntime::new();
+    let node = create_host(
+        &mut arena,
+        WidgetI::new(container().style(style(Color::BLACK))),
+    );
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    update_host(
+        &mut arena,
+        node,
+        WidgetI::new(container().style(style(Color::WHITE))),
+    );
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    arena.tick_style_animations(Duration::from_millis(50));
+    let halfway = background(&arena, node);
+    assert!(
+        halfway != Color::BLACK && halfway != Color::WHITE,
+        "mid-transition, not a jump: {halfway:?}"
+    );
+}
+
+/// On a property both name, the animation wins while it plays, and the
+/// transition's value is what shows once it stops.
+#[test]
+fn the_animation_wins_on_a_property_both_name_until_it_ends() {
+    let mut arena = UiRuntime::new();
+    let transition = Transition::new(Duration::from_millis(1000)).ease(Easing::Linear);
+    let flash = xui_interface::Animation::new(
+        xui_interface::StylePatch::new().background(Color::rgba(1.0, 0.0, 0.0, 1.0)),
+        xui_interface::StylePatch::new().background(Color::rgba(1.0, 0.0, 0.0, 1.0)),
+        Duration::from_millis(100),
+    );
+    let style = |color: Color| {
+        Style::new()
+            .width(20.0)
+            .height(20.0)
+            .background(color)
+            .transition(transition)
+            .animation(flash.clone())
+    };
+    let node = create_host(
+        &mut arena,
+        WidgetI::new(container().style(style(Color::BLACK))),
+    );
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    update_host(
+        &mut arena,
+        node,
+        WidgetI::new(container().style(style(Color::WHITE))),
+    );
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+
+    arena.tick_style_animations(Duration::from_millis(50));
+    assert_eq!(background(&arena, node), Color::rgba(1.0, 0.0, 0.0, 1.0));
+
+    arena.tick_style_animations(Duration::from_millis(60));
+    let after = background(&arena, node);
+    assert!(
+        after != Color::rgba(1.0, 0.0, 0.0, 1.0) && after != Color::WHITE,
+        "the transition, a tenth of the way along: {after:?}"
+    );
+}
+
+/// A transition that starts while a keyframe animation plays starts from what
+/// lies under it, so the animation ending leaves nothing to unwind.
+#[test]
+fn a_transition_started_under_an_animation_does_not_unwind_it() {
+    let mut arena = UiRuntime::new();
+    let transition = Transition::new(Duration::from_millis(1000)).ease(Easing::Linear);
+    let half_turn = xui_interface::Animation::new(
+        xui_interface::StylePatch::new().rotate(0.0),
+        xui_interface::StylePatch::new().rotate(std::f32::consts::TAU),
+        Duration::from_millis(100),
+    );
+    let style = |color: Color| {
+        Style::new()
+            .width(20.0)
+            .height(20.0)
+            .background(color)
+            .transition(transition)
+            .animation(half_turn.clone())
+    };
+    let node = create_host(
+        &mut arena,
+        WidgetI::new(container().style(style(Color::BLACK))),
+    );
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    arena.tick_style_animations(Duration::from_millis(50));
+    assert!((rotation(&arena, node) - std::f32::consts::PI).abs() < 1e-4);
+
+    update_host(
+        &mut arena,
+        node,
+        WidgetI::new(container().style(style(Color::WHITE))),
+    );
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    arena.tick_style_animations(Duration::from_millis(60));
+
+    assert!(
+        arena.is_animating(),
+        "the background transition is still going"
+    );
+    assert_eq!(
+        rotation(&arena, node),
+        0.0,
+        "and the rotation is simply over"
+    );
+}
+
+/// A child's keyframe animation sits on top of what it inherits from a
+/// transitioning parent, frame by frame.
+#[test]
+fn an_animating_child_follows_its_parents_transition() {
+    let mut arena = UiRuntime::new();
+    let transition = Transition::new(Duration::from_millis(100)).ease(Easing::Linear);
+    let parent_style = |color: Color| {
+        Style::new()
+            .width(80.0)
+            .height(80.0)
+            .color(color)
+            .transition(transition)
+    };
+    let parent = create_host(
+        &mut arena,
+        WidgetI::new(container().style(parent_style(Color::BLACK))),
+    );
+    let child = child_of(
+        &mut arena,
+        parent,
+        WidgetI::new(container().style(spinning(1000))),
+    );
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    update_host(
+        &mut arena,
+        parent,
+        WidgetI::new(container().style(parent_style(Color::WHITE))),
+    );
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+
+    for frame in 1..=3 {
+        arena.tick_style_animations(Duration::from_millis(20));
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        let parent_color = arena.style_system.effective(parent).text.color;
+        assert_ne!(parent_color, Color::WHITE);
+        assert_eq!(arena.style_system.effective(child).text.color, parent_color);
+        let turned = std::f32::consts::TAU * 0.02 * frame as f32;
+        assert!((rotation(&arena, child) - turned).abs() < 1e-4);
+    }
+}

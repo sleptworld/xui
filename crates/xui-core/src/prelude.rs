@@ -14,6 +14,7 @@ pub use xui_interface::events::{
     EventResult, FocusEvent, HoverEvent, PointerBoundaryEvent, PointerButton, PointerMoveEvent,
     PressEvent, ScrollEvent, SemanticEvent,
 };
+pub use xui_interface::{Animation, AnimationDirection, Iterations};
 
 pub use crate::event_system::EventState;
 pub use crate::event_system::callbacks::{

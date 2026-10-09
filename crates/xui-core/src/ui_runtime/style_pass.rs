@@ -1,4 +1,5 @@
-//! The style pass: targets, transitions, and sampled inheritance.
+//! The style pass: targets, transitions, keyframe animations, and sampled
+//! inheritance.
 
 use crate::animation::has_animatable_difference;
 use crate::layout::{
@@ -8,9 +9,12 @@ use crate::text::{TextHost, TextLayoutSlot};
 use crate::ui_runtime::UiRuntime;
 use crate::ui_runtime::commit::taffy_context;
 use crate::ui_runtime::state::{HostWorkFlags, InheritanceSync};
+use crate::ui_runtime::style::animated_sample_requires_layout;
 use crate::widgets::WidgetType;
 use taffy::prelude as tf;
-use xui_interface::{ComputedStyle, NodeId, TextBackend, TextLayoutConstraints, TextLayoutInput};
+use xui_interface::{
+    Animation, ComputedStyle, NodeId, TextBackend, TextLayoutConstraints, TextLayoutInput, Theme,
+};
 
 impl UiRuntime {
     pub(super) fn recompute_node_state(&mut self, id: NodeId) {
@@ -87,11 +91,20 @@ impl UiRuntime {
         self.stats.inheritance_visits += 1;
         let state = self.hosts[id].state;
         let style_system = &mut self.style_system;
-        let (diff, requires_layout) = self.hosts[id].widget.with_widgets(|widget| {
+        let before = self.hosts[id].widget.with_widgets(|widget| {
             widget.style().with_patch_for_state(state, |patch| {
                 style_system.sync_inherited(id, parent, patch)
             })
         });
+        let Some(before) = before else {
+            return false;
+        };
+        // The base under a keyframe animation moved: its keyframes go on top of
+        // the new one.
+        self.rebase_keyframes(id, false);
+        let after = self.style_system.effective(id);
+        let diff = before.diff(after);
+        let requires_layout = animated_sample_requires_layout(&before, after);
         if !diff.is_empty() {
             let mut work = HostWorkFlags::from_style_diff(diff);
             if requires_layout {
@@ -131,6 +144,12 @@ impl UiRuntime {
         //  Initialize
         if !self.style_system.initialized(id) {
             self.style_system.set_computed(id, computed_style);
+            // Mounted with it: plays from its first frame, and the first frame
+            // already shows it.
+            if let Some(animation) = widget.animation() {
+                self.style_system.start_animation(id, animation);
+                self.rebase_keyframes(id, true);
+            }
             self.style_system.set_initialized(id);
             let mut work_flags = HostWorkFlags::empty();
             if self.sync_effective_taffy_style(id) {
@@ -150,19 +169,32 @@ impl UiRuntime {
         let inherited_target_changed = !current_style.inherited_eq(&computed_style);
         let animatable_target_changed = has_animatable_difference(current_style, &computed_style);
 
+        // What the node shows, for the diff, and what lies under its keyframe
+        // animation, which is where a transition starts from: the keyframes
+        // are a layer of their own and go on top of whatever it does.
         let effective_before = self.style_system.effective(id).clone();
+        let base_before = self.style_system.base(id).clone();
 
         let target_unchanged = *current_style == computed_style;
+
+        // The same animation keeps playing across re-renders; a different one
+        // starts over.
+        let animation_started = match widget.animation() {
+            Some(animation) if self.style_system.animation_config(id) == Some(&animation) => false,
+            Some(animation) => {
+                self.style_system.start_animation(id, animation);
+                true
+            }
+            None => self.style_system.remove_animation(id),
+        };
 
         let mut cancelled_transition = false;
         let transition = widget.transition();
         let _started_transition = match (transition, animatable_target_changed) {
-            (Some(transition), true) => self.style_system.start_transition(
-                id,
-                transition,
-                &effective_before,
-                &computed_style,
-            ),
+            (Some(transition), true) => {
+                self.style_system
+                    .start_transition(id, transition, &base_before, &computed_style)
+            }
             (Some(_), false) => {
                 self.style_system
                     .sync_transition_target(id, &computed_style);
@@ -174,11 +206,17 @@ impl UiRuntime {
             }
         };
 
-        if target_unchanged && !cancelled_transition {
+        let nothing_else_moved = target_unchanged && !cancelled_transition && !animation_started;
+        if !nothing_else_moved {
+            self.style_system.set_computed(id, computed_style);
+        }
+        // Even when nothing else moved: a keyframe can name a token, or
+        // inherit from the parent, where the node's own style does neither, so
+        // a theme switch can move it alone.
+        let keyframes_moved = self.rebase_keyframes(id, true);
+        if nothing_else_moved && !keyframes_moved {
             return;
         }
-
-        self.style_system.set_computed(id, computed_style);
 
         let effective_diff = effective_before.diff(self.style_system.effective(id));
         let mut work_flags = HostWorkFlags::from_style_diff(effective_diff);
@@ -272,4 +310,43 @@ fn apply_anchored_layout(style: &mut tf::Style, width: Option<f32>) {
     if let Some(width) = width {
         style.size.width = tf::Dimension::length(width);
     }
+}
+
+impl UiRuntime {
+    /// Re-resolves `id`'s keyframe animation against what lies under it, when
+    /// that moved or when `force` says something else might have -- the theme,
+    /// the parent. Returns whether the keyframes changed. Does nothing for a
+    /// node with no keyframe animation.
+    pub(super) fn rebase_keyframes(&mut self, id: NodeId, force: bool) -> bool {
+        let Some(animation) = self.style_system.animation_config(id) else {
+            return false;
+        };
+        if !force && !self.style_system.keyframe_base_moved(id) {
+            return false;
+        }
+        let animation = animation.clone();
+        let parent = match self.hosts.parent(id) {
+            Some(parent) => self.style_system.effective(parent).clone(),
+            None => self.style_system.default_style().clone(),
+        };
+        let base = self.style_system.base(id).clone();
+        let (from, to) = keyframe_styles(&animation, &base, &parent, &self.theme);
+        self.style_system.rebase_animation(id, base, from, to)
+    }
+}
+
+/// `base` with each of `animation`'s keyframes applied on top: the two styles
+/// it plays between. Equal to `base` on every property neither keyframe
+/// names, which is what keeps the layers below showing there.
+fn keyframe_styles(
+    animation: &Animation,
+    base: &ComputedStyle,
+    parent: &ComputedStyle,
+    theme: &Theme,
+) -> (ComputedStyle, ComputedStyle) {
+    let mut from = base.clone();
+    from.apply(parent, &animation.from, theme);
+    let mut to = base.clone();
+    to.apply(parent, &animation.to, theme);
+    (from, to)
 }

@@ -511,6 +511,10 @@ impl WidgetI {
         self.with_widgets(|widget| widget.style().transition_config())
     }
 
+    pub(crate) fn animation(&self) -> Option<xui_interface::Animation> {
+        self.with_widgets(|widget| widget.style().animation_config().cloned())
+    }
+
     #[inline]
     pub fn take_event_handlers(&self) -> Option<EventHandlers> {
         self.with_widgets_mut(|w| w.take_event_handlers())

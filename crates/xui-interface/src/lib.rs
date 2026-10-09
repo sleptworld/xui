@@ -61,7 +61,9 @@ pub use style::{
     TransformStylePatch, WidgetStateMatcher,
 };
 pub use text::*;
-pub use transition::{AnimationProgress, Easing, Transition};
+pub use transition::{
+    Animation, AnimationDirection, AnimationProgress, Easing, Iterations, Transition,
+};
 pub use widget::{
     AccessibilityProperties, AccessibilityRole, Component, FocusProperties, Focusability, Key,
     NodeId, NodeLifecycleEvent, WidgetType,
