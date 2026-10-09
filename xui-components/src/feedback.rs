@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use xui_core::prelude::*;
 use xui_macros::{component, defaults};
 
@@ -12,25 +14,54 @@ pub fn skeleton(width: &Sizing, height: &Sizing, style: &Style) {
     root_style.merge(style);
     ContainerWidget::new()
         .style(root_style)
-        .accessibility_hidden(true)
         .into_element_desc(vec![])
 }
 
+/// One turn of a [`spinner`].
+const SPINNER_PERIOD: Duration = Duration::from_millis(800);
+
+/// An indeterminate progress indicator: Lucide's `loader-circle`, turning.
+///
+/// The turn is a looping style animation of the icon's rotation, so it costs a
+/// transform per frame -- the icon is drawn once and the renderer moves the
+/// picture -- and stops asking for frames while the window is off screen. It
+/// takes the text color, like text does; set `color` in `style` to change it.
 #[component]
 #[defaults(label = "Loading".to_string(), size = 24.0, style = Style::new())]
 pub fn spinner(label: &String, size: &f32, style: &Style) {
     let mut root_style = Style::new()
         .size(Size::fix(*size, *size))
         .align(AlignStyle::Center)
-        .justify(JustifyStyle::Center)
-        .font_size(*size);
+        .justify(JustifyStyle::Center);
     root_style.merge(style);
+    let turn = Animation::new(
+        StylePatch::new().rotate(0.0),
+        StylePatch::new().rotate(std::f32::consts::TAU),
+        SPINNER_PERIOD,
+    )
+    .infinite();
     ContainerWidget::new()
         .style(root_style)
-        .accessibility_role(AccessibilityRole::ProgressIndicator)
         .accessibility_label(label.clone())
-        .accessibility_live_region(AccessibilityLiveRegion::Polite)
-        .into_element_desc(vec![TextWidget::new("◌").into_element_desc()])
+        .into_element_desc(vec![
+            icon()
+                .from_icon_data(loader_circle_icon())
+                .size(*size)
+                .style(Style::new().animation(turn))
+                .into_element_desc(),
+        ])
+}
+
+/// Lucide `loader-circle`.
+fn loader_circle_icon() -> IconData {
+    static ICON: std::sync::OnceLock<IconData> = std::sync::OnceLock::new();
+    ICON.get_or_init(|| {
+        IconData::from_svg(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>"#,
+        )
+        .expect("embedded loader-circle icon must be valid")
+    })
+    .clone()
 }
 
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
@@ -70,9 +101,5 @@ pub fn callout(content: &ElementDesc, title: &Option<String>, tone: &CalloutTone
     ContainerWidget::new()
         .style(root_style)
         .flex_direction(FlexDirectionStyle::Column)
-        .accessibility_live_region(match tone {
-            CalloutTone::Danger => AccessibilityLiveRegion::Assertive,
-            _ => AccessibilityLiveRegion::Polite,
-        })
         .into_element_desc(children)
 }

@@ -19,6 +19,7 @@
 
 pub mod button;
 pub mod dropdown;
+pub mod feedback;
 pub mod image;
 pub mod input;
 pub mod layout;
@@ -27,6 +28,7 @@ pub mod virtual_list;
 
 pub use button::*;
 pub use dropdown::*;
+pub use feedback::*;
 pub use input::*;
 
 // `ImageError` and `ImageSrc` are defined identically in both `icon` and

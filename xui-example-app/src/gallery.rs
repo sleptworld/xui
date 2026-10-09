@@ -11,6 +11,7 @@ use xui_macros::{component, xui};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Page {
     Button,
+    Spinner,
     Input,
     Select,
     Tabs,
@@ -20,8 +21,9 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 7] = [
+    pub const ALL: [Page; 8] = [
         Page::Button,
+        Page::Spinner,
         Page::Input,
         Page::Select,
         Page::Tabs,
@@ -33,6 +35,7 @@ impl Page {
     fn title(self) -> &'static str {
         match self {
             Page::Button => "Button",
+            Page::Spinner => "Spinner",
             Page::Input => "Input",
             Page::Select => "Select",
             Page::Tabs => "Tabs",
@@ -45,6 +48,7 @@ impl Page {
     fn description(self) -> &'static str {
         match self {
             Page::Button => "Displays a button or a component that looks like a button.",
+            Page::Spinner => "An indeterminate progress indicator that turns on its own.",
             Page::Input => "A single-line text field with IME support.",
             Page::Select => "A list of options for the user to pick from, shown in a portal.",
             Page::Tabs => "Layered sections of content, displayed one at a time.",
@@ -57,6 +61,7 @@ impl Page {
     fn icon(self) -> IconData {
         match self {
             Page::Button => lucide_rs::icons::square_mouse_pointer(),
+            Page::Spinner => lucide_rs::icons::loader_circle(),
             Page::Input => lucide_rs::icons::text_cursor_input(),
             Page::Select => lucide_rs::icons::chevrons_up_down(),
             Page::Tabs => lucide_rs::icons::layers(),
@@ -244,7 +249,7 @@ fn button_page() {
                 text={label("Please wait")}
                 variant={ButtonVariant::Primary}
                 loading={true}
-                loading_indicator={Some(lucide(lucide_rs::icons::loader_circle(), 16.0))}
+                loading_indicator={Some(xui! { <spinner size={16.0} /> })}
             />
         </row>
     };
@@ -266,6 +271,38 @@ fn button_page() {
         example("With icon", with_icon),
         example("Disabled and loading", states),
         example("Interactive", interactive),
+    ])
+}
+
+#[component]
+fn spinner_page() {
+    let sizes = xui! {
+        <row gap={24.0} align={AlignStyle::Center} justify={JustifyStyle::Center}>
+            <spinner size={16.0} />
+            <spinner size={24.0} />
+            <spinner size={32.0} />
+            <spinner size={48.0} />
+        </row>
+    };
+    let colors = xui! {
+        <row gap={24.0} align={AlignStyle::Center} justify={JustifyStyle::Center}>
+            <spinner style={Style::new().color(ColorToken::MutedForeground)} />
+            <spinner style={Style::new().color(ColorToken::Primary)} />
+            <spinner style={Style::new().color(ColorToken::Destructive)} />
+        </row>
+    };
+    let in_context = hstack(
+        8.0,
+        vec![
+            xui! { <spinner size={16.0} style={Style::new().color(ColorToken::MutedForeground)} /> },
+            muted("Syncing your changes"),
+        ],
+    );
+
+    page(vec![
+        example("Sizes", sizes),
+        example("Color", colors),
+        example("Inline", in_context),
     ])
 }
 
@@ -866,6 +903,7 @@ pub fn gallery() {
 
     let content: ElementDesc = match page {
         Page::Button => xui! { <button_page /> },
+        Page::Spinner => xui! { <spinner_page /> },
         Page::Input => xui! { <input_page /> },
         Page::Select => xui! { <select_page /> },
         Page::Tabs => xui! { <tabs_page /> },
@@ -1015,5 +1053,46 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The spinner's turn reaches the renderer: two frames 200ms apart are
+    /// different pictures, though nothing but the frame clock moved.
+    #[test]
+    fn the_spinner_page_moves_from_frame_to_frame() {
+        INITIAL_PAGE.with(|initial| initial.set(Page::Spinner));
+        let theme = Theme::light();
+        let mut app = App::new(gallery_component);
+        app.set_theme(theme.clone());
+        let backend = SkiaBackend::<CosmicEngine>::headless(
+            1.0,
+            SkiaBackendOptions {
+                clear_color: theme.background,
+                ..SkiaBackendOptions::default()
+            },
+        );
+        let mut runtime = GuiRuntime::new(app, backend, CosmicEngine::new(1.0));
+        runtime.handle_event(RuntimeEvent::Resize(Size::new(WIDTH as f32, HEIGHT as f32)));
+        let t0 = std::time::Instant::now();
+        let mut pixels_at = |millis: u64| {
+            runtime
+                .frame_at(t0 + std::time::Duration::from_millis(millis))
+                .expect("frame should render");
+            runtime
+                .backend_mut()
+                .read_pixels_rgba8()
+                .expect("pixels should be readable")
+        };
+        pixels_at(0);
+        let before = pixels_at(50);
+        for millis in [100, 150, 200] {
+            pixels_at(millis);
+        }
+        let after = pixels_at(250);
+        let changed = before
+            .chunks_exact(4)
+            .zip(after.chunks_exact(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(changed > 100, "only {changed} pixels changed");
     }
 }
