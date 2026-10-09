@@ -300,6 +300,10 @@ Behaviours worth knowing:
   only the fallback when nothing is focused that wants it.
 - A host with no clipboard needs nothing special: the paste request is answered
   `Unsupported` and ignored.
+- The caret blinks every 500ms while the field is focused and left alone, and is
+  held shown for a full period after anything the field acts on (typing, moving
+  the caret, focus). Each half-period is a wake (see 4a), so an idle focused field
+  costs two frames a second. Without `TIMED_REDRAW` the caret does not blink.
 
 `TextSelection` is now exported (`xui_core::widgets`, and the prelude).
 `TextController::set_selection` took one and nothing outside `xui-core` could name

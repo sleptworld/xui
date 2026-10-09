@@ -27,6 +27,12 @@ impl UiRuntime {
         self.wakes.remove(node);
     }
 
+    /// The deadline `node` is waiting on, if any.
+    #[cfg(test)]
+    pub(crate) fn wake_of(&self, node: NodeId) -> Option<Instant> {
+        self.wakes.get(node).copied()
+    }
+
     /// The earliest deadline anyone asked for, or `None` when nothing is
     /// waiting or nobody can see the window.
     ///

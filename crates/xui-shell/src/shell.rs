@@ -836,6 +836,7 @@ fn touch_events(
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     use raw_window_handle::{
         DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
@@ -844,13 +845,18 @@ mod tests {
     use xui_core::render::MockRenderBackend;
     use xui_f::FBackend;
 
+    use xui_core::widgets::text_input;
+    use xui_interface::HostCapabilities;
+
     use crate::{
-        PhysicalSize, PlatformWindow, Shell, ShellControl, ShellEvent, ShellOptions, SurfaceTarget,
+        FrameInfo, PhysicalSize, PlatformWindow, Shell, ShellControl, ShellEvent, ShellOptions,
+        SurfaceTarget,
     };
 
     #[derive(Debug, Clone, PartialEq)]
     enum Call {
         RequestRedraw,
+        RequestRedrawAt(Instant),
         SetVisible(bool),
         Focus,
         SetCursor(CursorIcon),
@@ -862,6 +868,7 @@ mod tests {
         size: PhysicalSize,
         scale_factor: f64,
         minimized: bool,
+        capabilities: HostCapabilities,
         calls: Vec<Call>,
     }
 
@@ -873,6 +880,7 @@ mod tests {
                 size,
                 scale_factor,
                 minimized: false,
+                capabilities: HostCapabilities::NONE,
                 calls: Vec::new(),
             }))
         }
@@ -915,6 +923,14 @@ mod tests {
     impl PlatformWindow for FakeWindow {
         fn request_redraw(&self) {
             self.record(Call::RequestRedraw);
+        }
+
+        fn request_redraw_at(&self, at: Instant) {
+            self.record(Call::RequestRedrawAt(at));
+        }
+
+        fn capabilities(&self) -> HostCapabilities {
+            self.state().capabilities
         }
 
         fn set_visible(&self, visible: bool) {
@@ -1035,6 +1051,70 @@ mod tests {
         assert_eq!(
             shell.runtime_mut().backend_mut().frame_size,
             Some(Size::new(800.0, 600.0))
+        );
+    }
+
+    fn field(_cx: &mut HookContext<'_>) -> ElementDesc {
+        container().into_element_desc(vec![
+            text_input()
+                .style(Style::new().size(Size::fix(120.0, 30.0)))
+                .into_element_desc(),
+        ])
+    }
+
+    /// An idle focused field costs a timed frame per blink, and no frame in
+    /// between: the shell hands the host the deadline instead of a redraw.
+    #[test]
+    fn a_blinking_caret_is_scheduled_on_its_deadline_rather_than_polled() {
+        let window = Arc::new(FakeWindow::new(PhysicalSize::new(800, 600), 2.0));
+        window.state().capabilities = HostCapabilities::TIMED_REDRAW;
+        let (mut shell, _) = Shell::new(
+            window.clone(),
+            App::new(field),
+            FBackend::new(),
+            MockRenderBackend::default(),
+            ShellOptions::default(),
+        );
+        let t0 = Instant::now();
+        let half = Duration::from_millis(500);
+        let _ = shell.dispatch_event(
+            t0,
+            ShellEvent::PointerMoved {
+                position: Point::new(10.0, 10.0),
+                device_id: None,
+            },
+        );
+        for pressed in [true, false] {
+            let _ = shell.dispatch_event(
+                t0,
+                ShellEvent::PointerButton {
+                    button: PointerButton::Primary,
+                    pressed,
+                    device_id: None,
+                },
+            );
+        }
+        // The focus change is painted on an ordinary redraw.
+        send(&mut shell, ShellEvent::RedrawRequested);
+        window.state().calls.clear();
+        let _ = shell.about_to_wait();
+        assert!(
+            window.calls().is_empty(),
+            "already asked: {:?}",
+            window.calls()
+        );
+
+        let _ = shell.dispatch_event(
+            t0 + half,
+            ShellEvent::FrameTick(FrameInfo {
+                target: Some(t0 + half),
+                interval: None,
+            }),
+        );
+        assert_eq!(
+            window.calls(),
+            vec![Call::RequestRedrawAt(t0 + half * 2)],
+            "the blink frame asks for the next blink, and for nothing sooner"
         );
     }
 }

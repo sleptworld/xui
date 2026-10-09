@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use xui_interface::CursorIcon;
 use xui_interface::events::{PointerButton, RawEvent, SemanticEvent, XuiPointerId};
 use xui_interface::{
@@ -43,7 +45,16 @@ pub struct TextInputWidget {
     /// The clipboard read a paste is waiting on. A reply carrying any other id is
     /// not this widget's to act on.
     pending_paste: Option<RequestId>,
+    /// Whether the caret is in the shown half of its blink. Only meaningful
+    /// while focused; see [`TextInputWidget::restart_blink`].
+    caret_on: bool,
 }
+
+/// How long the caret stays in each half of a blink.
+///
+/// Roughly what the platforms default to: 530ms on Windows, about 500ms on
+/// macOS.
+const CARET_BLINK_INTERVAL: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TextInputDrag {
@@ -63,6 +74,7 @@ impl std::fmt::Debug for TextInputWidget {
             .field("focused", &self.focused)
             .field("scroll_x", &self.scroll_x)
             .field("drag", &self.drag)
+            .field("caret_on", &self.caret_on)
             .finish()
     }
 }
@@ -132,6 +144,7 @@ impl TextInputWidget {
             drag: None,
             ime_session: ImeSession::new(),
             pending_paste: None,
+            caret_on: true,
         }
     }
 
@@ -556,6 +569,61 @@ impl TextInputWidget {
         })
     }
 
+    /// Shows the caret and starts its blink over from `at`.
+    ///
+    /// Called whenever the user does something to the field, so the caret
+    /// holds still while it is being typed into or moved, and only blinks once
+    /// the field is left alone -- what every platform's text field does.
+    ///
+    /// The blink is a wake per half-period, never a frame per display refresh:
+    /// a focused field sitting idle costs two frames a second. On a host that
+    /// cannot schedule a frame for a deadline the caret stays shown instead,
+    /// since a wake there would only arrive with whatever event came next.
+    fn restart_blink(&mut self, cx: &mut EventContext<'_>, at: Instant) {
+        if !self.caret_on {
+            self.caret_on = true;
+            cx.mark_needs_paint();
+        }
+        if cx
+            .host_capabilities()
+            .contains(xui_interface::HostCapabilities::TIMED_REDRAW)
+        {
+            cx.request_wake_at(at + CARET_BLINK_INTERVAL);
+        }
+    }
+
+    /// Whether the caret would be painted now.
+    #[cfg(test)]
+    pub(crate) fn caret_shown(&self) -> bool {
+        self.focused && self.caret_on
+    }
+
+    /// Stops blinking. The caret is left in its shown state, for the next time
+    /// the field is focused.
+    fn stop_blink(&mut self, cx: &mut EventContext<'_>) {
+        self.caret_on = true;
+        cx.cancel_wake();
+    }
+
+    /// One half-period of the blink has passed.
+    fn blink(&mut self, wake: &xui_interface::WakeEvent, cx: &mut EventContext<'_>) -> EventResult {
+        if !self.focused {
+            return EventResult::Ignored;
+        }
+        self.caret_on = !self.caret_on;
+        cx.mark_needs_paint();
+        // From the deadline, so a late frame does not push every later blink
+        // back with it. A wake that arrives more than a period late -- the
+        // window was off screen -- starts over from now instead of firing a
+        // burst to catch up.
+        let mut next = wake.deadline + CARET_BLINK_INTERVAL;
+        if next <= wake.meta.timestamp {
+            next = wake.meta.timestamp + CARET_BLINK_INTERVAL;
+        }
+        cx.request_wake_at(next);
+        EventResult::Consumed
+    }
+
     fn handle_key_down(
         &mut self,
         key: &xui_interface::events::RawKeyboard,
@@ -673,7 +741,7 @@ impl TextInputWidget {
     ) {
         let rect = text_input_content_box(rect, style.layout.padding);
         let mut paint = TextPaintProps::new(TextPaintStyle::from_computed(&style.text));
-        paint.caret = self.focused.then_some(TextCaret {
+        paint.caret = (self.focused && self.caret_on).then_some(TextCaret {
             char_index: self.controller.selection().extent,
             color: style.text.color,
             width: 1.0,
@@ -716,6 +784,27 @@ impl TextInputWidget {
         event: EventRef<'_>,
         cx: &mut EventContext<'_>,
     ) -> EventResult {
+        if let EventRef::Semantic(SemanticEvent::Wake(wake)) = event {
+            return self.blink(wake, cx);
+        }
+        let was_focused = self.focused;
+        let result = self.handle_input(event, cx);
+        if self.focused {
+            // Gaining focus, or anything the field acted on.
+            if !was_focused || result.is_consumed() {
+                let at = match event {
+                    EventRef::Raw(raw) => raw.timestamp(),
+                    EventRef::Semantic(semantic) => semantic.meta().timestamp,
+                };
+                self.restart_blink(cx, at);
+            }
+        } else if was_focused {
+            self.stop_blink(cx);
+        }
+        result
+    }
+
+    fn handle_input(&mut self, event: EventRef<'_>, cx: &mut EventContext<'_>) -> EventResult {
         match event {
             EventRef::Raw(RawEvent::PointerDown(pointer))
                 if pointer.button == PointerButton::Primary =>

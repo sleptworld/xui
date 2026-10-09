@@ -1051,4 +1051,205 @@ mod tests {
         }
     }
 
+    /// The caret blinks on deadlines rather than on frames: a focused field
+    /// asks for a wake per half-period, the frame at that instant delivers it,
+    /// and nothing else asks for a frame in between.
+    mod caret_blink {
+        use super::*;
+        use crate::widgets::{Widgets, text_input};
+        use xui_interface::events::{
+            KeyState, Modifiers, NamedKey, PhysicalKey, PointerButton, PointerButtons, PointerKind,
+            RawKeyboard, RawPointerButton, XuiPointerId,
+        };
+        use xui_interface::{HostCapabilities, KeyText, NodeId, Point, Size as XSize, Style};
+
+        const HALF: Duration = Duration::from_millis(500);
+
+        /// Two fields side by side, so focus has somewhere to move.
+        fn fields(_cx: &mut HookContext<'_>) -> ElementDesc {
+            container()
+                .style(Style::new().width(400.0).height(300.0))
+                .into_element_desc(vec![
+                    text_input()
+                        .style(Style::new().size(XSize::fix(120.0, 30.0)))
+                        .into_element_desc(),
+                    text_input()
+                        .style(Style::new().size(XSize::fix(120.0, 30.0)))
+                        .into_element_desc(),
+                ])
+        }
+
+        fn started(
+            capabilities: HostCapabilities,
+            t0: Instant,
+        ) -> GuiRuntime<MockRenderBackend, ZeroTextBackend> {
+            let mut runtime = runtime_with(fields);
+            runtime.handle_event(RuntimeEvent::Capabilities(capabilities));
+            runtime.frame_at(t0).unwrap();
+            runtime
+        }
+
+        fn press(at: Instant, down: bool) -> RuntimeEvent {
+            let raw = RawPointerButton {
+                position: Point::new(10.0, 10.0),
+                pointer_id: XuiPointerId::new(0),
+                device_id: None,
+                kind: PointerKind::Mouse,
+                button: PointerButton::Primary,
+                buttons: PointerButtons::default(),
+                modifiers: Modifiers::default(),
+                timestamp: at,
+            };
+            RuntimeEvent::Input(if down {
+                RawEvent::PointerDown(raw)
+            } else {
+                RawEvent::PointerUp(raw)
+            })
+        }
+
+        /// Clicks into the first field at `at`, and returns it.
+        fn click_first(
+            runtime: &mut GuiRuntime<MockRenderBackend, ZeroTextBackend>,
+            at: Instant,
+        ) -> NodeId {
+            runtime.handle_event(press(at, true));
+            runtime.handle_event(press(at, false));
+            runtime
+                .app()
+                .ui_runtime()
+                .focused_node()
+                .expect("clicking a field focuses it")
+        }
+
+        fn key(at: Instant, named: Option<NamedKey>, text: Option<&str>) -> RuntimeEvent {
+            RuntimeEvent::Input(RawEvent::Keyboard(RawKeyboard {
+                physical_key: PhysicalKey::Unidentified,
+                named_key: named,
+                state: KeyState::Down,
+                text: text.and_then(KeyText::try_new),
+                modifiers: Modifiers::default(),
+                timestamp: at,
+                is_repeat: false,
+            }))
+        }
+
+        fn caret_shown(
+            runtime: &GuiRuntime<MockRenderBackend, ZeroTextBackend>,
+            node: NodeId,
+        ) -> bool {
+            runtime
+                .app()
+                .ui_runtime()
+                .node_view(node)
+                .widget
+                .with_widgets(|widget| match widget {
+                    Widgets::TextInput(input) => input.caret_shown(),
+                    _ => panic!("not a text input"),
+                })
+        }
+
+        #[test]
+        fn a_focused_field_blinks_on_its_deadlines_and_nothing_in_between() {
+            let t0 = Instant::now();
+            let mut runtime = started(HostCapabilities::TIMED_REDRAW, t0);
+            let field = click_first(&mut runtime, t0);
+            runtime.frame_at(t0).unwrap();
+            assert!(caret_shown(&runtime, field));
+            assert!(!runtime.app().is_dirty(), "an idle field owes no frame now");
+            assert_eq!(runtime.next_wake(), Some(t0 + HALF));
+
+            let early = runtime
+                .frame_at(t0 + HALF - Duration::from_millis(1))
+                .unwrap();
+            assert!(
+                !early.rendered,
+                "a frame before the deadline changes nothing"
+            );
+            assert!(caret_shown(&runtime, field));
+
+            let off = runtime.frame_at(t0 + HALF).unwrap();
+            assert!(
+                off.rendered,
+                "the wake is painted in the frame that delivered it"
+            );
+            assert!(!caret_shown(&runtime, field));
+            assert_eq!(runtime.next_wake(), Some(t0 + HALF * 2));
+
+            // Late by 30ms: the next deadline still keeps to the original beat.
+            runtime
+                .frame_at(t0 + HALF * 2 + Duration::from_millis(30))
+                .unwrap();
+            assert!(caret_shown(&runtime, field));
+            assert_eq!(runtime.next_wake(), Some(t0 + HALF * 3));
+            assert!(!runtime.app().is_dirty());
+        }
+
+        #[test]
+        fn typing_shows_the_caret_and_starts_the_blink_over() {
+            let t0 = Instant::now();
+            let mut runtime = started(HostCapabilities::TIMED_REDRAW, t0);
+            let field = click_first(&mut runtime, t0);
+            runtime.frame_at(t0 + HALF).unwrap();
+            assert!(!caret_shown(&runtime, field));
+
+            let typed = t0 + HALF + Duration::from_millis(120);
+            runtime.handle_event(key(typed, None, Some("a")));
+            assert!(caret_shown(&runtime, field));
+            assert_eq!(runtime.next_wake(), Some(typed + HALF));
+        }
+
+        #[test]
+        fn leaving_the_field_cancels_its_wake() {
+            let t0 = Instant::now();
+            let mut runtime = started(HostCapabilities::TIMED_REDRAW, t0);
+            let first = click_first(&mut runtime, t0);
+            let moved = t0 + Duration::from_millis(100);
+            runtime.handle_event(key(moved, Some(NamedKey::Tab), None));
+            let second = runtime.app().ui_runtime().focused_node().unwrap();
+            assert_ne!(first, second);
+
+            assert_eq!(runtime.app().ui_runtime().wake_of(first), None);
+            assert_eq!(runtime.next_wake(), Some(moved + HALF));
+        }
+
+        #[test]
+        fn a_host_that_cannot_time_a_frame_gets_a_steady_caret() {
+            let t0 = Instant::now();
+            let mut runtime = started(HostCapabilities::NONE, t0);
+            let field = click_first(&mut runtime, t0);
+            assert_eq!(runtime.next_wake(), None);
+
+            runtime.frame_at(t0 + HALF * 3).unwrap();
+            assert!(
+                caret_shown(&runtime, field),
+                "the caret only blinks on time"
+            );
+        }
+
+        #[test]
+        fn an_unseen_window_owes_no_wake_and_resumes_from_now() {
+            let t0 = Instant::now();
+            let mut runtime = started(HostCapabilities::TIMED_REDRAW, t0);
+            let field = click_first(&mut runtime, t0);
+
+            runtime.set_window_visible(false);
+            assert_eq!(runtime.next_wake(), None);
+            runtime.frame_at(t0 + HALF * 4).unwrap();
+            assert!(
+                caret_shown(&runtime, field),
+                "nothing is delivered off screen"
+            );
+
+            runtime.set_window_visible(true);
+            assert_eq!(runtime.next_wake(), Some(t0 + HALF), "the wake was kept");
+            let back = t0 + HALF * 7 + Duration::from_millis(10);
+            runtime.frame_at(back).unwrap();
+            assert!(!caret_shown(&runtime, field));
+            assert_eq!(
+                runtime.next_wake(),
+                Some(back + HALF),
+                "one blink, then the beat starts over, rather than a burst to catch up"
+            );
+        }
+    }
 }

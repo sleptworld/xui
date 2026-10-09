@@ -234,6 +234,11 @@ const STEPS: &[fn()] = &[
     step_quiet_idle,
     step_quiet_idle,
     step_quiet_end,
+    step_blink_begin,
+    step_blink_measure,
+    step_quiet_idle,
+    step_quiet_idle,
+    step_blink_end,
     step_external_resize,
     step_check_external_resize,
     step_window_commands,
@@ -787,6 +792,32 @@ fn step_quiet_end() {
             || format!("{} frames", deltas.len()),
         );
     }
+}
+
+/// With the ticker stopped, a focused input sitting idle is the only thing that
+/// wants frames, and it wants one per caret blink -- a timed redraw every half
+/// second -- not one per display refresh.
+fn step_blink_begin() {
+    TICKER.with(|slot| slot.borrow().as_ref().map(Ticker::stop));
+    step_text_focus();
+}
+
+/// A step after the click, so the frames the click itself caused are over.
+fn step_blink_measure() {
+    PAINTS.with(|paints| paints.borrow_mut().clear());
+}
+
+fn step_blink_end() {
+    // About a second since `step_blink_measure`, which a blink every 500ms
+    // fills with two frames. A frame per refresh would be sixty or more.
+    let painted = PAINTS.with(|paints| paints.borrow().len());
+    println!("info  {painted} frames painted in about a second of an idle, focused input");
+    record(
+        "an idle focused input is painted once per caret blink, on a timed redraw",
+        (1..=4).contains(&painted),
+        || format!("{painted} frames"),
+    );
+    TICKER.with(|slot| slot.borrow().as_ref().map(Ticker::start));
 }
 
 /// A resize that comes from outside the shell, as a drag does, rather than from a
