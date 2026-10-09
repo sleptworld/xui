@@ -25,7 +25,8 @@ mod backend;
 mod cache;
 #[cfg(target_os = "windows")]
 mod d3d;
-mod damage;
+// Shared with the other renderers; it lives in `xui-core`.
+use xui_core::render::damage;
 mod error;
 #[cfg(target_os = "macos")]
 mod metal;

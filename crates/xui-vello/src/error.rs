@@ -12,6 +12,12 @@ pub enum VelloBackendError {
     UnsupportedSurface,
     #[error("the surface texture could not be acquired")]
     AcquireSurface,
+    #[error("no frame has been rendered yet")]
+    NoFrame,
+    #[error("reading pixels back failed: {0}")]
+    Readback(String),
+    #[error("the render plan cannot be run: {0}")]
+    Plan(&'static str),
     #[error("vello: {0}")]
     Vello(#[from] vello::Error),
 }

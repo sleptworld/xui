@@ -772,17 +772,11 @@ fn pass_uniform(pass: &Pass, output: TextureRef<'_>, scale_factor: f32) -> PassU
         PassOp::Refraction {
             strength_px,
             chromatic_aberration_px,
+            center,
         } => {
             value.op[0] = 5;
             value.params0 = [*strength_px, *chromatic_aberration_px, 0.0, 0.0];
-            value.params1 = [
-                pass.uniforms.output_logical_bounds.x
-                    + pass.uniforms.output_logical_bounds.width * 0.5,
-                pass.uniforms.output_logical_bounds.y
-                    + pass.uniforms.output_logical_bounds.height * 0.5,
-                0.0,
-                0.0,
-            ];
+            value.params1 = [center.x, center.y, 0.0, 0.0];
         }
         PassOp::ChromaticAberration { offset_px } => {
             value.op[0] = 6;

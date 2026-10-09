@@ -163,7 +163,10 @@ fn dirty_since(node: &super::RenderNode, revision: u64) -> RenderDirty {
         dirty |= node.dirty & (RenderDirty::GEOMETRY | RenderDirty::CLIP | RenderDirty::VISIBILITY);
     }
     if node.epochs.paint > revision {
-        dirty |= node.dirty & (RenderDirty::PAINT | RenderDirty::EFFECT);
+        dirty |= node.dirty & RenderDirty::PAINT;
+    }
+    if node.epochs.effect > revision {
+        dirty |= node.dirty & RenderDirty::EFFECT;
     }
     if node.epochs.composite > revision {
         dirty |= node.dirty & RenderDirty::COMPOSITE;
@@ -318,6 +321,7 @@ fn apply_non_structural_updates(
                     picture.render_program = Some(render_program);
                     picture.content_version = node.epochs.content_version();
                     picture.composite_version = node.epochs.composite;
+                    picture.effect_version = node.epochs.effect;
                 }
             }
         }
@@ -350,6 +354,7 @@ fn empty_compiled_scene(source: &RenderScene) -> CompiledScene {
         placement_clip: None,
         content_version: ContentVersion::default(),
         composite_version: 0,
+        effect_version: 0,
         is_root: true,
     });
     CompiledScene {
@@ -465,6 +470,7 @@ fn rebuild_structure(
         placement_clip: None,
         content_version: root_node.epochs.content_version(),
         composite_version: root_node.epochs.composite,
+        effect_version: root_node.epochs.effect,
         is_root: true,
     };
     compiled
@@ -625,6 +631,7 @@ fn rebuild_picture_contents(
     picture.render_program = Some(render_program);
     picture.content_version = node.epochs.content_version();
     picture.composite_version = node.epochs.composite;
+    picture.effect_version = node.epochs.effect;
     let context = WalkContext {
         picture: picture_id,
         spatial: picture.placement_spatial,
@@ -823,6 +830,7 @@ fn walk_node(
                         placement_clip: context.clip,
                         content_version: node.epochs.content_version(),
                         composite_version: node.epochs.composite,
+                        effect_version: node.epochs.effect,
                         is_root: false,
                     });
                     compiled.picture_by_source.insert(id, key);
@@ -842,6 +850,7 @@ fn walk_node(
                 placement_clip: context.clip,
                 content_version: node.epochs.content_version(),
                 composite_version: node.epochs.composite,
+                effect_version: node.epochs.effect,
                 is_root: false,
             };
             live.pictures.insert(picture_id, ());

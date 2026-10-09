@@ -4,6 +4,7 @@ pub mod backend;
 pub mod built;
 pub mod compiled_scene;
 pub mod compiler;
+pub mod damage;
 mod destination;
 pub mod effect;
 pub mod frame_builder;

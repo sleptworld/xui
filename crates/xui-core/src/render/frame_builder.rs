@@ -83,6 +83,7 @@ impl FrameBuilder {
                 content_bounds: Bounds::ZERO,
                 render_bounds: viewport,
                 content_version: ContentVersion::default(),
+                effect_version: 0,
                 cache_id: None,
                 cache_policy: super::CachePolicy::None,
                 backdrop_isolation: BackdropIsolation::Isolate,
@@ -317,6 +318,7 @@ impl BuildContext<'_> {
             content_bounds: Bounds::ZERO,
             render_bounds: Bounds::ZERO,
             content_version: ContentVersion::default(),
+            effect_version: picture.effect_version,
             cache_id,
             cache_policy: picture.descriptor.cache_policy,
             backdrop_isolation: picture.descriptor.backdrop_isolation,
@@ -393,8 +395,13 @@ impl BuildContext<'_> {
                 .items
                 .push(BuiltItem::Layer(instance_id));
         }
+        // The parent shows this layer's effects, though the layer's own
+        // content does not include them.
         let mut parent_version = content_version;
-        parent_version.paint = parent_version.paint.max(placement_version.scene);
+        parent_version.paint = parent_version
+            .paint
+            .max(placement_version.scene)
+            .max(picture.effect_version);
         parent_version.dynamic = parent_version.dynamic.max(placement_version.dynamic);
         Ok(BuildResult {
             world_bounds: placement_bounds,

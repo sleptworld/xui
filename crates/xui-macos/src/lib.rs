@@ -35,6 +35,8 @@
 //! - `skia` (default) — [`runner`], on `xui-skia` with the `xui-f` text backend.
 //! - `skia-wgpu` — Skia on a wgpu-owned device, so a canvas GPU painter can
 //!   composite; see `xui-winit`'s feature of the same name.
+//! - `vello` — [`vello_runner`], on `xui-vello` with the `xui-f` text backend.
+//!   Independent of `skia`.
 
 #![cfg(target_os = "macos")]
 
@@ -50,6 +52,8 @@ mod window;
 
 #[cfg(feature = "skia")]
 pub use app::runner;
+#[cfg(feature = "vello")]
+pub use app::vello_runner;
 pub use app::{MacBackendInitError, MacRunError, MacRunner, MacRunnerOptions};
 pub use window::MacWindow;
 pub use xui_shell::{MacOsWindowOptions, PhysicalSize, WindowOptions, WindowSize};

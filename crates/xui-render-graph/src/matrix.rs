@@ -23,6 +23,28 @@ pub(crate) fn compose(after: ColorMatrix, before: ColorMatrix) -> ColorMatrix {
     canonicalize_matrix(result)
 }
 
+/// Whether the matrix maps every colour in [0, 1]^4 to a colour in [0, 1]^4.
+///
+/// Every executor clamps after each colour matrix. Two matrices can be fused
+/// into one only when the first never needs that clamp, because the fused
+/// matrix is linear and clamps once at the end: `x2` then `x0.5` is the
+/// identity fused, but clamped between, it takes 0.8 to 0.5.
+///
+/// The map is affine, so the image of the cube is the hull of its corners'
+/// images, and checking the sixteen corners is exact.
+pub(crate) fn preserves_unit_cube(matrix: &ColorMatrix) -> bool {
+    const EPSILON: f32 = 1e-6;
+    (0..16u32).all(|corner| {
+        let input = [0, 1, 2, 3].map(|bit| ((corner >> bit) & 1) as f32);
+        (0..4).all(|row| {
+            let base = row * 5;
+            let output = matrix[base + 4]
+                + (0..4).map(|column| matrix[base + column] * input[column]).sum::<f32>();
+            (-EPSILON..=1.0 + EPSILON).contains(&output)
+        })
+    })
+}
+
 pub(crate) fn is_identity(matrix: &ColorMatrix) -> bool {
     matrix == &IDENTITY
 }

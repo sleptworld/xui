@@ -33,6 +33,10 @@ pub struct RenderEpochs {
     pub geometry: u64,
     pub paint: u64,
     pub composite: u64,
+    /// A layer's own effects and isolation (`RenderDirty::EFFECT`): what is
+    /// done to its content, apart from the content itself, so a renderer that
+    /// keeps a layer's content can tell the two apart.
+    pub effect: u64,
 }
 
 impl RenderEpochs {
@@ -43,14 +47,18 @@ impl RenderEpochs {
         if dirty.intersects(RenderDirty::GEOMETRY | RenderDirty::CLIP | RenderDirty::VISIBILITY) {
             self.geometry = revision;
         }
-        if dirty.intersects(RenderDirty::PAINT | RenderDirty::EFFECT) {
+        if dirty.contains(RenderDirty::PAINT) {
             self.paint = revision;
+        }
+        if dirty.contains(RenderDirty::EFFECT) {
+            self.effect = revision;
         }
         if dirty.contains(RenderDirty::COMPOSITE) {
             self.composite = revision;
         }
     }
 
+    /// Everything of the node but its composite and its effects.
     pub fn content_version(self) -> ContentVersion {
         ContentVersion {
             topology: self.topology,
@@ -65,6 +73,7 @@ impl RenderEpochs {
             .max(self.geometry)
             .max(self.paint)
             .max(self.composite)
+            .max(self.effect)
     }
 }
 
@@ -1298,6 +1307,27 @@ mod tests {
         assert_eq!(node.dirty, RenderDirty::COMPOSITE);
         assert_eq!(node.epochs.content_version(), before);
         assert!(node.epochs.composite > 0);
+    }
+
+    #[test]
+    fn a_layers_effects_have_an_epoch_of_their_own() {
+        let mut scene = RenderScene::new();
+        let layer = scene.insert_layer(LayerDescriptor::default());
+        acknowledge_all(&mut scene);
+        let before = scene.node(layer).unwrap().epochs;
+        scene
+            .update_layer_descriptor(
+                layer,
+                LayerDescriptor {
+                    force_offscreen: true,
+                    ..LayerDescriptor::default()
+                },
+            )
+            .unwrap();
+        let after = scene.node(layer).unwrap().epochs;
+        assert_eq!(scene.node(layer).unwrap().dirty, RenderDirty::EFFECT);
+        assert_eq!(after.content_version(), before.content_version());
+        assert!(after.effect > before.effect);
     }
 
     #[test]

@@ -671,3 +671,158 @@ fn randomized_chains_have_valid_non_overlapping_slot_lifetimes() {
         }
     }
 }
+
+#[test]
+fn a_gaussian_is_cut_so_no_pass_reads_more_than_the_limit() {
+    use xui_render_graph::{MAX_PASS_RADIUS_PX, gaussian_stages};
+    let support = 3.0;
+    for sigma in [0.5, 4.0, 40.0, 42.0, 43.0, 60.0, 100.0, 400.0, 2_000.0] {
+        let (stages, stage_sigma) = gaussian_stages(sigma, support);
+        assert!(stages >= 1);
+        // Each pass is short enough to run...
+        assert!(
+            stage_sigma * support <= MAX_PASS_RADIUS_PX as f32 + 1e-3,
+            "sigma {sigma}: {stages} passes of {stage_sigma} still read {}",
+            stage_sigma * support
+        );
+        // ...and together they are the blur asked for: variances add.
+        let total = (stages as f32 * stage_sigma * stage_sigma).sqrt();
+        assert!((total - sigma).abs() < sigma * 1e-4, "sigma {sigma} became {total}");
+    }
+    // A blur that fits is one pass, untouched.
+    assert_eq!(gaussian_stages(10.0, 3.0), (1, 10.0));
+}
+
+#[test]
+fn a_spread_is_cut_into_chunks_that_add_up() {
+    use xui_render_graph::{MAX_PASS_RADIUS_PX, spread_chunks};
+    for radius in [0.0, 1.0, 5.5, 128.0, 129.0, 300.0, 1_000.0] {
+        let chunks = spread_chunks(radius);
+        assert!(!chunks.is_empty());
+        assert!(chunks.iter().all(|c| *c <= MAX_PASS_RADIUS_PX));
+        assert_eq!(chunks.iter().sum::<u32>(), radius.ceil() as u32, "radius {radius}");
+    }
+}
+
+#[test]
+fn refraction_bends_around_the_layer_however_its_output_is_cropped() {
+    let value = LayerGraphDescriptor {
+        backdrop: Some(BackdropDescriptor {
+            filters: vec![BackdropFilter::Refraction {
+                strength: 10.0,
+                chromatic_aberration: 2.0,
+            }],
+            ..BackdropDescriptor::default()
+        }),
+        ..descriptor()
+    };
+    let program = compile_layer(&value).unwrap();
+    let center_with = |backdrop_bounds: Bounds, transform: Affine| {
+        let plan = program
+            .instantiate(&LayerPlanContext {
+                backdrop_bounds: Some(backdrop_bounds),
+                composite: CompositeInstance {
+                    transform,
+                    ..CompositeInstance::default()
+                },
+                ..context()
+            })
+            .unwrap();
+        plan.passes()
+            .iter()
+            .find_map(|pass| match pass.op {
+                PassOp::Refraction { center, .. } => Some(center),
+                _ => None,
+            })
+            .unwrap()
+    };
+    // Content is 20..60 x 30..60: the middle is (40, 45), wherever the
+    // backdrop is cut, as a clip or a tile would.
+    let whole = center_with(rect_bounds(20.0, 30.0, 40.0, 30.0), Affine::IDENTITY);
+    let left = center_with(rect_bounds(20.0, 30.0, 10.0, 30.0), Affine::IDENTITY);
+    assert_eq!(whole, Point::new(40.0, 45.0));
+    assert_eq!(left, whole);
+    // The backdrop is in parent space, so the layer's placement moves it.
+    let moved = center_with(rect_bounds(0.0, 0.0, 200.0, 150.0), Affine::translate(30.0, 5.0));
+    assert_eq!(moved, Point::new(70.0, 50.0));
+}
+
+#[test]
+fn an_aliased_backdrop_is_copied_before_it_is_composited_onto_itself() {
+    let value = LayerGraphDescriptor {
+        backdrop: Some(BackdropDescriptor {
+            opacity: 0.5,
+            ..BackdropDescriptor::default()
+        }),
+        ..descriptor()
+    };
+    let program = compile_layer(&value).unwrap();
+    for (aliasing, copies) in [
+        (ExternalAliasing::Distinct, 0),
+        (ExternalAliasing::BackdropAndDestination, 1),
+    ] {
+        let plan = program
+            .instantiate_entry(
+                LayerProgramEntry::BackdropOnly,
+                &LayerPlanContext {
+                    external_aliasing: aliasing,
+                    ..context()
+                },
+            )
+            .unwrap();
+        let backdrop = plan.backdrop().unwrap();
+        let composite = plan
+            .passes()
+            .iter()
+            .find(|pass| matches!(pass.op, PassOp::BackdropComposite { .. }))
+            .unwrap();
+        assert_eq!(composite.output, plan.parent_destination());
+        assert_eq!(
+            composite.inputs.contains(&backdrop),
+            copies == 0,
+            "{aliasing:?}"
+        );
+        let copy_count = plan
+            .passes()
+            .iter()
+            .filter(|pass| matches!(pass.op, PassOp::Copy) && pass.inputs[0] == backdrop)
+            .count();
+        assert_eq!(copy_count, copies, "{aliasing:?}");
+    }
+}
+
+#[test]
+fn a_filtered_aliased_backdrop_needs_no_copy() {
+    let value = LayerGraphDescriptor {
+        backdrop: Some(BackdropDescriptor {
+            filters: vec![BackdropFilter::Blur {
+                sigma_x: 2.0,
+                sigma_y: 2.0,
+                quality: FilterQuality::Medium,
+            }],
+            ..BackdropDescriptor::default()
+        }),
+        ..descriptor()
+    };
+    let plan = compile_layer(&value)
+        .unwrap()
+        .instantiate(&LayerPlanContext {
+            external_aliasing: ExternalAliasing::BackdropAndDestination,
+            ..context()
+        })
+        .unwrap();
+    assert!(!plan.passes().iter().any(|pass| matches!(pass.op, PassOp::Copy)));
+    // Every read of the backdrop happens before the destination is written.
+    let backdrop = plan.backdrop().unwrap();
+    let first_write = plan
+        .passes()
+        .iter()
+        .position(|pass| pass.output == plan.parent_destination())
+        .unwrap();
+    let last_read = plan
+        .passes()
+        .iter()
+        .rposition(|pass| pass.inputs.contains(&backdrop))
+        .unwrap();
+    assert!(last_read < first_write);
+}

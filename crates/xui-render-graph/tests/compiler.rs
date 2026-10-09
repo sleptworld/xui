@@ -248,18 +248,22 @@ fn invalid_values_and_derived_overflow_are_rejected() {
         })
     ));
 
+    // Two huge matrices used to overflow when fused. The first one clamps, so
+    // they are no longer fused at all and nothing is derived from them: the
+    // program is just the two matrices, each finite on its own.
     value.effects = vec![
         LayerEffect::ColorMatrix([f32::MAX; 20]),
         LayerEffect::ColorMatrix([f32::MAX; 20]),
     ];
-    assert!(matches!(
-        compile_layer(&value),
-        Err(CompileError::InvalidEffectParameter {
-            index: 1,
-            field: "matrix",
-            ..
-        })
-    ));
+    let program = compile_layer(&value).expect("each matrix is finite by itself");
+    assert_eq!(
+        program
+            .nodes()
+            .iter()
+            .filter(|node| matches!(node.op, ProgramOp::ColorMatrix(_)))
+            .count(),
+        2
+    );
 
     value.effects = vec![LayerEffect::Blur {
         sigma_x: f32::MAX,
@@ -367,4 +371,201 @@ fn program_is_topological_and_fingerprint_is_static_only() {
         first.fingerprint(),
         compile_layer(&value).unwrap().fingerprint()
     );
+}
+
+/// One colour through one matrix, clamped, as every executor does it.
+fn apply_clamped(matrix: &[f32; 20], colour: [f32; 4]) -> [f32; 4] {
+    let mut out = [0.0; 4];
+    for row in 0..4 {
+        let base = row * 5;
+        let value = matrix[base + 4]
+            + (0..4).map(|column| matrix[base + column] * colour[column]).sum::<f32>();
+        out[row] = value.clamp(0.0, 1.0);
+    }
+    out
+}
+
+fn compiled_matrices(effects: &[[f32; 20]]) -> Vec<[f32; 20]> {
+    let mut value = descriptor();
+    value.effects = effects.iter().copied().map(LayerEffect::ColorMatrix).collect();
+    compile_layer(&value)
+        .unwrap()
+        .nodes()
+        .iter()
+        .filter_map(|node| match node.op {
+            ProgramOp::ColorMatrix(matrix) => Some(matrix),
+            _ => None,
+        })
+        .collect()
+}
+
+fn scale(amount: f32) -> [f32; 20] {
+    [
+        amount, 0.0, 0.0, 0.0, 0.0, 0.0, amount, 0.0, 0.0, 0.0, 0.0, 0.0, amount, 0.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+    ]
+}
+
+#[test]
+fn matrices_that_clamp_in_between_are_not_fused() {
+    // x2 clamps 0.8 to 1.0 before x0.5 makes it 0.5. Fused they would be the
+    // identity, vanish, and leave 0.8.
+    let program = compiled_matrices(&[scale(2.0), scale(0.5)]);
+    assert_eq!(program.len(), 2, "the clamp between them must survive");
+    let mut colour = [0.8, 0.8, 0.8, 1.0];
+    for matrix in &program {
+        colour = apply_clamped(matrix, colour);
+    }
+    assert_eq!(colour, [0.5, 0.5, 0.5, 1.0]);
+}
+
+#[test]
+fn matrices_that_never_clamp_in_between_are_still_fused() {
+    // Both only darken, so nothing leaves [0, 1] between them.
+    let program = compiled_matrices(&[scale(0.5), scale(0.5)]);
+    assert_eq!(program.len(), 1);
+    assert_eq!(program[0][0], 0.25);
+}
+
+#[test]
+fn a_compiled_chain_gives_what_the_effects_give_one_by_one() {
+    // Brightening, darkening, contrast, inversion, a channel swap: every
+    // ordering of the first three, over a grid of colours.
+    let swap = [
+        0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        1.0, 0.0,
+    ];
+    let contrast = [
+        2.0, 0.0, 0.0, 0.0, -0.5, 0.0, 2.0, 0.0, 0.0, -0.5, 0.0, 0.0, 2.0, 0.0, -0.5, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+    ];
+    let invert = [
+        -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+    ];
+    let pool = [scale(2.0), scale(0.5), contrast, invert, swap];
+    let levels = [0.0, 0.2, 0.5, 0.8, 1.0];
+    let mut checked = 0;
+    for a in 0..pool.len() {
+        for b in 0..pool.len() {
+            for c in 0..pool.len() {
+                let chain = [pool[a], pool[b], pool[c]];
+                let compiled = compiled_matrices(&chain);
+                for &r in &levels {
+                    for &g in &levels {
+                        for &bl in &levels {
+                            let start = [r, g, bl, 1.0];
+                            let written = chain.iter().fold(start, |c, m| apply_clamped(m, c));
+                            let run = compiled.iter().fold(start, |c, m| apply_clamped(m, c));
+                            for channel in 0..4 {
+                                assert!(
+                                    (written[channel] - run[channel]).abs() < 1e-4,
+                                    "chain {a}{b}{c} on {start:?}: written {written:?}, compiled {run:?}"
+                                );
+                            }
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 10_000);
+}
+
+fn glass_with_effects(effects: Vec<LayerEffect>) -> LayerGraphDescriptor {
+    LayerGraphDescriptor {
+        backdrop: Some(BackdropDescriptor {
+            filters: vec![BackdropFilter::Blur {
+                sigma_x: 3.0,
+                sigma_y: 3.0,
+                quality: FilterQuality::Medium,
+            }],
+            mask: Mask::AlphaTexture {
+                texture: ImageKey::UserProvided(7),
+                transform: Affine::scale(10.0, 10.0),
+            },
+            ..BackdropDescriptor::default()
+        }),
+        effects,
+        composite: CompositeDescriptor {
+            blend_mode: BlendMode::Multiply,
+            operator: CompositeOperator::SrcOver,
+        },
+        ..descriptor()
+    }
+}
+
+#[test]
+fn cutting_the_layer_branch_keeps_the_backdrop_and_composites_the_content() {
+    let program = compile_layer(&glass_with_effects(vec![
+        LayerEffect::Blur {
+            sigma_x: 2.0,
+            sigma_y: 2.0,
+            quality: FilterQuality::Medium,
+        },
+        image_mask(1, rect_bounds(0.0, 0.0, 10.0, 10.0)),
+    ]))
+    .unwrap();
+    assert!(program.has_layer_effects());
+    let cut = program.without_layer_effects();
+    assert!(!cut.has_layer_effects());
+
+    let ops: Vec<_> = cut.nodes().iter().map(|node| &node.op).collect();
+    assert!(matches!(ops[0], ProgramOp::Blur { .. }), "{ops:?}");
+    assert!(matches!(ops[1], ProgramOp::BackdropComposite { .. }), "{ops:?}");
+    assert!(
+        matches!(
+            ops[2],
+            ProgramOp::LayerComposite {
+                blend_mode: BlendMode::Multiply,
+                ..
+            }
+        ),
+        "{ops:?}"
+    );
+    assert_eq!(ops.len(), 3);
+
+    // The composite reads the content and composites onto the destination.
+    let composite = &cut.nodes()[2];
+    assert_eq!(composite.inputs[0], cut.layer_content());
+    assert_eq!(composite.inputs[1], cut.parent_destination());
+    // The backdrop mask is still the backdrop mask; the layer mask is gone.
+    let ProgramOp::BackdropComposite { mask, .. } = &cut.nodes()[1].op else {
+        unreachable!()
+    };
+    let xui_render_graph::MaskProgram::Texture { resource, .. } = mask else {
+        panic!("{mask:?}")
+    };
+    assert_eq!(
+        Some(*resource),
+        cut.external_resource(ExternalResourceKind::BackdropMask)
+    );
+    assert_eq!(cut.external_resource(ExternalResourceKind::LayerMask(0)), None);
+    // Every resource's producer is the node that writes it.
+    for (index, node) in cut.nodes().iter().enumerate() {
+        assert_eq!(cut.resources()[node.output.index()].producer.unwrap().index(), index);
+    }
+    assert_eq!(cut.backdrop_input_expansion(), program.backdrop_input_expansion());
+    assert_eq!(cut.layer_visual_expansion(), xui_render_graph::SampleExpansion::ZERO);
+}
+
+#[test]
+fn programs_that_differ_only_in_layer_effects_cut_to_the_same_program() {
+    let blur = |sigma| LayerEffect::Blur {
+        sigma_x: sigma,
+        sigma_y: sigma,
+        quality: FilterQuality::Medium,
+    };
+    let a = compile_layer(&glass_with_effects(vec![blur(2.0)])).unwrap();
+    let b = compile_layer(&glass_with_effects(vec![blur(9.0), blur(1.0)])).unwrap();
+    let none = compile_layer(&glass_with_effects(vec![])).unwrap();
+    assert_ne!(a.fingerprint(), b.fingerprint());
+    assert_eq!(
+        a.without_layer_effects().fingerprint(),
+        b.without_layer_effects().fingerprint()
+    );
+    // A program with no layer branch is what it cuts to.
+    assert!(!none.has_layer_effects());
+    assert_eq!(none.without_layer_effects().fingerprint(), none.fingerprint());
 }

@@ -98,6 +98,12 @@ fn build_effect_chain(
     let mut expansion = SampleExpansion::ZERO;
     for (index, op) in ops {
         if let ProgramOp::ColorMatrix(color_matrix) = op {
+            // Fusing is only exact if what is pending never needed clamping;
+            // otherwise it stays a node of its own and the executor clamps
+            // after it, as it does after every matrix.
+            if !matrix::preserves_unit_cube(&pending_matrix) {
+                flush_color_matrix(builder, &mut current, &mut pending_matrix)?;
+            }
             let fused = matrix::compose(color_matrix, pending_matrix);
             if fused.iter().any(|value| !value.is_finite()) {
                 return Err(operation_error(
@@ -612,6 +618,101 @@ impl ProgramBuilder {
             backdrop_expansion,
             layer_expansion,
         })
+    }
+}
+
+impl LayerProgram {
+    /// This program with its layer branch cut out: the backdrop branch as it
+    /// is, then the layer content composited as it comes.
+    ///
+    /// For a backend that has the layer branch's result already, because it
+    /// kept it from an earlier frame. Bound as this program's layer content
+    /// (over the original's layer bounds grown by
+    /// [`layer_visual_expansion`](Self::layer_visual_expansion)), it is
+    /// composited exactly as the original program would have composited it.
+    /// The layer masks go with the branch; nothing else is read.
+    pub fn without_layer_effects(&self) -> LayerProgram {
+        let layer_start = self
+            .nodes
+            .iter()
+            .rposition(|node| matches!(node.op, ProgramOp::BackdropComposite { .. }))
+            .map_or(0, |index| index + 1);
+        let composite = self.nodes.len() - 1;
+        debug_assert!(matches!(self.nodes[composite].op, ProgramOp::LayerComposite { .. }));
+        let kept_node = |index: usize| index < layer_start || index == composite;
+
+        // Old resource index -> new id; only what the kept nodes produce or
+        // read survives.
+        let mut map = vec![None; self.resources.len()];
+        let mut resources = Vec::new();
+        for (index, resource) in self.resources.iter().enumerate() {
+            let keep = match resource.kind {
+                ProgramResourceKind::External(ExternalResourceKind::LayerMask(_)) => false,
+                ProgramResourceKind::External(_) => true,
+                ProgramResourceKind::Virtual => resource.producer.is_some_and(|node| kept_node(node.index())),
+            };
+            if keep {
+                map[index] = Some(ProgramResourceId(resources.len() as u32));
+                resources.push(resource.clone());
+            }
+        }
+        let remap = |id: ProgramResourceId| map[id.index()].expect("a kept node reads a kept resource");
+        let mut nodes = Vec::new();
+        for (index, node) in self.nodes.iter().enumerate() {
+            if !kept_node(index) {
+                continue;
+            }
+            let mut op = node.op.clone();
+            if let ProgramOp::BackdropComposite {
+                mask: MaskProgram::Texture { resource, .. },
+                ..
+            } = &mut op
+            {
+                *resource = remap(*resource);
+            }
+            let inputs: Box<[ProgramResourceId]> = if index == composite {
+                // What the cut branch produced is now the layer content.
+                std::iter::once(self.layer_content)
+                    .chain(node.inputs[1..].iter().copied())
+                    .map(remap)
+                    .collect()
+            } else {
+                node.inputs.iter().copied().map(remap).collect()
+            };
+            let id = ProgramNodeId(nodes.len() as u32);
+            let output = remap(node.output);
+            resources[output.index()].producer = Some(id);
+            nodes.push(ProgramNode { op, inputs, output });
+        }
+        let fingerprint = fingerprint(
+            &nodes,
+            &resources,
+            self.working_color_space,
+            self.backdrop_expansion,
+            SampleExpansion::ZERO,
+        );
+        LayerProgram {
+            nodes: nodes.into_boxed_slice(),
+            resources: resources.into_boxed_slice(),
+            backdrop: self.backdrop.map(remap),
+            parent_destination: remap(self.parent_destination),
+            layer_content: remap(self.layer_content),
+            fingerprint,
+            working_color_space: self.working_color_space,
+            backdrop_expansion: self.backdrop_expansion,
+            layer_expansion: SampleExpansion::ZERO,
+        }
+    }
+
+    /// Whether the program does anything to the layer content before it is
+    /// composited.
+    pub fn has_layer_effects(&self) -> bool {
+        let layer_start = self
+            .nodes
+            .iter()
+            .rposition(|node| matches!(node.op, ProgramOp::BackdropComposite { .. }))
+            .map_or(0, |index| index + 1);
+        self.nodes.len() - layer_start > 1
     }
 }
 

@@ -3,7 +3,7 @@ use crate::{
     LayerProgram, MaskProgram, MaskShape, PlanError, ProgramOp, ProgramResourceKind,
     SampleExpansion,
 };
-use xui_interface::{Affine, Bounds, Color, Point, Rect};
+use xui_interface::{Affine, Bounds, Color, Point};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PassId(u32);
@@ -63,10 +63,14 @@ impl PixelRect {
     }
 }
 
+/// Whether the backdrop and the parent destination are distinct textures.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum ExternalAliasing {
     #[default]
     Distinct,
+    /// The backdrop is read from the texture the layer composites into. No
+    /// pass then samples the backdrop while writing the destination: a
+    /// backdrop composited unfiltered is copied out first.
     BackdropAndDestination,
 }
 
@@ -153,6 +157,10 @@ pub enum PassOp {
     Refraction {
         strength_px: f32,
         chromatic_aberration_px: f32,
+        /// What the refraction bends toward and away from, in logical units
+        /// of the pass's coordinate space: the middle of the layer. It does not
+        /// depend on how the output is cropped, clipped or tiled.
+        center: Point,
     },
     ChromaticAberration {
         offset_px: [f32; 2],
@@ -541,6 +549,7 @@ impl LoweredGraph {
                     chromatic_aberration,
                 } => {
                     let amount = strength.abs() + chromatic_aberration.abs();
+                    let center = layer_center(context, self.space(self.mapped(node.inputs[0])?))?;
                     self.lower_expanding(
                         node,
                         PassOp::Refraction {
@@ -549,6 +558,7 @@ impl LoweredGraph {
                                 *chromatic_aberration,
                                 context.scale_factor,
                             )?,
+                            center,
                         },
                         SampleExpansion::symmetric(amount, amount),
                     )?;
@@ -669,7 +679,7 @@ impl LoweredGraph {
                     blend_mode,
                     mask,
                 } => {
-                    let filtered = self.mapped(node.inputs[0])?;
+                    let mut filtered = self.mapped(node.inputs[0])?;
                     let requested = context
                         .backdrop_bounds
                         .unwrap_or(context.parent_destination_bounds);
@@ -680,6 +690,17 @@ impl LoweredGraph {
                     if bounds.is_none() {
                         self.map(node.output, self.parent_destination);
                         continue;
+                    }
+                    if context.external_aliasing == ExternalAliasing::BackdropAndDestination
+                        && Some(filtered) == self.backdrop
+                    {
+                        filtered = self.add_filter_pass(
+                            PassOp::Copy,
+                            filtered,
+                            self.full_bounds(filtered),
+                            CoordinateSpace::Parent,
+                            context.color_texture_class,
+                        )?;
                     }
                     let mut inputs = vec![filtered];
                     if blend_mode.requires_destination_snapshot() {
@@ -818,8 +839,7 @@ impl LoweredGraph {
         space: CoordinateSpace,
         class: TextureClass,
     ) -> Result<PlanResourceId, PlanError> {
-        let stages = gaussian_stage_count(sigma_px, support);
-        let stage_sigma = sigma_px / (stages as f32).sqrt();
+        let (stages, stage_sigma) = gaussian_stages(sigma_px, support);
         for _ in 0..stages {
             input = self.add_filter_pass(
                 PassOp::GaussianBlur {
@@ -844,14 +864,8 @@ impl LoweredGraph {
         space: CoordinateSpace,
         class: TextureClass,
     ) -> Result<PlanResourceId, PlanError> {
-        let integer_radius = radius_px.ceil().max(0.0) as u32;
-        let chunks = spread_chunk_count(integer_radius);
         for axis in [Axis::X, Axis::Y] {
-            let mut remaining = integer_radius;
-            for stage in 0..chunks {
-                let stages_left = chunks - stage;
-                let chunk = remaining.div_ceil(stages_left).min(128);
-                remaining = remaining.saturating_sub(chunk);
+            for chunk in spread_chunks(radius_px) {
                 input = self.add_filter_pass(
                     PassOp::AlphaSpread {
                         axis,
@@ -1189,6 +1203,7 @@ fn propagate_inputs(
         PassOp::Refraction {
             strength_px,
             chromatic_aberration_px,
+            ..
         } => {
             let amount = (strength_px.abs() + chromatic_aberration_px.abs()) / scale;
             needs[0] = expand_bounds(demand, SampleExpansion::symmetric(amount, amount));
@@ -1300,8 +1315,24 @@ fn bounds_is_finite(rect: Bounds) -> bool {
         .iter()
         .all(|value| value.is_finite())
 }
-fn is_empty(rect: Rect) -> bool {
-    rect.width <= 0.0 || rect.height <= 0.0
+
+/// The middle of the layer, in `space`: its content bounds' centre, placed by
+/// the composite transform in the parent.
+fn layer_center(context: &LayerPlanContext, space: CoordinateSpace) -> Result<Point, PlanError> {
+    let bounds = context.layer_content_bounds;
+    let local = Point::new(
+        (bounds.min.x + bounds.max.x) * 0.5,
+        (bounds.min.y + bounds.max.y) * 0.5,
+    );
+    let center = match space {
+        CoordinateSpace::LayerLocal => local,
+        CoordinateSpace::Parent => context.composite.transform.transform_point(local),
+    };
+    if center.x.is_finite() && center.y.is_finite() {
+        Ok(center)
+    } else {
+        Err(PlanError::CoordinateOverflow)
+    }
 }
 
 fn scaled(value: f32, scale: f32) -> Result<f32, PlanError> {
@@ -1313,12 +1344,40 @@ fn scaled(value: f32, scale: f32) -> Result<f32, PlanError> {
     }
 }
 
-fn gaussian_stage_count(sigma_px: f32, support: f32) -> u32 {
-    (((sigma_px * support) / 128.0).max(1.0).powi(2).ceil() as u32).max(1)
+/// The longest kernel, in pixels either side, one blur or spread pass reads.
+/// An executor's shader loops over at most this many taps.
+pub const MAX_PASS_RADIUS_PX: u32 = 128;
+
+/// How a Gaussian of `sigma_px` is cut into passes: how many, and the sigma of
+/// each.
+///
+/// One pass reads `sigma * support` pixels either side, which a shader bounds
+/// at [`MAX_PASS_RADIUS_PX`]. Past that a blur is repeated instead: variances
+/// add, so `n` passes of `sigma / sqrt(n)` are one pass of `sigma`, and each is
+/// short enough to run. Every executor must use this split, or a large blur
+/// comes out narrower than the plan says.
+pub fn gaussian_stages(sigma_px: f32, support: f32) -> (u32, f32) {
+    let max = MAX_PASS_RADIUS_PX as f32;
+    let stages = (((sigma_px * support) / max).max(1.0).powi(2).ceil() as u32).max(1);
+    (stages, sigma_px / (stages as f32).sqrt())
 }
 
-fn spread_chunk_count(radius_px: u32) -> u32 {
-    radius_px.div_ceil(128).max(1)
+/// The radii of the passes a spread (dilation) of `radius_px` is cut into, for
+/// one axis. They sum to the radius, rounded up, and none exceeds
+/// [`MAX_PASS_RADIUS_PX`]; running them one after another is the same dilation.
+pub fn spread_chunks(radius_px: f32) -> Vec<u32> {
+    let radius = radius_px.ceil().max(0.0) as u32;
+    let count = radius.div_ceil(MAX_PASS_RADIUS_PX).max(1);
+    let mut remaining = radius;
+    (0..count)
+        .map(|stage| {
+            let chunk = remaining
+                .div_ceil(count - stage)
+                .min(MAX_PASS_RADIUS_PX);
+            remaining = remaining.saturating_sub(chunk);
+            chunk
+        })
+        .collect()
 }
 
 fn expand_bounds(rect: Bounds, value: SampleExpansion) -> Bounds {
@@ -1326,20 +1385,6 @@ fn expand_bounds(rect: Bounds, value: SampleExpansion) -> Bounds {
         rect.min - Point::new(value.left, value.top),
         rect.max + Point::new(value.right, value.bottom),
     )
-}
-fn translate_rect(rect: Rect, x: f32, y: f32) -> Rect {
-    Rect::new(rect.x + x, rect.y + y, rect.width, rect.height)
-}
-fn intersect_rect(a: Rect, b: Rect) -> Rect {
-    let x0 = a.x.max(b.x);
-    let y0 = a.y.max(b.y);
-    let x1 = (a.x + a.width).min(b.x + b.width);
-    let y1 = (a.y + a.height).min(b.y + b.height);
-    if x1 <= x0 || y1 <= y0 {
-        Rect::new(x0, y0, 0.0, 0.0)
-    } else {
-        Rect::new(x0, y0, x1 - x0, y1 - y0)
-    }
 }
 fn union_into(target: &mut Option<Bounds>, value: Bounds) {
     *target = Some(match *target {

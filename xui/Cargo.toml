@@ -15,4 +15,5 @@ xui-macos = {path="../crates/xui-macos" ,features=["skia"]}
 [features]
 default = ["skia-wgpu"]
 skia = ["xui-macos/skia"]
+vello = ["xui-macos/vello"]
 skia-wgpu = ["xui-macos/skia-wgpu"]

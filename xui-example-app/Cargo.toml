@@ -11,7 +11,12 @@ path = "src/main.rs"
 name = "flight-icing"
 path = "src/bin/flight_icing/main.rs"
 
+[features]
+# Run the gallery on the Vello backend instead of Skia.
+vello = ["dep:xui-vello"]
+
 [dependencies]
+xui-vello = { path = "../crates/xui-vello", optional = true }
 xui-core = { path = "../crates/xui-core" }
 xui-macros = { path = "../crates/xui-macros" }
 xui-macos = { path = "../crates/xui-macos", features=["skia"] }

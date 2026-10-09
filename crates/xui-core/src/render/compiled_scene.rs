@@ -119,6 +119,8 @@ pub struct CompiledPicture {
     pub placement_clip: Option<CompiledClipId>,
     pub content_version: ContentVersion,
     pub composite_version: u64,
+    /// The layer's own effects; see [`RenderEpochs::effect`](super::RenderEpochs::effect).
+    pub effect_version: u64,
     pub is_root: bool,
 }
 

@@ -34,7 +34,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
+    #[cfg(feature = "vello")]
+    return run_vello(theme, options);
+
     // `xui_macos::runner` with a theme applied before the first frame.
+    #[cfg(not(feature = "vello"))]
     MacRunner::with_fallible_options(
         move |window| -> Result<_, std::io::Error> {
             let mut app = App::new(gallery::gallery_component);
@@ -47,5 +51,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .run()
     .unwrap();
+    Ok(())
+}
+
+/// The same gallery on Vello: `cargo run -p xui-example-app --features vello`.
+#[cfg(feature = "vello")]
+fn run_vello(
+    theme: Theme,
+    options: MacRunnerOptions,
+) -> Result<(), Box<dyn std::error::Error>> {
+    MacRunner::with_fallible_options(
+        move |window| -> Result<_, std::io::Error> {
+            let mut app = App::new(gallery::gallery_component);
+            app.set_theme(theme);
+            let backend = xui_vello::VelloBackend::<xui_f::FBackend>::new(window)
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            let context = backend.wgpu_context();
+            app.set_gpu_context(xui_core::widgets::CanvasGpuContext::new(
+                context.device().clone(),
+                context.queue().clone(),
+            ));
+            Ok((app, xui_f::FBackend::new(), backend))
+        },
+        options,
+    )
+    .run()?;
     Ok(())
 }

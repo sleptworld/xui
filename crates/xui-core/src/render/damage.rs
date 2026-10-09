@@ -1,10 +1,14 @@
+//! What of a frame changed since the last one, as regions of the root surface.
+//!
+//! Backend-independent: it reads only a [`BuiltFrame`], so every renderer can
+//! repaint just the damaged part of its persistent frame instead of all of it.
+
 use rustc_hash::FxHashMap;
-use xui_core::{
-    render::{BuiltFrame, BuiltItem, ContentVersion, PlacementVersion, RenderNodeId},
-    Affine, Point,
-};
 use xui_interface::{Bounds, Rect};
 use xui_render_graph::{ProgramFingerprint, SampleExpansion};
+
+use super::{BuiltFrame, BuiltItem, ContentVersion, PlacementVersion, RenderNodeId};
+use crate::{Affine, Point};
 
 /// Upper bound on the rects a simplified region keeps. Skia builds one region
 /// band per distinct y-span, and the software presenter blits per rect, so a
@@ -29,42 +33,42 @@ fn contains(outer: Bounds, inner: Bounds) -> bool {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct DamageRegion {
+pub struct DamageRegion {
     rects: Vec<Bounds>,
 }
 
 impl DamageRegion {
-    pub(crate) fn full(rect: Bounds) -> Self {
+    pub fn full(rect: Bounds) -> Self {
         let mut region = Self::default();
         region.add(rect);
         region
     }
 
-    pub(crate) fn add(&mut self, rect: Bounds) {
+    pub fn add(&mut self, rect: Bounds) {
         if rect.width() > 0.0 && rect.height() > 0.0 {
             self.rects.push(rect);
         }
     }
 
-    pub(crate) fn extend(&mut self, other: Self) {
+    pub fn extend(&mut self, other: Self) {
         self.rects.extend(other.rects);
     }
 
-    pub(crate) fn rects(&self) -> &[Bounds] {
+    pub fn rects(&self) -> &[Bounds] {
         &self.rects
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.rects.is_empty()
     }
 
-    pub(crate) fn bounds(&self) -> Option<Bounds> {
+    pub fn bounds(&self) -> Option<Bounds> {
         self.rects.iter().copied().reduce(Bounds::union)
     }
 
     /// True when any damaged rect touches `bounds`. Used to cull scene items
     /// that cannot contribute to this repaint.
-    pub(crate) fn intersects(&self, bounds: Bounds) -> bool {
+    pub fn intersects(&self, bounds: Bounds) -> bool {
         self.rects.iter().any(|rect| rect.intersects(bounds))
     }
 
@@ -78,7 +82,7 @@ impl DamageRegion {
     ///
     /// Every operation here only ever *grows* the covered area, so a simplified
     /// region is always safe to repaint: it can waste work, never lose it.
-    pub(crate) fn simplify(&mut self) {
+    pub fn simplify(&mut self) {
         if self.rects.len() < 2 {
             return;
         }
@@ -226,6 +230,8 @@ impl DamageRegion {
 struct ItemVersion {
     content: ContentVersion,
     placement: PlacementVersion,
+    /// A child layer's own effects; zero for a draw.
+    effect: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -249,23 +255,26 @@ struct ItemSnapshot {
 
 #[derive(Debug, Clone)]
 struct LayerSnapshot {
+    /// The layer's own damage is about what is drawn in it, so it follows the
+    /// content bounds; the render bounds also move with its effects.
+    content_bounds: Bounds,
     render_bounds: Bounds,
     items: Vec<ItemSnapshot>,
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct DamageTracker {
+pub struct DamageTracker {
     snapshots: FxHashMap<RenderNodeId, LayerSnapshot>,
     last_damage: FxHashMap<RenderNodeId, DamageRegion>,
 }
 
 impl DamageTracker {
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.snapshots.clear();
         self.last_damage.clear();
     }
 
-    pub(crate) fn update(&mut self, frame: &BuiltFrame) -> DamageRegion {
+    pub fn update(&mut self, frame: &BuiltFrame) -> DamageRegion {
         let mut next_snapshots = FxHashMap::default();
         let mut dirty_by_layer = FxHashMap::default();
         let effect_expansions = layer_effect_expansions(frame);
@@ -298,11 +307,11 @@ impl DamageTracker {
             .unwrap_or_default()
     }
 
-    pub(crate) fn layer(&self, source: RenderNodeId) -> DamageRegion {
+    pub fn layer(&self, source: RenderNodeId) -> DamageRegion {
         self.last_damage.get(&source).cloned().unwrap_or_default()
     }
 
-    pub(crate) fn dirty_region_count(&self) -> usize {
+    pub fn dirty_region_count(&self) -> usize {
         self.last_damage
             .values()
             .map(|region| region.rects.len())
@@ -310,7 +319,7 @@ impl DamageTracker {
     }
 }
 
-fn layer_snapshot(frame: &BuiltFrame, layer: &xui_core::render::BuiltLayer) -> LayerSnapshot {
+fn layer_snapshot(frame: &BuiltFrame, layer: &super::BuiltLayer) -> LayerSnapshot {
     let items = layer
         .items
         .iter()
@@ -322,6 +331,7 @@ fn layer_snapshot(frame: &BuiltFrame, layer: &xui_core::render::BuiltLayer) -> L
                     version: ItemVersion {
                         content: common.content_version,
                         placement: PlacementVersion::default(),
+                        effect: 0,
                     },
                     bounds: common.world_bounds,
                     kind: ItemKind::Draw,
@@ -336,6 +346,7 @@ fn layer_snapshot(frame: &BuiltFrame, layer: &xui_core::render::BuiltLayer) -> L
                     version: ItemVersion {
                         content: frame.layers[instance.layer.0].content_version,
                         placement: instance.placement_version,
+                        effect: frame.layers[instance.layer.0].effect_version,
                     },
                     bounds: instance.world_bounds,
                     kind: ItemKind::Layer {
@@ -352,6 +363,7 @@ fn layer_snapshot(frame: &BuiltFrame, layer: &xui_core::render::BuiltLayer) -> L
         })
         .collect();
     LayerSnapshot {
+        content_bounds: layer.content_bounds,
         render_bounds: layer.render_bounds,
         items,
     }
@@ -362,7 +374,7 @@ fn diff_layer(
     next: &LayerSnapshot,
     child_dirty: &FxHashMap<RenderNodeId, DamageRegion>,
 ) -> DamageRegion {
-    if previous.render_bounds != next.render_bounds {
+    if previous.content_bounds != next.content_bounds {
         let mut dirty = DamageRegion::full(previous.render_bounds);
         dirty.add(next.render_bounds);
         return dirty;
@@ -429,7 +441,10 @@ fn diff_item(
     child_dirty: &FxHashMap<RenderNodeId, DamageRegion>,
 ) -> DamageRegion {
     let mut dirty = DamageRegion::default();
+    // A child layer's effects changing changes what it shows everywhere, and
+    // not what is drawn in it, which is all its own damage says.
     if old.version.placement == new.version.placement
+        && old.version.effect == new.version.effect
         && old.bounds == new.bounds
         && old.kind == new.kind
     {
@@ -574,6 +589,136 @@ fn intersect_rect(a: Rect, b: Rect) -> Option<Rect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod effects {
+        use std::sync::Arc;
+
+        use super::super::DamageTracker;
+        use crate::render::{
+            BackdropIsolation, BuiltFrame, FrameBuilder, FrameProperties, LayerDescriptor, Primitive,
+            RenderNodeId, RenderScene, SceneCompiler, Shape, ShapePrimitive,
+        };
+        use xui_interface::{Bounds, Color, ComputedColorStyle, ComputedEffect, FilterQuality};
+
+        struct Session {
+            source: RenderScene,
+            compiler: SceneCompiler,
+            tracker: DamageTracker,
+        }
+
+        impl Session {
+            fn frame(&mut self) -> BuiltFrame {
+                let snapshot = self.source.dirty_snapshot();
+                let scene = self.compiler.compile(&self.source, &snapshot).unwrap();
+                let frame = FrameBuilder::new()
+                    .build(
+                        scene,
+                        Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
+                        &FrameProperties::default(),
+                    )
+                    .unwrap();
+                self.source.acknowledge(&snapshot);
+                self.tracker.update(&frame);
+                frame
+            }
+        }
+
+        fn blurred(sigma: f32) -> LayerDescriptor {
+            LayerDescriptor {
+                effects: Arc::from([ComputedEffect::Blur {
+                    sigma_x: sigma,
+                    sigma_y: sigma,
+                    quality: FilterQuality::Medium,
+                }]),
+                ..LayerDescriptor::default()
+            }
+        }
+
+        /// A blurred layer holding a square at 30..50.
+        fn session() -> (Session, RenderNodeId) {
+            let mut source = RenderScene::new();
+            let layer = source.insert_layer(blurred(2.0));
+            let square = source.insert_primitive(Primitive::Shape(ShapePrimitive {
+                bounds: Bounds::from_origin_size((30.0, 30.0), (20.0, 20.0)),
+                shape: Shape::Rect,
+                fill: Some(ComputedColorStyle::Solid(Color::BLACK)),
+                stroke: None,
+                shadow: None,
+            }));
+            source.append_child(source.root(), layer).unwrap();
+            source.set_child(layer, Some(square)).unwrap();
+            let mut session = Session {
+                source,
+                compiler: SceneCompiler::new(),
+                tracker: DamageTracker::default(),
+            };
+            session.frame();
+            (session, layer)
+        }
+
+        fn layer_of(frame: &BuiltFrame, source: RenderNodeId) -> &crate::render::BuiltLayer {
+            frame.layers.iter().find(|layer| layer.source == source).unwrap()
+        }
+
+        fn root_damage(session: &Session, frame: &BuiltFrame) -> Option<Bounds> {
+            session.tracker.layer(frame.layers[frame.root_layer.0].source).bounds()
+        }
+
+        fn contains(outer: Bounds, inner: Bounds) -> bool {
+            outer.min.x <= inner.min.x
+                && outer.min.y <= inner.min.y
+                && outer.max.x >= inner.max.x
+                && outer.max.y >= inner.max.y
+        }
+
+        /// What is drawn in the layer is as it was; what the parent shows of it
+        /// is not.
+        #[test]
+        fn new_effects_damage_a_layer_in_its_parent_and_not_inside_it() {
+            let (mut session, layer) = session();
+            let before = session.frame();
+            let before_layer = layer_of(&before, layer).clone();
+            let before_root = before.layers[before.root_layer.0].content_version;
+
+            session.source.update_layer_descriptor(layer, blurred(6.0)).unwrap();
+            let after = session.frame();
+            let after_layer = layer_of(&after, layer);
+
+            assert_eq!(after_layer.content_version, before_layer.content_version);
+            assert_ne!(after_layer.effect_version, before_layer.effect_version);
+            assert_ne!(after.layers[after.root_layer.0].content_version, before_root);
+            assert!(session.tracker.layer(layer).is_empty(), "{:?}", session.tracker.layer(layer));
+            // The parent repaints the layer where it reaches now: further than
+            // before, by the larger blur.
+            let reach = (after_layer.render_bounds & Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)))
+                .unwrap();
+            assert!(reach.width() > before_layer.render_bounds.width());
+            let damage = root_damage(&session, &after).expect("the parent is damaged");
+            assert!(contains(damage, reach), "{damage:?} does not cover {reach:?}");
+        }
+
+        /// Isolation is not in the layer's program, so nothing else says the
+        /// layer changed: its effect version does.
+        #[test]
+        fn an_effect_outside_the_program_still_repaints_the_layer() {
+            let (mut session, layer) = session();
+            let before = session.frame();
+            let reach = layer_of(&before, layer).render_bounds;
+            session
+                .source
+                .update_layer_descriptor(
+                    layer,
+                    LayerDescriptor {
+                        backdrop_isolation: BackdropIsolation::Isolate,
+                        ..blurred(2.0)
+                    },
+                )
+                .unwrap();
+            let after = session.frame();
+            let damage = root_damage(&session, &after).expect("the parent is damaged");
+            assert!(contains(damage, reach), "{damage:?} does not cover {reach:?}");
+        }
+    }
 
     #[test]
     fn transformed_damage_is_clipped() {

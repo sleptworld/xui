@@ -79,7 +79,12 @@ pub struct BuiltLayer {
     pub source: RenderNodeId,
     pub content_bounds: Bounds,
     pub render_bounds: Bounds,
+    /// What is drawn in the layer, its child layers whole (their effects and
+    /// placement included); not the layer's own effects.
     pub content_version: ContentVersion,
+    /// The layer's own effects and isolation, apart from its content: a
+    /// change here leaves what is drawn in the layer as it was.
+    pub effect_version: u64,
     pub cache_id: Option<LayerCacheId>,
     pub cache_policy: CachePolicy,
     pub backdrop_isolation: BackdropIsolation,

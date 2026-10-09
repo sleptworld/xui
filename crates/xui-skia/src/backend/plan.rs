@@ -279,17 +279,12 @@ impl<T: TextBackend> SkiaBackend<T> {
                     PassOp::Refraction {
                         strength_px,
                         chromatic_aberration_px,
+                        center,
                     } => Some(self.runtime_filter(
                         "refraction",
                         REFRACTION_SKSL,
                         &[
-                            (
-                                "center",
-                                &[
-                                    output_bounds.x() + output_bounds.width() * 0.5,
-                                    output_bounds.y() + output_bounds.height() * 0.5,
-                                ],
-                            ),
+                            ("center", &[center.x, center.y]),
                             (
                                 "amount",
                                 &[

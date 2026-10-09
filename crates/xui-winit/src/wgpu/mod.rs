@@ -157,6 +157,7 @@ impl<T: TextBackend> WGPUBackend<T> {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             })
             .await?;
         let vector_features = adapter.get_texture_format_features(wgpu::TextureFormat::Rgba8Unorm);

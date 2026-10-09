@@ -27,7 +27,8 @@ pub use input::{
 };
 pub use plan::{
     AttachmentBlend, Axis, CoordinateSpace, DrawProgram, DrawShader, Extent2d, ExternalAliasing,
-    LayerPlanContext, LayerProgramEntry, LayerRenderPlan, Pass, PassId, PassOp, PassUniforms,
+    LayerPlanContext, LayerProgramEntry, LayerRenderPlan, MAX_PASS_RADIUS_PX, Pass, PassId, PassOp,
+    PassUniforms, gaussian_stages, spread_chunks,
     PipelineKey, PixelRect, PlanLimits, PlanMask, PlanResource, PlanResourceId, PlanResourceKind,
     PlanStats, ResourceBindings, TextureClass, TransientSlot, TransientSlotId,
 };

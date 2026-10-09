@@ -6,9 +6,11 @@ edition = "2024"
 [dependencies]
 bytemuck = { version = "1.25.0", features = ["derive"] }
 log = { workspace = true }
+moka = { version = "0.12.15", features = ["sync"] }
+rustc-hash = "2.1.3"
 pollster = { workspace = true }
 thiserror = "2.0.18"
-vello = { version = "0.9.0", default-features = false, features = ["wgpu"] }
+vello = { version = "0.11.0", default-features = false, features = ["wgpu"] }
 wgpu = { workspace = true }
 # `wgpu` makes the canvas GPU-painter types (`CanvasGpuContext`) available, so
 # the device this backend owns can be handed to the app, as `xui-skia` does.
@@ -17,5 +19,14 @@ xui-interface = { path = "../xui-interface" }
 xui-render-graph = { path = "../xui-render-graph" }
 xui-shell = { path = "../xui-shell" }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# The `CAMetalLayer` wgpu-hal hands out, to switch it to a synchronized present
+# during live resize. Must match wgpu-hal's version.
+objc2-quartz-core = { version = "0.3.2", features = ["CALayer", "CAMetalLayer"] }
+
 [dev-dependencies]
-naga = { version = "29.0.3", features = ["wgsl-in"] }
+xui-cosmic = { path = "../xui-cosmic" }
+png = "0.18.1"
+# The reference the pixel comparison is made against.
+xui-skia = { path = "../xui-skia" }
+naga = { version = "30.0.1", features = ["wgsl-in"] }
