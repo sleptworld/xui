@@ -1,5 +1,5 @@
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::rc::Rc;
@@ -23,18 +23,39 @@ new_key_type! {
     pub struct FiberId;
 }
 
+/// Identity of a component for reconciliation: two fibers are the same
+/// component only if both the name and the type id agree.
+///
+/// The name alone is not enough for a generic component: `list::<A>` and
+/// `list::<B>` share one name, and reusing a fiber across them would hand
+/// `list::<B>` props and hook slots typed for `list::<A>`. `#[component]`
+/// passes the props type, so every monomorphization gets its own id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ComponentType(&'static str);
+pub struct ComponentType {
+    name: &'static str,
+    id: TypeId,
+}
+
+struct RootComponent;
 
 impl ComponentType {
-    pub const ROOT: Self = Self("__xui_root");
+    pub const ROOT: Self = Self::of::<RootComponent>("__xui_root");
 
-    pub const fn new(name: &'static str) -> Self {
-        Self(name)
+    pub const fn new(name: &'static str, id: TypeId) -> Self {
+        Self { name, id }
+    }
+
+    /// A component identified by `name` and the type `T`, typically its props.
+    pub const fn of<T: ?Sized + 'static>(name: &'static str) -> Self {
+        Self::new(name, TypeId::of::<T>())
     }
 
     pub const fn name(self) -> &'static str {
-        self.0
+        self.name
+    }
+
+    pub const fn id(self) -> TypeId {
+        self.id
     }
 }
 

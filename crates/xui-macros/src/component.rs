@@ -1,5 +1,25 @@
 //! `#[component]` / `component_fn!` — props struct, typed builder, and the tag
 //! constructor that lets `xui!` treat a component exactly like a host widget.
+//!
+//! # Generic components
+//!
+//! A component may take type and const parameters. They go on every generated
+//! item — `{Name}Props<P>`, the builder (ahead of its typestate parameters),
+//! the tag, call, type and handle functions — together with the `where`
+//! clause, plus a `P: 'static` bound per type parameter, since props are
+//! stored as `Rc<dyn Any>`. A parameter that no prop names is carried as
+//! phantom data.
+//!
+//! - A prop whose type names a parameter is where that parameter is inferred
+//!   from, so its setter takes the field type itself rather than
+//!   `impl Into<_>`: `<list items={vec![1, 2]} />` infers `T = i32`.
+//! - A parameter that no prop names has to be given explicitly, as
+//!   `<marker::<T> />` in `xui!` or `marker::<T>()` on the builder.
+//! - Each instantiation is its own component: the `ComponentType` carries the
+//!   props `TypeId`, so `list::<A>` replacing `list::<B>` at one position
+//!   remounts it instead of handing it the other's props and hook slots.
+//! - Lifetime parameters are rejected, as is `impl Trait` in a prop's type —
+//!   a struct field cannot hold one; name the parameter instead.
 
 use proc_macro2::{
     Delimiter, Group, Ident as TokenIdent, Span, TokenStream as TokenStream2, TokenTree,
@@ -9,8 +29,8 @@ use syn::parse::{Parse, ParseStream, Parser};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{
-    Attribute as SynAttribute, Error, Expr, FnArg, Ident, Pat, Result, ReturnType, Signature,
-    Token, Type, TypeReference, Visibility, parse_quote,
+    Attribute as SynAttribute, Error, Expr, FnArg, GenericParam, Generics, Ident, Pat, Result,
+    ReturnType, Signature, Token, Type, TypeReference, Visibility, WherePredicate, parse_quote,
 };
 
 use crate::krate;
@@ -136,10 +156,27 @@ pub fn strip_component_param_defaults(
 ) -> Result<(TokenStream2, Vec<Option<Expr>>)> {
     let mut output = TokenStream2::new();
     let mut defaults = None;
+    // The parameter list is the first parenthesized group outside the generics:
+    // `fn f<F: Fn(i32) -> R>(..)` has one inside them. The `>` of a `->` does
+    // not close an angle bracket.
+    let mut angle_depth = 0usize;
+    let mut after_minus = false;
     for token in sig_tokens {
+        if let TokenTree::Punct(punct) = &token {
+            match punct.as_char() {
+                '<' => angle_depth += 1,
+                '>' if !after_minus => angle_depth = angle_depth.saturating_sub(1),
+                _ => {}
+            }
+            after_minus = punct.as_char() == '-' && punct.spacing() == proc_macro2::Spacing::Joint;
+        } else {
+            after_minus = false;
+        }
         match token {
             TokenTree::Group(group)
-                if group.delimiter() == Delimiter::Parenthesis && defaults.is_none() =>
+                if group.delimiter() == Delimiter::Parenthesis
+                    && angle_depth == 0
+                    && defaults.is_none() =>
             {
                 let params = Punctuated::<ComponentParam, Token![,]>::parse_terminated
                     .parse2(group.stream())?;
@@ -260,6 +297,7 @@ pub fn expand_component_function(
         Default::default(),
         Box::new(parse_quote!(#xui_core::ElementDesc)),
     );
+    let generics = ComponentGenerics::new(&mut function.sig.generics)?;
 
     for input in &function.sig.inputs {
         if let FnArg::Receiver(receiver) = input {
@@ -301,10 +339,13 @@ pub fn expand_component_function(
     // struct, whatever the count. Treating a lone parameter as an
     // already-written props type instead would be indistinguishable from a
     // one-field component, and would leave `{Name}Props` undefined for the
-    // `xui!` call site.
-    let generated_props = if props_arg_count >= 1 {
+    // `xui!` call site. A generic component always has one, even without
+    // parameters, since the props type is what carries its type arguments.
+    let props_ty = generics.ty(&props_name, &[]);
+    let generated_props = if props_arg_count >= 1 || !generics.is_empty() {
         let generated = generate_component_props(
             function,
+            &generics,
             &props_name,
             &xui_core,
             &component_handle_name,
@@ -318,20 +359,29 @@ pub fn expand_component_function(
             .expect("cx argument is inserted above");
         let mut inputs = Punctuated::new();
         inputs.push(cx_arg);
-        inputs.push(parse_quote!(__xui_props: &#props_name));
+        inputs.push(parse_quote!(__xui_props: &#props_ty));
         function.sig.inputs = inputs;
         Some(generated)
     } else {
         None
     };
 
+    let fn_params = generics.params(&[]);
+    let fn_where = generics.where_clause(&[]);
+    let turbofish = generics.turbofish();
     let props_type = component_props_type(&function.sig)?;
+    // What tells monomorphizations apart in the fiber tree; see `ComponentType`.
+    let identity_type = if props_type.is_some() {
+        props_ty.clone()
+    } else {
+        quote!(#element_name)
+    };
     let component_call = if let Some(props_type) = props_type {
         quote! {
-            fn #component_call_name(
+            fn #component_call_name #fn_params (
                 cx: &mut #xui_core::HookContext<'_>,
                 props: ::std::option::Option<#xui_core::ErasedPropsRef<'_>>,
-            ) -> #xui_core::ElementDesc {
+            ) -> #xui_core::ElementDesc #fn_where {
                 let props = props
                     .expect("component props missing")
                     .downcast_ref::<#props_type>()
@@ -429,16 +479,19 @@ pub fn expand_component_function(
                     #body
                 }
 
-                pub fn #component_type_name() -> #xui_core::ComponentType {
-                    #xui_core::ComponentType::new(
+                pub fn #component_type_name #fn_params () -> #xui_core::ComponentType #fn_where {
+                    #xui_core::ComponentType::of::<#identity_type>(
                         concat!(module_path!(), "::", stringify!(#original_name)),
                     )
                 }
 
                 #component_call
 
-                pub fn #component_handle_name() -> #xui_core::ComponentRender {
-                    #xui_core::ComponentRender::new(#component_type_name(), #component_call_name)
+                pub fn #component_handle_name #fn_params () -> #xui_core::ComponentRender #fn_where {
+                    #xui_core::ComponentRender::new(
+                        #component_type_name #turbofish (),
+                        #component_call_name #turbofish,
+                    )
                 }
 
                 #element_builder
@@ -453,6 +506,7 @@ pub fn expand_component_function(
 
 fn generate_component_props(
     function: &ComponentFunction,
+    generics: &ComponentGenerics,
     props_name: &TokenIdent,
     xui_core: &TokenStream2,
     handle_name: &TokenIdent,
@@ -488,6 +542,19 @@ fn generate_component_props(
             ));
         }
         let field = &pat.ident;
+        // A props field cannot be `impl Trait`, and an anonymous parameter
+        // could not be named in the props type anyway.
+        let ty = &arg.ty;
+        if let Some(impl_token) = find_ident(quote!(#ty), &|ident| ident == "impl") {
+            return Err(Error::new(
+                impl_token.span(),
+                format!(
+                    "component prop `{field}` cannot use `impl Trait`: props are stored in a \
+                     struct, so declare a named generic parameter instead, as in \
+                     `fn {tag_name}<F: Trait>({field}: &F)`"
+                ),
+            ));
+        }
         let Some((field_type, binding)) = component_prop_field_type_and_binding(field, &arg.ty)?
         else {
             return Err(Error::new(
@@ -519,12 +586,35 @@ fn generate_component_props(
 
         props.push(ComponentProp {
             field: field.clone(),
+            generic: generics.mentioned_by(&field_type),
             field_type,
             default_value,
             required_state,
             binding,
         });
     }
+
+    // A type parameter no field names would be unused by the struct, so the
+    // props carry it as phantom data. `fn() -> T` keeps the props `Send`,
+    // `Sync` and covariant whatever `T` is.
+    let phantom_params = generics
+        .type_params
+        .iter()
+        .filter(|param| {
+            !props.iter().any(|prop| {
+                let field_type = &prop.field_type;
+                tokens_mention(quote!(#field_type), &|ident| ident == *param)
+            })
+        })
+        .collect::<Vec<_>>();
+    let (phantom_field, phantom_value) = if phantom_params.is_empty() {
+        (quote!(), quote!())
+    } else {
+        (
+            quote!(__xui_phantom: ::std::marker::PhantomData<fn() -> (#(#phantom_params,)*)>,),
+            quote!(__xui_phantom: ::std::marker::PhantomData,),
+        )
+    };
 
     let fields = props
         .iter()
@@ -619,21 +709,39 @@ fn generate_component_props(
             quote!(#param: #required_trait)
         })
         .collect::<Vec<_>>();
-    let builder_generics = generics(&state_params);
-    let builder_current_type = builder_type(&builder_name, &state_params);
-    let builder_initial_type = builder_type(&builder_name, &missing_state_args);
+    // The component's own parameters come first, the typestate after them.
+    let props_params = generics.params(&[]);
+    let props_type = generics.ty(props_name, &[]);
+    let user_where = generics.where_clause(&[]);
+    let builder_generics = generics.params(&state_params);
+    let builder_current_type = generics.ty(&builder_name, &state_params);
+    let builder_initial_type = generics.ty(&builder_name, &missing_state_args);
     let state_phantom_type = phantom_type(&state_params);
-    let build_where_clause = (!required_trait_bounds.is_empty()).then(|| {
-        quote! {
-            where
-                #(#required_trait_bounds),*
-        }
-    });
+    let builder_phantom_type = if generics.type_params.is_empty() {
+        state_phantom_type
+    } else {
+        let type_params = &generics.type_params;
+        quote!((fn() -> (#(#type_params,)*), #state_phantom_type))
+    };
+    let build_where_clause = generics.where_clause(&required_trait_bounds);
+    let handle_turbofish = generics.turbofish();
     let setters = props
         .iter()
         .map(|prop| {
             let field = &prop.field;
             let field_type = &prop.field_type;
+            // A field whose type names a component parameter is where that
+            // parameter is inferred from, and `impl Into<T<?>>` would leave it
+            // ambiguous as soon as a second `From` impl exists. Such a setter
+            // takes the field type itself.
+            let (param_type, value) = if prop.generic {
+                (quote!(#field_type), quote!(#field))
+            } else {
+                (
+                    quote!(impl ::std::convert::Into<#field_type>),
+                    quote!(#field.into()),
+                )
+            };
             if let Some(required_state) = prop.required_state.as_ref() {
                 let result_state_args = required_states
                     .iter()
@@ -645,7 +753,7 @@ fn generate_component_props(
                         }
                     })
                     .collect::<Vec<_>>();
-                let builder_type = builder_type(&builder_name, &result_state_args);
+                let builder_type = generics.ty(&builder_name, &result_state_args);
                 let destructure_fields = props
                     .iter()
                     .map(|prop| {
@@ -662,14 +770,14 @@ fn generate_component_props(
                     .map(|prop| {
                         let name = &prop.field;
                         if name == field {
-                            quote!(#name: ::std::option::Option::Some(#field.into()))
+                            quote!(#name: ::std::option::Option::Some(#value))
                         } else {
                             quote!(#name)
                         }
                     })
                     .collect::<Vec<_>>();
                 quote! {
-                    pub fn #field(self, #field: impl ::std::convert::Into<#field_type>) -> #builder_type {
+                    pub fn #field(self, #field: #param_type) -> #builder_type {
                         let Self {
                             #(#destructure_fields),*,
                             __xui_key,
@@ -684,8 +792,8 @@ fn generate_component_props(
                 }
             } else {
                 quote! {
-                    pub fn #field(mut self, #field: impl ::std::convert::Into<#field_type>) -> Self {
-                        self.#field = ::std::option::Option::Some(#field.into());
+                    pub fn #field(mut self, #field: #param_type) -> Self {
+                        self.#field = ::std::option::Option::Some(#value);
                         self
                     }
                 }
@@ -709,12 +817,10 @@ fn generate_component_props(
     let children_element_impls = has_children.then(|| {
         let mut content_params = vec![TokenIdent::new("__XuiChildren", Span::call_site())];
         content_params.extend(state_params.iter().cloned());
-        let content_generics = generics(&content_params);
-        let content_where = quote! {
-            where
-                __XuiChildren: #xui_core::IntoChildren,
-                #(#required_trait_bounds,)*
-        };
+        let content_generics = generics.params(&content_params);
+        let mut content_bounds = vec![quote!(__XuiChildren: #xui_core::IntoChildren)];
+        content_bounds.extend(required_trait_bounds.iter().cloned());
+        let content_where = generics.where_clause(&content_bounds);
         quote! {
             impl #builder_generics #xui_core::dsl::IntoElement<#xui_core::dsl::Children>
                 for #builder_current_type
@@ -741,7 +847,7 @@ fn generate_component_props(
 
     let children_impl = has_children.then(|| {
         quote! {
-            impl #xui_core::WithChildren for #props_name {
+            impl #props_params #xui_core::WithChildren for #props_type #user_where {
                 fn with_children(
                     mut self,
                     children: ::std::vec::Vec<#xui_core::ElementDesc>,
@@ -755,34 +861,35 @@ fn generate_component_props(
 
     Ok(GeneratedComponentProps {
         tokens: quote! {
-            #vis struct #props_name {
-                #(#fields),*
+            #vis struct #props_name #props_params #user_where {
+                #(#fields,)*
+                #phantom_field
             }
 
             #(#required_markers)*
 
-            #vis struct #builder_name #builder_generics {
-                #(#builder_fields),*,
+            #vis struct #builder_name #builder_generics #user_where {
+                #(#builder_fields,)*
                 __xui_key: ::std::option::Option<#xui_core::fiber::Key>,
-                _states: ::std::marker::PhantomData<#state_phantom_type>,
+                _states: ::std::marker::PhantomData<#builder_phantom_type>,
             }
 
             /// `<tag ... />` expands to `tag()`, the same as a host widget.
-            pub fn #tag_name() -> #builder_initial_type {
-                #props_name::builder()
+            pub fn #tag_name #props_params () -> #builder_initial_type #user_where {
+                <#props_type>::builder()
             }
 
-            impl #props_name {
+            impl #props_params #props_type #user_where {
                 pub fn builder() -> #builder_initial_type {
                     #builder_name {
-                        #(#builder_init_values),*,
+                        #(#builder_init_values,)*
                         __xui_key: ::std::option::Option::None,
                         _states: ::std::marker::PhantomData,
                     }
                 }
             }
 
-            impl #builder_generics #builder_current_type {
+            impl #builder_generics #builder_current_type #user_where {
                 #(#setters)*
 
                 /// Available in every builder state: a key never affects
@@ -796,9 +903,10 @@ fn generate_component_props(
             impl #builder_generics #builder_current_type
             #build_where_clause
             {
-                pub fn build(self) -> #props_name {
+                pub fn build(self) -> #props_type {
                     #props_name {
-                        #(#build_values),*
+                        #(#build_values,)*
+                        #phantom_value
                     }
                 }
 
@@ -810,7 +918,8 @@ fn generate_component_props(
                 ) -> #xui_core::ElementDesc {
                     let key = self.__xui_key.take();
                     #take_children
-                    let element = #xui_core::component(#handle_name()).props(self.build());
+                    let element = #xui_core::component(#handle_name #handle_turbofish ())
+                        .props(self.build());
                     let element = match key {
                         ::std::option::Option::Some(key) => element.key(key),
                         ::std::option::Option::None => element,
@@ -845,6 +954,8 @@ struct RequiredPropState {
 
 struct ComponentProp {
     field: Ident,
+    /// The field type names one of the component's generic parameters.
+    generic: bool,
     field_type: Type,
     default_value: Option<TokenStream2>,
     required_state: Option<RequiredPropState>,
@@ -996,20 +1107,130 @@ fn ident_pascal_case(ident: &Ident) -> String {
     output
 }
 
-fn generics(params: &[TokenIdent]) -> TokenStream2 {
-    if params.is_empty() {
-        quote!()
-    } else {
-        quote!(<#(#params),*>)
+/// The component function's own generic parameters, threaded through every
+/// generated item ahead of the builder's typestate parameters. Props travel as
+/// `Rc<dyn Any>`, so each type parameter is bounded by `'static` and lifetime
+/// parameters are rejected.
+struct ComponentGenerics {
+    /// As declared, bounds kept and defaults dropped.
+    params: Vec<GenericParam>,
+    /// Every parameter's name, in order, as a generic argument.
+    args: Vec<Ident>,
+    type_params: Vec<Ident>,
+    predicates: Vec<WherePredicate>,
+}
+
+impl ComponentGenerics {
+    fn new(generics: &mut Generics) -> Result<Self> {
+        for param in &mut generics.params {
+            match param {
+                GenericParam::Lifetime(param) => {
+                    return Err(Error::new(
+                        param.span(),
+                        "component functions cannot take lifetime parameters: props are \
+                         stored as `'static` values, so give them owned types",
+                    ));
+                }
+                GenericParam::Type(param) => {
+                    param.eq_token = None;
+                    param.default = None;
+                }
+                GenericParam::Const(param) => {
+                    param.eq_token = None;
+                    param.default = None;
+                }
+            }
+        }
+        let type_params = generics
+            .type_params()
+            .map(|param| param.ident.clone())
+            .collect::<Vec<_>>();
+        if !type_params.is_empty() {
+            let where_clause = generics.make_where_clause();
+            for param in &type_params {
+                where_clause.predicates.push(parse_quote!(#param: 'static));
+            }
+        }
+        let args = generics
+            .params
+            .iter()
+            .map(|param| match param {
+                GenericParam::Type(param) => param.ident.clone(),
+                GenericParam::Const(param) => param.ident.clone(),
+                GenericParam::Lifetime(_) => unreachable!("rejected above"),
+            })
+            .collect();
+        let predicates = generics
+            .where_clause
+            .as_ref()
+            .map(|clause| clause.predicates.iter().cloned().collect())
+            .unwrap_or_default();
+        Ok(Self {
+            params: generics.params.iter().cloned().collect(),
+            args,
+            type_params,
+            predicates,
+        })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.params.is_empty()
+    }
+
+    /// `<user params.., extra..>` for an `impl`, `struct` or `fn`.
+    fn params(&self, extra: &[TokenIdent]) -> TokenStream2 {
+        let params = &self.params;
+        if params.is_empty() && extra.is_empty() {
+            quote!()
+        } else {
+            quote!(<#(#params,)* #(#extra),*>)
+        }
+    }
+
+    /// `name<user args.., extra..>`.
+    fn ty(&self, name: &TokenIdent, extra: &[TokenIdent]) -> TokenStream2 {
+        let args = &self.args;
+        if args.is_empty() && extra.is_empty() {
+            quote!(#name)
+        } else {
+            quote!(#name<#(#args,)* #(#extra),*>)
+        }
+    }
+
+    /// `::<user args..>`, to name one monomorphization of a generated fn.
+    fn turbofish(&self) -> TokenStream2 {
+        let args = &self.args;
+        if args.is_empty() {
+            quote!()
+        } else {
+            quote!(::<#(#args),*>)
+        }
+    }
+
+    fn where_clause(&self, extra: &[TokenStream2]) -> TokenStream2 {
+        let predicates = &self.predicates;
+        if predicates.is_empty() && extra.is_empty() {
+            quote!()
+        } else {
+            quote!(where #(#predicates,)* #(#extra,)*)
+        }
+    }
+
+    fn mentioned_by(&self, ty: &Type) -> bool {
+        tokens_mention(quote!(#ty), &|ident| self.args.contains(ident))
     }
 }
 
-fn builder_type(builder_name: &TokenIdent, args: &[TokenIdent]) -> TokenStream2 {
-    if args.is_empty() {
-        quote!(#builder_name)
-    } else {
-        quote!(#builder_name<#(#args),*>)
-    }
+fn tokens_mention(tokens: TokenStream2, matches: &dyn Fn(&Ident) -> bool) -> bool {
+    find_ident(tokens, matches).is_some()
+}
+
+fn find_ident(tokens: TokenStream2, matches: &dyn Fn(&Ident) -> bool) -> Option<Ident> {
+    tokens.into_iter().find_map(|token| match token {
+        TokenTree::Ident(ident) => matches(&ident).then_some(ident),
+        TokenTree::Group(group) => find_ident(group.stream(), matches),
+        _ => None,
+    })
 }
 
 fn phantom_type(params: &[TokenIdent]) -> TokenStream2 {

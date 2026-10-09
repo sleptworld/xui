@@ -1664,7 +1664,7 @@ mod portal_tests {
     }
 
     fn counted_child_render() -> ComponentRender {
-        ComponentRender::new(ComponentType::new("counted_child"), counted_child)
+        ComponentRender::new(ComponentType::of::<NotHashProps>("counted_child"), counted_child)
     }
 
     fn component_parent(_cx: &mut HookContext<'_>) -> ElementDesc {
@@ -1681,7 +1681,7 @@ mod portal_tests {
     }
 
     fn stateful_leaf_render() -> ComponentRender {
-        ComponentRender::new(ComponentType::new("stateful_leaf"), stateful_leaf)
+        ComponentRender::new(ComponentType::of::<NotHashProps>("stateful_leaf"), stateful_leaf)
     }
 
     fn middle(_cx: &mut HookContext<'_>, _props: Option<ErasedPropsRef<'_>>) -> ElementDesc {
@@ -1690,7 +1690,7 @@ mod portal_tests {
     }
 
     fn middle_render() -> ComponentRender {
-        ComponentRender::new(ComponentType::new("middle"), middle)
+        ComponentRender::new(ComponentType::of::<NotHashProps>("middle"), middle)
     }
 
     /// Hands its child the *same* element every render, which is what

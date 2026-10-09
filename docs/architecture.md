@@ -118,7 +118,9 @@ Compile-time DSLs that produce `ElementDesc` / `Style` / components:
 - `style!(padding: 16.0, background: if hovered { ... })` → `Style` with
   state-conditioned rules lowered to `WidgetStateMatcher`.
 - `#[component]` / `component_fn!` — generates a props struct, a typed builder,
-  a support module, and a `ComponentRender` handle.
+  a support module, and a `ComponentRender` handle. Generic components are
+  supported (see the module docs of `xui-macros/src/component.rs`); each
+  instantiation is a distinct `ComponentType`, keyed by name and props `TypeId`.
 - `#[main]` — includes the asset bootstrap module and installs the
   `AssetManager` before the user's `main` body runs.
 - `#[derive(Animatable)]` — field-wise `Animatable` impl.

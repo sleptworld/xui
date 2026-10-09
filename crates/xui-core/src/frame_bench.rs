@@ -170,7 +170,7 @@ fn row_list(_cx: &mut HookContext<'_>, props: Option<ErasedPropsRef<'_>>) -> Ele
 }
 
 fn row_list_render() -> ComponentRender {
-    ComponentRender::new(ComponentType::new("frame_bench::row_list"), row_list)
+    ComponentRender::new(ComponentType::of::<usize>("frame_bench::row_list"), row_list)
 }
 
 /// Rebuilds the list element on every render, so its props are a fresh
