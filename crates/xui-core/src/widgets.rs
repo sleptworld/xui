@@ -100,6 +100,13 @@ macro_rules! event_handler_methods {
             self
         }
 
+        /// Observes this widget's laid-out border-box size without adding a
+        /// wrapper or changing layout. Create the handle with `cx.use_size()`.
+        pub fn observe_size(mut self, observer: crate::size::SizeObserver) -> Self {
+            self.interaction.size_observer = Some(observer);
+            self
+        }
+
         /// Binds `controller` to this widget's scroll position. Only has an
         /// effect on a widget whose style makes it scrollable.
         pub fn scroll_controller(mut self, controller: crate::scroll::ScrollController) -> Self {

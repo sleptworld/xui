@@ -111,11 +111,47 @@ impl UiRuntime {
 
     /// Activates the paint layout only after Taffy has committed every node's
     /// final width. Intrinsic measurement probes are deliberately inactive.
-    fn activate_final_text_layouts<T: TextBackend>(&self, measurer: &mut TextHost<T>) {
+    /// Activates, for paint, the variant of each text node that matches its
+    /// final width.
+    ///
+    /// Only nodes whose inputs can have moved are visited: the text, the
+    /// shaping style and the content width only change through work that also
+    /// repaints, restyles, reshapes or lays the node out, all of which is still
+    /// on the node here (`RECALC_LAYOUT` through `layout_dirty_list`, since
+    /// `sync_layout` has already taken the flag). A text input is always
+    /// visited: its text lives in its controller, not its props. A moved font
+    /// context invalidates every variant at once.
+    fn activate_final_text_layouts<T: TextBackend>(&mut self, measurer: &mut TextHost<T>) {
+        const INPUT_WORK: HostWorkFlags = HostWorkFlags::REBUILD_PAINT
+            .union(HostWorkFlags::RECALC_STYLE)
+            .union(HostWorkFlags::SHAPE_CHANGE)
+            .union(HostWorkFlags::SYNC_TREE);
+
         let font_context = measurer.backend().epoch();
-        let requests: Vec<_> = self
+        let all = self.text_font_context.replace(font_context) != Some(font_context);
+        let mut targets: Vec<NodeId> = self
             .text_nodes
             .keys()
+            .filter(|&id| {
+                let node = &self.hosts[id];
+                all || node.node_type == WidgetType::TextInput || node.work.intersects(INPUT_WORK)
+            })
+            .collect();
+        if !all {
+            // Ids queued before a removal are dropped by the membership test.
+            targets.extend(
+                self.ui_state
+                    .layout_dirty_list
+                    .iter()
+                    .copied()
+                    .filter(|&id| self.text_nodes.contains_key(id)),
+            );
+            targets.sort_unstable();
+            targets.dedup();
+        }
+
+        let requests: Vec<_> = targets
+            .into_iter()
             .filter_map(|id| {
                 let node = &self.hosts[id];
                 let effective = self.style_system.effective(id);

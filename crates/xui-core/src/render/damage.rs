@@ -595,8 +595,8 @@ mod tests {
 
         use super::super::DamageTracker;
         use crate::render::{
-            BackdropIsolation, BuiltFrame, FrameBuilder, FrameProperties, LayerDescriptor, Primitive,
-            RenderNodeId, RenderScene, SceneCompiler, Shape, ShapePrimitive,
+            BackdropIsolation, BuiltFrame, FrameBuilder, FrameProperties, LayerDescriptor,
+            Primitive, RenderNodeId, RenderScene, SceneCompiler, Shape, ShapePrimitive,
         };
         use xui_interface::{Bounds, Color, ComputedColorStyle, ComputedEffect, FilterQuality};
 
@@ -657,11 +657,18 @@ mod tests {
         }
 
         fn layer_of(frame: &BuiltFrame, source: RenderNodeId) -> &crate::render::BuiltLayer {
-            frame.layers.iter().find(|layer| layer.source == source).unwrap()
+            frame
+                .layers
+                .iter()
+                .find(|layer| layer.source == source)
+                .unwrap()
         }
 
         fn root_damage(session: &Session, frame: &BuiltFrame) -> Option<Bounds> {
-            session.tracker.layer(frame.layers[frame.root_layer.0].source).bounds()
+            session
+                .tracker
+                .layer(frame.layers[frame.root_layer.0].source)
+                .bounds()
         }
 
         fn contains(outer: Bounds, inner: Bounds) -> bool {
@@ -680,21 +687,35 @@ mod tests {
             let before_layer = layer_of(&before, layer).clone();
             let before_root = before.layers[before.root_layer.0].content_version;
 
-            session.source.update_layer_descriptor(layer, blurred(6.0)).unwrap();
+            session
+                .source
+                .update_layer_descriptor(layer, blurred(6.0))
+                .unwrap();
             let after = session.frame();
             let after_layer = layer_of(&after, layer);
 
             assert_eq!(after_layer.content_version, before_layer.content_version);
             assert_ne!(after_layer.effect_version, before_layer.effect_version);
-            assert_ne!(after.layers[after.root_layer.0].content_version, before_root);
-            assert!(session.tracker.layer(layer).is_empty(), "{:?}", session.tracker.layer(layer));
+            assert_ne!(
+                after.layers[after.root_layer.0].content_version,
+                before_root
+            );
+            assert!(
+                session.tracker.layer(layer).is_empty(),
+                "{:?}",
+                session.tracker.layer(layer)
+            );
             // The parent repaints the layer where it reaches now: further than
             // before, by the larger blur.
-            let reach = (after_layer.render_bounds & Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)))
-                .unwrap();
+            let reach = (after_layer.render_bounds
+                & Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)))
+            .unwrap();
             assert!(reach.width() > before_layer.render_bounds.width());
             let damage = root_damage(&session, &after).expect("the parent is damaged");
-            assert!(contains(damage, reach), "{damage:?} does not cover {reach:?}");
+            assert!(
+                contains(damage, reach),
+                "{damage:?} does not cover {reach:?}"
+            );
         }
 
         /// Isolation is not in the layer's program, so nothing else says the
@@ -716,7 +737,10 @@ mod tests {
                 .unwrap();
             let after = session.frame();
             let damage = root_damage(&session, &after).expect("the parent is damaged");
-            assert!(contains(damage, reach), "{damage:?} does not cover {reach:?}");
+            assert!(
+                contains(damage, reach),
+                "{damage:?} does not cover {reach:?}"
+            );
         }
     }
 

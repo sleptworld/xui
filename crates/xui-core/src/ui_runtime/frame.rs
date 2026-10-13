@@ -3,7 +3,7 @@
 use crate::core::Size;
 use crate::text::TextHost;
 use crate::ui_runtime::state::HostWorkFlags;
-use crate::ui_runtime::style::animated_sample_requires_layout;
+use crate::ui_runtime::style::style_change_requires_layout;
 use crate::ui_runtime::{RenderFrame, RenderFrameError, UiRuntime};
 use std::time::Duration;
 use xui_interface::{Bounds, NodeId, TextBackend};
@@ -51,7 +51,7 @@ impl UiRuntime {
             let after = self.style_system.effective(id);
             let diff = before.diff(after);
             if !diff.is_empty() {
-                changed.push((id, diff, animated_sample_requires_layout(&before, after)));
+                changed.push((id, diff, style_change_requires_layout(&before, after)));
             }
         }
         for (id, diff, requires_layout) in changed.iter().copied() {
@@ -119,6 +119,14 @@ impl UiRuntime {
         }
 
         self.ui_state.layout_dirty_list.clear();
+
+        // Publish only completed layout, including anchored width adjustments.
+        // Also handles a newly attached observer when geometry stayed cached.
+        // These notifications schedule subsequent renders, never run them here.
+        self.interaction_system.notify_detached_size_observers();
+        for (id, observer) in self.interaction_system.size_observers() {
+            observer.offer(id, self.layout_tree.node(id).layout.size());
+        }
         // Every frame, not only after layout: a scroll moves an anchor without
         // laying anything out.
         self.place_anchored_nodes(size);
@@ -146,11 +154,12 @@ impl UiRuntime {
     pub(crate) fn build_render_frame(&mut self) -> Result<Option<RenderFrame>, RenderFrameError> {
         let dirty_snapshot = self.render_system.scene.dirty_snapshot();
         let properties_snapshot = self.render_system.properties.snapshot();
-        let root = self.layout_tree.node(self.root).layout;
-        let viewport = Bounds::from_zero_size(root.size());
+        let viewport = self.layout_tree.node(self.root).layout;
+        // let viewport = Bounds::from_zero_size(root.size());
         let viewport_changed = self.render_system.last_viewport != Some(viewport);
         let needs_scene_compile = self.render_system.compiler.compiled_scene().is_none()
-            || !dirty_snapshot.nodes.is_empty();
+            || !dirty_snapshot.nodes.is_empty()
+            || dirty_snapshot.removed > 0;
         if !needs_scene_compile && !self.render_system.properties.is_dirty() && !viewport_changed {
             return Ok(None);
         }
@@ -159,15 +168,22 @@ impl UiRuntime {
                 .compiler
                 .compile(&self.render_system.scene, &dirty_snapshot)?;
         }
+        #[cfg(debug_assertions)]
+        self.render_system
+            .properties
+            .validate(&self.render_system.scene)?;
+
         let compiled = self
             .render_system
             .compiler
             .compiled_scene()
             .expect("scene compiler is initialized before frame building");
+
         let built =
             self.render_system
                 .builder
                 .build(compiled, viewport, &self.render_system.properties)?;
+
         Ok(Some(RenderFrame {
             built,
             dirty_snapshot,

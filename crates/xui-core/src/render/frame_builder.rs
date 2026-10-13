@@ -44,9 +44,26 @@ impl std::fmt::Display for FrameBuildError {
 
 impl std::error::Error for FrameBuildError {}
 
+/// Builds frames from a compiled scene.
+///
+/// Its caches outlive a frame, so once they have grown, building one
+/// allocates nothing for them: an entry counts only when stamped with the
+/// current build. World transforms count for longer, see `spatial_stamp`.
 #[derive(Debug, Default)]
 pub struct FrameBuilder {
     builds: u64,
+    /// The stamp current spatial cache entries carry. It stays as long as
+    /// `spatial_inputs` do, so a frame that moves nothing reuses every world
+    /// transform the last one worked out.
+    spatial_stamp: u64,
+    /// The scene's `spatial_token` and the properties' `transform_token` the
+    /// spatial cache was filled under: everything a world transform depends
+    /// on.
+    spatial_inputs: Option<(u64, u64)>,
+    spatial_cache: SecondaryMap<SpatialNodeId, (u64, SpatialState)>,
+    clip_cache: SecondaryMap<CompiledClipId, (u64, ClipState)>,
+    /// Spatial nodes whose span bounds cannot be trusted this frame.
+    stale_span_spatials: SecondaryMap<SpatialNodeId, u64>,
 }
 
 impl FrameBuilder {
@@ -60,17 +77,6 @@ impl FrameBuilder {
         viewport: Bounds,
         properties: &FrameProperties,
     ) -> Result<BuiltFrame, FrameBuildError> {
-        for source in properties.transform_sources() {
-            if scene.contains_source(source) && scene.spatial_for_source(source).is_none() {
-                return Err(FrameBuildError::DynamicTransformOnNonSpatialNode(source));
-            }
-        }
-        for source in properties.composite_sources() {
-            if scene.contains_source(source) && scene.layer_isolation(source) != Some(true) {
-                return Err(FrameBuildError::DynamicCompositeOnNonIsolatedLayer(source));
-            }
-        }
-
         self.builds = self.builds.wrapping_add(1).max(1);
         let root_picture = scene
             .picture(scene.root_picture())
@@ -101,14 +107,20 @@ impl FrameBuilder {
         // to fall back to per-item culling. Marking strict ancestors only:
         // a span rooted *at* the overridden node is still correct, because its
         // bounds are recorded before that node's own transform is applied.
-        let mut stale_span_spatials: SecondaryMap<SpatialNodeId, ()> = SecondaryMap::new();
+        let stamp = self.builds;
+        let spatial_inputs = (scene.spatial_token, properties.transform_token());
+        if self.spatial_inputs != Some(spatial_inputs) {
+            self.spatial_inputs = Some(spatial_inputs);
+            self.spatial_stamp = stamp;
+        }
+
         for source in properties.transform_sources() {
             let Some(spatial) = scene.spatial_for_source(source) else {
                 continue;
             };
             let mut ancestor = scene.spatial_node(spatial).and_then(|node| node.parent);
             while let Some(id) = ancestor {
-                if stale_span_spatials.insert(id, ()).is_some() {
+                if self.stale_span_spatials.insert(id, stamp) == Some(stamp) {
                     break;
                 }
                 ancestor = scene.spatial_node(id).and_then(|node| node.parent);
@@ -120,9 +132,11 @@ impl FrameBuilder {
             properties,
             viewport,
             frame,
-            spatial_cache: SecondaryMap::new(),
-            clip_cache: SecondaryMap::new(),
-            stale_span_spatials,
+            stamp,
+            spatial_stamp: self.spatial_stamp,
+            spatial_cache: &mut self.spatial_cache,
+            clip_cache: &mut self.clip_cache,
+            stale_span_spatials: &self.stale_span_spatials,
         };
         let result = context.build_picture_contents(scene.root_picture(), root_layer, true)?;
         let root = &mut context.frame.layers[root_layer.0];
@@ -157,10 +171,15 @@ struct BuildContext<'a> {
     properties: &'a FrameProperties,
     viewport: Bounds,
     frame: BuiltFrame,
-    spatial_cache: SecondaryMap<SpatialNodeId, SpatialState>,
-    clip_cache: SecondaryMap<CompiledClipId, ClipState>,
-    /// Spatial nodes whose span bounds cannot be trusted this frame.
-    stale_span_spatials: SecondaryMap<SpatialNodeId, ()>,
+    /// The current build; a cache entry stamped otherwise is from an earlier
+    /// frame.
+    stamp: u64,
+    /// What a spatial cache entry is stamped with while still current, which
+    /// may be an earlier build's stamp.
+    spatial_stamp: u64,
+    spatial_cache: &'a mut SecondaryMap<SpatialNodeId, (u64, SpatialState)>,
+    clip_cache: &'a mut SecondaryMap<CompiledClipId, (u64, ClipState)>,
+    stale_span_spatials: &'a SecondaryMap<SpatialNodeId, u64>,
 }
 
 impl BuildContext<'_> {
@@ -227,11 +246,18 @@ impl BuildContext<'_> {
     /// the compiler could not keep current this frame simply report `false`,
     /// which costs culling precision and never correctness.
     fn span_is_offscreen(&mut self, span: &CompiledItemSpan) -> Result<bool, FrameBuildError> {
-        if self.stale_span_spatials.contains_key(span.spatial) {
+        if self.stale_span_spatials.get(span.spatial) == Some(&self.stamp) {
             return Ok(false);
         }
         let spatial = self.resolve_spatial(span.spatial)?;
-        let world_bounds = spatial.transform.transform_bounds(span.local_bounds);
+        let Some(bounds) = self
+            .scene
+            .spatial_node(span.spatial)
+            .and_then(|node| node.subtree_bounds)
+        else {
+            return Ok(false);
+        };
+        let world_bounds = spatial.transform.transform_bounds(bounds);
         Ok(!world_bounds.intersects(self.viewport))
     }
 
@@ -410,7 +436,9 @@ impl BuildContext<'_> {
     }
 
     fn resolve_spatial(&mut self, id: SpatialNodeId) -> Result<SpatialState, FrameBuildError> {
-        if let Some(state) = self.spatial_cache.get(id).copied() {
+        if let Some(&(stamp, state)) = self.spatial_cache.get(id)
+            && stamp == self.spatial_stamp
+        {
             return Ok(state);
         }
         let node = self
@@ -426,8 +454,10 @@ impl BuildContext<'_> {
                 content_version: ContentVersion::default(),
             });
         let dynamic = self.properties.transform(node.source);
+        // A dynamic transform applies in the node's local space, before the
+        // node's own transform; see `FrameProperties::set_transform`.
         let local_transform = dynamic
-            .map(|value| value.value)
+            .map(|value| value.value.then(node.local_transform))
             .unwrap_or(node.local_transform);
         let mut content_version = parent.content_version.merge(node.content_version);
         if let Some(dynamic) = dynamic {
@@ -437,12 +467,14 @@ impl BuildContext<'_> {
             transform: local_transform.then(parent.transform),
             content_version,
         };
-        self.spatial_cache.insert(id, state);
+        self.spatial_cache.insert(id, (self.spatial_stamp, state));
         Ok(state)
     }
 
     fn resolve_clip(&mut self, id: CompiledClipId) -> Result<ClipState, FrameBuildError> {
-        if let Some(state) = self.clip_cache.get(id).copied() {
+        if let Some(&(stamp, state)) = self.clip_cache.get(id)
+            && stamp == self.stamp
+        {
             return Ok(state);
         }
         let clip = self
@@ -477,7 +509,7 @@ impl BuildContext<'_> {
             bounds: effective_bounds,
             content_version,
         };
-        self.clip_cache.insert(id, state);
+        self.clip_cache.insert(id, (self.stamp, state));
         Ok(state)
     }
 }
@@ -884,9 +916,8 @@ mod tests {
             .map(|node| node.source)
             .find(|source| {
                 scene
-                    .spatial_by_source
-                    .get(source)
-                    .and_then(|id| scene.spatial_nodes.get(*id))
+                    .spatial_for_source(*source)
+                    .and_then(|id| scene.spatial_nodes.get(id))
                     .is_some_and(|node| node.local_transform != Affine::IDENTITY)
             })
             .expect("the fixture has translated rows");
@@ -950,6 +981,129 @@ mod tests {
             draw_digest(&plain),
             "span culling dropped content that a non-structural edit moved into view"
         );
+    }
+
+    /// Two transforms with nothing between them, like a scroll container
+    /// with nothing of its own to paint around its scroll transform, cover the
+    /// same items. Both spans are kept, the outer one first: it rejects at
+    /// rest, and when the inner transform is set as a frame property it is
+    /// stale and the inner one, still valid, rejects instead. Either way
+    /// culling matches an unculled build.
+    #[test]
+    fn nested_transforms_over_the_same_items_test_the_outer_span_first() {
+        let mut source = super::super::RenderScene::new();
+        let layout = source.insert_transform(Affine::translate(0.0, 5_000.0));
+        let style = source.insert_transform(Affine::IDENTITY);
+        let contents = source.insert_group();
+        source.append_child(source.root(), layout).unwrap();
+        source.set_child(layout, Some(style)).unwrap();
+        source.set_child(style, Some(contents)).unwrap();
+        for _ in 0..4 {
+            append_shape(&mut source, contents);
+        }
+        let scene = compile(&source);
+        let spans = &scene.picture(scene.root_picture()).unwrap().spans;
+        let spatials: Vec<_> = spans.iter().map(|span| span.spatial).collect();
+        assert_eq!(
+            spatials,
+            [
+                scene.spatial_for_source(layout).unwrap(),
+                scene.spatial_for_source(style).unwrap(),
+            ]
+        );
+
+        let viewport = Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0));
+        for (offset, draws) in [(None, 0), (Some(-5_000.0), 4), (Some(1_000.0), 0)] {
+            let mut properties = FrameProperties::default();
+            if let Some(offset) = offset {
+                properties.set_transform(style, Affine::translate(0.0, offset));
+            }
+            let culled = FrameBuilder::new()
+                .build(&scene, viewport, &properties)
+                .unwrap();
+            let plain = FrameBuilder::new()
+                .build(&clear_spans(&scene), viewport, &properties)
+                .unwrap();
+            assert_eq!(culled.layers[0].items.len(), draws);
+            assert_eq!(draw_digest(&culled), draw_digest(&plain));
+        }
+    }
+
+    /// World transforms are worked out once and reused for as long as nothing
+    /// they depend on changes: a repaint reuses them, while moving a transform
+    /// in the scene or setting or clearing one as a frame property works them
+    /// out again.
+    #[test]
+    fn world_transforms_are_reused_until_a_spatial_input_changes() {
+        fn frame(
+            source: &mut super::super::RenderScene,
+            compiler: &mut SceneCompiler,
+            builder: &mut FrameBuilder,
+            properties: &FrameProperties,
+        ) -> (u64, f32) {
+            let snapshot = source.dirty_snapshot();
+            let scene = compiler.compile(source, &snapshot).unwrap();
+            let built = builder
+                .build(
+                    scene,
+                    Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
+                    properties,
+                )
+                .unwrap();
+            source.acknowledge(&snapshot);
+            let BuiltItem::Draw(draw) = &built.layers[0].items[0] else {
+                panic!("the primitive is drawn")
+            };
+            (builder.spatial_stamp, draw.common().world_bounds.min.x)
+        }
+
+        let mut source = super::super::RenderScene::new();
+        let transform = source.insert_transform(Affine::translate(10.0, 0.0));
+        let primitive = source.insert_primitive(shape(
+            Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
+            Color::BLACK,
+        ));
+        source.append_child(source.root(), transform).unwrap();
+        source.set_child(transform, Some(primitive)).unwrap();
+        let mut compiler = SceneCompiler::new();
+        let mut builder = FrameBuilder::new();
+        let mut properties = FrameProperties::default();
+        let mut next = |source: &mut super::super::RenderScene, properties: &FrameProperties| {
+            frame(source, &mut compiler, &mut builder, properties)
+        };
+
+        let (stamp, x) = next(&mut source, &properties);
+        assert_eq!(x, 10.0);
+
+        source
+            .update_primitive(
+                primitive,
+                shape(
+                    Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
+                    Color::WHITE,
+                ),
+            )
+            .unwrap();
+        assert_eq!(next(&mut source, &properties), (stamp, 10.0));
+
+        source
+            .update_transform(transform, Affine::translate(20.0, 0.0))
+            .unwrap();
+        let (moved, x) = next(&mut source, &properties);
+        assert_ne!(moved, stamp);
+        assert_eq!(x, 20.0);
+
+        // A frame property composes onto the node's own transform.
+        properties.set_transform(transform, Affine::translate(30.0, 0.0));
+        let (dynamic, x) = next(&mut source, &properties);
+        assert_ne!(dynamic, moved);
+        assert_eq!(x, 50.0);
+
+        properties.clear_transform(transform);
+        let (cleared, x) = next(&mut source, &properties);
+        assert_ne!(cleared, dynamic);
+        assert_eq!(x, 20.0);
+        assert_eq!(next(&mut source, &properties), (cleared, 20.0));
     }
 
     #[test]
@@ -1148,12 +1302,13 @@ mod tests {
         );
     }
 
+    // `FrameProperties::validate` only exists in debug builds.
+    #[cfg(debug_assertions)]
     #[test]
     fn dynamic_composite_rejects_non_isolated_layer() {
         let mut source = super::super::RenderScene::new();
         let layer = source.insert_layer(LayerDescriptor::default());
         source.append_child(source.root(), layer).unwrap();
-        let scene = compile(&source);
         let mut properties = FrameProperties::default();
         properties.set_composite(
             layer,
@@ -1164,17 +1319,13 @@ mod tests {
         );
 
         assert_eq!(
-            FrameBuilder::new()
-                .build(
-                    &scene,
-                    Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
-                    &properties,
-                )
-                .unwrap_err(),
+            properties.validate(&source).unwrap_err(),
             FrameBuildError::DynamicCompositeOnNonIsolatedLayer(layer)
         );
     }
 
+    // `FrameProperties::validate` only exists in debug builds.
+    #[cfg(debug_assertions)]
     #[test]
     fn dynamic_transform_rejects_non_spatial_source() {
         let mut source = super::super::RenderScene::new();
@@ -1183,18 +1334,11 @@ mod tests {
             Color::BLACK,
         ));
         source.append_child(source.root(), primitive).unwrap();
-        let scene = compile(&source);
         let mut properties = FrameProperties::default();
         properties.set_transform(primitive, Affine::translate(5.0, 0.0));
 
         assert_eq!(
-            FrameBuilder::new()
-                .build(
-                    &scene,
-                    Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
-                    &properties,
-                )
-                .unwrap_err(),
+            properties.validate(&source).unwrap_err(),
             FrameBuildError::DynamicTransformOnNonSpatialNode(primitive)
         );
     }

@@ -1,6 +1,7 @@
 pub use crate::animation::{AnimablePaintStyle, AnimableStyle};
 pub use crate::app::App;
 pub use crate::component::ComponentRuntime;
+pub use crate::context::{ContextProvider, context_provider};
 pub use crate::core::{Color, EdgeInsets, Point, Rect, Size};
 pub use crate::dsl::{Children, Content, IntoElement, NoChildren, StyleProps, Styled};
 pub use crate::element::{
@@ -25,6 +26,7 @@ pub use crate::fiber::{ComponentCall, ComponentRender, ComponentType, ErasedProp
 pub use crate::anchor::{AnchorAlign, AnchorPlacement, AnchorSide};
 pub use crate::focus::{FocusHandle, FocusManager, FocusRequest, FocusTransition};
 pub use crate::scroll::{ScrollController, ScrollMetrics};
+pub use crate::size::SizeObserver;
 pub use crate::render::{MockRenderBackend, RenderBackend};
 pub use crate::clock::{FrameClock, FrameTime};
 pub use crate::runtime::{ControlFlow, FrameReport, GuiRuntime, QueueEventSource, RuntimeEvent};

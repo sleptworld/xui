@@ -59,6 +59,7 @@ impl UiRuntime {
             node_lifecycle_events: Vec::new(),
             interaction_system: InteractionSystem::new(),
             text_nodes: slotmap::SparseSecondaryMap::new(),
+            text_font_context: None,
             canvas_nodes: slotmap::SparseSecondaryMap::new(),
             canvases_wanting_repaint: slotmap::SparseSecondaryMap::new(),
             window_visible: true,
@@ -205,18 +206,14 @@ impl UiRuntime {
 
     fn create_host_render_binding(&mut self, host: NodeId) -> Result<(), SceneError> {
         let root = self.render_system.scene.insert_transform(Affine::IDENTITY);
-        let transform = self.render_system.scene.insert_transform(Affine::IDENTITY);
         let contents = self.render_system.scene.insert_group();
         let paint = self.render_system.scene.insert_group();
         self.render_system.scene.append_child(contents, paint)?;
 
-        self.render_system
-            .scene
-            .set_child(transform, Some(contents))?;
-        self.render_system.scene.set_child(root, Some(transform))?;
+        self.render_system.scene.set_child(root, Some(contents))?;
         self.render_system.bind_host(
             host,
-            HostRenderBinding::scaffold(root, transform, contents, paint, None, None, None),
+            HostRenderBinding::scaffold(root, contents, paint, None, None, None),
         )?;
 
         if host == self.root {
@@ -346,9 +343,7 @@ impl UiRuntime {
         // Its parent is gone too, or it was detached above.
         self.layout_tree.forget(id);
         if let Some(binding) = self.render_system.unbind_host(id) {
-            self.render_system
-                .properties
-                .remove_source(binding.transform);
+            self.render_system.properties.remove_source(binding.root);
             self.render_system
                 .scene
                 .remove_subtree(binding.root)

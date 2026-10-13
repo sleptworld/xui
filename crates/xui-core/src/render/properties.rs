@@ -1,4 +1,4 @@
-use super::RenderNodeId;
+use super::{FrameBuildError, RenderNodeId, RenderNodeKind, RenderScene};
 use rustc_hash::FxHashMap;
 use xui_interface::Affine;
 
@@ -22,12 +22,41 @@ pub(crate) struct Versioned<T> {
 #[derive(Debug, Clone, Default)]
 pub struct FrameProperties {
     transforms: FxHashMap<RenderNodeId, Versioned<Affine>>,
+    /// Fresh whenever a transform is set, changed or removed; see
+    /// [`fresh_token`](super::fresh_token). 0 until the first, as every
+    /// instance is empty until then.
+    transform_token: u64,
     composites: FxHashMap<RenderNodeId, Versioned<DynamicComposite>>,
     revision: u64,
     acknowledged_revision: u64,
 }
 
 impl FrameProperties {
+    /// Rejects a dynamic transform on anything but a transform node, and a
+    /// dynamic composite on anything but an isolated layer. Properties on
+    /// nodes outside the scene's tree are ignored, as the frame ignores them.
+    #[cfg(debug_assertions)]
+    pub fn validate(&self, scene: &RenderScene) -> Result<(), FrameBuildError> {
+        let attached = |source: RenderNodeId| {
+            scene
+                .node(source)
+                .filter(|_| scene.is_attached(source))
+                .map(|node| &node.kind)
+        };
+        for source in self.transform_sources() {
+            if attached(source).is_some_and(|kind| !matches!(kind, RenderNodeKind::Transform(_))) {
+                return Err(FrameBuildError::DynamicTransformOnNonSpatialNode(source));
+            }
+        }
+        for source in self.composite_sources() {
+            let isolated = |kind: &RenderNodeKind| matches!(kind, RenderNodeKind::Layer(layer) if layer.descriptor.requires_isolation());
+            if attached(source).is_some_and(|kind| !isolated(kind)) {
+                return Err(FrameBuildError::DynamicCompositeOnNonIsolatedLayer(source));
+            }
+        }
+        Ok(())
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -48,6 +77,11 @@ impl FrameProperties {
             .max(snapshot.revision.min(self.revision));
     }
 
+    /// Sets the dynamic transform of the transform node `source`. It composes
+    /// with the node's own transform rather than replacing it, applying first,
+    /// in the node's local space: a host's style transform rides on its
+    /// layout position this way, without a node of its own and without the
+    /// position being folded into the value.
     pub fn set_transform(&mut self, source: RenderNodeId, transform: Affine) -> bool {
         if self
             .transforms
@@ -57,6 +91,7 @@ impl FrameProperties {
             return false;
         }
         let revision = self.next_revision();
+        self.transform_token = super::fresh_token();
         self.transforms.insert(
             source,
             Versioned {
@@ -72,6 +107,7 @@ impl FrameProperties {
             return false;
         }
         self.next_revision();
+        self.transform_token = super::fresh_token();
         true
     }
 
@@ -103,12 +139,19 @@ impl FrameProperties {
     }
 
     pub fn remove_source(&mut self, source: RenderNodeId) -> bool {
-        let removed =
-            self.transforms.remove(&source).is_some() | self.composites.remove(&source).is_some();
+        let removed_transform = self.transforms.remove(&source).is_some();
+        if removed_transform {
+            self.transform_token = super::fresh_token();
+        }
+        let removed = removed_transform | self.composites.remove(&source).is_some();
         if removed {
             self.next_revision();
         }
         removed
+    }
+
+    pub(crate) fn transform_token(&self) -> u64 {
+        self.transform_token
     }
 
     pub(crate) fn transform(&self, source: RenderNodeId) -> Option<Versioned<Affine>> {

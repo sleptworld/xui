@@ -1,3 +1,4 @@
+use crate::context::{Ancestors, ContextRegistry, ContextScope, NoAncestors};
 use crate::element::PortalBehavior;
 use crate::element::PortalDesc;
 use crate::event_system::interaction::HostInteraction;
@@ -5,7 +6,10 @@ use crate::fiber::{
     ComponentRender, ComponentState, EffectTag, ErasedProps, FiberArena, FiberId, FiberTag,
     HostState, Key, Node, PortalState,
 };
-use crate::lanes::{Lanes, NO_LANES, current_update_lane, includes_some_lane, should_interrupt};
+use crate::lanes::{
+    Lanes, NO_LANES, current_update_lane, get_highest_priority_lane, includes_some_lane,
+    should_interrupt,
+};
 use crate::state::{AsyncDispatcher, HookContext, HookStorage, Scheduler};
 use crate::ticker::TickerRegistry;
 use crate::ui_runtime::UiRuntime;
@@ -359,6 +363,26 @@ struct WipArena {
     wip_nodes: Vec<Option<WorkNode>>,
 }
 
+/// The strict ancestors of a node in the tree being worked on. Every node a
+/// render reaches has its whole ancestry in that tree, rendered or cloned.
+struct WipAncestors<'a> {
+    nodes: &'a WipArena,
+    of: WipId,
+}
+
+impl Ancestors for WipAncestors<'_> {
+    fn find(&self, visit: &mut dyn FnMut(FiberId) -> bool) {
+        let mut cursor = self.nodes.get(self.of).and_then(|node| node.parent);
+        while let Some(id) = cursor {
+            let node = self.nodes.get(id).expect("work node ancestor missing");
+            if visit(node.fiber_id) {
+                return;
+            }
+            cursor = node.parent;
+        }
+    }
+}
+
 impl WipArena {
     fn new() -> Self {
         Self {
@@ -410,6 +434,7 @@ pub struct ComponentRuntime {
     /// list the runtime walks each frame.
     tickers: TickerRegistry,
     hooks: FxHashMap<FiberId, HookStorage>,
+    contexts: ContextRegistry,
     root_widget: NodeId,
     budget: Duration,
     wip_nodes: WipArena,
@@ -455,6 +480,7 @@ impl ComponentRuntime {
             tokio_handle,
             tickers,
             hooks: FxHashMap::default(),
+            contexts: ContextRegistry::default(),
             budget: Duration::from_millis(4),
             wip_nodes: WipArena::new(),
         }
@@ -490,6 +516,28 @@ impl ComponentRuntime {
 
     pub fn mark_root_dirty(&self) {
         self.scheduler.mark_root_dirty(current_update_lane());
+    }
+
+    /// Sets the application-wide context of type `T`, which every component
+    /// reads unless an ancestor provides its own. Re-renders the components
+    /// that read it, and only those, when it changes.
+    pub fn provide_context<T: PartialEq + 'static>(&mut self, value: T) {
+        self.contexts.provide_app(value, &self.scheduler);
+    }
+
+    /// Clears the application-wide context of type `T`.
+    pub fn remove_context<T: 'static>(&mut self) {
+        self.contexts.remove_app::<T>(&self.scheduler);
+    }
+
+    /// The application-wide context of type `T`, if one is set.
+    pub fn context<T: Clone + 'static>(&self) -> Option<T> {
+        self.contexts.app_value()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn context_registry(&self) -> &ContextRegistry {
+        &self.contexts
     }
 
     pub fn rebuild_sync_if_needed(&mut self, arena: &mut UiRuntime) {
@@ -584,7 +632,7 @@ impl ComponentRuntime {
     }
 
     fn begin_work(&mut self, id: WipId) -> Option<WipId> {
-        let (fiber_id, tag, should_render, render_lanes) = {
+        let (fiber_id, tag, should_render, render_lanes, committed) = {
             let work = self.work_in_progress.as_ref().expect("work missing");
             let node = self.wip_nodes.get(id).expect("work node missing");
 
@@ -593,11 +641,13 @@ impl ComponentRuntime {
                 node.tag,
                 node.should_render_component(work.render_lanes, &self.nodes),
                 work.render_lanes,
+                !node.is_uncommited(),
             )
         };
 
         macro_rules! cx {
-            ($id: ident) => {{
+            ($id: ident, $ancestors: expr) => {{
+                self.contexts.begin_render($id);
                 let storage = self.hooks.entry($id).or_default();
                 let cx = HookContext::new_with_async(
                     storage,
@@ -607,16 +657,37 @@ impl ComponentRuntime {
                     self.async_dispatcher.clone(),
                     self.tokio_handle.clone(),
                     self.tickers.clone(),
-                );
+                )
+                .with_contexts(ContextScope {
+                    registry: &mut self.contexts,
+                    ancestors: $ancestors,
+                });
                 cx
             }};
+        }
+
+        // Runs after a component rendered and before its children are
+        // reconciled, so that readers of a context it changed are marked
+        // before the children's pending work is collected.
+        macro_rules! finish_render {
+            ($ancestors: expr) => {
+                self.contexts.finish_render(
+                    fiber_id,
+                    committed,
+                    $ancestors,
+                    &self.nodes,
+                    &self.scheduler,
+                    get_highest_priority_lane(render_lanes),
+                )
+            };
         }
 
         match tag {
             FiberTag::Root => {
                 if should_render {
-                    let mut cx = cx!(fiber_id);
+                    let mut cx = cx!(fiber_id, &NoAncestors);
                     let element = (self.root_render)(&mut cx);
+                    finish_render!(&NoAncestors);
                     self.reconcile_children(id, [element]);
                 } else {
                     self.clone_current_children(id);
@@ -624,10 +695,15 @@ impl ComponentRuntime {
             }
             FiberTag::Component => {
                 if should_render {
+                    let ancestors = WipAncestors {
+                        nodes: &self.wip_nodes,
+                        of: id,
+                    };
                     let wip_node = self.wip_nodes.get(id).unwrap();
                     if let Some((render, props)) = wip_node.component_render_props(&self.nodes) {
-                        let mut cx = cx!(fiber_id);
+                        let mut cx = cx!(fiber_id, &ancestors);
                         let element = (render.call)(&mut cx, props);
+                        finish_render!(&ancestors);
                         self.reconcile_children(id, [element]);
                     }
                 } else {
@@ -867,6 +943,7 @@ impl ComponentRuntime {
             .and_then(|portal| portal.entry);
         self.scheduler.mark_unmounted(id);
         self.hooks.remove(&id);
+        self.contexts.remove(id);
 
         if let Some(entry) = portal_entry {
             let _ = detach_portal(arena, entry);
@@ -1422,6 +1499,7 @@ impl ComponentRuntime {
         for node in self.wip_nodes.drain(..).flatten() {
             if node.binding.current.is_none() {
                 self.hooks.remove(&node.fiber_id);
+                self.contexts.remove(node.fiber_id);
                 self.nodes.remove_id(node.fiber_id);
                 self.scheduler.mark_unmounted(node.fiber_id);
             }

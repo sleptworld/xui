@@ -1997,6 +1997,188 @@ fn mounted_text_input_has_an_active_layout_before_any_edit() {
     );
 }
 
+/// Asserts that `node`'s active layout is the variant its final box asks for:
+/// activating that variant again must hand back the same handle.
+fn assert_final_text_is_active<T: xui_interface::TextBackend>(
+    arena: &UiRuntime,
+    measurer: &mut TextHost<T>,
+    node: NodeId,
+) {
+    let active = measurer
+        .active_slot(node, TextLayoutSlot::PRIMARY)
+        .expect("text must have an active layout");
+    let host_node = arena.node(node).unwrap();
+    let props = host_node
+        .widget
+        .with_widgets(|widget| widget.text_layout_props(&host_node.effective_style))
+        .unwrap();
+    let final_input = TextLayoutInput::new(
+        props.text,
+        TextLayoutConstraints::max_width(host_node.layout.width()),
+        props.style.into(),
+        props.paragraph,
+        props.text_box,
+        measurer.backend().epoch(),
+    );
+    assert_eq!(
+        measurer.activate_slot(node, TextLayoutSlot::PRIMARY, final_input),
+        active,
+        "the active layout is stale"
+    );
+}
+
+#[test]
+fn new_text_in_an_unchanged_box_is_activated() {
+    // The box keeps its size, so nothing about the edit reaches the text
+    // through its geometry: only the update's own work can.
+    let mut arena = UiRuntime::new();
+    let style = || Style::new().size(Size::fix(120.0, 20.0));
+    let node = create_host(
+        &mut arena,
+        WidgetI::new(TextWidget::new("before").style(style())),
+    );
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
+    let before = measurer.active_slot(node, TextLayoutSlot::PRIMARY);
+
+    let updated = WidgetI::new(TextWidget::new("after").style(style()));
+    let hash = updated.props_hash();
+    let handlers = updated.take_host_interaction();
+    arena.update_node(node, None, hash, updated, handlers);
+    arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
+
+    assert_ne!(measurer.active_slot(node, TextLayoutSlot::PRIMARY), before);
+    assert_final_text_is_active(&arena, &mut measurer, node);
+}
+
+/// Mounts `label` under a fill-size column whose style is `column_style`.
+fn font_fixture(column_style: Style, label: TextWidget) -> (UiRuntime, NodeId, NodeId) {
+    let mut arena = UiRuntime::new();
+    let column = create_host(&mut arena, WidgetI::new(container().style(column_style)));
+    let label = child_host(&mut arena, column, WidgetI::new(label));
+    (arena, column, label)
+}
+
+fn replace_widget(arena: &mut UiRuntime, id: NodeId, widget: WidgetI) {
+    let hash = widget.props_hash();
+    let handlers = widget.take_host_interaction();
+    arena.update_node(id, None, hash, widget, handlers);
+}
+
+#[test]
+fn text_is_laid_out_again_when_its_font_size_changes() {
+    let label_style = |size: f32| Style::new().font_size(size);
+    let (mut arena, _, label) = font_fixture(
+        Style::new().size(Size::fill()),
+        TextWidget::new("label text").style(label_style(12.0)),
+    );
+    let mut measurer = TextHost::new(xui_cosmic::CosmicEngine::new(1.0));
+    arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
+    let before = arena.node(label).unwrap().layout;
+
+    replace_widget(
+        &mut arena,
+        label,
+        WidgetI::new(TextWidget::new("label text").style(label_style(24.0))),
+    );
+    arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
+
+    let after = arena.node(label).unwrap().layout;
+    assert!(
+        after.height() > before.height(),
+        "the box kept its {before:?} after the font doubled: {after:?}"
+    );
+    assert_final_text_is_active(&arena, &mut measurer, label);
+}
+
+#[test]
+fn text_is_laid_out_again_when_an_inherited_font_size_changes() {
+    let column_style = |size: f32| Style::new().size(Size::fill()).font_size(size);
+    let (mut arena, column, label) =
+        font_fixture(column_style(12.0), TextWidget::new("label text"));
+    let mut measurer = TextHost::new(xui_cosmic::CosmicEngine::new(1.0));
+    arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
+    let before = arena.node(label).unwrap().layout;
+
+    replace_widget(
+        &mut arena,
+        column,
+        WidgetI::new(container().style(column_style(24.0))),
+    );
+    arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
+
+    let after = arena.node(label).unwrap().layout;
+    assert_eq!(
+        arena.node(label).unwrap().effective_style.text.font_size,
+        24.0
+    );
+    assert!(
+        after.height() > before.height(),
+        "the box kept its {before:?} after the inherited font doubled: {after:?}"
+    );
+    assert_final_text_is_active(&arena, &mut measurer, label);
+}
+
+#[test]
+fn a_text_color_change_lays_nothing_out() {
+    let label_style = |color: Color| Style::new().color(color);
+    let (mut arena, _, label) = font_fixture(
+        Style::new().size(Size::fill()),
+        TextWidget::new("label").style(label_style(Color::WHITE)),
+    );
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
+    let passes = arena.stats.layout_passes;
+
+    replace_widget(
+        &mut arena,
+        label,
+        WidgetI::new(TextWidget::new("label").style(label_style(Color::BLACK))),
+    );
+    arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
+
+    assert_eq!(
+        arena.node(label).unwrap().effective_style.text.color,
+        Color::BLACK
+    );
+    assert_eq!(arena.stats.layout_passes, passes);
+}
+
+#[test]
+fn a_resize_activates_only_the_text_whose_box_moved() {
+    let mut arena = UiRuntime::new();
+    let column = create_host(
+        &mut arena,
+        WidgetI::new(container().style(Style::new().size(Size::fill()))),
+    );
+    let stretched = child_host(
+        &mut arena,
+        column,
+        WidgetI::new(
+            TextWidget::new("stretched").style(Style::new().width(Sizing::fill()).height(20.0)),
+        ),
+    );
+    let fixed = child_host(
+        &mut arena,
+        column,
+        WidgetI::new(TextWidget::new("fixed").style(Style::new().size(Size::fix(80.0, 20.0)))),
+    );
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
+    let fixed_before = measurer.active_slot(fixed, TextLayoutSlot::PRIMARY);
+
+    arena.mark_subtree_layout_dirty(arena.root());
+    arena.update_tree(Size::new(600.0, 200.0), &mut measurer);
+
+    assert_eq!(arena.node(stretched).unwrap().layout.width(), 600.0);
+    assert_final_text_is_active(&arena, &mut measurer, stretched);
+    assert_eq!(
+        measurer.active_slot(fixed, TextLayoutSlot::PRIMARY),
+        fixed_before
+    );
+    assert_final_text_is_active(&arena, &mut measurer, fixed);
+}
+
 fn child_host(arena: &mut UiRuntime, parent: NodeId, widget: WidgetI) -> NodeId {
     let id = detached_host(arena, widget);
     arena.place(parent, id, None);
@@ -2099,15 +2281,9 @@ fn an_anchored_portal_follows_its_owner_across_a_resize() {
 
     // Layout keeps the menu at its parent's origin; the anchor is paint.
     assert_eq!(arena.node(menu).unwrap().layout.origin(), Point::zero());
-    let binding = arena.render_system.binding(menu).transform;
     assert_eq!(
-        arena
-            .render_system
-            .properties
-            .transform(binding)
-            .unwrap()
-            .value,
-        Affine::translate(110.0, 54.0)
+        style_transform(&arena, menu),
+        Some(Affine::translate(110.0, 54.0))
     );
     assert_eq!(arena.hit_test(Point::new(120.0, 60.0)), Some(menu));
 }
@@ -2269,8 +2445,7 @@ fn dropping_the_anchor_returns_the_portal_to_its_own_position() {
     arena.set_anchor(menu, None);
     arena.update_tree(Size::new(400.0, 300.0), &mut measurer);
     assert_eq!(arena.visual_layout(menu).min, Point::zero());
-    let binding = arena.render_system.binding(menu).transform;
-    assert!(arena.render_system.properties.transform(binding).is_none());
+    assert_eq!(style_transform(&arena, menu), None);
 }
 
 fn escape() -> RawEvent {
@@ -3068,36 +3243,18 @@ fn state_transform_transition_updates_only_frame_properties() {
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
     let layout_passes = arena.stats.layout_passes;
     let repaint_passes = arena.stats.repaint_passes;
-    let transform_node = arena.render_system.binding(node).transform;
-    assert!(
-        arena
-            .render_system
-            .properties
-            .transform(transform_node)
-            .is_none()
-    );
+    assert_eq!(style_transform(&arena, node), None);
 
     assert!(arena.tick_style_animations(Duration::from_millis(50)));
     let effective = arena.style_system.effective(node);
     assert!((effective.transform.translate.y - 1.0).abs() < 0.0001);
     // The tick only schedules the transform; the render sync applies it.
-    assert!(
-        arena
-            .render_system
-            .properties
-            .transform(transform_node)
-            .is_none()
-    );
+    assert_eq!(style_transform(&arena, node), None);
 
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
     assert_eq!(
-        arena
-            .render_system
-            .properties
-            .transform(transform_node)
-            .unwrap()
-            .value,
-        Affine::translate(0.0, 1.0)
+        style_transform(&arena, node),
+        Some(Affine::translate(0.0, 1.0))
     );
     assert_eq!(arena.stats.layout_passes, layout_passes);
     assert_eq!(arena.stats.repaint_passes, repaint_passes);
@@ -3125,15 +3282,9 @@ fn a_transform_is_derived_once_a_frame_from_the_settled_size() {
 
     assert_eq!(arena.stats.transform_syncs, syncs + 1);
     let transform = arena.style_system.effective(node).transform;
-    let transform_node = arena.render_system.binding(node).transform;
     assert_eq!(
-        arena
-            .render_system
-            .properties
-            .transform(transform_node)
-            .unwrap()
-            .value,
-        transform.to_affine(Size::new(40.0, 20.0)),
+        style_transform(&arena, node),
+        Some(transform.to_affine(Size::new(40.0, 20.0))),
         "the transform must be derived from the size layout just settled"
     );
 }
@@ -3164,15 +3315,9 @@ fn direct_transform_update_skips_layout_and_repaint() {
     );
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
-    let transform_node = arena.render_system.binding(node).transform;
     assert_eq!(
-        arena
-            .render_system
-            .properties
-            .transform(transform_node)
-            .unwrap()
-            .value,
-        Affine::translate(3.0, 5.0)
+        style_transform(&arena, node),
+        Some(Affine::translate(3.0, 5.0))
     );
     assert_eq!(arena.stats.layout_passes, layout_passes);
     assert_eq!(arena.stats.repaint_passes, repaint_passes);
@@ -3193,6 +3338,92 @@ fn rotation(arena: &UiRuntime, node: NodeId) -> f32 {
     arena.style_system.effective(node).transform.rotate
 }
 
+/// The style transform `node` carries as a frame property, if any.
+fn style_transform(arena: &UiRuntime, node: NodeId) -> Option<Affine> {
+    let root = arena.render_system.binding(node).root;
+    arena
+        .render_system
+        .properties
+        .transform(root)
+        .map(|value| value.value)
+}
+
+/// The wrappers between `node`'s layout root and its contents, outermost
+/// first.
+fn wrapper_chain(arena: &UiRuntime, node: NodeId) -> Vec<crate::render::RenderNodeId> {
+    let binding = arena.render_system.binding(node);
+    let scene = &arena.render_system.scene;
+    let mut chain = Vec::new();
+    let mut current = scene.children(binding.root).unwrap()[0];
+    while current != binding.contents {
+        chain.push(current);
+        current = scene.children(current).unwrap()[0];
+    }
+    chain
+}
+
+/// A style transform is a frame property on the host's layout root, composed
+/// onto the layout position when a frame is built. It adds no node: the
+/// wrapper chain stays as it is while transforms and wrappers come and go, and
+/// the frame places the host where both put it.
+#[test]
+fn a_style_transform_is_a_frame_property_on_the_layout_root() {
+    let mut arena = UiRuntime::new();
+    let style = Style::new()
+        .width(20.0)
+        .height(20.0)
+        .margin(EdgeInsets::all(10.0))
+        .backdrop_blur(4.0)
+        .when(WidgetState::PRESSED, |patch| patch.translate_y(4.0))
+        .when(WidgetState::HOVERED, |patch| patch.clip(true));
+    let node = create_host(&mut arena, WidgetI::new(container().style(style)));
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    // Where the frame puts the host's layer, and what it chains through.
+    let mut update = |arena: &mut UiRuntime| {
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        let frame = arena
+            .build_render_frame()
+            .expect("the scene compiles")
+            .expect("something changed");
+        let binding = arena.render_system.binding(node);
+        let instance = frame
+            .built
+            .layer_instances
+            .iter()
+            .find(|instance| Some(instance.source) == binding.layer)
+            .expect("the layer is placed");
+        let at = frame.built.layers[instance.layer.0].content_bounds.min;
+        arena.finish_render_frame(&frame);
+        (at, wrapper_chain(arena, node))
+    };
+    let (at, chain) = update(&mut arena);
+    let origin = arena.node(node).unwrap().layout.origin();
+    assert_ne!(origin, Point::zero(), "the margin moves the layout root");
+    let layer = arena.render_system.binding(node).layer.unwrap();
+    assert_eq!((at, chain.as_slice()), (origin, [layer].as_slice()));
+
+    arena.set_widget_state_flag(node, WidgetState::PRESSED, true);
+    let (at, chain) = update(&mut arena);
+    assert_eq!(chain, [layer]);
+    assert_eq!(at, origin + Point::new(0.0, 4.0));
+    assert_eq!(
+        style_transform(&arena, node),
+        Some(Affine::translate(0.0, 4.0)),
+        "the value leaves the layout position out"
+    );
+
+    arena.set_widget_state_flag(node, WidgetState::HOVERED, true);
+    let (at, chain) = update(&mut arena);
+    let clip = arena.render_system.binding(node).clip.expect("hover clips");
+    assert_eq!(chain, [clip, layer]);
+    assert_eq!(at, origin + Point::new(0.0, 4.0));
+
+    arena.set_widget_state_flag(node, WidgetState::PRESSED, false);
+    let (at, chain) = update(&mut arena);
+    assert_eq!(style_transform(&arena, node), None);
+    assert_eq!((at, chain.as_slice()), (origin, [clip, layer].as_slice()));
+}
+
 /// A looping rotation is the spinner case: it keeps the loop running, and
 /// every frame of it is a transform on the frame properties -- no layout, no
 /// repaint.
@@ -3206,17 +3437,11 @@ fn a_looping_rotation_spins_on_frame_properties_alone() {
     assert_eq!(rotation(&arena, node), 0.0);
     let layout_passes = arena.stats.layout_passes;
     let repaint_passes = arena.stats.repaint_passes;
-    let transform_node = arena.render_system.binding(node).transform;
 
     assert!(arena.tick_style_animations(Duration::from_millis(250)));
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
     assert!((rotation(&arena, node) - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
-    let quarter = arena
-        .render_system
-        .properties
-        .transform(transform_node)
-        .expect("the rotation reaches the frame properties")
-        .value;
+    let quarter = style_transform(&arena, node).expect("the rotation reaches the frame properties");
 
     // A whole turn later it is back where it was -- nothing to report for the
     // frame -- and still going.
@@ -3224,12 +3449,7 @@ fn a_looping_rotation_spins_on_frame_properties_alone() {
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
     assert!((rotation(&arena, node) - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
     assert!(arena.is_animating());
-    let again = arena
-        .render_system
-        .properties
-        .transform(transform_node)
-        .unwrap()
-        .value;
+    let again = style_transform(&arena, node).unwrap();
     let coefficients = |a: Affine| [a.xx, a.yx, a.xy, a.yy, a.dx, a.dy];
     assert!(
         coefficients(quarter)

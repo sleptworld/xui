@@ -8,6 +8,7 @@ pub struct InteractionProperties {
     pub focus: FocusProperties,
     pub focus_handle: Option<FocusHandle>,
     pub scroll_controller: Option<ScrollController>,
+    pub size_observer: Option<crate::size::SizeObserver>,
     pub accessibility: AccessibilityProperties,
     pub shortcuts: Vec<ShortcutBinding>,
 }

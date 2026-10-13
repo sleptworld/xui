@@ -26,6 +26,10 @@ pub(crate) struct InteractionSystem {
     /// Index of nodes with a bound scroll controller, so publishing metrics
     /// after layout visits only those instead of every interaction node.
     scroll_controllers: SparseSecondaryMap<NodeId, ()>,
+    size_observers: SparseSecondaryMap<NodeId, ()>,
+    /// Detachment notifications wait until commit finishes, so finishing the
+    /// current render cannot consume their scheduled update.
+    detached_size_observers: Vec<crate::size::SizeObserver>,
     /// Handed out by [`InteractionSystem::handlers`] for nodes that registered
     /// none. Owned rather than a `static` because `EventHandlers` holds `Rc`
     /// callbacks and so is not `Sync`; it borrows from `&self` instead, which
@@ -42,6 +46,8 @@ impl InteractionSystem {
             clamped_scrolls: Vec::new(),
             nodes: SparseSecondaryMap::new(),
             scroll_controllers: SparseSecondaryMap::new(),
+            size_observers: SparseSecondaryMap::new(),
+            detached_size_observers: Vec::new(),
             no_handlers: EventHandlers::EMPTY,
         }
     }
@@ -66,6 +72,19 @@ impl InteractionSystem {
 
     pub fn scroll_controller_nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.scroll_controllers.keys()
+    }
+
+    pub fn size_observers(&self) -> impl Iterator<Item = (NodeId, &crate::size::SizeObserver)> {
+        self.size_observers.keys().map(|id| {
+            let observer = self.nodes[id].properties.size_observer.as_ref().unwrap();
+            (id, observer)
+        })
+    }
+
+    pub fn notify_detached_size_observers(&mut self) {
+        for observer in self.detached_size_observers.drain(..) {
+            observer.notify();
+        }
     }
 
     /// Records that layout clamped `node` from `before` to `after`.
@@ -101,8 +120,20 @@ impl InteractionSystem {
         let old = self.nodes.remove(id);
         if let Some(old) = old.as_ref() {
             unbind_handles(id, &old.properties);
+            // Recommitting the same subscription must preserve its last size.
+            let next = interaction
+                .as_ref()
+                .and_then(|next| next.properties.size_observer.as_ref());
+            if old.properties.size_observer.as_ref() != next {
+                if let Some(observer) = old.properties.size_observer.as_ref() {
+                    if observer.unbind(id) {
+                        self.detached_size_observers.push(observer.clone());
+                    }
+                }
+            }
         }
         self.scroll_controllers.remove(id);
+        self.size_observers.remove(id);
 
         // Dropping the old node drops its handlers; there is no store to keep
         // in step, so no `update_set`/`clear_set` pair to get wrong.
@@ -112,6 +143,11 @@ impl InteractionSystem {
 
         if let Some(handle) = interaction.properties.focus_handle.as_ref() {
             handle.bind(id);
+        }
+
+        if let Some(observer) = interaction.properties.size_observer.as_ref() {
+            observer.bind(id);
+            self.size_observers.insert(id, ());
         }
         if let Some(controller) = interaction.properties.scroll_controller.as_ref() {
             controller.bind(id, self.scroll_requests.clone());
@@ -130,9 +166,15 @@ impl InteractionSystem {
         self.event_state.clear_node(id);
         self.focus.clear_node(id);
         self.scroll_controllers.remove(id);
+        self.size_observers.remove(id);
         self.clamped_scrolls.retain(|scroll| scroll.node != id);
         if let Some(node) = self.nodes.remove(id) {
             unbind_handles(id, &node.properties);
+            if let Some(observer) = node.properties.size_observer.as_ref() {
+                if observer.unbind(id) {
+                    self.detached_size_observers.push(observer.clone());
+                }
+            }
         }
     }
 }
@@ -149,5 +191,13 @@ fn unbind_handles(id: NodeId, properties: &InteractionProperties) {
 impl Default for InteractionSystem {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for InteractionSystem {
+    fn drop(&mut self) {
+        for (id, observer) in self.size_observers() {
+            observer.unbind(id);
+        }
     }
 }

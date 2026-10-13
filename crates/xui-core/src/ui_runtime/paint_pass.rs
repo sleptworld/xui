@@ -2,8 +2,8 @@
 
 use crate::core::Point;
 use crate::render::{
-    ClipShape, HostRenderBinding, LayerDescriptor, Primitive, RenderTreeWriter, SceneError, Shape,
-    ShapePrimitive,
+    ClipShape, HostRenderBinding, LayerDescriptor, Primitive, RenderNodeId, RenderTreeWriter,
+    SceneError, Shape, ShapePrimitive,
 };
 use crate::text::TextHost;
 use crate::ui_runtime::scroll::{scrollbar_parts, should_paint_scrollbar};
@@ -31,8 +31,8 @@ impl UiRuntime {
         if work.intersects(HostWorkFlags::SCENE) {
             self.sync_host_render_node(id)?;
         }
-        // Independent of the scene sync: the transform node a binding writes
-        // to is created with the host and never replaced.
+        // Independent of the scene sync: the transform is a frame property on
+        // the host's layout root, a node the scene sync never replaces.
         if work.intersects(HostWorkFlags::SYNC_TRANSFORM) {
             self.sync_effective_transform(id);
         }
@@ -192,24 +192,13 @@ impl UiRuntime {
                     .map(|host_child| self.render_system.binding(*host_child).root));
 
             if !children_match {
-                let current = self
-                    .render_system
+                let roots: Vec<_> = host_children
+                    .iter()
+                    .map(|host_child| self.render_system.binding(*host_child).root)
+                    .collect();
+                self.render_system
                     .scene
-                    .children(children_binding)?
-                    .to_vec();
-
-                for child_root in current {
-                    self.render_system.scene.detach(child_root)?;
-                }
-
-                for host_child in &host_children {
-                    let child_root = self.render_system.binding(*host_child).root;
-
-                    self.render_system.scene.detach(child_root)?;
-                    self.render_system
-                        .scene
-                        .append_child(children_binding, child_root)?;
-                }
+                    .set_children(children_binding, &roots)?;
             }
         }
 
@@ -233,15 +222,17 @@ impl UiRuntime {
     /// Re-derives `id`'s paint transform. Only the render sync calls this,
     /// for nodes marked `SYNC_TRANSFORM`, so it runs at most once a frame
     /// and always sees the settled style, anchor offset, and size.
+    ///
+    /// It is a frame property on the host's layout root, which the frame
+    /// builder composes onto the layout position, so the value leaves the
+    /// position out and a layout move does not touch it.
     fn sync_effective_transform(&mut self, id: NodeId) {
         self.stats.transform_syncs += 1;
-        let binding = self.render_system.binding(id);
+        let root = self.render_system.binding(id).root;
         let style = self.style_system.effective(id).transform;
         let offset = self.anchor_offset(id);
         if style == xui_interface::TransformStyle::IDENTITY && offset == Point::zero() {
-            self.render_system
-                .properties
-                .clear_transform(binding.transform);
+            self.render_system.properties.clear_transform(root);
             return;
         }
         let size = self.layout_tree.node(id).layout.size();
@@ -250,9 +241,28 @@ impl UiRuntime {
         let transform = style
             .to_affine(size)
             .then(Affine::translate(offset.x, offset.y));
-        self.render_system
-            .properties
-            .set_transform(binding.transform, transform);
+        self.render_system.properties.set_transform(root, transform);
+    }
+
+    /// Chains `root -> [clip] -> [layer] -> contents` from `binding` after a
+    /// wrapper was added or removed, first unlinking the wrappers in `old`,
+    /// the ones the chain held before.
+    fn relink_wrappers(
+        &mut self,
+        binding: &HostRenderBinding,
+        old: &[Option<RenderNodeId>],
+    ) -> Result<(), SceneError> {
+        let scene = &mut self.render_system.scene;
+        scene.set_child(binding.root, None)?;
+        for wrapper in old.iter().flatten() {
+            scene.set_child(*wrapper, None)?;
+        }
+        let mut child = binding.contents;
+        for wrapper in [binding.layer, binding.clip].into_iter().flatten() {
+            scene.set_child(wrapper, Some(child))?;
+            child = wrapper;
+        }
+        scene.set_child(binding.root, Some(child))
     }
 
     fn update_wrappers(
@@ -299,31 +309,7 @@ impl UiRuntime {
             return Ok(());
         }
 
-        // Break the old transform -> clip -> layer -> contents chain. The
-        // layout root remains permanently attached to the style transform.
-        self.render_system
-            .scene
-            .set_child(binding.transform, None)?;
-        if let Some(clip) = old_clip {
-            self.render_system.scene.set_child(clip, None)?;
-        }
-        if let Some(layer) = old_layer {
-            self.render_system.scene.set_child(layer, None)?;
-        }
-
-        // Rebuild the wrapper chain from inside out.
-        let mut child = binding.contents;
-        if let Some(layer) = binding.layer {
-            self.render_system.scene.set_child(layer, Some(child))?;
-            child = layer;
-        }
-        if let Some(clip) = binding.clip {
-            self.render_system.scene.set_child(clip, Some(child))?;
-            child = clip;
-        }
-        self.render_system
-            .scene
-            .set_child(binding.transform, Some(child))?;
+        self.relink_wrappers(binding, &[old_clip, old_layer])?;
 
         // Drop binding references before removing obsolete wrapper subtrees.
         let stored = self.render_system.binding_mut(id);

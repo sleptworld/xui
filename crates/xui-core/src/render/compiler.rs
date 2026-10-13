@@ -5,8 +5,10 @@ use slotmap::{SecondaryMap, SlotMap};
 use super::{
     CompiledClip, CompiledClipId, CompiledItemSpan, CompiledPicture, CompiledPictureItem,
     CompiledPrimitive, CompiledScene, CompiledSpatialNode, ContentVersion, DirtySnapshot,
-    LayerCacheKey, LayerDescriptor, PictureId, PrimitiveId, RenderDirty, RenderNodeId,
-    RenderNodeKind, RenderScene, SceneError, SpatialNodeId, render_graph::BuiltLayerProgram,
+    LayerCacheKey, LayerDescriptor, NodeItemLayout, PictureId, RenderDirty, RenderNodeId,
+    RenderNodeKind, RenderScene, SceneError, SpatialNodeId,
+    compiled_scene::{CompiledEntity, CompiledNode},
+    render_graph::BuiltLayerProgram,
 };
 use xui_interface::{Affine, core::Bounds};
 
@@ -87,6 +89,12 @@ impl SceneCompiler {
         snapshot: &DirtySnapshot,
     ) -> Result<&'a CompiledScene, SceneCompileError> {
         let needs_initial = self.compiled.is_none();
+        // Before anything else, and even when nothing else changed: a detached
+        // subtree can be removed without dirtying the scene, and the log is
+        // cleared once the frame is acknowledged.
+        if let Some(compiled) = self.compiled.as_mut() {
+            drop_removed_sources(compiled, source.removed_nodes());
+        }
         let compiled_revision = self
             .compiled
             .as_ref()
@@ -111,10 +119,14 @@ impl SceneCompiler {
         // (`EFFECT` covers `cache_key`) or when a subtree is attached
         // (`TOPOLOGY`). Re-walking the whole scene on every paint-only frame
         // costs O(scene) for a check that cannot have changed.
-        if needs_initial
-            || changed
-                .iter()
-                .any(|(_, dirty)| dirty.intersects(RenderDirty::TOPOLOGY | RenderDirty::EFFECT))
+        // With fewer than two keyed layers in the whole scene there is nothing
+        // to collide, which is every scene that does not page.
+        #[cfg(debug_assertions)]
+        if source.may_have_duplicate_cache_keys()
+            && (needs_initial
+                || changed.iter().any(|(_, dirty)| {
+                    dirty.intersects(RenderDirty::TOPOLOGY | RenderDirty::EFFECT)
+                }))
         {
             validate_explicit_cache_keys(source)?;
         }
@@ -125,17 +137,13 @@ impl SceneCompiler {
             });
 
         if structural {
-            // Taken rather than cloned: a deep copy of every SlotMap and
-            // source index costs O(scene) on each structural frame.
+            // Taken rather than cloned: a deep copy of every entity map costs
+            // O(scene) on each structural frame.
             let mut next = match self.compiled.take() {
                 Some(current) => current,
                 None => empty_compiled_scene(source),
             };
-            let outcome = if needs_initial {
-                rebuild_structure(&mut next, source)
-            } else {
-                rebuild_structural_branches(&mut next, source, &changed)
-            };
+            let outcome = rebuild_dirty_paths(&mut next, source);
             // A failed rebuild leaves `next` half-written, so it is dropped
             // instead of retained; `self.compiled` stays `None` and the next
             // call starts from a clean full rebuild.
@@ -195,72 +203,43 @@ fn requires_structural_rebuild(
     };
     match &node.kind {
         RenderNodeKind::Group(_) => false,
-        RenderNodeKind::Primitive(_) => !compiled.primitive_by_source.contains_key(&id),
-        RenderNodeKind::Transform(_) => !compiled.spatial_by_source.contains_key(&id),
-        RenderNodeKind::Clip(_) => !compiled.clip_by_source.contains_key(&id),
+        RenderNodeKind::Primitive(_) => compiled.primitive_for_source(id).is_none(),
+        RenderNodeKind::Transform(_) => compiled.spatial_for_source(id).is_none(),
+        RenderNodeKind::Clip(_) => compiled.clip_for_source(id).is_none(),
         RenderNodeKind::Layer(layer) => {
-            layer.descriptor.requires_isolation() != compiled.picture_by_source.contains_key(&id)
+            layer.descriptor.requires_isolation() != compiled.picture_for_source(id).is_some()
         }
     }
 }
 
-/// Re-derives a primitive's paint bounds in `ancestor`'s local space by
-/// composing the local transforms between them.
-fn bounds_in_spatial(
-    compiled: &CompiledScene,
-    primitive: &CompiledPrimitive,
-    ancestor: SpatialNodeId,
-) -> Option<Bounds> {
-    let mut transform = Affine::IDENTITY;
-    let mut current = primitive.spatial;
-    while current != ancestor {
-        let node = compiled.spatial_nodes.get(current)?;
-        transform = transform.then(node.local_transform);
-        current = node.parent?;
-    }
-    Some(transform.transform_bounds(primitive.primitive.paint_bounds()))
-}
-
-/// Refreshes span bounds after a non-structural geometry update.
+/// Widens the subtree bounds of `spatial` and its ancestors to cover
+/// `bounds`, given in `spatial`'s local space, after an in-place geometry
+/// update moved something under it.
 ///
-/// Such an update moves primitives and spatial nodes without changing the
-/// picture's item order, so every span's range stays valid and only the unions
-/// need redoing. Clips are deliberately not re-applied: ignoring them yields a
-/// bound at least as large as the original, which can only cull less.
-fn refresh_span_bounds(compiled: &mut CompiledScene) {
-    let picture_ids: Vec<_> = compiled
-        .pictures
-        .iter()
-        .filter(|(_, picture)| !picture.spans.is_empty())
-        .map(|(id, _)| id)
-        .collect();
-
-    for picture_id in picture_ids {
-        let mut spans = std::mem::take(&mut compiled.pictures[picture_id].spans);
-        let items = std::mem::take(&mut compiled.pictures[picture_id].items);
-        for span in &mut spans {
-            let mut bounds: Option<Bounds> = None;
-            for item in &items[span.start as usize..span.end as usize] {
-                let CompiledPictureItem::Primitive(primitive_id) = item else {
-                    continue;
-                };
-                let Some(primitive) = compiled.primitives.get(*primitive_id) else {
-                    continue;
-                };
-                let Some(local) = bounds_in_spatial(compiled, primitive, span.spatial) else {
-                    continue;
-                };
-                bounds = Some(match bounds {
-                    Some(bounds) => bounds.union(local),
-                    None => local,
-                });
-            }
-            if let Some(bounds) = bounds {
-                span.local_bounds = bounds;
-            }
-        }
-        compiled.pictures[picture_id].spans = spans;
-        compiled.pictures[picture_id].items = items;
+/// It only ever grows them, which is O(depth) where recomputing them exactly
+/// would be O(scene): the outermost spans cover everything. Bounds that are
+/// too large only cost culling precision, and the next walk through the node
+/// records them exactly again. Clips are not re-applied either, for the same
+/// reason.
+fn grow_subtree_bounds(
+    compiled: &mut CompiledScene,
+    mut spatial: Option<SpatialNodeId>,
+    mut bounds: Bounds,
+) {
+    while let Some(id) = spatial {
+        // An entity kept for a detached subtree may sit under a spatial node
+        // that has been removed since; it is placed nowhere, so nothing grows.
+        let Some(node) = compiled.spatial_nodes.get_mut(id) else {
+            return;
+        };
+        // Unbounded, or empty and so not holding what moved: either way the
+        // ancestors are left as they are.
+        let Some(subtree) = &mut node.subtree_bounds else {
+            return;
+        };
+        *subtree = subtree.union(bounds);
+        bounds = node.local_transform.transform_bounds(bounds);
+        spatial = node.parent;
     }
 }
 
@@ -269,54 +248,51 @@ fn apply_non_structural_updates(
     source: &RenderScene,
     changed: &[(RenderNodeId, RenderDirty)],
 ) -> Result<(), SceneCompileError> {
-    let mut geometry_moved = false;
     for (id, dirty) in changed {
         let node = source.node(*id).ok_or(SceneError::MissingNode(*id))?;
+        // Anything but a composite can move the bounds the node's walk
+        // recorded for it and its ancestors.
+        if !(*dirty - RenderDirty::COMPOSITE).is_empty() {
+            invalidate_layout_bounds(compiled, source, *id);
+        }
         match &node.kind {
             RenderNodeKind::Group(_) => {}
             RenderNodeKind::Primitive(value) => {
-                let primitive = compiled
-                    .primitive_by_source
-                    .get(id)
-                    .and_then(|key| compiled.primitives.get_mut(*key))
+                let key = compiled
+                    .primitive_for_source(*id)
                     .ok_or(SceneError::MissingNode(*id))?;
+                let primitive = &mut compiled.primitives[key];
                 if dirty.intersects(RenderDirty::GEOMETRY | RenderDirty::PAINT) {
                     primitive.primitive = value.primitive.clone();
                     primitive.content_version = node.epochs.content_version();
-                    geometry_moved |= dirty.contains(RenderDirty::GEOMETRY);
                 }
             }
             RenderNodeKind::Transform(value) => {
-                let spatial = compiled
-                    .spatial_by_source
-                    .get(id)
-                    .and_then(|key| compiled.spatial_nodes.get_mut(*key))
+                let key = compiled
+                    .spatial_for_source(*id)
                     .ok_or(SceneError::MissingNode(*id))?;
+                let spatial = &mut compiled.spatial_nodes[key];
                 if dirty.contains(RenderDirty::GEOMETRY) {
                     spatial.local_transform = value.transform;
                     spatial.content_version = node.epochs.content_version();
-                    geometry_moved = true;
+                    compiled.spatial_token = super::fresh_token();
                 }
             }
             RenderNodeKind::Clip(value) => {
-                let clip = compiled
-                    .clip_by_source
-                    .get(id)
-                    .and_then(|key| compiled.clips.get_mut(*key))
+                let key = compiled
+                    .clip_for_source(*id)
                     .ok_or(SceneError::MissingNode(*id))?;
+                let clip = &mut compiled.clips[key];
                 if dirty.intersects(RenderDirty::CLIP | RenderDirty::GEOMETRY) {
                     clip.clip = value.clip.clone();
                     clip.content_version = node.epochs.content_version();
                 }
             }
             RenderNodeKind::Layer(value) => {
-                if let Some(picture_id) = compiled.picture_by_source.get(id).copied() {
+                if let Some(picture_id) = compiled.picture_for_source(*id) {
                     let render_program =
                         reusable_render_program(compiled, picture_id, *id, &value.descriptor)?;
-                    let picture = compiled
-                        .pictures
-                        .get_mut(picture_id)
-                        .ok_or(SceneError::MissingNode(*id))?;
+                    let picture = &mut compiled.pictures[picture_id];
                     picture.descriptor = value.descriptor.clone();
                     picture.render_program = Some(render_program);
                     picture.content_version = node.epochs.content_version();
@@ -326,11 +302,28 @@ fn apply_non_structural_updates(
             }
         }
     }
-    // Span bounds are derived from primitive geometry and local transforms, so
-    // a geometry-only update would otherwise leave them stale and let the
-    // builder cull content that has moved back into view.
-    if geometry_moved {
-        refresh_span_bounds(compiled);
+    // Subtree bounds are derived from primitive geometry and local transforms,
+    // so an update would otherwise leave them stale and let the builder cull
+    // content that has moved back into view. Grown only once every transform
+    // is updated, so each path up is composed with the new ones.
+    for (id, dirty) in changed {
+        match compiled.entity(*id) {
+            CompiledEntity::Primitive(key)
+                if dirty.intersects(RenderDirty::GEOMETRY | RenderDirty::PAINT) =>
+            {
+                let primitive = &compiled.primitives[key];
+                let (spatial, bounds) = (primitive.spatial, primitive.primitive.paint_bounds());
+                grow_subtree_bounds(compiled, Some(spatial), bounds);
+            }
+            CompiledEntity::Spatial(key) if dirty.contains(RenderDirty::GEOMETRY) => {
+                let spatial = compiled.spatial_nodes[key];
+                if let Some(bounds) = spatial.subtree_bounds {
+                    let bounds = spatial.local_transform.transform_bounds(bounds);
+                    grow_subtree_bounds(compiled, spatial.parent, bounds);
+                }
+            }
+            _ => {}
+        }
     }
     Ok(())
 }
@@ -341,8 +334,10 @@ fn empty_compiled_scene(source: &RenderScene) -> CompiledScene {
     let root_spatial = spatial_nodes.insert(CompiledSpatialNode {
         source: source.root(),
         parent: None,
+        depth: 0,
         local_transform: Affine::IDENTITY,
         content_version: ContentVersion::default(),
+        subtree_bounds: None,
     });
     let root_picture = pictures.insert(CompiledPicture {
         source: source.root(),
@@ -357,6 +352,14 @@ fn empty_compiled_scene(source: &RenderScene) -> CompiledScene {
         effect_version: 0,
         is_root: true,
     });
+    let mut nodes = SecondaryMap::new();
+    nodes.insert(
+        source.root(),
+        CompiledNode {
+            layout: None,
+            entity: CompiledEntity::Picture(root_picture),
+        },
+    );
     CompiledScene {
         root_picture,
         root_spatial,
@@ -364,25 +367,13 @@ fn empty_compiled_scene(source: &RenderScene) -> CompiledScene {
         primitives: SlotMap::with_key(),
         spatial_nodes,
         clips: SlotMap::with_key(),
-        picture_by_source: [(source.root(), root_picture)].into_iter().collect(),
-        primitive_by_source: Default::default(),
-        spatial_by_source: Default::default(),
-        clip_by_source: Default::default(),
-        source_epoch: Default::default(),
-        layer_isolation: Default::default(),
-        metadata_epoch: 0,
+        nodes,
+        spatial_token: super::fresh_token(),
+        walk_generation: 0,
         scene_revision: 0,
+        spare_items: Vec::new(),
+        spare_spans: Vec::new(),
     }
-}
-
-/// Mark set for the compiled-graph sweep. Every id here is a slotmap key, so
-/// `SecondaryMap` indexes it directly instead of hashing it once per entity.
-#[derive(Default)]
-struct LiveCompiledIds {
-    pictures: SecondaryMap<PictureId, ()>,
-    primitives: SecondaryMap<PrimitiveId, ()>,
-    spatials: SecondaryMap<SpatialNodeId, ()>,
-    clips: SecondaryMap<CompiledClipId, ()>,
 }
 
 /// Minimum number of items a span must cover to earn its per-frame bounds
@@ -420,13 +411,38 @@ impl WalkOutput {
 /// Drops spans too small to pay for themselves, then puts the rest in
 /// pre-order so the builder meets an enclosing span before the ones nested in
 /// it. Both steps are safe to skip: fewer spans only means coarser culling.
-fn finalize_picture_spans(picture: &mut CompiledPicture) {
+///
+/// Nested transforms with nothing between them cover the same items. The
+/// outer one goes first: it rejects with a spatial node fewer to resolve, and
+/// when a dynamic transform on the inner one leaves it stale, the builder
+/// moves on to the inner one, which stays valid.
+fn finalize_picture_spans(
+    picture: &mut CompiledPicture,
+    spatial_nodes: &SlotMap<SpatialNodeId, CompiledSpatialNode>,
+) {
     picture
         .spans
         .retain(|span| span.end - span.start >= MIN_SPAN_ITEMS);
-    picture
-        .spans
-        .sort_unstable_by_key(|span| (span.start, std::cmp::Reverse(span.end)));
+    let spans = &mut picture.spans;
+    spans.sort_unstable_by_key(|span| (span.start, std::cmp::Reverse(span.end)));
+    // Spans over the same items now sit together; only those few need their
+    // spatial nodes looked up to order them.
+    let mut group = 0;
+    while group < spans.len() {
+        let same = |span: &CompiledItemSpan| {
+            span.start == spans[group].start && span.end == spans[group].end
+        };
+        let end = group
+            + 1
+            + spans[group + 1..]
+                .iter()
+                .take_while(|span| same(span))
+                .count();
+        if end - group > 1 {
+            spans[group..end].sort_unstable_by_key(|span| spatial_nodes[span.spatial].depth);
+        }
+        group = end;
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -436,47 +452,27 @@ struct WalkContext {
     clip: Option<CompiledClipId>,
 }
 
-fn rebuild_structure(
+/// A structural rebuild that walks only the paths leading to a change.
+///
+/// A subtree with nothing dirty in it, still under the parent the last walk
+/// placed it in, keeps its items: they are copied out of the previous
+/// contents of its picture instead of being walked again. On the first
+/// compile nothing has been placed, so the whole scene is walked. Entities of
+/// removed nodes are dropped from the scene's removal log (see
+/// [`SceneCompiler::compile`]) rather than by a sweep, so the cost follows
+/// what changed, not the size of the scene. Entities of a subtree that is
+/// detached or hidden but not removed stay until it is removed or walked again.
+fn rebuild_dirty_paths(
     compiled: &mut CompiledScene,
     source: &RenderScene,
 ) -> Result<(), SceneCompileError> {
-    let mut live = LiveCompiledIds::default();
-    live.pictures.insert(compiled.root_picture, ());
-    live.spatials.insert(compiled.root_spatial, ());
-    refresh_source_metadata(compiled, source)?;
-
-    let root_node = source
-        .node(source.root())
-        .ok_or(SceneError::MissingNode(source.root()))?;
-    *compiled
-        .spatial_nodes
-        .get_mut(compiled.root_spatial)
-        .expect("root spatial is retained") = CompiledSpatialNode {
-        source: source.root(),
-        parent: None,
-        local_transform: Affine::IDENTITY,
-        content_version: ContentVersion::default(),
+    let root_picture = &mut compiled.pictures[compiled.root_picture];
+    let old = OldItems {
+        items: std::mem::take(&mut root_picture.items),
+        spans: std::mem::take(&mut root_picture.spans),
     };
-    *compiled
-        .pictures
-        .get_mut(compiled.root_picture)
-        .expect("root picture is retained") = CompiledPicture {
-        source: source.root(),
-        items: Vec::new(),
-        spans: Vec::new(),
-        descriptor: LayerDescriptor::default(),
-        render_program: None,
-        placement_spatial: compiled.root_spatial,
-        placement_clip: None,
-        content_version: root_node.epochs.content_version(),
-        composite_version: root_node.epochs.composite,
-        effect_version: root_node.epochs.effect,
-        is_root: true,
-    };
-    compiled
-        .picture_by_source
-        .insert(source.root(), compiled.root_picture);
-
+    reset_root(compiled, source)?;
+    let root_in_place = compiled.layout(source.root()).is_some();
     walk_node(
         compiled,
         source,
@@ -486,164 +482,171 @@ fn rebuild_structure(
             spatial: compiled.root_spatial,
             clip: None,
         },
-        &mut live,
+        Placement {
+            parent: None,
+            parent_start: 0,
+            old_start: root_in_place.then_some(0),
+        },
+        &old,
     )?;
-    finalize_picture_spans(&mut compiled.pictures[compiled.root_picture]);
-    retain_live(compiled, &live);
+    finalize_picture_spans(
+        &mut compiled.pictures[compiled.root_picture],
+        &compiled.spatial_nodes,
+    );
+    old.recycle(compiled);
     Ok(())
 }
 
-fn refresh_source_metadata(
-    compiled: &mut CompiledScene,
-    source: &RenderScene,
-) -> Result<(), SceneCompileError> {
-    // Bumping the epoch retires every previous stamp, so neither map has to be
-    // cleared (and regrown) on each structural frame.
-    compiled.metadata_epoch = compiled.metadata_epoch.wrapping_add(1);
-    let epoch = compiled.metadata_epoch;
-    for (id, node) in source.depth_first(source.root())? {
-        compiled.source_epoch.insert(id, epoch);
-        if let RenderNodeKind::Layer(layer) = &node.kind {
-            compiled
-                .layer_isolation
-                .insert(id, (epoch, layer.descriptor.requires_isolation()));
-        }
-    }
+/// Empties the root picture into fresh buffers and refreshes its versions.
+fn reset_root(compiled: &mut CompiledScene, source: &RenderScene) -> Result<(), SceneCompileError> {
+    compiled.walk_generation += 1;
+    let root_node = source
+        .node(source.root())
+        .ok_or(SceneError::MissingNode(source.root()))?;
+    let (items, spans) = compiled.spare_buffers();
+    let root = &mut compiled.pictures[compiled.root_picture];
+    root.items = items;
+    root.spans = spans;
+    root.content_version = root_node.epochs.content_version();
+    root.composite_version = root_node.epochs.composite;
+    root.effect_version = root_node.epochs.effect;
     Ok(())
 }
 
-fn rebuild_structural_branches(
-    compiled: &mut CompiledScene,
-    source: &RenderScene,
-    changed: &[(RenderNodeId, RenderDirty)],
-) -> Result<(), SceneCompileError> {
-    let mut branch_sources = Vec::new();
-    for (id, dirty) in changed {
-        let branch = structural_branch_source(compiled, source, *id, *dirty);
-
-        // ROOT
-        let Some(branch) = branch else {
-            return rebuild_structure(compiled, source);
-        };
-
-        if branch_sources
-            .iter()
-            .any(|existing| is_source_ancestor(source, *existing, branch))
-        {
+/// Drops the compiled entities built for nodes the scene has removed.
+fn drop_removed_sources(compiled: &mut CompiledScene, removed: &[RenderNodeId]) {
+    for id in removed {
+        let Some(node) = compiled.nodes.remove(*id) else {
             continue;
+        };
+        match node.entity {
+            CompiledEntity::None => {}
+            CompiledEntity::Primitive(key) => {
+                compiled.primitives.remove(key);
+            }
+            CompiledEntity::Spatial(key) => {
+                compiled.spatial_nodes.remove(key);
+            }
+            CompiledEntity::Clip(key) => {
+                compiled.clips.remove(key);
+            }
+            CompiledEntity::Picture(key) => {
+                compiled.pictures.remove(key);
+            }
         }
-        branch_sources.retain(|existing| !is_source_ancestor(source, branch, *existing));
-        branch_sources.push(branch);
     }
-
-    refresh_source_metadata(compiled, source)?;
-    for source_id in branch_sources {
-        rebuild_picture_contents(compiled, source, source_id)?;
-    }
-    retain_picture_graph(compiled);
-    Ok(())
 }
 
-fn structural_branch_source(
-    compiled: &CompiledScene,
-    source: &RenderScene,
-    id: RenderNodeId,
-    dirty: RenderDirty,
-) -> Option<RenderNodeId> {
-    let Some(node) = source.node(id) else {
-        return None;
-    };
-    let can_rebuild_self = !dirty.contains(RenderDirty::VISIBILITY)
-        && dirty.intersects(RenderDirty::TOPOLOGY | RenderDirty::EFFECT)
-        && matches!(
-            &node.kind,
-            RenderNodeKind::Layer(layer)
-                if layer.descriptor.requires_isolation()
-                    && compiled.picture_by_source.contains_key(&id)
-        );
-    let mut current = if can_rebuild_self {
-        Some(id)
-    } else {
-        node.parent
-    };
-    while let Some(candidate) = current {
-        // The root picture is synthetic and its source is the root Group, not an
-        // isolated Layer. Returning it as a branch would send it to
-        // `rebuild_picture_contents`, which only accepts isolated layers.
-        // Falling back to `rebuild_structure` also refreshes the retained root
-        // spatial and picture state.
-        if candidate == source.root() {
-            return None;
-        }
-        if compiled.picture_by_source.contains_key(&candidate) {
-            return Some(candidate);
-        }
-        current = source.node(candidate).and_then(|node| node.parent);
-    }
-
-    None
-}
-
-fn is_source_ancestor(
-    source: &RenderScene,
-    ancestor: RenderNodeId,
-    descendant: RenderNodeId,
-) -> bool {
-    let mut current = Some(descendant);
+/// Marks `id` and its ancestors as having moved geometry since they were
+/// walked, so none of them is copied with its recorded bounds.
+///
+/// Stops at the first ancestor already marked: a walk validates a whole
+/// subtree at once, so an invalid node never sits under a valid one.
+fn invalidate_layout_bounds(compiled: &mut CompiledScene, source: &RenderScene, id: RenderNodeId) {
+    let mut current = Some(id);
     while let Some(id) = current {
-        if id == ancestor {
-            return true;
+        match compiled
+            .nodes
+            .get_mut(id)
+            .and_then(|node| node.layout.as_mut())
+        {
+            Some(layout) if layout.bounds_valid => layout.bounds_valid = false,
+            _ => break,
         }
         current = source.node(id).and_then(|node| node.parent);
     }
-    false
 }
 
-fn rebuild_picture_contents(
-    compiled: &mut CompiledScene,
-    source: &RenderScene,
-    source_id: RenderNodeId,
-) -> Result<(), SceneCompileError> {
-    let picture_id = compiled
-        .picture_by_source
-        .get(&source_id)
-        .copied()
-        .ok_or(SceneError::MissingNode(source_id))?;
-    let node = source
-        .node(source_id)
-        .ok_or(SceneError::MissingNode(source_id))?;
-    let RenderNodeKind::Layer(layer) = &node.kind else {
-        return Err(SceneError::WrongNodeKind {
-            node: source_id,
-            expected: "isolated layer",
+/// A picture's items and spans as the previous walk left them.
+#[derive(Default)]
+struct OldItems {
+    items: Vec<CompiledPictureItem>,
+    spans: Vec<CompiledItemSpan>,
+}
+
+impl OldItems {
+    /// Hands the buffers back once the walk is done copying from them, for
+    /// the next walk to fill.
+    fn recycle(self, compiled: &mut CompiledScene) {
+        let Self {
+            mut items,
+            mut spans,
+        } = self;
+        if items.capacity() > 0 {
+            items.clear();
+            compiled.spare_items.push(items);
         }
-        .into());
-    };
-    let render_program =
-        reusable_render_program(compiled, picture_id, source_id, &layer.descriptor)?;
-    let picture = compiled
-        .pictures
-        .get_mut(picture_id)
-        .ok_or(SceneError::MissingNode(source_id))?;
-    picture.items.clear();
-    picture.spans.clear();
-    picture.descriptor = layer.descriptor.clone();
-    picture.render_program = Some(render_program);
-    picture.content_version = node.epochs.content_version();
-    picture.composite_version = node.epochs.composite;
-    picture.effect_version = node.epochs.effect;
-    let context = WalkContext {
-        picture: picture_id,
-        spatial: picture.placement_spatial,
-        clip: None,
-    };
-    let mut branch_live = LiveCompiledIds::default();
-    branch_live.pictures.insert(picture_id, ());
-    if let Some(child) = layer.child {
-        walk_node(compiled, source, child, context, &mut branch_live)?;
+        if spans.capacity() > 0 {
+            spans.clear();
+            compiled.spare_spans.push(spans);
+        }
     }
-    finalize_picture_spans(&mut compiled.pictures[picture_id]);
-    Ok(())
+}
+
+impl CompiledScene {
+    /// Empty item and span buffers for a picture about to be walked.
+    fn spare_buffers(&mut self) -> (Vec<CompiledPictureItem>, Vec<CompiledItemSpan>) {
+        (
+            self.spare_items.pop().unwrap_or_default(),
+            self.spare_spans.pop().unwrap_or_default(),
+        )
+    }
+}
+
+/// Where a node is being placed, and where its items were.
+#[derive(Clone, Copy)]
+struct Placement {
+    parent: Option<RenderNodeId>,
+    /// Index of the parent's first item in the current picture.
+    parent_start: u32,
+    /// Index of the node's first item in the picture's previous items, when
+    /// the node sits where the last walk put it. `None` walks it afresh.
+    old_start: Option<u32>,
+}
+
+/// Copies a clean subtree's previous items, and the spans inside them, to the
+/// end of the picture. Returns `false`, copying nothing, when the recorded
+/// range does not fit the previous items.
+fn copy_previous_items(
+    compiled: &mut CompiledScene,
+    context: WalkContext,
+    old: &OldItems,
+    old_start: u32,
+    count: u32,
+) -> bool {
+    let old_end = old_start + count;
+    let items = &old.items[old_start as usize..old_end as usize];
+
+    let picture = &mut compiled.pictures[context.picture];
+    let new_start = picture.items.len() as u32;
+    picture.items.extend_from_slice(items);
+
+    #[cfg(test)]
+    tests::COPIED_ITEMS.with(|copied| copied.set(copied.get() + items.len()));
+
+    // A span covering exactly this range may belong to an ancestor transform
+    // instead, which is being walked and records its own. The subtree's spans
+    // all sit under spatial nodes deeper than the one it is placed in.
+    let placed_depth = compiled.spatial_nodes[context.spatial].depth;
+    let first = old.spans.partition_point(|span| span.start < old_start);
+    for span in &old.spans[first..] {
+        if span.start >= old_end {
+            break;
+        }
+        let inside = span.end <= old_end
+            && compiled
+                .spatial_nodes
+                .get(span.spatial)
+                .is_some_and(|spatial| spatial.depth > placed_depth);
+        if inside {
+            picture.spans.push(CompiledItemSpan {
+                start: span.start - old_start + new_start,
+                end: span.end - old_start + new_start,
+                ..*span
+            });
+        }
+    }
+    true
 }
 
 fn walk_node(
@@ -651,47 +654,108 @@ fn walk_node(
     source: &RenderScene,
     id: RenderNodeId,
     context: WalkContext,
-    live: &mut LiveCompiledIds,
+    placement: Placement,
+    old: &OldItems,
 ) -> Result<WalkOutput, SceneCompileError> {
     let node = source.node(id).ok_or(SceneError::MissingNode(id))?;
-    if !node.visible {
-        return Ok(WalkOutput::EMPTY);
+    let start = compiled.pictures[context.picture].items.len() as u32;
+    let generation = compiled.walk_generation;
+    let previous = compiled.layout(id).copied();
+    let record = |compiled: &mut CompiledScene, output: WalkOutput| {
+        let count = compiled.pictures[context.picture].items.len() as u32 - start;
+        compiled.node_mut(id).layout = Some(NodeItemLayout {
+            parent: placement.parent,
+            offset: start - placement.parent_start,
+            count,
+            local_bounds: output.local_bounds,
+            boundable: output.boundable,
+            bounds_valid: true,
+            generation,
+            children_generation: generation,
+        });
+        output
+    };
+
+    // Nothing under the node changed since it was walked: its items are still
+    // right, wherever they now land.
+    if let Some(old_start) = placement.old_start
+        && node.subtree_dirty.is_empty()
+        && let Some(previous) = previous.filter(|layout| layout.bounds_valid)
+        && copy_previous_items(compiled, context, old, old_start, previous.count)
+    {
+        compiled.node_mut(id).layout = Some(NodeItemLayout {
+            offset: start - placement.parent_start,
+            generation,
+            ..previous
+        });
+        return Ok(WalkOutput {
+            local_bounds: previous.local_bounds,
+            boundable: previous.boundable,
+        });
     }
+
+    if !node.visible {
+        return Ok(record(compiled, WalkOutput::EMPTY));
+    }
+
+    // Where a child's items were, if both it and this node are where the last
+    // walk left them; a child is then copied or walked in turn. `old_base` is
+    // where this node's items began in the previous items the child is
+    // copied from: its own old start, or 0 inside its own picture.
+    let child_placement = |compiled: &CompiledScene,
+                           child: RenderNodeId,
+                           parent_start: u32,
+                           old_base: Option<u32>| {
+        let old_start = old_base.zip(previous).and_then(|(old_base, previous)| {
+            let child = compiled.layout(child)?;
+            (child.parent == Some(id) && child.generation == previous.children_generation)
+                .then_some(old_base + child.offset)
+        });
+        Placement {
+            parent: Some(id),
+            parent_start,
+            old_start,
+        }
+    };
+    // An entity written with the node's current content still holds it: every
+    // edit of a primitive or clip bumps an epoch, so its clone can be skipped.
+    let content_version = node.epochs.content_version();
 
     let output = match &node.kind {
         RenderNodeKind::Group(group) => {
             let mut output = WalkOutput::EMPTY;
             for child in &group.children {
-                output = output.merge(walk_node(compiled, source, *child, context, live)?);
+                let placement = child_placement(compiled, *child, start, placement.old_start);
+                output = output.merge(walk_node(
+                    compiled, source, *child, context, placement, old,
+                )?);
             }
             output
         }
         RenderNodeKind::Primitive(value) => {
-            let primitive_id = match compiled.primitive_by_source.get(&id).copied() {
-                Some(key) if compiled.primitives.contains_key(key) => key,
+            let primitive_id = match compiled.entity(id) {
+                CompiledEntity::Primitive(key) => {
+                    let primitive = &mut compiled.primitives[key];
+                    if primitive.content_version != content_version {
+                        primitive.primitive = value.primitive.clone();
+                        primitive.content_version = content_version;
+                    }
+                    primitive.spatial = context.spatial;
+                    primitive.clip = context.clip;
+                    key
+                }
                 _ => {
                     let key = compiled.primitives.insert(CompiledPrimitive {
                         source: id,
                         primitive: value.primitive.clone(),
                         spatial: context.spatial,
                         clip: context.clip,
-                        content_version: node.epochs.content_version(),
+                        content_version,
                     });
-                    compiled.primitive_by_source.insert(id, key);
+                    compiled.node_mut(id).entity = CompiledEntity::Primitive(key);
                     key
                 }
             };
-            *compiled
-                .primitives
-                .get_mut(primitive_id)
-                .expect("primitive was retained") = CompiledPrimitive {
-                source: id,
-                primitive: value.primitive.clone(),
-                spatial: context.spatial,
-                clip: context.clip,
-                content_version: node.epochs.content_version(),
-            };
-            live.primitives.insert(primitive_id, ());
             compiled.pictures[context.picture]
                 .items
                 .push(CompiledPictureItem::Primitive(primitive_id));
@@ -701,33 +765,39 @@ fn walk_node(
             }
         }
         RenderNodeKind::Transform(value) => {
-            let spatial_id = match compiled.spatial_by_source.get(&id).copied() {
-                Some(key) if compiled.spatial_nodes.contains_key(key) => key,
+            let spatial = CompiledSpatialNode {
+                source: id,
+                parent: Some(context.spatial),
+                depth: compiled.spatial_nodes[context.spatial].depth + 1,
+                local_transform: value.transform,
+                content_version,
+                subtree_bounds: None,
+            };
+            let spatial_id = match compiled.entity(id) {
+                CompiledEntity::Spatial(key) => {
+                    let old = &compiled.spatial_nodes[key];
+                    if (old.parent, old.local_transform, old.content_version)
+                        != (
+                            spatial.parent,
+                            spatial.local_transform,
+                            spatial.content_version,
+                        )
+                    {
+                        compiled.spatial_token = super::fresh_token();
+                    }
+                    compiled.spatial_nodes[key] = spatial;
+                    key
+                }
                 _ => {
-                    let key = compiled.spatial_nodes.insert(CompiledSpatialNode {
-                        source: id,
-                        parent: Some(context.spatial),
-                        local_transform: value.transform,
-                        content_version: node.epochs.content_version(),
-                    });
-                    compiled.spatial_by_source.insert(id, key);
+                    let key = compiled.spatial_nodes.insert(spatial);
+                    compiled.node_mut(id).entity = CompiledEntity::Spatial(key);
                     key
                 }
             };
-            *compiled
-                .spatial_nodes
-                .get_mut(spatial_id)
-                .expect("spatial node was retained") = CompiledSpatialNode {
-                source: id,
-                parent: Some(context.spatial),
-                local_transform: value.transform,
-                content_version: node.epochs.content_version(),
-            };
-            live.spatials.insert(spatial_id, ());
             let Some(child) = value.child else {
-                return Ok(WalkOutput::EMPTY);
+                return Ok(record(compiled, WalkOutput::EMPTY));
             };
-            let start = compiled.pictures[context.picture].items.len() as u32;
+            let placement = child_placement(compiled, child, start, placement.old_start);
             let inner = walk_node(
                 compiled,
                 source,
@@ -736,20 +806,21 @@ fn walk_node(
                     spatial: spatial_id,
                     ..context
                 },
-                live,
+                placement,
+                old,
             )?;
-            let end = compiled.pictures[context.picture].items.len() as u32;
             // `inner.local_bounds` is already in `spatial_id`'s local space,
-            // which is exactly what the span records.
-            if let Some(local_bounds) = inner.local_bounds.filter(|_| inner.boundable) {
-                compiled.pictures[context.picture]
-                    .spans
-                    .push(CompiledItemSpan {
-                        spatial: spatial_id,
-                        local_bounds,
-                        start,
-                        end,
-                    });
+            // which is exactly what the node records.
+            let subtree_bounds = inner.local_bounds.filter(|_| inner.boundable);
+            compiled.spatial_nodes[spatial_id].subtree_bounds = subtree_bounds;
+            let picture = &mut compiled.pictures[context.picture];
+            let end = picture.items.len() as u32;
+            if subtree_bounds.is_some() {
+                picture.spans.push(CompiledItemSpan {
+                    spatial: spatial_id,
+                    start,
+                    end,
+                });
             }
             WalkOutput {
                 local_bounds: inner
@@ -759,31 +830,33 @@ fn walk_node(
             }
         }
         RenderNodeKind::Clip(value) => {
-            let clip_id = match compiled.clip_by_source.get(&id).copied() {
-                Some(key) if compiled.clips.contains_key(key) => key,
+            let clip_id = match compiled.entity(id) {
+                CompiledEntity::Clip(key) => {
+                    let clip = &mut compiled.clips[key];
+                    if clip.content_version != content_version {
+                        clip.clip = value.clip.clone();
+                        clip.content_version = content_version;
+                    }
+                    clip.parent = context.clip;
+                    clip.spatial = context.spatial;
+                    key
+                }
                 _ => {
                     let key = compiled.clips.insert(CompiledClip {
                         source: id,
                         parent: context.clip,
                         spatial: context.spatial,
                         clip: value.clip.clone(),
-                        content_version: node.epochs.content_version(),
+                        content_version,
                     });
-                    compiled.clip_by_source.insert(id, key);
+                    compiled.node_mut(id).entity = CompiledEntity::Clip(key);
                     key
                 }
             };
-            *compiled.clips.get_mut(clip_id).expect("clip was retained") = CompiledClip {
-                source: id,
-                parent: context.clip,
-                spatial: context.spatial,
-                clip: value.clip.clone(),
-                content_version: node.epochs.content_version(),
-            };
-            live.clips.insert(clip_id, ());
             let Some(child) = value.child else {
-                return Ok(WalkOutput::EMPTY);
+                return Ok(record(compiled, WalkOutput::EMPTY));
             };
+            let placement = child_placement(compiled, child, start, placement.old_start);
             let inner = walk_node(
                 compiled,
                 source,
@@ -792,7 +865,8 @@ fn walk_node(
                     clip: Some(clip_id),
                     ..context
                 },
-                live,
+                placement,
+                old,
             )?;
             // The clip shares the caller's spatial node, so intersecting is a
             // valid tightening of the reported bounds.
@@ -804,60 +878,80 @@ fn walk_node(
             }
         }
         RenderNodeKind::Layer(value) if !value.descriptor.requires_isolation() => {
-            compiled.picture_by_source.remove(&id);
+            // A layer that just lost isolation left its content in its own
+            // picture, so that content is walked rather than copied.
+            let was_isolated = match compiled.entity(id) {
+                CompiledEntity::Picture(picture) => {
+                    compiled.pictures.remove(picture);
+                    compiled.node_mut(id).entity = CompiledEntity::None;
+                    true
+                }
+                _ => false,
+            };
             match value.child {
-                Some(child) => walk_node(compiled, source, child, context, live)?,
+                Some(child) => {
+                    let old_base = placement.old_start.filter(|_| !was_isolated);
+                    let placement = child_placement(compiled, child, start, old_base);
+                    walk_node(compiled, source, child, context, placement, old)?
+                }
                 None => WalkOutput::EMPTY,
             }
         }
         RenderNodeKind::Layer(value) => {
-            let render_program = match compiled.picture_by_source.get(&id).copied() {
+            let existing = match compiled.entity(id) {
+                CompiledEntity::Picture(key) => Some(key),
+                _ => None,
+            };
+            let render_program = match existing {
                 Some(picture_id) => {
                     reusable_render_program(compiled, picture_id, id, &value.descriptor)?
                 }
                 None => compile_render_program(id, &value.descriptor)?,
             };
-            let picture_id = match compiled.picture_by_source.get(&id).copied() {
-                Some(key) if compiled.pictures.contains_key(key) => key,
-                _ => {
-                    let key = compiled.pictures.insert(CompiledPicture {
-                        source: id,
-                        items: Vec::new(),
-                        spans: Vec::new(),
-                        descriptor: value.descriptor.clone(),
-                        render_program: Some(render_program.clone()),
-                        placement_spatial: context.spatial,
-                        placement_clip: context.clip,
-                        content_version: node.epochs.content_version(),
-                        composite_version: node.epochs.composite,
-                        effect_version: node.epochs.effect,
-                        is_root: false,
-                    });
-                    compiled.picture_by_source.insert(id, key);
-                    key
+            // The content sits in the layer's own picture, so it can only be
+            // copied from there, and only while the layer itself is in place.
+            // The buffers are taken either way, to be refilled next time.
+            let picture_old = match existing {
+                Some(picture_id) => {
+                    let picture = &mut compiled.pictures[picture_id];
+                    OldItems {
+                        items: std::mem::take(&mut picture.items),
+                        spans: std::mem::take(&mut picture.spans),
+                    }
                 }
+                None => OldItems::default(),
             };
-            *compiled
-                .pictures
-                .get_mut(picture_id)
-                .expect("picture was retained") = CompiledPicture {
+            let (items, spans) = compiled.spare_buffers();
+            let picture = CompiledPicture {
                 source: id,
-                items: Vec::new(),
-                spans: Vec::new(),
+                items,
+                spans,
                 descriptor: value.descriptor.clone(),
                 render_program: Some(render_program),
                 placement_spatial: context.spatial,
                 placement_clip: context.clip,
-                content_version: node.epochs.content_version(),
+                content_version,
                 composite_version: node.epochs.composite,
                 effect_version: node.epochs.effect,
                 is_root: false,
             };
-            live.pictures.insert(picture_id, ());
+            let picture_id = match existing {
+                Some(key) => {
+                    compiled.pictures[key] = picture;
+                    key
+                }
+                None => {
+                    let key = compiled.pictures.insert(picture);
+                    compiled.node_mut(id).entity = CompiledEntity::Picture(key);
+                    key
+                }
+            };
             compiled.pictures[context.picture]
                 .items
                 .push(CompiledPictureItem::Picture(picture_id));
             if let Some(child) = value.child {
+                let old_base = existing.and(placement.old_start).map(|_| 0);
+                let placement = child_placement(compiled, child, 0, old_base);
                 walk_node(
                     compiled,
                     source,
@@ -867,10 +961,12 @@ fn walk_node(
                         clip: None,
                         ..context
                     },
-                    live,
+                    placement,
+                    &picture_old,
                 )?;
             }
-            finalize_picture_spans(&mut compiled.pictures[picture_id]);
+            picture_old.recycle(compiled);
+            finalize_picture_spans(&mut compiled.pictures[picture_id], &compiled.spatial_nodes);
             // An isolated layer's effects can paint outside its content, so
             // enclosing spans must not try to bound it.
             WalkOutput {
@@ -879,7 +975,7 @@ fn walk_node(
             }
         }
     };
-    Ok(output)
+    Ok(record(compiled, output))
 }
 
 fn compile_render_program(
@@ -917,138 +1013,6 @@ fn reusable_render_program(
     compile_render_program(source, descriptor)
 }
 
-fn retain_live(compiled: &mut CompiledScene, live: &LiveCompiledIds) {
-    // let stale_pictures: Vec<_> = compiled
-    //     .pictures
-    //     .keys()
-    //     .filter(|key| !live.pictures.contains(key))
-    //     .collect();
-    // for key in stale_pictures {
-    //     compiled.pictures.remove(key);
-    // }
-    compiled
-        .pictures
-        .retain(|k, _| live.pictures.contains_key(k));
-    compiled
-        .primitives
-        .retain(|k, _| live.primitives.contains_key(k));
-    compiled
-        .spatial_nodes
-        .retain(|k, _| live.spatials.contains_key(k));
-    compiled.clips.retain(|k, _| live.clips.contains_key(k));
-    // let stale_primitives: Vec<_> = compiled
-    //     .primitives
-    //     .keys()
-    //     .filter(|key| !live.primitives.contains(key))
-    //     .collect();
-    // for key in stale_primitives {
-    //     compiled.primitives.remove(key);
-    // }
-    // let stale_spatials: Vec<_> = compiled
-    //     .spatial_nodes
-    //     .keys()
-    //     .filter(|key| !live.spatials.contains(key))
-    //     .collect();
-    // for key in stale_spatials {
-    //     compiled.spatial_nodes.remove(key);
-    // }
-    // let stale_clips: Vec<_> = compiled
-    //     .clips
-    //     .keys()
-    //     .filter(|key| !live.clips.contains(key))
-    //     .collect();
-    // for key in stale_clips {
-    //     compiled.clips.remove(key);
-    // }
-    compiled
-        .picture_by_source
-        .retain(|_, key| live.pictures.contains_key(*key));
-    compiled
-        .primitive_by_source
-        .retain(|_, key| live.primitives.contains_key(*key));
-    compiled
-        .spatial_by_source
-        .retain(|_, key| live.spatials.contains_key(*key));
-    compiled
-        .clip_by_source
-        .retain(|_, key| live.clips.contains_key(*key));
-}
-
-fn retain_picture_graph(compiled: &mut CompiledScene) {
-    let mut live = LiveCompiledIds::default();
-    let mut pictures = vec![compiled.root_picture];
-    while let Some(picture_id) = pictures.pop() {
-        if live.pictures.insert(picture_id, ()).is_some() {
-            continue;
-        }
-        let Some(picture) = compiled.pictures.get(picture_id).cloned() else {
-            continue;
-        };
-        mark_spatial_chain(compiled, &mut live, picture.placement_spatial);
-        if let Some(clip) = picture.placement_clip {
-            mark_clip_chain(compiled, &mut live, clip);
-        }
-        for item in picture.items {
-            match item {
-                CompiledPictureItem::Primitive(primitive_id) => {
-                    if live.primitives.insert(primitive_id, ()).is_some() {
-                        continue;
-                    }
-                    let Some(primitive) = compiled.primitives.get(primitive_id).cloned() else {
-                        continue;
-                    };
-                    mark_spatial_chain(compiled, &mut live, primitive.spatial);
-                    if let Some(clip) = primitive.clip {
-                        mark_clip_chain(compiled, &mut live, clip);
-                    }
-                }
-                CompiledPictureItem::Picture(child) => pictures.push(child),
-            }
-        }
-    }
-    retain_live(compiled, &live);
-}
-
-fn mark_spatial_chain(
-    compiled: &CompiledScene,
-    live: &mut LiveCompiledIds,
-    mut spatial: SpatialNodeId,
-) {
-    loop {
-        if live.spatials.insert(spatial, ()).is_some() {
-            break;
-        }
-        let Some(parent) = compiled
-            .spatial_nodes
-            .get(spatial)
-            .and_then(|node| node.parent)
-        else {
-            break;
-        };
-        spatial = parent;
-    }
-}
-
-fn mark_clip_chain(
-    compiled: &CompiledScene,
-    live: &mut LiveCompiledIds,
-    mut clip_id: CompiledClipId,
-) {
-    loop {
-        if live.clips.insert(clip_id, ()).is_some() {
-            break;
-        }
-        let Some(clip) = compiled.clips.get(clip_id) else {
-            break;
-        };
-        mark_spatial_chain(compiled, live, clip.spatial);
-        let Some(parent) = clip.parent else {
-            break;
-        };
-        clip_id = parent;
-    }
-}
-
 fn validate_explicit_cache_keys(source: &RenderScene) -> Result<(), SceneCompileError> {
     fn visit(
         source: &RenderScene,
@@ -1076,8 +1040,8 @@ fn validate_explicit_cache_keys(source: &RenderScene) -> Result<(), SceneCompile
 mod tests {
     use super::*;
     use crate::render::{
-        BlendMode, CachePolicy, ClipShape, CompositeOperator, CompositeStyle, Primitive, Shape,
-        ShapePrimitive,
+        BlendMode, BuiltFrame, BuiltItem, CachePolicy, ClipShape, CompositeOperator,
+        CompositeStyle, FrameBuilder, FrameProperties, Primitive, Shape, ShapePrimitive,
     };
     use std::sync::Arc;
     use xui_interface::{
@@ -1109,8 +1073,8 @@ mod tests {
         let mut compiler = SceneCompiler::new();
         let first_snapshot = source.dirty_snapshot();
         let first = compiler.compile(&source, &first_snapshot).unwrap();
-        let first_primitive = first.primitive_by_source[&primitive];
-        let first_spatial = first.spatial_by_source[&transform];
+        let first_primitive = first.primitive_for_source(primitive).unwrap();
+        let first_spatial = first.spatial_for_source(transform).unwrap();
 
         source
             .update_transform(transform, Affine::translate(5.0, 7.0))
@@ -1127,8 +1091,11 @@ mod tests {
         let second_snapshot = source.dirty_snapshot();
         let second = compiler.compile(&source, &second_snapshot).unwrap();
 
-        assert_eq!(second.primitive_by_source[&primitive], first_primitive);
-        assert_eq!(second.spatial_by_source[&transform], first_spatial);
+        assert_eq!(
+            second.primitive_for_source(primitive).unwrap(),
+            first_primitive
+        );
+        assert_eq!(second.spatial_for_source(transform).unwrap(), first_spatial);
         assert_eq!(
             second.spatial_nodes[first_spatial].local_transform,
             Affine::translate(5.0, 7.0)
@@ -1149,10 +1116,14 @@ mod tests {
             .compile(&source, &snapshot)
             .unwrap()
             .scene_revision();
-        let first_id = compiler.compiled_scene().unwrap().primitive_by_source[&primitive];
+        let first_id = compiler
+            .compiled_scene()
+            .unwrap()
+            .primitive_for_source(primitive)
+            .unwrap();
         let second = compiler.compile(&source, &snapshot).unwrap();
         assert_eq!(second.scene_revision(), first_revision);
-        assert_eq!(second.primitive_by_source[&primitive], first_id);
+        assert_eq!(second.primitive_for_source(primitive).unwrap(), first_id);
     }
 
     #[test]
@@ -1173,14 +1144,55 @@ mod tests {
         let first_id = compiler
             .compile(&source, &snapshot)
             .unwrap()
-            .primitive_by_source[&first];
+            .primitive_for_source(first)
+            .unwrap();
 
         source.remove_subtree(stale).unwrap();
         let snapshot = source.dirty_snapshot();
         let compiled = compiler.compile(&source, &snapshot).unwrap();
-        assert_eq!(compiled.primitive_by_source[&first], first_id);
-        assert!(!compiled.primitive_by_source.contains_key(&stale));
+        assert_eq!(compiled.primitive_for_source(first).unwrap(), first_id);
+        assert_eq!(compiled.primitive_for_source(stale), None);
         assert_eq!(compiled.pictures[compiled.root_picture].items.len(), 1);
+    }
+
+    #[test]
+    fn removing_an_already_detached_subtree_drops_its_entities() {
+        let mut source = RenderScene::new();
+        let transform = source.insert_transform(Affine::translate(1.0, 2.0));
+        let primitive = source.insert_primitive(shape(
+            Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0)),
+            Color::BLACK,
+        ));
+        source.append_child(source.root(), transform).unwrap();
+        source.set_child(transform, Some(primitive)).unwrap();
+        let mut compiler = SceneCompiler::new();
+        let compile = |compiler: &mut SceneCompiler, source: &mut RenderScene| {
+            let snapshot = source.dirty_snapshot();
+            compiler.compile(source, &snapshot).unwrap();
+            source.acknowledge(&snapshot);
+        };
+        compile(&mut compiler, &mut source);
+
+        // Detached but alive: kept, in case it comes back.
+        source.detach(transform).unwrap();
+        compile(&mut compiler, &mut source);
+        let compiled = compiler.compiled_scene().unwrap();
+        assert!(compiled.spatial_for_source(transform).is_some());
+        assert!(compiled.pictures[compiled.root_picture].items.is_empty());
+
+        // Removing it dirties nothing the scene still holds.
+        source.remove_subtree(transform).unwrap();
+        assert!(!source.is_dirty());
+        compile(&mut compiler, &mut source);
+        let compiled = compiler.compiled_scene().unwrap();
+        assert_eq!(compiled.spatial_for_source(transform), None);
+        assert_eq!(compiled.primitive_for_source(primitive), None);
+        assert!(compiled.primitives.is_empty());
+        assert_eq!(
+            compiled.spatial_nodes.len(),
+            1,
+            "only the root spatial node"
+        );
     }
 
     #[test]
@@ -1279,7 +1291,7 @@ mod tests {
     }
 
     #[test]
-    fn topology_inside_an_isolated_layer_targets_that_picture_branch() {
+    fn topology_inside_an_isolated_layer_rebuilds_that_picture() {
         let mut source = RenderScene::new();
         let layer = source.insert_layer(LayerDescriptor {
             force_offscreen: true,
@@ -1302,11 +1314,6 @@ mod tests {
             Color::WHITE,
         ));
         source.append_child(group, second).unwrap();
-        let compiled = compiler.compiled_scene().unwrap();
-        assert_eq!(
-            structural_branch_source(compiled, &source, group, RenderDirty::TOPOLOGY),
-            Some(layer)
-        );
 
         let snapshot = source.dirty_snapshot();
         let compiled = compiler.compile(&source, &snapshot).unwrap();
@@ -1552,5 +1559,461 @@ mod tests {
             compiler.compile(&source, &source.dirty_snapshot()),
             Err(SceneCompileError::RenderGraph { source, .. }) if source == layer
         ));
+    }
+
+    thread_local! {
+        pub(super) static COPIED_ITEMS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// A compiled scene with every entity named by its source node, so a scene
+    /// compiled incrementally can be compared with one compiled from scratch.
+    #[derive(Debug, PartialEq)]
+    struct CanonicalPicture {
+        source: RenderNodeId,
+        placement: Vec<(RenderNodeId, Affine, u32)>,
+        placement_clip: Vec<(RenderNodeId, ClipShape, RenderNodeId)>,
+        items: Vec<CanonicalItem>,
+        spans: Vec<(u32, u32, RenderNodeId)>,
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum CanonicalItem {
+        Primitive {
+            source: RenderNodeId,
+            primitive: Primitive,
+            spatial: Vec<(RenderNodeId, Affine, u32)>,
+            clip: Vec<(RenderNodeId, ClipShape, RenderNodeId)>,
+            content_version: ContentVersion,
+        },
+        Picture(CanonicalPicture),
+    }
+
+    fn spatial_chain(
+        compiled: &CompiledScene,
+        mut id: Option<SpatialNodeId>,
+    ) -> Vec<(RenderNodeId, Affine, u32)> {
+        let mut chain = Vec::new();
+        while let Some(spatial) = id.map(|id| &compiled.spatial_nodes[id]) {
+            chain.push((spatial.source, spatial.local_transform, spatial.depth));
+            id = spatial.parent;
+        }
+        chain
+    }
+
+    fn clip_chain(
+        compiled: &CompiledScene,
+        mut id: Option<CompiledClipId>,
+    ) -> Vec<(RenderNodeId, ClipShape, RenderNodeId)> {
+        let mut chain = Vec::new();
+        while let Some(clip) = id.map(|id| &compiled.clips[id]) {
+            let spatial = compiled.spatial_nodes[clip.spatial].source;
+            chain.push((clip.source, clip.clip.clone(), spatial));
+            id = clip.parent;
+        }
+        chain
+    }
+
+    /// Span bounds are left out of the canonical form and collected into
+    /// `bounds` instead: an in-place geometry update refreshes them without
+    /// re-applying clips, so they may legitimately be larger than a fresh
+    /// compile's.
+    fn canonical(
+        compiled: &CompiledScene,
+        id: PictureId,
+        bounds: &mut Vec<Bounds>,
+    ) -> CanonicalPicture {
+        let picture = &compiled.pictures[id];
+        bounds.extend(
+            picture
+                .spans
+                .iter()
+                .filter_map(|span| compiled.spatial_nodes[span.spatial].subtree_bounds),
+        );
+        CanonicalPicture {
+            source: picture.source,
+            placement: spatial_chain(compiled, Some(picture.placement_spatial)),
+            placement_clip: clip_chain(compiled, picture.placement_clip),
+            items: picture
+                .items
+                .iter()
+                .map(|item| match item {
+                    CompiledPictureItem::Primitive(id) => {
+                        let primitive = &compiled.primitives[*id];
+                        CanonicalItem::Primitive {
+                            source: primitive.source,
+                            primitive: primitive.primitive.clone(),
+                            spatial: spatial_chain(compiled, Some(primitive.spatial)),
+                            clip: clip_chain(compiled, primitive.clip),
+                            content_version: primitive.content_version,
+                        }
+                    }
+                    CompiledPictureItem::Picture(id) => {
+                        CanonicalItem::Picture(canonical(compiled, *id, bounds))
+                    }
+                })
+                .collect(),
+            spans: picture
+                .spans
+                .iter()
+                .map(|span| {
+                    let spatial = compiled.spatial_nodes[span.spatial].source;
+                    (span.start, span.end, spatial)
+                })
+                .collect(),
+        }
+    }
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn below(&mut self, n: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % n as u64) as usize
+        }
+
+        fn coordinate(&mut self) -> f32 {
+            self.below(200) as f32
+        }
+    }
+
+    fn is_inside(source: &RenderScene, node: RenderNodeId, ancestor: RenderNodeId) -> bool {
+        let mut current = Some(node);
+        while let Some(id) = current {
+            if id == ancestor {
+                return true;
+            }
+            current = source.node(id).and_then(|node| node.parent);
+        }
+        false
+    }
+
+    /// One random edit through the scene's public API. Every edit is valid, so
+    /// none of them may fail.
+    fn random_edit(source: &mut RenderScene, nodes: &mut Vec<RenderNodeId>, rng: &mut Rng) {
+        nodes.retain(|id| source.contains(*id));
+        let of_kind =
+            |source: &RenderScene, nodes: &[RenderNodeId], kind: fn(&RenderNodeKind) -> bool| {
+                nodes
+                    .iter()
+                    .copied()
+                    .filter(|id| kind(&source.node(*id).unwrap().kind))
+                    .collect::<Vec<_>>()
+            };
+        let groups = of_kind(source, nodes, |kind| {
+            matches!(kind, RenderNodeKind::Group(_))
+        });
+        let parent = groups[rng.below(groups.len())];
+        let bounds = |rng: &mut Rng| {
+            Bounds::from_origin_size((rng.coordinate(), rng.coordinate()), (10.0, 10.0))
+        };
+        // A new subtree, attached under `parent`, behind a wrapper of some kind.
+        let mut wrap =
+            |source: &mut RenderScene, nodes: &mut Vec<RenderNodeId>, wrapper: RenderNodeId| {
+                let inner = source.insert_group();
+                source.set_child(wrapper, Some(inner)).unwrap();
+                source.append_child(parent, wrapper).unwrap();
+                nodes.extend([wrapper, inner]);
+            };
+        let removable: Vec<_> = nodes
+            .iter()
+            .copied()
+            .filter(|id| *id != source.root())
+            .collect();
+        let wrappers = of_kind(source, nodes, |kind| {
+            matches!(
+                kind,
+                RenderNodeKind::Transform(_) | RenderNodeKind::Clip(_) | RenderNodeKind::Layer(_)
+            )
+        });
+        match rng.below(18) {
+            0 | 1 => {
+                let primitive = source.insert_primitive(shape(bounds(rng), Color::BLACK));
+                let index = rng.below(source.children(parent).unwrap().len() + 1);
+                source.insert_child(parent, index, primitive).unwrap();
+                nodes.push(primitive);
+            }
+            2 => {
+                let group = source.insert_group();
+                source.append_child(parent, group).unwrap();
+                nodes.push(group);
+            }
+            3 => {
+                let transform =
+                    source.insert_transform(Affine::translate(rng.coordinate(), rng.coordinate()));
+                wrap(source, nodes, transform);
+            }
+            4 => {
+                let clip = source.insert_clip(ClipShape::Rect(bounds(rng)));
+                wrap(source, nodes, clip);
+            }
+            5 => {
+                let layer = source.insert_layer(LayerDescriptor {
+                    force_offscreen: rng.below(2) == 0,
+                    ..LayerDescriptor::default()
+                });
+                wrap(source, nodes, layer);
+            }
+            6 if !removable.is_empty() => {
+                source
+                    .remove_subtree(removable[rng.below(removable.len())])
+                    .unwrap();
+            }
+            7 if !removable.is_empty() => {
+                source
+                    .detach(removable[rng.below(removable.len())])
+                    .unwrap();
+            }
+            8 => {
+                let detached: Vec<_> = removable
+                    .iter()
+                    .copied()
+                    .filter(|id| source.node(*id).unwrap().parent.is_none())
+                    .filter(|id| !is_inside(source, parent, *id))
+                    .collect();
+                if !detached.is_empty() {
+                    let node = detached[rng.below(detached.len())];
+                    source.append_child(parent, node).unwrap();
+                }
+            }
+            9 if !removable.is_empty() => {
+                let node = removable[rng.below(removable.len())];
+                let visible = source.node(node).unwrap().visible;
+                source.set_visible(node, !visible).unwrap();
+            }
+            10 => {
+                let transforms = of_kind(source, nodes, |kind| {
+                    matches!(kind, RenderNodeKind::Transform(_))
+                });
+                if !transforms.is_empty() {
+                    let transform = Affine::translate(rng.coordinate(), rng.coordinate());
+                    source
+                        .update_transform(transforms[rng.below(transforms.len())], transform)
+                        .unwrap();
+                }
+            }
+            11 => {
+                let primitives = of_kind(source, nodes, |kind| {
+                    matches!(kind, RenderNodeKind::Primitive(_))
+                });
+                if !primitives.is_empty() {
+                    let primitive = shape(bounds(rng), Color::WHITE);
+                    source
+                        .update_primitive(primitives[rng.below(primitives.len())], primitive)
+                        .unwrap();
+                }
+            }
+            12 => {
+                let layers = of_kind(source, nodes, |kind| {
+                    matches!(kind, RenderNodeKind::Layer(_))
+                });
+                if !layers.is_empty() {
+                    let layer = layers[rng.below(layers.len())];
+                    let RenderNodeKind::Layer(value) = &source.node(layer).unwrap().kind else {
+                        unreachable!()
+                    };
+                    let descriptor = LayerDescriptor {
+                        force_offscreen: !value.descriptor.force_offscreen,
+                        ..value.descriptor.clone()
+                    };
+                    source.update_layer_descriptor(layer, descriptor).unwrap();
+                }
+            }
+            14 if !wrappers.is_empty() => {
+                // Swap a wrapper's child for a fresh group, or for nothing.
+                let wrapper = wrappers[rng.below(wrappers.len())];
+                let replacement = (rng.below(3) > 0).then(|| source.insert_group());
+                nodes.extend(replacement);
+                source.set_child(wrapper, replacement).unwrap();
+            }
+            15 => {
+                let clips = of_kind(source, nodes, |kind| {
+                    matches!(kind, RenderNodeKind::Clip(_))
+                });
+                if !clips.is_empty() {
+                    let clip = ClipShape::Rect(bounds(rng));
+                    source
+                        .update_clip(clips[rng.below(clips.len())], clip)
+                        .unwrap();
+                }
+            }
+            16 => {
+                let layers = of_kind(source, nodes, |kind| {
+                    matches!(kind, RenderNodeKind::Layer(_))
+                });
+                if !layers.is_empty() {
+                    let composite = CompositeStyle {
+                        opacity: rng.below(10) as f32 / 10.0,
+                        ..CompositeStyle::default()
+                    };
+                    source
+                        .update_layer_composite(layers[rng.below(layers.len())], composite)
+                        .unwrap();
+                }
+            }
+            17 => {
+                let children = source.children(parent).unwrap();
+                if children.len() > 1 {
+                    let child = children[rng.below(children.len())];
+                    let index = rng.below(children.len());
+                    source.reorder_child(parent, child, index).unwrap();
+                }
+            }
+            _ => {
+                let mut children = source.children(parent).unwrap().to_vec();
+                for index in (1..children.len()).rev() {
+                    children.swap(index, rng.below(index + 1));
+                }
+                source.set_children(parent, &children).unwrap();
+            }
+        }
+    }
+
+    /// Sets, changes or clears a dynamic transform on a transform node now and
+    /// then, attached or not.
+    fn random_dynamic_transform(
+        source: &RenderScene,
+        nodes: &[RenderNodeId],
+        properties: &mut FrameProperties,
+        rng: &mut Rng,
+    ) {
+        if rng.below(3) != 0 {
+            return;
+        }
+        let transforms: Vec<_> = nodes
+            .iter()
+            .copied()
+            .filter(|id| {
+                source
+                    .node(*id)
+                    .is_some_and(|node| matches!(node.kind, RenderNodeKind::Transform(_)))
+            })
+            .collect();
+        if transforms.is_empty() {
+            return;
+        }
+        let transform = transforms[rng.below(transforms.len())];
+        if rng.below(3) == 0 {
+            properties.clear_transform(transform);
+        } else {
+            let to = Affine::translate(rng.coordinate(), rng.coordinate());
+            properties.set_transform(transform, to);
+        }
+    }
+
+    /// Everything a frame places, in order, so two builds can be compared.
+    fn frame_digest(frame: &BuiltFrame) -> String {
+        use std::fmt::Write;
+        let mut out = String::new();
+        for layer in &frame.layers {
+            write!(
+                out,
+                "L{:?}{:?}{:?}{:?}[",
+                layer.source, layer.content_bounds, layer.render_bounds, layer.content_version
+            )
+            .unwrap();
+            for item in &layer.items {
+                match item {
+                    BuiltItem::Draw(draw) => {
+                        let common = draw.common();
+                        write!(
+                            out,
+                            "D{:?}{:?}{:?}{:?}{:?};",
+                            common.source,
+                            common.content_version,
+                            common.world_transform,
+                            common.world_bounds,
+                            common.clip_chain
+                        )
+                        .unwrap();
+                    }
+                    BuiltItem::Layer(id) => {
+                        let instance = &frame.layer_instances[id.0];
+                        write!(
+                            out,
+                            "I{:?}{:?}{:?}{:?}{:?};",
+                            instance.source,
+                            instance.layer,
+                            instance.world_bounds,
+                            instance.placement_version,
+                            instance.clip_chain
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+            out.push(']');
+        }
+        for clip in &frame.clip_chains {
+            write!(
+                out,
+                "C{:?}{:?}{:?}{:?};",
+                clip.source, clip.parent, clip.world_transform, clip.world_bounds
+            )
+            .unwrap();
+        }
+        out
+    }
+
+    #[test]
+    fn incremental_compiles_match_a_compile_from_scratch() {
+        COPIED_ITEMS.with(|copied| copied.set(0));
+        for seed in 1..=24u64 {
+            let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let mut source = RenderScene::new();
+            let mut nodes = vec![source.root()];
+            let mut compiler = SceneCompiler::new();
+            // One builder across every step, reusing world transforms while
+            // nothing moves, held against a fresh one each step.
+            let mut builder = FrameBuilder::new();
+            let mut properties = FrameProperties::default();
+            let mut dynamic = Rng(seed.wrapping_mul(0xD1B5_4A32_D192_ED03));
+            for step in 0..150 {
+                for _ in 0..=rng.below(3) {
+                    random_edit(&mut source, &mut nodes, &mut rng);
+                }
+                random_dynamic_transform(&source, &nodes, &mut properties, &mut dynamic);
+                let snapshot = source.dirty_snapshot();
+                let incremental = compiler.compile(&source, &snapshot).unwrap();
+                let mut incremental_bounds = Vec::new();
+                let incremental_picture = canonical(
+                    incremental,
+                    incremental.root_picture,
+                    &mut incremental_bounds,
+                );
+                let viewport = Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0));
+                let reused = builder.build(incremental, viewport, &properties).unwrap();
+                let rebuilt = FrameBuilder::new()
+                    .build(incremental, viewport, &properties)
+                    .unwrap();
+                assert_eq!(
+                    frame_digest(&reused),
+                    frame_digest(&rebuilt),
+                    "seed {seed}, step {step}: a reused world transform is stale"
+                );
+
+                let mut fresh = SceneCompiler::new();
+                let fresh = fresh.compile(&source, &source.dirty_snapshot()).unwrap();
+                let mut fresh_bounds = Vec::new();
+                assert_eq!(
+                    incremental_picture,
+                    canonical(fresh, fresh.root_picture, &mut fresh_bounds),
+                    "seed {seed}, step {step}"
+                );
+                for (incremental, fresh) in incremental_bounds.iter().zip(&fresh_bounds) {
+                    assert_eq!(
+                        incremental.union(*fresh),
+                        *incremental,
+                        "seed {seed}, step {step}: a span no longer covers its items"
+                    );
+                }
+                source.acknowledge(&snapshot);
+            }
+        }
+        assert!(
+            COPIED_ITEMS.with(|copied| copied.get()) > 0,
+            "no compile copied a clean subtree, so nothing above tested reuse"
+        );
     }
 }

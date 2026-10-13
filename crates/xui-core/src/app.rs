@@ -252,6 +252,27 @@ impl App {
         self.ui_runtime.set_theme(theme);
     }
 
+    /// Sets the application-wide context of type `T`: what
+    /// [`HookContext::use_context`] returns where no ancestor provides a `T`.
+    ///
+    /// Can be called before the first frame, to hand the root component
+    /// something it cannot take as props, or at any time after; a changed
+    /// value re-renders only the components that read it. See
+    /// [`crate::context`].
+    pub fn provide_context<T: PartialEq + 'static>(&mut self, value: T) {
+        self.components.provide_context(value);
+    }
+
+    /// Clears the application-wide context of type `T`.
+    pub fn remove_context<T: 'static>(&mut self) {
+        self.components.remove_context::<T>();
+    }
+
+    /// The application-wide context of type `T`, if one is set.
+    pub fn context<T: Clone + 'static>(&self) -> Option<T> {
+        self.components.context()
+    }
+
     pub fn set_rebuild_budget(&mut self, budget: Duration) {
         self.components.set_budget(budget);
     }

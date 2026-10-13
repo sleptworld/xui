@@ -17,6 +17,7 @@ use tokio::runtime::Handle as TokioHandle;
 use tokio::task::JoinHandle;
 
 use crate::clock::FrameTime;
+use crate::context::ContextScope;
 use crate::fiber::FiberId;
 use crate::lanes::{
     DEFAULT_LANE, Lane, LaneRoot, Lanes, NO_LANES, RETRY_LANE, current_update_lane,
@@ -432,6 +433,7 @@ pub struct HookContext<'a> {
     dispatcher: AsyncDispatcher,
     tokio_handle: Option<TokioHandle>,
     tickers: TickerRegistry,
+    contexts: Option<ContextScope<'a>>,
 }
 
 impl<'a> HookContext<'a> {
@@ -474,7 +476,38 @@ impl<'a> HookContext<'a> {
             dispatcher,
             tokio_handle,
             tickers,
+            contexts: None,
         }
+    }
+
+    /// Lets this context provide and read contexts. Without it, as from
+    /// [`Self::new`], `use_context` finds nothing and `provide_context` does
+    /// nothing.
+    pub(crate) fn with_contexts(mut self, scope: ContextScope<'a>) -> Self {
+        self.contexts = Some(scope);
+        self
+    }
+
+    pub(crate) fn owner(&self) -> FiberId {
+        self.owner
+    }
+
+    pub(crate) fn context_scope_mut(&mut self) -> Option<&mut ContextScope<'a>> {
+        self.contexts.as_mut()
+    }
+
+    /// Observes one widget's final border-box size, excluding paint transforms.
+    ///
+    /// Attach the returned handle with `.observe_size(size.clone())` and read
+    /// it with `size.get()`. Initially, and while unbound, it returns `None`.
+    /// Layout publishes changes for a subsequent render; it never rebuilds
+    /// the component inside layout or changes the widget's sizing rules.
+    pub fn use_size(&mut self) -> crate::size::SizeObserver {
+        let owner = self.owner;
+        let scheduler = self.scheduler.clone();
+        self.use_memo(move || crate::size::SizeObserver::new(owner, scheduler))
+            .get()
+            .clone()
     }
 
     pub fn use_state<T: Clone + 'static>(&mut self, init: impl FnOnce() -> T) -> State<T> {

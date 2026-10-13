@@ -91,6 +91,17 @@ The heart of the framework:
 - **`state`** — hooks (`HookContext`, `Memo`, `Resource`, `Callback`,
   `AsyncValue`, `TaskContext`), lanes for batched updates, scheduler and async
   dispatcher. Uses `slot` for phase-guarded storage.
+- **`context`** — `cx.provide_context(value)` / `cx.use_context::<T>()`:
+  values keyed by type that a component hands to its whole subtree, plus
+  `App::provide_context` for application-wide ones and a
+  `<context_provider value={..}>` element. Resolution walks the *fiber*
+  ancestors, so portal content sees the contexts where it was written.
+  Values live in a per-runtime `ContextRegistry` (not hook slots, so providing
+  may be conditional) that records who read what; a provider whose value
+  changes (by `PartialEq`), disappears, or newly shadows an outer one marks
+  exactly those readers dirty in the current render lane, after its own
+  render and before its children are reconciled, which is what carries the
+  change past components that bail out on unchanged props.
 - **`lanes`** — update lanes (default, retry, …) for concurrent and batched
   state propagation.
 - **`layout`** — `taffy` flexbox over retained spatial nodes.
@@ -105,6 +116,12 @@ The heart of the framework:
 - **`assets`** — installs the process-global `AssetManager` and exposes
   `load_image_asset` and friends.
 - **`element`** — `ElementDesc`, `ComponentDesc`, `WidgetDesc`, `portal`.
+- **`size`** — `HookContext::use_size()` creates a stable size subscription;
+  `.observe_size(handle)` binds it to one widget without adding a wrapper.
+  `handle.get()` returns `None` before layout or while unbound, otherwise the
+  final border-box size in logical pixels. Layout publishes changes on the
+  ordinary update lane for a subsequent render; no containment or frame-local
+  layout/rebuild loop is involved.
 
 ### Macros — `xui-macros`
 
@@ -160,12 +177,16 @@ GuiRuntime  ──►  App
     └─ render phase (slot::RenderPhase::Render):
          │
          ├─ re-render dirty components via HookContext → ElementDesc tree
+         │    (a provider whose context changed marks its readers dirty in
+         │     the same pass, before its children are reconciled)
          │
          ├─ fiber reconciler diffs ElementDesc → retained widget + layout tree
          │
          ├─ style system: patches + theme + state → ComputedStyle per node
          │
          ├─ taffy layout pass → node Bounds
+         │
+         ├─ publish observed sizes → schedule changed owners for a later render
          │
         ── scene built (RenderNodeId / PictureId / PrimitiveId)
          │

@@ -381,7 +381,7 @@ macro_rules! any_field_changed {
     };
 }
 
-pub(crate) fn animated_sample_requires_layout(from: &ComputedStyle, to: &ComputedStyle) -> bool {
+pub(crate) fn style_change_requires_layout(from: &ComputedStyle, to: &ComputedStyle) -> bool {
     from.layout != to.layout
         || any_field_changed!(
             from.text,
@@ -501,18 +501,18 @@ mod tests {
 
         let mut color = initial.clone();
         color.text.color = Color::WHITE;
-        assert!(!animated_sample_requires_layout(&initial, &color));
+        assert!(!style_change_requires_layout(&initial, &color));
 
         let mut width = initial.clone();
         width.layout.width = xui_interface::Sizing::fix(80.0);
-        assert!(animated_sample_requires_layout(&initial, &width));
+        assert!(style_change_requires_layout(&initial, &width));
 
         let mut font_size = initial.clone();
         font_size.text.font_size += 4.0;
-        assert!(animated_sample_requires_layout(&initial, &font_size));
+        assert!(style_change_requires_layout(&initial, &font_size));
 
         let mut scrollbar_color = initial.clone();
         scrollbar_color.scroll.scrollbar.thumb_color = ComputedColorStyle::Solid(Color::WHITE);
-        assert!(!animated_sample_requires_layout(&initial, &scrollbar_color));
+        assert!(!style_change_requires_layout(&initial, &scrollbar_color));
     }
 }

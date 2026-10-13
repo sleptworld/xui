@@ -20,6 +20,14 @@ mod writer;
 
 use slotmap::new_key_type;
 
+/// A value no other call returns. A type that takes a fresh one whenever some
+/// part of its contents changes can tell from two equal tokens that the part
+/// is the same, across clones and across instances.
+pub(crate) fn fresh_token() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 new_key_type! {
     pub struct RenderNodeId;
     pub struct LayerCacheKey;

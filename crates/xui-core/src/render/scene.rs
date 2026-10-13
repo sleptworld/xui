@@ -102,6 +102,12 @@ pub struct RenderScene {
     root: RenderNodeId,
     revision: u64,
     dirty_nodes: Vec<RenderNodeId>,
+    /// Live layers carrying an explicit `cache_key`, attached or not. Below two
+    /// no key can be duplicated, so the compiler skips its O(scene) check.
+    explicit_cache_keys: usize,
+    /// Nodes removed since the last acknowledged snapshot, so the compiler can
+    /// drop what it built for them without sweeping the whole scene.
+    removed: Vec<RenderNodeId>,
 }
 
 impl Default for RenderScene {
@@ -119,6 +125,8 @@ impl RenderScene {
             root,
             revision: 0,
             dirty_nodes: Vec::new(),
+            explicit_cache_keys: 0,
+            removed: Vec::new(),
         };
         scene.mark_dirty(root, RenderDirty::ALL);
         scene
@@ -136,10 +144,6 @@ impl RenderScene {
         self.nodes.get(id)
     }
 
-    pub(crate) fn node_mut(&mut self, id: RenderNodeId) -> Option<&mut RenderNode> {
-        self.nodes.get_mut(id)
-    }
-
     pub fn children(&self, id: RenderNodeId) -> Result<&[RenderNodeId], SceneError> {
         Ok(self
             .nodes
@@ -152,8 +156,31 @@ impl RenderScene {
         self.nodes.contains_key(id)
     }
 
+    /// Whether `id` is live and reachable from the root.
+    pub fn is_attached(&self, id: RenderNodeId) -> bool {
+        let mut current = Some(id);
+        while let Some(node) = current {
+            if node == self.root {
+                return true;
+            }
+            current = self.nodes.get(node).and_then(|node| node.parent);
+        }
+        false
+    }
+
+    /// Nodes removed since the last acknowledged snapshot.
+    pub fn removed_nodes(&self) -> &[RenderNodeId] {
+        &self.removed
+    }
+
     pub fn is_dirty(&self) -> bool {
         !self.dirty_nodes.is_empty()
+    }
+
+    /// Whether two layers could share an explicit cache key: only then is the
+    /// scene worth walking for duplicates.
+    pub(crate) fn may_have_duplicate_cache_keys(&self) -> bool {
+        self.explicit_cache_keys > 1
     }
 
     pub fn insert_node(&mut self, mut node: RenderNode) -> RenderNodeId {
@@ -161,6 +188,7 @@ impl RenderScene {
         node.dirty = RenderDirty::empty();
         node.subtree_dirty = RenderDirty::empty();
         node.dirty_enqueued = false;
+        self.explicit_cache_keys += usize::from(has_explicit_cache_key(&node));
         let id = self.nodes.insert(node);
         self.mark_dirty(id, RenderDirty::ALL);
         id
@@ -433,8 +461,62 @@ impl RenderScene {
             ids.push(id);
         }
         for id in ids.into_iter().rev() {
-            self.nodes.remove(id);
+            let node = self
+                .nodes
+                .remove(id)
+                .expect("collected from the live subtree");
+            self.explicit_cache_keys -= usize::from(has_explicit_cache_key(&node));
+            self.removed.push(id);
         }
+        Ok(())
+    }
+
+    /// Makes `children` exactly `parent`'s children, in order, as one
+    /// topology change. Children leaving are detached, not removed; a child
+    /// still under another parent is moved here.
+    ///
+    /// Equivalent to detaching every child and appending each again, but
+    /// linear: that took a `Vec::remove` per child.
+    pub fn set_children(
+        &mut self,
+        parent: RenderNodeId,
+        children: &[RenderNodeId],
+    ) -> Result<(), SceneError> {
+        self.validate_group(parent)?;
+        for &child in children {
+            if !self.nodes.contains_key(child) {
+                return Err(SceneError::MissingNode(child));
+            }
+        }
+        #[cfg(debug_assertions)]
+        {
+            let mut seen = std::collections::HashSet::new();
+            for &child in children {
+                if !seen.insert(child) {
+                    return Err(SceneError::DuplicateChild { parent, child });
+                }
+                let mut ancestor = Some(parent);
+                while let Some(id) = ancestor {
+                    if id == child {
+                        return Err(SceneError::CycleDetected { parent, child });
+                    }
+                    ancestor = self.nodes[id].parent;
+                }
+            }
+        }
+
+        let old = std::mem::take(self.group_children_mut(parent)?);
+        for child in &old {
+            self.nodes[*child].parent = None;
+        }
+        for &child in children {
+            if let Some(previous) = self.nodes[child].parent {
+                self.remove_child(previous, child)?;
+            }
+            self.nodes[child].parent = Some(parent);
+        }
+        *self.group_children_mut(parent)? = children.to_vec();
+        self.mark_dirty(parent, RenderDirty::TOPOLOGY);
         Ok(())
     }
 
@@ -523,6 +605,8 @@ impl RenderScene {
         {
             dirty |= RenderDirty::EFFECT;
         }
+        self.explicit_cache_keys = self.explicit_cache_keys - usize::from(old.cache_key.is_some())
+            + usize::from(descriptor.cache_key.is_some());
         if let RenderNodeKind::Layer(value) = &mut self.nodes[id].kind {
             value.descriptor = descriptor;
         }
@@ -587,6 +671,7 @@ impl RenderScene {
         DirtySnapshot {
             revision: self.revision,
             nodes: self.dirty_nodes.clone(),
+            removed: self.removed.len(),
         }
     }
 
@@ -610,6 +695,8 @@ impl RenderScene {
     }
 
     pub fn acknowledge(&mut self, snapshot: &DirtySnapshot) {
+        self.removed
+            .drain(..snapshot.removed.min(self.removed.len()));
         for id in &snapshot.nodes {
             let Some(node) = self.nodes.get_mut(*id) else {
                 continue;
@@ -842,6 +929,8 @@ impl RenderScene {
 pub struct DirtySnapshot {
     pub revision: u64,
     pub nodes: Vec<RenderNodeId>,
+    /// How many of [`RenderScene::removed_nodes`] the snapshot covers.
+    pub removed: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -945,10 +1034,11 @@ impl RenderNode {
 #[derive(Debug, Clone, Copy)]
 pub struct HostRenderBinding {
     /// Layout-position transform and root of this host's retained subtree.
+    /// The host's style transform and anchor offset, when it has them, are a
+    /// frame property on this node, composed onto its layout position when a
+    /// frame is built: animating them recompiles nothing, and a host needs no
+    /// node of its own for them.
     pub root: RenderNodeId,
-    /// Visual Style transform. This remains separate from layout so frame
-    /// properties can animate it without recompiling the retained scene.
-    pub transform: RenderNodeId,
     pub contents: RenderNodeId,
     pub paint: RenderNodeId,
     pub children: Option<RenderNodeId>,
@@ -964,7 +1054,6 @@ pub struct HostRenderBinding {
 impl HostRenderBinding {
     pub fn scaffold(
         root: RenderNodeId,
-        transform: RenderNodeId,
         contents: RenderNodeId,
         paint: RenderNodeId,
         children: Option<RenderNodeId>,
@@ -973,7 +1062,6 @@ impl HostRenderBinding {
     ) -> Self {
         Self {
             root,
-            transform,
             contents,
             paint,
             children,
@@ -990,7 +1078,6 @@ impl HostRenderBinding {
     pub(crate) fn references(&self) -> Vec<(&'static str, RenderNodeId)> {
         let mut values = vec![
             ("root", self.root),
-            ("transform", self.transform),
             ("contents", self.contents),
             ("paint", self.paint),
             // ("children", self.children),
@@ -1065,6 +1152,10 @@ pub fn update_scroll_offset(
     offset: Point,
 ) -> Result<bool, SceneError> {
     scene.update_transform(nodes.transform, Affine::translate(-offset.x, -offset.y))
+}
+
+fn has_explicit_cache_key(node: &RenderNode) -> bool {
+    matches!(&node.kind, RenderNodeKind::Layer(layer) if layer.descriptor.cache_key.is_some())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1200,6 +1291,36 @@ mod tests {
         scene.remove_subtree(child).unwrap();
         assert!(!scene.contains(child));
         assert!(!scene.contains(grandchild));
+    }
+
+    #[test]
+    fn explicit_cache_keys_are_counted_through_insert_update_and_removal() {
+        let mut keys = SlotMap::<LayerCacheKey, ()>::with_key();
+        let keyed = |key| LayerDescriptor {
+            cache_key: Some(key),
+            ..LayerDescriptor::default()
+        };
+        let mut scene = RenderScene::new();
+        let first = scene.insert_layer(keyed(keys.insert(())));
+        let second = scene.insert_layer(LayerDescriptor::default());
+        assert!(!scene.may_have_duplicate_cache_keys());
+
+        scene
+            .update_layer_descriptor(second, keyed(keys.insert(())))
+            .unwrap();
+        assert!(scene.may_have_duplicate_cache_keys());
+
+        scene
+            .update_layer_descriptor(first, LayerDescriptor::default())
+            .unwrap();
+        assert!(!scene.may_have_duplicate_cache_keys());
+
+        let group = scene.insert_group();
+        let nested = scene.insert_layer(keyed(keys.insert(())));
+        scene.append_child(group, nested).unwrap();
+        assert!(scene.may_have_duplicate_cache_keys());
+        scene.remove_subtree(group).unwrap();
+        assert!(!scene.may_have_duplicate_cache_keys());
     }
 
     #[test]

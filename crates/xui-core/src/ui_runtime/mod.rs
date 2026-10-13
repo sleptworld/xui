@@ -68,6 +68,10 @@ pub struct UiRuntime {
     /// Index of live `WidgetType::Text` hosts. `HostData::node_type` is fixed at
     /// creation, so membership only changes when a node is created or removed.
     pub(super) text_nodes: SparseSecondaryMap<NodeId, ()>,
+    /// The font context every active text layout was last settled against.
+    /// While it holds, only text nodes with work this frame can need a new
+    /// variant; once it moves, every one does.
+    pub(super) text_font_context: Option<u64>,
     /// Index of live `WidgetType::Canvas` hosts, kept for the same reason as
     /// `text_nodes`: the post-layout pass has to find them without walking the
     /// whole tree.

@@ -10,6 +10,9 @@ Skia/wgpu rendering, with a deterministic `.xpak` asset pipeline.
   and a first component.
 - **[Architecture](architecture.md)** — crate layering, data flow, the rendering
   and asset pipelines, and state storage.
+- **[Render Compile 操作手册](render-compile/README.md)** — incremental scene
+  compilation, dynamic frame properties, culling, layer programs, and debugging;
+  includes an editable Typst manual and PDF.
 
 ## API reference
 

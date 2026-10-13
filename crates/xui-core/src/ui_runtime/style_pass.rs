@@ -9,7 +9,7 @@ use crate::text::{TextHost, TextLayoutSlot};
 use crate::ui_runtime::UiRuntime;
 use crate::ui_runtime::commit::taffy_context;
 use crate::ui_runtime::state::{HostWorkFlags, InheritanceSync};
-use crate::ui_runtime::style::animated_sample_requires_layout;
+use crate::ui_runtime::style::style_change_requires_layout;
 use crate::widgets::WidgetType;
 use taffy::prelude as tf;
 use xui_interface::{
@@ -104,7 +104,7 @@ impl UiRuntime {
         self.rebase_keyframes(id, false);
         let after = self.style_system.effective(id);
         let diff = before.diff(after);
-        let requires_layout = animated_sample_requires_layout(&before, after);
+        let requires_layout = style_change_requires_layout(&before, after);
         if !diff.is_empty() {
             let mut work = HostWorkFlags::from_style_diff(diff);
             if requires_layout {
@@ -218,8 +218,14 @@ impl UiRuntime {
             return;
         }
 
-        let effective_diff = effective_before.diff(self.style_system.effective(id));
+        let effective_after = self.style_system.effective(id);
+        let effective_diff = effective_before.diff(effective_after);
         let mut work_flags = HostWorkFlags::from_style_diff(effective_diff);
+        // Shaping inputs never reach the Taffy style, so the sync below cannot
+        // see them: the text has to be measured again for its own sake.
+        if style_change_requires_layout(&effective_before, effective_after) {
+            work_flags |= HostWorkFlags::RELAYOUT;
+        }
 
         if inherited_target_changed {
             self.style_system.mark_subtree_dirty(id);

@@ -17,6 +17,8 @@
 //! - `fiber` — retained fiber tree that reconciles `ElementDesc` trees.
 //! - `state` — hooks: `HookContext`, `Memo`, `Resource`, `Callback`,
 //!   `AsyncValue`, `TaskContext`, with lanes for batched updates.
+//! - `context` — `provide_context`/`use_context`: values a component hands
+//!   down to its subtree, re-rendering only the components that read them.
 //! - `layout` — `taffy` flexbox over retained spatial nodes.
 //! - `style` — patches, tokens, themes, `ComputedStyle`, state rules.
 //! - `render` — scene, scene compiler, and the `RenderBackend` trait.
@@ -36,6 +38,7 @@ pub mod app;
 pub mod assets;
 pub mod clock;
 pub mod component;
+pub mod context;
 pub mod core;
 mod diagnostics;
 pub mod dsl;
@@ -55,6 +58,7 @@ pub mod prelude;
 pub mod runtime;
 pub mod scroll;
 pub mod shortcut;
+pub mod size;
 pub mod state;
 pub mod style;
 pub mod ticker;

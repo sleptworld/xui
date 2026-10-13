@@ -72,10 +72,10 @@ impl Page {
     }
 }
 
-thread_local! {
-    /// The page the gallery opens on; tests point it at each page in turn.
-    pub static INITIAL_PAGE: std::cell::Cell<Page> = const { std::cell::Cell::new(Page::Button) };
-}
+/// The page the gallery opens on, provided on the `App`; tests point it at
+/// each page in turn. Without one it opens on [`Page::Button`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InitialPage(pub Page);
 
 // ---- building blocks -------------------------------------------------------
 
@@ -894,7 +894,10 @@ fn sidebar(active: Page, callbacks: Vec<Callback<()>>) -> ElementDesc {
 
 #[component]
 pub fn gallery() {
-    let active = cx.use_state(|| INITIAL_PAGE.with(|page| page.get()));
+    let initial = cx
+        .use_context::<InitialPage>()
+        .map_or(Page::Button, |page| page.0);
+    let active = cx.use_state(|| initial);
     let callbacks: Vec<Callback<()>> = Page::ALL
         .into_iter()
         .map(|page| cx.use_callback((), move |()| active.set(page)))
@@ -1010,8 +1013,8 @@ mod tests {
         ));
         {
             for (name, theme, page, width) in runs {
-                INITIAL_PAGE.with(|initial| initial.set(page));
                 let mut app = App::new(gallery_component);
+                app.provide_context(InitialPage(page));
                 app.set_theme(theme.clone());
                 app.resize(Size::new(width as f32, HEIGHT as f32));
                 let mut backend = SkiaBackend::<CosmicEngine>::headless(
@@ -1059,9 +1062,9 @@ mod tests {
     /// different pictures, though nothing but the frame clock moved.
     #[test]
     fn the_spinner_page_moves_from_frame_to_frame() {
-        INITIAL_PAGE.with(|initial| initial.set(Page::Spinner));
         let theme = Theme::light();
         let mut app = App::new(gallery_component);
+        app.provide_context(InitialPage(Page::Spinner));
         app.set_theme(theme.clone());
         let backend = SkiaBackend::<CosmicEngine>::headless(
             1.0,
