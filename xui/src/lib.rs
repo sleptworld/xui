@@ -16,7 +16,7 @@ pub mod prelude {
 }
 
 #[cfg(target_os = "macos")]
-pub use xui_macos::MacRunnerOptions;
+pub use xui_macos::*;
 
 #[cfg(all(target_os = "macos", feature = "vello"))]
 pub use xui_macos::runner;
