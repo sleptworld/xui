@@ -2066,14 +2066,28 @@ impl<T: TextBackend> WGPUBackend<T> {
             .caret
             .and_then(|caret| layout_query.and_then(|query| query.caret_rect(caret.char_index)));
 
-        let backend = text.backend_mut();
+        let rasterizer = text.backend().rasterizer().cloned();
 
-        if command.paint.style.color.a > 0.0 {
+        if command.paint.style.color.a > 0.0
+            && let Some(rasterizer) = rasterizer
+        {
             let scale = 1. / self.scale_factor;
+            let glyphs = layout.runs.iter().flat_map(|run| {
+                let ppem = run.font_size * self.scale_factor;
+                layout.glyphs[run.glyph_range.clone()]
+                    .iter()
+                    .map(move |glyph| (run.font_id, ppem, glyph))
+            });
 
-            for glyph in &layout.glyphs {
-                let Some((alloc, bitmap)) = self.glyph_allocation(backend, glyph.key.clone())?
-                else {
+            for (font, ppem, glyph) in glyphs {
+                let request = GlyphRequest::new(
+                    font,
+                    glyph.glyph_id,
+                    ppem,
+                    SubpixelOffset::Zero,
+                    RasterOptions::default(),
+                );
+                let Some((alloc, bitmap)) = self.glyph_allocation(&*rasterizer, &request)? else {
                     continue;
                 };
                 if bitmap.width == 0 || bitmap.height == 0 {
@@ -2125,10 +2139,10 @@ impl<T: TextBackend> WGPUBackend<T> {
 
     fn glyph_allocation(
         &mut self,
-        text: &mut T,
-        key: <T as Shaper>::GlyphKey,
-    ) -> Result<Option<(AllocInfo, RasterizedGlyph)>, WgpuBackendError> {
-        let value = if let Some(bitmap) = text.rasterize(key) {
+        rasterizer: &T::Rasterizer,
+        request: &GlyphRequest<T::FontId>,
+    ) -> Result<Option<(AllocInfo, GlyphImage)>, WgpuBackendError> {
+        let value = if let Some(bitmap) = rasterizer.rasterize(request) {
             if bitmap.width == 0 || bitmap.height == 0 {
                 None
             } else {

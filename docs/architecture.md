@@ -25,19 +25,24 @@ application crate
     │
     ├──► xui-shell                platform host contract + driver (depends on xui, interface)
     │
-    ├──► xui-skia                 Skia backend (depends on xui, interface, render-graph, shell)
+    ├──► xui-vello                Vello backend, the default (depends on xui, interface,
+    │                            render-graph, shell, wgpu-text)
+    │
+    ├──► xui-skia                 optional Skia backend (depends on xui, interface,
+    │                            render-graph, shell)
     │
     ├──► xui-winit                winit host for xui-shell (depends on xui, interface,
-    │                            shell, render-graph, text-engine; selects skia or wgpu)
+    │                            shell, render-graph; selects vello, skia or wgpu)
     │
     ├──► xui-macos                native AppKit host for xui-shell (depends on xui,
-    │                            interface, shell, skia; macOS only)
+    │                            interface, shell, vello or skia; macOS only)
     │
     └──► xui-windows              native Win32 host for xui-shell (depends on xui,
-                                 interface, shell, skia; Windows only)
+                                 interface, shell, vello or skia; Windows only)
 ```
 
-Backends (`xui-skia`, optional `wgpu` in `xui-winit`) implement the
+Backends (`xui-vello` by default, `xui-skia`, and the standalone `wgpu`
+renderer in `xui-winit`) implement the
 `xui_core::render::RenderBackend` and `xui_interface::TextBackend` traits. The core
 runtime never names a GPU library directly.
 
@@ -74,8 +79,12 @@ The shared vocabulary every other crate agrees on:
   then the properties the keyframes name -- so a transition shows through
   wherever the animation does not reach. Transform-only animations stay on the
   frame-properties path -- no layout, no repaint.
-- **Text traits** — `TextBackend`, `Shaper`, `FontDatabase`, `GlyphRasterizer`,
-  plus layout data (`ParagraphLayout`, `LineLayout`, `GlyphRun`, …).
+- **Text traits** — `TextBackend` bundles three parts: a shared, thread-safe
+  `FontCollection` (font ids → `FontData`), the mutable `Shaper`, and an
+  optional thread-safe `GlyphRasterizer` that renders `GlyphRequest`s into
+  `GlyphImage`s. Layout is in logical pixels and independent of the scale
+  factor; physical size and subpixel offset are rasterization parameters.
+  Plus layout data (`ParagraphLayout`, `LineLayout`, `GlyphRun`, …).
 - **Dirty tracking** — `WidgetUpdateFlags`, `StyleDiffFlags`.
 
 ### Runtime and reconciler — `xui`
@@ -192,7 +201,7 @@ GuiRuntime  ──►  App
          │
          ├─ scene compiler → render graph (xui-render-graph LayerProgram)
          │
-        ── backend (xui-skia SkiaBackend / wgpu) rasterizes frame → surface
+        ── backend (xui-vello VelloBackend / xui-skia SkiaBackend) rasterizes frame → surface
          │
         ── TextBackend (xui-text-engine CosmicEngine) lays out & rasterizes glyphs
 ```
@@ -211,8 +220,10 @@ The render path is split into three stages so backends stay thin:
    style into a reusable `LayerProgram`; `LayerProgram::instantiate` applies
    frame geometry, lowers executable pass IR, and assigns abstract transient
    texture slots. Pure Rust, no GPU dependency, `#![forbid(unsafe_code)]`.
-3. **Backend** (`xui-skia`, or `wgpu` via `xui-winit`) — consumes the graph and
-   rasterizes to the window surface. `xui-skia` uses `skia-safe` on a
+3. **Backend** (`xui-vello` by default, or `xui-skia`) — consumes the graph and
+   rasterizes to the window surface. `xui-vello` draws 2D content with Vello
+   on a wgpu device it owns, composes layers with its own passes, and draws
+   text from glyph bitmaps (`xui-wgpu-text`). `xui-skia` uses `skia-safe` on a
    platform swapchain picked at runtime (Metal on macOS, Direct3D 12 on
    Windows, Vulkan on Linux, and a `softbuffer` CPU blit as the fallback when
    no GPU context can be created — `XUI_SKIA_GPU=0` forces it); caches layers,
@@ -265,14 +276,19 @@ Two cooperating primitives back hook state:
 
 ## Backend selection
 
-`xui-winit` exposes feature flags:
+Every host (`xui-winit`, `xui-macos`, `xui-windows`) and the `xui` facade
+expose the same flags:
 
 ```toml
 [dependencies]
-xui-winit = { path = "../xui-winit", features = ["skia"] }   # default
+xui-winit = { path = "../xui-winit" }                          # vello (default): `runner`
 # or
-xui-winit = { path = "../xui-winit", default-features = false, features = ["wgpu"] }
+xui-winit = { path = "../xui-winit", features = ["skia"] }      # adds `skia_runner`
+# or
+xui-winit = { path = "../xui-winit", default-features = false, features = ["skia"] }
 ```
 
-`skia` pulls in `xui-skia` and re-exports `SkiaBackend`; `wgpu` pulls in the
+`vello` pulls in `xui-vello` and provides `runner`; `skia` pulls in `xui-skia`,
+re-exports `SkiaBackend` and provides `skia_runner`. In `xui-winit`, `wgpu`
+pulls in the
 optional `wgpu` renderer module (`TexturePool`, `WGPUBackend`, …).

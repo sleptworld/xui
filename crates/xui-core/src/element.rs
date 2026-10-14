@@ -251,3 +251,25 @@ impl From<ElementDesc> for ComponentDesc {
         }
     }
 }
+
+/// Empty portal builder for use in the declarative `view!` DSL.
+pub fn portal_view() -> PortalDesc {
+    PortalDesc::new(Vec::new())
+}
+impl crate::dsl::IntoElement<crate::dsl::NoChildren> for PortalDesc {
+    fn into_element(self, _: crate::dsl::NoChildren) -> ElementDesc {
+        self.into()
+    }
+}
+impl<T: IntoChildren> crate::dsl::IntoElement<crate::dsl::Content<T>> for PortalDesc {
+    fn into_element(mut self, children: crate::dsl::Content<T>) -> ElementDesc {
+        self.children = children.collect();
+        self.into()
+    }
+}
+impl crate::dsl::IntoElement<crate::dsl::Children> for PortalDesc {
+    fn into_element(mut self, children: crate::dsl::Children) -> ElementDesc {
+        self.children = children.collect();
+        self.into()
+    }
+}

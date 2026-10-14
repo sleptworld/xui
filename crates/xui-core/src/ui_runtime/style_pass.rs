@@ -286,7 +286,7 @@ impl UiRuntime {
                     .expect("a text input always lays out text");
 
                 let constraints = TextLayoutConstraints::default();
-                let font_context = measurer.backend().epoch();
+                let font_context = measurer.font_epoch();
 
                 let input = TextLayoutInput::new(
                     props.text,

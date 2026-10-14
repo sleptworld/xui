@@ -162,6 +162,65 @@ macro_rules! event_handler_methods {
             self
         }
 
+        pub fn accessibility_checked(mut self, value: xui_interface::AccessibilityChecked) -> Self {
+            self.interaction.accessibility.checked = Some(value);
+            self
+        }
+        pub fn accessibility_orientation(
+            mut self,
+            value: xui_interface::AccessibilityOrientation,
+        ) -> Self {
+            self.interaction.accessibility.orientation = Some(value);
+            self
+        }
+        pub fn accessibility_live_region(
+            mut self,
+            value: xui_interface::AccessibilityLiveRegion,
+        ) -> Self {
+            self.interaction.accessibility.live_region = Some(value);
+            self
+        }
+        pub fn accessibility_expanded(mut self, value: bool) -> Self {
+            self.interaction.accessibility.expanded = Some(value);
+            self
+        }
+        pub fn accessibility_hidden(mut self, value: bool) -> Self {
+            self.interaction.accessibility.hidden = Some(value);
+            self
+        }
+        pub fn accessibility_required(mut self, value: bool) -> Self {
+            self.interaction.accessibility.required = Some(value);
+            self
+        }
+        pub fn accessibility_invalid(mut self, value: bool) -> Self {
+            self.interaction.accessibility.invalid = Some(value);
+            self
+        }
+        pub fn accessibility_read_only(mut self, value: bool) -> Self {
+            self.interaction.accessibility.read_only = Some(value);
+            self
+        }
+        pub fn accessibility_numeric_value(mut self, value: f64) -> Self {
+            self.interaction.accessibility.numeric_value = Some(value.into());
+            self
+        }
+        /// Numeric limits as one DSL argument.
+        pub fn accessibility_value_range(mut self, range: (f64, f64, Option<f64>)) -> Self {
+            self.interaction.accessibility.min_value = Some(range.0.into());
+            self.interaction.accessibility.max_value = Some(range.1.into());
+            self.interaction.accessibility.step_value = range.2.map(Into::into);
+            self
+        }
+        /// Installs all key bindings in one `view!` modifier.
+        pub fn shortcuts(
+            mut self,
+            bindings: impl IntoIterator<Item = (xui_interface::Shortcut, xui_interface::CommandId)>,
+        ) -> Self {
+            for (shortcut, command) in bindings {
+                self = self.shortcut(shortcut, command);
+            }
+            self
+        }
         pub fn shortcut(
             mut self,
             shortcut: xui_interface::Shortcut,
@@ -213,7 +272,6 @@ mod text_input;
 mod z_stack;
 
 pub(crate) use canvas::CanvasInvalidator;
-pub(crate) use text_input::text_input_content_box;
 #[cfg(feature = "wgpu")]
 pub use canvas::{CANVAS_GPU_FORMAT, CANVAS_GPU_USAGES, CanvasGpuPainter, GpuPainter};
 pub use canvas::{
@@ -227,14 +285,15 @@ pub use icon::{IconData, IconLayer, IconStroke, IconWidget, SvgIconError};
 pub use image::ImageWidget;
 pub(crate) use overlay::RootOverlayerWidget;
 pub use overlay::{
-    DismissHandler, DismissReason, OverlayChild, OverlayEntry, OverlayEntryId,
-    OverlayEntryOptions, OverlayModelError, OverlayScope, OverlayScopeId,
+    DismissHandler, DismissReason, OverlayChild, OverlayEntry, OverlayEntryId, OverlayEntryOptions,
+    OverlayModelError, OverlayScope, OverlayScopeId,
 };
 pub use root::RootWidget;
 pub use text::TextWidget;
 pub use text_input::TextInputWidget;
 #[doc(hidden)]
 pub use text_input::keymap::{TextCommand, TextKeymap};
+pub(crate) use text_input::text_input_content_box;
 pub use text_input::value::TextSelection;
 pub use text_input::{TextController, TextInputChange};
 pub use z_stack::ZStackWidget;

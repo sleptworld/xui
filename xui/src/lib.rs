@@ -16,10 +16,13 @@ pub mod prelude {
 }
 
 #[cfg(target_os = "macos")]
-pub use xui_macos::{MacRunnerOptions, runner};
+pub use xui_macos::MacRunnerOptions;
 
 #[cfg(all(target_os = "macos", feature = "vello"))]
-pub use xui_macos::vello_runner;
+pub use xui_macos::runner;
 
-#[cfg(feature = "skia-wgpu")]
+#[cfg(all(target_os = "macos", feature = "skia"))]
+pub use xui_macos::skia_runner;
+
+#[cfg(all(target_os = "macos", any(feature = "vello", feature = "skia-wgpu")))]
 pub use xui_macos::wgpu;

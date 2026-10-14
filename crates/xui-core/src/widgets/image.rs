@@ -78,6 +78,11 @@ impl ImageWidget {
     }
 
     /// Supplies already-decoded pixels and their stable renderer cache key.
+    /// Image pixels and identity supplied as a single DSL argument.
+    pub fn source(self, source: (ImageKey, ImageData)) -> Self {
+        self.image_data(source.0, source.1)
+    }
+
     pub fn image_data(
         mut self,
         image_key: impl Into<ImageKey>,

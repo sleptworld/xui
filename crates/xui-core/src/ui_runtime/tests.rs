@@ -44,8 +44,8 @@ use xui_interface::events::{
 };
 use xui_interface::style::FlexDirectionStyle;
 use xui_interface::{
-    Affine, CanvasTextId, Color, ComputedColorStyle, EdgeInsets, FontDatabase, PathBuilder,
-    PathFill, Style, TextProps, VectorSceneBuilder, WidgetState,
+    Affine, CanvasTextId, Color, ComputedColorStyle, EdgeInsets, PathBuilder, PathFill, Style,
+    TextProps, VectorSceneBuilder, WidgetState,
 };
 
 fn create_host(arena: &mut UiRuntime, widget: WidgetI) -> NodeId {
@@ -1946,7 +1946,7 @@ fn final_text_width_is_activated_after_layout_measurement() {
         props.style.into(),
         props.paragraph,
         props.text_box,
-        measurer.backend().epoch(),
+        measurer.font_epoch(),
     );
 
     let expected = measurer.activate_slot(node, TextLayoutSlot::PRIMARY, final_input);
@@ -1957,7 +1957,7 @@ fn final_text_width_is_activated_after_layout_measurement() {
         .widget
         .with_widgets(|widget| widget.text_layout_props(&host_node.effective_style))
         .unwrap();
-    let font_context = measurer.backend().epoch();
+    let font_context = measurer.font_epoch();
     measurer.measure_slot(
         node,
         TextLayoutSlot::PRIMARY,
@@ -2018,7 +2018,7 @@ fn assert_final_text_is_active<T: xui_interface::TextBackend>(
         props.style.into(),
         props.paragraph,
         props.text_box,
-        measurer.backend().epoch(),
+        measurer.font_epoch(),
     );
     assert_eq!(
         measurer.activate_slot(node, TextLayoutSlot::PRIMARY, final_input),

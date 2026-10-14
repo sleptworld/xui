@@ -47,8 +47,7 @@ use xui_core::{
     text::{TextHost, TextLayoutHandle},
 };
 use xui_interface::{
-    Color, FontDatabase, FontWeight, ImageKey, NodeLifecycleEvent, PathDataId, Size, TextBackend,
-    VectorSceneId,
+    Color, FontWeight, ImageKey, NodeLifecycleEvent, PathDataId, Size, TextBackend, VectorSceneId,
 };
 use xui_shell::SurfaceTarget;
 
@@ -168,7 +167,7 @@ pub struct SkiaBackend<T: TextBackend = crate::SkiaTextBackend> {
     pending_damage: DamageRegion,
     damage_history: VecDeque<Vec<softbuffer::Rect>>,
     // Font Cache
-    font_cache: FxHashMap<(<T as FontDatabase>::FontId, FontWeight), SkTypeface>,
+    font_cache: FxHashMap<(T::FontId, FontWeight), SkTypeface>,
     font_cache_epoch: Option<u64>,
     /// Built once and reused. `FontMgr::new()` is a CoreText enumeration on
     /// macOS and costs ~30 ms a call, which used to be paid per typeface cache

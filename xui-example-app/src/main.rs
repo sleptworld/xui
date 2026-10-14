@@ -5,7 +5,8 @@
 //! with the `xui!` macro and `#[component]` functions; the image page loads
 //! from the packed `assets/`.
 //!
-//! `cargo run -p xui-example-app` (add `XUI_THEME=dark` for the dark palette).
+//! `cargo run -p xui-example-app` (add `XUI_THEME=dark` for the dark palette;
+//! `--features skia` runs it on Skia instead of Vello).
 //! Its build script packs `assets/` through `xui-build`; `cargo xui run` works
 //! too, and additionally mounts `assets/` live in release builds.
 //!
@@ -34,28 +35,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
-    #[cfg(feature = "vello")]
-    return run_vello(theme, options);
+    #[cfg(feature = "skia")]
+    return run_skia(theme, options);
 
-    // `xui_macos::runner` with a theme applied before the first frame.
-    #[cfg(not(feature = "vello"))]
-    MacRunner::with_fallible_options(
-        move |window| -> Result<_, std::io::Error> {
-            let mut app = App::new(gallery::gallery_component);
-            app.set_theme(theme);
-            let backend = xui_skia::SkiaBackend::<xui_f::FBackend>::new(window)
-                .map_err(|error| std::io::Error::other(error.to_string()))?;
-            Ok((app, xui_f::FBackend::new(), backend))
-        },
-        options,
-    )
-    .run()
-    .unwrap();
-    Ok(())
+    #[cfg(not(feature = "skia"))]
+    run_vello(theme, options)
 }
 
-/// The same gallery on Vello: `cargo run -p xui-example-app --features vello`.
-#[cfg(feature = "vello")]
+/// `xui_macos::runner` with a theme applied before the first frame.
+#[cfg(not(feature = "skia"))]
 fn run_vello(
     theme: Theme,
     options: MacRunnerOptions,
@@ -71,6 +59,26 @@ fn run_vello(
                 context.device().clone(),
                 context.queue().clone(),
             ));
+            Ok((app, xui_f::FBackend::new(), backend))
+        },
+        options,
+    )
+    .run()?;
+    Ok(())
+}
+
+/// The same gallery on Skia: `cargo run -p xui-example-app --features skia`.
+#[cfg(feature = "skia")]
+fn run_skia(
+    theme: Theme,
+    options: MacRunnerOptions,
+) -> Result<(), Box<dyn std::error::Error>> {
+    MacRunner::with_fallible_options(
+        move |window| -> Result<_, std::io::Error> {
+            let mut app = App::new(gallery::gallery_component);
+            app.set_theme(theme);
+            let backend = xui_skia::SkiaBackend::<xui_f::FBackend>::new(window)
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
             Ok((app, xui_f::FBackend::new(), backend))
         },
         options,

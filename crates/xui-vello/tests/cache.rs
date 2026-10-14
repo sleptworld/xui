@@ -251,7 +251,11 @@ fn some_text(_: &mut HookContext<'_>) -> ElementDesc {
 
 #[test]
 fn a_font_is_loaded_once_and_counted() {
-    let Some(mut backend) = backend(VelloBackendOptions::default()) else {
+    // Fonts are loaded for Vello's outlines; bitmap text needs none of them.
+    let Some(mut backend) = backend(VelloBackendOptions {
+        bitmap_text: false,
+        ..VelloBackendOptions::default()
+    }) else {
         return;
     };
     let first = draw(&mut backend, some_text, 64.0);

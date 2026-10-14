@@ -1,0 +1,16 @@
+[package]
+name = "xui-wgpu-text"
+version = "0.1.0"
+edition = "2024"
+description = "Draws xui glyph runs with wgpu: a glyph atlas mirrored in textures, and the shader that samples it"
+
+[dependencies]
+bytemuck = { version = "1.25.0", features = ["derive"] }
+etagere = "0.3.0"
+wgpu = { workspace = true }
+xui-interface = { path = "../xui-interface" }
+
+[dev-dependencies]
+naga = { version = "30.0.1", features = ["wgsl-in"] }
+pollster = { workspace = true }
+xui-f = { path = "../xui-f" }

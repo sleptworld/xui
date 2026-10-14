@@ -1,9 +1,15 @@
-//! Production-oriented font selection and shaping backend for XUI.
+//! Production-oriented font selection, shaping and glyph rendering backend
+//! for XUI.
 //!
 //! Responsibilities are separated into platform font management (`font`),
-//! Unicode bidi resolution (`bidi`), HarfRust shaping (`shape`), and paragraph
-//! line layout (`layout`). Glyph rasterization intentionally remains outside
-//! this crate so a native renderer can consume positioned glyph IDs directly.
+//! Unicode bidi resolution (`bidi`), HarfRust shaping (`shape`) and paragraph
+//! line layout (`layout`). Glyph rendering is [`xui_swash`]'s
+//! [`SwashRasterizer`] over this backend's [`FFonts`].
+//!
+//! The backend is the shaper (`TextBackend::Shaper = FBackend`). Its fonts and
+//! rasterizer are shared, `Send + Sync` handles: a renderer keeps clones of
+//! the `Arc`s and reads fonts or rasterizes glyphs on its own thread while the
+//! backend keeps laying text out.
 
 mod bidi;
 mod font;
@@ -13,33 +19,37 @@ mod types;
 
 use std::sync::Arc;
 
-use xui_interface::{
-    FontDataRef, FontDatabase, FontQuery, GlyphRasterizer, ParagraphLayout, RasterizedGlyph,
-    Shaper, TextBackend, TextLayoutInput,
-};
+use xui_interface::{FontQuery, ParagraphLayout, Shaper, TextBackend, TextLayoutInput};
+use xui_swash::SwashRasterizer;
 
+pub use font::{FFont, FFonts};
 pub use layout::{FHardLayout, FParagraphState};
-pub use types::{FFontId, FGlyphKey};
+pub use types::FFontId;
 
-/// Fontique font management plus HarfRust shaping and paragraph layout.
+/// Fontique font management, HarfRust shaping and paragraph layout, with a
+/// swash rasterizer over the same fonts.
 pub struct FBackend {
     fonts: font::FontStore,
+    rasterizer: Arc<SwashRasterizer<FFonts>>,
 }
 
 impl FBackend {
     /// Creates a backend and indexes fonts reported by the platform source.
     pub fn new() -> Self {
-        let mut backend = Self {
-            fonts: font::FontStore::with_system_fonts(true),
-        };
+        let mut backend = Self::with_store(font::FontStore::with_system_fonts(true));
         backend.fonts.warm_system_ui();
         backend
     }
 
     /// Creates an empty backend for applications that only use embedded fonts.
     pub fn without_system_fonts() -> Self {
+        Self::with_store(font::FontStore::empty())
+    }
+
+    fn with_store(fonts: font::FontStore) -> Self {
         Self {
-            fonts: font::FontStore::empty(),
+            rasterizer: Arc::new(SwashRasterizer::new(fonts.shared().clone())),
+            fonts,
         }
     }
 
@@ -60,35 +70,9 @@ impl Default for FBackend {
     }
 }
 
-impl FontDatabase for FBackend {
-    type FontId = FFontId;
-
-    fn epoch(&self) -> u64 {
-        self.fonts.epoch()
-    }
-
-    fn load_system_fonts(&mut self) {
-        self.fonts.load_system_fonts();
-        self.fonts.warm_system_ui();
-    }
-
-    fn load_font_bytes(&mut self, bytes: Arc<[u8]>) -> Self::FontId {
-        self.fonts.load_font_bytes(bytes)
-    }
-
-    fn query(&mut self, query: &FontQuery) -> Option<Self::FontId> {
-        self.fonts.query(query)
-    }
-
-    fn font_data(&self, id: Self::FontId) -> Option<FontDataRef<'_>> {
-        self.fonts.font_data(id)
-    }
-}
-
 impl Shaper for FBackend {
-    type State = FParagraphState;
-    type GlyphKey = FGlyphKey;
     type FontId = FFontId;
+    type State = FParagraphState;
 
     fn create_state(&mut self) -> Self::State {
         FParagraphState::default()
@@ -98,20 +82,42 @@ impl Shaper for FBackend {
         &mut self,
         state: &mut Self::State,
         input: TextLayoutInput,
-    ) -> ParagraphLayout<Self::FontId, Self::GlyphKey> {
+    ) -> ParagraphLayout<FFontId> {
         layout::layout(&mut self.fonts, state, input)
     }
 }
 
-impl GlyphRasterizer for FBackend {
-    type GlyphKey = FGlyphKey;
+impl TextBackend for FBackend {
+    type FontId = FFontId;
+    type Fonts = FFonts;
+    type Shaper = Self;
+    type Rasterizer = SwashRasterizer<FFonts>;
 
-    fn rasterize(&mut self, _key: Self::GlyphKey) -> Option<RasterizedGlyph> {
-        types::no_rasterized_glyph()
+    fn fonts(&self) -> &Arc<FFonts> {
+        self.fonts.shared()
+    }
+
+    fn shaper(&mut self) -> &mut Self {
+        self
+    }
+
+    fn rasterizer(&self) -> Option<&Arc<SwashRasterizer<FFonts>>> {
+        Some(&self.rasterizer)
+    }
+
+    fn load_system_fonts(&mut self) {
+        self.fonts.load_system_fonts();
+        self.fonts.warm_system_ui();
+    }
+
+    fn load_font_bytes(&mut self, bytes: Arc<[u8]>) -> Option<FFontId> {
+        self.fonts.load_font_bytes(bytes)
+    }
+
+    fn query(&mut self, query: &FontQuery) -> Option<FFontId> {
+        self.fonts.query(query)
     }
 }
-
-impl TextBackend for FBackend {}
 
 #[cfg(test)]
 mod tests {
@@ -120,6 +126,10 @@ mod tests {
         ComputedTextStyle, FontFamily, FontStretch, FontStyle, FontWeight, LineHeight,
         OverflowWrap, ParagraphStyle, TextBoxStyle, TextContent, TextLayoutConstraints,
         TextOverflow, TextStyle, WhiteSpace,
+    };
+    use xui_interface::{
+        FontCollection, FontData, GlyphRasterizer, GlyphRequest, RasterOptions,
+        RasterizedGlyphFormat, SubpixelOffset,
     };
 
     fn input(text: &'static str, width: f32) -> TextLayoutInput {
@@ -208,6 +218,124 @@ mod tests {
             .expect("RTL ellipsis cluster");
         assert_eq!(synthetic.text_range.start, rtl.lines[0].text_range.end);
         assert_eq!(synthetic.text_range.end, rtl.lines[0].text_range.end);
+    }
+
+    /// `(font, glyph, font size)` of every glyph with ink.
+    fn inked(layout: &ParagraphLayout<FFontId>) -> Vec<(FFontId, u32, f32)> {
+        layout
+            .runs
+            .iter()
+            .flat_map(|run| {
+                layout.glyphs[run.glyph_range.clone()]
+                    .iter()
+                    .filter(|glyph| !glyph.flags.contains(xui_interface::GlyphFlags::WHITESPACE))
+                    .map(|glyph| (run.font_id, glyph.glyph_id, run.font_size))
+            })
+            .collect()
+    }
+
+    fn request(font: FFontId, glyph: u32, ppem: f32) -> GlyphRequest<FFontId> {
+        GlyphRequest::new(
+            font,
+            glyph,
+            ppem,
+            SubpixelOffset::Zero,
+            RasterOptions::default(),
+        )
+    }
+
+    #[test]
+    fn rasterizes_shaped_glyphs_at_the_requested_size() {
+        let mut backend = FBackend::new();
+        if backend.face_count() == 0 {
+            return;
+        }
+        let mut state = backend.create_state();
+        let layout = backend.layout_paragraph(&mut state, input("Ag 中", 400.0));
+        let glyphs = inked(&layout);
+        assert_eq!(glyphs.len(), 3);
+        let rasterizer = backend.rasterizer().unwrap().clone();
+
+        let (font, glyph, size) = glyphs[0];
+        let at_1x = rasterizer
+            .rasterize(&request(font, glyph, size))
+            .expect("'A' has ink");
+        assert_eq!(at_1x.format, RasterizedGlyphFormat::Mask);
+        assert_eq!(
+            at_1x.pixels.len(),
+            at_1x.width as usize * at_1x.height as usize
+        );
+        assert!(at_1x.pixels.iter().any(|value| *value > 0));
+        assert!(at_1x.top > 0, "'A' sits above the baseline");
+
+        let at_2x = rasterizer
+            .rasterize(&request(font, glyph, size * 2.0))
+            .unwrap();
+        assert!(at_2x.height >= at_1x.height * 2 - 2);
+
+        let space = layout
+            .glyphs
+            .iter()
+            .find(|glyph| glyph.flags.contains(xui_interface::GlyphFlags::WHITESPACE))
+            .unwrap();
+        assert!(
+            rasterizer
+                .rasterize(&request(font, space.glyph_id, size))
+                .is_none()
+        );
+        // The font data renderers read is the face the glyphs came from.
+        let data = backend.fonts().font(font).unwrap();
+        assert!(!data.bytes().is_empty());
+    }
+
+    #[test]
+    fn rasterizes_on_other_threads_while_shaping_continues() {
+        fn send_sync<T: Send + Sync>() {}
+        send_sync::<SwashRasterizer<FFonts>>();
+        send_sync::<FBackend>();
+
+        let mut backend = FBackend::new();
+        if backend.face_count() == 0 {
+            return;
+        }
+        // Taken before any CJK fallback face is resolved: faces registered
+        // later must still reach the handle.
+        let rasterizer = backend.rasterizer().unwrap().clone();
+        let mut state = backend.create_state();
+        let layout = backend.layout_paragraph(&mut state, input("Ag 中文 العربية", 400.0));
+        let glyphs = inked(&layout);
+
+        let workers: Vec<_> = (0..4)
+            .map(|worker| {
+                let rasterizer = rasterizer.clone();
+                let glyphs = glyphs.clone();
+                std::thread::spawn(move || {
+                    let scale = 1.0 + worker as f32 * 0.5;
+                    glyphs.iter().all(|&(font, glyph, size)| {
+                        rasterizer
+                            .rasterize(&request(font, glyph, size * scale))
+                            .is_some()
+                    })
+                })
+            })
+            .collect();
+        // Shaping keeps going, resolving new fallback faces, meanwhile.
+        for text in ["日本語 テキスト", "עברית", "Ελληνικά 😀", "हिन्दी"]
+        {
+            let mut state = backend.create_state();
+            assert!(
+                !backend
+                    .layout_paragraph(&mut state, input(text, 200.0))
+                    .lines
+                    .is_empty()
+            );
+        }
+        for worker in workers {
+            assert!(
+                worker.join().unwrap(),
+                "every inked glyph renders on every thread"
+            );
+        }
     }
 
     #[test]

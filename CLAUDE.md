@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`xui` is a retained-mode, declarative GUI framework for Rust (edition 2024), organized as a Cargo workspace of small crates: a JSX-style `xui!` macro, a React-style hook/fiber runtime, taffy flexbox layout, a backend-independent render graph, Skia/wgpu backends, and a deterministic `.xpak` asset pipeline. `README.md`, `docs/architecture.md`, and `docs/components.md` are the authoritative long-form docs; API reference lives in `//!`/`///` doc comments (`cargo doc --no-deps --open`).
+`xui` is a retained-mode, declarative GUI framework for Rust (edition 2024), organized as a Cargo workspace of small crates: a JSX-style `xui!` macro, a React-style hook/fiber runtime, taffy flexbox layout, a backend-independent render graph, Vello (default) and Skia backends, and a deterministic `.xpak` asset pipeline. `README.md`, `docs/architecture.md`, and `docs/components.md` are the authoritative long-form docs; API reference lives in `//!`/`///` doc comments (`cargo doc --no-deps --open`).
 
 ## Commands
 
@@ -32,7 +32,7 @@ Assets are packed by each app's `build.rs` calling `xui_build::assets()`, so pla
 
 - **A crate using `#[xui::main]` (or `#[xui_macros::main]`) / `xui_core::include_assets!()` needs a build script calling `xui_build::assets()`** (with `xui-build` in `[build-dependencies]`, as `xui-example-app` has). It hands the generated bootstrap to the compiler via `cargo::rustc-env=XUI_ASSETS_BOOTSTRAP`; without it the crate only compiles through `cargo xui`. The bootstrap's generator lives in `xui-build` and its runtime half in `xui_core::assets::bootstrap` — change them together.
 - **`xui-table` is NOT a workspace member** (its directory exists but is absent from `Cargo.toml` `members`), so `cargo test -p xui-table` currently errors with "current package believes it's in a workspace when it's not". Add it to `members`/`default-members` before building it, or ask before doing so.
-- `xui-text` and `xui-text-engine` are referenced in docs but are not in the workspace; the live text backends are `xui-cosmic` (cosmic-text, default) and `xui-f` (HarfRust/fontique shaping, no rasterization).
+- `xui-text` and `xui-text-engine` are referenced in docs but are not in the workspace; the live text backends are `xui-cosmic` (cosmic-text, default) and `xui-f` (HarfRust/fontique shaping); both rasterize through `xui-swash`.
 - `xui-render-graph` is `#![forbid(unsafe_code)]` — keep it that way.
 - **`xui-core` and `xui-animation` do not depend on `xui-macros`.** The macros (`xui!`, `style!`, `#[component]`, `#[defaults]`, `#[main]`, `derive(Animatable)`) are re-exported by the `xui` facade (`xui::prelude::*`); workspace crates on `xui-core` import them from `xui_macros` directly. Generated code names the runtime as `xui_core` when that is a direct dependency and falls back to `xui` otherwise — `krate.rs` in `xui-macros` for the macros, `runtime_crate` in `xui-build` for the asset bootstrap — so anything a macro expands to must stay reachable through `xui`'s `pub use xui_core::*`. Don't add `xui-macros` back to `xui-core`.
 
@@ -52,15 +52,18 @@ app ──► xui (runtime, fiber, hooks, layout, style, widgets, render scene)
     xui-components ─► xui        built-in widgets (button, input, dialog, data_table, …)
     xui-table ─► xui             advanced_table + pure, window-free TableModel
     xui-shell ─► xui             host contract: PlatformWindow/SurfaceTarget/WindowOptions + Shell driver
-    xui-skia ─► xui, render-graph, shell   skia-safe backend; Metal/D3D12/Vulkan, softbuffer fallback (XUI_SKIA_GPU=0)
-    xui-winit ─► xui, shell, skia|wgpu, xui-cosmic, xui-f   winit host for xui-shell, runner
-    xui-macos ─► xui, shell, skia, xui-f   native AppKit host for xui-shell (objc2 0.6); empty off macOS; xui-example-app runs on it
-    xui-windows ─► xui, shell, skia, xui-f   native Win32 host for xui-shell (windows 0.62, IMM32 IME); empty off Windows; never built or run — see its lib.rs
+    xui-vello ─► xui, render-graph, shell, xui-wgpu-text   the default backend: vello + wgpu, composes layers itself, text from glyph bitmaps
+    xui-skia ─► xui, render-graph, shell   optional skia-safe backend; Metal/D3D12/Vulkan, softbuffer fallback (XUI_SKIA_GPU=0)
+    xui-swash ─► xui-interface   swash GlyphRasterizer over any FontCollection, with a bitmap cache; used by xui-f, xui-cosmic
+    xui-wgpu-text ─► xui-interface, wgpu   draws glyph runs (and carets/underlines) with wgpu: GlyphAtlas (etagere allocation and eviction over the page textures, no CPU copy), text.wgsl; xui-vello draws its text with it
+    xui-winit ─► xui, shell, vello|skia|wgpu, xui-cosmic, xui-f   winit host for xui-shell, runner
+    xui-macos ─► xui, shell, vello|skia, xui-f   native AppKit host for xui-shell (objc2 0.6); empty off macOS; xui-example-app runs on it
+    xui-windows ─► xui, shell, vello|skia, xui-f   native Win32 host for xui-shell (windows 0.62, IMM32 IME); empty off Windows; never built or run — see its lib.rs
     lucide-rs                    embedded Lucide SVG set as IconData (build.rs codegen)
     xui-pak ◄─ xui-pak-build ◄─ xui-build (build.rs) ◄─ xui-cli (cargo xui); xui-pak-build ◄─ xui-pak-cli (xpak)
 ```
 
-**Window hosts:** a host (`xui-winit`, or the native `xui-macos`) owns the event loop and window, translates native events into `xui_shell::ShellEvent`, and implements `PlatformWindow`; `xui_shell::Shell` holds all platform-independent host state (modifiers, buttons, visibility, first-frame reveal, cursor/IME sync). Render backends take `Arc<dyn SurfaceTarget>`, never a winit type — keep winit out of `xui-shell` and `xui-skia`.
+**Window hosts:** a host (`xui-winit`, or the native `xui-macos`) owns the event loop and window, translates native events into `xui_shell::ShellEvent`, and implements `PlatformWindow`; `xui_shell::Shell` holds all platform-independent host state (modifiers, buttons, visibility, first-frame reveal, cursor/IME sync). Render backends take `Arc<dyn SurfaceTarget>`, never a winit type — keep winit out of `xui-shell`, `xui-vello` and `xui-skia`.
 
 **Host ↔ runtime contract** (design and status in `docs/shell-api.md`): besides events in and diffed `PlatformOutput` out, the application leaves one-shot `PlatformCommand`s and `PlatformRequest`s (clipboard, dialogs, window commands) on `App::platform()` (a `PlatformHandle`); `Shell` drains them into `PlatformWindow::perform`, and replies come back through the event route, never from inside `perform`. Everything the runtime produces or consumes here lives in `xui-interface::platform`, because `xui-shell` depends on `xui-core`. Hosts implement only what they can — every new `PlatformWindow` method defaults to "unsupported". A host should hold a `ShellHandle` (re-entrant `submit`) rather than keep its own event queue, and pass native event timestamps to `dispatch_event`/`submit`. Phases 0 (types and plumbing) and 1 (`xui-macos` on it) are done; `xui-winit` and `xui-windows` do not use it yet, and of the widgets only `TextInputWidget` does (copy, cut, paste, select all, undo, redo, by key or as commands; a widget reaches the host through `EventContext::send_platform` / `request_platform`, and the answer comes back to it as `SemanticEvent::PlatformReply`). `cargo run -p xui-macos --example smoke` drives a real window and asserts the macOS host's behaviour (needs the screen on and unlocked, else it stops at its first check; it takes the clipboard briefly and restores it).
 
@@ -70,7 +73,9 @@ app ──► xui (runtime, fiber, hooks, layout, style, widgets, render scene)
 
 **Phase guards:** `slot` keeps a thread-local `RenderPhase` (`Render`/`Event`/`Effect`/`Commit`). Hook storage may only be written in `Event`/`Effect`; debug builds assert this. If a test or new code panics on a phase assertion, the fix is usually where the write happens, not the guard.
 
-**Backend feature flags (`xui-winit`):** `skia` (default) → `xui-skia`; `wgpu` → standalone wgpu renderer; `skia-wgpu` → Skia running on a wgpu-owned device so a `CanvasController::with_gpu_painter` canvas can composite its own shader output (enables `xui-core/wgpu` and `xui-skia/wgpu`). `xui-skia` itself defaults to its `wgpu` feature; `wgpu-hal` is pinned to `>=29.0.4` deliberately (see comment in `xui-skia/Cargo.toml`).
+**Text backend contract** (`xui-interface/src/text.rs`): `TextBackend` is a bundle of associated types — `Fonts: FontCollection` (shared `Arc`, `&self`, `Send + Sync`; every font id a layout uses must resolve through it until its `epoch` moves), `Shaper` (the `&mut` layout context; most backends use `Shaper = Self`), and `Rasterizer: GlyphRasterizer` (`&self`, `Send + Sync`, `NoRasterizer` when absent). Layouts are scale-independent; renderers build `GlyphRequest`s (font, glyph, physical ppem, subpixel offset, `RasterOptions`) themselves. There is no per-glyph key and no text-backend scale factor. `GlyphImage` pixels: `Mask` = 1 byte/px, `SubpixelMask` = RGBA, `Color` = premultiplied RGBA.
+
+**Backend feature flags (every host, and the `xui` facade):** `vello` (default) → `xui-vello`, the host's `runner`; `skia` → `xui-skia`, the host's `skia_runner` (independent of `vello`); `skia-wgpu` → Skia running on a wgpu-owned device so a `CanvasController::with_gpu_painter` canvas can composite its own shader output (enables `xui-core/wgpu` and `xui-skia/wgpu`; Vello always runs on its own wgpu device, so it needs no such flag). `xui-winit` also has `wgpu` → the standalone wgpu renderer (`wgpu_runner`), which does not compile against the current wgpu. `xui-example-app` runs on Vello; `--features skia` runs it on Skia, and its snapshot tests render headless through Skia either way. `xui-skia` itself defaults to its `wgpu` feature; `wgpu-hal` is pinned to `>=29.0.4` deliberately (see comment in `xui-skia/Cargo.toml`).
 
 **Components contract** (`docs/components.md`): stateful controls take an optional controlled value + `default_*` + `on_*` callback; controlled values are the source of truth. Layout primitives (`ContainerWidget`, `GridWidget`, portals) stay in `xui`, not `xui-components`. Disabled items are removed from focus navigation; modal overlays trap/restore focus and render in a portal.
 

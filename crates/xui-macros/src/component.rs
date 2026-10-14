@@ -400,7 +400,12 @@ pub fn expand_component_function(
             }
         }
     };
-    let attrs = &function.attrs;
+    let tag_docs = component_documentation(function, &original_name);
+    let attrs: Vec<_> = function
+        .attrs
+        .iter()
+        .filter(|attr| !attr.path().is_ident("doc"))
+        .collect();
     let vis = &function.vis;
     let sig = &function.sig;
     let body = &function.body;
@@ -428,6 +433,7 @@ pub fn expand_component_function(
         quote!()
     } else {
         quote! {
+            #[doc(hidden)]
             #[derive(Default)]
             pub struct #element_name {
                 __xui_key: ::std::option::Option<#xui_core::fiber::Key>,
@@ -454,6 +460,7 @@ pub fn expand_component_function(
                 }
             }
 
+            #tag_docs
             pub fn #original_name() -> #element_name {
                 #element_name::default()
             }
@@ -474,11 +481,13 @@ pub fn expand_component_function(
                 #props_tokens
 
                 #(#attrs)*
+                #[doc(hidden)]
                 pub #sig {
                     #(#prop_bindings)*
                     #body
                 }
 
+                #[doc(hidden)]
                 pub fn #component_type_name #fn_params () -> #xui_core::ComponentType #fn_where {
                     #xui_core::ComponentType::of::<#identity_type>(
                         concat!(module_path!(), "::", stringify!(#original_name)),
@@ -487,6 +496,7 @@ pub fn expand_component_function(
 
                 #component_call
 
+                #[doc(hidden)]
                 pub fn #component_handle_name #fn_params () -> #xui_core::ComponentRender #fn_where {
                     #xui_core::ComponentRender::new(
                         #component_type_name #turbofish (),
@@ -498,10 +508,30 @@ pub fn expand_component_function(
             }
 
             #[allow(unused_imports)]
-            #vis use #module_name::{#component_handle_name, #component_name, #original_name};
+            #[doc(hidden)]
+            #vis use #module_name::{#component_handle_name, #component_name};
+            #[doc(inline)]
+            #[allow(unused_imports)]
+            #vis use #module_name::#original_name;
             #props_reexport
         },
     })
+}
+
+/// Preserves user-written doc attributes on the DSL entry point. Non-doc
+/// attributes remain on the render implementation as before.
+fn component_documentation(function: &ComponentFunction, tag: &Ident) -> TokenStream2 {
+    let attrs: Vec<_> = function
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("doc"))
+        .collect();
+    if attrs.is_empty() {
+        let doc = format!("Constructs the `{tag}` component for use with `view!` or `xui!`.");
+        quote!(#[doc = #doc])
+    } else {
+        quote!(#(#attrs)*)
+    }
 }
 
 fn generate_component_props(
@@ -516,6 +546,7 @@ fn generate_component_props(
     // the facade decides what the outside world can reach.
     let vis = quote!(pub);
     let builder_name = component_props_builder_name(props_name);
+    let tag_docs = component_documentation(function, tag_name);
     let mut props = Vec::new();
     let mut has_children = false;
 
@@ -621,7 +652,11 @@ fn generate_component_props(
         .map(|prop| {
             let field = &prop.field;
             let field_type = &prop.field_type;
-            quote!(pub #field: #field_type)
+            let doc = match &prop.default_value {
+                Some(default) => format!("The `{field}` prop. Defaults to `{default}` when omitted."),
+                None => format!("The required `{field}` prop; it must be supplied when constructing the component."),
+            };
+            quote!(#[doc = #doc] pub #field: #field_type)
         })
         .collect::<Vec<_>>();
     let builder_fields = props
@@ -680,14 +715,16 @@ fn generate_component_props(
                  default value with `#[defaults({field} = ..)]`"
             );
             quote! {
-                #[doc = "Implemented only when this required component prop has been set on the typed builder."]
+                #[doc(hidden)]
                 #[diagnostic::on_unimplemented(
                     message = #missing_message,
                     label = #missing_label,
                     note = #missing_note,
                 )]
                 #vis trait #required_trait {}
+                #[doc(hidden)]
                 #vis struct #missing;
+                #[doc(hidden)]
                 #vis struct #set;
                 impl #required_trait for #set {}
             }
@@ -861,6 +898,7 @@ fn generate_component_props(
 
     Ok(GeneratedComponentProps {
         tokens: quote! {
+            #[doc = concat!("Owned props for [`", stringify!(#tag_name), "()`]. See the component documentation for behavior, defaults, and examples.")]
             #vis struct #props_name #props_params #user_where {
                 #(#fields,)*
                 #phantom_field
@@ -868,18 +906,20 @@ fn generate_component_props(
 
             #(#required_markers)*
 
+            #[doc(hidden)]
             #vis struct #builder_name #builder_generics #user_where {
                 #(#builder_fields,)*
                 __xui_key: ::std::option::Option<#xui_core::fiber::Key>,
                 _states: ::std::marker::PhantomData<#builder_phantom_type>,
             }
 
-            /// `<tag ... />` expands to `tag()`, the same as a host widget.
+            #tag_docs
             pub fn #tag_name #props_params () -> #builder_initial_type #user_where {
                 <#props_type>::builder()
             }
 
             impl #props_params #props_type #user_where {
+                #[doc(hidden)]
                 pub fn builder() -> #builder_initial_type {
                     #builder_name {
                         #(#builder_init_values,)*

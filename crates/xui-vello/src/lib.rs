@@ -6,8 +6,22 @@
 //!
 //! # Who does what
 //!
-//! **Vello draws**: shapes, paths, gradients, shadows, glyph runs, images, and
-//! the clips around them. It composes nothing.
+//! **Vello draws**: shapes, paths, gradients, shadows, images, and the clips
+//! around them, and glyph runs it cannot draw from bitmaps. It composes
+//! nothing.
+//!
+//! **`xui-wgpu-text` draws text** from glyph bitmaps when the text backend has
+//! a rasterizer ([`VelloBackendOptions::bitmap_text`]): text whose transform is
+//! a translation and a uniform scale, cut by nothing but rectangles, and that
+//! fits the glyph atlas ([`VelloBackendOptions::glyph_atlas`]; text that does
+//! not, even at the atlas's limit, is outlines for that frame). Its
+//! glyphs, caret and decorations wait for the band they were drawn in to close
+//! and are drawn over it then, so a band is not cut for every text; a later
+//! draw in the band that overlaps one closes the band first. Text right after
+//! the first band on an opaque clear colour is drawn into that band as Vello
+//! wrote it (encoded), as Vello's own glyphs would be; any other is drawn over
+//! the composition in linear light, as a band of Vello glyphs would be
+//! composed.
 //!
 //! **This crate composes**, with its own `wgpu` passes
 //! ([`filter.wgsl`](../src/filter.wgsl)), following the frame's layer tree:
@@ -91,6 +105,9 @@ mod text;
 mod texture;
 
 pub use backend::{FrameStats, ResourceStats, VelloBackend, VelloBackendOptions};
+pub use xui_wgpu_text::AtlasOptions;
 pub use context::WgpuContext;
 pub use encode::Unsupported;
 pub use error::VelloBackendError;
+/// The `wgpu` the backend renders with, for canvas GPU painters on its device.
+pub use wgpu;

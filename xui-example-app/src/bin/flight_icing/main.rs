@@ -1,10 +1,14 @@
 //! The aircraft icing monitoring dashboard: a full application-style demo.
 //!
-//! `cargo run -p xui-example-app --bin flight-icing`
+//! `cargo run -p xui-example-app --bin flight-icing` (on Skia: add
+//! `--features skia`)
 
 mod dashboard;
 
+#[cfg(not(feature = "skia"))]
 use xui_macos::runner;
+#[cfg(feature = "skia")]
+use xui_macos::skia_runner as runner;
 use xui_macos::{MacOsWindowOptions, MacRunnerOptions, PhysicalSize, WindowOptions};
 
 #[xui_macros::main]

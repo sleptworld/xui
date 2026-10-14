@@ -32,11 +32,12 @@
 //!
 //! # Features
 //!
-//! - `skia` (default) — [`runner`], on `xui-skia` with the `xui-f` text backend.
+//! - `vello` (default) — `runner`, on `xui-vello` with the `xui-f` text
+//!   backend.
+//! - `skia` — `skia_runner`, on `xui-skia` with the `xui-f` text backend.
+//!   Independent of `vello`.
 //! - `skia-wgpu` — Skia on a wgpu-owned device, so a canvas GPU painter can
 //!   composite; see `xui-winit`'s feature of the same name.
-//! - `vello` — [`vello_runner`], on `xui-vello` with the `xui-f` text backend.
-//!   Independent of `skia`.
 
 #![cfg(target_os = "macos")]
 
@@ -50,13 +51,19 @@ mod time;
 mod view;
 mod window;
 
-#[cfg(feature = "skia")]
-pub use app::runner;
 #[cfg(feature = "vello")]
-pub use app::vello_runner;
+pub use app::runner;
+#[cfg(feature = "skia")]
+pub use app::skia_runner;
 pub use app::{MacBackendInitError, MacRunError, MacRunner, MacRunnerOptions};
 pub use window::MacWindow;
 pub use xui_shell::{MacOsWindowOptions, PhysicalSize, WindowOptions, WindowSize};
 
+#[cfg(feature = "vello")]
+pub use xui_vello::{VelloBackend, VelloBackendOptions, wgpu};
+
 #[cfg(feature = "skia-wgpu")]
-pub use xui_skia::{WgpuContext, WgpuImage, wgpu};
+pub use xui_skia::{WgpuContext, WgpuImage};
+// The same crate either way; named once.
+#[cfg(all(feature = "skia-wgpu", not(feature = "vello")))]
+pub use xui_skia::wgpu;

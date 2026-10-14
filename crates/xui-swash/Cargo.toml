@@ -1,0 +1,10 @@
+[package]
+name = "xui-swash"
+version = "0.1.0"
+edition = "2024"
+description = "Shared swash glyph rasterizer and glyph atlas for xui text backends"
+
+[dependencies]
+moka = { version = "0.12.15", features = ["sync"] }
+swash = "0.2.7"
+xui-interface = { path = "../xui-interface" }

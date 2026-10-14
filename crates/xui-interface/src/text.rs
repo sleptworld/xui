@@ -1,12 +1,50 @@
+use std::convert::Infallible;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
+use std::marker::PhantomData;
 use std::ops::Range;
-use std::path::Path;
 use std::sync::Arc;
 
 use crate::{Color, ComputedTextStyle, NodeLifecycleEvent, Point, Rect, Size};
 
+/// A text backend: fonts, shaping and (optionally) glyph rasterization, as
+/// three parts with different ownership.
+///
+/// - [`fonts`](Self::fonts) is shared, read-only and thread-safe. Renderers
+///   keep a clone of the `Arc` and resolve the fonts of any layout through it,
+///   from any thread.
+/// - [`shaper`](Self::shaper) is the mutable shaping context the host lays
+///   text out with. A backend whose shaping state lives in the backend itself
+///   uses `type Shaper = Self`.
+/// - [`rasterizer`](Self::rasterizer), when present, renders glyphs from any
+///   thread for renderers that draw bitmaps. Renderers that draw outlines
+///   themselves (Skia, Vello) only need the fonts.
+///
+/// Every font id the backend hands out, in a layout or from
+/// [`load_font_bytes`](Self::load_font_bytes) / [`query`](Self::query),
+/// resolves through [`fonts`](Self::fonts) until its epoch changes.
+pub trait TextBackend {
+    type FontId: Copy + Eq + Hash + Debug + Send + Sync + 'static;
+    type Fonts: FontCollection<FontId = Self::FontId>;
+    type Shaper: Shaper<FontId = Self::FontId>;
+    type Rasterizer: GlyphRasterizer<FontId = Self::FontId>;
+
+    fn fonts(&self) -> &Arc<Self::Fonts>;
+    fn shaper(&mut self) -> &mut Self::Shaper;
+    /// `None` for backends that cannot render glyph bitmaps; their
+    /// `Rasterizer` is usually [`NoRasterizer`].
+    fn rasterizer(&self) -> Option<&Arc<Self::Rasterizer>>;
+
+    /// Makes the platform's installed fonts available, if they are not yet.
+    fn load_system_fonts(&mut self);
+    /// Registers a font file. Returns the first face it contains, or `None`
+    /// when the bytes are not a font.
+    fn load_font_bytes(&mut self, bytes: Arc<[u8]>) -> Option<Self::FontId>;
+    fn query(&mut self, query: &FontQuery) -> Option<Self::FontId>;
+}
+
 pub trait Shaper {
+    type FontId: Copy + Eq + Hash;
     /// Persistent backend state for one logical text unit.
     ///
     /// Hosts create this once when the unit is created and reuse it across
@@ -14,31 +52,110 @@ pub trait Shaper {
     /// invalidate or rebuild cached internals when the input content, shaping
     /// style, or font context changes.
     type State;
-    type GlyphKey: Clone + Eq + Hash;
-    type FontId: Clone + Copy + Eq + Hash;
 
     /// Creates the state for a newly created logical text unit.
     fn create_state(&mut self) -> Self::State;
+    /// Lays a paragraph out in logical pixels. The result does not depend on
+    /// the scale factor: physical sizes are a rasterization concern.
     fn layout_paragraph(
         &mut self,
         state: &mut Self::State,
         input: TextLayoutInput,
-    ) -> ParagraphLayout<Self::FontId, Self::GlyphKey>;
+    ) -> ParagraphLayout<Self::FontId>;
 
     fn handle_node_lifecycle(&mut self, _event: &NodeLifecycleEvent) {}
 }
 
-pub trait FontDatabase {
-    type FontId: Copy + Eq + Hash;
+/// The fonts a backend has handed out ids for, shared with renderers.
+pub trait FontCollection: Send + Sync {
+    type FontId: Copy + Eq + Hash + Debug + Send + Sync + 'static;
+    type Font: FontData;
+
+    /// Advances whenever fonts are added or replaced. Layouts shaped under an
+    /// older epoch may resolve fallbacks differently, and an id may refer to
+    /// a different font, so caches keyed on font ids are dropped when it
+    /// changes.
     fn epoch(&self) -> u64;
-    fn load_system_fonts(&mut self);
-    fn load_font_bytes(&mut self, bytes: Arc<[u8]>) -> Self::FontId;
-    fn query(&mut self, query: &FontQuery) -> Option<Self::FontId>;
-    /// Returns the source data for a shaped font.
-    ///
-    /// `index` is the face index in a font collection and must be preserved by
-    /// renderers when constructing their native font object.
-    fn font_data(&self, id: Self::FontId) -> Option<FontDataRef<'_>>;
+    fn font(&self, id: Self::FontId) -> Option<Self::Font>;
+}
+
+/// One font face's data, as the backend holds it.
+///
+/// Handles are cheap to clone (reference counted) and can be kept and sent
+/// across threads, so a renderer can build its native font object once and
+/// reuse it without copying the file.
+pub trait FontData: Clone + Send + Sync + 'static {
+    /// The whole font file or collection the face is in.
+    fn bytes(&self) -> &[u8];
+    /// Index of the face in a collection; renderers must preserve it.
+    fn index(&self) -> u32;
+    /// The platform's identity for an installed font, for renderers that
+    /// prefer their native font manager. `None` for application fonts.
+    fn system(&self) -> Option<SystemFontInfo<'_>> {
+        None
+    }
+}
+
+/// How the platform font manager knows an installed face.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SystemFontInfo<'a> {
+    pub family: &'a str,
+    pub postscript_name: &'a str,
+    pub weight: FontWeight,
+    pub style: FontStyle,
+    pub stretch: FontStretch,
+}
+
+/// Uninhabited [`FontData`], for collections that never resolve a font.
+impl FontData for Infallible {
+    fn bytes(&self) -> &[u8] {
+        match *self {}
+    }
+
+    fn index(&self) -> u32 {
+        match *self {}
+    }
+}
+
+/// A collection that resolves nothing, for backends without font data (test
+/// doubles, measuring-only shapers).
+pub struct NoFonts<F> {
+    epoch: std::sync::atomic::AtomicU64,
+    _font: PhantomData<fn() -> F>,
+}
+
+impl<F> NoFonts<F> {
+    pub fn new() -> Self {
+        Self {
+            epoch: std::sync::atomic::AtomicU64::new(0),
+            _font: PhantomData,
+        }
+    }
+
+    /// Advances the epoch, as a backend does when its fonts change.
+    pub fn bump_epoch(&self) {
+        self.epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl<F> Default for NoFonts<F> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<F: Copy + Eq + Hash + Debug + Send + Sync + 'static> FontCollection for NoFonts<F> {
+    type FontId = F;
+    type Font = Infallible;
+
+    fn epoch(&self) -> u64 {
+        self.epoch.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn font(&self, _id: F) -> Option<Infallible> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -62,44 +179,10 @@ pub enum FontStretch {
     UltraExpanded,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum FontDataRef<'a> {
-    Bytes {
-        bytes: &'a [u8],
-        index: u32,
-    },
-    /// A system font whose platform source exposes collection bytes rather
-    /// than a stable filesystem handle. Renderers should prefer their native
-    /// font manager and use `bytes` as a fallback.
-    SystemMemory {
-        bytes: &'a [u8],
-        index: u32,
-        family: &'a str,
-        postscript_name: &'a str,
-        weight: FontWeight,
-        style: FontStyle,
-        stretch: FontStretch,
-    },
-    System {
-        handle: SystemFontHandle,
-        path: &'a Path,
-        index: u32,
-        /// Family name used by the platform font manager. Some system font
-        /// collections cannot be reconstructed reliably from their raw bytes.
-        family: &'a str,
-        postscript_name: &'a str,
-        weight: FontWeight,
-        style: FontStyle,
-        stretch: FontStretch,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SystemFontHandle(pub u64);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct QuantizedSize(pub u16);
 
+/// Horizontal position of a glyph within its pixel, in quarters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SubpixelOffset {
     Zero,
@@ -108,14 +191,144 @@ pub enum SubpixelOffset {
     ThreeQuarter,
 }
 
-#[derive(Debug, Clone)]
-pub struct RasterizedGlyph {
+impl SubpixelOffset {
+    /// Splits a physical pen coordinate into the whole pixel a bitmap is
+    /// placed at and the offset it is rendered with. Positions round to the
+    /// nearest quarter, so `3.9` lands on pixel 4 with no offset.
+    pub fn split(position: f32) -> (i32, Self) {
+        let quarters = (position * 4.0).round();
+        let whole = (quarters / 4.0).floor();
+        let offset = match (quarters - whole * 4.0) as i32 {
+            1 => Self::Quarter,
+            2 => Self::Half,
+            3 => Self::ThreeQuarter,
+            _ => Self::Zero,
+        };
+        (whole as i32, offset)
+    }
+
+    pub const fn as_f32(self) -> f32 {
+        match self {
+            Self::Zero => 0.0,
+            Self::Quarter => 0.25,
+            Self::Half => 0.5,
+            Self::ThreeQuarter => 0.75,
+        }
+    }
+}
+
+/// How a glyph outline is turned into pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RasterOptions {
+    /// Apply TrueType/CFF hinting. Off on macOS by default, where text keeps
+    /// its outline shapes, on elsewhere.
+    pub hinting: bool,
+    /// Produce RGB subpixel (LCD) coverage instead of a single alpha channel.
+    pub subpixel_antialiasing: bool,
+}
+
+impl Default for RasterOptions {
+    fn default() -> Self {
+        Self {
+            hinting: !cfg!(target_os = "macos"),
+            subpixel_antialiasing: false,
+        }
+    }
+}
+
+/// Everything that decides what a rendered glyph looks like.
+///
+/// Built by the renderer at draw time, never by the shaper: the physical size
+/// and the subpixel offset depend on the scale factor, layer transforms and
+/// the final pen position, none of which layout knows. Requests are plain
+/// values, so renderers can key their own caches and atlases on them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GlyphRequest<F> {
+    pub font: F,
+    pub glyph: GlyphId,
+    /// Physical pixels per em, as `f32` bits: the logical font size times
+    /// every scale applied on the way to the screen.
+    pub ppem_bits: u32,
+    pub subpixel_x: SubpixelOffset,
+    pub options: RasterOptions,
+}
+
+impl<F> GlyphRequest<F> {
+    pub fn new(
+        font: F,
+        glyph: GlyphId,
+        ppem: f32,
+        subpixel_x: SubpixelOffset,
+        options: RasterOptions,
+    ) -> Self {
+        Self {
+            font,
+            glyph,
+            ppem_bits: ppem.to_bits(),
+            subpixel_x,
+            options,
+        }
+    }
+
+    pub fn ppem(&self) -> f32 {
+        f32::from_bits(self.ppem_bits)
+    }
+}
+
+/// A rendered glyph in device pixels.
+///
+/// Pixels are row-major with no row padding, laid out by `format`:
+///
+/// - [`RasterizedGlyphFormat::Mask`]: one coverage byte per pixel.
+/// - [`RasterizedGlyphFormat::SubpixelMask`]: RGBA, per-channel coverage in
+///   R, G and B.
+/// - [`RasterizedGlyphFormat::Color`]: RGBA with premultiplied alpha.
+///
+/// `left` is the offset of the bitmap's left edge from the pen position and
+/// `top` the distance from the baseline up to its top edge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlyphImage {
     pub format: RasterizedGlyphFormat,
     pub width: u32,
     pub height: u32,
     pub left: i32,
     pub top: i32,
     pub pixels: Arc<[u8]>,
+}
+
+impl GlyphImage {
+    pub const fn bytes_per_pixel(&self) -> usize {
+        self.format.bytes_per_pixel()
+    }
+
+    /// Bytes per row of `pixels`.
+    pub const fn stride(&self) -> usize {
+        self.width as usize * self.bytes_per_pixel()
+    }
+}
+
+/// Renders glyphs from any thread.
+///
+/// Every input is in the request, so the result does not depend on backend
+/// state such as a scale factor, and the rasterizer can be shared (`Arc`) with
+/// render threads while shaping goes on elsewhere. Implementations cache their
+/// results: a repeated request should cost a lookup and an `Arc` clone.
+pub trait GlyphRasterizer: Send + Sync {
+    type FontId: Copy + Eq + Hash + Send + Sync;
+
+    /// `None` when the glyph has no ink (whitespace) or cannot be rendered.
+    fn rasterize(&self, request: &GlyphRequest<Self::FontId>) -> Option<GlyphImage>;
+}
+
+/// The rasterizer of a backend that has none.
+pub struct NoRasterizer<F>(PhantomData<fn() -> F>);
+
+impl<F: Copy + Eq + Hash + Send + Sync> GlyphRasterizer for NoRasterizer<F> {
+    type FontId = F;
+
+    fn rasterize(&self, _request: &GlyphRequest<F>) -> Option<GlyphImage> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -125,18 +338,14 @@ pub enum RasterizedGlyphFormat {
     Color,
 }
 
-pub trait GlyphRasterizer {
-    type GlyphKey;
-    fn rasterize(&mut self, key: Self::GlyphKey) -> Option<RasterizedGlyph>;
-}
-
-pub trait TextBackend:
-    FontDatabase
-    + Shaper<FontId = <Self as FontDatabase>::FontId>
-    + GlyphRasterizer<GlyphKey = <Self as Shaper>::GlyphKey>
-{
-    /// Notify backends whose glyph cache keys depend on physical pixel scale.
-    fn set_scale_factor(&mut self, _scale_factor: f32) {}
+impl RasterizedGlyphFormat {
+    /// Bytes per pixel of a [`GlyphImage`] in this format.
+    pub const fn bytes_per_pixel(self) -> usize {
+        match self {
+            Self::Mask => 1,
+            Self::SubpixelMask | Self::Color => 4,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -448,14 +657,14 @@ fn hash_color<H: Hasher>(color: Color, state: &mut H) {
 }
 
 #[derive(Debug, Clone)]
-pub struct ParagraphLayout<F, K = ()> {
+pub struct ParagraphLayout<F> {
     pub lines: Vec<LineLayout>,
     pub runs: Vec<GlyphRun<F>>,
-    pub glyphs: Vec<GlyphInstance<K>>,
+    pub glyphs: Vec<GlyphInstance>,
     pub clusters: Vec<TextCluster>,
 }
 
-impl<F, K> ParagraphLayout<F, K> {
+impl<F> ParagraphLayout<F> {
     pub fn size(&self) -> Size<f32> {
         let width = self
             .lines
@@ -776,8 +985,7 @@ pub struct GlyphRun<F> {
 }
 
 #[derive(Debug, Clone)]
-pub struct GlyphInstance<K = ()> {
-    pub key: K,
+pub struct GlyphInstance {
     pub glyph_id: GlyphId,
     /// Glyph origin (the point on the baseline) in paragraph-local logical
     /// coordinates. A renderer can pass these positions directly to its native
@@ -939,6 +1147,38 @@ pub struct TextLayoutKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subpixel_split_rounds_to_the_nearest_quarter() {
+        use SubpixelOffset::*;
+        assert_eq!(SubpixelOffset::split(3.0), (3, Zero));
+        assert_eq!(SubpixelOffset::split(3.1), (3, Zero));
+        assert_eq!(SubpixelOffset::split(3.2), (3, Quarter));
+        assert_eq!(SubpixelOffset::split(3.5), (3, Half));
+        assert_eq!(SubpixelOffset::split(3.7), (3, ThreeQuarter));
+        assert_eq!(SubpixelOffset::split(3.9), (4, Zero));
+        assert_eq!(SubpixelOffset::split(-0.3), (-1, ThreeQuarter));
+        assert_eq!(ThreeQuarter.as_f32(), 0.75);
+    }
+
+    #[test]
+    fn glyph_image_rows_follow_the_format() {
+        let mask = GlyphImage {
+            format: RasterizedGlyphFormat::Mask,
+            width: 2,
+            height: 1,
+            left: 0,
+            top: 1,
+            pixels: Arc::from(&[10u8, 200][..]),
+        };
+        assert_eq!(mask.stride(), 2);
+        let color = GlyphImage {
+            format: RasterizedGlyphFormat::Color,
+            pixels: Arc::from(&[1u8, 2, 3, 4, 5, 6, 7, 8][..]),
+            ..mask
+        };
+        assert_eq!(color.stride(), 8);
+    }
 
     fn multiline_layout() -> ParagraphLayout<u32> {
         let lines = vec![

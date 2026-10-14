@@ -1,10 +1,52 @@
+//! Loading placeholders, progress activity, and contextual messages.
+//!
+//! [`skeleton`] supplies static decoration, [`spinner`] animates a cached icon transform,
+//! and [`callout`] combines arbitrary content with an optional title and [`CalloutTone`].
+//! Determinate progress is provided by [`crate::controls::progress`].
+//!
+//! # Components
+//!
+//! | Component | Purpose |
+//! | --- | --- |
+//! | [`skeleton`](fn@self::skeleton) | A static, decorative placeholder for content that has not loaded. |
+//! | [`spinner`](fn@self::spinner) | An indeterminate loading indicator rendered as a rotating cached vector icon. |
+//! | [`callout`](fn@self::callout) | A bordered message panel with an optional title and semantic tone. |
+
 use std::time::Duration;
 
+use crate::layout::MergeClone;
 use xui_core::prelude::*;
-use xui_macros::{component, defaults};
+use xui_macros::{component, view};
 
+/// A static, decorative placeholder for content that has not loaded.
+///
+/// `width` and `height` set the placeholder dimensions, and `style` overrides the muted
+/// fill and rounded corners. The placeholder is hidden from accessibility. It schedules
+/// no animation frames.
+///
+/// # Props
+///
+/// | Prop | Type | Default |
+/// | --- | --- | --- |
+/// | `width` | `Sizing` | `Sizing::Fill` |
+/// | `height` | `Sizing` | `Sizing::fix(16.0)` |
+/// | `style` | `Style` | `Style::new()` |
+///
+/// # Example
+///
+/// ```rust
+/// use xui_core::prelude::*;
+/// use xui_components::*;
+/// use xui_macros::view;
+///
+/// let _ = view! { skeleton(width: Sizing::fix(160.0), height: Sizing::fix(20.0)) };
+/// ```
 #[component]
-#[defaults(width = Sizing::Fill, height = Sizing::fix(16.0), style = Style::new())]
+#[defaults(
+    width = Sizing::Fill,
+    height = Sizing::fix(16.0),
+    style = Style::new(),
+)]
 pub fn skeleton(width: &Sizing, height: &Sizing, style: &Style) {
     let mut root_style = Style::new()
         .width(*width)
@@ -12,44 +54,86 @@ pub fn skeleton(width: &Sizing, height: &Sizing, style: &Style) {
         .background(ColorToken::MutedSurface)
         .border_radius(RadiusToken::Sm);
     root_style.merge(style);
-    ContainerWidget::new()
-        .style(root_style)
-        .into_element_desc(vec![])
+    view! {
+        container(
+            style: root_style,
+            accessibility_hidden: true,
+        )
+    }
 }
 
 /// One turn of a [`spinner`].
 const SPINNER_PERIOD: Duration = Duration::from_millis(800);
 
-/// An indeterminate progress indicator: Lucide's `loader-circle`, turning.
+/// An indeterminate loading indicator rendered as a rotating cached vector icon.
 ///
-/// The turn is a looping style animation of the icon's rotation, so it costs a
-/// transform per frame -- the icon is drawn once and the renderer moves the
-/// picture -- and stops asking for frames while the window is off screen. It
-/// takes the text color, like text does; set `color` in `style` to change it.
+/// `period` sets the turn duration and `paused` stops rotation. The animation changes the
+/// icon transform instead of rebuilding the component each frame, and the runtime stops
+/// requesting frames while the window is hidden. `label` supplies accessibility text;
+/// `style` sets the root, including the inherited icon color.
+///
+/// # Props
+///
+/// | Prop | Type | Default |
+/// | --- | --- | --- |
+/// | `label` | `String` | `"Loading".to_string()` |
+/// | `size` | `f32` | `24.0` |
+/// | `style` | `Style` | `Style::new()` |
+/// | `period` | `Duration` | `SPINNER_PERIOD` |
+/// | `paused` | `bool` | `false` |
+///
+/// # Example
+///
+/// ```rust
+/// use xui_core::prelude::*;
+/// use xui_components::*;
+/// use xui_macros::view;
+///
+/// let _ = view! { spinner(size: 20.0, label: "Loading results") };
+/// ```
 #[component]
-#[defaults(label = "Loading".to_string(), size = 24.0, style = Style::new())]
-pub fn spinner(label: &String, size: &f32, style: &Style) {
+#[defaults(
+    label = "Loading".to_string(),
+    size = 24.0,
+    style = Style::new(),
+    period = SPINNER_PERIOD,
+    paused = false,
+)]
+pub fn spinner(label: &String, size: &f32, style: &Style, period: &Duration, paused: &bool) {
+    let size = &if size.is_finite() {
+        size.max(0.0)
+    } else {
+        24.0
+    };
     let mut root_style = Style::new()
         .size(Size::fix(*size, *size))
         .align(AlignStyle::Center)
         .justify(JustifyStyle::Center);
     root_style.merge(style);
-    let turn = Animation::new(
-        StylePatch::new().rotate(0.0),
-        StylePatch::new().rotate(std::f32::consts::TAU),
-        SPINNER_PERIOD,
-    )
-    .infinite();
-    ContainerWidget::new()
-        .style(root_style)
-        .accessibility_label(label.clone())
-        .into_element_desc(vec![
-            icon()
-                .from_icon_data(loader_circle_icon())
-                .size(*size)
-                .style(Style::new().animation(turn))
-                .into_element_desc(),
-        ])
+    let icon_style = if *paused {
+        Style::new()
+    } else {
+        Style::new().animation(
+            Animation::new(
+                StylePatch::new().rotate(0.0),
+                StylePatch::new().rotate(std::f32::consts::TAU),
+                (*period).max(Duration::from_millis(1)),
+            )
+            .infinite(),
+        )
+    };
+    view! {
+        container(
+            style: root_style,
+            accessibility_label: label.clone(),
+        ) {
+            icon(
+                from_icon_data: loader_circle_icon(),
+                size: *size,
+                style: icon_style,
+            )
+        }
+    }
 }
 
 /// Lucide `loader-circle`.
@@ -64,6 +148,7 @@ fn loader_circle_icon() -> IconData {
     .clone()
 }
 
+/// The accent emphasis of a contextual message panel.
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 pub enum CalloutTone {
     #[default]
@@ -73,9 +158,45 @@ pub enum CalloutTone {
     Danger,
 }
 
+/// A bordered message panel with an optional title and semantic tone.
+///
+/// `content` accepts arbitrary elements. `tone` chooses the accent border, `title_style`
+/// customizes the title, and `style` overrides the panel. The content inherits the theme
+/// foreground and background.
+///
+/// # Props
+///
+/// | Prop | Type | Default |
+/// | --- | --- | --- |
+/// | `content` | `ElementDesc` | **Required** |
+/// | `title` | `Option<String>` | `None` |
+/// | `tone` | `CalloutTone` | `CalloutTone::Info` |
+/// | `style` | `Style` | `Style::new()` |
+/// | `title_style` | `Style` | `Style::new()` |
+///
+/// # Example
+///
+/// ```rust
+/// use xui_core::prelude::*;
+/// use xui_components::*;
+/// use xui_macros::view;
+///
+/// let _ = view! { callout(content: view! { text("Your settings were saved.") }, title: Some("Saved".to_owned())) };
+/// ```
 #[component]
-#[defaults(title = None, tone = CalloutTone::Info, style = Style::new())]
-pub fn callout(content: &ElementDesc, title: &Option<String>, tone: &CalloutTone, style: &Style) {
+#[defaults(
+    title = None,
+    tone = CalloutTone::Info,
+    style = Style::new(),
+    title_style = Style::new(),
+)]
+pub fn callout(
+    content: &ElementDesc,
+    title: &Option<String>,
+    tone: &CalloutTone,
+    style: &Style,
+    title_style: &Style,
+) {
     let color = match tone {
         CalloutTone::Info => Color::hex("#1d4ed8"),
         CalloutTone::Success => Color::hex("#15803d"),
@@ -84,22 +205,29 @@ pub fn callout(content: &ElementDesc, title: &Option<String>, tone: &CalloutTone
     };
     let mut children = Vec::with_capacity(2);
     if let Some(title) = title {
-        children.push(
-            TextWidget::new(title.clone())
-                .style(Style::new().font_weight(FontWeight::Bold))
-                .into_element_desc(),
-        );
+        children.push(view! {
+            xui_core::widgets::text(
+                title.clone(),
+                style: Style::new().font_weight(FontWeight::Bold).merge_clone(title_style),
+            )
+        });
     }
     children.push(content.clone());
     let mut root_style = Style::new()
+        .background(ColorToken::Background)
+        .color(ColorToken::Foreground)
         .gap(6.0)
         .padding(EdgeInsets::all(12.0))
         .border_width(1.0)
         .border_color(color)
         .border_radius(RadiusToken::Md);
     root_style.merge(style);
-    ContainerWidget::new()
-        .style(root_style)
-        .flex_direction(FlexDirectionStyle::Column)
-        .into_element_desc(children)
+    view! {
+        container(
+            style: root_style,
+            flex_direction: FlexDirectionStyle::Column,
+        ) {
+            ..children
+        }
+    }
 }

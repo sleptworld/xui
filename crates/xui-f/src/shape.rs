@@ -6,13 +6,12 @@ use unicode_segmentation::UnicodeSegmentation;
 use xui_interface::{ComputedTextStyle, FontQuery, FontStretch, GlyphFlags, Point};
 
 use crate::{
-    FFontId, FGlyphKey, bidi,
+    FFontId, bidi,
     font::{FaceMetrics, FontStore},
 };
 
 #[derive(Debug, Clone)]
 pub(crate) struct ShapedGlyph {
-    pub key: FGlyphKey,
     pub glyph_id: u32,
     pub offset: Point,
     pub advance: f32,
@@ -31,6 +30,8 @@ pub(crate) struct ShapedCluster {
 pub(crate) struct ShapedRun {
     pub text_range: Range<usize>,
     pub font_id: FFontId,
+    /// Logical pixels per em.
+    pub font_size: f32,
     pub bidi_level: u8,
     pub metrics: FaceMetrics,
     pub glyphs: Vec<ShapedGlyph>,
@@ -219,11 +220,6 @@ fn shape_span(
             }
             let glyph_advance = position.x_advance as f32 * scale;
             glyphs.push(ShapedGlyph {
-                key: FGlyphKey {
-                    font_id: span.font_id,
-                    glyph_id: info.glyph_id,
-                    font_size_bits: style.font_size.to_bits(),
-                },
                 glyph_id: info.glyph_id,
                 offset: Point::new(
                     advance + position.x_offset as f32 * scale,
@@ -255,6 +251,7 @@ fn shape_span(
     Some(ShapedRun {
         text_range: span.range,
         font_id: span.font_id,
+        font_size: style.font_size,
         bidi_level,
         metrics,
         glyphs,

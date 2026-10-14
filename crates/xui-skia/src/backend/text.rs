@@ -5,11 +5,10 @@ use skia_safe::{
     Canvas, ClipOp, Font, FontMgr, FontStyle as SkFontStyle, GlyphId as SkGlyphId,
     Point as SkPoint, TextBlob, TextBlobBuilder, Typeface as SkTypeface,
 };
-use std::fs::File;
 use xui_core::text::{TextHost, TextLayoutHandle};
 use xui_interface::{
-    Affine, FontDataRef, FontDatabase, FontWeight, NodeId, ParagraphLayout, Rect, Shaper,
-    TextBackend, TextVerticalAlign,
+    Affine, FontCollection, FontData, FontWeight, NodeId, ParagraphLayout, Rect, TextBackend,
+    TextVerticalAlign,
 };
 
 use super::{
@@ -118,16 +117,6 @@ impl<T: TextBackend> SkiaBackend<T> {
         Ok(())
     }
 
-    fn load_font_from_path(
-        &mut self,
-        path: &std::path::Path,
-        index: u32,
-    ) -> std::io::Result<Option<SkTypeface>> {
-        let file = File::open(path)?;
-        let f = unsafe { memmap2::Mmap::map(&file) }?;
-        Ok(self.load_font_from_bytes(&f, index))
-    }
-
     fn load_font_from_bytes(&mut self, bytes: &[u8], index: u32) -> Option<SkTypeface> {
         self.font_mgr().new_from_data(bytes, Some(index as usize))
     }
@@ -165,10 +154,11 @@ impl<T: TextBackend> SkiaBackend<T> {
     fn typeface_for_font(
         &mut self,
         backend: &T,
-        font_id: <T as FontDatabase>::FontId,
+        font_id: T::FontId,
         font_weight: FontWeight,
     ) -> Result<SkTypeface, SkiaBackendError> {
-        let epoch = backend.epoch();
+        let fonts = backend.fonts();
+        let epoch = fonts.epoch();
         if self.font_cache_epoch != Some(epoch) {
             self.font_cache.clear();
             self.font_cache_epoch = Some(epoch);
@@ -178,56 +168,31 @@ impl<T: TextBackend> SkiaBackend<T> {
             return Ok(typeface.clone());
         }
 
-        let font_data = backend.font_data(font_id).ok_or_else(|| {
+        let font = fonts.font(font_id).ok_or_else(|| {
             SkiaBackendError::FontDataError("the shaper did not expose data for a run font".into())
         })?;
-        let typeface = match font_data {
-            FontDataRef::Bytes { bytes, index } => self
-                .load_font_from_bytes(bytes, index)
+        let index = font.index();
+        let typeface = match font.system() {
+            // The native font manager knows installed faces best (and some
+            // system collections cannot be rebuilt from their bytes).
+            Some(system) => self
+                .system_typeface(
+                    system.family,
+                    system.postscript_name,
+                    sk_font_style(font_weight, system.stretch, system.style),
+                )
+                .or_else(|| self.load_font_from_bytes(font.bytes(), index))
+                .ok_or_else(|| {
+                    SkiaBackendError::FontDataError(format!(
+                        "Skia could not resolve system font {} ({}) at collection index {index}",
+                        system.family, system.postscript_name
+                    ))
+                })?,
+            None => self
+                .load_font_from_bytes(font.bytes(), index)
                 .ok_or_else(|| {
                     SkiaBackendError::FontDataError(format!(
                         "Skia could not load font bytes at collection index {index}"
-                    ))
-                })?,
-            FontDataRef::SystemMemory {
-                bytes,
-                index,
-                family,
-                postscript_name,
-                style,
-                stretch,
-                ..
-            } => self
-                .system_typeface(
-                    family,
-                    postscript_name,
-                    sk_font_style(font_weight, stretch, style),
-                )
-                .or_else(|| self.load_font_from_bytes(bytes, index))
-                .ok_or_else(|| {
-                    SkiaBackendError::FontDataError(format!(
-                        "Skia could not resolve system font {family} ({postscript_name}) from in-memory collection index {index}"
-                    ))
-                })?,
-            FontDataRef::System {
-                path,
-                index,
-                family,
-                postscript_name,
-                style,
-                stretch,
-                ..
-            } => self
-                .system_typeface(
-                    family,
-                    postscript_name,
-                    sk_font_style(font_weight, stretch, style),
-                )
-                .or_else(|| self.load_font_from_path(path, index).ok().flatten())
-                .ok_or_else(|| {
-                    SkiaBackendError::FontDataError(format!(
-                        "Skia could not resolve system font {family} ({postscript_name}) from {} at collection index {index}",
-                        path.display()
                     ))
                 })?,
         };
@@ -238,7 +203,7 @@ impl<T: TextBackend> SkiaBackend<T> {
     fn build_text_blob(
         &mut self,
         backend: &T,
-        layout: &ParagraphLayout<<T as Shaper>::FontId, <T as Shaper>::GlyphKey>,
+        layout: &ParagraphLayout<T::FontId>,
     ) -> Result<Option<TextBlob>, SkiaBackendError> {
         let mut builder = TextBlobBuilder::new();
         let mut has_glyphs = false;
@@ -280,9 +245,9 @@ impl<T: TextBackend> SkiaBackend<T> {
         backend: &T,
         handle: TextLayoutHandle,
         owner: NodeId,
-        layout: &ParagraphLayout<<T as Shaper>::FontId, <T as Shaper>::GlyphKey>,
+        layout: &ParagraphLayout<T::FontId>,
     ) -> Result<Option<TextBlob>, SkiaBackendError> {
-        let font_epoch = backend.epoch();
+        let font_epoch = backend.fonts().epoch();
         if let Some(cached) = self.text_blob_cache.get_mut(&handle)
             && cached.font_epoch == font_epoch
         {
@@ -307,7 +272,7 @@ impl<T: TextBackend> SkiaBackend<T> {
         &mut self,
         backend: &T,
         canvas: &Canvas,
-        layout: &ParagraphLayout<<T as Shaper>::FontId, <T as Shaper>::GlyphKey>,
+        layout: &ParagraphLayout<T::FontId>,
         origin: xui_interface::Point,
         color: Color,
     ) -> Result<(), SkiaBackendError> {

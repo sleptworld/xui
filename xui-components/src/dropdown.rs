@@ -1,8 +1,28 @@
-use xui_core::prelude::*;
-use xui_macros::component;
+//! Option selection with independently controlled value and disclosure.
+//!
+//! [`drop_down`] renders its option list in an anchored portal. [`DropDownItem`] supplies
+//! identity/disabled state and [`DropDownStyle`] defines complete visual slots.
+//! Crate-root `select` and `combo_box` are aliases for the same non-editable picker.
+//!
+//! # Components
+//!
+//! | Component | Purpose |
+//! | --- | --- |
+//! | [`drop_down`](fn@self::drop_down) | An accessible option picker with a portal-mounted dropdown list. |
 
+use crate::{SelectionItem, SelectionModel};
+use std::rc::Rc;
+use xui_core::prelude::*;
+use xui_macros::{component, view};
+const PREVIOUS_OPTION: CommandId = CommandId("xui.dropdown.previous");
+const NEXT_OPTION: CommandId = CommandId("xui.dropdown.next");
+const FIRST_OPTION: CommandId = CommandId("xui.dropdown.first");
+const LAST_OPTION: CommandId = CommandId("xui.dropdown.last");
+
+/// Callback requesting a zero-based dropdown option index.
 pub type DropDownChangeCallback = Callback<usize>;
 
+/// An identified dropdown option with display text and disabled state.
 #[derive(Clone, Debug, Hash)]
 pub struct DropDownItem {
     pub id: String,
@@ -25,6 +45,7 @@ impl DropDownItem {
     }
 }
 
+/// Complete styles for the dropdown root, trigger, menu, and option states.
 #[derive(Clone, Debug, Hash)]
 pub struct DropDownStyle {
     pub root: Style,
@@ -143,11 +164,13 @@ fn check_icon() -> IconData {
 }
 
 fn indicator(data: IconData, style: Style) -> ElementDesc {
-    icon()
-        .from_icon_data(data)
-        .size(16.0)
-        .style(style)
-        .into_element_desc()
+    view! {
+        icon(
+            from_icon_data: data,
+            size: 16.0,
+            style: style,
+        )
+    }
 }
 
 fn normalized_selection(items: &[DropDownItem], requested: usize) -> Option<usize> {
@@ -158,37 +181,65 @@ fn normalized_selection(items: &[DropDownItem], requested: usize) -> Option<usiz
         .or_else(|| items.iter().position(|item| !item.disabled))
 }
 
-fn select_item(
-    index: usize,
-    controlled: bool,
-    selection: xui_core::state::State<usize>,
-    open: xui_core::state::State<bool>,
-    on_change: &Option<DropDownChangeCallback>,
-) {
-    if !controlled {
-        selection.set(index);
-    }
-    open.set(false);
-    if let Some(on_change) = on_change {
-        on_change.call(index);
-    }
-}
-
-/// A selectable menu whose option list is Portal-mounted into the runtime's
-/// root overlayer, keeping it above clipped and scrolling ancestors.
+/// An accessible option picker with a portal-mounted dropdown list.
+///
+/// `selected` and `open` opt into controlled state independently; otherwise
+/// `default_selected` and `default_open` seed internal state. Change callbacks report
+/// requested values in either mode. Disabled options are skipped by arrow/Home/End
+/// navigation. `placement` controls anchoring, width matching, and collision avoidance;
+/// [`DropDownStyle`] contains complete, independently replaceable visual slots. The
+/// default accessibility ID prefix is unique and stable per instance.
+///
+/// # Props
+///
+/// | Prop | Type | Default |
+/// | --- | --- | --- |
+/// | `items` | `Vec<DropDownItem>` | **Required** |
+/// | `selected` | `Option<usize>` | `None` |
+/// | `default_selected` | `usize` | `0` |
+/// | `open` | `Option<bool>` | `None` |
+/// | `default_open` | `bool` | `false` |
+/// | `on_open_change` | `Option<crate::BoolChangeCallback>` | `None` |
+/// | `placement` | `AnchorPlacement` | `AnchorPlacement::default().match_width(true)` |
+/// | `on_change` | `Option<DropDownChangeCallback>` | `None` |
+/// | `placeholder` | `String` | `"Select…".to_string()` |
+/// | `disabled` | `bool` | `false` |
+/// | `style` | `DropDownStyle` | `DropDownStyle::default()` |
+/// | `id_prefix` | `String` | `String::new()` |
+/// | `z_index` | `i32` | `1000` |
+///
+/// # Example
+///
+/// ```rust
+/// use xui_core::prelude::*;
+/// use xui_components::*;
+/// use xui_macros::view;
+///
+/// let _ = view! { drop_down(items: vec![DropDownItem::new("a", "Alpha"), DropDownItem::new("b", "Beta")]) };
+/// ```
 #[component]
 #[defaults(
     selected = None,
+    default_selected = 0,
+    open = None,
+    default_open = false,
+    on_open_change = None,
+    placement = AnchorPlacement::default().match_width(true),
     on_change = None,
     placeholder = "Select…".to_string(),
     disabled = false,
     style = DropDownStyle::default(),
-    id_prefix = "dropdown".to_string(),
+    id_prefix = String::new(),
     z_index = 1000,
 )]
 pub fn drop_down(
     items: &Vec<DropDownItem>,
     selected: &Option<usize>,
+    default_selected: &usize,
+    open: &Option<bool>,
+    default_open: &bool,
+    on_open_change: &Option<crate::BoolChangeCallback>,
+    placement: &AnchorPlacement,
     on_change: &Option<DropDownChangeCallback>,
     placeholder: &String,
     disabled: &bool,
@@ -196,9 +247,42 @@ pub fn drop_down(
     id_prefix: &String,
     z_index: &i32,
 ) {
-    let initial = normalized_selection(items, selected.unwrap_or(0)).unwrap_or(0);
+    static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let generated_id = cx.use_memo(|| {
+        format!(
+            "dropdown-{}",
+            NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    });
+    let id_prefix = if id_prefix.is_empty() {
+        generated_id.get()
+    } else {
+        id_prefix
+    };
+
+    let initial = normalized_selection(items, selected.unwrap_or(*default_selected)).unwrap_or(0);
     let internal_selection = cx.use_state(|| initial);
-    let open = cx.use_state(|| false);
+    let internal_open = cx.use_state(|| *default_open);
+    let open_controlled = open.is_some();
+    let shown = !*disabled && open.unwrap_or(*internal_open.get());
+    let set_open = cx.use_callback((open_controlled, internal_open, on_open_change.clone()), {
+        let callback = on_open_change.clone();
+        move |next| {
+            if !open_controlled {
+                internal_open.set(next);
+            }
+            if let Some(callback) = &callback {
+                callback.call(next);
+            }
+        }
+    });
+    let model = Rc::new(SelectionModel::new(items.iter().map(|item| {
+        SelectionItem::new(item.id.clone(), item.label.clone(), item.disabled)
+    })));
+    let nav_model = model.clone();
+    let nav_callback = on_change.clone();
+    let nav_disabled = *disabled;
+
     let controlled = selected.is_some();
     let active = normalized_selection(items, selected.unwrap_or(*internal_selection.get()));
 
@@ -214,46 +298,27 @@ pub fn drop_down(
             .color(ColorToken::Foreground.alpha(0.5))
             .border_color(ColorToken::Input.alpha(0.5));
     }
-    if *open.get() {
+    if shown {
         trigger_style.merge(&style.trigger_open);
     }
 
-    let trigger = ContainerWidget::new()
-        .key(format!("{id_prefix}-trigger"))
-        .style(trigger_style)
-        .flex_direction(FlexDirectionStyle::Row)
-        .focusable(!*disabled)
-        .tab_index(if *disabled { -1 } else { 0 })
-        .accessibility_role(AccessibilityRole::Button)
-        .accessibility_id(format!("{id_prefix}-trigger"))
-        .accessibility_label(label.clone())
-        .accessibility_disabled(*disabled)
-        .accessibility_controls(format!("{id_prefix}-menu"))
-        .on_click({
-            let disabled = *disabled;
-            move |_, event_cx| {
-                if disabled {
-                    return EventResult::Ignored;
-                }
-                open.update(|open| *open = !*open);
-                event_cx.request_focus();
-                EventResult::Consumed
-            }
-        });
     let mut trigger_children = vec![
-        TextWidget::new(label)
-            .style(if has_selection {
-                Style::new()
-            } else {
-                Style::new().color(ColorToken::MutedForeground)
-            })
-            .into_element_desc(),
+        view! {
+            xui_core::widgets::text(
+                label.clone(),
+                style: if has_selection {
+                    Style::new()
+                } else {
+                    Style::new().color(ColorToken::MutedForeground)
+                },
+            )
+        },
         indicator(
             chevron_down_icon(),
             Style::new().color(ColorToken::MutedForeground),
         ),
     ];
-    if *open.get() {
+    if shown {
         let mut options = Vec::with_capacity(items.len());
         for (index, item) in items.iter().enumerate() {
             let is_selected = active == Some(index);
@@ -266,71 +331,125 @@ pub fn drop_down(
             };
             let disabled = item.disabled;
             let selection = internal_selection;
-            let open_state = open;
+            let close = set_open.clone();
             let callback = on_change.clone();
-            options.push(
-                ContainerWidget::new()
-                    .key(format!("{id_prefix}-option-{}", item.id))
-                    .style(option_style)
-                    .flex_direction(FlexDirectionStyle::Row)
-                    .focusable(!disabled)
-                    .tab_index(if disabled { -1 } else { 0 })
-                    .accessibility_role(AccessibilityRole::Button)
-                    .accessibility_label(item.label.clone())
-                    .accessibility_selected(is_selected)
-                    .accessibility_disabled(disabled)
-                    .on_click(move |_, _| {
+            options.push(view! {
+                container(
+                    key: format!("{id_prefix}-option-{}", item.id),
+                    style: option_style,
+                    flex_direction: FlexDirectionStyle::Row,
+                    focusable: !disabled,
+                    tab_index: if disabled { -1 } else { 0 },
+                    accessibility_role: AccessibilityRole::Option,
+                    accessibility_label: item.label.clone(),
+                    accessibility_selected: is_selected,
+                    accessibility_disabled: disabled,
+                    on_click: move |_, _| {
                         if disabled {
                             return EventResult::Consumed;
                         }
-                        select_item(index, controlled, selection, open_state, &callback);
+                        if !controlled { selection.set(index); }
+                        close.call(false);
+                        if let Some(callback) = &callback { callback.call(index); }
                         EventResult::Consumed
-                    })
-                    .into_element_desc(vec![
-                        TextWidget::new(item.label.clone()).into_element_desc(),
-                        // Keep the slot when unselected so labels don't shift.
-                        indicator(
-                            check_icon(),
-                            if is_selected {
-                                Style::new()
-                            } else {
-                                Style::new().color(Color::TRANSPARENT)
-                            },
-                        ),
-                    ]),
-            );
+                    },
+                ) {
+                    xui_core::widgets::text(
+                        item.label.clone(),
+                    )
+                    ..// Keep the slot when unselected so labels don't shift.
+                    indicator(
+                        check_icon(),
+                        if is_selected {
+                            Style::new()
+                        } else {
+                            Style::new().color(Color::TRANSPARENT)
+                        },
+                    )
+                }
+            });
         }
 
-        let menu = ContainerWidget::new()
-            .key(format!("{id_prefix}-menu"))
-            .style(style.menu.clone())
-            .flex_direction(FlexDirectionStyle::Column)
-            .accessibility_role(AccessibilityRole::List)
-            .accessibility_id(format!("{id_prefix}-menu"))
-            .into_element_desc(options);
+        let menu = view! {
+            container(
+                key: format!("{id_prefix}-menu"),
+                style: style.menu.clone(),
+                flex_direction: FlexDirectionStyle::Column,
+                accessibility_role: AccessibilityRole::ListBox,
+                accessibility_id: format!("{id_prefix}-menu"),
+            ) {
+                ..options
+            }
+        };
 
         // Written inside the trigger, so the trigger owns the portal and the
         // menu follows it through resizes, layout changes and scrolling. Modal:
         // a press outside reaches nothing but the dismiss handler, which is
         // also what keeps the trigger from reopening it.
-        trigger_children.push(
-            portal(vec![menu])
-                .key(format!("{id_prefix}-portal"))
-                .z_index(*z_index)
-                .modal(true)
-                .anchor(
-                    AnchorPlacement::new(AnchorSide::Bottom)
-                        .offset(4.0)
-                        .match_width(true),
-                )
-                .on_dismiss(move |_| open.set(false))
-                .into(),
-        );
+        trigger_children.push(view! {
+            xui_core::element::portal_view(
+                key: format!("{id_prefix}-portal"),
+                z_index: *z_index,
+                modal: true,
+                anchor: *placement,
+                on_dismiss: { let set_open = set_open.clone(); move |_| set_open.call(false) },
+            ) {
+                ..menu
+            }
+        });
     }
 
-    ContainerWidget::new()
-        .style(style.root.clone())
-        .into_element_desc(vec![trigger.into_element_desc(trigger_children)])
+    view! {
+        container(
+            style: style.root.clone(),
+        ) {
+            container(
+                key: format!("{id_prefix}-trigger"),
+                style: trigger_style,
+                flex_direction: FlexDirectionStyle::Row,
+                focusable: !*disabled,
+                tab_index: if *disabled { -1 } else { 0 },
+                accessibility_role: AccessibilityRole::ComboBox,
+                accessibility_expanded: shown,
+                accessibility_id: format!("{id_prefix}-trigger"),
+                accessibility_label: label.clone(),
+                accessibility_disabled: *disabled,
+                accessibility_controls: format!("{id_prefix}-menu"),
+                shortcuts: [
+                    (Shortcut::named(NamedKey::ArrowUp).allow_repeat(true), PREVIOUS_OPTION),
+                    (Shortcut::named(NamedKey::ArrowDown).allow_repeat(true), NEXT_OPTION),
+                    (Shortcut::named(NamedKey::Home), FIRST_OPTION), (Shortcut::named(NamedKey::End), LAST_OPTION),
+                ],
+                on_command: move |event, _| {
+                    if nav_disabled { return EventResult::Ignored; }
+                    let target = match event.command {
+                        PREVIOUS_OPTION => nav_model.adjacent(active.unwrap_or(0), -1),
+                        NEXT_OPTION => nav_model.adjacent(active.unwrap_or(0), 1),
+                        FIRST_OPTION => nav_model.first(), LAST_OPTION => nav_model.last(),
+                        _ => return EventResult::Ignored,
+                    };
+                    if let Some(target) = target {
+                        if !controlled { internal_selection.set(target); }
+                        if let Some(callback) = &nav_callback { callback.call(target); }
+                    }
+                    EventResult::Consumed
+                },
+                on_click: {
+                    let disabled = *disabled;
+                    move |_, event_cx| {
+                        if disabled {
+                            return EventResult::Ignored;
+                        }
+                        set_open.call(!shown);
+                        event_cx.request_focus();
+                        EventResult::Consumed
+                    }
+                },
+            ) {
+                ..trigger_children
+            }
+        }
+    }
 }
 
 #[cfg(test)]

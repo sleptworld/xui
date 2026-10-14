@@ -1,11 +1,24 @@
+//! Action buttons with semantic emphasis and density settings.
+//!
+//! Use [`button`](fn@self::button) for keyboard-operable actions. [`ButtonVariant`]
+//! chooses emphasis and [`ButtonSize`] chooses density; arbitrary leading/trailing
+//! elements support compound labels.
+//!
+//! # Components
+//!
+//! | Component | Purpose |
+//! | --- | --- |
+//! | [`button`](fn@self::button) | A focusable action button with semantic variants, loading state, and keyboard activation. |
+
 use std::time::Duration;
 
 use xui_core::prelude::*;
 
-use xui_macros::component;
+use xui_macros::{component, view};
 
 const ACTIVATE_BUTTON: CommandId = CommandId("xui.button.activate");
 
+/// Callback invoked when an enabled button is activated.
 pub type ButtonClickCallback = Callback<()>;
 
 /// The semantic emphasis of a `button`, after shadcn/ui's button variants.
@@ -135,11 +148,19 @@ fn variant_style(variant: ButtonVariant, interactive: bool) -> Style {
 
     style = match variant {
         ButtonVariant::Primary => style
-            .when(WidgetState::HOVERED, |s| s.background(ColorToken::Primary.alpha(0.9)))
-            .when(WidgetState::PRESSED, |s| s.background(ColorToken::Primary.alpha(0.8))),
+            .when(WidgetState::HOVERED, |s| {
+                s.background(ColorToken::Primary.alpha(0.9))
+            })
+            .when(WidgetState::PRESSED, |s| {
+                s.background(ColorToken::Primary.alpha(0.8))
+            }),
         ButtonVariant::Secondary => style
-            .when(WidgetState::HOVERED, |s| s.background(ColorToken::Secondary.alpha(0.8)))
-            .when(WidgetState::PRESSED, |s| s.background(ColorToken::Secondary.alpha(0.65))),
+            .when(WidgetState::HOVERED, |s| {
+                s.background(ColorToken::Secondary.alpha(0.8))
+            })
+            .when(WidgetState::PRESSED, |s| {
+                s.background(ColorToken::Secondary.alpha(0.65))
+            }),
         ButtonVariant::Outline | ButtonVariant::Ghost => style
             .when(WidgetState::HOVERED, |s| {
                 s.background(ColorToken::Accent)
@@ -150,8 +171,12 @@ fn variant_style(variant: ButtonVariant, interactive: bool) -> Style {
                     .color(ColorToken::AccentForeground)
             }),
         ButtonVariant::Danger => style
-            .when(WidgetState::HOVERED, |s| s.background(ColorToken::Destructive.alpha(0.9)))
-            .when(WidgetState::PRESSED, |s| s.background(ColorToken::Destructive.alpha(0.8))),
+            .when(WidgetState::HOVERED, |s| {
+                s.background(ColorToken::Destructive.alpha(0.9))
+            })
+            .when(WidgetState::PRESSED, |s| {
+                s.background(ColorToken::Destructive.alpha(0.8))
+            }),
         ButtonVariant::Link => style.when(WidgetState::HOVERED, |s| {
             s.decoration(TextDecoration {
                 underline: true,
@@ -197,11 +222,42 @@ fn invoke(callback: &Option<ButtonClickCallback>) {
     }
 }
 
-/// A focusable, keyboard-operable button with visual variants and async states.
+/// A focusable action button with semantic variants, loading state, and keyboard
+/// activation.
 ///
-/// `loading` is intentionally treated as disabled to prevent duplicate submits.
-/// `leading` and `trailing` accept arbitrary elements, making icon buttons and
-/// compound labels possible without weakening the button's semantics.
+/// `disabled` and `loading` prevent activation and remove the button from sequential
+/// focus navigation. Enter and Space activate an enabled button. `leading`, `trailing`,
+/// and `loading_indicator` accept custom elements; `label_style` styles the text and
+/// `style` overrides the root after defaults.
+///
+/// # Props
+///
+/// | Prop | Type | Default |
+/// | --- | --- | --- |
+/// | `text` | `String` | **Required** |
+/// | `variant` | `ButtonVariant` | `ButtonVariant::Secondary` |
+/// | `size` | `ButtonSize` | `ButtonSize::Medium` |
+/// | `disabled` | `bool` | `false` |
+/// | `loading` | `bool` | `false` |
+/// | `full_width` | `bool` | `false` |
+/// | `leading` | `Option<ElementDesc>` | `None` |
+/// | `trailing` | `Option<ElementDesc>` | `None` |
+/// | `loading_indicator` | `Option<ElementDesc>` | `None` |
+/// | `on_click` | `Option<ButtonClickCallback>` | `None` |
+/// | `accessibility_label` | `Option<String>` | `None` |
+/// | `style` | `Style` | `Style::new()` |
+/// | `label_style` | `Style` | `Style::new()` |
+/// | `transition_duration` | `Duration` | `Duration::from_millis(150)` |
+///
+/// # Example
+///
+/// ```rust
+/// use xui_core::prelude::*;
+/// use xui_components::*;
+/// use xui_macros::view;
+///
+/// let _ = view! { button(text: "Save", variant: ButtonVariant::Primary) };
+/// ```
 #[component]
 #[defaults(
     variant = ButtonVariant::Secondary,
@@ -215,6 +271,8 @@ fn invoke(callback: &Option<ButtonClickCallback>) {
     on_click = None,
     accessibility_label = None,
     style = Style::new(),
+    label_style = Style::new(),
+    transition_duration = Duration::from_millis(150),
 )]
 pub fn button(
     text: &String,
@@ -229,46 +287,50 @@ pub fn button(
     on_click: &Option<ButtonClickCallback>,
     accessibility_label: &Option<String>,
     style: &Style,
+    label_style: &Style,
+    transition_duration: &Duration,
 ) {
     let interactive = !*disabled && !*loading;
-    let root_style = resolved_style(*variant, *size, interactive, *full_width, style);
+    let mut root_style = resolved_style(*variant, *size, interactive, *full_width, &Style::new())
+        .transition(Transition::new(*transition_duration));
+    root_style.merge(style);
     let label = accessibility_label.clone().unwrap_or_else(|| text.clone());
 
     let mut children = Vec::with_capacity(3);
     if *loading {
-        children.push(
-            loading_indicator
-                .clone()
-                .unwrap_or_else(|| xui_core::widgets::TextWidget::new("…").into_element_desc()),
-        );
+        children.push(loading_indicator.clone().unwrap_or_else(|| {
+            view! {
+                crate::spinner(size: 16.0, label: "Loading")
+            }
+        }));
     } else if let Some(leading) = leading {
         children.push(leading.clone());
     }
-    children.push(xui_core::widgets::TextWidget::new(text.clone()).into_element_desc());
+    children.push(view! {
+        xui_core::widgets::text(
+            text.clone(),
+            style: label_style.clone(),
+        )
+    });
     if !*loading && let Some(trailing) = trailing {
         children.push(trailing.clone());
     }
 
-    let mut root = ContainerWidget::new()
-        .style(root_style.transition(Transition::new(Duration::from_millis(150))))
-        .flex_direction(FlexDirectionStyle::Row)
-        .focusable(interactive)
-        .tab_index(if interactive { 0 } else { -1 })
-        .accessibility_role(AccessibilityRole::Button)
-        .accessibility_label(label)
-        .accessibility_disabled(!interactive);
+    let click_callback = on_click.clone();
+    let command_callback = on_click.clone();
 
-    if *loading {
-        root = root.accessibility_description("Loading");
-    }
-
-    if interactive {
-        let click_callback = on_click.clone();
-        let command_callback = on_click.clone();
-        root = root
-            .shortcut(Shortcut::named(NamedKey::Enter), ACTIVATE_BUTTON)
-            .shortcut(Shortcut::named(NamedKey::Space), ACTIVATE_BUTTON)
-            .on_click(move |event, event_cx| {
+    view! {
+        container(
+            style: root_style,
+            flex_direction: FlexDirectionStyle::Row,
+            focusable: interactive,
+            tab_index: if interactive { 0 } else { -1 },
+            accessibility_role: AccessibilityRole::Button,
+            accessibility_label: label,
+            accessibility_disabled: !interactive,
+            accessibility_description: if *loading { "Loading" } else { "" },
+            shortcuts: [(Shortcut::named(NamedKey::Enter), ACTIVATE_BUTTON),(Shortcut::named(NamedKey::Space), ACTIVATE_BUTTON)],
+            on_click: move |event, event_cx| { if !interactive { return EventResult::Ignored; }
                 if event
                     .button
                     .is_some_and(|button| button != PointerButton::Primary)
@@ -278,17 +340,18 @@ pub fn button(
                 event_cx.request_focus();
                 invoke(&click_callback);
                 EventResult::Consumed
-            })
-            .on_command(move |event, _| {
+            },
+            on_command: move |event, _| { if !interactive { return EventResult::Ignored; }
                 if event.command != ACTIVATE_BUTTON {
                     return EventResult::Ignored;
                 }
                 invoke(&command_callback);
                 EventResult::Consumed
-            });
+            },
+        ) {
+            ..children
+        }
     }
-
-    root.into_element_desc(children)
 }
 
 #[cfg(test)]

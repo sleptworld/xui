@@ -4,18 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["skia"]
-# A ready-made `runner` on the Skia backend with the `xui-f` text backend, the
-# pairing `xui-winit` defaults to.
+default = ["vello"]
+# A ready-made `runner` on the Vello backend with the `xui-f` text backend, the
+# pairing every host defaults to. Vello always runs on a wgpu device it owns,
+# so a canvas GPU painter works without an extra feature.
+vello = ["dep:xui-vello", "dep:xui-f"]
+# A ready-made `skia_runner` on the Skia backend with the `xui-f` text backend.
+# Independent of `vello`: either, both or neither can be enabled.
 skia = ["dep:xui-skia", "dep:xui-f"]
 # Skia on a wgpu-owned device, so a canvas GPU painter can composite its own
 # shader output. Same meaning as `xui-winit`'s feature of that name.
 skia-wgpu = ["skia", "xui-skia/wgpu"]
-# A ready-made `vello_runner` on the Vello backend with the `xui-f` text
-# backend. Independent of `skia`: either, both or neither can be enabled. Vello
-# always runs on a wgpu device it owns, so a canvas GPU painter works without
-# an extra feature.
-vello = ["dep:xui-vello", "dep:xui-f"]
 
 [dependencies]
 raw-window-handle = "0.6.2"

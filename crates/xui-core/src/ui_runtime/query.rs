@@ -162,6 +162,12 @@ impl UiRuntime {
     pub(crate) fn is_focusable(&self, id: NodeId) -> bool {
         let node = &self.hosts[id];
         let interaction = self.interaction_system.get(id);
+        if interaction.is_some_and(|node| {
+            node.properties.accessibility.disabled == Some(true)
+                || node.properties.accessibility.hidden == Some(true)
+        }) {
+            return false;
+        }
         let focus = interaction
             .map(|node| node.properties.focus)
             .unwrap_or_default();

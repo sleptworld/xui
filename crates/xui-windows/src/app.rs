@@ -186,8 +186,35 @@ fn message_loop() {
     }
 }
 
-#[cfg(feature = "skia")]
+/// A window running `app` on the Vello backend with the `xui-f` text backend.
+///
+/// Vello opens its own wgpu device, which is handed to the app so a canvas GPU
+/// painter draws on the device the frame is composed from.
+#[cfg(feature = "vello")]
 pub fn runner(
+    app: xui_core::app::ComponentFn,
+    options: Option<WinRunnerOptions>,
+) -> WinRunner<xui_vello::VelloBackend<xui_f::FBackend>, xui_f::FBackend> {
+    let app = App::new(app);
+    WinRunner::with_fallible_options(
+        move |window| -> Result<_, std::io::Error> {
+            let mut app = app;
+            let backend = xui_vello::VelloBackend::<xui_f::FBackend>::new(window)
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            let context = backend.wgpu_context();
+            app.set_gpu_context(xui_core::widgets::CanvasGpuContext::new(
+                context.device().clone(),
+                context.queue().clone(),
+            ));
+            Ok((app, xui_f::FBackend::new(), backend))
+        },
+        options.unwrap_or_default(),
+    )
+}
+
+/// `runner`, on the Skia backend.
+#[cfg(feature = "skia")]
+pub fn skia_runner(
     app: xui_core::app::ComponentFn,
     options: Option<WinRunnerOptions>,
 ) -> WinRunner<xui_skia::SkiaBackend<xui_f::FBackend>, xui_f::FBackend> {
@@ -198,7 +225,7 @@ pub fn runner(
             let mut app = app;
             let backend = xui_skia::SkiaBackend::<xui_f::FBackend>::new(window)
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
-            // See `xui_winit::runner`: a canvas GPU painter draws on the device
+            // See `xui_winit::skia_runner`: a canvas GPU painter draws on the device
             // Skia composites from, when Skia is on a shared one.
             #[cfg(feature = "skia-wgpu")]
             if let Some(context) = backend.wgpu_context() {

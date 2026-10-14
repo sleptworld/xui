@@ -10,10 +10,13 @@ xui-interface = {path="../crates/xui-interface"}
 xui-macros = {path="../crates/xui-macros"}
 
 [target.'cfg(target_os = "macos")'.dependencies]
-xui-macos = {path="../crates/xui-macos" ,features=["skia"]}
+xui-macos = { path = "../crates/xui-macos", default-features = false }
 
 [features]
-default = ["skia-wgpu"]
-skia = ["xui-macos/skia"]
+default = ["vello"]
+# `runner` on the Vello backend.
 vello = ["xui-macos/vello"]
+# `skia_runner` on the Skia backend. Independent of `vello`.
+skia = ["xui-macos/skia"]
+# Skia on a wgpu-owned device, so a canvas GPU painter can composite.
 skia-wgpu = ["xui-macos/skia-wgpu"]

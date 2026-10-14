@@ -55,13 +55,27 @@ pub fn render_scaled(
     scale: f32,
     setup: impl FnOnce(&mut VelloBackend<CosmicEngine>),
 ) -> Option<Frame> {
-    let mut backend = match VelloBackend::<CosmicEngine>::headless(
+    render_options(
+        root,
         scale,
         VelloBackendOptions {
             clear_color: CLEAR,
             ..VelloBackendOptions::default()
         },
-    ) {
+        setup,
+    )
+    .map(|(frame, _)| frame)
+}
+
+/// [`render_scaled`] with `options`, returning the backend's resource stats
+/// after the frame as well.
+pub fn render_options(
+    root: ComponentFn,
+    scale: f32,
+    options: VelloBackendOptions,
+    setup: impl FnOnce(&mut VelloBackend<CosmicEngine>),
+) -> Option<(Frame, xui_vello::ResourceStats)> {
+    let mut backend = match VelloBackend::<CosmicEngine>::headless(scale, options) {
         Ok(backend) => backend,
         Err(error) => {
             eprintln!("skipping: no wgpu adapter ({error})");
@@ -84,11 +98,12 @@ pub fn render_scaled(
     assert_eq!((width, height), ((SIZE * scale) as u32, (SIZE * scale) as u32));
     let pixels = backend.read_pixels_rgba8().expect("read pixels");
     assert_eq!(pixels.len(), width as usize * height as usize * 4);
-    Some(Frame {
+    let frame = Frame {
         unsupported: backend.unsupported(),
         pixels,
         width: width as usize,
-    })
+    };
+    Some((frame, backend.resource_stats()))
 }
 
 pub fn is_close(actual: [u8; 4], expected: [u8; 4]) -> bool {

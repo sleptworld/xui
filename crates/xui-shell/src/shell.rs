@@ -598,7 +598,6 @@ where
     fn set_scale_factor(&mut self, scale_factor: f64) {
         let factor = scale_factor as f32;
         let _ = self.runtime.backend_mut().set_factor(factor);
-        self.runtime.text_backend_mut().set_scale_factor(factor);
         self.runtime.app_mut().set_scale_factor(factor);
         let size = self.window.surface_size().to_logical(scale_factor);
         self.runtime.handle_event(RuntimeEvent::Resize(size));

@@ -20,7 +20,10 @@
 //!
 //! # Features
 //!
-//! - `skia` (default) — [`runner`], on `xui-skia` with the `xui-f` text backend.
+//! - `vello` (default) — `runner`, on `xui-vello` with the `xui-f` text
+//!   backend.
+//! - `skia` — `skia_runner`, on `xui-skia` with the `xui-f` text backend.
+//!   Independent of `vello`.
 //! - `skia-wgpu` — Skia on a wgpu-owned device, so a canvas GPU painter can
 //!   composite; see `xui-winit`'s feature of the same name.
 
@@ -34,8 +37,10 @@ mod keycode;
 mod window;
 mod wndproc;
 
-#[cfg(feature = "skia")]
+#[cfg(feature = "vello")]
 pub use app::runner;
+#[cfg(feature = "skia")]
+pub use app::skia_runner;
 pub use app::{WinBackendInitError, WinRunError, WinRunner, WinRunnerOptions};
 pub use window::WinWindow;
 pub use xui_shell::{MacOsWindowOptions, PhysicalSize, WindowOptions, WindowSize};

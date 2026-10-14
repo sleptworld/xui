@@ -10,7 +10,6 @@ default = ["wgpu"]
 wgpu = ["dep:wgpu", "dep:wgpu-hal", "dep:pollster", "xui-core/wgpu"]
 
 [dependencies]
-memmap2.workspace = true
 moka = { version = "0.12.15", features = ["sync"] }
 rustc-hash = "2.1.3"
 skia-safe = { version = "0.99.0", features = ["gpu", "textlayout"] }

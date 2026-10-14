@@ -5402,6 +5402,7 @@ dependencies = [
  "cosmic-text",
  "sys-locale",
  "xui-interface",
+ "xui-swash",
 ]
 
 [[package]]
@@ -5435,6 +5436,7 @@ dependencies = [
  "unicode-script",
  "unicode-segmentation",
  "xui-interface",
+ "xui-swash",
 ]
 
 [[package]]
@@ -5544,7 +5546,6 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "ash-window",
- "memmap2",
  "moka",
  "objc2 0.6.4",
  "objc2-core-foundation",
@@ -5564,6 +5565,15 @@ dependencies = [
  "xui-interface",
  "xui-render-graph",
  "xui-shell",
+]
+
+[[package]]
+name = "xui-swash"
+version = "0.1.0"
+dependencies = [
+ "moka",
+ "swash",
+ "xui-interface",
 ]
 
 [[package]]
@@ -5587,6 +5597,20 @@ dependencies = [
  "xui-render-graph",
  "xui-shell",
  "xui-skia",
+ "xui-wgpu-text",
+]
+
+[[package]]
+name = "xui-wgpu-text"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "etagere",
+ "naga",
+ "pollster",
+ "wgpu",
+ "xui-f",
+ "xui-interface",
 ]
 
 [[package]]
@@ -5600,6 +5624,7 @@ dependencies = [
  "xui-interface",
  "xui-shell",
  "xui-skia",
+ "xui-vello",
 ]
 
 [[package]]
@@ -5625,6 +5650,7 @@ dependencies = [
  "xui-render-graph",
  "xui-shell",
  "xui-skia",
+ "xui-vello",
 ]
 
 [[package]]

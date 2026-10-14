@@ -38,7 +38,8 @@ use xui_core::render::{
 };
 use xui_core::render::render_graph::ImageResource;
 use xui_core::text::TextHost;
-use xui_interface::{FontDatabase, ImageData, TextBackend};
+use xui_interface::{ImageData, TextBackend};
+use xui_wgpu_text::{TextBatch, TextRenderer, TextTarget};
 use xui_render_graph::{
     CompositeInstance, ExternalAliasing, ExternalResourceKind, LayerPlanContext,
     LayerProgramEntry, LayerRenderPlan, PlanLimits, TextureClass,
@@ -54,7 +55,10 @@ use crate::{
     filter::{ClipSpec, TextureDraw},
     layer_cache::{CacheUpdate, CacheUse, FilterUse, LayerCache},
     image::{ImageCache, encode_image},
-    text::{FontCache, encode_text},
+    text::{
+        FontCache, MAX_BITMAP_PPEM, bitmap_parts, encode_selection, encode_text, has_selection,
+        paragraph,
+    },
     paths::PathCache,
     texture::ExternalTextures,
 };
@@ -98,6 +102,9 @@ pub(crate) struct Surface {
 pub(crate) enum SurfaceOp {
     /// 2D content on transparent, drawn over what is composed so far.
     Band(Scene),
+    /// Glyphs, and the rectangles in front of them, drawn by `xui-wgpu-text`
+    /// over what is composed so far.
+    Text(TextBatch),
     /// A texture the application rendered, drawn over what is composed so far.
     Texture {
         draw: TextureDraw,
@@ -172,10 +179,11 @@ pub(crate) fn encode_frame<T: TextBackend>(
     cache: &LayerCache,
     damage: &DamageTracker,
     text: &TextHost<T>,
-    fonts: &mut FontCache<<T as FontDatabase>::FontId>,
+    fonts: &mut FontCache<T::FontId>,
     images: &ImageCache,
     textures: &mut ExternalTextures,
     paths: &PathCache,
+    bitmap: Option<BitmapText<'_, T>>,
 ) -> (Surface, Unsupported) {
     let mut encoder = Encoder {
         frame,
@@ -188,6 +196,7 @@ pub(crate) fn encode_frame<T: TextBackend>(
         images,
         textures,
         paths,
+        bitmap,
         scale: scale_factor,
         limits: PlanLimits {
             max_texture_dimension_2d: max_texture_dimension,
@@ -203,6 +212,14 @@ pub(crate) fn encode_frame<T: TextBackend>(
     (target.finish(), encoder.unsupported)
 }
 
+/// What draws text from glyph bitmaps, when the text backend can render them.
+pub(crate) struct BitmapText<'a, T: TextBackend> {
+    pub renderer: &'a mut TextRenderer<T::FontId>,
+    pub rasterizer: &'a T::Rasterizer,
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+}
+
 struct Encoder<'a, T: TextBackend> {
     frame: &'a BuiltFrame,
     /// By layer: whether a backdrop in it, or in a layer inside it that lets
@@ -213,10 +230,11 @@ struct Encoder<'a, T: TextBackend> {
     /// Cache entries a job of this frame uses: one layer each.
     claimed: FxHashSet<LayerCacheId>,
     text: &'a TextHost<T>,
-    fonts: &'a mut FontCache<<T as FontDatabase>::FontId>,
+    fonts: &'a mut FontCache<T::FontId>,
     images: &'a ImageCache,
     textures: &'a mut ExternalTextures,
     paths: &'a PathCache,
+    bitmap: Option<BitmapText<'a, T>>,
     scale: f32,
     limits: PlanLimits,
     unsupported: Unsupported,
@@ -238,6 +256,13 @@ struct Builder {
     open: Vec<BuiltClipChainId>,
     /// What a draw is clipped by; kept to spare an allocation a draw.
     wanted: Vec<BuiltClipChainId>,
+    /// Text drawn after the band, not in it: nothing drawn in the band since
+    /// overlaps it, so it can wait for the band to close, which spares a band
+    /// a text. In paint order.
+    pending: TextBatch,
+    /// Where `pending` draws, in target pixels: a band draw that touches one
+    /// of these closes the band first.
+    pending_bounds: Vec<KurboRect>,
 }
 
 impl Builder {
@@ -252,6 +277,8 @@ impl Builder {
             drawn: false,
             open: Vec::new(),
             wanted: Vec::new(),
+            pending: TextBatch::default(),
+            pending_bounds: Vec::new(),
         }
     }
 
@@ -290,12 +317,39 @@ impl Builder {
         rect.x0 < viewport.x1 && rect.x1 > viewport.x0 && rect.y0 < viewport.y1 && rect.y1 > viewport.y0
     }
 
-    /// Closes the band: what is drawn in it so far is one op.
+    /// Closes the band: what is drawn in it so far is one op, and the text
+    /// waiting on it the next.
     fn cut(&mut self) {
         self.close_clips(0);
         let scene = std::mem::replace(&mut self.scene, Scene::new());
         if std::mem::take(&mut self.drawn) {
             self.ops.push(SurfaceOp::Band(scene));
+        }
+        self.pending_bounds.clear();
+        let pending = std::mem::take(&mut self.pending);
+        if !pending.is_empty() {
+            self.ops.push(SurfaceOp::Text(pending));
+        }
+    }
+
+    /// Text drawn over everything so far, in `bounds` (target pixels).
+    fn defer(&mut self, batch: TextBatch, bounds: KurboRect) {
+        if batch.is_empty() {
+            return;
+        }
+        self.pending.append(batch);
+        self.pending_bounds.push(bounds);
+    }
+
+    /// Readies the band for a draw over `rect` (target pixels): text waiting
+    /// on the band that the draw would cover is drawn first.
+    fn clear_of(&mut self, rect: KurboRect) {
+        if self
+            .pending_bounds
+            .iter()
+            .any(|bounds| bounds.overlaps(rect))
+        {
+            self.cut();
         }
     }
 
@@ -354,8 +408,14 @@ impl<T: TextBackend> Encoder<'_, T> {
                         self.vector_around_textures(target, common, &value.primitive);
                         continue;
                     }
-                    self.clip_to(target, common.clip_chain);
                     let world = base * kurbo_affine(common.world_transform);
+                    if let BuiltDraw::Text(value) = draw
+                        && self.bitmap_text(target, common, world, &value.primitive)
+                    {
+                        continue;
+                    }
+                    target.clear_of(base.transform_rect_bbox(kurbo_bounds(common.world_bounds)));
+                    self.clip_to(target, common.clip_chain);
                     match draw {
                         BuiltDraw::Shape(value) => {
                             encode_shape(&mut target.scene, world, &value.primitive)
@@ -848,6 +908,84 @@ impl<T: TextBackend> Encoder<'_, T> {
         })
     }
 
+    /// Draws a text primitive from glyph bitmaps, deferred past the band:
+    /// `false` when it has to be Vello's, as outlines (no rasterizer, a
+    /// transform other than a translation and a uniform scale, a clip other
+    /// than rectangles, glyphs too large, a glyph atlas at its limit), and
+    /// nothing was drawn.
+    fn bitmap_text(
+        &mut self,
+        target: &mut Builder,
+        common: &xui_core::render::BuiltDrawData,
+        world: KurboAffine,
+        primitive: &xui_core::render::TextPrimitive,
+    ) -> bool {
+        if self.bitmap.is_none() {
+            return false;
+        }
+        let [scale, b, c, d, _, _] = world.as_coeffs();
+        if b != 0.0 || c != 0.0 || scale <= 0.0 || (scale - d).abs() > scale * 1e-6 {
+            return false;
+        }
+        let Some(paragraph) = paragraph(self.text, primitive) else {
+            return true;
+        };
+        if paragraph
+            .layout
+            .runs
+            .iter()
+            .any(|run| run.font_size * scale as f32 > MAX_BITMAP_PPEM)
+        {
+            return false;
+        }
+        let Some(clips) = self.clip_set(target, common.clip_chain) else {
+            return true;
+        };
+        if clips.mask.is_some() || clips.specs.len() > usize::from(clips.bounds.is_some()) {
+            return false;
+        }
+        let bounds = world.transform_rect_bbox(kurbo_bounds(primitive.bounds));
+        let clip = clips
+            .bounds
+            .map_or(bounds, |rect| rect.intersect(bounds))
+            .intersect(target.viewport());
+        if !(clip.width() > 0.0 && clip.height() > 0.0) {
+            return true;
+        }
+
+        let parts = bitmap_parts(
+            world,
+            primitive,
+            self.text,
+            &paragraph,
+            [clip.x0 as f32, clip.y0 as f32, clip.x1 as f32, clip.y1 as f32],
+        );
+        let bitmap = self.bitmap.as_mut().expect("checked above");
+        let batch = bitmap.renderer.prepare(
+            bitmap.device,
+            bitmap.queue,
+            bitmap.rasterizer,
+            TextTarget {
+                origin_px: (0, 0),
+                extent: target.extent,
+            },
+            &parts.draws(),
+        );
+        // The glyph atlas is at its limit: rather than text with holes, all
+        // of this text is Vello's.
+        if batch.incomplete() {
+            return false;
+        }
+        if has_selection(primitive) {
+            target.clear_of(clip);
+            self.clip_to(target, common.clip_chain);
+            encode_selection(&mut target.scene, world, primitive, self.text, &paragraph);
+            target.drawn = true;
+        }
+        target.defer(batch, clip);
+        true
+    }
+
     /// A canvas whose commands include textures: the 2D commands either side
     /// of each texture are drawn by Vello in their own bands, the texture by
     /// this crate between them.
@@ -912,6 +1050,7 @@ impl<T: TextBackend> Encoder<'_, T> {
         if commands.is_empty() {
             return;
         }
+        target.clear_of(target.base.transform_rect_bbox(kurbo_bounds(common.world_bounds)));
         self.clip_to(target, common.clip_chain);
         encode_vector(&mut target.scene, world, commands, self.paths);
         target.drawn = true;
@@ -1357,6 +1496,7 @@ mod tests {
             &images,
             &mut textures,
             &paths,
+            None,
         )
     }
 

@@ -66,6 +66,21 @@ impl FocusProperties {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AccessibilityRole {
     Generic,
+    ComboBox,
+    Dialog,
+    ListBox,
+    Menu,
+    MenuItem,
+    Option,
+    ProgressIndicator,
+    Slider,
+    Table,
+    Row,
+    Cell,
+    ColumnHeader,
+    Tooltip,
+    Tree,
+    TreeItem,
     Button,
     Checkbox,
     Group,
@@ -85,6 +100,32 @@ pub enum AccessibilityRole {
     TextField,
 }
 
+/// State of a toggle, including an indeterminate checkbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AccessibilityChecked {
+    False,
+    True,
+    Mixed,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AccessibilityOrientation {
+    Horizontal,
+    Vertical,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AccessibilityLiveRegion {
+    Polite,
+    Assertive,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AccessibilityPopup {
+    Menu,
+    ListBox,
+    Tree,
+    Grid,
+    Dialog,
+}
+
 /// Platform-neutral accessibility metadata attached to a host widget.
 ///
 /// Backends can consume this data to build their native accessibility tree.
@@ -98,6 +139,21 @@ pub struct AccessibilityProperties {
     pub disabled: Option<bool>,
     pub controls: Option<String>,
     pub labelled_by: Option<String>,
+    pub described_by: Option<String>,
+    pub value: Option<String>,
+    pub read_only: Option<bool>,
+    pub required: Option<bool>,
+    pub invalid: Option<bool>,
+    pub hidden: Option<bool>,
+    pub expanded: Option<bool>,
+    pub checked: Option<AccessibilityChecked>,
+    pub orientation: Option<AccessibilityOrientation>,
+    pub live_region: Option<AccessibilityLiveRegion>,
+    pub has_popup: Option<AccessibilityPopup>,
+    pub numeric_value: Option<ordered_float::OrderedFloat<f64>>,
+    pub min_value: Option<ordered_float::OrderedFloat<f64>>,
+    pub max_value: Option<ordered_float::OrderedFloat<f64>>,
+    pub step_value: Option<ordered_float::OrderedFloat<f64>>,
 }
 
 impl AccessibilityProperties {

@@ -1,15 +1,28 @@
+//! Asynchronous raster images from packaged assets, URLs, and local files.
+//!
+//! [`ImageSrc`] identifies a source; [`image`](fn@self::image) retains the resource and
+//! supports fitting, opacity, accessibility text, and loading/error elements. Import the
+//! component explicitly to distinguish it from the host `image()` widget.
+//!
+//! # Components
+//!
+//! | Component | Purpose |
+//! | --- | --- |
+//! | [`image`](fn@self::image) | An asynchronous image loaded from a packaged asset, URL, or local path. |
+
 use thiserror::Error;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use xui_core::assets::AssetId;
 use xui_core::assets::load_image_asset;
-use xui_macros::component;
 use xui_core::prelude::*;
+use xui_macros::{component, view};
 use zune_core::bytestream::ZCursor;
 use zune_core::colorspace::ColorSpace;
 use zune_core::options::DecoderOptions;
 use zune_image::image::Image;
 
+/// A source-loading or decoding failure reported by the image resource.
 #[derive(Debug, Error, Clone)]
 pub enum ImageError {
     #[error("network error: {0}")]
@@ -24,6 +37,7 @@ pub enum ImageError {
     AssetNotFound(String),
 }
 
+/// A packaged asset, network URL, or local file supplying image pixels.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum ImageSrc {
     Url(String),
@@ -77,6 +91,7 @@ impl From<AssetId> for ImageSrc {
     }
 }
 
+/// An optional image dimension; `Auto` leaves the layout style unchanged.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Default)]
 pub enum ImageSize {
     #[default]
@@ -124,12 +139,17 @@ impl From<Option<Sizing>> for ImageSize {
     }
 }
 
+/// A finite image-opacity value clamped to the range from zero to one.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct ImageOpacity(u32);
 
 impl ImageOpacity {
     pub fn new(value: f32) -> Self {
-        Self(value.clamp(0.0, 1.0).to_bits())
+        Self(if value.is_finite() {
+            value.clamp(0.0, 1.0).to_bits()
+        } else {
+            1.0f32.to_bits()
+        })
     }
 
     pub fn get(self) -> f32 {
@@ -155,6 +175,41 @@ impl From<u32> for ImageOpacity {
     }
 }
 
+/// An asynchronous image loaded from a packaged asset, URL, or local path.
+///
+/// `src` identifies the retained resource. URL/file decoding runs on a blocking worker,
+/// and HTTP requests share a client. `loading` and `fallback` replace pending/error
+/// output; otherwise the component uses an empty box or `alt` text. `style` controls
+/// layout/decoration, while `image_style` and the fitting shortcuts control pixel
+/// placement. `alt` labels a ready image for accessibility.
+///
+/// # Props
+///
+/// | Prop | Type | Default |
+/// | --- | --- | --- |
+/// | `src` | `ImageSrc` | **Required** |
+/// | `alt` | `Option<String>` | `None` |
+/// | `width` | `ImageSize` | `ImageSize::Auto` |
+/// | `height` | `ImageSize` | `ImageSize::Auto` |
+/// | `opacity` | `ImageOpacity` | `ImageOpacity::default()` |
+/// | `image_style` | `ImageStyle` | `ImageStyle::default()` |
+/// | `fit` | `Option<ImageFit>` | `None` |
+/// | `alignment` | `Option<Alignment>` | `None` |
+/// | `repeat` | `Option<ImageRepeat>` | `None` |
+/// | `sampling` | `Option<Sampling>` | `None` |
+/// | `style` | `Style` | `Style::new()` |
+/// | `loading` | `Option<ElementDesc>` | `None` |
+/// | `fallback` | `Option<ElementDesc>` | `None` |
+///
+/// # Example
+///
+/// ```rust
+/// use xui_core::prelude::*;
+/// use xui_components::*;
+/// use xui_macros::view;
+///
+/// let _ = view! { xui_components::image::image(src: "asset://images/logo.png", alt: Some("Logo".to_owned()), width: 64.0, height: 64.0) };
+/// ```
 #[component]
 #[defaults(
     alt = None,
@@ -166,6 +221,9 @@ impl From<u32> for ImageOpacity {
     alignment = None,
     repeat = None,
     sampling = None,
+    style = Style::new(),
+    loading = None,
+    fallback = None,
 )]
 pub fn image(
     src: &ImageSrc,
@@ -178,16 +236,18 @@ pub fn image(
     alignment: &Option<Alignment>,
     repeat: &Option<ImageRepeat>,
     sampling: &Option<Sampling>,
+    style: &Style,
+    loading: &Option<ElementDesc>,
+    fallback: &Option<ElementDesc>,
 ) {
     let image_key = image_key(src);
-    let child = vec![];
     let resource_src = src.clone();
     let fetch_src = resource_src.clone();
     let image_src = cx.use_resource(
         resource_src,
         move |_| async move { get_image(&fetch_src).await },
     );
-    let mut style = Style::new();
+    let mut style = style.clone();
 
     style = width.apply_width(style);
     style = height.apply_height(style);
@@ -196,18 +256,23 @@ pub fn image(
     use AsyncValue::*;
 
     match image_src.get() {
-        Pending => placeholder(style, None),
-        Ready(image_data) => ImageWidget::new()
-            .image_data(image_key, image_data)
-            .style(style)
-            .image_style(image_style)
-            .opacity(opacity.get())
-            .into_element_desc(child),
+        Pending => loading
+            .clone()
+            .unwrap_or_else(|| placeholder(style, alt.as_deref())),
+        Ready(image_data) => view! {
+            xui_core::widgets::image(
+                source: (image_key, image_data),
+                style: style,
+                image_style: image_style,
+                opacity: opacity.get(),
+                accessibility_role: AccessibilityRole::Image,
+                accessibility_label: alt.clone().unwrap_or_default(),
+            )
+        },
 
-        Error(e) => {
-            eprintln!("{}", e);
-            placeholder(style, alt.as_deref())
-        }
+        Error(_) => fallback
+            .clone()
+            .unwrap_or_else(|| placeholder(style, alt.as_deref())),
     }
 }
 
@@ -235,17 +300,26 @@ fn resolve_image_style(
 
 fn placeholder(style: Style, alt: Option<&str>) -> ElementDesc {
     match alt.filter(|text| !text.is_empty()) {
-        Some(text) => TextWidget::new(text.to_string())
-            .style(style)
-            .into_element_desc(),
-        None => ContainerWidget::new()
-            .style(style)
-            .into_element_desc(Vec::new()),
+        Some(text) => view! {
+            xui_core::widgets::text(
+                text.to_string(),
+                style: style,
+            )
+        },
+        None => view! {
+            container(
+                style: style,
+            )
+        },
     }
 }
 
 async fn get_network_image(path: &str) -> Result<ImageData, ImageError> {
-    let resp = reqwest::get(path)
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let resp = CLIENT
+        .get_or_init(reqwest::Client::new)
+        .get(path)
+        .send()
         .await
         .map_err(|e| ImageError::NetworkError(e.to_string()))?
         .error_for_status()
@@ -253,9 +327,11 @@ async fn get_network_image(path: &str) -> Result<ImageData, ImageError> {
     let bytes = resp
         .bytes()
         .await
-        .map_err(|e| ImageError::NetworkError(e.to_string()))?
-        .to_vec();
-    decode_image(&bytes).map_err(|e| ImageError::DecodeError(e.to_string()))
+        .map_err(|e| ImageError::NetworkError(e.to_string()))?;
+    tokio::task::spawn_blocking(move || decode_image(&bytes))
+        .await
+        .map_err(|e| ImageError::DecodeError(e.to_string()))?
+        .map_err(|e| ImageError::DecodeError(e.to_string()))
 }
 
 async fn get_local_image(path: &str) -> Result<ImageData, ImageError> {
@@ -266,7 +342,10 @@ async fn get_local_image(path: &str) -> Result<ImageData, ImageError> {
     file.read_to_end(&mut buf)
         .await
         .map_err(|e| ImageError::IoError(e.to_string()))?;
-    decode_image(&buf).map_err(|e| ImageError::DecodeError(e.to_string()))
+    tokio::task::spawn_blocking(move || decode_image(&buf))
+        .await
+        .map_err(|e| ImageError::DecodeError(e.to_string()))?
+        .map_err(|e| ImageError::DecodeError(e.to_string()))
 }
 
 async fn get_image(src: &ImageSrc) -> Result<ImageData, ImageError> {
@@ -381,6 +460,7 @@ mod tests {
 
     #[test]
     fn opacity_clamps_to_valid_range() {
+        assert_eq!(ImageOpacity::from(f32::NAN).get(), 1.0);
         assert_eq!(ImageOpacity::from(-1.0).get(), 0.0);
         assert_eq!(ImageOpacity::from(0.5).get(), 0.5);
         assert_eq!(ImageOpacity::from(2.0).get(), 1.0);

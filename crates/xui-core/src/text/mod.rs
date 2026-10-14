@@ -1,8 +1,8 @@
 pub mod cache;
 
 pub use cache::{
-    ParagraphId, ParagraphInfo, TextCacheStats, TextDocumentId, TextHost, TextLayoutHandle,
-    TextLayoutSlot, TextUnitId, TextUnitLocation,
+    ParagraphId, ParagraphInfo, ShaperState, TextCacheStats, TextDocumentId, TextHost,
+    TextLayoutHandle, TextLayoutSlot, TextUnitId, TextUnitLocation,
 };
 use xui_interface::{Point, Rect, Size, TextPosition, TextRange};
 
@@ -32,41 +32,20 @@ pub trait TextLayoutQuery {
 
 #[cfg(test)]
 pub(crate) mod testing {
-    use std::sync::Arc;
+    use std::sync::{Arc, LazyLock};
 
     use xui_interface::{
-        FontDataRef, FontDatabase, FontQuery, GlyphRasterizer, ParagraphLayout, RasterizedGlyph,
-        Shaper, TextBackend, TextLayoutInput,
+        FontQuery, NoFonts, NoRasterizer, ParagraphLayout, Shaper, TextBackend, TextLayoutInput,
     };
 
+    /// Lays every paragraph out empty, without fonts.
     pub(crate) struct ZeroTextBackend;
 
-    impl FontDatabase for ZeroTextBackend {
-        type FontId = u32;
-
-        fn epoch(&self) -> u64 {
-            0
-        }
-
-        fn load_system_fonts(&mut self) {}
-
-        fn load_font_bytes(&mut self, _bytes: Arc<[u8]>) -> Self::FontId {
-            0
-        }
-
-        fn query(&mut self, _query: &FontQuery) -> Option<Self::FontId> {
-            Some(0)
-        }
-
-        fn font_data(&self, _id: Self::FontId) -> Option<FontDataRef<'_>> {
-            None
-        }
-    }
+    static NO_FONTS: LazyLock<Arc<NoFonts<u32>>> = LazyLock::new(Arc::default);
 
     impl Shaper for ZeroTextBackend {
-        type State = ();
-        type GlyphKey = ();
         type FontId = u32;
+        type State = ();
 
         fn create_state(&mut self) -> Self::State {}
 
@@ -74,7 +53,7 @@ pub(crate) mod testing {
             &mut self,
             _state: &mut Self::State,
             _input: TextLayoutInput,
-        ) -> ParagraphLayout<Self::FontId, Self::GlyphKey> {
+        ) -> ParagraphLayout<u32> {
             ParagraphLayout {
                 lines: Vec::new(),
                 runs: Vec::new(),
@@ -84,15 +63,34 @@ pub(crate) mod testing {
         }
     }
 
-    impl GlyphRasterizer for ZeroTextBackend {
-        type GlyphKey = ();
+    impl TextBackend for ZeroTextBackend {
+        type FontId = u32;
+        type Fonts = NoFonts<u32>;
+        type Shaper = Self;
+        type Rasterizer = NoRasterizer<u32>;
 
-        fn rasterize(&mut self, _key: Self::GlyphKey) -> Option<RasterizedGlyph> {
+        fn fonts(&self) -> &Arc<NoFonts<u32>> {
+            &NO_FONTS
+        }
+
+        fn shaper(&mut self) -> &mut Self {
+            self
+        }
+
+        fn rasterizer(&self) -> Option<&Arc<NoRasterizer<u32>>> {
             None
         }
-    }
 
-    impl TextBackend for ZeroTextBackend {}
+        fn load_system_fonts(&mut self) {}
+
+        fn load_font_bytes(&mut self, _bytes: Arc<[u8]>) -> Option<u32> {
+            None
+        }
+
+        fn query(&mut self, _query: &FontQuery) -> Option<u32> {
+            Some(0)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -101,9 +99,9 @@ mod tests {
 
     use slotmap::SlotMap;
     use xui_interface::{
-        FontDataRef, FontDatabase, FontQuery, GlyphRasterizer, NodeId, NodeLifecycleEvent,
-        ParagraphLayout, ParagraphStyle, RasterizedGlyph, Shaper, TextBackend, TextBoxStyle,
-        TextLayoutConstraints, TextLayoutInput, TextStyle,
+        FontQuery, NoFonts, NoRasterizer, NodeId, NodeLifecycleEvent, ParagraphLayout,
+        ParagraphStyle, Shaper, TextBackend, TextBoxStyle, TextLayoutConstraints, TextLayoutInput,
+        TextStyle,
     };
 
     use super::*;
@@ -112,7 +110,7 @@ mod tests {
         create_state_calls: usize,
         layout_calls: usize,
         lifecycle_calls: usize,
-        epoch: u64,
+        fonts: Arc<NoFonts<u32>>,
     }
 
     impl CountingTextBackend {
@@ -121,7 +119,7 @@ mod tests {
                 create_state_calls: 0,
                 layout_calls: 0,
                 lifecycle_calls: 0,
-                epoch: 0,
+                fonts: Arc::default(),
             }
         }
     }
@@ -131,35 +129,9 @@ mod tests {
         layout_calls: usize,
     }
 
-    impl FontDatabase for CountingTextBackend {
-        type FontId = u32;
-
-        fn epoch(&self) -> u64 {
-            self.epoch
-        }
-
-        fn load_system_fonts(&mut self) {
-            self.epoch = self.epoch.wrapping_add(1);
-        }
-
-        fn load_font_bytes(&mut self, _bytes: Arc<[u8]>) -> Self::FontId {
-            self.epoch = self.epoch.wrapping_add(1);
-            0
-        }
-
-        fn query(&mut self, _query: &FontQuery) -> Option<Self::FontId> {
-            Some(0)
-        }
-
-        fn font_data(&self, _id: Self::FontId) -> Option<FontDataRef<'_>> {
-            None
-        }
-    }
-
     impl Shaper for CountingTextBackend {
-        type State = CountingParagraphState;
-        type GlyphKey = ();
         type FontId = u32;
+        type State = CountingParagraphState;
 
         fn create_state(&mut self) -> Self::State {
             self.create_state_calls += 1;
@@ -170,7 +142,7 @@ mod tests {
             &mut self,
             state: &mut Self::State,
             _input: TextLayoutInput,
-        ) -> ParagraphLayout<Self::FontId, Self::GlyphKey> {
+        ) -> ParagraphLayout<u32> {
             self.layout_calls += 1;
             state.layout_calls += 1;
             ParagraphLayout {
@@ -186,15 +158,37 @@ mod tests {
         }
     }
 
-    impl GlyphRasterizer for CountingTextBackend {
-        type GlyphKey = ();
+    impl TextBackend for CountingTextBackend {
+        type FontId = u32;
+        type Fonts = NoFonts<u32>;
+        type Shaper = Self;
+        type Rasterizer = NoRasterizer<u32>;
 
-        fn rasterize(&mut self, _key: Self::GlyphKey) -> Option<RasterizedGlyph> {
+        fn fonts(&self) -> &Arc<NoFonts<u32>> {
+            &self.fonts
+        }
+
+        fn shaper(&mut self) -> &mut Self {
+            self
+        }
+
+        fn rasterizer(&self) -> Option<&Arc<NoRasterizer<u32>>> {
             None
         }
-    }
 
-    impl TextBackend for CountingTextBackend {}
+        fn load_system_fonts(&mut self) {
+            self.fonts.bump_epoch();
+        }
+
+        fn load_font_bytes(&mut self, _bytes: Arc<[u8]>) -> Option<u32> {
+            self.fonts.bump_epoch();
+            Some(0)
+        }
+
+        fn query(&mut self, _query: &FontQuery) -> Option<u32> {
+            Some(0)
+        }
+    }
 
     fn input(constraints: TextLayoutConstraints) -> TextLayoutInput {
         TextLayoutInput::new(

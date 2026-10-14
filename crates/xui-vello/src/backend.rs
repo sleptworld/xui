@@ -6,13 +6,14 @@ use vello::{
 };
 use xui_core::render::{BuiltFrame, BuiltItem, RenderBackend, damage::DamageTracker};
 use xui_core::text::TextHost;
-use xui_interface::{Color, FontDatabase, NodeLifecycleEvent, Size, TextBackend};
+use xui_interface::{Color, NodeLifecycleEvent, Size, TextBackend};
 use xui_shell::SurfaceTarget;
+use xui_wgpu_text::{AtlasOptions, TextBatch, TextRenderer};
 
 use crate::{
     VelloBackendError, WgpuContext,
-    encode::{ClipMask, Inherit, Surface, SurfaceOp, Unsupported, encode_frame},
-    filter::{Finish, FilterRenderer, Placed, PlanTextures, Slot},
+    encode::{BitmapText, ClipMask, Inherit, Surface, SurfaceOp, Unsupported, encode_frame},
+    filter::{ENCODED_FORMAT, Finish, FilterRenderer, LINEAR_FORMAT, Placed, PlanTextures, Slot},
     layer_cache::{CacheUpdate, LayerCache},
     texture::ExternalTextures,
     image::ImageCache,
@@ -44,6 +45,14 @@ pub struct VelloBackendOptions {
     /// when it pays (`CachePolicy::Auto`), the least recently used going
     /// first. A layer that always wants it (`Always`) is not counted.
     pub layer_cache_budget_bytes: u64,
+    /// Draw text from glyph bitmaps (`xui-wgpu-text`) when the text backend
+    /// can render them, rather than as outlines through Vello. Text that is
+    /// rotated, skewed, very large, or cut by a clip other than rectangles is
+    /// outlines either way.
+    pub bitmap_text: bool,
+    /// Pages of the bitmap text atlas. A text that does not fit even at the
+    /// atlas's limit is drawn as outlines for that frame.
+    pub glyph_atlas: AtlasOptions,
 }
 
 impl Default for VelloBackendOptions {
@@ -54,6 +63,8 @@ impl Default for VelloBackendOptions {
             font_cache_budget_bytes: 256 * 1024 * 1024,
             filter_texture_budget_bytes: crate::filter::DEFAULT_POOL_BUDGET,
             layer_cache_budget_bytes: 128 * 1024 * 1024,
+            bitmap_text: true,
+            glyph_atlas: AtlasOptions::default(),
         }
     }
 }
@@ -111,6 +122,10 @@ pub struct ResourceStats {
     pub layer_cache_filtered_hits: u64,
     pub layer_cache_filtered_misses: u64,
     pub layer_cache_filtered_patches: u64,
+    /// Glyph bitmaps in the text atlas, inkless ones included, and the atlas
+    /// pages (textures) holding them.
+    pub glyph_atlas_entries: usize,
+    pub glyph_atlas_pages: usize,
 }
 
 struct SceneTarget {
@@ -166,7 +181,9 @@ pub struct VelloBackend<T: TextBackend> {
     context: WgpuContext,
     renderer: Renderer,
     target: Option<SceneTarget>,
-    fonts: FontCache<<T as FontDatabase>::FontId>,
+    fonts: FontCache<T::FontId>,
+    /// Bitmap text, made on the first frame that has some.
+    text_renderer: Option<TextRenderer<T::FontId>>,
     images: ImageCache,
     paths: PathCache,
     filters: FilterRenderer,
@@ -267,6 +284,7 @@ impl<T: TextBackend> VelloBackend<T> {
             renderer,
             target: None,
             fonts: FontCache::new(options.font_cache_budget_bytes),
+            text_renderer: None,
             images: ImageCache::new(options.image_cache_budget_bytes),
             paths: PathCache::default(),
             filters,
@@ -334,6 +352,7 @@ impl<T: TextBackend> VelloBackend<T> {
             renderer,
             target: None,
             fonts: FontCache::new(options.font_cache_budget_bytes),
+            text_renderer: None,
             images: ImageCache::new(options.image_cache_budget_bytes),
             paths: PathCache::default(),
             filters,
@@ -391,6 +410,14 @@ impl<T: TextBackend> VelloBackend<T> {
             layer_cache_filtered_hits: counts.filtered_hits,
             layer_cache_filtered_misses: counts.filtered_misses,
             layer_cache_filtered_patches: counts.filtered_patches,
+            glyph_atlas_entries: self
+                .text_renderer
+                .as_ref()
+                .map_or(0, |renderer| renderer.atlas().len()),
+            glyph_atlas_pages: self
+                .text_renderer
+                .as_ref()
+                .map_or(0, |renderer| renderer.atlas().page_count()),
         }
     }
 
@@ -488,16 +515,20 @@ impl<T: TextBackend> VelloBackend<T> {
 
     /// Draws `surface` into `dest`.
     ///
-    /// A surface that is one band of 2D content is one Vello render, straight
-    /// into `dest`. Anything else is composed here (see [`Self::compose`]) and
-    /// written out as Vello writes.
+    /// A surface that is one band of 2D content, on an opaque clear colour
+    /// and followed by nothing but text, is one Vello render straight into
+    /// `dest`, with the text drawn over it there. Anything else is composed
+    /// here (see [`Self::compose`]) and written out as Vello writes.
     fn render_surface(
         &mut self,
         surface: Surface,
         dest: Dest,
         clear: Color,
     ) -> Result<(), VelloBackendError> {
-        if let [SurfaceOp::Band(scene)] = surface.ops.as_slice() {
+        if let Some((SurfaceOp::Band(scene), text)) = surface.ops.split_first()
+            && (text.is_empty()
+                || (opaque(clear) && text.iter().all(|op| matches!(op, SurfaceOp::Text(_)))))
+        {
             let view = match dest {
                 Dest::Root => &self.target.as_ref().expect("target").view,
                 Dest::Slot(slot) => self.filters.view(slot),
@@ -509,6 +540,11 @@ impl<T: TextBackend> VelloBackend<T> {
                 view,
                 &render_params(surface.extent, clear),
             )?;
+            let batches = text.iter().filter_map(|op| match op {
+                SurfaceOp::Text(batch) => Some(batch),
+                _ => None,
+            });
+            self.draw_text(view, ENCODED_FORMAT, batches);
             return Ok(());
         }
         let composed = self.compose(surface, clear, None)?;
@@ -521,6 +557,51 @@ impl<T: TextBackend> VelloBackend<T> {
             Dest::Slot(slot) => self.filters.finish(device, queue, composed, Finish::Slot(slot)),
         }
         Ok(())
+    }
+
+    /// Draws text `batches` over `view`, a target of `format` and of the
+    /// extent they were prepared for.
+    fn draw_text<'b>(
+        &self,
+        view: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        batches: impl IntoIterator<Item = &'b TextBatch>,
+    ) {
+        let Some(renderer) = &self.text_renderer else {
+            return;
+        };
+        let mut batches = batches.into_iter().filter(|batch| !batch.is_empty()).peekable();
+        if batches.peek().is_none() {
+            return;
+        }
+        let mut encoder =
+            self.context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("xui-vello text"),
+                });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("xui-vello text"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            for batch in batches {
+                renderer.render(&mut pass, batch, format);
+            }
+        }
+        self.context.queue.submit([encoder.finish()]);
     }
 
     /// Composes `surface` in paint order, from `clear`, and returns it linear
@@ -547,7 +628,8 @@ impl<T: TextBackend> VelloBackend<T> {
             ops,
         } = surface;
         let mut composed: Option<Slot> = None;
-        for op in ops {
+        let mut ops = ops.into_iter().peekable();
+        while let Some(op) = ops.next() {
             let device = &self.context.device;
             let queue = &self.context.queue;
             let below = |filters: &mut FilterRenderer, composed: Option<Slot>| {
@@ -566,10 +648,27 @@ impl<T: TextBackend> VelloBackend<T> {
                         self.filters.view(band),
                         &render_params(extent, base),
                     )?;
+                    // Text right after an opaque band is drawn into it, as
+                    // Vello writes it: encoded, where opaque straight alpha is
+                    // premultiplied too.
+                    if composed.is_none() && opaque(clear) {
+                        let mut text = Vec::new();
+                        while let Some(SurfaceOp::Text(_)) = ops.peek() {
+                            if let Some(SurfaceOp::Text(batch)) = ops.next() {
+                                text.push(batch);
+                            }
+                        }
+                        self.draw_text(self.filters.view(band), ENCODED_FORMAT, &text);
+                    }
                     match composed {
                         None => self.filters.premultiplied(device, queue, band, extent),
                         Some(below) => self.filters.band_over(device, queue, band, below, extent),
                     }
+                }
+                SurfaceOp::Text(batch) => {
+                    let below = below(&mut self.filters, composed);
+                    self.draw_text(self.filters.view(below), LINEAR_FORMAT, [&batch]);
+                    below
                 }
                 SurfaceOp::Texture { draw, clip_mask } => {
                     let below = below(&mut self.filters, composed);
@@ -1001,7 +1100,7 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for VelloBackend<T> {
         let size = self.target.as_ref().expect("begin_frame ensures a target").size;
 
         // Fonts are not part of the scene: a different set shapes differently.
-        let font_epoch = Some(text.backend().epoch());
+        let font_epoch = Some(text.font_epoch());
         if self.font_epoch != font_epoch {
             self.font_epoch = font_epoch;
             self.invalidate();
@@ -1021,11 +1120,33 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for VelloBackend<T> {
         self.frame_stats.total_pixels += pixels;
         self.needs_present = true;
 
+        let rasterizer = if self.options.bitmap_text {
+            text.backend().rasterizer().cloned()
+        } else {
+            None
+        };
+        let device = &self.context.device;
+        let bitmap = rasterizer.as_deref().map(|rasterizer| {
+            let renderer = self.text_renderer.get_or_insert_with(|| {
+                TextRenderer::new(
+                    device,
+                    &[ENCODED_FORMAT, LINEAR_FORMAT],
+                    self.options.glyph_atlas,
+                )
+            });
+            renderer.begin_frame(text.font_epoch());
+            BitmapText {
+                renderer,
+                rasterizer,
+                device,
+                queue: &self.context.queue,
+            }
+        });
         let (surface, found) = encode_frame(
             frame,
             self.scale_factor,
             region,
-            self.context.device.limits().max_texture_dimension_2d,
+            device.limits().max_texture_dimension_2d,
             &self.layer_cache,
             &self.damage,
             text,
@@ -1033,8 +1154,12 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for VelloBackend<T> {
             &self.images,
             &mut self.textures,
             &self.paths,
+            bitmap,
         );
         self.report(found);
+        if let Some(renderer) = &mut self.text_renderer {
+            renderer.upload(&self.context.device, &self.context.queue);
+        }
 
         let clear = self.options.clear_color;
         let extent = ((region[2] - region[0]) as u32, (region[3] - region[1]) as u32);
@@ -1125,6 +1250,12 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for VelloBackend<T> {
     }
 
     fn handle_node_lifecycle(&mut self, _event: &NodeLifecycleEvent) {}
+}
+
+/// Whether a band drawn on `clear` covers every pixel, so its straight alpha
+/// is premultiplied too.
+fn opaque(clear: Color) -> bool {
+    clear.a >= 1.0
 }
 
 /// Vello's parameters for one band of `extent` on `base`.

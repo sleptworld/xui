@@ -12,9 +12,9 @@ use rustc_hash::FxHashMap;
 use slotmap::{SlotMap, new_key_type};
 use smallvec::SmallVec;
 use xui_interface::{
-    Affinity, NodeId, NodeLifecycleEvent, ParagraphLayout, Point, Rect, Shaper, Size, TextBackend,
-    TextLayoutConstraints, TextLayoutInput, TextLayoutKey, TextOffset, TextOffsetUnit,
-    TextPosition, TextRange,
+    Affinity, FontCollection, NodeId, NodeLifecycleEvent, ParagraphLayout, Point, Rect, Shaper,
+    Size, TextBackend, TextLayoutConstraints, TextLayoutInput, TextLayoutKey, TextOffset,
+    TextOffsetUnit, TextPosition, TextRange,
 };
 
 use super::{TextLayoutMetrics, TextLayoutQuery};
@@ -32,6 +32,9 @@ new_key_type! {
     /// Document-local paragraph identity.
     pub struct ParagraphId;
 }
+
+/// Paragraph state of `B`'s shaper.
+pub type ShaperState<B> = <<B as TextBackend>::Shaper as Shaper>::State;
 
 const DEFAULT_ESTIMATED_LAYOUTS: usize = 128;
 const DEFAULT_MAX_LAYOUT_BYTES: u64 = 32 * 1024 * 1024;
@@ -91,7 +94,7 @@ impl ParagraphInfo {
 /// variants share that state but remain independently cached for rendering.
 pub struct TextHost<B: TextBackend> {
     backend: B,
-    units: SlotMap<TextUnitId, TextUnitCache<B::State>>,
+    units: SlotMap<TextUnitId, TextUnitCache<ShaperState<B>>>,
     entries: SlotMap<TextLayoutHandle, LayoutEntry<B>>,
     residency: GlobalLayoutCache,
     owners: FxHashMap<NodeId, OwnerCache>,
@@ -156,13 +159,19 @@ impl<B: TextBackend> TextHost<B> {
         &mut self.backend
     }
 
+    /// The backend's [`FontCollection::epoch`]: layouts shaped under another
+    /// epoch may resolve fonts differently.
+    pub fn font_epoch(&self) -> u64 {
+        self.backend.fonts().epoch()
+    }
+
     /// Returns or creates the stable unit behind a normal owner slot.
     pub fn ensure_direct_unit(&mut self, owner: NodeId, slot: TextLayoutSlot) -> TextUnitId {
         if let Some(unit) = self.direct_unit(owner, slot) {
             return unit;
         }
 
-        let state = self.backend.create_state();
+        let state = self.backend.shaper().create_state();
         let unit = self.units.insert(TextUnitCache {
             owner,
             location: TextUnitLocation::Direct { owner, slot },
@@ -268,7 +277,7 @@ impl<B: TextBackend> TextHost<B> {
 
         let layout = {
             let state = &mut self.units.get_mut(unit)?.state;
-            Arc::new(self.backend.layout_paragraph(state, input.clone()))
+            Arc::new(self.backend.shaper().layout_paragraph(state, input.clone()))
         };
         let metrics = text_layout_metrics(&layout);
         let memory_cost = Self::estimated_memory_cost(&layout, &self.units.get(unit)?.state);
@@ -309,7 +318,7 @@ impl<B: TextBackend> TextHost<B> {
 
         let layout = {
             let state = &mut self.units.get_mut(unit)?.state;
-            Arc::new(self.backend.layout_paragraph(state, input.clone()))
+            Arc::new(self.backend.shaper().layout_paragraph(state, input.clone()))
         };
         let memory_cost = Self::estimated_memory_cost(&layout, &self.units.get(unit)?.state);
         let handle = self.insert_entry(unit, key, layout, Some(input), memory_cost, true)?;
@@ -340,10 +349,7 @@ impl<B: TextBackend> TextHost<B> {
         self.activate_unit(unit, key, input)
     }
 
-    pub fn layout(
-        &self,
-        handle: TextLayoutHandle,
-    ) -> Option<Arc<ParagraphLayout<<B as Shaper>::FontId, <B as Shaper>::GlyphKey>>> {
+    pub fn layout(&self, handle: TextLayoutHandle) -> Option<Arc<ParagraphLayout<B::FontId>>> {
         let entry = self.resident_entry(handle)?;
         Some(entry.layout.clone())
     }
@@ -353,12 +359,12 @@ impl<B: TextBackend> TextHost<B> {
             .map(|entry| entry as &dyn TextLayoutQuery)
     }
 
-    pub fn state(&self, handle: TextLayoutHandle) -> Option<&B::State> {
+    pub fn state(&self, handle: TextLayoutHandle) -> Option<&ShaperState<B>> {
         let unit = self.resident_entry(handle)?.cache_key.unit;
         Some(&self.units.get(unit)?.state)
     }
 
-    pub fn state_mut(&mut self, handle: TextLayoutHandle) -> Option<&mut B::State> {
+    pub fn state_mut(&mut self, handle: TextLayoutHandle) -> Option<&mut ShaperState<B>> {
         let cache_key = self.entries.get(handle)?.cache_key;
         self.residency.get(&cache_key)?;
         let last_access = self.next_access_epoch();
@@ -371,8 +377,8 @@ impl<B: TextBackend> TextHost<B> {
         &mut self,
         unit: TextUnitId,
         key: TextLayoutKey,
-        layout: Arc<ParagraphLayout<<B as Shaper>::FontId, <B as Shaper>::GlyphKey>>,
-        state: B::State,
+        layout: Arc<ParagraphLayout<B::FontId>>,
+        state: ShaperState<B>,
     ) -> Option<TextLayoutHandle> {
         let memory_cost = Self::estimated_memory_cost(&layout, &state);
         self.insert_unit_variant_with_cost(unit, key, layout, state, memory_cost)
@@ -382,8 +388,8 @@ impl<B: TextBackend> TextHost<B> {
         &mut self,
         unit: TextUnitId,
         key: TextLayoutKey,
-        layout: Arc<ParagraphLayout<<B as Shaper>::FontId, <B as Shaper>::GlyphKey>>,
-        state: B::State,
+        layout: Arc<ParagraphLayout<B::FontId>>,
+        state: ShaperState<B>,
         memory_cost: u64,
     ) -> Option<TextLayoutHandle> {
         if let Some(handle) = self.find_unit(unit, &key) {
@@ -399,8 +405,8 @@ impl<B: TextBackend> TextHost<B> {
         &mut self,
         unit: TextUnitId,
         key: TextLayoutKey,
-        layout: Arc<ParagraphLayout<<B as Shaper>::FontId, <B as Shaper>::GlyphKey>>,
-        state: B::State,
+        layout: Arc<ParagraphLayout<B::FontId>>,
+        state: ShaperState<B>,
     ) -> TextLayoutHandle {
         let memory_cost = Self::estimated_memory_cost(&layout, &state);
         self.insert_unit_active_with_cost(unit, key, layout, state, memory_cost)
@@ -410,8 +416,8 @@ impl<B: TextBackend> TextHost<B> {
         &mut self,
         unit: TextUnitId,
         key: TextLayoutKey,
-        layout: Arc<ParagraphLayout<<B as Shaper>::FontId, <B as Shaper>::GlyphKey>>,
-        state: B::State,
+        layout: Arc<ParagraphLayout<B::FontId>>,
+        state: ShaperState<B>,
         memory_cost: u64,
     ) -> TextLayoutHandle {
         if let Some(handle) = self.find_unit(unit, &key)
@@ -646,7 +652,7 @@ impl<B: TextBackend> TextHost<B> {
     ) -> Option<ParagraphInfo> {
         self.owners.get(&owner)?.documents.get(document)?;
 
-        let state = self.backend.create_state();
+        let state = self.backend.shaper().create_state();
         let unit = self.units.insert(TextUnitCache {
             owner,
             // Replaced immediately after the paragraph id is allocated.
@@ -890,7 +896,7 @@ impl<B: TextBackend> TextHost<B> {
         }
     }
 
-    pub fn estimated_memory_cost<F, K>(layout: &ParagraphLayout<F, K>, state: &B::State) -> u64 {
+    pub fn estimated_memory_cost<F>(layout: &ParagraphLayout<F>, state: &ShaperState<B>) -> u64 {
         let bytes = size_of_val(layout)
             .saturating_add(
                 layout
@@ -904,9 +910,12 @@ impl<B: TextBackend> TextHost<B> {
                     .capacity()
                     .saturating_mul(size_of::<xui_interface::GlyphRun<F>>()),
             )
-            .saturating_add(layout.glyphs.capacity().saturating_mul(size_of::<
-                xui_interface::GlyphInstance<<B as Shaper>::GlyphKey>,
-            >()))
+            .saturating_add(
+                layout
+                    .glyphs
+                    .capacity()
+                    .saturating_mul(size_of::<xui_interface::GlyphInstance>()),
+            )
             .saturating_add(
                 layout
                     .clusters
@@ -921,14 +930,14 @@ impl<B: TextBackend> TextHost<B> {
         if let NodeLifecycleEvent::Removed(owner) = event {
             self.remove_owner(*owner);
         }
-        self.backend.handle_node_lifecycle(event);
+        self.backend.shaper().handle_node_lifecycle(event);
     }
 
     fn insert_entry(
         &mut self,
         unit: TextUnitId,
         key: TextLayoutKey,
-        layout: Arc<ParagraphLayout<<B as Shaper>::FontId, <B as Shaper>::GlyphKey>>,
+        layout: Arc<ParagraphLayout<B::FontId>>,
         input: Option<TextLayoutInput>,
         memory_cost: u64,
         pinned: bool,
@@ -1246,7 +1255,7 @@ type GlobalLayoutCache = QuickCache<
     LayoutLifecycle,
 >;
 
-fn text_layout_metrics<F, K>(layout: &ParagraphLayout<F, K>) -> TextLayoutMetrics {
+fn text_layout_metrics<F>(layout: &ParagraphLayout<F>) -> TextLayoutMetrics {
     TextLayoutMetrics {
         size: layout.size(),
         first_baseline: layout.lines.first().map(|line| line.baseline),
@@ -1256,7 +1265,7 @@ fn text_layout_metrics<F, K>(layout: &ParagraphLayout<F, K>) -> TextLayoutMetric
 
 struct LayoutEntry<B: TextBackend> {
     cache_key: LayoutCacheKey,
-    layout: Arc<ParagraphLayout<<B as Shaper>::FontId, <B as Shaper>::GlyphKey>>,
+    layout: Arc<ParagraphLayout<B::FontId>>,
     input: Option<TextLayoutInput>,
     last_access: Cell<u64>,
 }
@@ -1346,7 +1355,7 @@ fn shape_style_hash(style: &xui_interface::ComputedTextStyle) -> u64 {
     hasher.finish()
 }
 
-fn layout_offset_unit<K, F>(layout: &ParagraphLayout<F, K>) -> TextOffsetUnit {
+fn layout_offset_unit<F>(layout: &ParagraphLayout<F>) -> TextOffsetUnit {
     layout
         .clusters
         .first()
@@ -1355,9 +1364,9 @@ fn layout_offset_unit<K, F>(layout: &ParagraphLayout<F, K>) -> TextOffsetUnit {
         .unwrap_or(TextOffsetUnit::Char)
 }
 
-fn normalize_range_for_layout<F, K>(
+fn normalize_range_for_layout<F>(
     text: &str,
-    layout: &ParagraphLayout<F, K>,
+    layout: &ParagraphLayout<F>,
     range: TextRange,
 ) -> TextRange {
     let unit = layout_offset_unit(layout);

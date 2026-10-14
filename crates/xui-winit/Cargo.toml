@@ -4,13 +4,19 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["skia"]
+default = ["vello"]
+# `runner`: the Vello backend with the `xui-f` text backend.
+vello = ["dep:xui-vello"]
+# `skia_runner`: the Skia backend with the `xui-f` text backend. Independent of
+# `vello`.
 skia = ["dep:xui-skia"]
 # Skia rendering on a device wgpu opened, which is what lets a canvas GPU
 # painter composite its own shader output. Orthogonal to `wgpu`, which selects
 # the standalone wgpu renderer instead of Skia.
 skia-wgpu = ["skia", "xui-skia/wgpu"]
-wgpu = ["dep:wgpu", "dep:xui-cosmic"]
+# `wgpu_runner`: the standalone wgpu renderer with the `xui-cosmic` text
+# backend.
+wgpu = ["dep:wgpu", "dep:xui-cosmic", "dep:etagere", "dep:vello"]
 
 [dependencies]
 bytemuck = { version = "1.25.0", features = ["derive"] }
@@ -32,6 +38,7 @@ moka = { version = "0.12.15", features = ["sync"] }
 rustc-hash = "2.1.3"
 vello = { version = "0.11.0", default-features = false, features = ["wgpu"], optional=true }
 xui-skia = { path = "../xui-skia", optional = true }
+xui-vello = { path = "../xui-vello", optional = true }
 
 [dev-dependencies]
 naga = { version = "30.0.1", features = ["wgsl-in"] }

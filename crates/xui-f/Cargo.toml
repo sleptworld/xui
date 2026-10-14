@@ -13,3 +13,4 @@ unicode-linebreak = "0.1.5"
 unicode-script = "0.5.8"
 unicode-segmentation = "1.13.2"
 xui-interface = { path = "../xui-interface" }
+xui-swash = { path = "../xui-swash" }

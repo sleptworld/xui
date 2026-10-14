@@ -1,6 +1,6 @@
 use etagere::{Allocation, AllocatorOptions, BucketedAtlasAllocator, Size};
 use glam::{Vec2, Vec3};
-use xui_interface::RasterizedGlyph;
+use xui_interface::GlyphImage;
 
 use crate::wgpu::AllocInfo;
 
@@ -69,7 +69,7 @@ impl Atlas {
     pub fn handle_allocation(
         &mut self,
         queue: &wgpu::Queue,
-        bitmap: &RasterizedGlyph,
+        bitmap: &GlyphImage,
     ) -> Result<AllocInfo, crate::error::Error> {
         if let Some(alloc) = self
             .allocator
@@ -109,13 +109,14 @@ impl Atlas {
         ))
     }
 
-    fn write_glyph_to_texture(
-        &self,
-        queue: &wgpu::Queue,
-        bitmap: &RasterizedGlyph,
-        alloc: Allocation,
-    ) {
+    fn write_glyph_to_texture(&self, queue: &wgpu::Queue, bitmap: &GlyphImage, alloc: Allocation) {
         let layer = self.current_layer;
+        // The atlas texture is RGBA; a coverage mask goes into every channel.
+        let rgba: std::borrow::Cow<'_, [u8]> = if bitmap.bytes_per_pixel() == 1 {
+            bitmap.pixels.iter().flat_map(|alpha| [*alpha; 4]).collect()
+        } else {
+            std::borrow::Cow::Borrowed(&bitmap.pixels)
+        };
 
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -128,7 +129,7 @@ impl Atlas {
                 },
                 aspect: wgpu::TextureAspect::All,
             },
-            bitmap.pixels.as_ref(),
+            &rgba,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(bitmap.width * 4),

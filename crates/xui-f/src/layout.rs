@@ -10,7 +10,7 @@ use xui_interface::{
 };
 
 use crate::{
-    FFontId, FGlyphKey, bidi,
+    FFontId, bidi,
     font::{FaceMetrics, FontStore},
     shape::{self, ShapedLine},
 };
@@ -95,7 +95,7 @@ pub(crate) fn layout(
     fonts: &mut FontStore,
     state: &mut FParagraphState,
     input: TextLayoutInput,
-) -> ParagraphLayout<FFontId, FGlyphKey> {
+) -> ParagraphLayout<FFontId> {
     let mut output = empty_layout();
     if input.text_box_style.max_lines == Some(0) {
         return output;
@@ -447,7 +447,7 @@ fn break_paragraph(
 
 #[allow(clippy::too_many_arguments)]
 fn emit_line(
-    output: &mut ParagraphLayout<FFontId, FGlyphKey>,
+    output: &mut ParagraphLayout<FFontId>,
     shaped: &ShapedLine,
     ellipsis: Option<&ShapedLine>,
     text_range: Range<usize>,
@@ -520,7 +520,6 @@ fn emit_line(
                 let mut glyph_pen = 0.0;
                 for glyph in &run.glyphs[cluster.glyph_range.clone()] {
                     output.glyphs.push(GlyphInstance {
-                        key: glyph.key,
                         glyph_id: glyph.glyph_id,
                         draw_pos: Point::new(
                             x + visual_x + glyph.offset.x - run_cluster_x,
@@ -560,10 +559,7 @@ fn emit_line(
                 text_range: byte_range(run.text_range.clone()),
                 glyph_range: run_glyph_start..output.glyphs.len(),
                 font_id: run.font_id,
-                font_size: run
-                    .glyphs
-                    .first()
-                    .map_or(0.0, |glyph| f32::from_bits(glyph.key.font_size_bits)),
+                font_size: run.font_size,
                 font_weight,
                 style_id: 0,
                 bidi_level: run.bidi_level,
@@ -661,7 +657,7 @@ fn byte_range(range: Range<usize>) -> TextRange {
     )
 }
 
-fn empty_layout() -> ParagraphLayout<FFontId, FGlyphKey> {
+fn empty_layout() -> ParagraphLayout<FFontId> {
     ParagraphLayout {
         lines: Vec::new(),
         runs: Vec::new(),
@@ -694,6 +690,7 @@ mod tests {
             runs: vec![shape::ShapedRun {
                 text_range: 0..offset,
                 font_id: FFontId(0),
+                font_size: 16.0,
                 bidi_level: 0,
                 metrics: FaceMetrics::FALLBACK,
                 glyphs: Vec::new(),

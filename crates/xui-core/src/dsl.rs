@@ -331,3 +331,6 @@ impl<T: Into<TextContent>> IntoElement<Content<T>> for TextWidget {
         self.text(content.0).into_element_desc()
     }
 }
+
+impl_host_element!(leaf crate::widgets::TextInputWidget);
+impl_styled!(crate::widgets::TextInputWidget);

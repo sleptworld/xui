@@ -1,31 +1,124 @@
 //! `cosmic-text` text backend for `xui`.
 //!
-//! Implements the `xui-interface` text traits (`TextBackend`, `Shaper`,
-//! `FontDatabase`, `GlyphRasterizer`) on top of the `cosmic-text` crate, and is
-//! the default text backend used by `xui` applications.
+//! Implements the `xui-interface` text traits (`TextBackend`, `Shaper`) on top
+//! of the `cosmic-text` crate, and is the default text backend used by `xui`
+//! applications.
 //!
-//! `CosmicEngine` owns a `FontSystem` and `SwashCache`, reuses a `Buffer` across
-//! layouts, and translates cosmic-text runs into the `ParagraphLayout` shape the
-//! framework expects. `xui-interface` paragraph and text-box options (alignment,
+//! `CosmicEngine` owns a `FontSystem`, reuses a `Buffer` across layouts, and
+//! translates cosmic-text runs into the `ParagraphLayout` shape the framework
+//! expects. Every font a layout uses is published to [`CosmicFonts`], the
+//! shared collection renderers read, and glyphs are rendered by an
+//! [`xui_swash::SwashRasterizer`] over it. `xui-interface` paragraph and text-box options (alignment,
 //! wrap, ellipsis, max lines, font weight/style/stretch/family, line height,
 //! underline) are mapped onto cosmic-text equivalents.
 
 use cosmic_text::{
-    Align, Attrs, Buffer, CacheKey, Ellipsize, EllipsizeHeightLimit, Family, FontSystem, Metrics,
-    Shaping, Style as CosmicStyle, SwashCache, Weight, Wrap, fontdb,
+    Align, Attrs, Buffer, Ellipsize, EllipsizeHeightLimit, Family, FontSystem, Metrics, Shaping,
+    Style as CosmicStyle, Weight, Wrap, fontdb,
 };
 use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
-    sync::Arc,
+    collections::{HashMap, HashSet},
+    sync::{
+        Arc, PoisonError, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 use xui_interface::{ComputedTextStyle, Point, Rect, text::*};
+use xui_swash::SwashRasterizer;
 
 pub struct CosmicEngine {
     font_system: FontSystem,
-    swash_cache: SwashCache,
-    font_epoch: u64,
-    scale: f32,
+    fonts: Arc<CosmicFonts>,
+    /// Ids already in `fonts` this epoch, so publishing a layout's fonts
+    /// takes the collection's write lock only for new ones.
+    published: HashSet<fontdb::ID>,
+    rasterizer: Arc<SwashRasterizer<CosmicFonts>>,
+}
+
+/// The fonts a [`CosmicEngine`] has handed out ids for, shared with renderers
+/// and the rasterizer.
+pub struct CosmicFonts {
+    fonts: RwLock<HashMap<fontdb::ID, CosmicFont>>,
+    epoch: AtomicU64,
+}
+
+impl CosmicFonts {
+    fn new() -> Self {
+        Self {
+            fonts: RwLock::new(HashMap::new()),
+            epoch: AtomicU64::new(0),
+        }
+    }
+
+    fn insert(&self, id: fontdb::ID, font: CosmicFont) {
+        let mut fonts = self.fonts.write().unwrap_or_else(PoisonError::into_inner);
+        fonts.insert(id, font);
+    }
+
+    /// Fonts were added: fallback may resolve differently, ids stay valid.
+    fn bump_epoch(&self) {
+        self.epoch.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The database was replaced or edited: ids may now mean other faces.
+    fn reset(&self) {
+        self.fonts
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        self.bump_epoch();
+    }
+}
+
+impl FontCollection for CosmicFonts {
+    type FontId = fontdb::ID;
+    type Font = CosmicFont;
+
+    fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Relaxed)
+    }
+
+    fn font(&self, id: fontdb::ID) -> Option<CosmicFont> {
+        let fonts = self.fonts.read().unwrap_or_else(PoisonError::into_inner);
+        fonts.get(&id).cloned()
+    }
+}
+
+/// One face's data as fontdb holds it. Cloning shares the file.
+#[derive(Clone)]
+pub struct CosmicFont {
+    data: Arc<dyn AsRef<[u8]> + Send + Sync>,
+    index: u32,
+    /// `None` for fonts the application registered from bytes.
+    system: Option<Arc<SystemFace>>,
+}
+
+struct SystemFace {
+    family: String,
+    postscript_name: String,
+    weight: FontWeight,
+    style: FontStyle,
+    stretch: FontStretch,
+}
+
+impl FontData for CosmicFont {
+    fn bytes(&self) -> &[u8] {
+        (*self.data).as_ref()
+    }
+
+    fn index(&self) -> u32 {
+        self.index
+    }
+
+    fn system(&self) -> Option<SystemFontInfo<'_>> {
+        self.system.as_deref().map(|face| SystemFontInfo {
+            family: &face.family,
+            postscript_name: &face.postscript_name,
+            weight: face.weight,
+            style: face.style,
+            stretch: face.stretch,
+        })
+    }
 }
 
 /// Which faces the engine starts with.
@@ -134,18 +227,22 @@ pub struct CosmicParagraphState {
 }
 
 impl CosmicEngine {
-    pub fn new(init_scale_factor: f32) -> Self {
-        Self::with_fonts(init_scale_factor, FontSet::System)
+    /// `_scale_factor` is unused: layout is in logical pixels and glyphs are
+    /// rasterized at whatever size a renderer requests.
+    pub fn new(_scale_factor: f32) -> Self {
+        Self::with_fonts(1.0, FontSet::System)
     }
 
     /// Builds an engine over a chosen set of faces. See [`FontSet`] — the
     /// default scans every installed font and that scan dominates startup.
-    pub fn with_fonts(init_scale_factor: f32, fonts: FontSet) -> Self {
+    /// `_scale_factor` is unused, as for [`new`](Self::new).
+    pub fn with_fonts(_scale_factor: f32, fonts: FontSet) -> Self {
+        let shared = Arc::new(CosmicFonts::new());
         Self {
             font_system: fonts.build(),
-            swash_cache: SwashCache::new(),
-            font_epoch: 0,
-            scale: init_scale_factor,
+            rasterizer: Arc::new(SwashRasterizer::new(shared.clone())),
+            fonts: shared,
+            published: HashSet::new(),
         }
     }
 
@@ -153,17 +250,59 @@ impl CosmicEngine {
         &self.font_system
     }
 
+    /// The database may be edited arbitrarily through this, so every font id
+    /// handed out so far is invalidated.
     pub fn font_system_mut(&mut self) -> &mut FontSystem {
-        self.font_epoch = self.font_epoch.wrapping_add(1);
+        self.fonts.reset();
+        self.published.clear();
         &mut self.font_system
     }
 
-    pub fn swash_cache(&self) -> &SwashCache {
-        &self.swash_cache
-    }
-
-    pub fn swash_cache_mut(&mut self) -> &mut SwashCache {
-        &mut self.swash_cache
+    /// Makes `id` resolvable through [`CosmicFonts`].
+    fn publish(&mut self, id: fontdb::ID) {
+        if self.published.contains(&id) {
+            return;
+        }
+        let Some(face) = self.font_system.db().face(id) else {
+            return;
+        };
+        if matches!(face.source, fontdb::Source::File(_)) {
+            // Shaping memory-maps a file face the first time it is used;
+            // `get_font` does the same for a face nothing has shaped with yet.
+            let weight = face.weight;
+            let _ = self.font_system.get_font(id, weight);
+        }
+        let Some(face) = self.font_system.db().face(id) else {
+            return;
+        };
+        let (data, system) = match &face.source {
+            fontdb::Source::Binary(data) => (data.clone(), false),
+            fontdb::Source::SharedFile(_, data) => (data.clone(), true),
+            fontdb::Source::File(_) => return,
+        };
+        let system = system.then(|| {
+            Arc::new(SystemFace {
+                family: face
+                    .families
+                    .first()
+                    .map(|(name, _)| name.clone())
+                    .unwrap_or_default(),
+                postscript_name: face.post_script_name.clone(),
+                weight: map_cosmic_weight(face.weight),
+                style: map_cosmic_style(face.style),
+                stretch: map_cosmic_stretch(face.stretch),
+            })
+        });
+        let data: Arc<dyn AsRef<[u8]> + Send + Sync> = data;
+        self.fonts.insert(
+            id,
+            CosmicFont {
+                data,
+                index: face.index,
+                system,
+            },
+        );
+        self.published.insert(id);
     }
 
     fn create_buffer(
@@ -184,7 +323,7 @@ impl CosmicEngine {
         &mut self,
         buffer: &mut Buffer,
         input: TextLayoutInput,
-    ) -> ParagraphLayout<fontdb::ID, CacheKey> {
+    ) -> ParagraphLayout<fontdb::ID> {
         if input.text_box_style.max_lines == Some(0) {
             return ParagraphLayout {
                 lines: Vec::new(),
@@ -249,7 +388,7 @@ impl CosmicEngine {
         &mut self,
         buffer: &cosmic_text::Buffer,
         line_base_byte_offsets: &[usize],
-    ) -> ParagraphLayout<fontdb::ID, CacheKey> {
+    ) -> ParagraphLayout<fontdb::ID> {
         let mut lines = Vec::new();
         let mut runs = Vec::new();
         let mut glyphs = Vec::new();
@@ -344,7 +483,6 @@ impl CosmicEngine {
                 let glyph_index = glyphs.len();
 
                 glyphs.push(GlyphInstance {
-                    key: g.physical((0.0, cosmic_run.line_y), self.scale).cache_key,
                     glyph_id: g.glyph_id as u32,
                     draw_pos: Point::new(g.x_offset + g.x, cosmic_run.line_y + g.y_offset),
                     hitbox: Rect::new(g.x, cosmic_run.line_top, g.w, cosmic_run.line_height),
@@ -429,13 +567,6 @@ impl CosmicEngine {
             script: None,
         }
     }
-
-    fn font_handle(&self, id: fontdb::ID) -> Option<SystemFontHandle> {
-        self.font_system.db().face(id)?;
-        let mut hasher = DefaultHasher::new();
-        id.hash(&mut hasher);
-        Some(SystemFontHandle(hasher.finish()))
-    }
 }
 
 fn align_for_paragraph(align: TextAlign) -> Option<Align> {
@@ -458,7 +589,7 @@ fn wrap_for_paragraph(style: &ParagraphStyle) -> Wrap {
     }
 }
 
-fn truncate_layout_lines<K>(layout: &mut ParagraphLayout<fontdb::ID, K>, max_lines: usize) {
+fn truncate_layout_lines(layout: &mut ParagraphLayout<fontdb::ID>, max_lines: usize) {
     if layout.lines.len() <= max_lines {
         return;
     }
@@ -486,9 +617,8 @@ impl Default for CosmicEngine {
 }
 
 impl Shaper for CosmicEngine {
-    type State = CosmicParagraphState;
-    type GlyphKey = CacheKey;
     type FontId = fontdb::ID;
+    type State = CosmicParagraphState;
 
     fn create_state(&mut self) -> Self::State {
         CosmicParagraphState::default()
@@ -498,94 +628,71 @@ impl Shaper for CosmicEngine {
         &mut self,
         state: &mut Self::State,
         input: TextLayoutInput,
-    ) -> ParagraphLayout<Self::FontId, Self::GlyphKey> {
+    ) -> ParagraphLayout<fontdb::ID> {
         let mut buffer = state
             .buffer
             .take()
             .unwrap_or_else(|| self.create_buffer(&input.default_style, input.constraints));
         let layout = self.layout_with_buffer(&mut buffer, input);
         state.buffer = Some(buffer);
+        for run in &layout.runs {
+            self.publish(run.font_id);
+        }
         layout
     }
 }
 
-impl FontDatabase for CosmicEngine {
+impl TextBackend for CosmicEngine {
     type FontId = fontdb::ID;
+    type Fonts = CosmicFonts;
+    type Shaper = Self;
+    type Rasterizer = SwashRasterizer<CosmicFonts>;
 
-    fn epoch(&self) -> u64 {
-        self.font_epoch
+    fn fonts(&self) -> &Arc<CosmicFonts> {
+        &self.fonts
     }
 
+    fn shaper(&mut self) -> &mut Self {
+        self
+    }
+
+    fn rasterizer(&self) -> Option<&Arc<SwashRasterizer<CosmicFonts>>> {
+        Some(&self.rasterizer)
+    }
+
+    /// Rebuilds the font system with a fresh platform scan. Ids from the old
+    /// database mean nothing in the new one, so all of them are dropped.
     fn load_system_fonts(&mut self) {
         self.font_system = FontSystem::new();
-        self.font_epoch = self.font_epoch.wrapping_add(1);
+        self.fonts.reset();
+        self.published.clear();
     }
 
-    fn load_font_bytes(&mut self, bytes: Arc<[u8]>) -> Self::FontId {
+    fn load_font_bytes(&mut self, bytes: Arc<[u8]>) -> Option<fontdb::ID> {
         let ids = self
             .font_system
             .db_mut()
-            .load_font_source(fontdb::Source::Binary(Arc::new(bytes.to_vec())));
-        self.font_epoch = self.font_epoch.wrapping_add(1);
-
-        ids.first().copied().unwrap_or_default()
+            .load_font_source(fontdb::Source::Binary(Arc::new(bytes)));
+        let first = ids.first().copied()?;
+        for id in ids {
+            self.publish(id);
+        }
+        self.fonts.bump_epoch();
+        Some(first)
     }
 
-    fn query(&mut self, query: &FontQuery) -> Option<Self::FontId> {
+    fn query(&mut self, query: &FontQuery) -> Option<fontdb::ID> {
         let families = query_families(&query.families);
-        self.font_system.db().query(&fontdb::Query {
+        let id = self.font_system.db().query(&fontdb::Query {
             families: &families,
             weight: font_weight(query.weight),
             stretch: font_stretch(query.stretch),
             style: font_style(query.style),
-        })
-    }
-
-    fn font_data(&self, id: Self::FontId) -> Option<FontDataRef<'_>> {
-        let face = self.font_system.db().face(id)?;
-        let system_font = |path| {
-            Some(FontDataRef::System {
-                handle: self.font_handle(id)?,
-                path,
-                index: face.index,
-                family: face.families.first()?.0.as_str(),
-                postscript_name: face.post_script_name.as_str(),
-                weight: map_cosmic_weight(face.weight),
-                style: map_cosmic_style(face.style),
-                stretch: map_cosmic_stretch(face.stretch),
-            })
-        };
-        match &face.source {
-            fontdb::Source::Binary(data) => Some(FontDataRef::Bytes {
-                bytes: data.as_ref().as_ref(),
-                index: face.index,
-            }),
-            fontdb::Source::SharedFile(path, _) | fontdb::Source::File(path) => system_font(path),
-        }
+        })?;
+        self.publish(id);
+        Some(id)
     }
 }
-
-impl GlyphRasterizer for CosmicEngine {
-    type GlyphKey = CacheKey;
-
-    fn rasterize(&mut self, key: Self::GlyphKey) -> Option<RasterizedGlyph> {
-        let image = self
-            .swash_cache
-            .get_image(&mut self.font_system, key)
-            .clone()?;
-
-        Some(RasterizedGlyph {
-            format: rasterized_glyph_format(image.content),
-            width: image.placement.width,
-            height: image.placement.height,
-            left: image.placement.left,
-            top: image.placement.top,
-            pixels: Arc::from(rgba_bitmap_data(image.content, &image.data)),
-        })
-    }
-}
-
-impl TextBackend for CosmicEngine {}
 
 fn attrs_for_style(style: &ComputedTextStyle) -> Attrs<'_> {
     let mut attrs = Attrs::new()
@@ -720,34 +827,6 @@ fn width_for_constraints(constraints: TextLayoutConstraints) -> Option<f32> {
     }
 }
 
-fn rgba_bitmap_data(content: cosmic_text::SwashContent, data: &[u8]) -> Vec<u8> {
-    match content {
-        cosmic_text::SwashContent::Mask => {
-            let mut rgba = Vec::with_capacity(data.len() * 4);
-            for alpha in data {
-                rgba.extend_from_slice(&[*alpha, *alpha, *alpha, *alpha]);
-            }
-            rgba
-        }
-        cosmic_text::SwashContent::SubpixelMask => {
-            let mut rgba = Vec::with_capacity(data.len() / 3 * 4);
-            for rgb in data.chunks_exact(3) {
-                rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
-            }
-            rgba
-        }
-        cosmic_text::SwashContent::Color => data.to_vec(),
-    }
-}
-
-fn rasterized_glyph_format(content: cosmic_text::SwashContent) -> RasterizedGlyphFormat {
-    match content {
-        cosmic_text::SwashContent::Mask => RasterizedGlyphFormat::Mask,
-        cosmic_text::SwashContent::SubpixelMask => RasterizedGlyphFormat::SubpixelMask,
-        cosmic_text::SwashContent::Color => RasterizedGlyphFormat::Color,
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ClusterKey {
     source_line: usize,
@@ -788,10 +867,10 @@ mod tests {
         width: f32,
         paragraph: ParagraphStyle,
         text_box: TextBoxStyle,
-    ) -> ParagraphLayout<fontdb::ID, CacheKey> {
+    ) -> ParagraphLayout<fontdb::ID> {
         let mut engine = CosmicEngine::default();
         let mut state = engine.create_state();
-        let epoch = engine.epoch();
+        let epoch = engine.fonts().epoch();
         engine.layout_paragraph(
             &mut state,
             TextLayoutInput::new(
@@ -895,5 +974,52 @@ mod tests {
         assert_eq!(value.lines.len(), 1);
         assert!(value.lines[0].ellipsized);
         assert!(value.lines[0].width <= 45.0);
+    }
+
+    #[test]
+    fn layout_fonts_resolve_and_rasterize_through_the_shared_handles() {
+        let mut engine = CosmicEngine::default();
+        let mut state = engine.create_state();
+        let layout = engine.layout_paragraph(
+            &mut state,
+            TextLayoutInput::new(
+                "Ag 中".into(),
+                TextLayoutConstraints::max_width(400.0),
+                TextStyle::default().into(),
+                ParagraphStyle::default(),
+                TextBoxStyle::default(),
+                engine.fonts().epoch(),
+            ),
+        );
+        if layout.runs.is_empty() {
+            return; // no fonts installed
+        }
+        let fonts = engine.fonts().clone();
+        let rasterizer = engine.rasterizer().unwrap().clone();
+        for run in &layout.runs {
+            let font = fonts
+                .font(run.font_id)
+                .expect("a layout's fonts are published");
+            assert!(!font.bytes().is_empty());
+        }
+        let run = &layout.runs[0];
+        let (font, glyph) = (run.font_id, layout.glyphs[run.glyph_range.start].glyph_id);
+        let image = std::thread::spawn(move || {
+            rasterizer.rasterize(&GlyphRequest::new(
+                font,
+                glyph,
+                32.0,
+                SubpixelOffset::Zero,
+                RasterOptions::default(),
+            ))
+        })
+        .join()
+        .unwrap()
+        .expect("'A' has ink");
+        assert_eq!(image.format, RasterizedGlyphFormat::Mask);
+        assert_eq!(
+            image.pixels.len(),
+            image.width as usize * image.height as usize
+        );
     }
 }

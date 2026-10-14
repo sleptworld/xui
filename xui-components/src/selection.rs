@@ -1,5 +1,13 @@
+//! Reusable enabled-item navigation and buffered text matching.
+//!
+//! [`SelectionModel`] normalizes indices, skips disabled choices, supports optional
+//! wrapping, and caches case-folded labels. [`TypeaheadState`] buffers text with an
+//! expiry window. [`SelectionOrientation`] and [`SelectionActivationMode`] configure
+//! component keyboard behavior.
+
 use std::time::{Duration, Instant};
 
+/// The axis used for layout and directional keyboard navigation.
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 pub enum SelectionOrientation {
     #[default]
@@ -7,6 +15,7 @@ pub enum SelectionOrientation {
     Vertical,
 }
 
+/// Whether keyboard focus automatically activates a choice or waits for activation.
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 pub enum SelectionActivationMode {
     #[default]
@@ -14,6 +23,7 @@ pub enum SelectionActivationMode {
     Manual,
 }
 
+/// An identified navigation choice with a searchable label and disabled state.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct SelectionItem {
     pub id: String,
@@ -31,16 +41,21 @@ impl SelectionItem {
     }
 }
 
+/// Enabled-item navigation and case-folded label matching with optional wrapping.
 #[derive(Clone, Debug, Default, Hash, PartialEq, Eq)]
 pub struct SelectionModel {
     items: Vec<SelectionItem>,
     wrap: bool,
+    normalized_labels: Vec<String>,
 }
 
 impl SelectionModel {
     pub fn new(items: impl IntoIterator<Item = SelectionItem>) -> Self {
+        let items: Vec<SelectionItem> = items.into_iter().collect();
+        let normalized_labels = items.iter().map(|item| item.label.to_lowercase()).collect();
         Self {
-            items: items.into_iter().collect(),
+            items,
+            normalized_labels,
             wrap: true,
         }
     }
@@ -97,16 +112,17 @@ impl SelectionModel {
         if query.is_empty() || self.items.is_empty() {
             return None;
         }
-        let start = after.map_or(0, |index| (index + 1) % self.items.len());
+        let start = after.map_or(0, |index| (index % self.items.len() + 1) % self.items.len());
         (0..self.items.len())
             .map(|offset| (start + offset) % self.items.len())
             .find(|index| {
                 let item = &self.items[*index];
-                !item.disabled && item.label.to_lowercase().starts_with(&query)
+                !item.disabled && self.normalized_labels[*index].starts_with(&query)
             })
     }
 }
 
+/// A time-limited text buffer for successive typeahead keystrokes.
 #[derive(Clone, Debug, Default)]
 pub struct TypeaheadState {
     query: String,
@@ -184,5 +200,43 @@ mod tests {
             ),
             Some(2)
         );
+    }
+}
+
+pub(crate) const PREVIOUS_ITEM: xui_core::prelude::CommandId =
+    xui_core::prelude::CommandId("xui.selection.previous");
+pub(crate) const NEXT_ITEM: xui_core::prelude::CommandId =
+    xui_core::prelude::CommandId("xui.selection.next");
+pub(crate) const FIRST_ITEM: xui_core::prelude::CommandId =
+    xui_core::prelude::CommandId("xui.selection.first");
+pub(crate) const LAST_ITEM: xui_core::prelude::CommandId =
+    xui_core::prelude::CommandId("xui.selection.last");
+pub(crate) fn selection_shortcuts()
+-> [(xui_core::prelude::Shortcut, xui_core::prelude::CommandId); 4] {
+    use xui_core::prelude::*;
+    [
+        (
+            Shortcut::named(NamedKey::ArrowUp).allow_repeat(true),
+            PREVIOUS_ITEM,
+        ),
+        (
+            Shortcut::named(NamedKey::ArrowDown).allow_repeat(true),
+            NEXT_ITEM,
+        ),
+        (Shortcut::named(NamedKey::Home), FIRST_ITEM),
+        (Shortcut::named(NamedKey::End), LAST_ITEM),
+    ]
+}
+pub(crate) fn selection_target(
+    model: &SelectionModel,
+    index: usize,
+    command: xui_core::prelude::CommandId,
+) -> Option<usize> {
+    match command {
+        PREVIOUS_ITEM => model.adjacent(index, -1),
+        NEXT_ITEM => model.adjacent(index, 1),
+        FIRST_ITEM => model.first(),
+        LAST_ITEM => model.last(),
+        _ => None,
     }
 }

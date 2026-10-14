@@ -65,6 +65,7 @@ pub use transition::{
     Animation, AnimationDirection, AnimationProgress, Easing, Iterations, Transition,
 };
 pub use widget::{
+    AccessibilityChecked, AccessibilityLiveRegion, AccessibilityOrientation, AccessibilityPopup,
     AccessibilityProperties, AccessibilityRole, Component, FocusProperties, Focusability, Key,
     NodeId, NodeLifecycleEvent, WidgetType,
 };

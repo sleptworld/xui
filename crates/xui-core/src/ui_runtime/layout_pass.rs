@@ -127,7 +127,7 @@ impl UiRuntime {
             .union(HostWorkFlags::SHAPE_CHANGE)
             .union(HostWorkFlags::SYNC_TREE);
 
-        let font_context = measurer.backend().epoch();
+        let font_context = measurer.font_epoch();
         let all = self.text_font_context.replace(font_context) != Some(font_context);
         let mut targets: Vec<NodeId> = self
             .text_nodes
@@ -336,7 +336,7 @@ fn measure_layout_context<T: TextBackend>(
                     }
                 };
 
-                let font_context = measurer.backend().epoch();
+                let font_context = measurer.font_epoch();
                 let input = TextLayoutInput::new(
                     props.text,
                     constraints,

@@ -27,7 +27,8 @@ on its own if you only want the shared type vocabulary.
 - **Text** — pluggable text backend; `xui-text-engine` ships a `cosmic-text`
   implementation, `xui-text` ships a `swash`/`fontique` shaping stack.
 - **Rendering** — backend-independent scene → render graph → frame pipeline.
-  `xui-skia` provides a Skia backend; `xui-winit` integrates `winit` windows.
+  `xui-vello` (the default) renders with Vello on wgpu, `xui-skia` with Skia;
+  `xui-winit`, `xui-macos` and `xui-windows` host the window.
 - **Assets** — deterministic, versioned `.xpak` archives built by `cargo xui`
   from `xui.toml`, with embedded or external bundles and live directory mounts.
 - **No `unsafe` in the render graph** — `xui-render-graph` is `#![forbid(unsafe_code)]`.
@@ -44,9 +45,10 @@ on its own if you only want the shared type vocabulary.
 | [`xui-text`](xui-text/src/lib.rs) | `swash`/`fontique` text shaping, atlas, bidi, layout |
 | [`xui-text-engine`](xui-text-engine/src/lib.rs) | `cosmic-text` implementation of the `xui-interface` text traits |
 | [`xui-render-graph`](xui-render-graph/src/lib.rs) | Backend-independent layer/backdrop/filter compilation (`#![forbid(unsafe_code)]`) |
-| [`xui-skia`](xui-skia/src/lib.rs) | Skia rendering backend (`skia-safe`); Metal on macOS, Direct3D 12 on Windows, Vulkan on Linux, `softbuffer` fallback |
+| [`xui-vello`](crates/xui-vello/src/lib.rs) | Default rendering backend: Vello on `wgpu`, with its own layer compositor and bitmap text (`xui-wgpu-text`) |
+| [`xui-skia`](xui-skia/src/lib.rs) | Optional Skia rendering backend (`skia-safe`); Metal on macOS, Direct3D 12 on Windows, Vulkan on Linux, `softbuffer` fallback |
 | [`xui-shell`](xui-shell/src/lib.rs) | Platform host contract (`PlatformWindow`, `SurfaceTarget`, `WindowOptions`) and the platform-independent `Shell` driver |
-| [`xui-winit`](xui-winit/src/lib.rs) | `winit` host for `xui-shell`; `skia` (default) or `wgpu` backend |
+| [`xui-winit`](xui-winit/src/lib.rs) | `winit` host for `xui-shell`; `vello` (default), `skia` or `wgpu` backend |
 | [`xui-macos`](crates/xui-macos/src/lib.rs) | Native AppKit host for `xui-shell` (NSWindow/NSView, `NSTextInputClient` IME, trackpad momentum); macOS only |
 | [`xui-windows`](crates/xui-windows/src/lib.rs) | Native Win32 host for `xui-shell` (window class + message loop, IMM32 IME, Per-Monitor V2 DPI); Windows only |
 | [`xui-assets`](xui-assets/src/lib.rs) | `AssetManager`, source mounting, caching, `AssetFormat` |
@@ -69,7 +71,7 @@ See [`docs/README.md`](docs/README.md) for the documentation index and
 ```toml
 [dependencies]
 xui-core = { path = "../path/to/xui" }
-xui-winit = { path = "../path/to/xui-winit", features = ["skia"] }
+xui-winit = { path = "../path/to/xui-winit" }   # Vello; add `features = ["skia"]` for `skia_runner`
 xui-components = { path = "../path/to/xui-components" }
 
 [build-dependencies]
@@ -204,8 +206,8 @@ Data flow each frame:
    re-renders dirty components into an `ElementDesc` tree.
 4. The fiber reconciler diffs elements, updates the retained widget/layout tree
    (taffy flexbox), and produces a backend-independent scene.
-5. The scene compiler lowers the scene into a render graph; `xui-skia` (or
-   `wgpu`) rasterizes a frame to the window surface.
+5. The scene compiler lowers the scene into a render graph; `xui-vello` (or
+   `xui-skia`) rasterizes a frame to the window surface.
 6. Text is laid out by the configured `TextBackend`
    (`xui-text-engine::CosmicEngine` by default).
 

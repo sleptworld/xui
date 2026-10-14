@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use xui_interface::CursorIcon;
 use xui_interface::events::{PointerButton, RawEvent, SemanticEvent, XuiPointerId};
 use xui_interface::{
-    Affine, Bounds, ClipboardContent, ClipboardTarget, CommandId, Color, ComputedStyle, EventRef,
+    Affine, Bounds, ClipboardContent, ClipboardTarget, Color, CommandId, ComputedStyle, EventRef,
     EventResult, Key, PlatformCommand, PlatformReply, PlatformRequest, Point, RawIme, Rect,
     RequestId, Style, TextCaret, TextContent, TextInputPurpose, TextInputSession, TextOffset,
     TextOffsetUnit, TextPaintProps, TextPaintStyle, TextProps, TextSelectionPaint, WhiteSpace,
@@ -39,6 +39,8 @@ pub struct TextInputWidget {
     uses_external_controller: bool,
     last_text: String,
     focused: bool,
+    disabled: bool,
+    read_only: bool,
     scroll_x: f32,
     drag: Option<TextInputDrag>,
     ime_session: ImeSession,
@@ -140,6 +142,8 @@ impl TextInputWidget {
             uses_external_controller: false,
             last_text: String::new(),
             focused: false,
+            disabled: false,
+            read_only: false,
             scroll_x: 0.0,
             drag: None,
             ime_session: ImeSession::new(),
@@ -155,6 +159,20 @@ impl TextInputWidget {
             last_text: initial_text.to_owned(),
             ..Self::new()
         }
+    }
+
+    /// Blocks user editing and removes this field from focus navigation.
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self.interaction.focus = self.interaction.focus.focusable(!disabled);
+        self.interaction.accessibility.disabled = Some(disabled);
+        self
+    }
+    /// Allows selection and copying while blocking editing, paste and IME.
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self.interaction.accessibility.read_only = Some(read_only);
+        self
     }
 
     pub fn controller(mut self, controller: TextController) -> Self {
@@ -558,6 +576,17 @@ impl TextInputWidget {
         command: CommandId,
         cx: &mut EventContext<'_>,
     ) -> Option<EventResult> {
+        if self.read_only
+            && [
+                commands::CUT,
+                commands::PASTE,
+                commands::UNDO,
+                commands::REDO,
+            ]
+            .contains(&command)
+        {
+            return Some(EventResult::Ignored);
+        }
         Some(match command {
             c if c == commands::COPY => self.copy_selection(cx),
             c if c == commands::CUT => self.cut_selection(cx),
@@ -629,7 +658,23 @@ impl TextInputWidget {
         key: &xui_interface::events::RawKeyboard,
         cx: &mut EventContext<'_>,
     ) -> EventResult {
-        match keymap::TextKeymap::platform_default().resolve(key) {
+        let command = keymap::TextKeymap::platform_default().resolve(key);
+        if self.read_only
+            && matches!(
+                command,
+                Some(
+                    keymap::TextCommand::Undo
+                        | keymap::TextCommand::Redo
+                        | keymap::TextCommand::DeleteBackward
+                        | keymap::TextCommand::DeleteForward
+                        | keymap::TextCommand::Cut
+                        | keymap::TextCommand::Paste
+                )
+            )
+        {
+            return EventResult::Ignored;
+        }
+        match command {
             Some(keymap::TextCommand::SelectAll) => self.select_all(cx),
             Some(keymap::TextCommand::Undo) => self.undo_redo(cx, false),
             Some(keymap::TextCommand::Redo) => self.undo_redo(cx, true),
@@ -676,6 +721,8 @@ impl TextInputWidget {
             &self.style,
             self.uses_external_controller,
             self.focused,
+            self.disabled,
+            self.read_only,
             self.controller.selection().base,
             self.controller.selection().extent,
             self.scroll_x.to_bits(),
@@ -685,6 +732,12 @@ impl TextInputWidget {
     pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
         let mut flags = WidgetUpdateFlags::empty();
         let next_text = next.controller.text();
+        if self.disabled != next.disabled || self.read_only != next.read_only {
+            self.disabled = next.disabled;
+            self.read_only = next.read_only;
+            self.pending_paste = None;
+            flags |= WidgetUpdateFlags::PAINT_OUTPUT;
+        }
 
         if next.uses_external_controller {
             let mut controller_changed = false;
@@ -805,6 +858,14 @@ impl TextInputWidget {
     }
 
     fn handle_input(&mut self, event: EventRef<'_>, cx: &mut EventContext<'_>) -> EventResult {
+        if self.disabled
+            && !matches!(
+                event,
+                EventRef::Semantic(SemanticEvent::Blur(_) | SemanticEvent::FocusOut(_))
+            )
+        {
+            return EventResult::Ignored;
+        }
         match event {
             EventRef::Raw(RawEvent::PointerDown(pointer))
                 if pointer.button == PointerButton::Primary =>
@@ -857,6 +918,9 @@ impl TextInputWidget {
             EventRef::Raw(RawEvent::Keyboard(input))
                 if input.state == xui_interface::events::KeyState::Down =>
             {
+                if self.read_only {
+                    return self.handle_key_down(input, cx);
+                }
                 if keymap::TextKeymap::platform_default()
                     .resolve(input)
                     .is_some()
@@ -881,6 +945,9 @@ impl TextInputWidget {
                 }
             }
             EventRef::Raw(RawEvent::Ime(e)) => {
+                if self.read_only {
+                    return EventResult::Ignored;
+                }
                 match e {
                     RawIme::Enabled { .. } => {}
                     RawIme::Preedit {
@@ -905,7 +972,7 @@ impl TextInputWidget {
                         }
                     }
                     RawIme::Disabled { timestamp: _ } => {
-                        self.ime_session.end(&self.controller);
+                        let _ = self.ime_session.end(&self.controller);
                     }
                 }
                 EventResult::Consumed
@@ -918,7 +985,9 @@ impl TextInputWidget {
             {
                 self.pending_paste = None;
                 match &reply.reply {
-                    PlatformReply::Clipboard(Some(ClipboardContent::Text(text))) => {
+                    PlatformReply::Clipboard(Some(ClipboardContent::Text(text)))
+                        if !self.read_only =>
+                    {
                         self.insert_pasted(cx, text)
                     }
                     // Nothing on the clipboard, or no clipboard to ask: a paste

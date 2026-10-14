@@ -1,8 +1,13 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{
+        Arc, PoisonError, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use skia_safe::{
-    AlphaType, ColorSpace, ColorType, Font, FontMgr, FontStyle as SkFontStyle, FontStyle,
-    ImageInfo, Paint, TextBlob, Typeface, font_style,
+    FontMgr, FontStyle as SkFontStyle, FontStyle, Typeface, font_style,
     textlayout::{
         FontCollection, Paragraph, ParagraphBuilder, ParagraphStyle as SkParagraphStyle,
         TextAlign as SkTextAlign, TextStyle as SkTextStyle, TypefaceFontProvider,
@@ -10,21 +15,69 @@ use skia_safe::{
     },
 };
 use xui_interface::{
-    FontDataRef, FontDatabase, FontFamily, FontQuery, FontStretch, FontWeight, GlyphFlags,
-    GlyphInstance, GlyphRasterizer, GlyphRun, LineHeight, LineLayout, ParagraphLayout, Point,
-    RasterizedGlyph, RasterizedGlyphFormat, Rect, Shaper, TextAlign, TextBackend, TextCluster,
-    TextLayoutConstraints, TextLayoutInput, TextOffset, TextOverflow, TextRange, WhiteSpace,
+    FontCollection as XuiFontCollection, FontData, FontFamily, FontQuery, FontStretch, FontWeight,
+    GlyphFlags, GlyphInstance, GlyphRun, LineHeight, LineLayout, NoRasterizer, ParagraphLayout,
+    Point, Rect, Shaper, TextAlign, TextBackend, TextCluster, TextLayoutConstraints,
+    TextLayoutInput, TextOffset, TextOverflow, TextRange, WhiteSpace,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SkiaFontId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SkiaGlyphKey {
-    font_id: u32,
-    glyph_id: skia_safe::GlyphId,
-    font_size_bits: u32,
-    scale_bits: u32,
+/// The typefaces a [`SkiaTextBackend`] has handed out ids for, with their
+/// font files, shared with renderers.
+pub struct SkiaFonts {
+    fonts: RwLock<HashMap<u32, SkiaFont>>,
+    epoch: AtomicU64,
+}
+
+impl SkiaFonts {
+    fn new() -> Self {
+        Self {
+            fonts: RwLock::new(HashMap::new()),
+            epoch: AtomicU64::new(0),
+        }
+    }
+
+    fn insert(&self, id: u32, font: SkiaFont) {
+        let mut fonts = self.fonts.write().unwrap_or_else(PoisonError::into_inner);
+        fonts.insert(id, font);
+    }
+
+    fn bump_epoch(&self) {
+        self.epoch.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl XuiFontCollection for SkiaFonts {
+    type FontId = SkiaFontId;
+    type Font = SkiaFont;
+
+    fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Relaxed)
+    }
+
+    fn font(&self, id: SkiaFontId) -> Option<SkiaFont> {
+        let fonts = self.fonts.read().unwrap_or_else(PoisonError::into_inner);
+        fonts.get(&id.0).cloned()
+    }
+}
+
+/// A typeface's font file, as Skia serialized it.
+#[derive(Clone)]
+pub struct SkiaFont {
+    bytes: Arc<[u8]>,
+    index: u32,
+}
+
+impl FontData for SkiaFont {
+    fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    fn index(&self) -> u32 {
+        self.index
+    }
 }
 
 #[derive(Default)]
@@ -40,41 +93,24 @@ impl SkiaParagraphState {
     }
 }
 
-struct RegisteredTypeface {
-    typeface: Typeface,
-    bytes: Option<Arc<[u8]>>,
-    index: u32,
-}
-
-/// XUI text services backed by SkParagraph/SkShaper and Skia glyph rasterization.
+/// XUI text services backed by SkParagraph/SkShaper. It has no glyph
+/// rasterizer: the Skia renderer draws glyph outlines itself.
 pub struct SkiaTextBackend {
     font_manager: FontMgr,
     custom_fonts: TypefaceFontProvider,
-    typefaces: HashMap<u32, RegisteredTypeface>,
-    epoch: u64,
-    scale_factor: f32,
+    fonts: Arc<SkiaFonts>,
+    /// Typefaces already offered to `fonts`, by unique id.
+    registered: HashSet<u32>,
 }
 
 impl SkiaTextBackend {
-    pub fn new(scale_factor: f32) -> Self {
+    /// `_scale_factor` is unused: layout is in logical pixels.
+    pub fn new(_scale_factor: f32) -> Self {
         Self {
             font_manager: FontMgr::new(),
             custom_fonts: TypefaceFontProvider::new(),
-            typefaces: HashMap::new(),
-            epoch: 0,
-            scale_factor: valid_scale(scale_factor),
-        }
-    }
-
-    pub fn scale_factor(&self) -> f32 {
-        self.scale_factor
-    }
-
-    pub fn set_scale_factor(&mut self, scale_factor: f32) {
-        let scale_factor = valid_scale(scale_factor);
-        if self.scale_factor.to_bits() != scale_factor.to_bits() {
-            self.scale_factor = scale_factor;
-            self.epoch = self.epoch.wrapping_add(1);
+            fonts: Arc::new(SkiaFonts::new()),
+            registered: HashSet::new(),
         }
     }
 
@@ -86,19 +122,21 @@ impl SkiaTextBackend {
         collection
     }
 
+    /// Publishes `typeface`'s font file to [`SkiaFonts`]. A typeface Skia
+    /// cannot serialize stays unresolvable, and renderers skip its runs.
     fn register_typeface(&mut self, typeface: Typeface) -> SkiaFontId {
         let id = typeface.unique_id();
-        self.typefaces.entry(id).or_insert_with(|| {
-            let (bytes, index) = typeface
-                .to_font_data()
-                .map(|(bytes, index)| (Some(Arc::from(bytes)), index as u32))
-                .unwrap_or((None, 0));
-            RegisteredTypeface {
-                typeface,
-                bytes,
-                index,
-            }
-        });
+        if self.registered.insert(id)
+            && let Some((bytes, index)) = typeface.to_font_data()
+        {
+            self.fonts.insert(
+                id,
+                SkiaFont {
+                    bytes: Arc::from(bytes),
+                    index: index as u32,
+                },
+            );
+        }
         SkiaFontId(id)
     }
 }
@@ -109,37 +147,40 @@ impl Default for SkiaTextBackend {
     }
 }
 
-impl FontDatabase for SkiaTextBackend {
+impl TextBackend for SkiaTextBackend {
     type FontId = SkiaFontId;
+    type Fonts = SkiaFonts;
+    type Shaper = Self;
+    type Rasterizer = NoRasterizer<SkiaFontId>;
 
-    fn epoch(&self) -> u64 {
-        self.epoch
+    fn fonts(&self) -> &Arc<SkiaFonts> {
+        &self.fonts
+    }
+
+    fn shaper(&mut self) -> &mut Self {
+        self
+    }
+
+    fn rasterizer(&self) -> Option<&Arc<NoRasterizer<SkiaFontId>>> {
+        None
     }
 
     fn load_system_fonts(&mut self) {
         self.font_manager = FontMgr::new();
-        self.epoch = self.epoch.wrapping_add(1);
+        self.fonts.bump_epoch();
     }
 
-    fn load_font_bytes(&mut self, bytes: Arc<[u8]>) -> Self::FontId {
-        let Some(typeface) = self.font_manager.new_from_data(bytes.as_ref(), None) else {
-            return SkiaFontId(0);
-        };
+    fn load_font_bytes(&mut self, bytes: Arc<[u8]>) -> Option<SkiaFontId> {
+        let typeface = self.font_manager.new_from_data(bytes.as_ref(), None)?;
         let id = typeface.unique_id();
-        self.custom_fonts.register_typeface(typeface.clone(), None);
-        self.typefaces.insert(
-            id,
-            RegisteredTypeface {
-                typeface,
-                bytes: Some(bytes),
-                index: 0,
-            },
-        );
-        self.epoch = self.epoch.wrapping_add(1);
-        SkiaFontId(id)
+        self.custom_fonts.register_typeface(typeface, None);
+        self.registered.insert(id);
+        self.fonts.insert(id, SkiaFont { bytes, index: 0 });
+        self.fonts.bump_epoch();
+        Some(SkiaFontId(id))
     }
 
-    fn query(&mut self, query: &FontQuery) -> Option<Self::FontId> {
+    fn query(&mut self, query: &FontQuery) -> Option<SkiaFontId> {
         let style = sk_font_style(query.weight, query.stretch, query.style);
         for family in query_family_names(&query.families) {
             let typeface = match family {
@@ -150,25 +191,16 @@ impl FontDatabase for SkiaTextBackend {
                 None => self.font_manager.legacy_make_typeface(None, style),
             };
             if let Some(typeface) = typeface {
-                return Some(SkiaFontId(typeface.unique_id()));
+                return Some(self.register_typeface(typeface));
             }
         }
         None
     }
-
-    fn font_data(&self, id: Self::FontId) -> Option<FontDataRef<'_>> {
-        let entry = self.typefaces.get(&id.0)?;
-        Some(FontDataRef::Bytes {
-            bytes: entry.bytes.as_deref()?,
-            index: entry.index,
-        })
-    }
 }
 
 impl Shaper for SkiaTextBackend {
-    type State = SkiaParagraphState;
-    type GlyphKey = SkiaGlyphKey;
     type FontId = SkiaFontId;
+    type State = SkiaParagraphState;
 
     fn create_state(&mut self) -> Self::State {
         SkiaParagraphState::default()
@@ -178,7 +210,7 @@ impl Shaper for SkiaTextBackend {
         &mut self,
         state: &mut Self::State,
         input: TextLayoutInput,
-    ) -> ParagraphLayout<Self::FontId, Self::GlyphKey> {
+    ) -> ParagraphLayout<SkiaFontId> {
         if input.text_box_style.max_lines == Some(0) {
             state.paragraph = None;
             return empty_layout();
@@ -251,7 +283,7 @@ impl SkiaTextBackend {
         &mut self,
         paragraph: &mut Paragraph,
         input: &TextLayoutInput,
-    ) -> ParagraphLayout<SkiaFontId, SkiaGlyphKey> {
+    ) -> ParagraphLayout<SkiaFontId> {
         let metrics = paragraph.get_line_metrics();
         let did_ellipsize = paragraph.did_exceed_max_lines();
         let mut output = ParagraphLayout {
@@ -280,7 +312,6 @@ impl SkiaTextBackend {
             line.ellipsized = true;
         }
 
-        let scale_bits = self.scale_factor.to_bits();
         let default_weight = input.default_style.font_weight;
         paragraph.extended_visit(|line_index, info| {
             let Some(info) = info else { return };
@@ -354,12 +385,6 @@ impl SkiaTextBackend {
                     });
                 let glyph_index = output.glyphs.len();
                 output.glyphs.push(GlyphInstance {
-                    key: SkiaGlyphKey {
-                        font_id: font_id.0,
-                        glyph_id,
-                        font_size_bits: info.font().size().to_bits(),
-                        scale_bits,
-                    },
                     glyph_id: glyph_id as u32,
                     draw_pos,
                     hitbox,
@@ -408,100 +433,12 @@ impl SkiaTextBackend {
     }
 }
 
-impl GlyphRasterizer for SkiaTextBackend {
-    type GlyphKey = SkiaGlyphKey;
-
-    fn rasterize(&mut self, key: Self::GlyphKey) -> Option<RasterizedGlyph> {
-        let typeface = self.typefaces.get(&key.font_id)?.typeface.clone();
-        let scale = f32::from_bits(key.scale_bits);
-        let mut font = Font::from_typeface(typeface, f32::from_bits(key.font_size_bits) * scale);
-        font.set_subpixel(true);
-        font.set_edging(skia_safe::font::Edging::SubpixelAntiAlias);
-
-        let mut bounds = [skia_safe::Rect::default()];
-        font.get_bounds(&[key.glyph_id], &mut bounds, None);
-        let bounds = bounds[0];
-        let left = bounds.left.floor() as i32 - 1;
-        let top_edge = bounds.top.floor() as i32 - 1;
-        let right = bounds.right.ceil() as i32 + 1;
-        let bottom = bounds.bottom.ceil() as i32 + 1;
-        let width = (right - left).max(0) as u32;
-        let height = (bottom - top_edge).max(0) as u32;
-        if width == 0 || height == 0 {
-            return Some(RasterizedGlyph {
-                format: RasterizedGlyphFormat::Mask,
-                width: 0,
-                height: 0,
-                left,
-                top: -top_edge,
-                pixels: Arc::from([]),
-            });
-        }
-
-        let mut surface = skia_safe::surfaces::raster_n32_premul((width as i32, height as i32))?;
-        surface.canvas().clear(skia_safe::Color::TRANSPARENT);
-        let blob = TextBlob::from_text([key.glyph_id], &font)?;
-        let mut paint = Paint::default();
-        paint.set_anti_alias(true);
-        paint.set_color(skia_safe::Color::WHITE);
-        surface
-            .canvas()
-            .draw_text_blob(blob, (-left as f32, -top_edge as f32), &paint);
-
-        let mut rgba = vec![0; width as usize * height as usize * 4];
-        let info = ImageInfo::new(
-            (width as i32, height as i32),
-            ColorType::RGBA8888,
-            AlphaType::Unpremul,
-            ColorSpace::new_srgb(),
-        );
-        if !surface.read_pixels(&info, &mut rgba, width as usize * 4, (0, 0)) {
-            return None;
-        }
-        let is_color = rgba
-            .chunks_exact(4)
-            .any(|pixel| pixel[3] != 0 && (pixel[0] != pixel[1] || pixel[1] != pixel[2]));
-        if !is_color {
-            for pixel in rgba.chunks_exact_mut(4) {
-                let alpha = pixel[3];
-                pixel.fill(alpha);
-            }
-        }
-        Some(RasterizedGlyph {
-            format: if is_color {
-                RasterizedGlyphFormat::Color
-            } else {
-                RasterizedGlyphFormat::Mask
-            },
-            width,
-            height,
-            left,
-            top: -top_edge,
-            pixels: Arc::from(rgba),
-        })
-    }
-}
-
-impl TextBackend for SkiaTextBackend {
-    fn set_scale_factor(&mut self, scale_factor: f32) {
-        SkiaTextBackend::set_scale_factor(self, scale_factor);
-    }
-}
-
-fn empty_layout<F, K>() -> ParagraphLayout<F, K> {
+fn empty_layout<F>() -> ParagraphLayout<F> {
     ParagraphLayout {
         lines: Vec::new(),
         runs: Vec::new(),
         glyphs: Vec::new(),
         clusters: Vec::new(),
-    }
-}
-
-fn valid_scale(scale: f32) -> f32 {
-    if scale.is_finite() && scale > 0.0 {
-        scale
-    } else {
-        1.0
     }
 }
 
@@ -631,7 +568,7 @@ mod tests {
             }
         }
         for run in &layout.runs {
-            assert!(backend.font_data(run.font_id).is_some());
+            assert!(backend.fonts().font(run.font_id).is_some());
             assert!(run.font_size > 0.0);
             assert!(!run.glyph_range.is_empty());
         }

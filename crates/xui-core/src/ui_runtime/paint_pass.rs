@@ -395,7 +395,7 @@ impl UiRuntime {
         let frame_time = self.frame_time;
         let gpu_context = self.gpu_context.clone();
         let widget = self.hosts[id].widget.clone();
-        let font_context = measurer.backend().epoch();
+        let font_context = measurer.font_epoch();
 
         let mut wants_repaint = false;
         let text_boxes = widget.with_widgets_mut(|node| match node {

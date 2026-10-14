@@ -1,5 +1,17 @@
+//! Viewport-bounded rendering for fixed-height collections.
+//!
+//! [`virtual_list`](fn@self::virtual_list) uses [`VirtualItemRenderer`] to build only a
+//! visible window plus overscan. [`VirtualRange`] describes a half-open row range. Layout
+//! size observations keep the window current after resizes.
+//!
+//! # Components
+//!
+//! | Component | Purpose |
+//! | --- | --- |
+//! | [`virtual_list`](fn@self::virtual_list) | A fixed-row-height scrolling list that materializes only the visible window and overscan. |
+
 use xui_core::prelude::*;
-use xui_macros::component;
+use xui_macros::{component, view};
 
 /// Builds the row at a given index. Only indices near the viewport are ever
 /// asked for, so the cost of a list stops depending on how long it is.
@@ -31,13 +43,21 @@ fn visible_range(
     item_count: usize,
     overscan: usize,
 ) -> VirtualRange {
-    if item_count == 0 || item_height <= 0.0 || viewport_height <= 0.0 {
+    if item_count == 0
+        || !item_height.is_finite()
+        || item_height <= 0.0
+        || !viewport_height.is_finite()
+        || viewport_height <= 0.0
+    {
         return VirtualRange { start: 0, end: 0 };
     }
-    let first_visible = (scroll_top.max(0.0) / item_height).floor() as usize;
+    let max_scroll =
+        (item_count as f64 * f64::from(item_height) - f64::from(viewport_height)).max(0.0);
+    let offset = f64::from(scroll_top.max(0.0)).min(max_scroll);
+    let first_visible = (offset / f64::from(item_height)).floor() as usize;
     // `+ 1` covers the row straddling the bottom edge, and a second row is
     // needed when the first one is only partly scrolled past the top.
-    let span = (viewport_height / item_height).ceil() as usize + 2;
+    let span = ((viewport_height / item_height).ceil() as usize).saturating_add(2);
     let start = first_visible.saturating_sub(overscan);
     let end = first_visible
         .saturating_add(span)
@@ -49,16 +69,49 @@ fn visible_range(
     }
 }
 
-/// A scrolling list that only builds the rows near the viewport.
+/// A fixed-row-height scrolling list that materializes only the visible window and
+/// overscan.
 ///
-/// The runtime already translates a scroll container's content on its own, so
-/// scrolling itself never re-renders this component: the rows sit at absolute
-/// offsets inside a spacer as tall as the whole list, and a re-render happens
-/// only when the visible range actually changes.
+/// `render_item` receives indices near the viewport. `viewport_height` seeds layout;
+/// subsequent size observations follow resizes without requiring a wheel event. Memoized
+/// rows are reused while the visible range, renderer, and item style remain unchanged.
+/// The component owns row position, width, and height; `item_style` customizes
+/// decoration. Variable row heights are not supported.
 ///
-/// `viewport_height` seeds the first frame, after which the list uses the
-/// height it measures from its own layout, so a stale hint corrects itself
-/// rather than leaving gaps.
+/// # Props
+///
+/// | Prop | Type | Default |
+/// | --- | --- | --- |
+/// | `item_count` | `usize` | **Required** |
+/// | `item_height` | `f32` | **Required** |
+/// | `viewport_height` | `f32` | **Required** |
+/// | `render_item` | `VirtualItemRenderer` | **Required** |
+/// | `overscan` | `usize` | `3` |
+/// | `style` | `Style` | `Style::new()` |
+/// | `item_style` | `Style` | `Style::new()` |
+///
+/// # Example
+///
+/// ```rust
+/// use xui_core::prelude::*;
+/// use xui_components::*;
+/// use xui_macros::view;
+///
+/// use xui_macros::component;
+///
+/// #[component]
+/// fn example_list() {
+///     let render_item = cx.use_callback((), |index: usize| view! { text(index.to_string()) });
+///     view! {
+///         virtual_list(item_count: 100_000usize, item_height: 24.0,
+///             viewport_height: 240.0, render_item: render_item)
+///     }
+/// }
+///
+/// fn main() {
+///     let _ = view! { example_list() };
+/// }
+/// ```
 #[component]
 #[defaults(
     overscan = 3,
@@ -75,14 +128,14 @@ pub fn virtual_list(
     item_style: &Style,
 ) {
     let scroll_top = cx.use_state(|| 0.0f32);
-    // Zero until the first layout is observed; the prop is the fallback.
-    let measured_height = cx.use_state(|| 0.0f32);
+    // The prop seeds layout; size observations also follow resizes without a wheel event.
+    let size = cx.use_size();
 
     let item_count = *item_count;
     let item_height = *item_height;
     let overscan = *overscan;
     let height_hint = *viewport_height;
-    let measured = *measured_height.get();
+    let measured = size.get().map_or(0.0, |size| size.height);
     let viewport = if measured > 0.0 {
         measured
     } else {
@@ -96,75 +149,93 @@ pub fn virtual_list(
         item_count,
         overscan,
     );
-    let total_height = item_height * item_count as f32;
+    let total_height = if item_height.is_finite() && item_height > 0.0 {
+        (f64::from(item_height) * item_count as f64).min(f64::from(f32::MAX)) as f32
+    } else {
+        0.0
+    };
 
-    let mut rows = Vec::with_capacity(range.len());
-    for index in range.start..range.end {
-        let row = render_item.call(index);
-        rows.push(
-            ContainerWidget::new()
-                // Keyed by index so reconciliation reuses a row's hosts when
-                // the range slides instead of tearing them down.
-                .key(format!("xui-virtual-row-{index}"))
-                .style(
-                    item_style
-                        .clone()
-                        .absolute()
-                        .inset(EdgeInsets::new(0.0, 0.0, index as f32 * item_height, 0.0))
-                        .width(Sizing::Fill)
-                        .height(item_height),
-                )
-                .into_element_desc(vec![row]),
-        );
-    }
+    let rows = cx.use_memo_with(
+        (range, item_height, item_style.clone(), render_item.clone()),
+        || {
+            let mut rows = Vec::with_capacity(range.len());
+            for index in range.start..range.end {
+                let row = render_item.call(index);
+                rows.push(view! {
+                    container(
+                        key: format!("xui-virtual-row-{index}"),
+                        style: item_style
+                            .clone()
+                            .absolute()
+                            .inset(EdgeInsets::new(0.0, 0.0, index as f32 * item_height, 0.0))
+                            .width(Sizing::Fill)
+                            .height(item_height),
+                    ) {
+                        ..row
+                    }
+                });
+            }
+            rows
+        },
+    );
 
     // The spacer carries the full scrollable height even though almost none of
     // it is occupied, which is what keeps the scrollbar honest.
-    let content = ContainerWidget::new()
-        .key("xui-virtual-content")
-        .style(
-            Style::new()
+    let content = view! {
+        container(
+            key: "xui-virtual-content",
+            style: Style::new()
                 .relative()
                 .width(Sizing::Fill)
                 .height(total_height),
-        )
-        .into_element_desc(rows);
+        ) {
+            ..rows.get().clone()
+        }
+    };
 
-    ContainerWidget::new()
-        .style(style.clone().scroll_vertical())
-        .on_scroll(move |event, event_cx| {
-            // The translator emits a `Scroll` for every node on the wheel's
-            // path, and those for the rows beneath bubble through here with
-            // no offsets. Only the one describing this container matters.
-            if event.scroll_target != event_cx.node_id() {
-                return EventResult::Ignored;
-            }
-            let Some(offset_after) = event.offset_after else {
-                return EventResult::Ignored;
-            };
-            let offset = offset_after.y;
-            let layout_height = event_cx.node_ref.layout.height();
-            let viewport = if layout_height > 0.0 {
-                layout_height
-            } else {
-                viewport
-            };
-
-            // The runtime has already applied the scroll and moved the content,
-            // so a re-render is only warranted when different rows are needed.
-            // The measured height is folded into that same decision rather than
-            // stored eagerly: learning it is pointless if the window is
-            // unchanged, and storing it would cost a render of its own.
-            let next = visible_range(offset, viewport, item_height, item_count, overscan);
-            if next != range {
-                scroll_top.set(offset);
-                if layout_height > 0.0 && (layout_height - measured).abs() > 0.5 {
-                    measured_height.set(layout_height);
+    let mut viewport_style = Style::new().height(if height_hint.is_finite() {
+        height_hint.max(0.0)
+    } else {
+        0.0
+    });
+    viewport_style.merge(style);
+    viewport_style = viewport_style.scroll_vertical();
+    view! {
+        container(
+            style: viewport_style,
+            observe_size: size,
+            on_scroll: move |event, event_cx| {
+                // The translator emits a `Scroll` for every node on the wheel's
+                // path, and those for the rows beneath bubble through here with
+                // no offsets. Only the one describing this container matters.
+                if event.scroll_target != event_cx.node_id() {
+                    return EventResult::Ignored;
                 }
-            }
-            EventResult::Ignored
-        })
-        .into_element_desc(vec![content])
+                let Some(offset_after) = event.offset_after else {
+                    return EventResult::Ignored;
+                };
+                let offset = offset_after.y;
+                let layout_height = event_cx.node_ref.layout.height();
+                let viewport = if layout_height > 0.0 {
+                    layout_height
+                } else {
+                    viewport
+                };
+                // The runtime has already applied the scroll and moved the content,
+                // so a re-render is only warranted when different rows are needed.
+                // The measured height is folded into that same decision rather than
+                // stored eagerly: learning it is pointless if the window is
+                // unchanged, and storing it would cost a render of its own.
+                let next = visible_range(offset, viewport, item_height, item_count, overscan);
+                if next != range {
+                    scroll_top.set(offset);
+                }
+                EventResult::Ignored
+            },
+        ) {
+            ..content
+        }
+    }
 }
 
 #[cfg(test)]
@@ -229,29 +300,40 @@ mod tests {
         assert_eq!(short, long);
     }
 
+    #[test]
+    fn invalid_dimensions_and_shrunk_sources_have_safe_ranges() {
+        assert!(visible_range(0.0, 200.0, f32::NAN, 100, 3).is_empty());
+        assert!(visible_range(0.0, f32::INFINITY, 20.0, 100, 3).is_empty());
+        let range = visible_range(1_000_000.0, 200.0, 20.0, 20, 0);
+        assert_eq!(range, VirtualRange { start: 10, end: 20 });
+        assert_eq!(visible_range(0.0, 200.0, 20.0, 20, usize::MAX).end, 20);
+    }
+
     // ---- wheel dispatch ---------------------------------------------------
 
     use std::time::Instant;
     use xui_core::text::TextHost;
-    use xui_macros::xui;
     use xui_cosmic::CosmicEngine;
     use xui_interface::Translation;
     use xui_interface::events::{Modifiers, RawEvent, RawWheel, ScrollDelta};
+    use xui_macros::view;
 
     fn list_root(cx: &mut HookContext<'_>) -> ElementDesc {
         let render_item: VirtualItemRenderer = cx.use_callback((), |_index: usize| {
-            ContainerWidget::new()
-                .style(Style::new().width(Sizing::Fill).height(20.0))
-                .into_element_desc(Vec::new())
+            view! {
+                container(
+                    style: Style::new().width(Sizing::Fill).height(20.0),
+                )
+            }
         });
-        xui! {
-            <virtual_list
-                item_count={1_000usize}
-                item_height={20.0f32}
-                viewport_height={200.0f32}
-                render_item={render_item}
-                style={Style::new().width(Sizing::Fill).height(200.0)}
-            />
+        view! {
+            virtual_list(
+                item_count: 1_000usize,
+                item_height: 20.0f32,
+                viewport_height: 200.0f32,
+                render_item: render_item,
+                style: Style::new().width(Sizing::Fill).height(200.0),
+            )
         }
     }
 

@@ -12,16 +12,16 @@ name = "flight-icing"
 path = "src/bin/flight_icing/main.rs"
 
 [features]
-# Run the gallery on the Vello backend instead of Skia.
-vello = ["dep:xui-vello"]
+# Run the gallery and the dashboard on the Skia backend instead of Vello.
+skia = ["dep:xui-skia", "xui-macos/skia"]
 
 [dependencies]
-xui-vello = { path = "../crates/xui-vello", optional = true }
+xui-vello = { path = "../crates/xui-vello" }
 xui-core = { path = "../crates/xui-core" }
 xui-macros = { path = "../crates/xui-macros" }
-xui-macos = { path = "../crates/xui-macos", features=["skia"] }
+xui-macos = { path = "../crates/xui-macos" }
 xui-components = { path = "../xui-components" }
-xui-skia = { path = "../crates/xui-skia" }
+xui-skia = { path = "../crates/xui-skia", optional = true }
 xui-f = { path = "../crates/xui-f" }
 lucide-rs = { path = "../lucide-rs" }
 leanplot = { git = "https://github.com/sleptworld/LeanPlot.git" }
@@ -29,6 +29,8 @@ leanplot = { git = "https://github.com/sleptworld/LeanPlot.git" }
 
 [dev-dependencies]
 png = "0.18.1"
+# The gallery and dashboard snapshots are rendered by Skia, headless.
+xui-skia = { path = "../crates/xui-skia" }
 xui-cosmic = { path = "../crates/xui-cosmic" }
 
 [build-dependencies]

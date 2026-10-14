@@ -1,4 +1,10 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc, PoisonError, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use fontique::{
     Attributes, Blob, CharmapIndex, Collection, CollectionOptions, FallbackKey,
@@ -12,20 +18,17 @@ use skrifa::{
     string::StringId,
 };
 use unicode_script::Script;
-use xui_interface::{FontDataRef, FontFamily, FontQuery, FontStretch, FontStyle, FontWeight};
+use xui_interface::{
+    FontCollection, FontData, FontFamily, FontQuery, FontStretch, FontStyle, FontWeight,
+    SystemFontInfo,
+};
 
 use crate::FFontId;
 
 pub(crate) struct FaceRecord {
     pub blob: Blob<u8>,
     pub index: u32,
-    pub family: String,
-    pub postscript_name: String,
-    pub weight: FontWeight,
-    pub style: FontStyle,
-    pub stretch: FontStretch,
     pub metrics: FaceMetrics,
-    pub custom: bool,
     charmap_index: CharmapIndex,
     shaper_data: Option<ShaperData>,
 }
@@ -69,6 +72,89 @@ impl FaceMetrics {
     }
 }
 
+/// One face's data, as renderers and the rasterizer read it.
+///
+/// Cloning shares the font file; nothing is copied.
+#[derive(Clone)]
+pub struct FFont {
+    blob: Blob<u8>,
+    index: u32,
+    info: Arc<FaceInfo>,
+}
+
+struct FaceInfo {
+    family: String,
+    postscript_name: String,
+    weight: FontWeight,
+    style: FontStyle,
+    stretch: FontStretch,
+    /// Installed on the platform, as opposed to registered by the application.
+    system: bool,
+}
+
+impl FontData for FFont {
+    fn bytes(&self) -> &[u8] {
+        self.blob.as_ref()
+    }
+
+    fn index(&self) -> u32 {
+        self.index
+    }
+
+    fn system(&self) -> Option<SystemFontInfo<'_>> {
+        self.info.system.then(|| SystemFontInfo {
+            family: &self.info.family,
+            postscript_name: &self.info.postscript_name,
+            weight: self.info.weight,
+            style: self.info.style,
+            stretch: self.info.stretch,
+        })
+    }
+}
+
+/// Every face an `FBackend` has handed out an id for, shared with renderers
+/// and the rasterizer so they can read fonts on other threads while the
+/// backend keeps shaping.
+///
+/// Faces are only ever appended, in id order, so an id stays valid for the
+/// life of the backend. The lock is taken for writing once per new face.
+pub struct FFonts {
+    faces: RwLock<Vec<FFont>>,
+    epoch: AtomicU64,
+}
+
+impl FFonts {
+    fn new() -> Self {
+        Self {
+            faces: RwLock::new(Vec::new()),
+            epoch: AtomicU64::new(0),
+        }
+    }
+
+    fn push(&self, face: FFont) {
+        let mut faces = self.faces.write().unwrap_or_else(PoisonError::into_inner);
+        faces.push(face);
+    }
+
+    fn bump_epoch(&self) {
+        self.epoch.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl FontCollection for FFonts {
+    type FontId = FFontId;
+    type Font = FFont;
+
+    fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Relaxed)
+    }
+
+    fn font(&self, id: FFontId) -> Option<FFont> {
+        let faces = self.faces.read().unwrap_or_else(PoisonError::into_inner);
+        faces.get(id.0 as usize).cloned()
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct QueryKey {
     families: Vec<FontFamily>,
@@ -100,9 +186,9 @@ pub(crate) struct FontStore {
     system_fonts: bool,
     source_cache: SourceCache,
     faces: Vec<FaceRecord>,
+    shared: Arc<FFonts>,
     face_ids: HashMap<(u64, u32), FFontId>,
     candidates: HashMap<(QueryKey, CandidateScope), Vec<FFontId>>,
-    epoch: u64,
 }
 
 impl FontStore {
@@ -121,18 +207,22 @@ impl FontStore {
             // threads, so the shared (mutex guarded) variant is pure overhead.
             source_cache: SourceCache::new(SourceCacheOptions { shared: false }),
             faces: Vec::new(),
+            shared: Arc::new(FFonts::new()),
             face_ids: HashMap::new(),
             candidates: HashMap::new(),
-            epoch: 0,
         }
     }
 
     pub fn epoch(&self) -> u64 {
-        self.epoch
+        self.shared.epoch()
     }
 
     pub fn face_count(&self) -> usize {
         self.faces.len()
+    }
+
+    pub fn shared(&self) -> &Arc<FFonts> {
+        &self.shared
     }
 
     pub fn face(&self, id: FFontId) -> Option<&FaceRecord> {
@@ -149,7 +239,7 @@ impl FontStore {
         self.collection.load_system_fonts();
         self.system_fonts = true;
         self.candidates.clear();
-        self.epoch = self.epoch.wrapping_add(1);
+        self.shared.bump_epoch();
     }
 
     /// Resolve the normal system UI face so common UI text has no first-use
@@ -174,7 +264,7 @@ impl FontStore {
             .map_or(FaceMetrics::FALLBACK, |face| face.metrics)
     }
 
-    pub fn load_font_bytes(&mut self, bytes: Arc<[u8]>) -> FFontId {
+    pub fn load_font_bytes(&mut self, bytes: Arc<[u8]>) -> Option<FFontId> {
         let blob = Blob::new(Arc::new(bytes));
         let registered = self.collection.register_fonts(blob, None);
         let mut first = None;
@@ -205,9 +295,9 @@ impl FontStore {
         }
         if first.is_some() {
             self.candidates.clear();
-            self.epoch = self.epoch.wrapping_add(1);
+            self.shared.bump_epoch();
         }
-        first.unwrap_or(FFontId::INVALID)
+        first
     }
 
     pub fn query(&mut self, query: &FontQuery) -> Option<FFontId> {
@@ -354,14 +444,21 @@ impl FontStore {
             .map(|name| name.to_string())
             .unwrap_or_default();
         let id = FFontId(self.faces.len().try_into().ok()?);
+        self.shared.push(FFont {
+            blob: font.blob.clone(),
+            index: font.index,
+            info: Arc::new(FaceInfo {
+                family: font.family,
+                postscript_name,
+                weight: font.weight,
+                style: font.style,
+                stretch: font.stretch,
+                system: !font.custom,
+            }),
+        });
         self.faces.push(FaceRecord {
             blob: font.blob,
             index: font.index,
-            family: font.family,
-            postscript_name,
-            weight: font.weight,
-            style: font.style,
-            stretch: font.stretch,
             metrics: FaceMetrics {
                 ascent: (metrics.ascent / units_per_em).clamp(0.0, 2.0),
                 // Skrifa reports the descender as a negative offset from the
@@ -369,7 +466,6 @@ impl FontStore {
                 descent: (-metrics.descent / units_per_em).clamp(0.0, 2.0),
                 line_gap: (metrics.leading / units_per_em).clamp(0.0, 2.0),
             },
-            custom: font.custom,
             charmap_index: font.charmap_index,
             shaper_data: None,
         });
@@ -388,26 +484,6 @@ impl FontStore {
 
     pub fn prune_sources(&mut self, max_age: u64) {
         self.source_cache.prune(max_age, true);
-    }
-
-    pub fn font_data(&self, id: FFontId) -> Option<FontDataRef<'_>> {
-        let face = self.face(id)?;
-        if face.custom {
-            Some(FontDataRef::Bytes {
-                bytes: face.blob.as_ref(),
-                index: face.index,
-            })
-        } else {
-            Some(FontDataRef::SystemMemory {
-                bytes: face.blob.as_ref(),
-                index: face.index,
-                family: &face.family,
-                postscript_name: &face.postscript_name,
-                weight: face.weight,
-                style: face.style,
-                stretch: face.stretch,
-            })
-        }
     }
 }
 
@@ -557,10 +633,7 @@ mod tests {
     fn invalid_data_does_not_advance_epoch() {
         let mut store = FontStore::empty();
         let epoch = store.epoch();
-        assert_eq!(
-            store.load_font_bytes(Arc::from(&b"not a font"[..])),
-            FFontId::INVALID
-        );
+        assert_eq!(store.load_font_bytes(Arc::from(&b"not a font"[..])), None);
         assert_eq!(store.epoch(), epoch);
     }
 }

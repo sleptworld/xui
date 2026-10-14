@@ -1,8 +1,9 @@
 //! Skia rendering backend for `xui`.
 //!
 //! Implements `xui_core::render::RenderBackend` (and the text/glyph rasterization
-//! path) on top of `skia-safe`. Used by default through `xui-winit`'s `skia`
-//! feature; on macOS it drives a Metal surface via `objc2-metal`.
+//! path) on top of `skia-safe`. Optional: each host's `skia` feature provides a
+//! `skia_runner` on it (Vello is the default backend); on macOS it drives a
+//! Metal surface via `objc2-metal`.
 //!
 //! Presentation is selected at runtime by [`present::WindowPresenter`]: Metal on
 //! macOS, Direct3D 12 on Windows, Vulkan on Linux, and a `softbuffer` CPU blit
@@ -16,7 +17,8 @@
 //!   (defaults to `SkiaTextBackend`).
 //! - `SkiaBackendOptions` — clear color and layer-cache budget.
 //! - `SkiaTextBackend` — `xui_interface::TextBackend` backed by Skia paragraphs.
-//! - `SkiaFontId`, `SkiaGlyphKey`, `SkiaParagraphState` — glyph/paragraph keys.
+//! - `SkiaFontId`, `SkiaFonts`, `SkiaFont`, `SkiaParagraphState` — font ids, the
+//!   shared font collection and paragraph state.
 //! - `SkiaFrameStats`, `SkiaLayerCacheStats` — per-frame and cache statistics.
 //!
 //! Applications construct a `SkiaBackend` indirectly through `xui-winit`.
@@ -42,7 +44,7 @@ pub use backend::{SkiaBackend, SkiaBackendOptions, SkiaOptimizations};
 pub use cache::SkiaLayerCacheStats;
 pub use error::SkiaBackendError;
 pub use stats::SkiaFrameStats;
-pub use text::{SkiaFontId, SkiaGlyphKey, SkiaParagraphState, SkiaTextBackend};
+pub use text::{SkiaFont, SkiaFontId, SkiaFonts, SkiaParagraphState, SkiaTextBackend};
 
 #[cfg(feature = "wgpu")]
 pub use wgpu_surface::*;

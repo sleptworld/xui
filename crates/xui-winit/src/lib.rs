@@ -8,10 +8,13 @@
 //!
 //! # Features
 //!
-//! - `skia` (default) — pulls in `xui-skia` and re-exports `SkiaBackend` and
-//!   `SkiaTextBackend`; enables the `runner` function.
+//! - `vello` (default) — pulls in `xui-vello` and re-exports `VelloBackend`;
+//!   enables the `runner` function.
+//! - `skia` — pulls in `xui-skia` and re-exports `SkiaBackend` and
+//!   `SkiaTextBackend`; enables the `skia_runner` function. Independent of
+//!   `vello`.
 //! - `wgpu` — enables the optional `wgpu` renderer module (`WGPUBackend`,
-//!   `TexturePool`, `TextureLease`, ...).
+//!   `TexturePool`, `TextureLease`, ...) and `wgpu_runner`.
 //!
 //! See `xui-example-app` for the standard application setup.
 
@@ -27,8 +30,12 @@ pub(crate) mod renders;
 #[cfg(feature = "wgpu")]
 mod wgpu;
 
-#[cfg(feature = "skia")]
+#[cfg(feature = "vello")]
 pub use runner::runner;
+#[cfg(feature = "skia")]
+pub use runner::skia_runner;
+#[cfg(feature = "wgpu")]
+pub use runner::wgpu_runner;
 pub use runner::{WinitBackendInitError, WinitRunError, WinitRunner, WinitRunnerOptions};
 pub use sdf::UI_SHADER_WGSL;
 pub use translate::{
@@ -44,8 +51,11 @@ pub use wgpu::{
     TexturePoolStats, TextureRequest, WGPUBackend, WgpuBackendInitError, WgpuBackendOptions,
 };
 
+#[cfg(feature = "vello")]
+pub use xui_vello::{VelloBackend, VelloBackendOptions};
+
 #[cfg(feature = "skia")]
 pub use xui_skia::{
-    SkiaBackend, SkiaBackendError, SkiaBackendOptions, SkiaFontId, SkiaGlyphKey,
+    SkiaBackend, SkiaBackendError, SkiaBackendOptions, SkiaFont, SkiaFontId, SkiaFonts,
     SkiaLayerCacheStats, SkiaParagraphState, SkiaTextBackend,
 };
