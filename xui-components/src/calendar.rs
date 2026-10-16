@@ -396,8 +396,8 @@ pub fn date_picker(
             month: *month,
             selected: *selected,
             on_select: Some(select),
-            on_month_change: on_month_change.clone(),
-            style: style.clone(),
+            on_month_change: on_month_change.share(),
+            style: style.share(),
             disabled: *disabled,
         )
     };
@@ -414,7 +414,7 @@ pub fn date_picker(
     });
     view! {
         crate::popover(
-            trigger: trigger.clone(),
+            trigger: trigger.share(),
             content: content,
             open: Some(shown),
             on_open_change: Some(changed),

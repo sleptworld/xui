@@ -382,11 +382,14 @@ pub fn expand_component_function(
                 cx: &mut #xui_core::HookContext<'_>,
                 props: ::std::option::Option<#xui_core::ErasedPropsRef<'_>>,
             ) -> #xui_core::ElementDesc #fn_where {
-                let props = props
-                    .expect("component props missing")
+                let owner = props.expect("component props missing");
+                let props = owner
                     .downcast_ref::<#props_type>()
                     .unwrap_or_else(|| panic!("component props type mismatch"));
-                #component_name(cx, props)
+                #xui_core::prop::render_with_props::<#props_type, _>(
+                    owner,
+                    || #component_name(cx, props),
+                )
             }
         }
     } else {
@@ -656,7 +659,7 @@ fn generate_component_props(
                 Some(default) => format!("The `{field}` prop. Defaults to `{default}` when omitted."),
                 None => format!("The required `{field}` prop; it must be supplied when constructing the component."),
             };
-            quote!(#[doc = #doc] pub #field: #field_type)
+            quote!(#[doc = #doc] pub #field: #xui_core::prop::Prop<#field_type>)
         })
         .collect::<Vec<_>>();
     let builder_fields = props
@@ -664,7 +667,7 @@ fn generate_component_props(
         .map(|prop| {
             let field = &prop.field;
             let field_type = &prop.field_type;
-            quote!(#field: ::std::option::Option<#field_type>)
+            quote!(#field: ::std::option::Option<#xui_core::prop::Prop<#field_type>>)
         })
         .collect::<Vec<_>>();
     let builder_init_values = props
@@ -679,7 +682,7 @@ fn generate_component_props(
         .map(|prop| {
             let field = &prop.field;
             if let Some(default_value) = &prop.default_value {
-                quote!(#field: self.#field.unwrap_or_else(|| #default_value))
+                quote!(#field: self.#field.unwrap_or_else(|| #xui_core::prop::Prop::new(#default_value)))
             } else {
                 quote! {
                     #field: self.#field.expect(concat!(
@@ -768,15 +771,21 @@ fn generate_component_props(
             let field = &prop.field;
             let field_type = &prop.field_type;
             // A field whose type names a component parameter is where that
-            // parameter is inferred from, and `impl Into<T<?>>` would leave it
-            // ambiguous as soon as a second `From` impl exists. Such a setter
-            // takes the field type itself.
-            let (param_type, value) = if prop.generic {
-                (quote!(#field_type), quote!(#field))
+            // parameter is inferred from, and `IntoProp`'s blanket over
+            // `Into<T<?>>` would leave it ambiguous as soon as a second `From`
+            // impl exists. Such a setter takes the value itself or a shared
+            // prop, which `Prop`'s two `From` impls tell apart by shape.
+            let (setter_params, param_type, value) = if prop.generic {
+                (
+                    quote!(),
+                    quote!(impl ::std::convert::Into<#xui_core::prop::Prop<#field_type>>),
+                    quote!(::std::convert::Into::into(#field)),
+                )
             } else {
                 (
-                    quote!(impl ::std::convert::Into<#field_type>),
-                    quote!(#field.into()),
+                    quote!(<__XuiVia>),
+                    quote!(impl #xui_core::prop::IntoProp<#field_type, __XuiVia>),
+                    quote!(#xui_core::prop::IntoProp::into_prop(#field)),
                 )
             };
             if let Some(required_state) = prop.required_state.as_ref() {
@@ -814,7 +823,7 @@ fn generate_component_props(
                     })
                     .collect::<Vec<_>>();
                 quote! {
-                    pub fn #field(self, #field: #param_type) -> #builder_type {
+                    pub fn #field #setter_params (self, #field: #param_type) -> #builder_type {
                         let Self {
                             #(#destructure_fields),*,
                             __xui_key,
@@ -829,7 +838,7 @@ fn generate_component_props(
                 }
             } else {
                 quote! {
-                    pub fn #field(mut self, #field: #param_type) -> Self {
+                    pub fn #field #setter_params (mut self, #field: #param_type) -> Self {
                         self.#field = ::std::option::Option::Some(#value);
                         self
                     }
@@ -844,7 +853,7 @@ fn generate_component_props(
     let take_children = if has_children {
         quote! {
             if let ::std::option::Option::Some(children) = children {
-                self.children = ::std::option::Option::Some(children);
+                self.children = ::std::option::Option::Some(#xui_core::prop::Prop::new(children));
             }
         }
     } else {
@@ -882,6 +891,20 @@ fn generate_component_props(
         }
     });
 
+    let field_names = props.iter().map(|prop| &prop.field).collect::<Vec<_>>();
+    let prop_fields_impl = quote! {
+        impl #props_params #xui_core::prop::PropFields for #props_type #user_where {
+            const FIELDS: &'static [#xui_core::prop::PropGetter] = &[
+                #(
+                    |props| &props
+                        .downcast_ref::<Self>()
+                        .expect("component props type mismatch")
+                        .#field_names,
+                )*
+            ];
+        }
+    };
+
     let children_impl = has_children.then(|| {
         quote! {
             impl #props_params #xui_core::WithChildren for #props_type #user_where {
@@ -889,7 +912,7 @@ fn generate_component_props(
                     mut self,
                     children: ::std::vec::Vec<#xui_core::ElementDesc>,
                 ) -> Self {
-                    self.children = children;
+                    self.children = #xui_core::prop::Prop::new(children);
                     self
                 }
             }
@@ -903,6 +926,8 @@ fn generate_component_props(
                 #(#fields,)*
                 #phantom_field
             }
+
+            #prop_fields_impl
 
             #(#required_markers)*
 
@@ -1025,7 +1050,7 @@ fn component_prop_field_type_and_binding(
     let field_type = (**elem).clone();
     Ok(Some((
         field_type,
-        quote!(let #field = &__xui_props.#field;),
+        quote!(let #field = &*__xui_props.#field;),
     )))
 }
 

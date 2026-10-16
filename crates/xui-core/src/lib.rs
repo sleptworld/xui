@@ -55,6 +55,7 @@ pub mod lanes;
 pub mod layout;
 pub mod platform;
 pub mod prelude;
+pub mod prop;
 pub mod runtime;
 pub mod scroll;
 pub mod shortcut;

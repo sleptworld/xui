@@ -724,7 +724,7 @@ pub fn menu(
     });
     view! {
         popover(
-            trigger: trigger.clone(),
+            trigger: trigger.share(),
             content: content,
             open: Some(shown),
             on_open_change: Some(change),

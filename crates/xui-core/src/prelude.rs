@@ -25,6 +25,7 @@ pub use crate::event_system::callbacks::{
 };
 pub use crate::event_system::{Flow, Handler};
 pub use crate::fiber::{ComponentCall, ComponentRender, ComponentType, ErasedPropsRef};
+pub use crate::prop::{Prop, Share};
 pub use crate::focus::{FocusHandle, FocusManager, FocusRequest, FocusTransition};
 pub use crate::render::{MockRenderBackend, RenderBackend};
 pub use crate::runtime::{ControlFlow, FrameReport, GuiRuntime, QueueEventSource, RuntimeEvent};

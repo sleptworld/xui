@@ -293,13 +293,13 @@ impl WorkNode {
         fiber_tree: &'b FiberArena,
     ) -> Option<(ComponentRender, Option<ErasedPropsRef<'a>>)> {
         match &self.work {
-            Some(Work::ComponentWork(c)) => Some((c.render, c.props.as_deref())),
+            Some(Work::ComponentWork(c)) => Some((c.render, c.props.as_ref())),
             _ => self
                 .binding
                 .current
                 .and_then(|id| fiber_tree.node(id))
                 .and_then(|node| node.component.as_ref())
-                .map(|component| (component.render, component.props.as_deref())),
+                .map(|component| (component.render, component.props.as_ref())),
         }
     }
 }

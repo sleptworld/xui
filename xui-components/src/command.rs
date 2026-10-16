@@ -243,7 +243,7 @@ pub fn command_palette(
             content: content,
             open: Some(*open),
             title: Some("Command palette".to_owned()),
-            on_open_change: on_open_change.clone(),
+            on_open_change: on_open_change.share(),
         )
     }
 }

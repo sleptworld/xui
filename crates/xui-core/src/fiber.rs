@@ -16,7 +16,9 @@ use crate::element::PortalBehavior;
 use crate::widgets::{OverlayEntryId, OverlayEntryOptions, OverlayScopeId};
 
 pub type ErasedProps = Rc<dyn Any>;
-pub type ErasedPropsRef<'a> = &'a dyn Any;
+/// The props a [`ComponentCall`] is handed: the allocation itself, which
+/// [`Share::share`](crate::prop::Share::share) projects into.
+pub type ErasedPropsRef<'a> = &'a ErasedProps;
 pub type ComponentCall = fn(&mut HookContext<'_>, Option<ErasedPropsRef<'_>>) -> ElementDesc;
 
 new_key_type! {

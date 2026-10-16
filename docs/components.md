@@ -60,6 +60,11 @@ fn account_actions() {
 }
 ```
 
+A component forwards a prop it received with `.share()` instead of `.clone()`:
+`popover(trigger: trigger.share(), ..)`. The child then reads the value through
+the parent's props allocation, however many levels it is passed down; anything
+that is not one of the rendering component's own props is cloned as before.
+
 Every component accepts a `style` override. Named visual slots are merged after
 their defaults, so callers can change decoration without replacing behavior.
 Virtual row position and height remain owned by the virtualization algorithm.
