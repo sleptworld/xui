@@ -1,3 +1,4 @@
+use rustc_hash::FxHashMap;
 use slotmap::SlotMap;
 use xui_interface::{Affine, Bounds, Point};
 
@@ -711,22 +712,41 @@ impl RenderScene {
                 .get(*id)
                 .is_some_and(|node| node.dirty_enqueued && !node.dirty.is_empty())
         });
-        // `mark_dirty` keeps `subtree_dirty` correct on the way in, so only the
-        // nodes whose flags were just cleared need their ancestor summaries
-        // recomputed. A full-scene rebuild here would be O(scene) every frame.
-        for id in &snapshot.nodes {
-            self.refresh_subtree_dirty_from(*id);
-        }
+        self.refresh_subtree_dirty(&snapshot.nodes);
     }
 
-    /// Recomputes `subtree_dirty` from `from` up to the root, stopping as soon
-    /// as a node's summary is unchanged: nothing above it can change either.
-    fn refresh_subtree_dirty_from(&mut self, from: RenderNodeId) {
-        let mut current = Some(from);
-        while let Some(id) = current {
-            let Some(node) = self.nodes.get(id) else {
-                break;
-            };
+    /// Refreshes snapshot nodes and their ancestors in child-before-parent order.
+    /// Each affected node scans its children once, even if many dirty siblings
+    /// share it. Unaffected subtrees contribute their cached summaries.
+    fn refresh_subtree_dirty(&mut self, nodes: &[RenderNodeId]) {
+        let mut pending = FxHashMap::default();
+        let mut affected = Vec::new();
+        for id in nodes {
+            if !self.nodes.contains_key(*id) {
+                continue;
+            }
+            let mut current = Some(*id);
+            while let Some(id) = current {
+                let std::collections::hash_map::Entry::Vacant(entry) = pending.entry(id) else {
+                    // This node's entire ancestor path was already collected.
+                    break;
+                };
+                entry.insert(0usize);
+                affected.push(id);
+                current = self.nodes[id].parent;
+            }
+        }
+
+        // Count only affected children: other children already have a valid
+        // summary and do not need to be visited before their parent.
+        for id in &affected {
+            if let Some(parent) = self.nodes[*id].parent {
+                *pending.get_mut(&parent).expect("ancestor was collected") += 1;
+            }
+        }
+        let mut ready: Vec<_> = affected.into_iter().filter(|id| pending[id] == 0).collect();
+        while let Some(id) = ready.pop() {
+            let node = &self.nodes[id];
             let parent = node.parent;
             let mut summary = node.dirty;
             for child in node.children() {
@@ -735,12 +755,14 @@ impl RenderScene {
                 }
             }
 
-            let node = &mut self.nodes[id];
-            if node.subtree_dirty == summary {
-                break;
+            self.nodes[id].subtree_dirty = summary;
+            if let Some(parent) = parent {
+                let count = pending.get_mut(&parent).expect("ancestor was collected");
+                *count -= 1;
+                if *count == 0 {
+                    ready.push(parent);
+                }
             }
-            node.subtree_dirty = summary;
-            current = parent;
         }
     }
 
@@ -1379,6 +1401,108 @@ mod tests {
             )
             .unwrap();
         assert_eq!(scene.node(primitive).unwrap().dirty, RenderDirty::PAINT);
+    }
+
+    fn assert_dirty_summaries(scene: &RenderScene) {
+        for (_, node) in &scene.nodes {
+            let expected = node.children().iter().fold(node.dirty, |summary, child| {
+                summary | scene.nodes[*child].subtree_dirty
+            });
+            assert_eq!(node.subtree_dirty, expected);
+        }
+    }
+
+    #[test]
+    fn acknowledge_refreshes_wide_and_nested_branches_in_any_snapshot_order() {
+        let mut scene = RenderScene::new();
+        let group = scene.insert_group();
+        scene.append_child(scene.root(), group).unwrap();
+        let mut leaves = Vec::new();
+        for _ in 0..1024 {
+            let leaf = scene.insert_primitive(shape(Bounds::ZERO, Color::BLACK));
+            scene.append_child(group, leaf).unwrap();
+            leaves.push(leaf);
+        }
+        let nested = scene.insert_group();
+        scene.append_child(group, nested).unwrap();
+        let deep = scene.insert_primitive(shape(Bounds::ZERO, Color::BLACK));
+        scene.append_child(nested, deep).unwrap();
+        // Detached nodes also participate in acknowledgment.
+        let detached = scene.insert_group();
+        let mut snapshot = scene.dirty_snapshot();
+        snapshot.nodes.reverse();
+        scene.acknowledge(&snapshot);
+        assert_dirty_summaries(&scene);
+        assert!(scene.nodes[scene.root()].subtree_dirty.is_empty());
+        assert!(scene.nodes[detached].subtree_dirty.is_empty());
+
+        // Mix a dirty parent, a deep leaf, and many dirty siblings.
+        scene.set_visible(group, false).unwrap();
+        scene.set_visible(deep, false).unwrap();
+        for leaf in leaves {
+            scene.set_visible(leaf, false).unwrap();
+        }
+        acknowledge_all(&mut scene);
+        assert_dirty_summaries(&scene);
+        assert!(scene.nodes[scene.root()].subtree_dirty.is_empty());
+        assert!(!scene.is_dirty());
+    }
+
+    #[test]
+    fn acknowledge_preserves_new_changes_on_affected_and_unaffected_branches() {
+        let mut scene = RenderScene::new();
+        let group = scene.insert_group();
+        scene.append_child(scene.root(), group).unwrap();
+        let a = scene.insert_group();
+        let b = scene.insert_group();
+        scene.append_child(group, a).unwrap();
+        scene.append_child(group, b).unwrap();
+        acknowledge_all(&mut scene);
+
+        scene.mark_dirty(group, RenderDirty::PAINT);
+        scene.mark_dirty(a, RenderDirty::GEOMETRY);
+        let snapshot = scene.dirty_snapshot();
+        scene.mark_dirty(a, RenderDirty::PAINT);
+        scene.mark_dirty(b, RenderDirty::COMPOSITE);
+        scene.acknowledge(&snapshot);
+
+        assert_dirty_summaries(&scene);
+        assert!(scene.nodes[group].dirty.is_empty());
+        assert_eq!(
+            scene.nodes[a].dirty,
+            RenderDirty::GEOMETRY | RenderDirty::PAINT
+        );
+        assert_eq!(scene.nodes[b].dirty, RenderDirty::COMPOSITE);
+        assert_eq!(scene.dirty_snapshot().nodes, vec![a, b]);
+        // Repeating the old acknowledgment must leave newer changes intact.
+        scene.acknowledge(&snapshot);
+        assert_dirty_summaries(&scene);
+        assert!(scene.is_dirty());
+        acknowledge_all(&mut scene);
+        assert_dirty_summaries(&scene);
+        assert!(!scene.is_dirty());
+    }
+
+    #[test]
+    fn acknowledge_handles_removed_snapshot_nodes_and_new_removal_records() {
+        let mut scene = RenderScene::new();
+        let a = scene.insert_group();
+        let b = scene.insert_group();
+        scene.append_child(scene.root(), a).unwrap();
+        scene.append_child(scene.root(), b).unwrap();
+        acknowledge_all(&mut scene);
+
+        scene.remove_subtree(a).unwrap();
+        scene.mark_dirty(b, RenderDirty::PAINT);
+        let snapshot = scene.dirty_snapshot();
+        scene.remove_subtree(b).unwrap();
+        scene.acknowledge(&snapshot);
+        assert_eq!(scene.removed, vec![b]);
+        assert_dirty_summaries(&scene);
+        assert!(scene.is_dirty());
+        acknowledge_all(&mut scene);
+        assert_dirty_summaries(&scene);
+        assert!(!scene.is_dirty());
     }
 
     #[test]

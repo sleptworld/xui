@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use xui_interface::{
     Affine, Bounds, ComputedColorStyle, ComputedShadowStyle, ComputedStrokeStyle, ImageData,
-    ImageKey, ImageStyle, ImageVariant, NodeId, TextPaintProps, TextVerticalAlign, VectorScene,
+    ImageKey, ImageStyle, ImageVariant, NodeId, Point, TextPaintProps, TextVerticalAlign,
+    VectorScene,
 };
 
 use crate::text::TextLayoutSlot;
@@ -17,6 +20,7 @@ pub enum Primitive {
     Vector(VectorPrimitive),
     Image(ImagePrimitive),
     Text(TextPrimitive),
+    Batch(BatchPrimitive),
 }
 
 impl Primitive {
@@ -26,6 +30,7 @@ impl Primitive {
             Self::Vector(value) => value.transform.transform_bounds(value.scene.bounds()),
             Self::Image(value) => value.bounds,
             Self::Text(value) => value.bounds,
+            Self::Batch(value) => value.paint_bounds(),
         }
     }
 
@@ -35,6 +40,7 @@ impl Primitive {
             Self::Vector(value) => value.transform.transform_bounds(value.scene.bounds()),
             Self::Image(value) => value.bounds,
             Self::Text(value) => value.bounds,
+            Self::Batch(value) => value.paint_bounds(),
         }
     }
 
@@ -72,6 +78,7 @@ impl Primitive {
                     || a.layout_revision != b.layout_revision
                     || a.paint != b.paint,
             },
+            (Self::Batch(a), Self::Batch(b)) => a.diff(b),
             _ => PrimitiveChange {
                 geometry: true,
                 paint: true,
@@ -135,6 +142,133 @@ pub struct TextPrimitive {
     pub layout_revision: u64,
     pub vertical_align: TextVerticalAlign,
     pub paint: TextPaintProps,
+}
+
+/// An ordered run of primitives painted from one render node.
+///
+/// For content that draws many items but never needs them addressed one by
+/// one -- a canvas is the case this exists for. Giving every item a node of
+/// its own makes the scene grow with the picture, and every per-node cost in
+/// the scene (dirty summaries, child scans, reconciliation) grows with it. A
+/// batch keeps that at one leaf; the frame builder expands it into one draw per
+/// item, so backends see exactly what separate nodes would have produced.
+///
+/// Items are in batch-local coordinates and placed at `origin` in the node's
+/// space, so moving the node leaves the shared item list untouched.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BatchPrimitive {
+    pub content: Arc<BatchContent>,
+    pub origin: Point,
+}
+
+impl BatchPrimitive {
+    pub fn new(content: Arc<BatchContent>, origin: Point) -> Self {
+        Self { content, origin }
+    }
+
+    /// The transform from batch-local coordinates to the node's space.
+    pub fn transform(&self) -> Affine {
+        Affine::translate(self.origin.x, self.origin.y)
+    }
+
+    fn paint_bounds(&self) -> Bounds {
+        self.content.paint_bounds.translate(self.origin)
+    }
+
+    fn diff(&self, next: &Self) -> PrimitiveChange {
+        let moved = self.origin != next.origin;
+        if Arc::ptr_eq(&self.content, &next.content) {
+            return PrimitiveChange {
+                geometry: moved,
+                paint: false,
+            };
+        }
+        let (a, b) = (&self.content.items, &next.content.items);
+        if a.len() != b.len() {
+            return PrimitiveChange {
+                geometry: true,
+                paint: true,
+            };
+        }
+        a.iter().zip(b.iter()).fold(
+            PrimitiveChange {
+                geometry: moved,
+                paint: false,
+            },
+            |mut change, (a, b)| {
+                let item = a.primitive.diff(&b.primitive);
+                change.geometry |= item.geometry || a.clip != b.clip;
+                change.paint |= item.paint;
+                change
+            },
+        )
+    }
+}
+
+/// The items of a [`BatchPrimitive`], with their bounds summarized once.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BatchContent {
+    items: Vec<BatchItem>,
+    paint_bounds: Bounds,
+}
+
+impl BatchContent {
+    pub fn new(items: Vec<BatchItem>) -> Self {
+        debug_assert!(
+            items
+                .iter()
+                .all(|item| !matches!(item.primitive, Primitive::Batch(_))),
+            "batches do not nest"
+        );
+        let paint_bounds = items
+            .iter()
+            .map(BatchItem::paint_bounds)
+            .reduce(Bounds::union)
+            .unwrap_or(Bounds::ZERO);
+        Self {
+            items,
+            paint_bounds,
+        }
+    }
+
+    pub fn items(&self) -> &[BatchItem] {
+        &self.items
+    }
+}
+
+/// One primitive of a batch, optionally clipped to a rectangle of its own.
+///
+/// The clip is resolved by the frame builder into a clip chain under the
+/// node's, so an item that needs one does not need a clip node -- and with it
+/// a node -- of its own.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BatchItem {
+    pub primitive: Primitive,
+    pub clip: Option<Bounds>,
+}
+
+impl BatchItem {
+    pub fn new(primitive: Primitive) -> Self {
+        Self {
+            primitive,
+            clip: None,
+        }
+    }
+
+    pub fn clipped(primitive: Primitive, clip: Bounds) -> Self {
+        Self {
+            primitive,
+            clip: Some(clip),
+        }
+    }
+
+    fn paint_bounds(&self) -> Bounds {
+        let bounds = self.primitive.paint_bounds();
+        match self.clip {
+            Some(clip) => (bounds & clip).unwrap_or(Bounds::ZERO),
+            None => bounds,
+        }
+    }
 }
 
 #[cfg(test)]

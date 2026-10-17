@@ -293,7 +293,10 @@ pub fn switch(
         children.push(label.clone());
     }
 
+    // `center` fills its parent by default; a switch is sized by its track and
+    // label.
     let root_style = crate::layout::control_style(disabled)
+        .size(Size::new(Sizing::Hug, Sizing::Hug))
         .align(AlignStyle::Center)
         .gap(8.0)
         .min_height(32.0)

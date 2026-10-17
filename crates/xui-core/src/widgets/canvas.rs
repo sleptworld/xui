@@ -32,7 +32,8 @@ use crate::element::ElementDesc;
 use crate::event_system::interaction::InteractionProperties;
 use crate::event_system::{EventContext, callbacks::EventHandlers};
 use crate::render::{
-    ClipShape, Primitive, RenderTreeWriter, ShapePrimitive, TextPrimitive, VectorPrimitive,
+    BatchContent, BatchItem, BatchPrimitive, ClipShape, Primitive, RenderTreeWriter,
+    ShapePrimitive, TextPrimitive, VectorPrimitive,
 };
 use crate::text::TextLayoutSlot;
 #[cfg(feature = "wgpu")]
@@ -755,7 +756,21 @@ enum CanvasBatch {
         bounds: Bounds,
         props: std::sync::Arc<TextProps>,
         constraints: TextLayoutConstraints,
+        /// What the layout in this box's slot is shaped from. Paint compares
+        /// it to decide whether the text changed, so a recompile that leaves
+        /// a label as it was leaves its primitive -- and its damage -- alone.
+        revision: u64,
     },
+}
+
+/// A hash of everything a canvas text layout is shaped from.
+fn text_layout_revision(props: &TextProps, constraints: TextLayoutConstraints) -> u64 {
+    let constraints = match constraints {
+        TextLayoutConstraints::Definate(width) => (0u8, width.to_bits()),
+        TextLayoutConstraints::Unbound => (1, 0),
+        TextLayoutConstraints::MinSize => (2, 0),
+    };
+    props_hash(&(props, constraints))
 }
 
 /// The lowered form of a canvas's content, rebuilt only when the content, the
@@ -765,8 +780,13 @@ struct CompiledCanvas {
     batches: Vec<CanvasBatch>,
     size: Size<f32>,
     revision: u64,
-    /// Bumped on every compile so text primitives invalidate their shaping.
+    /// Bumped on every compile that actually rebuilt the batches.
     generation: u64,
+    /// The batches lowered to one render primitive, built on first paint and
+    /// kept until the next compile, so a canvas that only moves repaints
+    /// without rebuilding its item list. Keyed by the node, which text
+    /// primitives name.
+    content: RefCell<Option<(NodeId, Arc<BatchContent>)>>,
 }
 
 impl CompiledCanvas {
@@ -779,9 +799,101 @@ impl CompiledCanvas {
                 bounds,
                 props,
                 constraints,
+                ..
             } => Some((*id, *bounds, props.as_ref(), *constraints)),
             _ => None,
         })
+    }
+
+    fn content(&self, node_id: NodeId) -> Arc<BatchContent> {
+        let mut cached = self.content.borrow_mut();
+        if let Some((cached_node, content)) = cached.as_ref()
+            && *cached_node == node_id
+        {
+            return content.clone();
+        }
+        let content = Arc::new(self.lower(node_id));
+        *cached = Some((node_id, content.clone()));
+        content
+    }
+
+    /// Every batch as items of one [`BatchPrimitive`], in canvas-local
+    /// coordinates.
+    fn lower(&self, node_id: NodeId) -> BatchContent {
+        let mut items = Vec::new();
+        for batch in &self.batches {
+            match batch {
+                CanvasBatch::Shapes(shapes) => {
+                    items.extend(
+                        shapes
+                            .iter()
+                            .map(|shape| BatchItem::new(Primitive::Shape(*shape))),
+                    );
+                }
+                // The scene was built once at compile time, so its id -- and
+                // with it every compiled path the backend has cached for it --
+                // survives this repaint.
+                CanvasBatch::Vector(scene) => {
+                    items.push(BatchItem::new(Primitive::Vector(VectorPrimitive {
+                        scene: scene.clone(),
+                        transform: Affine::IDENTITY,
+                    })));
+                }
+                CanvasBatch::Text {
+                    id,
+                    bounds,
+                    props,
+                    constraints,
+                    revision,
+                } => {
+                    let text = Primitive::Text(TextPrimitive {
+                        node_id,
+                        bounds: *bounds,
+                        slot: canvas_text_slot(*id),
+                        layout_revision: *revision,
+                        vertical_align: props.paragraph.vertical_align,
+                        paint: TextPaintProps::new(TextPaintStyle {
+                            color: props.style.color,
+                            font_size: props.style.font_size,
+                            line_height: props.style.line_height,
+                            decoration: props.style.decoration,
+                        }),
+                    });
+                    // Only text wrapped to a width can be held to its box;
+                    // unconstrained text is laid out at its natural size, so
+                    // there is nothing to cut, and a clip costs a layer in
+                    // Vello for every box that has one.
+                    items.push(match constraints {
+                        TextLayoutConstraints::Definate(_) => BatchItem::clipped(text, *bounds),
+                        TextLayoutConstraints::Unbound | TextLayoutConstraints::MinSize => {
+                            BatchItem::new(text)
+                        }
+                    });
+                }
+            }
+        }
+        BatchContent::new(items)
+    }
+}
+
+/// Carries over each vector run whose commands did not change, so it keeps its
+/// scene id and the backend's compiled form of it. Runs are matched by their
+/// position among the vector runs, which is what an unchanged drawing keeps.
+fn reuse_vector_scenes(previous: &[CanvasBatch], next: &mut [CanvasBatch]) {
+    let mut previous = previous.iter().filter_map(|batch| match batch {
+        CanvasBatch::Vector(scene) => Some(scene),
+        _ => None,
+    });
+    for batch in next {
+        let CanvasBatch::Vector(scene) = batch else {
+            continue;
+        };
+        let Some(old) = previous.next() else {
+            return;
+        };
+        if old.commands() == scene.commands() {
+            *scene = old.clone();
+        }
     }
 }
 
@@ -836,13 +948,15 @@ fn compile_commands(
             VectorCommand::TextBox { id, bounds, props } => {
                 flush_shapes(&mut batches, &mut shapes);
                 flush_vectors(&mut batches, &mut vectors);
+                let constraints = text_constraints.get(id).copied().unwrap_or_else(|| {
+                    TextLayoutConstraints::max_width(bounds.width().max(0.0))
+                });
                 batches.push(CanvasBatch::Text {
                     id: *id,
                     bounds: *bounds,
                     props: props.clone(),
-                    constraints: text_constraints.get(id).copied().unwrap_or_else(|| {
-                        TextLayoutConstraints::max_width(bounds.width().max(0.0))
-                    }),
+                    constraints,
+                    revision: text_layout_revision(props, constraints),
                 });
             }
         }
@@ -1313,7 +1427,7 @@ impl CanvasWidget {
         }
 
         self.wants_repaint = false;
-        let (batches, picks) = match content {
+        let (mut batches, picks) = match content {
             CanvasContent::Scene(scene) => (
                 compile_commands(scene.commands(), &HashMap::new()),
                 Vec::new(),
@@ -1341,11 +1455,13 @@ impl CanvasWidget {
         };
 
         self.controller.publish_compiled(size, Some(picks));
+        reuse_vector_scenes(&self.compiled.batches, &mut batches);
         self.compiled = CompiledCanvas {
             batches,
             size,
             revision,
             generation: self.compiled.generation.wrapping_add(1),
+            content: RefCell::new(None),
         };
     }
 
@@ -1479,54 +1595,16 @@ impl CanvasWidget {
         _style: &ComputedStyle,
         writer: &mut RenderTreeWriter<'_>,
     ) {
-        let origin = rect.origin();
+        // One clip and one leaf, however much is drawn: the items hang off
+        // the leaf rather than each taking a node of its own.
+        let content = self.compiled.content(node_id);
         writer
             .clip(ClipShape::Rect(rect), |writer| {
-                for batch in &self.compiled.batches {
-                    match batch {
-                        CanvasBatch::Shapes(shapes) => {
-                            for shape in shapes {
-                                writer.primitive(Primitive::Shape(ShapePrimitive {
-                                    bounds: shape.bounds.translate(origin),
-                                    // A line carries its endpoints in the same
-                                    // space as the bounds, so they move too.
-                                    shape: translate_shape(shape.shape, origin),
-                                    ..*shape
-                                }))?;
-                            }
-                        }
-                        // The scene was built once at compile time, so its id
-                        // -- and with it every compiled path the backend has
-                        // cached for it -- survives this repaint.
-                        CanvasBatch::Vector(scene) => {
-                            writer.primitive(Primitive::Vector(VectorPrimitive {
-                                scene: scene.clone(),
-                                transform: Affine::translate(rect.x(), rect.y()),
-                            }))?;
-                        }
-                        CanvasBatch::Text {
-                            id, bounds, props, ..
-                        } => {
-                            let bounds = bounds.translate(origin);
-                            let paint = TextPaintProps::new(TextPaintStyle {
-                                color: props.style.color,
-                                font_size: props.style.font_size,
-                                line_height: props.style.line_height,
-                                decoration: props.style.decoration,
-                            });
-                            writer.clip(ClipShape::Rect(bounds), |writer| {
-                                writer.primitive(Primitive::Text(TextPrimitive {
-                                    node_id,
-                                    bounds,
-                                    slot: canvas_text_slot(*id),
-                                    layout_revision: self.compiled.generation,
-                                    vertical_align: props.paragraph.vertical_align,
-                                    paint,
-                                }))?;
-                                Ok(())
-                            })?;
-                        }
-                    }
+                if !content.items().is_empty() {
+                    writer.primitive(Primitive::Batch(BatchPrimitive::new(
+                        content,
+                        rect.origin(),
+                    )))?;
                 }
                 Ok(())
             })
@@ -1547,16 +1625,6 @@ impl CanvasWidget {
 
     pub(super) fn text_layout_props(&self, _style: &ComputedStyle) -> Option<TextProps> {
         None
-    }
-}
-
-fn translate_shape(shape: Shape, origin: Point) -> Shape {
-    match shape {
-        Shape::Line { from, to } => Shape::Line {
-            from: Point::new(from.x + origin.x, from.y + origin.y),
-            to: Point::new(to.x + origin.x, to.y + origin.y),
-        },
-        other => other,
     }
 }
 
@@ -2031,8 +2099,35 @@ mod tests {
         assert_eq!(widget.compiled_generation(), generation + 1);
     }
 
+    /// Renders `widget` at `rect` and returns the batch under its clip.
+    fn render_batch(widget: &CanvasWidget, rect: Bounds) -> (ClipShape, BatchPrimitive) {
+        let mut render_scene = RenderScene::new();
+        let parent = render_scene.insert_group();
+        let theme = StyleTheme::default();
+        let style = ComputedStyle::initial(&theme);
+        let mut writer = RenderTreeWriter::new(&mut render_scene, parent);
+        widget.render(xui_interface::NodeId::null(), rect, &style, &mut writer);
+        writer.finish().unwrap();
+
+        let outer_clip = render_scene.children(parent).unwrap()[0];
+        let RenderNodeKind::Clip(outer) = &render_scene.node(outer_clip).unwrap().kind else {
+            panic!("canvas root should be a clip");
+        };
+        let children = render_scene.children(outer.child.unwrap()).unwrap();
+        let [leaf] = children else {
+            panic!("a canvas draws from one leaf, got {} children", children.len());
+        };
+        let RenderNodeKind::Primitive(node) = &render_scene.node(*leaf).unwrap().kind else {
+            panic!("expected a primitive");
+        };
+        let Primitive::Batch(batch) = &node.primitive else {
+            panic!("expected a batch");
+        };
+        (outer.clip.clone(), batch.clone())
+    }
+
     #[test]
-    fn a_line_moves_its_endpoints_with_the_node_not_just_its_bounds() {
+    fn a_line_moves_with_the_batch_origin_not_its_endpoints() {
         let controller = CanvasController::with_painter(|p| {
             p.line(
                 Point::new(0.0, 10.0),
@@ -2044,36 +2139,21 @@ mod tests {
         let mut widget = CanvasWidget::new(controller);
         compile(&mut widget, Size::new(100.0, 50.0));
 
-        let mut render_scene = RenderScene::new();
-        let parent = render_scene.insert_group();
-        let theme = StyleTheme::default();
-        let style = ComputedStyle::initial(&theme);
         let rect = Bounds::from_origin_size((20.0, 30.0), (100.0, 50.0));
-
-        let mut writer = RenderTreeWriter::new(&mut render_scene, parent);
-        widget.render(xui_interface::NodeId::null(), rect, &style, &mut writer);
-        writer.finish().unwrap();
-
-        let outer_clip = render_scene.children(parent).unwrap()[0];
-        let RenderNodeKind::Clip(outer) = &render_scene.node(outer_clip).unwrap().kind else {
-            panic!("canvas root should be a clip");
-        };
-        let child = render_scene.children(outer.child.unwrap()).unwrap()[0];
-        let RenderNodeKind::Primitive(node) = &render_scene.node(child).unwrap().kind else {
-            panic!("expected a primitive");
-        };
-        let Primitive::Shape(shape) = &node.primitive else {
+        let (_, batch) = render_batch(&widget, rect);
+        // Endpoints stay canvas-local; the batch transform places them, the
+        // same way it places the bounds, so the two cannot disagree.
+        let Primitive::Shape(shape) = &batch.content.items()[0].primitive else {
             panic!("expected a shape");
         };
-        // Both backends read the endpoints in the same space as the bounds, so
-        // leaving them at canvas-local coordinates draws the rule off-node.
         assert_eq!(
             shape.shape,
             Shape::Line {
-                from: Point::new(20.0, 40.0),
-                to: Point::new(120.0, 40.0),
+                from: Point::new(0.0, 10.0),
+                to: Point::new(100.0, 10.0),
             }
         );
+        assert_eq!(batch.transform(), Affine::translate(20.0, 30.0));
     }
 
     #[test]
@@ -2092,63 +2172,150 @@ mod tests {
         let mut widget = CanvasWidget::new(controller);
         compile(&mut widget, Size::new(100.0, 50.0));
 
-        let mut render_scene = RenderScene::new();
-        let parent = render_scene.insert_group();
-        let theme = StyleTheme::default();
-        let style = ComputedStyle::initial(&theme);
         let rect = Bounds::from_origin_size((2.0, 3.0), (100.0, 50.0));
+        let (clip, batch) = render_batch(&widget, rect);
+        assert_eq!(clip, ClipShape::Rect(rect));
+        assert_eq!(batch.origin, Point::new(2.0, 3.0));
 
-        let mut writer = RenderTreeWriter::new(&mut render_scene, parent);
-        widget.render(xui_interface::NodeId::null(), rect, &style, &mut writer);
-        writer.finish().unwrap();
-
-        let outer_clip = render_scene.children(parent).unwrap()[0];
-        let RenderNodeKind::Clip(outer) = &render_scene.node(outer_clip).unwrap().kind else {
-            panic!("canvas root should be a clip");
-        };
-        assert_eq!(outer.clip, ClipShape::Rect(rect));
-
-        let children = render_scene
-            .children(outer.child.unwrap())
-            .unwrap()
-            .to_vec();
-        assert_eq!(children.len(), 3);
-
-        let RenderNodeKind::Primitive(shape) = &render_scene.node(children[0]).unwrap().kind else {
-            panic!("first batch should be a shape primitive");
-        };
-        let Primitive::Shape(shape) = &shape.primitive else {
-            panic!("first batch should be a shape");
+        let items = batch.content.items();
+        assert_eq!(items.len(), 3);
+        let Primitive::Shape(shape) = &items[0].primitive else {
+            panic!("first item should be a shape");
         };
         assert_eq!(
             shape.bounds,
-            Bounds::from_origin_size((2.0, 3.0), (10.0, 10.0))
+            Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0))
         );
-
-        let RenderNodeKind::Primitive(vector) = &render_scene.node(children[1]).unwrap().kind
-        else {
-            panic!("second batch should be a vector primitive");
+        let Primitive::Vector(vector) = &items[1].primitive else {
+            panic!("second item should be a vector run");
         };
-        let Primitive::Vector(vector) = &vector.primitive else {
-            panic!("second batch should be a vector run");
-        };
-        assert_eq!(vector.transform, Affine::translate(rect.x(), rect.y()));
-
-        let RenderNodeKind::Clip(text_clip) = &render_scene.node(children[2]).unwrap().kind else {
-            panic!("a text box introduces its own clip");
-        };
-        let text_node = render_scene.children(text_clip.child.unwrap()).unwrap()[0];
-        let RenderNodeKind::Primitive(text) = &render_scene.node(text_node).unwrap().kind else {
-            panic!("text clip should contain a primitive");
-        };
-        let Primitive::Text(text) = &text.primitive else {
-            panic!("third batch should be text");
+        assert_eq!(vector.transform, Affine::IDENTITY);
+        let Primitive::Text(text) = &items[2].primitive else {
+            panic!("third item should be text");
         };
         assert_eq!(text.slot, TextLayoutSlot::new(1));
+        let text_bounds = Bounds::from_origin_size((10.0, 12.0), (80.0, 24.0));
+        assert_eq!(text.bounds, text_bounds);
         assert_eq!(
-            text.bounds,
-            Bounds::from_origin_size((12.0, 15.0), (80.0, 24.0))
+            items[2].clip,
+            Some(text_bounds),
+            "a box wrapped to a width is held to it"
         );
+    }
+
+    #[test]
+    fn the_scene_does_not_grow_with_the_drawing() {
+        let controller = CanvasController::with_painter(|p| {
+            for i in 0..500 {
+                let x = i as f32;
+                p.rect(Bounds::from_origin_size((x, 0.0), (1.0, 1.0)), Color::BLACK);
+                p.text_keyed(
+                    i,
+                    Bounds::from_origin_size((x, 2.0), (10.0, 10.0)),
+                    TextProps::new("x"),
+                );
+            }
+        });
+        let mut widget = CanvasWidget::new(controller);
+        compile(&mut widget, Size::new(600.0, 20.0));
+        let (_, batch) = render_batch(&widget, Bounds::from_zero_size(Size::new(600.0, 20.0)));
+        assert_eq!(batch.content.items().len(), 1000);
+    }
+
+    #[test]
+    fn only_text_wrapped_to_a_width_is_clipped() {
+        let controller = CanvasController::with_painter(|p| {
+            let free = p.layout_text(TextProps::new("free"), TextLayoutConstraints::Unbound);
+            p.draw_text(Point::new(0.0, 0.0), free);
+            let wrapped =
+                p.layout_text(TextProps::new("wrapped"), TextLayoutConstraints::max_width(40.0));
+            p.draw_text(Point::new(0.0, 20.0), wrapped);
+        });
+        let mut widget = CanvasWidget::new(controller);
+        compile(&mut widget, Size::new(100.0, 50.0));
+        let (_, batch) = render_batch(&widget, Bounds::from_zero_size(Size::new(100.0, 50.0)));
+        let clips: Vec<_> = batch
+            .content
+            .items()
+            .iter()
+            .map(|item| item.clip.is_some())
+            .collect();
+        assert_eq!(clips, vec![false, true]);
+    }
+
+    #[test]
+    fn a_recompile_that_changes_nothing_changes_no_primitive() {
+        let label = Rc::new(RefCell::new("first"));
+        let source = label.clone();
+        let controller = CanvasController::with_painter(move |p| {
+            p.stroke_path(line_path(), PathStroke::new(Color::BLACK, 1.0));
+            p.text(
+                Bounds::from_origin_size((0.0, 0.0), (40.0, 12.0)),
+                TextProps::new("fixed"),
+            );
+            p.text(
+                Bounds::from_origin_size((0.0, 20.0), (40.0, 12.0)),
+                TextProps::new(*source.borrow()),
+            );
+        });
+        let mut widget = CanvasWidget::new(controller.clone());
+        let rect = Bounds::from_zero_size(Size::new(100.0, 50.0));
+        compile(&mut widget, rect.size());
+        let (_, before) = render_batch(&widget, rect);
+
+        controller.invalidate();
+        compile(&mut widget, rect.size());
+        let (_, same) = render_batch(&widget, rect);
+        assert!(
+            !Arc::ptr_eq(&before.content, &same.content),
+            "the recompile rebuilt the items"
+        );
+        assert_eq!(
+            Primitive::Batch(before.clone()).diff(&Primitive::Batch(same.clone())),
+            Default::default(),
+            "but an identical drawing is no change: text compares by content, \
+             and an unchanged vector run keeps its scene"
+        );
+
+        *label.borrow_mut() = "second";
+        controller.invalidate();
+        compile(&mut widget, rect.size());
+        let (_, edited) = render_batch(&widget, rect);
+        let revisions = |batch: &BatchPrimitive| -> Vec<u64> {
+            batch
+                .content
+                .items()
+                .iter()
+                .filter_map(|item| match &item.primitive {
+                    Primitive::Text(text) => Some(text.layout_revision),
+                    _ => None,
+                })
+                .collect()
+        };
+        let (old, new) = (revisions(&same), revisions(&edited));
+        assert_eq!(old[0], new[0], "the untouched label keeps its layout");
+        assert_ne!(old[1], new[1], "the edited one does not");
+    }
+
+    #[test]
+    fn a_recompile_keeps_the_scene_id_of_an_unchanged_vector_run() {
+        let width = Rc::new(RefCell::new(1.0));
+        let source = width.clone();
+        let controller = CanvasController::with_painter(move |p| {
+            p.stroke_path(line_path(), PathStroke::new(Color::BLACK, 1.0));
+            p.rect(Bounds::from_origin_size((0.0, 0.0), (1.0, 1.0)), Color::BLACK);
+            p.stroke_path(line_path(), PathStroke::new(Color::BLACK, *source.borrow()));
+        });
+        let mut widget = CanvasWidget::new(controller.clone());
+        compile(&mut widget, Size::new(10.0, 10.0));
+        let first = widget.vector_scene_ids();
+
+        *width.borrow_mut() = 2.0;
+        controller.invalidate();
+        compile(&mut widget, Size::new(10.0, 10.0));
+        let second = widget.vector_scene_ids();
+        assert_eq!(first[0], second[0]);
+        assert_ne!(first[1], second[1]);
     }
 
     /// The GPU painter path, on a real device.

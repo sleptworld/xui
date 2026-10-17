@@ -703,11 +703,18 @@ pub fn column() -> ContainerWidget {
 }
 
 /// `<center>` — a [`container`] preset, not a distinct widget. See [`row`].
+///
+/// Fills its parent in both axes by default. Centering distributes the free
+/// space inside the container, and a content-sized container has none, so a
+/// hugging `<center>` would look as if it centered nothing. A `width`,
+/// `height` or `size` given to it still overrides the fill.
 pub fn center() -> ContainerWidget {
     ContainerWidget::new()
         .flex_direction(FlexDirectionStyle::Column)
         .style(Style::from_patch(
             xui_interface::StylePatch::default()
+                .width(xui_interface::core::Sizing::Fill)
+                .height(xui_interface::core::Sizing::Fill)
                 .justify(xui_interface::JustifyStyle::Center)
                 .align(xui_interface::AlignStyle::Center),
         ))

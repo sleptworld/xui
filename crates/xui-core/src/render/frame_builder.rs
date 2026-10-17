@@ -267,8 +267,10 @@ impl BuildContext<'_> {
         layer_id: BuiltLayerId,
         cull_to_viewport: bool,
     ) -> Result<BuildResult, FrameBuildError> {
-        let primitive = self
-            .scene
+        // Through a copy of the reference, so the primitive borrows the scene
+        // rather than `self`, which a batch needs mutably to expand into.
+        let scene = self.scene;
+        let primitive = scene
             .primitive(primitive_id)
             .ok_or(FrameBuildError::MissingPrimitive(primitive_id))?;
         let spatial = self.resolve_spatial(primitive.spatial)?;
@@ -293,32 +295,87 @@ impl BuildContext<'_> {
                 world_bounds,
                 clip_chain: clip.map(|clip| clip.id),
             };
-            let draw = match &primitive.primitive {
-                Primitive::Shape(primitive) => BuiltDraw::Shape(BuiltShape {
-                    common,
-                    primitive: *primitive,
-                }),
-                Primitive::Vector(primitive) => BuiltDraw::Vector(BuiltVector {
-                    common,
-                    primitive: primitive.clone(),
-                }),
-                Primitive::Image(primitive) => BuiltDraw::Image(BuiltImage {
-                    common,
-                    primitive: primitive.clone(),
-                }),
-                Primitive::Text(primitive) => BuiltDraw::Text(BuiltText {
-                    common,
-                    primitive: *primitive,
-                }),
-            };
-            self.frame.layers[layer_id.0]
-                .items
-                .push(BuiltItem::Draw(draw));
+            match &primitive.primitive {
+                Primitive::Batch(batch) => {
+                    self.build_batch(batch, common, clip, cull_to_viewport, layer_id)
+                }
+                single => {
+                    let draw = built_draw(single, common).expect("a single primitive draws");
+                    self.frame.layers[layer_id.0]
+                        .items
+                        .push(BuiltItem::Draw(draw));
+                }
+            }
         }
         Ok(BuildResult {
             world_bounds: visible_bounds,
             content_version,
         })
+    }
+
+    /// Expands a batch into one draw per item, in item order.
+    ///
+    /// Every draw carries the node's source and content version, which is
+    /// what separate nodes would have done after any of them changed: the
+    /// batch is one node, so it is invalidated as one.
+    fn build_batch(
+        &mut self,
+        batch: &super::BatchPrimitive,
+        node: BuiltDrawData,
+        clip: Option<ClipState>,
+        cull_to_viewport: bool,
+        layer_id: BuiltLayerId,
+    ) {
+        let transform = batch.transform().then(node.world_transform);
+        for item in batch.content.items() {
+            let world_bounds = transform.transform_bounds(item.primitive.paint_bounds());
+            let item_clip = item.clip.map(|local| {
+                let bounds = transform.transform_bounds(local);
+                let bounds = match clip {
+                    Some(parent) => (parent.bounds & bounds).unwrap_or(Bounds::ZERO),
+                    None => bounds,
+                };
+                (local, bounds)
+            });
+            let clip_bounds = match item_clip {
+                Some((_, bounds)) => Some(bounds),
+                None => clip.map(|clip| clip.bounds),
+            };
+            let visible = match clip_bounds {
+                Some(clip) => world_bounds & clip,
+                None => Some(world_bounds),
+            };
+            if !visible.is_some_and(|bounds| !cull_to_viewport || bounds.intersects(self.viewport))
+            {
+                continue;
+            }
+            let clip_chain = match item_clip {
+                Some((local, bounds)) => {
+                    let id = BuiltClipChainId(self.frame.clip_chains.len());
+                    self.frame.clip_chains.push(BuiltClipChain {
+                        source: node.source,
+                        parent: node.clip_chain,
+                        clip: super::ClipShape::Rect(local),
+                        world_transform: transform,
+                        world_bounds: bounds,
+                    });
+                    Some(id)
+                }
+                None => node.clip_chain,
+            };
+            let common = BuiltDrawData {
+                source: node.source,
+                content_version: node.content_version,
+                world_transform: transform,
+                world_bounds,
+                clip_chain,
+            };
+            if let Some(draw) = built_draw(&item.primitive, common) {
+                self.frame.layers[layer_id.0]
+                    .items
+                    .push(BuiltItem::Draw(draw));
+            }
+        }
     }
 
     fn build_child_picture(
@@ -512,6 +569,30 @@ impl BuildContext<'_> {
         self.clip_cache.insert(id, (self.stamp, state));
         Ok(state)
     }
+}
+
+/// The draw for one non-batch primitive; `None` for a batch, which the
+/// caller expands instead.
+fn built_draw(primitive: &Primitive, common: BuiltDrawData) -> Option<BuiltDraw> {
+    Some(match primitive {
+        Primitive::Shape(primitive) => BuiltDraw::Shape(BuiltShape {
+            common,
+            primitive: *primitive,
+        }),
+        Primitive::Vector(primitive) => BuiltDraw::Vector(BuiltVector {
+            common,
+            primitive: primitive.clone(),
+        }),
+        Primitive::Image(primitive) => BuiltDraw::Image(BuiltImage {
+            common,
+            primitive: primitive.clone(),
+        }),
+        Primitive::Text(primitive) => BuiltDraw::Text(BuiltText {
+            common,
+            primitive: *primitive,
+        }),
+        Primitive::Batch(_) => return None,
+    })
 }
 
 fn merge_results(a: BuildResult, b: BuildResult) -> BuildResult {
@@ -1157,6 +1238,67 @@ mod tests {
                 .world_transform
                 .transform_point(Point::new(1.0, 1.0)),
             Point::new(11.0, 21.0)
+        );
+    }
+
+    #[test]
+    fn a_batch_expands_to_one_draw_per_item_with_its_own_clips() {
+        use crate::render::{BatchContent, BatchItem, BatchPrimitive};
+
+        let mut source = super::super::RenderScene::new();
+        let clip = source.insert_clip(ClipShape::Rect(Bounds::from_origin_size(
+            (0.0, 0.0),
+            (100.0, 100.0),
+        )));
+        let item = Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0));
+        let content = Arc::new(BatchContent::new(vec![
+            BatchItem::new(shape(item, Color::BLACK)),
+            BatchItem::clipped(
+                shape(Bounds::from_origin_size((20.0, 0.0), (40.0, 10.0)), Color::WHITE),
+                Bounds::from_origin_size((20.0, 0.0), (5.0, 10.0)),
+            ),
+            // Far outside the viewport: culled on its own, not with the batch.
+            BatchItem::new(shape(
+                Bounds::from_origin_size((900.0, 900.0), (10.0, 10.0)),
+                Color::BLACK,
+            )),
+        ]));
+        let batch = source.insert_primitive(Primitive::Batch(BatchPrimitive::new(
+            content,
+            Point::new(5.0, 6.0),
+        )));
+        source.append_child(source.root(), clip).unwrap();
+        source.set_child(clip, Some(batch)).unwrap();
+
+        let frame = FrameBuilder::new()
+            .build(
+                &compile(&source),
+                Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
+                &FrameProperties::default(),
+            )
+            .unwrap();
+        let draws: Vec<_> = frame.layers[0]
+            .items
+            .iter()
+            .map(|item| match item {
+                BuiltItem::Draw(draw) => draw.common().clone(),
+                BuiltItem::Layer(_) => panic!("no layers here"),
+            })
+            .collect();
+        assert_eq!(draws.len(), 2);
+        assert!(draws.iter().all(|draw| draw.source == batch));
+        assert_eq!(
+            draws[0].world_bounds,
+            Bounds::from_origin_size((5.0, 6.0), (10.0, 10.0))
+        );
+        let node_clip = draws[0].clip_chain.unwrap();
+        let item_clip = draws[1].clip_chain.unwrap();
+        assert_ne!(node_clip, item_clip);
+        let chain = &frame.clip_chains[item_clip.0];
+        assert_eq!(chain.parent, Some(node_clip));
+        assert_eq!(
+            chain.world_bounds,
+            Bounds::from_origin_size((25.0, 6.0), (5.0, 10.0))
         );
     }
 

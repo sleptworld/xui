@@ -3763,3 +3763,46 @@ fn an_animating_child_follows_its_parents_transition() {
         assert!((rotation(&arena, child) - turned).abs() < 1e-4);
     }
 }
+
+/// `center` fills its parent, so it has free space to center its child in;
+/// sized to its content it had none and looked as if it centered nothing.
+#[test]
+fn center_fills_its_parent_and_centers_its_child() {
+    let mut arena = UiRuntime::new();
+    let center = create_host(&mut arena, WidgetI::new(crate::widgets::center()));
+    let child = child_of(
+        &mut arena,
+        center,
+        WidgetI::new(container().style(Style::new().width(10.0).height(20.0))),
+    );
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    arena.update_tree(Size::new(400.0, 300.0), &mut measurer);
+
+    let outer = arena.node(center).unwrap().layout;
+    assert_eq!((outer.width(), outer.height()), (400.0, 300.0));
+    let inner = arena.node(child).unwrap().layout;
+    assert_eq!((inner.min.x, inner.min.y), (195.0, 140.0));
+}
+
+/// An explicit size still overrides the fill.
+#[test]
+fn a_sized_center_keeps_its_size() {
+    let mut arena = UiRuntime::new();
+    let center = create_host(
+        &mut arena,
+        WidgetI::new(crate::widgets::center().style(Style::new().size(Size::new(
+            Sizing::Hug,
+            Sizing::from(50.0),
+        )))),
+    );
+    child_of(
+        &mut arena,
+        center,
+        WidgetI::new(container().style(Style::new().width(10.0).height(20.0))),
+    );
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    arena.update_tree(Size::new(400.0, 300.0), &mut measurer);
+
+    let outer = arena.node(center).unwrap().layout;
+    assert_eq!(outer.height(), 50.0);
+}
