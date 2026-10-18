@@ -94,6 +94,93 @@ fn assert_same(patched: &[u8], fresh: &[u8]) {
 
 const FULL: u64 = (SIZE as u64) * (SIZE as u64);
 
+/// Dock previews cover text and move without rebuilding the panes underneath.
+fn dock_preview(_: &mut HookContext<'_>) -> ElementDesc {
+    dock_preview_scene(true)
+}
+
+fn dock_preview_scene(moving: bool) -> ElementDesc {
+    let mut children = vec![
+        TextWidget::new("Pane title")
+            .style(Style::new().font_size(14.0).color(Color::WHITE))
+            .into_element_desc(),
+    ];
+    if !moving {
+        children.push(
+            ContainerWidget::new()
+                .style(
+                    Style::new()
+                        .absolute()
+                        .inset(EdgeInsets::new(25.0, 0.0, 50.0, 0.0))
+                        .width(10.0)
+                        .height(10.0)
+                        .background(if step() == 0 {
+                            Color::WHITE
+                        } else {
+                            Color::BLACK
+                        }),
+                )
+                .into_element_desc(vec![]),
+        );
+    }
+    children.push(
+        ContainerWidget::new()
+            .style(
+                Style::new()
+                    .absolute()
+                    .inset(EdgeInsets::new(
+                        if !moving || step() == 0 { 10.0 } else { 45.0 },
+                        0.0,
+                        8.0,
+                        0.0,
+                    ))
+                    .width(40.0)
+                    .height(70.0)
+                    .background(Color::rgba(0.1, 0.4, 1.0, 0.3)),
+            )
+            .into_element_desc(vec![]),
+    );
+    ContainerWidget::new()
+        .style(
+            Style::new()
+                .width(SIZE)
+                .height(SIZE)
+                .background(Color::rgb(0.08, 0.08, 0.1)),
+        )
+        .into_element_desc(children)
+}
+
+#[test]
+fn moving_translucent_dock_preview_matches_fresh_render() {
+    let Some((patched, fresh, _)) = patched_and_fresh(dock_preview) else {
+        return;
+    };
+    assert_same(&patched, &fresh);
+}
+
+fn changing_under_dock_preview(_: &mut HookContext<'_>) -> ElementDesc {
+    // Change a small item away from the title while the blue overlay stays put.
+    // The overlay cuts the text band in a full frame; the patch culls the title.
+    dock_preview_scene(false)
+}
+
+#[test]
+fn patch_under_translucent_dock_preview_matches_fresh_render() {
+    let Some((patched, fresh, stats)) = patched_and_fresh(changing_under_dock_preview) else {
+        return;
+    };
+    assert!(stats.last_pixels > 0 && stats.last_pixels < FULL / 4, "{stats:?}");
+    // A separate band quantizes the translucent source to RGBA8 before blending;
+    // a single Vello band quantizes after blending. Allow that one-code rounding.
+    let max_delta = patched
+        .iter()
+        .zip(&fresh)
+        .map(|(a, b)| a.abs_diff(*b))
+        .max()
+        .unwrap();
+    assert!(max_delta <= 1, "largest channel difference: {max_delta}");
+}
+
 fn square(color: Color, side: f32) -> ElementDesc {
     ContainerWidget::new()
         .style(Style::new().width(side).height(side).background(color))

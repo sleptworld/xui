@@ -20,8 +20,7 @@
 //! draw in the band that overlaps one closes the band first. Text right after
 //! the first band on an opaque clear colour is drawn into that band as Vello
 //! wrote it (encoded), as Vello's own glyphs would be; any other is drawn over
-//! the composition in linear light, as a band of Vello glyphs would be
-//! composed.
+//! the composition in linear light.
 //!
 //! **This crate composes**, with its own `wgpu` passes
 //! ([`filter.wgsl`](../src/filter.wgsl)), following the frame's layer tree:

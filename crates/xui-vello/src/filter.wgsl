@@ -8,11 +8,10 @@
 // Left at their defaults, every texture is aligned with the output pixel for
 // pixel and read whole.
 //
-// Everything here is computed in linear light, premultiplied, in half-float
+// Filters and layer composites use linear light, premultiplied, in half-float
 // textures. Vello's output (sRGB-encoded, straight alpha) is decoded on the way
-// in (op 0, op 17) and encoded on the way out (ops 20, 21). What Vello blends
-// within a band stays in its own space; this is the space of what is done to
-// bands, filters and textures.
+// in (op 0) and encoded on the way out (ops 20, 21). Joining 2D bands (op 17)
+// uses Vello's encoded-space blend so splitting a band does not change colours.
 
 struct Params {
     // x: the operation; y: blend mode; z: mask kind (backdrop composite).
@@ -333,9 +332,13 @@ fn fs_main(@builtin(position) position: vec4f) -> @location(0) vec4f {
         return over(original, vec4f(srgb_decode(u.color.rgb) * a, a));
     }
     if kind == 17u {
-        // A band of 2D content (straight alpha) over what is composed so far.
-        let band = decode_premult(load0(p));
-        return band + load1(p) * (1.0 - band.a);
+        // Match Vello's encoded-space source-over. Band boundaries change
+        // when a damage patch culls text or layers; blending bands in linear
+        // light would then change the colour of an otherwise identical draw.
+        let band = premultiply(load0(p));
+        let below = unpremultiply(load1(p));
+        let encoded = premultiply(vec4f(srgb_encode(below.rgb), below.a));
+        return decode_premult(unpremultiply(over(band, encoded)));
     }
     if kind == 18u {
         return texture_over(position.xy, load0(p));

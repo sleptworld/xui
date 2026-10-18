@@ -5,7 +5,8 @@
 //! [`filter.wgsl`](../filter.wgsl): bands of 2D content drawn over one another,
 //! application textures drawn between them, and isolated layers run through
 //! their render-graph plans (`graph`): filters, backdrops, masks, and the
-//! composite into the parent. All of it in linear light, premultiplied.
+//! composite into the parent. Filters and layer composites use linear light,
+//! premultiplied; joining 2D bands preserves Vello's encoded-space blending.
 
 use moka::sync::Cache;
 use rustc_hash::FxBuildHasher;
@@ -808,7 +809,8 @@ impl FilterRenderer {
         copy
     }
 
-    /// A band of 2D content over what is composed so far. Both are released.
+    /// A band of 2D content over what is composed so far, blended in Vello's
+    /// encoded colour space so band cuts do not change colours. Both are released.
     pub(crate) fn band_over(
         &mut self,
         device: &wgpu::Device,
