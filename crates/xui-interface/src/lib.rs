@@ -52,13 +52,14 @@ pub use style::{
     ComputedColorStyle, ComputedEffect, ComputedEffectStyle, ComputedLayoutStyle,
     ComputedLinearGradientStyle, ComputedMaskShape, ComputedPaintStyle,
     ComputedRadialGradientStyle, ComputedScrollStyle, ComputedScrollbarStyle, ComputedShadowStyle,
-    ComputedStrokeStyle, ComputedStyle, ComputedTextStyle, CursorIcon, Effect, EffectStylePatch,
+    ComputedStrokeStyle, ComputedStyle, ComputedTextStyle, CursorIcon, DisplayStyle, Effect,
+    EffectStylePatch,
     FilterQuality, FlexDirectionStyle, FontSizeToken, JustifyStyle, LayoutStylePatch, LengthValue,
     LinearGradientStyle, MaskShape, PaintStylePatch, PositionStyle, RadialGradientStyle,
     RadiusToken, ScrollDirectionStyle, ScrollStylePatch, ScrollbarStyle, ScrollbarStylePatch,
     ScrollbarVisibilityStyle, ShadowStyle, SpacingToken, StateStyleRule, Stroke, StrokeLineStyle,
     StrokeStyle, Style, StyleMerge, StylePatch, StyleValue, TextStylePatch, Theme, TransformStyle,
-    TransformStylePatch, WidgetStateMatcher,
+    TransformStylePatch, VisibilityStyle, WidgetStateMatcher,
 };
 pub use text::*;
 pub use transition::{

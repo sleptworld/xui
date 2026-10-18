@@ -6,6 +6,7 @@ use xui_interface::{
     VectorScene,
 };
 
+use super::ContentVersion;
 use crate::text::TextLayoutSlot;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -155,15 +156,57 @@ pub struct TextPrimitive {
 ///
 /// Items are in batch-local coordinates and placed at `origin` in the node's
 /// space, so moving the node leaves the shared item list untouched.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Each item also carries a content version of its own, kept by the scene, so
+/// damage tracking can tell which items of a changed batch actually changed:
+/// one moved marker repaints the marker, not the whole canvas.
+#[derive(Debug, Clone)]
 pub struct BatchPrimitive {
     pub content: Arc<BatchContent>,
     pub origin: Point,
+    /// One per item, assigned by [`RenderScene`](super::RenderScene) when the
+    /// batch is updated; empty until then, which reads as all-default. Not
+    /// part of equality: it records when items changed, not what they are.
+    item_versions: Arc<[ContentVersion]>,
+}
+
+impl PartialEq for BatchPrimitive {
+    fn eq(&self, other: &Self) -> bool {
+        self.origin == other.origin
+            && (Arc::ptr_eq(&self.content, &other.content) || self.content == other.content)
+    }
 }
 
 impl BatchPrimitive {
     pub fn new(content: Arc<BatchContent>, origin: Point) -> Self {
-        Self { content, origin }
+        Self {
+            content,
+            origin,
+            item_versions: Arc::from([]),
+        }
+    }
+
+    /// The version of item `index`: when the scene last saw it change.
+    pub fn item_version(&self, index: usize) -> ContentVersion {
+        self.item_versions.get(index).copied().unwrap_or_default()
+    }
+
+    /// Versions for `self`'s items as an update from `previous`: an item
+    /// equal to the one at its index in `previous`, in a batch that did not
+    /// move, keeps that item's version; every other item takes `changed`.
+    pub(crate) fn carry_item_versions(&mut self, previous: &Self, changed: ContentVersion) {
+        let moved = self.origin != previous.origin;
+        let old = previous.content.items();
+        self.item_versions = self
+            .content
+            .items()
+            .iter()
+            .enumerate()
+            .map(|(index, item)| match old.get(index) {
+                Some(before) if !moved && before == item => previous.item_version(index),
+                _ => changed,
+            })
+            .collect();
     }
 
     /// The transform from batch-local coordinates to the node's space.

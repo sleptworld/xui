@@ -776,6 +776,31 @@ pub enum PositionStyle {
     Absolute,
 }
 
+/// Whether a node takes part in layout at all.
+///
+/// `None` takes the node and its subtree out of layout, paint and hit
+/// testing -- it occupies no space -- while leaving it mounted, so component
+/// state survives. That is the difference from rendering it conditionally,
+/// which unmounts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum DisplayStyle {
+    #[default]
+    Visible,
+    None,
+}
+
+/// Whether a laid-out node is drawn.
+///
+/// `Hidden` keeps the node's space and its state but draws nothing and takes
+/// no input, for the node and its whole subtree. It changes paint only, so
+/// toggling it never re-runs layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum VisibilityStyle {
+    #[default]
+    Visible,
+    Hidden,
+}
+
 /// A visual transform applied after layout. `origin` is normalized within the
 /// node's laid-out bounds, so `(0.5, 0.5)` is the center.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -872,6 +897,7 @@ pub struct LayoutStylePatch {
     pub justify: StyleValue<JustifyStyle>,
     pub position: StyleValue<PositionStyle>,
     pub inset: StyleValue<EdgeInsets>,
+    pub display: StyleValue<DisplayStyle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -883,6 +909,7 @@ pub struct PaintStylePatch {
     pub stroke: StyleValue<StrokeStyle>,
     pub shadow: StyleValue<ShadowStyle>,
     pub clip: StyleValue<bool>,
+    pub visibility: StyleValue<VisibilityStyle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -1105,6 +1132,15 @@ impl Style {
         self.map_base(|base| base.position_type(position))
     }
 
+    pub fn display(self, display: DisplayStyle) -> Self {
+        self.map_base(|base| base.display(display))
+    }
+
+    /// `display(DisplayStyle::None)`: out of layout, still mounted.
+    pub fn display_none(self) -> Self {
+        self.display(DisplayStyle::None)
+    }
+
     pub fn absolute(self) -> Self {
         self.position_type(PositionStyle::Absolute)
     }
@@ -1202,6 +1238,15 @@ impl Style {
 
     pub fn clip(self, clip: bool) -> Self {
         self.map_base(|base| base.clip(clip))
+    }
+
+    pub fn visibility(self, visibility: VisibilityStyle) -> Self {
+        self.map_base(|base| base.visibility(visibility))
+    }
+
+    /// `visibility(VisibilityStyle::Hidden)`: keeps its space, draws nothing.
+    pub fn hidden(self) -> Self {
+        self.visibility(VisibilityStyle::Hidden)
     }
 
     /// Blurs the content already painted behind this widget.
@@ -1583,6 +1628,15 @@ impl StylePatch {
         self
     }
 
+    pub fn display(mut self, display: DisplayStyle) -> Self {
+        self.layout.display = StyleValue::Value(display);
+        self
+    }
+
+    pub fn display_none(self) -> Self {
+        self.display(DisplayStyle::None)
+    }
+
     pub fn absolute(self) -> Self {
         self.position_type(PositionStyle::Absolute)
     }
@@ -1717,6 +1771,15 @@ impl StylePatch {
     pub fn clip(mut self, clip: bool) -> Self {
         self.paint.clip = StyleValue::Value(clip);
         self
+    }
+
+    pub fn visibility(mut self, visibility: VisibilityStyle) -> Self {
+        self.paint.visibility = StyleValue::Value(visibility);
+        self
+    }
+
+    pub fn hidden(self) -> Self {
+        self.visibility(VisibilityStyle::Hidden)
     }
 
     /// Blurs the content already painted behind this widget.
@@ -1918,6 +1981,7 @@ pub struct ComputedLayoutStyle {
     /// Explicit positioning offsets. `None` maps to Taffy's `auto` inset on
     /// every edge, which preserves the intrinsic size of absolute children.
     pub inset: Option<EdgeInsets>,
+    pub display: DisplayStyle,
 }
 
 impl ComputedLayoutStyle {
@@ -1943,6 +2007,7 @@ pub struct ComputedPaintStyle {
     pub stroke: Option<ComputedStrokeStyle>,
     pub shadow: Option<ComputedShadowStyle>,
     pub clip: bool,
+    pub visibility: VisibilityStyle,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -2084,6 +2149,7 @@ impl ComputedStyle {
                 justify: JustifyStyle::Start,
                 position: PositionStyle::Relative,
                 inset: None,
+                display: DisplayStyle::Visible,
             },
             paint: ComputedPaintStyle {
                 background: ComputedColorStyle::Solid(Color::TRANSPARENT),
@@ -2093,6 +2159,7 @@ impl ComputedStyle {
                 stroke: None,
                 shadow: None,
                 clip: false,
+                visibility: VisibilityStyle::Visible,
             },
             transform: TransformStyle::IDENTITY,
             effect: ComputedEffectStyle {
@@ -2144,8 +2211,18 @@ impl ComputedStyle {
             flags |= StyleDiffFlags::LAYOUT;
         }
 
-        if self.paint != other.paint {
+        let paint_without_visibility = |paint: &ComputedPaintStyle| ComputedPaintStyle {
+            visibility: VisibilityStyle::Visible,
+            ..*paint
+        };
+        if paint_without_visibility(&self.paint) != paint_without_visibility(&other.paint) {
             flags |= StyleDiffFlags::PAINT;
+        }
+
+        if self.paint.visibility != other.paint.visibility
+            || self.layout.display != other.layout.display
+        {
+            flags |= StyleDiffFlags::VISIBILITY;
         }
 
         if self.transform != other.transform {
@@ -2430,6 +2507,7 @@ fn merge_layout(target: &mut LayoutStylePatch, other: &LayoutStylePatch) {
     merge_value(&mut target.justify, &other.justify);
     merge_value(&mut target.position, &other.position);
     merge_value(&mut target.inset, &other.inset);
+    merge_value(&mut target.display, &other.display);
 }
 
 fn merge_paint(target: &mut PaintStylePatch, other: &PaintStylePatch) {
@@ -2440,6 +2518,7 @@ fn merge_paint(target: &mut PaintStylePatch, other: &PaintStylePatch) {
     merge_value(&mut target.stroke, &other.stroke);
     merge_value(&mut target.shadow, &other.shadow);
     merge_value(&mut target.clip, &other.clip);
+    merge_value(&mut target.visibility, &other.visibility);
 }
 
 fn merge_transform(target: &mut TransformStylePatch, other: &TransformStylePatch) {
@@ -2557,6 +2636,7 @@ fn apply_layout(target: &mut ComputedLayoutStyle, patch: &LayoutStylePatch, them
     target.justify = resolve_copy_no_inherit(patch.justify, target.justify, initial.justify);
     target.position = resolve_copy_no_inherit(patch.position, target.position, initial.position);
     target.inset = resolve_optional_copy_no_inherit(patch.inset, target.inset, initial.inset);
+    target.display = resolve_copy_no_inherit(patch.display, target.display, initial.display);
 }
 
 fn apply_paint(target: &mut ComputedPaintStyle, patch: &PaintStylePatch, theme: &Theme) {
@@ -2595,6 +2675,8 @@ fn apply_paint(target: &mut ComputedPaintStyle, patch: &PaintStylePatch, theme: 
     );
     target.shadow = resolve_shadow_no_inherit(patch.shadow, target.shadow, initial.shadow, theme);
     target.clip = resolve_copy_no_inherit(patch.clip, target.clip, initial.clip);
+    target.visibility =
+        resolve_copy_no_inherit(patch.visibility, target.visibility, initial.visibility);
 }
 
 fn apply_transform(target: &mut TransformStyle, patch: &TransformStylePatch) {
@@ -3295,6 +3377,7 @@ impl Hash for LayoutStylePatch {
         self.align.hash(state);
         self.justify.hash(state);
         self.position.hash(state);
+        self.display.hash(state);
         hash_style_value_edge_insets(&self.margin, state);
         hash_style_value_edge_insets(&self.padding, state);
         hash_style_value_edge_insets(&self.inset, state);
@@ -3310,6 +3393,7 @@ impl Hash for PaintStylePatch {
         hash_style_value_stroke(&self.stroke, state);
         hash_style_value_shadow(&self.shadow, state);
         self.clip.hash(state);
+        self.visibility.hash(state);
     }
 }
 

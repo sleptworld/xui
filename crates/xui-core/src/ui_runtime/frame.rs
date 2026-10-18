@@ -113,6 +113,16 @@ impl UiRuntime {
         // parent's effective style, which a later recompute could still move.
         self.sync_pending_inheritance();
 
+        // Styles are final here: a focused node that one of them just hid, or
+        // took out of layout, gives its focus up, as a disabled one does.
+        if let Some(focused) = self.focused_node()
+            && !self.is_rendered(focused)
+        {
+            self.interaction_system
+                .focus
+                .request_focus(None, xui_interface::FocusReason::Disabled);
+        }
+
         // Recompute layout if needed.
         if self.has_layout_dirty() {
             self.compute_layout(size, measurer);

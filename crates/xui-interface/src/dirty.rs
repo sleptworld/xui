@@ -32,5 +32,9 @@ bitflags::bitflags! {
         const EFFECT = 1 << 4;
         const TRANSFORM = 1 << 5;
         const INHERITED = 1 << 6;
+        /// `visibility` or `display` changed: whether the node is drawn at
+        /// all. Apart from `PAINT` so that showing or hiding a node does not
+        /// repaint what it draws.
+        const VISIBILITY = 1 << 7;
     }
 }

@@ -281,10 +281,11 @@ impl BuildContext<'_> {
             Some(clip) => world_bounds & clip.bounds,
             None => Some(world_bounds),
         };
-        let mut content_version = primitive.content_version.merge(spatial.content_version);
+        let mut context_version = spatial.content_version;
         if let Some(clip) = clip {
-            content_version = content_version.merge(clip.content_version);
+            context_version = context_version.merge(clip.content_version);
         }
+        let content_version = primitive.content_version.merge(context_version);
         if visible_bounds
             .is_some_and(|bounds| !cull_to_viewport || bounds.intersects(self.viewport))
         {
@@ -296,9 +297,15 @@ impl BuildContext<'_> {
                 clip_chain: clip.map(|clip| clip.id),
             };
             match &primitive.primitive {
-                Primitive::Batch(batch) => {
-                    self.build_batch(batch, common, clip, cull_to_viewport, layer_id)
-                }
+                Primitive::Batch(batch) => self.build_batch(
+                    batch,
+                    primitive.content_version,
+                    context_version,
+                    common,
+                    clip,
+                    cull_to_viewport,
+                    layer_id,
+                ),
                 single => {
                     let draw = built_draw(single, common).expect("a single primitive draws");
                     self.frame.layers[layer_id.0]
@@ -318,16 +325,29 @@ impl BuildContext<'_> {
     /// Every draw carries the node's source and content version, which is
     /// what separate nodes would have done after any of them changed: the
     /// batch is one node, so it is invalidated as one.
+    #[allow(clippy::too_many_arguments)]
     fn build_batch(
         &mut self,
         batch: &super::BatchPrimitive,
+        primitive_version: ContentVersion,
+        context_version: ContentVersion,
         node: BuiltDrawData,
         clip: Option<ClipState>,
         cull_to_viewport: bool,
         layer_id: BuiltLayerId,
     ) {
         let transform = batch.transform().then(node.world_transform);
-        for item in batch.content.items() {
+        // Everything an item's draw depends on besides the item: placement,
+        // clips, and the node's topology. Its own edits come from its item
+        // version, so an untouched item keeps its version -- and its pixels --
+        // across an edit to its neighbours.
+        let item_base = ContentVersion {
+            geometry: 0,
+            paint: 0,
+            ..primitive_version
+        }
+        .merge(context_version);
+        for (index, item) in batch.content.items().iter().enumerate() {
             let world_bounds = transform.transform_bounds(item.primitive.paint_bounds());
             let item_clip = item.clip.map(|local| {
                 let bounds = transform.transform_bounds(local);
@@ -365,7 +385,7 @@ impl BuildContext<'_> {
             };
             let common = BuiltDrawData {
                 source: node.source,
-                content_version: node.content_version,
+                content_version: item_base.merge(batch.item_version(index)),
                 world_transform: transform,
                 world_bounds,
                 clip_chain,
@@ -1299,6 +1319,67 @@ mod tests {
         assert_eq!(
             chain.world_bounds,
             Bounds::from_origin_size((25.0, 6.0), (5.0, 10.0))
+        );
+    }
+
+    #[test]
+    fn editing_one_batch_item_changes_only_its_draw_version() {
+        use crate::render::{BatchContent, BatchItem, BatchPrimitive};
+
+        let square = |x: f32, color| {
+            BatchItem::new(shape(Bounds::from_origin_size((x, 0.0), (10.0, 10.0)), color))
+        };
+        let batch = |second: Color, origin: Point| {
+            Primitive::Batch(BatchPrimitive::new(
+                Arc::new(BatchContent::new(vec![
+                    square(0.0, Color::BLACK),
+                    square(20.0, second),
+                    square(40.0, Color::BLACK),
+                ])),
+                origin,
+            ))
+        };
+        let mut source = super::super::RenderScene::new();
+        let node = source.insert_primitive(batch(Color::BLACK, Point::zero()));
+        source.append_child(source.root(), node).unwrap();
+        let mut compiler = SceneCompiler::new();
+        let mut versions = |source: &mut super::super::RenderScene| -> Vec<ContentVersion> {
+            let snapshot = source.dirty_snapshot();
+            let scene = compiler.compile(source, &snapshot).unwrap().clone();
+            source.acknowledge(&snapshot);
+            let frame = FrameBuilder::new()
+                .build(
+                    &scene,
+                    Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
+                    &FrameProperties::default(),
+                )
+                .unwrap();
+            frame.layers[0]
+                .items
+                .iter()
+                .map(|item| match item {
+                    BuiltItem::Draw(draw) => draw.common().content_version,
+                    BuiltItem::Layer(_) => panic!("no layers here"),
+                })
+                .collect()
+        };
+
+        let first = versions(&mut source);
+        source
+            .update_primitive(node, batch(Color::WHITE, Point::zero()))
+            .unwrap();
+        let edited = versions(&mut source);
+        assert_eq!(edited[0], first[0]);
+        assert_ne!(edited[1], first[1], "the edited item changed");
+        assert_eq!(edited[2], first[2]);
+
+        source
+            .update_primitive(node, batch(Color::WHITE, Point::new(5.0, 0.0)))
+            .unwrap();
+        let moved = versions(&mut source);
+        assert!(
+            moved.iter().zip(&edited).all(|(moved, edited)| moved != edited),
+            "moving the batch moves every item"
         );
     }
 

@@ -42,13 +42,13 @@ pub use crate::style::{
     ComputedColorStyle, ComputedEffect, ComputedEffectStyle, ComputedLayoutStyle,
     ComputedLinearGradientStyle, ComputedMaskShape, ComputedPaintStyle,
     ComputedRadialGradientStyle, ComputedShadowStyle, ComputedStrokeStyle, ComputedStyle,
-    ComputedTextStyle, CursorIcon, Effect, EffectStylePatch, FilterQuality, FlexDirectionStyle,
+    ComputedTextStyle, CursorIcon, DisplayStyle, Effect, EffectStylePatch, FilterQuality, FlexDirectionStyle,
     FontSizeToken, JustifyStyle, LayoutStylePatch, LengthValue, LinearGradientStyle, MaskShape,
     PaintStylePatch, PositionStyle, RadialGradientStyle, RadiusToken, ScrollDirectionStyle,
     ScrollStylePatch, ScrollbarStyle, ScrollbarStylePatch, ScrollbarVisibilityStyle, ShadowStyle,
     SpacingToken, StateStyleRule, Stroke, StrokeLineStyle, StrokeStyle, Style, StyleMerge,
     StylePatch, StyleValue, TextStylePatch, Theme, TransformStyle, TransformStylePatch,
-    WidgetState, WidgetStateMatcher,
+    VisibilityStyle, WidgetState, WidgetStateMatcher,
 };
 pub use crate::ticker::{Tick, Ticker};
 pub use crate::ui_runtime::{NodeView, RenderFrameError, UiRuntime};

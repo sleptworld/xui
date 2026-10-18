@@ -3806,3 +3806,132 @@ fn a_sized_center_keeps_its_size() {
     let outer = arena.node(center).unwrap().layout;
     assert_eq!(outer.height(), 50.0);
 }
+
+/// Whether the render scene draws `node`: its layout root's own flag, which
+/// the frame builder honours for the whole subtree.
+fn drawn(arena: &UiRuntime, node: NodeId) -> bool {
+    let root = arena.render_system.binding(node).root;
+    arena.render_system.scene.node(root).unwrap().visible
+}
+
+/// A 40x40 container with `style` merged over its size.
+fn square(style: Style) -> WidgetI {
+    WidgetI::new(
+        container()
+            .style(Style::new().size(Size::fix(40.0, 40.0)))
+            .style(style),
+    )
+}
+
+/// `visibility: hidden` keeps the node's space, draws nothing, and lets the
+/// pointer through, children included. Toggling it repaints nothing: it only
+/// flips the render root.
+#[test]
+fn a_hidden_node_keeps_its_space_but_is_not_drawn_or_hit() {
+    let mut arena = UiRuntime::new();
+    let first = create_host(&mut arena, square(Style::new()));
+    let hidden = create_host(&mut arena, square(Style::new().hidden()));
+    let inner = child_of(
+        &mut arena,
+        hidden,
+        WidgetI::new(container().style(Style::new().size(Size::fix(20.0, 20.0)))),
+    );
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+
+    let layout = arena.node(hidden).unwrap().layout;
+    assert_eq!((layout.min.y, layout.height()), (40.0, 40.0));
+    assert_eq!(arena.node(first).unwrap().layout.min.y, 0.0);
+    assert!(!drawn(&arena, hidden));
+    let over_inner = Point::new(10.0, 50.0);
+    assert_ne!(arena.hit_test(over_inner), Some(inner));
+    assert_ne!(arena.hit_test(Point::new(30.0, 70.0)), Some(hidden));
+
+    let repaints = arena.stats.repaint_passes;
+    update_host(&mut arena, hidden, square(Style::new()));
+    arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+    assert!(drawn(&arena, hidden));
+    assert_eq!(arena.hit_test(over_inner), Some(inner));
+    assert_eq!(
+        arena.stats.repaint_passes, repaints,
+        "showing a node flips its render root; what it draws is unchanged"
+    );
+}
+
+/// `display: none` takes the node out of layout -- its siblings close the gap
+/// -- without unmounting it, so showing it again brings back the same node.
+#[test]
+fn a_node_out_of_layout_takes_no_space_and_stays_mounted() {
+    let mut arena = UiRuntime::new();
+    let gone = create_host(&mut arena, square(Style::new().display_none()));
+    let after = create_host(&mut arena, square(Style::new()));
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+
+    assert_eq!(arena.node(after).unwrap().layout.min.y, 0.0);
+    assert!(!drawn(&arena, gone));
+    assert_eq!(arena.hit_test(Point::new(10.0, 10.0)), Some(after));
+
+    update_host(&mut arena, gone, square(Style::new()));
+    arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+    assert!(arena.contains(gone), "still the node it was");
+    assert!(drawn(&arena, gone));
+    assert_eq!(arena.node(gone).unwrap().layout.height(), 40.0);
+    assert_eq!(arena.node(after).unwrap().layout.min.y, 40.0);
+    assert_eq!(arena.hit_test(Point::new(10.0, 10.0)), Some(gone));
+}
+
+/// A focused node that is hidden gives its focus up, and a hidden node -- or
+/// one under a hidden ancestor -- cannot take it.
+#[test]
+fn hiding_the_focused_node_gives_up_its_focus() {
+    let mut arena = UiRuntime::new();
+    let field = create_host(
+        &mut arena,
+        WidgetI::new(
+            container()
+                .tab_index(0)
+                .style(Style::new().size(Size::fix(40.0, 40.0))),
+        ),
+    );
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+    click(&mut arena, &measurer, field);
+    assert_eq!(arena.focused_node(), Some(field));
+
+    update_host(
+        &mut arena,
+        field,
+        WidgetI::new(
+            container()
+                .tab_index(0)
+                .style(Style::new().size(Size::fix(40.0, 40.0)).hidden()),
+        ),
+    );
+    arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+    assert!(!arena.is_focusable(field));
+    // Focus requests are applied by the next dispatch, before it reaches any
+    // widget.
+    let mut translator =
+        EventTranslator::new(crate::event_system::translator::EventTranslatorConfig::default());
+    arena.dispatch_event(&measurer, &mut translator, pointer_move(Point::new(150.0, 150.0)));
+    assert_eq!(arena.focused_node(), None);
+}
+
+#[test]
+fn a_child_of_an_undisplayed_node_cannot_take_focus() {
+    let mut arena = UiRuntime::new();
+    let parent = create_host(&mut arena, square(Style::new().display_none()));
+    let field = child_of(
+        &mut arena,
+        parent,
+        WidgetI::new(container().tab_index(0)),
+    );
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+    assert!(!arena.is_focusable(field));
+
+    update_host(&mut arena, parent, square(Style::new()));
+    arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+    assert!(arena.is_focusable(field));
+}

@@ -139,7 +139,7 @@ impl HostWorkFlags {
         if flags.intersects(StyleDiffFlags::SCROLL) {
             work |= Self::RELAYOUT;
         }
-        if flags.intersects(StyleDiffFlags::EFFECT) {
+        if flags.intersects(StyleDiffFlags::EFFECT | StyleDiffFlags::VISIBILITY) {
             work |= Self::SYNC_RENDER;
         }
         if flags.intersects(StyleDiffFlags::TRANSFORM) {

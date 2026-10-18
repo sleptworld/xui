@@ -4,6 +4,7 @@ use crate::core::Point;
 use crate::event_system::EventState;
 use crate::event_system::callbacks::{EventHandlers, EventMask};
 use crate::focus::FocusManager;
+use crate::ui_runtime::paint_pass::is_drawn;
 use crate::ui_runtime::{EventPath, NodeView, UiRuntime};
 use crate::widgets::{WidgetType, Widgets};
 use xui_interface::{Bounds, CursorIcon, Focusability, NodeId};
@@ -171,7 +172,7 @@ impl UiRuntime {
         let focus = interaction
             .map(|node| node.properties.focus)
             .unwrap_or_default();
-        match focus.focusability {
+        let focusable = match focus.focusability {
             Focusability::Focusable => true,
             Focusability::NotFocusable => false,
             Focusability::Auto => {
@@ -179,7 +180,26 @@ impl UiRuntime {
                     || matches!(node.node_type, WidgetType::Button | WidgetType::TextInput)
                     || interaction.is_some_and(|node| node.handlers.listens_for(EventMask::FOCUS))
             }
+        };
+        // Last: it walks the ancestors, and most nodes are not focusable.
+        focusable && self.is_rendered(id)
+    }
+
+    /// Whether `id` is drawn: neither it nor an ancestor is hidden or out of
+    /// layout by style. A node that is not cannot be hit, focused, or hold
+    /// focus.
+    ///
+    /// Walks the host ancestors, so an overlay entry answers for its own
+    /// chain up to the overlayer, not for the Portal that mounted it.
+    pub(crate) fn is_rendered(&self, id: NodeId) -> bool {
+        let mut cursor = Some(id);
+        while let Some(node) = cursor {
+            if !is_drawn(self.style_system.effective(node)) {
+                return false;
+            }
+            cursor = self.hosts.parent(node);
         }
+        true
     }
 
     pub(crate) fn is_sequentially_focusable(&self, id: NodeId) -> bool {
@@ -267,6 +287,10 @@ impl UiRuntime {
     ) -> HitTestOutcome {
         let layout = self.layout_tree.node(id);
         let node_style = self.style_system.effective(id);
+        // Nothing of a node that is not drawn can be hit, its subtree included.
+        if !is_drawn(node_style) {
+            return HitTestOutcome::Miss;
+        }
         let ancestor_scroll_offset = ancestor_scroll_offset - self.anchor_offset(id);
         let visual_layout = layout.visual_bounds(ancestor_scroll_offset);
         let contains_point = visual_layout.contains(point);

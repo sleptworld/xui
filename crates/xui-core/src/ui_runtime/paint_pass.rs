@@ -11,8 +11,8 @@ use crate::ui_runtime::state::HostWorkFlags;
 use crate::ui_runtime::{NodeView, UiRuntime};
 use crate::widgets::{Widgets, canvas_text_slot};
 use xui_interface::{
-    Affine, Bounds, ComputedColorStyle, ComputedStyle, NodeId, ScrollbarVisibilityStyle,
-    TextBackend, TextLayoutInput, TextProps,
+    Affine, Bounds, ComputedColorStyle, ComputedStyle, DisplayStyle, NodeId,
+    ScrollbarVisibilityStyle, TextBackend, TextLayoutInput, TextProps, VisibilityStyle,
 };
 
 impl UiRuntime {
@@ -63,6 +63,7 @@ impl UiRuntime {
             needs_overlay,
             clip_shape,
             layer_descriptor,
+            visible,
         ) = {
             let host = &self.hosts[id];
             let layout = self.layout_tree.node(id);
@@ -91,6 +92,7 @@ impl UiRuntime {
                 needs_scrollbar_overlay(node),
                 clip_shape,
                 layer_descriptor_from_style(node.effective_style, viewport),
+                is_drawn(node.effective_style),
             )
         };
 
@@ -99,6 +101,9 @@ impl UiRuntime {
             binding.root,
             Affine::translate(local_origin.x, local_origin.y),
         )?;
+        // On the root, so the whole subtree goes with it and the frame
+        // builder skips it without visiting a single descendant.
+        self.render_system.scene.set_visible(binding.root, visible)?;
 
         self.update_wrappers(id, &mut binding, clip_shape, layer_descriptor)?;
 
@@ -459,6 +464,11 @@ impl UiRuntime {
 
         self.mark_work(id, HostWorkFlags::REBUILD_PAINT);
     }
+}
+
+/// Whether a node is drawn at all: neither hidden nor out of layout.
+pub(super) fn is_drawn(style: &ComputedStyle) -> bool {
+    style.paint.visibility == VisibilityStyle::Visible && style.layout.display == DisplayStyle::Visible
 }
 
 fn layer_descriptor_from_style(style: &ComputedStyle, bounds: Bounds) -> Option<LayerDescriptor> {

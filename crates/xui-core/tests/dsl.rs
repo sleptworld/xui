@@ -47,6 +47,18 @@ fn style_attributes_reach_the_widget() {
     );
 }
 
+#[test]
+fn visibility_and_display_are_style_attributes() {
+    let plain = xui! { <container /> };
+    let hidden = xui! { <container visibility={VisibilityStyle::Hidden} /> };
+    let undisplayed = xui! { <container display={DisplayStyle::None} /> };
+
+    let hashes = [&plain, &hidden, &undisplayed].map(|element| host(element).widget.props_hash());
+    assert_ne!(hashes[0], hashes[1]);
+    assert_ne!(hashes[0], hashes[2]);
+    assert_ne!(hashes[1], hashes[2]);
+}
+
 /// Before the rewrite this attribute had no entry in the macro's table and was
 /// silently discarded; now it is an ordinary inherent method.
 #[test]

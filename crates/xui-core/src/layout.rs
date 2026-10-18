@@ -3,7 +3,7 @@ use taffy::{LengthPercentage, prelude as tf};
 use taffy::{Overflow, Point as TaffyPoint};
 use xui_interface::core::Sizing;
 use xui_interface::style::{AlignStyle, JustifyStyle};
-use xui_interface::{PositionStyle, WidgetState};
+use xui_interface::{DisplayStyle, PositionStyle, WidgetState};
 
 use crate::core::EdgeInsets;
 use crate::style::{ComputedStyle, FlexDirectionStyle, ScrollDirectionStyle, Theme};
@@ -230,6 +230,14 @@ fn computed_layout_style_for_parent(
             .map(|h| dimension_for_axis(h, Axis::Vertical, parent_layout))
             .unwrap_or(taffy::Dimension::auto()),
     };
+
+    // Last, over whatever display the widget chose: taffy lays a `None` node
+    // and its subtree out at zero size and skips it in its parent's layout.
+    // `container_layout` is untouched, so the children keep the parent kind
+    // they will need again once the node is shown.
+    if layout.display == DisplayStyle::None {
+        style.display = tf::Display::None;
+    }
 
     style
 }

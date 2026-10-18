@@ -31,10 +31,10 @@ use std::sync::Arc;
 use crate::core::{EdgeInsets, Point, Size};
 use crate::element::{ElementDesc, IntoChildren};
 use crate::style::{
-    AlignStyle, BackdropStyle, ColorStyle, ColorValue, CursorIcon, Effect, JustifyStyle,
-    LengthValue, PositionStyle, ScrollDirectionStyle, ScrollbarStyle, ScrollbarStylePatch,
-    ScrollbarVisibilityStyle, ShadowStyle, StrokeLineStyle, StrokeStyle, Style, StyleMerge,
-    TransformStyle,
+    AlignStyle, BackdropStyle, ColorStyle, ColorValue, CursorIcon, DisplayStyle, Effect,
+    JustifyStyle, LengthValue, PositionStyle, ScrollDirectionStyle, ScrollbarStyle,
+    ScrollbarStylePatch, ScrollbarVisibilityStyle, ShadowStyle, StrokeLineStyle, StrokeStyle,
+    Style, StyleMerge, TransformStyle, VisibilityStyle,
 };
 use xui_animation::Transition;
 use xui_interface::{
@@ -172,6 +172,7 @@ style_props! {
     // `position_type` reads badly as an attribute; the rename lives here rather
     // than in the macro so that the macro keeps zero exceptions.
     position(position: PositionStyle) => position_type;
+    display(display: DisplayStyle) => display;
 
     // transform
     transform(transform: TransformStyle) => transform;
@@ -191,6 +192,7 @@ style_props! {
     stroke(stroke: StrokeStyle) => stroke;
     shadow(shadow: ShadowStyle) => shadow;
     clip(clip: bool) => clip;
+    visibility(visibility: VisibilityStyle) => visibility;
     cursor(cursor: CursorIcon) => cursor;
     backdrop_blur(sigma: impl Into<LengthValue>) => backdrop_blur;
     backdrop_style(backdrop: BackdropStyle) => backdrop_style;

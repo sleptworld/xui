@@ -534,9 +534,6 @@ impl RenderScene {
         if !change.geometry && !change.paint {
             return Ok(false);
         }
-        if let RenderNodeKind::Primitive(node) = &mut self.nodes[id].kind {
-            node.primitive = primitive;
-        }
         let mut dirty = RenderDirty::empty();
         if change.geometry {
             dirty |= RenderDirty::GEOMETRY;
@@ -545,6 +542,21 @@ impl RenderScene {
             dirty |= RenderDirty::PAINT;
         }
         self.mark_dirty(id, dirty);
+        let node = &mut self.nodes[id];
+        let changed = ContentVersion {
+            topology: 0,
+            ..node.epochs.content_version()
+        };
+        let RenderNodeKind::Primitive(value) = &mut node.kind else {
+            unreachable!("checked above");
+        };
+        let mut primitive = primitive;
+        if let (Primitive::Batch(previous), Primitive::Batch(next)) =
+            (&value.primitive, &mut primitive)
+        {
+            next.carry_item_versions(previous, changed);
+        }
+        value.primitive = primitive;
         Ok(true)
     }
 
