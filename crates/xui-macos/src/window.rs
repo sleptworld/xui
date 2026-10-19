@@ -120,17 +120,8 @@ impl MacWindow {
             window.zoom(None);
         }
 
-        for kind in [
-            NSWindowButton::CloseButton,
-            NSWindowButton::MiniaturizeButton,
-            NSWindowButton::ZoomButton,
-        ] {
-            if let Some(button) = window.standardWindowButton(kind) {
-                let mut origin = button.frame().origin;
-                origin.y += options.macos.btn_translation.1 as f64;
-                origin.x += options.macos.btn_translation.0 as f64;
-                button.setFrameOrigin(origin);
-            }
+        if let Some((x, y)) = options.macos.btn_margin {
+            set_window_button_margin(&window, (x as f32, y as f32));
         }
 
         let this = Self {
@@ -181,6 +172,47 @@ impl MacWindow {
             );
         }
         *cached
+    }
+}
+
+fn set_window_button_margin(window: &NSWindow, margin: (f32, f32)) {
+    let (left, top) = (margin.0 as f64, margin.1 as f64);
+    if !left.is_finite() || !top.is_finite() || left < 0.0 || top < 0.0 {
+        return;
+    }
+
+    let buttons = [
+        NSWindowButton::CloseButton,
+        NSWindowButton::MiniaturizeButton,
+        NSWindowButton::ZoomButton,
+    ]
+    .map(|kind| window.standardWindowButton(kind));
+
+    let Some(close) = buttons[0].as_ref() else {
+        return;
+    };
+
+    let Some(container) = (unsafe { close.superview().and_then(|view| view.superview()) }) else {
+        return;
+    };
+
+    let close_frame = close.frame();
+    let button_height = close_frame.size.height;
+    let base_x = close_frame.origin.x;
+
+    let offsets = buttons
+        .each_ref()
+        .map(|button| button.as_ref().map(|b| b.frame().origin.x - base_x));
+
+    let mut frame = container.frame();
+    frame.size.height = button_height + top * 2.0;
+    frame.origin.y = window.frame().size.height - frame.size.height;
+    container.setFrame(frame);
+
+    for (button, offset) in buttons.iter().zip(offsets) {
+        if let (Some(button), Some(offset)) = (button, offset) {
+            button.setFrameOrigin(NSPoint::new(left + offset, top));
+        }
     }
 }
 
