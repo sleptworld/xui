@@ -7,7 +7,7 @@ use xui_interface::{
     EventResult, Key, PlatformCommand, PlatformReply, PlatformRequest, Point, RawIme, Rect,
     RequestId, Style, TextCaret, TextContent, TextInputPurpose, TextInputSession, TextOffset,
     TextOffsetUnit, TextPaintProps, TextPaintStyle, TextProps, TextSelectionPaint, WhiteSpace,
-    WidgetType, WidgetUpdateFlags, commands,
+    WidgetUpdateFlags, commands,
 };
 
 use crate::element::ElementDesc;
@@ -707,10 +707,6 @@ impl Default for TextInputWidget {
 }
 
 impl TextInputWidget {
-    pub(super) fn node_type(&self) -> WidgetType {
-        WidgetType::TextInput
-    }
-
     pub(super) fn get_key(&self) -> Option<&Key> {
         self.key.as_ref()
     }
@@ -727,6 +723,27 @@ impl TextInputWidget {
             self.controller.selection().extent,
             self.scroll_x.to_bits(),
         ))
+    }
+
+    /// An internal controller is per instance: one description mounted twice
+    /// must not give two inputs one buffer. An external one is the caller's
+    /// handle and is shared on purpose.
+    pub(super) fn instantiate(&self) -> Self {
+        let controller = if self.uses_external_controller {
+            self.controller.clone()
+        } else {
+            TextController::with_text(self.controller.text())
+        };
+        Self {
+            key: self.key.clone(),
+            controller,
+            style: self.style.clone(),
+            uses_external_controller: self.uses_external_controller,
+            last_text: self.last_text.clone(),
+            disabled: self.disabled,
+            read_only: self.read_only,
+            ..Self::new()
+        }
     }
 
     pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {

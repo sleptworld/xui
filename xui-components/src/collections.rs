@@ -1,22 +1,22 @@
 //! Disclosure, navigation, tabular data, and hierarchical collections.
 //!
-//! [`collapsible`] and [`accordion`] expose disclosure state, [`breadcrumb`] and
-//! [`pagination`] report navigation requests, and [`data_table`]/[`data_grid`] render
-//! supplied data. [`tree_view`] keeps selection and expansion independent. These data
-//! surfaces materialize visible supplied rows; use [`crate::virtual_list::virtual_list`]
+//! [`Collapsible`] and [`Accordion`] expose disclosure state, [`Breadcrumb`] and
+//! [`Pagination`] report navigation requests, and [`DataTable`]/[`DataGrid`] render
+//! supplied data. [`TreeView`] keeps selection and expansion independent. These data
+//! surfaces materialize visible supplied rows; use [`crate::virtual_list::VirtualList`]
 //! when the collection requires virtualization.
 //!
 //! # Components
 //!
 //! | Component | Purpose |
 //! | --- | --- |
-//! | [`collapsible`](fn@self::collapsible) | A disclosure section showing content when its trigger is activated. |
-//! | [`accordion`](fn@self::accordion) | A single-expanded-item accordion with optional collapse behavior. |
-//! | [`breadcrumb`](fn@self::breadcrumb) | A breadcrumb trail with callback-driven navigation and a configurable separator. |
-//! | [`pagination`](fn@self::pagination) | A page-navigation row with endpoint buttons and visible sibling pages. |
-//! | [`data_table`](fn@self::data_table) | A presentational table of arbitrary element cells with optional headers. |
-//! | [`data_grid`](fn@self::data_grid) | A tabular string-data surface with sortable headers and selectable rows. |
-//! | [`tree_view`](fn@self::tree_view) | A tree with independent controlled selection and expansion. |
+//! | [`Collapsible`](fn@self::Collapsible) | A disclosure section showing content when its trigger is activated. |
+//! | [`Accordion`](fn@self::Accordion) | A single-expanded-item accordion with optional collapse behavior. |
+//! | [`Breadcrumb`](fn@self::Breadcrumb) | A breadcrumb trail with callback-driven navigation and a configurable separator. |
+//! | [`Pagination`](fn@self::Pagination) | A page-navigation row with endpoint buttons and visible sibling pages. |
+//! | [`DataTable`](fn@self::DataTable) | A presentational table of arbitrary element cells with optional headers. |
+//! | [`DataGrid`](fn@self::DataGrid) | A tabular string-data surface with sortable headers and selectable rows. |
+//! | [`TreeView`](fn@self::TreeView) | A tree with independent controlled selection and expansion. |
 
 use crate::layout::MergeClone;
 use xui_core::prelude::*;
@@ -49,7 +49,7 @@ use crate::{BoolChangeCallback, IndexChangeCallback};
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { collapsible(trigger: view! { text("Details") }, content: view! { text("More information") }) };
+/// let _ = view! { Collapsible(trigger: view! { text("Details") }, content: view! { text("More information") }) };
 /// ```
 #[component]
 #[defaults(
@@ -165,7 +165,7 @@ pub type OptionalIndexChangeCallback = Callback<Option<usize>>;
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { accordion(items: vec![AccordionItem::new("details", view! { text("Details") }, view! { text("Information") })]) };
+/// let _ = view! { Accordion(items: vec![AccordionItem::new("details", view! { text("Details") }, view! { text("Information") })]) };
 /// ```
 #[component]
 #[defaults(
@@ -297,7 +297,7 @@ impl BreadcrumbItem {
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { breadcrumb(items: vec![BreadcrumbItem::new("Home"), BreadcrumbItem::new("Settings")]) };
+/// let _ = view! { Breadcrumb(items: vec![BreadcrumbItem::new("Home"), BreadcrumbItem::new("Settings")]) };
 /// ```
 #[component]
 #[defaults(
@@ -391,7 +391,7 @@ pub fn breadcrumb(
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { pagination(page_count: 10usize, page: 2usize) };
+/// let _ = view! { Pagination(page_count: 10usize, page: 2usize) };
 /// ```
 #[component]
 #[defaults(
@@ -536,7 +536,7 @@ impl TableRow {
 ///
 /// `rows` and `headers` provide content; `column_tracks` overrides the default
 /// equal-width tracks. Header, cell, row, and root styles can be customized. This
-/// component materializes all rows; use [`crate::virtual_list::virtual_list`] for large
+/// component materializes all rows; use [`crate::virtual_list::VirtualList`] for large
 /// visible datasets.
 ///
 /// # Props
@@ -558,7 +558,7 @@ impl TableRow {
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { data_table(rows: vec![TableRow::new("row-1", vec![view! { text("Alpha") }])]) };
+/// let _ = view! { DataTable(rows: vec![TableRow::new("row-1", vec![view! { text("Alpha") }])]) };
 /// ```
 #[component]
 #[defaults(
@@ -738,7 +738,7 @@ pub type GridSortCallback = Callback<GridSort>;
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { data_grid(columns: vec![DataGridColumn::new("name", "Name")], rows: vec![DataGridRow::new("row-1", vec!["Alpha".to_owned()])]) };
+/// let _ = view! { DataGrid(columns: vec![DataGridColumn::new("name", "Name")], rows: vec![DataGridRow::new("row-1", vec!["Alpha".to_owned()])]) };
 /// ```
 #[component]
 #[defaults(
@@ -1035,7 +1035,7 @@ fn tree_nodes(
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { tree_view(nodes: vec![TreeNode::branch("folder", "Folder", vec![TreeNode::leaf("file", "File")])]) };
+/// let _ = view! { TreeView(nodes: vec![TreeNode::branch("folder", "Folder", vec![TreeNode::leaf("file", "File")])]) };
 /// ```
 #[component]
 #[defaults(

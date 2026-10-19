@@ -21,6 +21,14 @@ impl UiRuntime {
         self.hosts.contains_key(id).then(|| self.node_view(id))
     }
 
+    /// The props hash `id` was last committed with.
+    ///
+    /// # Preconditions
+    /// - `id` is live.
+    pub(crate) fn host_props_hash(&self, id: NodeId) -> u64 {
+        self.hosts[id].new_props_hash
+    }
+
     /// [`Self::node`] for an id known to be live.
     ///
     /// # Preconditions

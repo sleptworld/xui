@@ -1,16 +1,16 @@
 //! Loading placeholders, progress activity, and contextual messages.
 //!
-//! [`skeleton`] supplies static decoration, [`spinner`] animates a cached icon transform,
-//! and [`callout`] combines arbitrary content with an optional title and [`CalloutTone`].
-//! Determinate progress is provided by [`crate::controls::progress`].
+//! [`Skeleton`] supplies static decoration, [`Spinner`] animates a cached icon transform,
+//! and [`Callout`] combines arbitrary content with an optional title and [`CalloutTone`].
+//! Determinate progress is provided by [`crate::controls::Progress`].
 //!
 //! # Components
 //!
 //! | Component | Purpose |
 //! | --- | --- |
-//! | [`skeleton`](fn@self::skeleton) | A static, decorative placeholder for content that has not loaded. |
-//! | [`spinner`](fn@self::spinner) | An indeterminate loading indicator rendered as a rotating cached vector icon. |
-//! | [`callout`](fn@self::callout) | A bordered message panel with an optional title and semantic tone. |
+//! | [`Skeleton`](fn@self::Skeleton) | A static, decorative placeholder for content that has not loaded. |
+//! | [`Spinner`](fn@self::Spinner) | An indeterminate loading indicator rendered as a rotating cached vector icon. |
+//! | [`Callout`](fn@self::Callout) | A bordered message panel with an optional title and semantic tone. |
 
 use std::time::Duration;
 
@@ -39,7 +39,7 @@ use xui_macros::{component, view};
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { skeleton(width: Sizing::fix(160.0), height: Sizing::fix(20.0)) };
+/// let _ = view! { Skeleton(width: Sizing::fix(160.0), height: Sizing::fix(20.0)) };
 /// ```
 #[component]
 #[defaults(
@@ -62,7 +62,7 @@ pub fn skeleton(width: &Sizing, height: &Sizing, style: &Style) {
     }
 }
 
-/// One turn of a [`spinner`].
+/// One turn of a [`Spinner`].
 const SPINNER_PERIOD: Duration = Duration::from_millis(800);
 
 /// An indeterminate loading indicator rendered as a rotating cached vector icon.
@@ -89,7 +89,7 @@ const SPINNER_PERIOD: Duration = Duration::from_millis(800);
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { spinner(size: 20.0, label: "Loading results") };
+/// let _ = view! { Spinner(size: 20.0, label: "Loading results") };
 /// ```
 #[component]
 #[defaults(
@@ -181,7 +181,7 @@ pub enum CalloutTone {
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { callout(content: view! { text("Your settings were saved.") }, title: Some("Saved".to_owned())) };
+/// let _ = view! { Callout(content: view! { text("Your settings were saved.") }, title: Some("Saved".to_owned())) };
 /// ```
 #[component]
 #[defaults(

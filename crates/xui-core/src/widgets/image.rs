@@ -207,10 +207,6 @@ impl Default for ImageWidget {
 }
 
 impl ImageWidget {
-    pub(super) fn node_type(&self) -> WidgetType {
-        WidgetType::Image
-    }
-
     pub(super) fn get_key(&self) -> Option<&Key> {
         self.key.as_ref()
     }
@@ -223,6 +219,20 @@ impl ImageWidget {
             self.opacity.to_bits(),
             &self.style,
         ))
+    }
+
+    /// See [`Widgets::instantiate`](super::Widgets::instantiate).
+    pub(super) fn instantiate(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            image_data: self.image_data.clone(),
+            image_key: self.image_key.clone(),
+            image_style: self.image_style,
+            opacity: self.opacity,
+            style: self.style.clone(),
+            event_handlers: EventHandlers::default(),
+            interaction: InteractionProperties::default(),
+        }
     }
 
     pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {

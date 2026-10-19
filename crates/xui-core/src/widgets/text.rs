@@ -1,13 +1,12 @@
+use crate::element::ElementDesc;
 use crate::event_system::callbacks::EventHandlers;
 use crate::event_system::interaction::InteractionProperties;
-use crate::{element::ElementDesc, event_system::EventContext};
 use xui_interface::{
-    Bounds, ComputedStyle, EventRef, EventResult, Key, OverflowWrap, ParagraphStyle, Style,
-    TextBoxStyle, TextContent, TextOverflow, TextPaintProps, TextPaintStyle, TextProps, WidgetType,
-    WidgetUpdateFlags,
+    Bounds, ComputedStyle, Key, OverflowWrap, ParagraphStyle, Style, TextBoxStyle, TextContent,
+    TextOverflow, TextPaintProps, TextPaintStyle, TextProps, WidgetType, WidgetUpdateFlags,
 };
 
-use super::{props_hash, widget_element_desc};
+use super::{HostWidget, props_hash, sync, widget_element_desc};
 use crate::render::{Primitive, RenderTreeWriter, TextPrimitive};
 use crate::text::TextLayoutSlot;
 
@@ -96,16 +95,26 @@ impl TextWidget {
     event_handler_methods!();
 }
 
-impl TextWidget {
-    pub(super) fn node_type(&self) -> WidgetType {
-        WidgetType::Text
-    }
+impl HostWidget for TextWidget {
+    const TYPE: WidgetType = WidgetType::Text;
 
-    pub(super) fn get_key(&self) -> Option<&Key> {
+    fn get_key(&self) -> Option<&Key> {
         self.key.as_ref()
     }
 
-    pub(super) fn props_hash(&self) -> u64 {
+    fn current_style(&self) -> &Style {
+        &self.style
+    }
+
+    fn style_mut(&mut self) -> Option<&mut Style> {
+        Some(&mut self.style)
+    }
+
+    fn set_key(&mut self, key: Option<Key>) {
+        self.key = key;
+    }
+
+    fn props_hash(&self) -> u64 {
         props_hash(&(
             &self.props.text,
             &self.props.paragraph,
@@ -114,31 +123,32 @@ impl TextWidget {
         ))
     }
 
-    pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
-        let mut flags = WidgetUpdateFlags::empty();
-        if self.props.text != next.props.text
-            || self.props.paragraph != next.props.paragraph
-            || self.props.text_box != next.props.text_box
-        {
-            flags |= WidgetUpdateFlags::LAYOUT_INPUT | WidgetUpdateFlags::PAINT_OUTPUT;
+    fn instantiate(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            props: self.props.clone(),
+            style: self.style.clone(),
+            event_handlers: EventHandlers::default(),
+            interaction: InteractionProperties::default(),
         }
-        if self.style != next.style {
-            flags |= WidgetUpdateFlags::STYLE_TARGET;
-        }
-        self.props = next.props.clone();
-        self.style = next.style.clone();
-        flags
     }
 
-    pub(super) fn default_style(&self) -> Style {
-        Style::new()
+    fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
+        let shape = WidgetUpdateFlags::LAYOUT_INPUT | WidgetUpdateFlags::PAINT_OUTPUT;
+        // `text_layout_props` overwrites every field of `props.style` from the
+        // computed style, so a change there has nothing of its own to redo.
+        self.props.style.clone_from(&next.props.style);
+        sync(&mut self.props.text, &next.props.text, shape)
+            | sync(&mut self.props.paragraph, &next.props.paragraph, shape)
+            | sync(&mut self.props.text_box, &next.props.text_box, shape)
+            | sync(
+                &mut self.style,
+                &next.style,
+                WidgetUpdateFlags::STYLE_TARGET,
+            )
     }
 
-    pub(super) fn current_style(&self) -> &Style {
-        &self.style
-    }
-
-    pub(super) fn render(
+    fn render(
         &self,
         node_id: xui_interface::NodeId,
         rect: Bounds,
@@ -167,22 +177,22 @@ impl TextWidget {
             .expect("widget render tree must remain valid");
     }
 
-    pub(super) fn handle_event(
-        &mut self,
-        _event: EventRef,
-        _cx: &mut EventContext<'_>,
-    ) -> EventResult {
-        EventResult::Ignored
-    }
-
-    pub(super) fn text_content(&self) -> Option<TextContent> {
+    fn text_content(&self) -> Option<TextContent> {
         Some(self.props.text.clone())
     }
 
-    pub(super) fn text_layout_props(&self, style: &ComputedStyle) -> Option<TextProps> {
+    fn text_layout_props(&self, style: &ComputedStyle) -> Option<TextProps> {
         let mut props = self.props.clone();
         apply_text_style(&mut props, style);
         Some(props)
+    }
+
+    fn interaction(&self) -> Option<(&InteractionProperties, &EventHandlers)> {
+        Some((&self.interaction, &self.event_handlers))
+    }
+
+    fn interaction_mut(&mut self) -> Option<(&mut InteractionProperties, &mut EventHandlers)> {
+        Some((&mut self.interaction, &mut self.event_handlers))
     }
 }
 

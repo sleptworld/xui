@@ -3935,3 +3935,305 @@ fn a_child_of_an_undisplayed_node_cannot_take_focus() {
     arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
     assert!(arena.is_focusable(field));
 }
+
+// ---------------------------------------------------------------------
+// Re-rendered descriptions: handlers are never part of `props_hash`, and a
+// description is never the live widget
+// ---------------------------------------------------------------------
+
+mod rerendered_handlers {
+    use super::*;
+    use crate::app::App;
+    use crate::element::ElementDesc;
+    use crate::state::{HookContext, State};
+
+    thread_local! {
+        static COUNT: RefCell<Option<State<u32>>> = const { RefCell::new(None) };
+        static SEEN: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// The handler captures the state by value and nothing hashed depends on
+    /// it, so only the handler differs between renders. From 3 on it is gone.
+    fn root(cx: &mut HookContext<'_>) -> ElementDesc {
+        let count = cx.use_state(|| 0u32);
+        COUNT.with(|slot| *slot.borrow_mut() = Some(count));
+        let captured = *count.get();
+        let widget = container().style(Style::new().size(Size::fix(40.0, 40.0)));
+        let widget = if captured < 3 {
+            widget.on_click(move |_: &ClickEvent, _| {
+                SEEN.with(|seen| seen.borrow_mut().push(captured));
+                EventResult::Consumed
+            })
+        } else {
+            widget
+        };
+        widget.into_element_desc(Vec::new())
+    }
+
+    fn click(app: &mut App, text: &mut TextHost<ZeroTextBackend>) {
+        let point = Point::new(10.0, 10.0);
+        app.dispatch_event(pointer_move(point), text);
+        app.dispatch_event(RawEvent::PointerDown(pointer_at(point)), text);
+        app.dispatch_event(RawEvent::PointerUp(pointer_at(point)), text);
+    }
+
+    fn set_count(value: u32) {
+        COUNT.with(|slot| slot.borrow().as_ref().unwrap().set(value));
+    }
+
+    #[test]
+    fn a_handler_only_change_reaches_dispatch_and_a_removed_handler_stops() {
+        SEEN.with(|seen| seen.borrow_mut().clear());
+        let mut app = App::new(root);
+        app.resize(Size::new(100.0, 100.0));
+        let mut text = TextHost::new(ZeroTextBackend);
+
+        click(&mut app, &mut text);
+        set_count(1);
+        click(&mut app, &mut text);
+        set_count(3);
+        click(&mut app, &mut text);
+
+        assert_eq!(SEEN.with(|seen| seen.borrow().clone()), vec![0, 1]);
+    }
+
+    thread_local! {
+        static TICK: RefCell<Option<State<u32>>> = const { RefCell::new(None) };
+    }
+
+    /// Re-renders on every tick but hands back the element it memoized, so
+    /// the reconciler sees the very description it committed last time.
+    fn memoized_root(cx: &mut HookContext<'_>) -> ElementDesc {
+        let tick = cx.use_state(|| 0u32);
+        TICK.with(|slot| *slot.borrow_mut() = Some(tick));
+        let _ = *tick.get();
+        let element = cx.use_memo(|| {
+            container()
+                .style(Style::new().size(Size::fix(40.0, 40.0)))
+                .on_click(|_: &ClickEvent, _| {
+                    SEEN.with(|seen| seen.borrow_mut().push(7));
+                    EventResult::Consumed
+                })
+                .into_element_desc(Vec::new())
+        });
+        element.get().clone()
+    }
+
+    /// Committing a description used to empty it of its handlers, and a memo
+    /// holds the same one: after one re-render the handler was gone.
+    #[test]
+    fn a_memoized_host_keeps_its_handler_across_parent_renders() {
+        SEEN.with(|seen| seen.borrow_mut().clear());
+        let mut app = App::new(memoized_root);
+        app.resize(Size::new(100.0, 100.0));
+        let mut text = TextHost::new(ZeroTextBackend);
+
+        click(&mut app, &mut text);
+        TICK.with(|slot| slot.borrow().as_ref().unwrap().set(1));
+        click(&mut app, &mut text);
+        TICK.with(|slot| slot.borrow().as_ref().unwrap().set(2));
+        click(&mut app, &mut text);
+
+        assert_eq!(SEEN.with(|seen| seen.borrow().clone()), vec![7, 7, 7]);
+    }
+
+    /// One text-input description mounted twice.
+    fn shared_input_root(cx: &mut HookContext<'_>) -> ElementDesc {
+        let input = cx.use_memo(|| crate::widgets::text_input().into_element_desc());
+        let input = input.get().clone();
+        container().into_element_desc(vec![input.clone(), input])
+    }
+
+    /// Each mount of a description is its own widget: two inputs built from
+    /// one element must not edit one buffer.
+    #[test]
+    fn one_description_mounted_twice_gives_two_independent_widgets() {
+        let mut app = App::new(shared_input_root);
+        app.resize(Size::new(200.0, 100.0));
+        let mut text = TextHost::new(ZeroTextBackend);
+        app.dispatch_event(pointer_move(Point::new(1.0, 1.0)), &mut text);
+
+        let runtime = app.ui_runtime();
+        let parent = runtime.children(runtime.root()).next().unwrap();
+        let controllers: Vec<_> = runtime
+            .children(parent)
+            .map(|id| {
+                runtime
+                    .node(id)
+                    .unwrap()
+                    .widget
+                    .with_widgets(|widget| match widget {
+                        Widgets::TextInput(input) => input.controller.clone(),
+                        other => panic!("expected a text input, found {other:?}"),
+                    })
+            })
+            .collect();
+
+        assert_eq!(controllers.len(), 2);
+        assert!(!controllers[0].same_handle(&controllers[1]));
+    }
+}
+
+/// Hosts written with `view!` that the macro templates
+/// (`docs/template-slots.md` §12): what changes is written into the live
+/// widget, and the result must be what the builder chain would have built.
+mod templated_hosts {
+    use super::*;
+    use crate::app::App;
+    use crate::element::ElementDesc;
+    use crate::render::MockRenderBackend;
+    use crate::state::{HookContext, State};
+    use crate::widgets::{TextWidget, container, text};
+    use xui_interface::Color;
+    use xui_macros::view;
+
+    thread_local! {
+        static COUNT: RefCell<Option<State<u32>>> = const { RefCell::new(None) };
+        static SEEN: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn shade(n: u32) -> Color {
+        if n % 2 == 0 { Color::BLACK } else { Color::WHITE }
+    }
+
+    /// A templated card: two static attributes, a changing background, a
+    /// handler with an unannotated closure, and a text whose content and
+    /// color change.
+    fn card(cx: &mut HookContext<'_>) -> ElementDesc {
+        let count = cx.use_state(|| 0u32);
+        COUNT.with(|slot| *slot.borrow_mut() = Some(count));
+        card_tree(*count.get())
+    }
+
+    fn card_tree(n: u32) -> ElementDesc {
+        let background = shade(n);
+        view! {
+            container(width: 40.0, height: 40.0, background: background, on_click: move |_, _| {
+                SEEN.with(|seen| seen.borrow_mut().push(n));
+                EventResult::Consumed
+            }) {
+                text(n.to_string()).color(background)
+            }
+        }
+    }
+
+    fn set_count(app: &mut App, text: &mut TextHost<ZeroTextBackend>, value: u32) {
+        COUNT.with(|slot| slot.borrow().as_ref().unwrap().set(value));
+        app.render(&mut MockRenderBackend::default(), text).unwrap();
+    }
+
+    fn hosts(app: &App) -> (NodeId, NodeId) {
+        let runtime = app.ui_runtime();
+        let card = runtime.children(runtime.root()).next().unwrap();
+        let label = runtime.children(card).next().unwrap();
+        (card, label)
+    }
+
+    fn style_of(app: &App, id: NodeId) -> Style {
+        app.ui_runtime()
+            .node(id)
+            .unwrap()
+            .widget
+            .with_widgets(|widget| widget.style().clone())
+    }
+
+    fn text_of(app: &App, id: NodeId) -> String {
+        let widget = app.ui_runtime().node(id).unwrap().widget.text().unwrap();
+        widget.as_str().to_owned()
+    }
+
+    #[test]
+    fn the_root_and_its_text_are_templated() {
+        let element = card_tree(0);
+        assert!(matches!(element, ElementDesc::Templated(_)));
+        let ElementDesc::Templated(card) = element else { unreachable!() };
+        assert!(matches!(card.children[0], ElementDesc::Templated(_)));
+    }
+
+    #[test]
+    fn changed_slots_are_written_into_the_live_widgets() {
+        let mut app = App::new(card);
+        app.resize(Size::new(100.0, 100.0));
+        let mut text = TextHost::new(ZeroTextBackend);
+        app.render(&mut MockRenderBackend::default(), &mut text).unwrap();
+        let (card_id, label_id) = hosts(&app);
+
+        for n in [1, 2, 3] {
+            set_count(&mut app, &mut text, n);
+            assert_eq!(hosts(&app), (card_id, label_id), "the same hosts are reused");
+            assert_eq!(
+                style_of(&app, card_id),
+                Style::new().width(40.0).height(40.0).background(shade(n))
+            );
+            assert_eq!(style_of(&app, label_id), Style::new().color(shade(n)));
+            assert_eq!(text_of(&app, label_id), n.to_string());
+        }
+    }
+
+    fn click(app: &mut App, text: &mut TextHost<ZeroTextBackend>) {
+        let point = Point::new(10.0, 10.0);
+        app.dispatch_event(pointer_move(point), text);
+        app.dispatch_event(RawEvent::PointerDown(pointer_at(point)), text);
+        app.dispatch_event(RawEvent::PointerUp(pointer_at(point)), text);
+    }
+
+    #[test]
+    fn every_render_hands_its_handler_to_the_host() {
+        SEEN.with(|seen| seen.borrow_mut().clear());
+        let mut app = App::new(card);
+        app.resize(Size::new(100.0, 100.0));
+        let mut text = TextHost::new(ZeroTextBackend);
+
+        click(&mut app, &mut text);
+        set_count(&mut app, &mut text, 2);
+        click(&mut app, &mut text);
+
+        assert_eq!(SEEN.with(|seen| seen.borrow().clone()), vec![0, 2]);
+    }
+
+    thread_local! {
+        static MODE: Cell<u32> = const { Cell::new(0) };
+        static TICK: RefCell<Option<State<u32>>> = const { RefCell::new(None) };
+    }
+
+    /// Mode 0 writes a templated text whose color follows the tick; mode 1 the
+    /// plain builder for the same widget at the same place.
+    fn switching(cx: &mut HookContext<'_>) -> ElementDesc {
+        let tick = cx.use_state(|| 0u32);
+        TICK.with(|slot| *slot.borrow_mut() = Some(tick));
+        let color = shade(*tick.get());
+        match MODE.with(Cell::get) {
+            0 => view! { text("a").color(color) },
+            _ => TextWidget::new("a")
+                .style(Style::new().color(Color::BLACK))
+                .into_element_desc(),
+        }
+    }
+
+    /// A patched host's description is no longer its widget, so a plain
+    /// element written over it with the values it was first built from must
+    /// still be applied, not matched against the first build's hash.
+    #[test]
+    fn a_patched_host_is_updated_by_a_plain_element_that_matches_its_first_values() {
+        MODE.with(|slot| slot.set(0));
+        let mut app = App::new(switching);
+        app.resize(Size::new(100.0, 100.0));
+        let mut text = TextHost::new(ZeroTextBackend);
+        app.render(&mut MockRenderBackend::default(), &mut text).unwrap();
+        let label = app.ui_runtime().children(app.ui_runtime().root()).next().unwrap();
+        assert_eq!(style_of(&app, label), Style::new().color(Color::BLACK));
+
+        // Same call site: the color is patched in.
+        TICK.with(|slot| slot.borrow().as_ref().unwrap().set(1));
+        app.render(&mut MockRenderBackend::default(), &mut text).unwrap();
+        assert_eq!(style_of(&app, label), Style::new().color(Color::WHITE));
+
+        // The builder chain, with the color the host was first built with.
+        MODE.with(|slot| slot.set(1));
+        TICK.with(|slot| slot.borrow().as_ref().unwrap().set(2));
+        app.render(&mut MockRenderBackend::default(), &mut text).unwrap();
+        let after = app.ui_runtime().children(app.ui_runtime().root()).next().unwrap();
+        assert_eq!(after, label, "the host is reused");
+        assert_eq!(style_of(&app, label), Style::new().color(Color::BLACK));
+    }
+}

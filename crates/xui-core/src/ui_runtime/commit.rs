@@ -1,6 +1,7 @@
 //! Fiber commit: the one door through which the host tree changes shape.
 
 use crate::anchor::AnchorPlacement;
+use crate::event_system::callbacks::EventHandlers;
 use crate::event_system::interaction::HostInteraction;
 use crate::fiber::Key;
 use crate::layout::{ParentLayout, computed_style_for_widget, taffy_style_for_widget};
@@ -358,12 +359,40 @@ impl UiRuntime {
         std::mem::take(&mut self.node_lifecycle_events)
     }
 
+    /// Hands `id` the handlers of a re-render that changed nothing else. See
+    /// [`InteractionSystem::replace_handlers`]; no work is marked.
+    ///
+    /// # Preconditions
+    /// - `id` is live.
+    pub(crate) fn replace_handlers(&mut self, id: NodeId, handlers: EventHandlers) {
+        debug_assert!(
+            self.hosts.contains_key(id),
+            "replace_handlers on a dead node"
+        );
+        self.interaction_system.replace_handlers(id, handlers);
+    }
+
     pub(crate) fn update_node(
         &mut self,
         id: NodeId,
         key: Option<Key>,
         props_hash: u64,
         widget: WidgetI,
+        interaction: Option<HostInteraction>,
+    ) -> WidgetI {
+        widget.with_widgets(|next| self.update_node_from(id, key, props_hash, next, interaction))
+    }
+
+    /// Updates the live widget of `id` from the next description `next`.
+    ///
+    /// # Preconditions
+    /// - `id` is live.
+    pub(crate) fn update_node_from(
+        &mut self,
+        id: NodeId,
+        key: Option<Key>,
+        props_hash: u64,
+        next: &Widgets,
         interaction: Option<HostInteraction>,
     ) -> WidgetI {
         let mut flags = WidgetUpdateFlags::empty();
@@ -374,7 +403,7 @@ impl UiRuntime {
             node.key = key;
             node.new_props_hash = props_hash;
 
-            let widget_flags = node.widget.update_from(&widget);
+            let widget_flags = node.widget.update_from_widgets(next);
 
             flags |= widget_flags;
             current_widget = node.widget.clone();
@@ -389,6 +418,32 @@ impl UiRuntime {
         self.refresh_taffy_context(id);
         self.request_update(id, flags);
         current_widget
+    }
+    /// [`Self::update_node_from`] for a templated host from the call site it
+    /// was committed from: `patch` writes the slots that changed into the
+    /// widget and says what has to be redone, instead of the widget comparing
+    /// itself with a whole new description.
+    pub(crate) fn patch_node(
+        &mut self,
+        id: NodeId,
+        key: Option<Key>,
+        patch: impl FnOnce(&mut Widgets) -> WidgetUpdateFlags,
+        interaction: Option<HostInteraction>,
+    ) {
+        let flags = {
+            let node = &mut self.hosts[id];
+            node.key = key;
+            node.widget.with_widgets_mut(patch)
+        };
+        self.interaction_system.update(id, interaction);
+        if self.focused_node() == Some(id) && !self.is_focusable(id) {
+            self.interaction_system
+                .focus
+                .request_focus(None, xui_interface::FocusReason::Disabled);
+        }
+
+        self.refresh_taffy_context(id);
+        self.request_update(id, flags);
     }
 
     /// Makes the overlayer's children exactly `order`, the overlay model's

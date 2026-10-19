@@ -42,7 +42,7 @@ use xui_interface::{
     Affine, Bounds, CanvasTextId, Color, ComputedColorStyle, ComputedStrokeStyle, ComputedStyle,
     EventRef, EventResult, ExternalTextureId, Key, NodeId, PathData, PathFill, PathStroke, Point,
     Sampling, Shape, Size, StrokeLineStyle, Style, TextContent, TextLayoutConstraints,
-    TextPaintProps, TextPaintStyle, TextProps, Theme, VectorCommand, VectorScene, WidgetType,
+    TextPaintProps, TextPaintStyle, TextProps, Theme, VectorCommand, VectorScene,
     WidgetUpdateFlags,
 };
 
@@ -1345,10 +1345,6 @@ impl CanvasWidget {
 }
 
 impl CanvasWidget {
-    pub(super) fn node_type(&self) -> WidgetType {
-        WidgetType::Canvas
-    }
-
     pub(super) fn get_key(&self) -> Option<&Key> {
         self.key.as_ref()
     }
@@ -1361,6 +1357,16 @@ impl CanvasWidget {
     /// scheduled.
     pub(super) fn props_hash(&self) -> u64 {
         props_hash(&(self.controller.identity(), &self.style))
+    }
+
+    /// The controller is a handle, so every instance of one description
+    /// paints the same content -- as two tags given one controller do.
+    pub(super) fn instantiate(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            style: self.style.clone(),
+            ..Self::new(self.controller.clone())
+        }
     }
 
     pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {

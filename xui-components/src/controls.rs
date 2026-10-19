@@ -1,23 +1,23 @@
 //! Boolean, choice, range, and compact content components.
 //!
-//! Use [`checkbox`], [`switch`], [`radio_group`], and [`slider`] for interaction;
-//! [`progress`] reports a numeric value. [`badge`], [`avatar`], [`card`], and
-//! [`separator`] provide themed content structure. Stateful controls accept optional
+//! Use [`Checkbox`], [`Switch`], [`RadioGroup`], and [`Slider`] for interaction;
+//! [`Progress`] reports a numeric value. [`Badge`], [`Avatar`], [`Card`], and
+//! [`Separator`] provide themed content structure. Stateful controls accept optional
 //! controlled values, defaults, and callbacks.
 //!
 //! # Components
 //!
 //! | Component | Purpose |
 //! | --- | --- |
-//! | [`checkbox`](fn@self::checkbox) | A labeled checkbox supporting controlled, uncontrolled, and indeterminate states. |
-//! | [`switch`](fn@self::switch) | A boolean switch with a sliding thumb and optional label. |
-//! | [`radio_group`](fn@self::radio_group) | A group of mutually exclusive radio choices with roving keyboard focus. |
-//! | [`slider`](fn@self::slider) | A numeric slider with stepped pointer and keyboard adjustment. |
-//! | [`progress`](fn@self::progress) | A determinate progress bar with accessible numeric value metadata. |
-//! | [`separator`](fn@self::separator) | A decorative horizontal or vertical divider. |
-//! | [`badge`](fn@self::badge) | A compact text badge with semantic color variants. |
-//! | [`avatar`](fn@self::avatar) | A circular avatar showing a supplied image element or text fallback. |
-//! | [`card`](fn@self::card) | A themed, bordered content panel with rounded corners. |
+//! | [`Checkbox`](fn@self::Checkbox) | A labeled checkbox supporting controlled, uncontrolled, and indeterminate states. |
+//! | [`Switch`](fn@self::Switch) | A boolean switch with a sliding thumb and optional label. |
+//! | [`RadioGroup`](fn@self::RadioGroup) | A group of mutually exclusive radio choices with roving keyboard focus. |
+//! | [`Slider`](fn@self::Slider) | A numeric slider with stepped pointer and keyboard adjustment. |
+//! | [`Progress`](fn@self::Progress) | A determinate progress bar with accessible numeric value metadata. |
+//! | [`Separator`](fn@self::Separator) | A decorative horizontal or vertical divider. |
+//! | [`Badge`](fn@self::Badge) | A compact text badge with semantic color variants. |
+//! | [`Avatar`](fn@self::Avatar) | A circular avatar showing a supplied image element or text fallback. |
+//! | [`Card`](fn@self::Card) | A themed, bordered content panel with rounded corners. |
 
 use std::time::Duration;
 
@@ -102,7 +102,7 @@ fn commit_bool(
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { checkbox(default_checked: true, label: Some(view! { text("Remember me") })) };
+/// let _ = view! { Checkbox(default_checked: true, label: Some(view! { text("Remember me") })) };
 /// ```
 #[component]
 #[defaults(
@@ -227,7 +227,7 @@ const SWITCH_TRAVEL: f32 = SWITCH_TRACK_WIDTH - SWITCH_THUMB_SIZE - SWITCH_TRACK
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { switch(default_checked: true, label: Some(view! { text("Notifications") })) };
+/// let _ = view! { Switch(default_checked: true, label: Some(view! { text("Notifications") })) };
 /// ```
 #[component]
 #[defaults(
@@ -385,7 +385,7 @@ impl RadioItem {
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { radio_group(items: vec![RadioItem::new("a", "Choice A", view! { text("Choice A") })]) };
+/// let _ = view! { RadioGroup(items: vec![RadioItem::new("a", "Choice A", view! { text("Choice A") })]) };
 /// ```
 #[component]
 #[defaults(
@@ -584,7 +584,7 @@ fn clamp_step(value: f32, min: f32, max: f32, step: f32) -> f32 {
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { slider(min: 0.0, max: 10.0, step: 0.5, default_value: 4.0) };
+/// let _ = view! { Slider(min: 0.0, max: 10.0, step: 0.5, default_value: 4.0) };
 /// ```
 #[component]
 #[defaults(
@@ -743,7 +743,7 @@ pub fn slider(
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { progress(value: 40.0, max: 100.0) };
+/// let _ = view! { Progress(value: 40.0, max: 100.0) };
 /// ```
 #[component]
 #[defaults(
@@ -822,7 +822,7 @@ pub enum SeparatorOrientation {
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { separator(orientation: SeparatorOrientation::Horizontal) };
+/// let _ = view! { Separator(orientation: SeparatorOrientation::Horizontal) };
 /// ```
 #[component]
 #[defaults(
@@ -872,7 +872,7 @@ pub enum BadgeVariant {
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { badge(text: "New", variant: BadgeVariant::Primary) };
+/// let _ = view! { Badge(text: "New", variant: BadgeVariant::Primary) };
 /// ```
 #[component]
 #[defaults(
@@ -935,7 +935,7 @@ pub fn badge(text: &String, style: &Style, variant: &BadgeVariant) {
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { avatar(accessibility_label: "Alex", fallback: "AL") };
+/// let _ = view! { Avatar(accessibility_label: "Alex", fallback: "AL") };
 /// ```
 #[component]
 #[defaults(
@@ -1002,7 +1002,7 @@ pub fn avatar(
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { card(content: view! { text("Card content") }) };
+/// let _ = view! { Card(content: view! { text("Card content") }) };
 /// ```
 #[component]
 #[defaults(

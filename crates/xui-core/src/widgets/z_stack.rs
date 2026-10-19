@@ -5,7 +5,7 @@ use crate::event_system::interaction::InteractionProperties;
 use crate::render::RenderTreeWriter;
 use xui_interface::{
     Alignment, Bounds, ComputedStyle, EventRef, EventResult, Key, Style, TextContent, TextProps,
-    WidgetType, WidgetUpdateFlags,
+    WidgetUpdateFlags,
 };
 
 use super::utils::render_box;
@@ -70,16 +70,23 @@ impl ZStackWidget {
 
     event_handler_methods!();
 
-    pub(super) fn node_type(&self) -> WidgetType {
-        WidgetType::ZStack
-    }
-
     pub(super) fn get_key(&self) -> Option<&Key> {
         self.key.as_ref()
     }
 
     pub(super) fn props_hash(&self) -> u64 {
         props_hash(&(&self.style, self.alignment))
+    }
+
+    /// See [`Widgets::instantiate`](super::Widgets::instantiate).
+    pub(super) fn instantiate(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            style: self.style.clone(),
+            alignment: self.alignment,
+            event_handlers: EventHandlers::default(),
+            interaction: InteractionProperties::default(),
+        }
     }
 
     pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {

@@ -9,11 +9,12 @@ use xui_core::prelude::*;
 use xui_core::widgets::WidgetType;
 use xui_macros::{component, view, xui};
 
-fn host(element: &ElementDesc) -> &WidgetDesc {
-    match element {
-        ElementDesc::Host(desc) => desc,
-        other => panic!("expected a host element, got {other:?}"),
-    }
+/// The element as the builder chain would have described it, however the
+/// macro chose to build it (plainly, hoisted, or templated).
+fn host(element: &ElementDesc) -> WidgetDesc {
+    element
+        .to_host()
+        .unwrap_or_else(|| panic!("expected a host element, got {element:?}"))
 }
 
 fn texts(element: &ElementDesc) -> Vec<String> {
@@ -227,19 +228,19 @@ fn shell(children: &Vec<ElementDesc>) {
 
 #[test]
 fn components_take_named_props_and_bodies() {
-    let element = view! { greeting(name: String::from("world")).key("hi") };
-    match element {
+    let element = view! { Greeting(name: String::from("world")).key("hi") };
+    match element.resolved() {
         ElementDesc::Component(desc) => assert_eq!(desc.key, Some("hi".into())),
         other => panic!("expected a component element, got {other:?}"),
     }
 
     let element = view! {
-        shell {
+        Shell {
             container()
             container()
         }
     };
-    assert!(matches!(element, ElementDesc::Component(_)));
+    assert!(matches!(element.resolved(), ElementDesc::Component(_)));
 }
 
 #[test]

@@ -10,7 +10,7 @@ use crate::event_system::interaction::InteractionProperties;
 use xui_assets::AssetId;
 use xui_interface::{
     Affine, Bounds, Color, ComputedStyle, EventRef, EventResult, FillRule, Key, PathData, PathFill,
-    PathStroke, Rect, Size, Sizing, Style, TextContent, TextProps, VectorSceneBuilder, WidgetType,
+    PathStroke, Rect, Size, Sizing, Style, TextContent, TextProps, VectorSceneBuilder,
     WidgetUpdateFlags,
 };
 
@@ -329,9 +329,6 @@ impl IconWidget {
 }
 
 impl IconWidget {
-    pub(super) fn node_type(&self) -> WidgetType {
-        WidgetType::Icon
-    }
     pub(super) fn get_key(&self) -> Option<&Key> {
         self.key.as_ref()
     }
@@ -342,6 +339,19 @@ impl IconWidget {
                 .map(|c| (c.r.to_bits(), c.g.to_bits(), c.b.to_bits(), c.a.to_bits())),
             &self.style,
         ))
+    }
+
+    /// See [`Widgets::instantiate`](super::Widgets::instantiate).
+    pub(super) fn instantiate(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            icon_key: self.icon_key.clone(),
+            data: self.data.clone(),
+            color: self.color,
+            style: self.style.clone(),
+            event_handlers: EventHandlers::default(),
+            interaction: InteractionProperties::default(),
+        }
     }
 
     pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {

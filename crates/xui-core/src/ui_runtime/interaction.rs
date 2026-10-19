@@ -162,6 +162,26 @@ impl InteractionSystem {
         );
     }
 
+    /// Swaps the handlers of a host whose re-render left every hashed property
+    /// as it was. Handlers are closures, so they never compare equal and are
+    /// not part of `props_hash`; a re-render that only captured new values
+    /// still has to reach dispatch, without invalidating anything else.
+    pub fn replace_handlers(&mut self, id: NodeId, handlers: EventHandlers) {
+        match self.nodes.get_mut(id) {
+            Some(node) => node.handlers = handlers,
+            None if handlers.is_empty() => {}
+            None => {
+                self.nodes.insert(
+                    id,
+                    InteractionNode {
+                        properties: InteractionProperties::default(),
+                        handlers,
+                    },
+                );
+            }
+        }
+    }
+
     pub fn remove(&mut self, id: NodeId) {
         self.event_state.clear_node(id);
         self.focus.clear_node(id);

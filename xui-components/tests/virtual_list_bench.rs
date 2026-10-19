@@ -71,7 +71,7 @@ fn virtual_list_root(cx: &mut HookContext<'_>) -> ElementDesc {
     let count = ROWS.load(Ordering::Relaxed);
     let style = Style::new().width(Sizing::Fill).height(VIEWPORT.height);
     xui! {
-        <virtual_list
+        <VirtualList
             item_count={count}
             item_height={ITEM_HEIGHT}
             viewport_height={VIEWPORT.height}

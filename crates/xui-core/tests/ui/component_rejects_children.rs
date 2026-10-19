@@ -9,5 +9,5 @@ fn leaf(label: &String) {
 }
 
 fn with_body() -> ElementDesc {
-    xui! { <leaf label={String::from("hi")}>{"unexpected"}</leaf> }
+    xui! { <Leaf label={String::from("hi")}>{"unexpected"}</Leaf> }
 }

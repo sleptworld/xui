@@ -1,7 +1,7 @@
-error[E0277]: required prop `tone` of `<badge>` was never set
+error[E0277]: required prop `tone` of `<Badge>` was never set
   --> tests/ui/component_missing_required_prop.rs:12:13
    |
-12 |     xui! { <badge label={String::from("hi")} /> }
+12 |     xui! { <Badge label={String::from("hi")} /> }
    |     --------^^^^^^^^^^^--------------------------
    |     |       |
    |     |       `tone` is missing here

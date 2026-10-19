@@ -119,7 +119,7 @@ macro_rules! events {
         ///
         /// One variant per slot rather than per payload type, so the dispatch
         /// match below is a straight 1:1 generation from the table.
-        #[derive(Debug)]
+        #[derive(Debug, Clone)]
         pub enum AnyHandler {
             Any(Handler<SemanticEvent>),
             $( $kind(Handler<$event>), )*
@@ -202,7 +202,68 @@ macro_rules! events {
         }
 
         impl<T: Listen> EventProps for T {}
+
+        /// The `on_*` attributes of a templated host (`docs/template-slots.md`
+        /// §12), one function per [`EventProps`] method with the same bound.
+        ///
+        /// `view!` passes the attribute's value straight to the function named
+        /// after it, so an unannotated closure gets its higher-ranked signature
+        /// from this bound exactly as it would from the builder method; the
+        /// returned entry is then installed without knowing its type.
+        #[doc(hidden)]
+        pub mod handlers {
+            use super::*;
+
+            pub fn on_event<R: Into<Flow>>(
+                handler: impl for<'a> FnMut(&SemanticEvent, &mut EventContext<'a>) -> R + 'static,
+            ) -> HandlerEntry {
+                HandlerEntry::new(ListenPhase::Bubble, AnyHandler::Any(Handler::new(handler)))
+            }
+
+            pub fn on_event_capture<R: Into<Flow>>(
+                handler: impl for<'a> FnMut(&SemanticEvent, &mut EventContext<'a>) -> R + 'static,
+            ) -> HandlerEntry {
+                HandlerEntry::new(ListenPhase::Capture, AnyHandler::Any(Handler::new(handler)))
+            }
+
+            $(
+                $(#[deprecated(note = $deprecated)])?
+                pub fn $method<R: Into<Flow>>(
+                    handler: impl for<'a> FnMut(&$event, &mut EventContext<'a>) -> R + 'static,
+                ) -> HandlerEntry {
+                    HandlerEntry::new(ListenPhase::Bubble, AnyHandler::$kind(Handler::new(handler)))
+                }
+
+                $(
+                    pub fn $capture_method<R: Into<Flow>>(
+                        handler: impl for<'a> FnMut(&$event, &mut EventContext<'a>) -> R + 'static,
+                    ) -> HandlerEntry {
+                        HandlerEntry::new(ListenPhase::Capture, AnyHandler::$kind(Handler::new(handler)))
+                    }
+                )?
+            )*
+        }
     };
+}
+
+/// One `on_*` attribute of a templated host: a handler and the phase it runs
+/// in, from [`handlers`].
+#[derive(Debug, Clone)]
+pub struct HandlerEntry {
+    phase: ListenPhase,
+    handler: AnyHandler,
+}
+
+impl HandlerEntry {
+    fn new(phase: ListenPhase, handler: AnyHandler) -> Self {
+        Self { phase, handler }
+    }
+
+    /// Installs the handler, replacing any earlier one of its kind and phase,
+    /// as the builder method would.
+    pub(crate) fn install(self, handlers: &mut EventHandlers) {
+        handlers.set(self.phase, self.handler);
+    }
 }
 
 // The whole event vocabulary. Adding a row adds the enum discriminant, the mask
@@ -262,7 +323,8 @@ pub trait Listen: Sized {
     fn handlers_mut(&mut self) -> &mut EventHandlers;
 }
 
-#[derive(Debug)]
+// Cloning shares the handlers: each is an `Rc`.
+#[derive(Debug, Clone)]
 struct Entry {
     phase: ListenPhase,
     handler: AnyHandler,
@@ -274,7 +336,7 @@ struct Entry {
 /// carry 33 empty fields plus, in the runtime, a 272-byte handle set. Nodes
 /// almost always have zero or one handler, so a `SmallVec` inline capacity of
 /// four covers the realistic cases without allocating.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct EventHandlers {
     mask: EventMask,
     entries: SmallVec<[Entry; 4]>,

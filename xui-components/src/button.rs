@@ -1,6 +1,6 @@
 //! Action buttons with semantic emphasis and density settings.
 //!
-//! Use [`button`](fn@self::button) for keyboard-operable actions. [`ButtonVariant`]
+//! Use [`Button`](fn@self::Button) for keyboard-operable actions. [`ButtonVariant`]
 //! chooses emphasis and [`ButtonSize`] chooses density; arbitrary leading/trailing
 //! elements support compound labels.
 //!
@@ -8,7 +8,7 @@
 //!
 //! | Component | Purpose |
 //! | --- | --- |
-//! | [`button`](fn@self::button) | A focusable action button with semantic variants, loading state, and keyboard activation. |
+//! | [`Button`](fn@self::Button) | A focusable action button with semantic variants, loading state, and keyboard activation. |
 
 use std::time::Duration;
 
@@ -256,7 +256,7 @@ fn invoke(callback: &Option<ButtonClickCallback>) {
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { button(text: "Save", variant: ButtonVariant::Primary) };
+/// let _ = view! { Button(text: "Save", variant: ButtonVariant::Primary) };
 /// ```
 #[component]
 #[defaults(
@@ -300,7 +300,7 @@ pub fn button(
     if *loading {
         children.push(loading_indicator.clone().unwrap_or_else(|| {
             view! {
-                crate::spinner(size: 16.0, label: "Loading")
+                crate::Spinner(size: 16.0, label: "Loading")
             }
         }));
     } else if let Some(leading) = leading {

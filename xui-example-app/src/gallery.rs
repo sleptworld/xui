@@ -1,7 +1,7 @@
 //! The Component Gallery: every `xui-components` control on the shadcn/ui-style
 //! theme, one page per component, behind a sidebar.
 
-use xui_components::image::image;
+use xui_components::image::Image;
 use xui_components::*;
 use xui_core::core::Bounds;
 use xui_core::prelude::*;
@@ -200,20 +200,20 @@ fn button_page() {
 
     let variants = xui! {
         <row gap={8.0} flex_wrap={true} justify={JustifyStyle::Center}>
-            <button text={label("Primary")} variant={ButtonVariant::Primary} />
-            <button text={label("Secondary")} variant={ButtonVariant::Secondary} />
-            <button text={label("Outline")} variant={ButtonVariant::Outline} />
-            <button text={label("Ghost")} variant={ButtonVariant::Ghost} />
-            <button text={label("Destructive")} variant={ButtonVariant::Danger} />
-            <button text={label("Link")} variant={ButtonVariant::Link} />
+            <Button text={label("Primary")} variant={ButtonVariant::Primary} />
+            <Button text={label("Secondary")} variant={ButtonVariant::Secondary} />
+            <Button text={label("Outline")} variant={ButtonVariant::Outline} />
+            <Button text={label("Ghost")} variant={ButtonVariant::Ghost} />
+            <Button text={label("Destructive")} variant={ButtonVariant::Danger} />
+            <Button text={label("Link")} variant={ButtonVariant::Link} />
         </row>
     };
     let sizes = xui! {
         <row gap={8.0} flex_wrap={true} justify={JustifyStyle::Center}>
-            <button text={label("Small")} variant={ButtonVariant::Outline} size={ButtonSize::Small} />
-            <button text={label("Default")} variant={ButtonVariant::Outline} />
-            <button text={label("Large")} variant={ButtonVariant::Outline} size={ButtonSize::Large} />
-            <button
+            <Button text={label("Small")} variant={ButtonVariant::Outline} size={ButtonSize::Small} />
+            <Button text={label("Default")} variant={ButtonVariant::Outline} />
+            <Button text={label("Large")} variant={ButtonVariant::Outline} size={ButtonSize::Large} />
+            <Button
                 text={String::new()}
                 variant={ButtonVariant::Outline}
                 size={ButtonSize::Icon}
@@ -224,17 +224,17 @@ fn button_page() {
     };
     let with_icon = xui! {
         <row gap={8.0} flex_wrap={true} justify={JustifyStyle::Center}>
-            <button
+            <Button
                 text={label("Login with Email")}
                 variant={ButtonVariant::Primary}
                 leading={Some(lucide(lucide_rs::icons::mail(), 16.0))}
             />
-            <button
+            <Button
                 text={label("Delete")}
                 variant={ButtonVariant::Danger}
                 leading={Some(lucide(lucide_rs::icons::trash_2(), 16.0))}
             />
-            <button
+            <Button
                 text={label("Continue")}
                 variant={ButtonVariant::Secondary}
                 trailing={Some(lucide(lucide_rs::icons::arrow_right(), 16.0))}
@@ -243,13 +243,13 @@ fn button_page() {
     };
     let states = xui! {
         <row gap={8.0} flex_wrap={true} justify={JustifyStyle::Center}>
-            <button text={label("Disabled")} variant={ButtonVariant::Primary} disabled={true} />
-            <button text={label("Disabled")} variant={ButtonVariant::Outline} disabled={true} />
-            <button
+            <Button text={label("Disabled")} variant={ButtonVariant::Primary} disabled={true} />
+            <Button text={label("Disabled")} variant={ButtonVariant::Outline} disabled={true} />
+            <Button
                 text={label("Please wait")}
                 variant={ButtonVariant::Primary}
                 loading={true}
-                loading_indicator={Some(xui! { <spinner size={16.0} /> })}
+                loading_indicator={Some(xui! { <Spinner size={16.0} /> })}
             />
         </row>
     };
@@ -257,7 +257,7 @@ fn button_page() {
     let interactive = hstack(
         16.0,
         vec![
-            xui! { <button text={label("Click me")} variant={ButtonVariant::Primary} on_click={Some(on_click)} /> },
+            xui! { <Button text={label("Click me")} variant={ButtonVariant::Primary} on_click={Some(on_click)} /> },
             muted(format!(
                 "Clicked {count} time{}",
                 if count == 1 { "" } else { "s" }
@@ -278,23 +278,23 @@ fn button_page() {
 fn spinner_page() {
     let sizes = xui! {
         <row gap={24.0} align={AlignStyle::Center} justify={JustifyStyle::Center}>
-            <spinner size={16.0} />
-            <spinner size={24.0} />
-            <spinner size={32.0} />
-            <spinner size={48.0} />
+            <Spinner size={16.0} />
+            <Spinner size={24.0} />
+            <Spinner size={32.0} />
+            <Spinner size={48.0} />
         </row>
     };
     let colors = xui! {
         <row gap={24.0} align={AlignStyle::Center} justify={JustifyStyle::Center}>
-            <spinner style={Style::new().color(ColorToken::MutedForeground)} />
-            <spinner style={Style::new().color(ColorToken::Primary)} />
-            <spinner style={Style::new().color(ColorToken::Destructive)} />
+            <Spinner style={Style::new().color(ColorToken::MutedForeground)} />
+            <Spinner style={Style::new().color(ColorToken::Primary)} />
+            <Spinner style={Style::new().color(ColorToken::Destructive)} />
         </row>
     };
     let in_context = hstack(
         8.0,
         vec![
-            xui! { <spinner size={16.0} style={Style::new().color(ColorToken::MutedForeground)} /> },
+            xui! { <Spinner size={16.0} style={Style::new().color(ColorToken::MutedForeground)} /> },
             muted("Syncing your changes"),
         ],
     );
@@ -315,13 +315,13 @@ fn input_page() {
             "Default",
             ContainerWidget::new()
                 .style(Style::new().width(320.0))
-                .into_element_desc(vec![xui! { <input controller={email.get().clone()} /> }]),
+                .into_element_desc(vec![xui! { <Input controller={email.get().clone()} /> }]),
         ),
         example(
             "With label",
             field(
                 "Email",
-                xui! { <input controller={prefilled.get().clone()} /> },
+                xui! { <Input controller={prefilled.get().clone()} /> },
                 Some("Click to focus; click the empty area around it to blur."),
             ),
         ),
@@ -347,7 +347,7 @@ fn select_page() {
         12.0,
         vec![
             xui! {
-                <drop_down
+                <DropDown
                     items={fruits()}
                     selected={Some(*selected.get())}
                     on_change={Some(on_change)}
@@ -360,13 +360,13 @@ fn select_page() {
     page(vec![
         example(
             "Default",
-            xui! { <drop_down items={fruits()} id_prefix={"gallery-select".to_string()} /> },
+            xui! { <DropDown items={fruits()} id_prefix={"gallery-select".to_string()} /> },
         ),
         example("Controlled", controlled),
         example(
             "Disabled",
             xui! {
-                <drop_down
+                <DropDown
                     items={fruits()}
                     disabled={true}
                     id_prefix={"gallery-select-disabled".to_string()}
@@ -393,7 +393,7 @@ fn tab_card(title: &str, description: &str, fields: Vec<ElementDesc>, action: &s
     children.extend(fields);
     children.push(hstack(
         0.0,
-        vec![xui! { <button text={action.to_string()} variant={ButtonVariant::Primary} /> }],
+        vec![xui! { <Button text={action.to_string()} variant={ButtonVariant::Primary} /> }],
     ));
     ContainerWidget::new()
         .style(
@@ -436,12 +436,12 @@ fn tabs_page() {
                 vec![
                     field(
                         "Name",
-                        xui! { <input controller={name.get().clone()} /> },
+                        xui! { <Input controller={name.get().clone()} /> },
                         None,
                     ),
                     field(
                         "Username",
-                        xui! { <input controller={username.get().clone()} /> },
+                        xui! { <Input controller={username.get().clone()} /> },
                         None,
                     ),
                 ],
@@ -457,12 +457,12 @@ fn tabs_page() {
                 vec![
                     field(
                         "Current password",
-                        xui! { <input controller={current.get().clone()} /> },
+                        xui! { <Input controller={current.get().clone()} /> },
                         None,
                     ),
                     field(
                         "New password",
-                        xui! { <input controller={next.get().clone()} /> },
+                        xui! { <Input controller={next.get().clone()} /> },
                         None,
                     ),
                 ],
@@ -478,7 +478,7 @@ fn tabs_page() {
         example(
             "Default",
             xui! {
-                <tabs
+                <Tabs
                     items={items}
                     selected={Some(*selected.get())}
                     on_change={Some(on_change)}
@@ -506,7 +506,7 @@ fn image_page() {
                             .clip(true),
                     )
                     .into_element_desc(vec![xui! {
-                        <image
+                        <Image
                             src={ImageSrc::AssetId(crate::xui_assets::refs::images::DEMO_PNG)}
                             width={180.0}
                             height={120.0}
@@ -573,7 +573,7 @@ fn virtual_list_page() {
                 .clip(true),
         )
         .into_element_desc(vec![xui! {
-            <virtual_list
+            <VirtualList
                 item_count={ROW_COUNT}
                 item_height={ROW_HEIGHT}
                 viewport_height={320.0}
@@ -837,7 +837,7 @@ fn nav_item(page: Page, active: bool, on_select: Callback<()>) -> ElementDesc {
         style = style.color(ColorToken::MutedForeground);
     }
     xui! {
-        <button
+        <Button
             text={page.title().to_string()}
             variant={ButtonVariant::Ghost}
             size={ButtonSize::Small}
@@ -905,14 +905,14 @@ pub fn gallery() {
     let page = *active.get();
 
     let content: ElementDesc = match page {
-        Page::Button => xui! { <button_page /> },
-        Page::Spinner => xui! { <spinner_page /> },
-        Page::Input => xui! { <input_page /> },
-        Page::Select => xui! { <select_page /> },
-        Page::Tabs => xui! { <tabs_page /> },
-        Page::Image => xui! { <image_page /> },
-        Page::VirtualList => xui! { <virtual_list_page /> },
-        Page::Canvas => xui! { <canvas_page /> },
+        Page::Button => xui! { <ButtonPage /> },
+        Page::Spinner => xui! { <SpinnerPage /> },
+        Page::Input => xui! { <InputPage /> },
+        Page::Select => xui! { <SelectPage /> },
+        Page::Tabs => xui! { <TabsPage /> },
+        Page::Image => xui! { <ImagePage /> },
+        Page::VirtualList => xui! { <VirtualListPage /> },
+        Page::Canvas => xui! { <CanvasPage /> },
     };
 
     let main = ContainerWidget::new()

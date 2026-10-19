@@ -1,19 +1,19 @@
 //! Externally filtered command discovery in a dialog.
 //!
 //! [`CommandItem`] defines identity, label, keywords, display shortcut, and disabled
-//! state. [`command_palette`] filters a caller-supplied query and reports selection by
+//! state. [`CommandPalette`] filters a caller-supplied query and reports selection by
 //! original item index; it does not include an editable search field.
 //!
 //! # Components
 //!
 //! | Component | Purpose |
 //! | --- | --- |
-//! | [`command_palette`](fn@self::command_palette) | A dialog listing commands filtered by a caller-supplied query. |
+//! | [`CommandPalette`](fn@self::CommandPalette) | A dialog listing commands filtered by a caller-supplied query. |
 
 use xui_core::prelude::*;
 use xui_macros::{component, view};
 
-use crate::{BoolChangeCallback, MenuSelectCallback, dialog};
+use crate::{BoolChangeCallback, MenuSelectCallback, Dialog};
 
 /// An identified command with searchable keywords, a display shortcut, and disabled
 /// state.
@@ -89,7 +89,7 @@ fn command_matches(item: &CommandItem, query: &str) -> bool {
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { command_palette(items: vec![CommandItem::new("open", "Open file").keywords(["document"])], query: "file", open: true) };
+/// let _ = view! { CommandPalette(items: vec![CommandItem::new("open", "Open file").keywords(["document"])], query: "file", open: true) };
 /// ```
 #[component]
 #[defaults(
@@ -239,7 +239,7 @@ pub fn command_palette(
         }
     };
     view! {
-        dialog(
+        Dialog(
             content: content,
             open: Some(*open),
             title: Some("Command palette".to_owned()),

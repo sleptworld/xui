@@ -31,8 +31,8 @@ fn outer(items: &Vec<u32>, label: &str) {
     let local = vec![7, 8];
     xui! {
         <container>
-            <middle items={items.share()} label={label.share()} />
-            <generic_leaf name={"copied"} items={local.share()} />
+            <Middle items={items.share()} label={label.share()} />
+            <GenericLeaf name={"copied"} items={local.share()} />
         </container>
     }
 }
@@ -42,8 +42,8 @@ fn middle(items: &Vec<u32>, label: &str) {
     record("middle", items, label);
     xui! {
         <container>
-            <leaf items={items.share()} label={label.share()} />
-            <generic_leaf name={"generic"} items={items.share()} />
+            <Leaf items={items.share()} label={label.share()} />
+            <GenericLeaf name={"generic"} items={items.share()} />
         </container>
     }
 }
@@ -62,7 +62,7 @@ fn generic_leaf<T: Clone>(name: &str, items: &Vec<T>) {
 }
 
 fn root(_cx: &mut HookContext<'_>) -> ElementDesc {
-    xui! { <outer items={vec![1, 2, 3]} label={"shared"} /> }
+    xui! { <Outer items={vec![1, 2, 3]} label={"shared"} /> }
 }
 
 #[test]
@@ -98,7 +98,7 @@ fn record_handle(count: &State<u32>) {
 #[component]
 fn relay(count: &State<u32>) {
     record_handle(count);
-    xui! { <relay_leaf count={count.share()} /> }
+    xui! { <RelayLeaf count={count.share()} /> }
 }
 
 #[component]
@@ -109,7 +109,7 @@ fn relay_leaf(count: &State<u32>) {
 
 fn state_root(cx: &mut HookContext<'_>) -> ElementDesc {
     let count = cx.use_state(|| 0u32);
-    xui! { <relay count={count} /> }
+    xui! { <Relay count={count} /> }
 }
 
 #[test]

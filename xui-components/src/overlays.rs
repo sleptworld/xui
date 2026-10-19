@@ -1,7 +1,7 @@
 //! Portal-mounted dialogs, popovers, hints, menus, drawers, and toasts.
 //!
-//! [`dialog`], [`drawer`], [`popover`], [`tooltip`], [`menu`], [`context_menu`], and
-//! [`toast`] share runtime stacking and dismissal behavior. Anchored components use
+//! [`Dialog`], [`Drawer`], [`Popover`], [`Tooltip`], [`Menu`], [`ContextMenu`], and
+//! [`Toast`] share runtime stacking and dismissal behavior. Anchored components use
 //! [`xui_core::anchor::AnchorPlacement`]. Modal portals block background pointer input;
 //! automatic focus trapping/restoration is not provided by the current portal API.
 //!
@@ -9,13 +9,13 @@
 //!
 //! | Component | Purpose |
 //! | --- | --- |
-//! | [`dialog`](fn@self::dialog) | A modal portal containing a titled dialog panel and backdrop. |
-//! | [`popover`](fn@self::popover) | An anchored portal opened by a focusable trigger. |
-//! | [`tooltip`](fn@self::tooltip) | A non-interactive anchored hint shown on pointer hover or descendant focus. |
-//! | [`drawer`](fn@self::drawer) | An edge-mounted modal sheet with a configurable side and backdrop. |
-//! | [`menu`](fn@self::menu) | A trigger-based menu with disabled actions and keyboard focus navigation. |
-//! | [`context_menu`](fn@self::context_menu) | A menu opened by semantic context-menu events at a pointer or keyboard-requested position. |
-//! | [`toast`](fn@self::toast) | A portal-mounted transient message with a semantic tone and live announcement. |
+//! | [`Dialog`](fn@self::Dialog) | A modal portal containing a titled dialog panel and backdrop. |
+//! | [`Popover`](fn@self::Popover) | An anchored portal opened by a focusable trigger. |
+//! | [`Tooltip`](fn@self::Tooltip) | A non-interactive anchored hint shown on pointer hover or descendant focus. |
+//! | [`Drawer`](fn@self::Drawer) | An edge-mounted modal sheet with a configurable side and backdrop. |
+//! | [`Menu`](fn@self::Menu) | A trigger-based menu with disabled actions and keyboard focus navigation. |
+//! | [`ContextMenu`](fn@self::ContextMenu) | A menu opened by semantic context-menu events at a pointer or keyboard-requested position. |
+//! | [`Toast`](fn@self::Toast) | A portal-mounted transient message with a semantic tone and live announcement. |
 
 use crate::layout::MergeClone;
 use xui_core::prelude::*;
@@ -77,7 +77,7 @@ fn overlay_panel_style() -> Style {
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { dialog(content: view! { text("Dialog content") }, title: Some("Settings".to_owned()), open: Some(true)) };
+/// let _ = view! { Dialog(content: view! { text("Dialog content") }, title: Some("Settings".to_owned()), open: Some(true)) };
 /// ```
 #[component]
 #[defaults(
@@ -209,7 +209,7 @@ pub fn dialog(
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { popover(trigger: view! { text("More") }, content: view! { text("Additional details") }) };
+/// let _ = view! { Popover(trigger: view! { text("More") }, content: view! { text("Additional details") }) };
 /// ```
 #[component]
 #[defaults(
@@ -317,7 +317,7 @@ pub fn popover(
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { tooltip(trigger: view! { text("Help") }, text: "Show help") };
+/// let _ = view! { Tooltip(trigger: view! { text("Help") }, text: "Show help") };
 /// ```
 #[component]
 #[defaults(
@@ -435,7 +435,7 @@ pub enum DrawerSide {
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { drawer(content: view! { text("Settings") }, side: DrawerSide::Right, open: Some(true)) };
+/// let _ = view! { Drawer(content: view! { text("Settings") }, side: DrawerSide::Right, open: Some(true)) };
 /// ```
 #[component]
 #[defaults(
@@ -600,7 +600,7 @@ pub type MenuSelectCallback = Callback<usize>;
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { menu(trigger: view! { text("Actions") }, items: vec![MenuItem::new("copy", "Copy")]) };
+/// let _ = view! { Menu(trigger: view! { text("Actions") }, items: vec![MenuItem::new("copy", "Copy")]) };
 /// ```
 #[component]
 #[defaults(
@@ -723,7 +723,7 @@ pub fn menu(
         }
     });
     view! {
-        popover(
+        Popover(
             trigger: trigger.share(),
             content: content,
             open: Some(shown),
@@ -764,7 +764,7 @@ pub fn menu(
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { context_menu(trigger: view! { text("Right-click here") }, items: vec![MenuItem::new("copy", "Copy")]) };
+/// let _ = view! { ContextMenu(trigger: view! { text("Right-click here") }, items: vec![MenuItem::new("copy", "Copy")]) };
 /// ```
 #[component]
 #[defaults(
@@ -972,7 +972,7 @@ pub enum ToastTone {
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { toast(message: "Saved", open: true) };
+/// let _ = view! { Toast(message: "Saved", open: true) };
 /// ```
 #[component]
 #[defaults(

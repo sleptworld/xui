@@ -5391,6 +5391,7 @@ dependencies = [
  "xui-interface",
  "xui-macros",
  "xui-render-graph",
+ "xui-schema",
  "zune-core",
  "zune-image",
 ]
@@ -5478,6 +5479,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+ "xui-schema",
 ]
 
 [[package]]
@@ -5528,6 +5530,10 @@ dependencies = [
  "thiserror 2.0.18",
  "xui-interface",
 ]
+
+[[package]]
+name = "xui-schema"
+version = "0.1.0"
 
 [[package]]
 name = "xui-shell"

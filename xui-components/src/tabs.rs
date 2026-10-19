@@ -1,14 +1,14 @@
 //! Tab navigation, panel mounting, and keyboard activation modes.
 //!
 //! [`TabItem`] combines a label, content panel, identity, and disabled state.
-//! [`tabs`](fn@self::tabs) mounts only the active panel, while [`TabsStyle`] exposes
+//! [`Tabs`](fn@self::Tabs) mounts only the active panel, while [`TabsStyle`] exposes
 //! independently replaceable styles.
 //!
 //! # Components
 //!
 //! | Component | Purpose |
 //! | --- | --- |
-//! | [`tabs`](fn@self::tabs) | An accessible tab list with one mounted content panel and configurable keyboard activation. |
+//! | [`Tabs`](fn@self::Tabs) | An accessible tab list with one mounted content panel and configurable keyboard activation. |
 
 use std::time::Duration;
 
@@ -202,7 +202,7 @@ fn new_focus_handles(count: usize) -> Rc<[FocusHandle]> {
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { tabs(items: vec![TabItem::new("account", "Account", view! { text("Account settings") })]) };
+/// let _ = view! { Tabs(items: vec![TabItem::new("account", "Account", view! { text("Account settings") })]) };
 /// ```
 #[component]
 #[defaults(

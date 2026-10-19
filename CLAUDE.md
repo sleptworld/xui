@@ -45,6 +45,7 @@ app ──► xui (runtime, fiber, hooks, layout, style, widgets, render scene)
           ├─► xui-interface   shared vocabulary: geometry, Style/StylePatch/ComputedStyle,
           │                   tokens/themes, RawEvent*, text traits (TextBackend, Shaper, …)
           ├─► xui-macros      xui!, style!, #[component], #[main], #[derive(Animatable)]
+          │     └─► xui-schema  host tags and style attributes the macros template (data only)
           ├─► xui-animation   Animatable/Tween/Timeline
           ├─► xui-render-graph  compile_layer → LayerProgram → instantiate per frame (pure Rust)
           ├─► xui-assets      AssetManager (mount order: DirectorySource dev → EmbeddedPak/PakSource)
@@ -76,6 +77,8 @@ app ──► xui (runtime, fiber, hooks, layout, style, widgets, render scene)
 **Text backend contract** (`xui-interface/src/text.rs`): `TextBackend` is a bundle of associated types — `Fonts: FontCollection` (shared `Arc`, `&self`, `Send + Sync`; every font id a layout uses must resolve through it until its `epoch` moves), `Shaper` (the `&mut` layout context; most backends use `Shaper = Self`), and `Rasterizer: GlyphRasterizer` (`&self`, `Send + Sync`, `NoRasterizer` when absent). Layouts are scale-independent; renderers build `GlyphRequest`s (font, glyph, physical ppem, subpixel offset, `RasterOptions`) themselves. There is no per-glyph key and no text-backend scale factor. `GlyphImage` pixels: `Mask` = 1 byte/px, `SubpixelMask` = RGBA, `Color` = premultiplied RGBA.
 
 **Backend feature flags (every host, and the `xui` facade):** `vello` (default) → `xui-vello`, the host's `runner`; `skia` → `xui-skia`, the host's `skia_runner` (independent of `vello`); `skia-wgpu` → Skia running on a wgpu-owned device so a `CanvasController::with_gpu_painter` canvas can composite its own shader output (enables `xui-core/wgpu` and `xui-skia/wgpu`; Vello always runs on its own wgpu device, so it needs no such flag). `xui-winit` also has `wgpu` → the standalone wgpu renderer (`wgpu_runner`), which does not compile against the current wgpu. `xui-example-app` runs on Vello; `--features skia` runs it on Skia, and its snapshot tests render headless through Skia either way. `xui-skia` itself defaults to its `wgpu` feature; `wgpu-hal` is pinned to `>=29.0.4` deliberately (see comment in `xui-skia/Cargo.toml`).
+
+**Tags**: host tags are lowercase (`row`, `text`); `#[component] fn date_picker` is written `DatePicker(..)` in `view!` / `xui!`. `xui!` / `view!` hoist fully static elements and template the hosts listed in `xui-schema` (`docs/template-slots.md` §5, §12); a new style attribute in `style_props!` belongs in `xui_schema::STYLE_PROPS` too (a test checks).
 
 **Components contract** (`docs/components.md`): stateful controls take an optional controlled value + `default_*` + `on_*` callback; controlled values are the source of truth. Layout primitives (`ContainerWidget`, `GridWidget`, portals) stay in `xui`, not `xui-components`. Disabled items are removed from focus navigation; modal overlays trap/restore focus and render in a portal.
 

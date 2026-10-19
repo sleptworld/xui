@@ -31,9 +31,11 @@ mod animatable;
 mod component;
 mod element;
 mod errors;
+mod hoist;
 mod krate;
 mod main_fn;
 mod style;
+mod template;
 mod view;
 
 use proc_macro::TokenStream;

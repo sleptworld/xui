@@ -56,14 +56,14 @@ fn marker<T>() {
 
 #[test]
 fn type_parameters_are_inferred_from_the_props_that_name_them() {
-    let _: ElementDesc = xui! { <labeled value={3u8} /> };
-    let _: ElementDesc = xui! { <labeled value={"text"} /> };
-    let _: ElementDesc = xui! { <rendered render={|v: i32| v.to_string()} value={2} /> };
-    let _: ElementDesc = xui! { <fixed values={[1.0, 2.0, 3.0]} /> };
+    let _: ElementDesc = xui! { <Labeled value={3u8} /> };
+    let _: ElementDesc = xui! { <Labeled value={"text"} /> };
+    let _: ElementDesc = xui! { <Rendered render={|v: i32| v.to_string()} value={2} /> };
+    let _: ElementDesc = xui! { <Fixed values={[1.0, 2.0, 3.0]} /> };
     let _: ElementDesc = xui! {
-        <listing items={vec![1, 2]}>
+        <Listing items={vec![1, 2]}>
             <container />
-        </listing>
+        </Listing>
     };
 
     let props = LabeledProps::builder().value(7i64).build();
@@ -72,8 +72,8 @@ fn type_parameters_are_inferred_from_the_props_that_name_them() {
 
 #[test]
 fn parameters_no_prop_names_take_a_turbofish() {
-    let _: ElementDesc = xui! { <typed::<u8> label={"n".to_string()} /> };
-    let _: ElementDesc = xui! { <marker::<String> /> };
+    let _: ElementDesc = xui! { <Typed::<u8> label={"n".to_string()} /> };
+    let _: ElementDesc = xui! { <Marker::<String> /> };
 
     let props = TypedProps::<u8>::builder().label("n").build();
     assert_eq!(props.label, "n");
@@ -122,9 +122,9 @@ fn swapping_root(cx: &mut HookContext<'_>) -> ElementDesc {
     let wide = cx.use_state(|| false);
     WIDE.with(|slot| *slot.borrow_mut() = Some(wide));
     if *wide.get() {
-        xui! { <probe::<u16> key={"probe"} tag={"p".to_string()} /> }
+        xui! { <Probe::<u16> key={"probe"} tag={"p".to_string()} /> }
     } else {
-        xui! { <probe::<u8> key={"probe"} tag={"p".to_string()} /> }
+        xui! { <Probe::<u8> key={"probe"} tag={"p".to_string()} /> }
     }
 }
 

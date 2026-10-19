@@ -1,6 +1,6 @@
 //! Viewport-bounded rendering for fixed-height collections.
 //!
-//! [`virtual_list`](fn@self::virtual_list) uses [`VirtualItemRenderer`] to build only a
+//! [`VirtualList`](fn@self::VirtualList) uses [`VirtualItemRenderer`] to build only a
 //! visible window plus overscan. [`VirtualRange`] describes a half-open row range. Layout
 //! size observations keep the window current after resizes.
 //!
@@ -8,7 +8,7 @@
 //!
 //! | Component | Purpose |
 //! | --- | --- |
-//! | [`virtual_list`](fn@self::virtual_list) | A fixed-row-height scrolling list that materializes only the visible window and overscan. |
+//! | [`VirtualList`](fn@self::VirtualList) | A fixed-row-height scrolling list that materializes only the visible window and overscan. |
 
 use xui_core::prelude::*;
 use xui_macros::{component, view};
@@ -103,13 +103,13 @@ fn visible_range(
 /// fn example_list() {
 ///     let render_item = cx.use_callback((), |index: usize| view! { text(index.to_string()) });
 ///     view! {
-///         virtual_list(item_count: 100_000usize, item_height: 24.0,
+///         VirtualList(item_count: 100_000usize, item_height: 24.0,
 ///             viewport_height: 240.0, render_item: render_item)
 ///     }
 /// }
 ///
 /// fn main() {
-///     let _ = view! { example_list() };
+///     let _ = view! { ExampleList() };
 /// }
 /// ```
 #[component]
@@ -327,7 +327,7 @@ mod tests {
             }
         });
         view! {
-            virtual_list(
+            VirtualList(
                 item_count: 1_000usize,
                 item_height: 20.0f32,
                 viewport_height: 200.0f32,

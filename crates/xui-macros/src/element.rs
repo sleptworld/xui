@@ -21,6 +21,10 @@
 //! The one thing this module *does* enforce is what it can see without types:
 //! an attribute must not be written twice.
 //!
+//! The one thing it *decides* without types is whether an element is static —
+//! literals and constants all the way down — in which case the same expansion
+//! runs once per call site instead of on every render ([`crate::hoist`]).
+//!
 //! [`Element`] is also the tree `view!` parses into (see [`crate::view`]), so
 //! the two syntaxes share one expansion and cannot drift apart. The control
 //! flow children ([`Child::If`], [`Child::For`], [`Child::Match`],
@@ -35,6 +39,8 @@ use syn::spanned::Spanned;
 use syn::{Error, Expr, Ident, LitStr, Pat, Path, Result, Stmt, Token, braced};
 
 use crate::errors::Errors;
+use crate::hoist;
+use crate::template;
 
 pub struct Element {
     pub tag: Path,
@@ -204,12 +210,32 @@ fn path_name(path: &Path) -> String {
 impl Element {
     pub fn expand(&self, xui: &TokenStream2) -> Result<TokenStream2> {
         let mut errors = Errors::default();
-        let tokens = self.expand_inner(xui, &mut errors);
+        let tokens = self.expand_value(xui, &mut errors);
         errors.into_result()?;
         Ok(tokens)
     }
 
-    fn expand_inner(&self, xui_core: &TokenStream2, errors: &mut Errors) -> TokenStream2 {
+    /// The element as an `ElementDesc` expression: built once per call site
+    /// when it is static (see [`crate::hoist`]), built every time otherwise.
+    /// Only the largest static subtree is hoisted; its own static children are
+    /// part of that one allocation.
+    fn expand_value(&self, xui_core: &TokenStream2, errors: &mut Errors) -> TokenStream2 {
+        if hoist::is_static_element(self) {
+            let element = self.expand_inner(xui_core, errors, false);
+            hoist::hoist(element, xui_core)
+        } else if let Some(templated) = template::expand(self, xui_core, errors) {
+            templated
+        } else {
+            self.expand_inner(xui_core, errors, true)
+        }
+    }
+
+    fn expand_inner(
+        &self,
+        xui_core: &TokenStream2,
+        errors: &mut Errors,
+        hoist_children: bool,
+    ) -> TokenStream2 {
         self.check_duplicate_attrs(errors);
 
         let tag = &self.tag;
@@ -223,7 +249,7 @@ impl Element {
             builder = quote_spanned!(name.span()=> #builder.#name(#value));
         }
 
-        let children = self.expand_children(xui_core, errors);
+        let children = self.expand_children(xui_core, errors, hoist_children);
         // The body's span, so that "does not accept this kind of body"
         // underlines the body rather than the whole invocation.
         let span = self.body_span().unwrap_or_else(|| tag.span());
@@ -240,7 +266,7 @@ impl Element {
         }
     }
 
-    fn check_duplicate_attrs(&self, errors: &mut Errors) {
+    pub(crate) fn check_duplicate_attrs(&self, errors: &mut Errors) {
         let mut seen: HashMap<String, Span> = HashMap::new();
         for attr in &self.attrs {
             let name = attr.name.to_string();
@@ -261,14 +287,19 @@ impl Element {
     /// them a widget accepts is a property of its `IntoElement` impls, not of
     /// this macro. That is what makes `<canvas>{x}</canvas>` a type error and
     /// `<text>{x}</text>` a text assignment without either being special-cased.
-    fn expand_children(&self, xui_core: &TokenStream2, errors: &mut Errors) -> TokenStream2 {
+    pub(crate) fn expand_children(
+        &self,
+        xui_core: &TokenStream2,
+        errors: &mut Errors,
+        hoist: bool,
+    ) -> TokenStream2 {
         match &self.body {
             Body::None => quote!(#xui_core::dsl::NoChildren),
             Body::Content(expr) => {
                 quote_spanned!(expr.span()=> #xui_core::dsl::Content(#expr))
             }
             Body::Children(children) => {
-                let statements = expand_statements(children, xui_core, errors);
+                let statements = expand_statements(children, xui_core, errors, hoist);
                 quote! {
                     #xui_core::dsl::Children({
                         let mut __xui_children = ::std::vec::Vec::new();
@@ -298,20 +329,27 @@ impl Child {
 /// flow children become the same control flow around their own pushes, so a
 /// branch that is not taken contributes nothing and a loop contributes one
 /// entry per iteration.
+///
+/// `hoist` is false inside a subtree that is already being hoisted as a whole.
 fn expand_statements(
     children: &[Child],
     xui_core: &TokenStream2,
     errors: &mut Errors,
+    hoist: bool,
 ) -> TokenStream2 {
     let statements = children.iter().map(|child| match child {
         Child::Element(element) => {
-            let element = element.expand_inner(xui_core, errors);
+            let element = if hoist {
+                element.expand_value(xui_core, errors)
+            } else {
+                element.expand_inner(xui_core, errors, false)
+            };
             quote!(__xui_children.push(#element);)
         }
         Child::Expr(expr) => quote_spanned! {expr.span()=>
             #xui_core::IntoChildren::append_children(#expr, &mut __xui_children);
         },
-        Child::If(child) => expand_if(child, xui_core, errors),
+        Child::If(child) => expand_if(child, xui_core, errors, hoist),
         Child::For(ForChild {
             for_token,
             pat,
@@ -319,7 +357,7 @@ fn expand_statements(
             body,
             ..
         }) => {
-            let body = expand_statements(body, xui_core, errors);
+            let body = expand_statements(body, xui_core, errors, hoist);
             quote!(#for_token #pat in #iter { #body })
         }
         Child::Match(MatchChild {
@@ -330,7 +368,7 @@ fn expand_statements(
             let arms = arms.iter().map(|arm| {
                 let pat = &arm.pat;
                 let guard = arm.guard.as_ref().map(|guard| quote!(if #guard));
-                let body = expand_statements(&arm.body, xui_core, errors);
+                let body = expand_statements(&arm.body, xui_core, errors, hoist);
                 quote!(#pat #guard => { #body })
             });
             let arms: Vec<_> = arms.collect();
@@ -342,24 +380,29 @@ fn expand_statements(
     quote!(#(#statements)*)
 }
 
-fn expand_if(child: &IfChild, xui_core: &TokenStream2, errors: &mut Errors) -> TokenStream2 {
+fn expand_if(
+    child: &IfChild,
+    xui_core: &TokenStream2,
+    errors: &mut Errors,
+    hoist: bool,
+) -> TokenStream2 {
     let IfChild {
         if_token,
         cond,
         then,
         otherwise,
     } = child;
-    let then = expand_statements(then, xui_core, errors);
+    let then = expand_statements(then, xui_core, errors, hoist);
     let otherwise = otherwise.as_ref().map(|otherwise| {
         // `else if` arrives as an `else` holding a single `if` child; emitting
         // it without the extra block keeps the expansion readable.
         match otherwise.as_slice() {
             [Child::If(nested)] => {
-                let nested = expand_if(nested, xui_core, errors);
+                let nested = expand_if(nested, xui_core, errors, hoist);
                 quote!(else #nested)
             }
             otherwise => {
-                let otherwise = expand_statements(otherwise, xui_core, errors);
+                let otherwise = expand_statements(otherwise, xui_core, errors, hoist);
                 quote!(else { #otherwise })
             }
         }

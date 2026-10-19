@@ -131,9 +131,9 @@ fn main() {
 fn root(cx: &mut HookContext) -> ElementDesc {
     xui! {
         <Column style={style!(padding: 16.0, gap: 8.0)}>
-            <button on_click={Callback::from(|_| { /* ... */ })}>
+            <Button on_click={Callback::from(|_| { /* ... */ })}>
                 {"Click me"}
-            </button>
+            </Button>
         </Column>
     }
 }

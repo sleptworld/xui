@@ -1,6 +1,6 @@
 //! Field labels, descriptions, and accessible validation feedback.
 //!
-//! [`form_field`] wraps an element supplied by the caller and adds required/disabled
+//! [`FormField`] wraps an element supplied by the caller and adds required/disabled
 //! metadata and status messages. [`FieldStatus`] determines feedback emphasis and
 //! live-announcement priority; behavioral flags should also be passed to the nested
 //! control.
@@ -9,7 +9,7 @@
 //!
 //! | Component | Purpose |
 //! | --- | --- |
-//! | [`form_field`](fn@self::form_field) | A labeled form-control wrapper with description and validation feedback. |
+//! | [`FormField`](fn@self::FormField) | A labeled form-control wrapper with description and validation feedback. |
 
 use crate::layout::MergeClone;
 use xui_core::prelude::*;
@@ -55,7 +55,7 @@ pub enum FieldStatus {
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { form_field(label: "Email", control: view! { xui_components::input() }, required: true) };
+/// let _ = view! { FormField(label: "Email", control: view! { xui_components::Input() }, required: true) };
 /// ```
 #[component]
 #[defaults(

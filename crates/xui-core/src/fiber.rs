@@ -3,17 +3,16 @@ use std::any::{Any, TypeId};
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::rc::Rc;
-use taffy::prelude as tf;
 pub use xui_interface::Key;
+use xui_interface::NodeId;
 use xui_interface::widget::WidgetType;
-use xui_interface::{Bounds, ComputedStyle, NodeId};
 
 use crate::HookContext;
-use crate::element::{ComponentDesc, ElementDesc};
-use crate::lanes::{Lanes, NO_LANES};
-use crate::widgets::WidgetI;
 use crate::element::PortalBehavior;
+use crate::element::{ComponentDesc, ElementDesc, Hoisted, TemplateBase, TemplateSlots};
+use crate::lanes::{Lanes, NO_LANES};
 use crate::widgets::{OverlayEntryId, OverlayEntryOptions, OverlayScopeId};
+use crate::widgets::{WidgetI, WidgetProto};
 
 pub type ErasedProps = Rc<dyn Any>;
 /// The props a [`ComponentCall`] is handed: the allocation itself, which
@@ -131,14 +130,29 @@ bitflags::bitflags! {
     }
 }
 
+/// What a host fiber remembers between commits. Everything else about the
+/// host -- its widget, styles and layout -- lives on the `UiRuntime` node and
+/// is read from there.
 pub struct HostState {
     pub node_id: Option<NodeId>,
-    pub widget: Option<WidgetI>,
-    pub style: tf::Style,
-    pub computed_style: ComputedStyle,
-    pub layout: Bounds,
-    pub previous_layout: Bounds,
     pub props_hash: u64,
+    /// The description last committed, so that being handed it again is
+    /// recognised by pointer.
+    pub proto: Option<WidgetProto>,
+    /// The hoisted subtree this host was mounted from, if it was one: being
+    /// handed the same allocation again skips the whole subtree. Held, not
+    /// just compared, so its address cannot be reused while committed.
+    pub hoisted: Option<Rc<Hoisted>>,
+    /// The call site and slot values this host was committed from, if it was
+    /// templated: the next render from the same call site compares and writes
+    /// only the slots.
+    pub template: Option<TemplateState>,
+}
+
+/// See [`HostState::template`].
+pub struct TemplateState {
+    pub base: Rc<TemplateBase>,
+    pub slots: TemplateSlots,
 }
 
 pub struct ComponentState {

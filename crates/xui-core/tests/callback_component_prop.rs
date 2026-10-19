@@ -28,7 +28,7 @@ fn non_hash_component_prop(value: &NotHash, suffix: &String) {
 #[test]
 fn component_props_do_not_need_to_implement_hash() {
     let element = xui! {
-        <non_hash_component_prop value={NotHash(7)} suffix={String::from("!")} />
+        <NonHashComponentProp value={NotHash(7)} suffix={String::from("!")} />
     };
-    assert!(matches!(element, ElementDesc::Component(_)));
+    assert!(matches!(element.resolved(), ElementDesc::Component(_)));
 }

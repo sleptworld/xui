@@ -1,16 +1,15 @@
 use crate::element::ElementDesc;
-use crate::event_system::EventContext;
 use crate::event_system::callbacks::EventHandlers;
 use crate::event_system::interaction::InteractionProperties;
 use crate::widgets::utils::render_box;
 use xui_interface::Bounds;
 use xui_interface::style::FlexDirectionStyle;
 use xui_interface::{
-    ColorStyle, ComputedStyle, EventRef, EventResult, Key, LengthValue, ScrollDirectionStyle,
-    Style, TextContent, TextProps, WidgetType, WidgetUpdateFlags, style::ScrollbarStylePatch,
+    ColorStyle, ComputedStyle, Key, LengthValue, ScrollDirectionStyle, Style, WidgetType,
+    WidgetUpdateFlags, style::ScrollbarStylePatch,
 };
 
-use super::{props_hash, widget_element_desc};
+use super::{HostWidget, props_hash, sync, widget_element_desc};
 use crate::render::RenderTreeWriter;
 
 pub struct ContainerWidget {
@@ -125,46 +124,57 @@ impl Default for ContainerWidget {
     }
 }
 
-impl ContainerWidget {
-    pub(super) fn node_type(&self) -> WidgetType {
-        WidgetType::Container
-    }
+impl HostWidget for ContainerWidget {
+    const TYPE: WidgetType = WidgetType::Container;
 
-    pub(super) fn get_key(&self) -> Option<&Key> {
+    fn get_key(&self) -> Option<&Key> {
         self.key.as_ref()
     }
 
-    pub(super) fn props_hash(&self) -> u64 {
-        props_hash(&(&self.style, self.flex_direction, self.flex_wrap))
-    }
-
-    pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
-        let mut flags = WidgetUpdateFlags::empty();
-        if self.style != next.style {
-            self.style = next.style.clone();
-            flags |= WidgetUpdateFlags::STYLE_TARGET;
-        }
-        if self.flex_direction != next.flex_direction || self.flex_wrap != next.flex_wrap {
-            self.flex_direction = next.flex_direction;
-            self.flex_wrap = next.flex_wrap;
-            flags |= WidgetUpdateFlags::LAYOUT_INPUT;
-        }
-        if flags.is_empty() {
-            WidgetUpdateFlags::empty()
-        } else {
-            flags
-        }
-    }
-
-    pub(super) fn default_style(&self) -> Style {
-        Style::new()
-    }
-
-    pub(super) fn current_style(&self) -> &Style {
+    fn current_style(&self) -> &Style {
         &self.style
     }
 
-    pub(super) fn render(
+    fn style_mut(&mut self) -> Option<&mut Style> {
+        Some(&mut self.style)
+    }
+
+    fn set_key(&mut self, key: Option<Key>) {
+        self.key = key;
+    }
+
+    fn props_hash(&self) -> u64 {
+        props_hash(&(&self.style, self.flex_direction, self.flex_wrap))
+    }
+
+    fn instantiate(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            style: self.style.clone(),
+            flex_direction: self.flex_direction,
+            flex_wrap: self.flex_wrap,
+            event_handlers: EventHandlers::default(),
+            interaction: InteractionProperties::default(),
+        }
+    }
+
+    fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
+        sync(
+            &mut self.style,
+            &next.style,
+            WidgetUpdateFlags::STYLE_TARGET,
+        ) | sync(
+            &mut self.flex_direction,
+            &next.flex_direction,
+            WidgetUpdateFlags::LAYOUT_INPUT,
+        ) | sync(
+            &mut self.flex_wrap,
+            &next.flex_wrap,
+            WidgetUpdateFlags::LAYOUT_INPUT,
+        )
+    }
+
+    fn render(
         &self,
         _node_id: xui_interface::NodeId,
         rect: Bounds,
@@ -174,19 +184,11 @@ impl ContainerWidget {
         render_box(rect, style, writer);
     }
 
-    pub(super) fn handle_event(
-        &mut self,
-        _event: EventRef<'_>,
-        _cx: &mut EventContext<'_>,
-    ) -> EventResult {
-        EventResult::Ignored
+    fn interaction(&self) -> Option<(&InteractionProperties, &EventHandlers)> {
+        Some((&self.interaction, &self.event_handlers))
     }
 
-    pub(super) fn text_content(&self) -> Option<TextContent> {
-        None
-    }
-
-    pub(super) fn text_layout_props(&self, _style: &ComputedStyle) -> Option<TextProps> {
-        None
+    fn interaction_mut(&mut self) -> Option<(&mut InteractionProperties, &mut EventHandlers)> {
+        Some((&mut self.interaction, &mut self.event_handlers))
     }
 }

@@ -31,9 +31,9 @@ fn braced_children_expand_single_and_collection_values_in_order() {
         </container>
     };
 
-    let ElementDesc::Host(host) = element else {
-        panic!("container must expand to a host element");
-    };
+    let host = element
+        .to_host()
+        .expect("container must expand to a host element");
     let keys = host
         .children
         .iter()

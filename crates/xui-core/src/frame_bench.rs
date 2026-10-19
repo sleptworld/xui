@@ -33,7 +33,8 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
-use xui_interface::{Color, NodeId, Size, Style, WidgetState};
+use xui_interface::{Color, NodeId, Size, Sizing, Style, WidgetState};
+use xui_macros::view;
 
 /// Tree sizes to sweep. Each row expands to 4 hosts and ~21 scene nodes, so
 /// 1600 rows is ~6.4k hosts / ~34k scene nodes.
@@ -640,5 +641,132 @@ fn component_rebuild_cost() {
             ms(median(&mut samples)),
             settle[settle.len() / 2]
         );
+    }
+}
+
+/// A row as a template would see it: a static card, a static label, and one
+/// text whose content follows the root's state. `dynamic` false leaves every
+/// row unchanged, so the rebuild is pure overhead.
+fn template_row(index: usize, toggle: bool, dynamic: bool) -> ElementDesc {
+    let value = if dynamic && toggle { "on" } else { "off" };
+    container()
+        .style(
+            Style::new()
+                .width(Sizing::fill())
+                .height(28.0)
+                .padding(EdgeInsets::all(4.0))
+                .background(Color::hex("#141414")),
+        )
+        .into_element_desc(vec![
+            TextWidget::new(if index % 3 == 0 { "row label" } else { "item" })
+                .style(Style::new().width(120.0).height(20.0))
+                .into_element_desc(),
+            TextWidget::new(value)
+                .style(Style::new().width(40.0).height(20.0))
+                .into_element_desc(),
+        ])
+}
+
+fn template_root(cx: &mut HookContext<'_>, dynamic: bool) -> ElementDesc {
+    let toggle = cx.use_state(|| false);
+    TOGGLE.with(|slot| *slot.borrow_mut() = Some(toggle));
+    let on = *toggle.get();
+    let rows: Vec<ElementDesc> = (0..ROWS.load(Ordering::Relaxed))
+        .map(|index| template_row(index, on, dynamic))
+        .collect();
+    container()
+        .style(Style::new().size(Size::fill()).scroll_vertical())
+        .into_element_desc(rows)
+}
+
+/// [`template_row`] written with `view!` and constants only. Without `dynamic`
+/// the whole row is static and hoisted as one (`docs/template-slots.md` §5);
+/// with it, the label is hoisted and the card and the value are templated
+/// (§12): the card has no slots, the value's text is its one slot.
+fn template_row_view(toggle: bool, dynamic: bool) -> ElementDesc {
+    if dynamic {
+        let value = if toggle { "on" } else { "off" };
+        view! {
+            container(width: Sizing::Fill, height: 28.0, background: ROW_BACKGROUND) {
+                text("item").width(120.0).height(20.0)
+                text(value).width(40.0).height(20.0)
+            }
+        }
+    } else {
+        view! {
+            container(width: Sizing::Fill, height: 28.0, background: ROW_BACKGROUND) {
+                text("item").width(120.0).height(20.0)
+                text("off").width(40.0).height(20.0)
+            }
+        }
+    }
+}
+
+const ROW_BACKGROUND: Color = Color::rgb(0.08, 0.08, 0.08);
+
+fn template_root_view(cx: &mut HookContext<'_>, dynamic: bool) -> ElementDesc {
+    let toggle = cx.use_state(|| false);
+    TOGGLE.with(|slot| *slot.borrow_mut() = Some(toggle));
+    let on = *toggle.get();
+    let rows: Vec<ElementDesc> = (0..ROWS.load(Ordering::Relaxed))
+        .map(|_| template_row_view(on, dynamic))
+        .collect();
+    container()
+        .style(Style::new().size(Size::fill()).scroll_vertical())
+        .into_element_desc(rows)
+}
+
+fn template_root_view_static(cx: &mut HookContext<'_>) -> ElementDesc {
+    template_root_view(cx, false)
+}
+
+fn template_root_view_dynamic(cx: &mut HookContext<'_>) -> ElementDesc {
+    template_root_view(cx, true)
+}
+
+fn template_root_static(cx: &mut HookContext<'_>) -> ElementDesc {
+    template_root(cx, false)
+}
+
+fn template_root_dynamic(cx: &mut HookContext<'_>) -> ElementDesc {
+    template_root(cx, true)
+}
+
+/// What the template/slot work (docs/template-slots.md) is measured against:
+/// a root state change re-rendering every row, timed until the tree settles
+/// rather than for the first budget slice only. `unchanged` is pure rebuild
+/// overhead; `one_dynamic` also commits one text per row. Compare both with
+/// `memoized_subtree_bailout`'s memoized line, the floor for skipped work.
+#[test]
+#[ignore = "benchmark; run with --release --ignored"]
+fn template_row_rebuild() {
+    let _exclusive = exclusive();
+    println!("rows,hosts,mode,settle_ms");
+    for rows in ROW_COUNTS {
+        for (label, root) in [
+            ("unchanged", template_root_static as ComponentFn),
+            ("one_dynamic", template_root_dynamic as ComponentFn),
+            ("view_unchanged", template_root_view_static as ComponentFn),
+            ("view_one_dynamic", template_root_view_dynamic as ComponentFn),
+        ] {
+            let mut harness = Harness::with_root(rows, root);
+            let hosts = harness.host_count();
+            let mut samples = Vec::new();
+            for iteration in 0..20 {
+                TOGGLE.with(|slot| {
+                    slot.borrow()
+                        .as_ref()
+                        .expect("root component has mounted")
+                        .set(iteration % 2 == 0)
+                });
+                let started = Instant::now();
+                harness.render();
+                while harness.app.is_dirty() {
+                    harness.render();
+                }
+                samples.push(started.elapsed());
+            }
+            println!("{rows},{hosts},{label},{:.4}", ms(median(&mut samples)));
+        }
     }
 }

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use rustc_hash::FxHashMap;
 use xui_interface::{
     Bounds, ComputedStyle, EdgeInsets, EventRef, EventResult, Key, NodeId, Size, Style,
-    TextContent, TextProps, WidgetType, WidgetUpdateFlags,
+    TextContent, TextProps, WidgetUpdateFlags,
 };
 
 use crate::{event_system::EventContext, render::RenderTreeWriter};
@@ -488,18 +488,18 @@ impl RootOverlayerWidget {
             .children = children;
     }
 
-    no_event_handler_methods!();
-
-    pub(super) fn node_type(&self) -> WidgetType {
-        WidgetType::RootOverlayer
-    }
-
     pub(super) fn get_key(&self) -> Option<&Key> {
         Some(&self.key)
     }
 
     pub(super) fn props_hash(&self) -> u64 {
         0
+    }
+
+    /// Never reached through an element -- the runtime mounts the overlayer
+    /// itself -- but an instance of it is simply a fresh overlayer.
+    pub(super) fn instantiate(&self) -> Self {
+        Self::new()
     }
 
     pub(super) fn update_from(&mut self, _next: &Self) -> WidgetUpdateFlags {

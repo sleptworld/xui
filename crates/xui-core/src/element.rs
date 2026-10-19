@@ -2,9 +2,14 @@ use crate::{
     ComponentRender,
     anchor::AnchorPlacement,
     fiber::{ErasedProps, Key},
-    widgets::{DismissHandler, DismissReason, OverlayEntryOptions, OverlayScopeId, WidgetI},
+    event_system::callbacks::EventHandlers,
+    event_system::interaction::HostInteraction,
+    widgets::{
+        DismissHandler, DismissReason, OverlayEntryOptions, OverlayScopeId, WidgetProto, Widgets,
+    },
 };
-use xui_interface::WidgetType;
+use std::rc::Rc;
+use xui_interface::{Style, StyleMerge, TextContent, WidgetType, WidgetUpdateFlags};
 
 pub type Component = ElementDesc;
 
@@ -13,11 +18,180 @@ pub enum ElementDesc {
     Host(WidgetDesc),
     Component(ComponentDesc),
     Portal(PortalDesc),
+    /// A subtree `xui!` / `view!` proved static: built once per call site and
+    /// thread, and handed out as the same allocation on every render, so the
+    /// reconciler can skip it by pointer.
+    Hoisted(Rc<Hoisted>),
+    /// A host element `xui!` / `view!` split at its call site into what never
+    /// changes, built once ([`TemplateBase`]), and what may (the slots), so
+    /// the reconciler compares and writes only the latter.
+    Templated(TemplatedDesc),
+}
+
+/// A host element as its call site's [`TemplateBase`] plus this render's
+/// values for the attributes that change. See `docs/template-slots.md` §12.
+#[derive(Clone, Debug)]
+pub struct TemplatedDesc {
+    pub(crate) base: Rc<TemplateBase>,
+    pub(crate) key: Option<Key>,
+    pub(crate) slots: TemplateSlots,
+    /// Boxed and absent when there are none, to keep this no larger than the
+    /// other variants of `ElementDesc`.
+    pub(crate) handlers: Option<Box<EventHandlers>>,
+    pub children: Vec<ElementDesc>,
+}
+
+/// The part of a templated host that is the same on every render: the tag
+/// with every static attribute applied. One per call site and thread.
+#[derive(Debug)]
+pub struct TemplateBase {
+    proto: WidgetProto,
+}
+
+impl TemplateBase {
+    pub fn new(proto: WidgetProto) -> Rc<Self> {
+        Rc::new(Self { proto })
+    }
+
+    pub(crate) fn proto(&self) -> &WidgetProto {
+        &self.proto
+    }
+
+    /// The interaction the static attributes set, with `handlers` from this
+    /// render.
+    pub(crate) fn interaction(
+        &self,
+        handlers: Option<Box<EventHandlers>>,
+    ) -> Option<HostInteraction> {
+        let interaction = HostInteraction {
+            properties: self
+                .proto
+                .widgets()
+                .interaction_properties()
+                .cloned()
+                .unwrap_or_default(),
+            handlers: handlers.map(|handlers| *handlers).unwrap_or_default(),
+        };
+        (!interaction.is_empty()).then_some(interaction)
+    }
+
+    /// A widget built as the call site's builder chain would build it with
+    /// `slots`, interaction left out (see [`Widgets::instantiate`]).
+    pub(crate) fn build(&self, slots: &TemplateSlots) -> Widgets {
+        let mut widget = self.proto.widgets().instantiate();
+        slots.write(self, None, &mut widget);
+        widget
+    }
+}
+
+/// The values of a templated host's changing attributes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TemplateSlots {
+    /// Every style attribute from the first changing one on, chained in
+    /// source order onto an empty style. Merged over the base's style it gives
+    /// what the builder chain would: the setters only assign fields.
+    ///
+    /// Boxed: a `Style` is a few kilobytes, and this struct travels inside
+    /// every `ElementDesc`, work node and fiber, templated or not.
+    pub(crate) style: Option<Box<Style>>,
+    /// `text(..)`'s content, when it is not a constant.
+    pub(crate) content: Option<TextContent>,
+}
+
+impl TemplateSlots {
+    /// Writes the slots into `widget`, which holds `base`'s attributes and
+    /// either nothing else (`prev` is `None`) or the slots `prev` wrote.
+    /// Only what differs from `prev` is written; the result says what has to
+    /// be redone.
+    pub(crate) fn write(
+        &self,
+        base: &TemplateBase,
+        prev: Option<&TemplateSlots>,
+        widget: &mut Widgets,
+    ) -> WidgetUpdateFlags {
+        let mut flags = WidgetUpdateFlags::empty();
+        if let Some(style) = &self.style
+            && prev.is_none_or(|prev| prev.style.as_ref() != Some(style))
+            && let Some(target) = widget.style_mut()
+        {
+            let mut next = base.proto.widgets().style().clone();
+            style.merge_into(&mut next);
+            *target = next;
+            flags |= WidgetUpdateFlags::STYLE_TARGET;
+        }
+        if let Some(content) = &self.content
+            && prev.is_none_or(|prev| prev.content.as_ref() != Some(content))
+        {
+            match widget {
+                Widgets::Text(text) => {
+                    text.props.text = content.clone();
+                    flags |= WidgetUpdateFlags::LAYOUT_INPUT | WidgetUpdateFlags::PAINT_OUTPUT;
+                }
+                _ => debug_assert!(false, "only `text` has a content slot"),
+            }
+        }
+        flags
+    }
+}
+
+impl TemplatedDesc {
+    pub fn key(&self) -> Option<Key> {
+        self.key.or_else(|| self.base.proto.key())
+    }
+
+    /// The description the builder chain would have produced: the base with
+    /// the slots written and the handlers installed.
+    pub fn to_widget_desc(&self) -> WidgetDesc {
+        let mut widget = self.base.build(&self.slots);
+        if self.key.is_some() {
+            widget.set_key(self.key);
+        }
+        if let Some(interaction) = self.base.interaction(self.handlers.clone()) {
+            widget.set_interaction(interaction);
+        }
+        WidgetDesc::new(WidgetProto::new(widget), self.children.clone())
+    }
+}
+
+/// The shared allocation behind [`ElementDesc::Hoisted`].
+#[derive(Debug)]
+pub struct Hoisted {
+    element: ElementDesc,
+    /// The host's `props_hash`, computed once rather than on every render.
+    /// `None` when the element is not a host.
+    props_hash: Option<u64>,
+}
+
+impl Hoisted {
+    pub fn new(element: ElementDesc) -> Rc<Self> {
+        match element {
+            ElementDesc::Hoisted(hoisted) => hoisted,
+            element => {
+                let props_hash = match &element {
+                    ElementDesc::Host(host) => Some(host.widget.props_hash()),
+                    _ => None,
+                };
+                Rc::new(Self {
+                    element,
+                    props_hash,
+                })
+            }
+        }
+    }
+
+    /// The element itself, never another `Hoisted`.
+    pub fn element(&self) -> &ElementDesc {
+        &self.element
+    }
+
+    pub(crate) fn props_hash(&self) -> Option<u64> {
+        self.props_hash
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct WidgetDesc {
-    pub widget: WidgetI,
+    pub widget: WidgetProto,
     pub children: Vec<ElementDesc>,
 }
 
@@ -112,11 +286,11 @@ impl PortalDesc {
 }
 
 impl WidgetDesc {
-    pub fn new(widget: WidgetI, children: Vec<ElementDesc>) -> Self {
+    pub fn new(widget: WidgetProto, children: Vec<ElementDesc>) -> Self {
         Self { widget, children }
     }
 
-    pub fn leaf(widget: WidgetI) -> Self {
+    pub fn leaf(widget: WidgetProto) -> Self {
         Self::new(widget, Vec::new())
     }
 
@@ -147,6 +321,26 @@ impl ElementDesc {
             Self::Host(widget) => widget.widget.key(),
             Self::Component(component) => component.key,
             Self::Portal(portal) => portal.key,
+            Self::Hoisted(hoisted) => hoisted.element.key(),
+            Self::Templated(templated) => templated.key(),
+        }
+    }
+
+    /// The element as a plain host description, if it is a host: looking
+    /// through a hoisted allocation and building a templated element out.
+    pub fn to_host(&self) -> Option<WidgetDesc> {
+        match self.resolved() {
+            Self::Host(host) => Some(host.clone()),
+            Self::Templated(templated) => Some(templated.to_widget_desc()),
+            _ => None,
+        }
+    }
+
+    /// The element itself, looking through a [`Hoisted`] allocation.
+    pub fn resolved(&self) -> &ElementDesc {
+        match self {
+            Self::Hoisted(hoisted) => hoisted.element(),
+            element => element,
         }
     }
 
@@ -154,6 +348,8 @@ impl ElementDesc {
         match self {
             Self::Host(widget) => Some(widget.widget.node_type()),
             Self::Component(_) | Self::Portal(_) => None,
+            Self::Hoisted(hoisted) => hoisted.element.node_type(),
+            Self::Templated(templated) => Some(templated.base.proto.node_type()),
         }
     }
 }
@@ -232,6 +428,8 @@ impl From<ElementDesc> for WidgetDesc {
     fn from(val: ElementDesc) -> Self {
         match val {
             ElementDesc::Host(widget) => widget,
+            ElementDesc::Hoisted(hoisted) => hoisted.element.clone().into(),
+            ElementDesc::Templated(templated) => templated.to_widget_desc(),
             ElementDesc::Component(_) => {
                 unreachable!()
             }
@@ -247,6 +445,8 @@ impl From<ElementDesc> for ComponentDesc {
                 unreachable!()
             }
             ElementDesc::Component(component) => component,
+            ElementDesc::Hoisted(hoisted) => hoisted.element.clone().into(),
+            ElementDesc::Templated(_) => unreachable!(),
             ElementDesc::Portal(_) => unreachable!(),
         }
     }

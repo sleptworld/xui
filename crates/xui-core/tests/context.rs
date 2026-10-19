@@ -37,13 +37,13 @@ fn compact_scope(children: &Vec<ElementDesc>) {
 fn root(_cx: &mut HookContext<'_>) -> ElementDesc {
     xui! {
         <container>
-            <label name={"plain".to_string()} />
-            <compact_scope>
-                <label name={"compact".to_string()} />
+            <Label name={"plain".to_string()} />
+            <CompactScope>
+                <Label name={"compact".to_string()} />
                 <context_provider value={Locale("fr")}>
-                    <label name={"french".to_string()} />
+                    <Label name={"french".to_string()} />
                 </context_provider>
-            </compact_scope>
+            </CompactScope>
         </container>
     }
 }

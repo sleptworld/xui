@@ -12,14 +12,14 @@ value, a `default_*` value for uncontrolled use, and an `on_*` callback.
 
 | Area | Components |
 | --- | --- |
-| Actions | `button` with six variants and four sizes |
-| Text and choice inputs | `input`, `checkbox`, `radio_group`, `switch`, `slider`, `drop_down` (`select` and `combo_box` aliases) |
-| Overlay and transient UI | `dialog`, `drawer` (`sheet` alias), `popover`, `tooltip`, `menu`, `context_menu`, `toast`, `command_palette` |
-| Navigation and disclosure | `tabs`, `collapsible`, `accordion`, `breadcrumb`, `pagination` |
-| Date | `calendar`, `date_picker`, `CalendarDate`, `CalendarMonth` |
-| Data | `data_table`, sortable/selectable `data_grid`, `tree_view`, `virtual_list` |
-| Feedback | `progress`, `spinner`, `skeleton`, `callout`, form validation messages |
-| Content and structure | `image`, `avatar`, `badge`, `card`, `separator`, `form_field` |
+| Actions | `Button` with six variants and four sizes |
+| Text and choice inputs | `Input`, `Checkbox`, `RadioGroup`, `Switch`, `Slider`, `DropDown` (`Select` and `ComboBox` aliases) |
+| Overlay and transient UI | `Dialog`, `Drawer` (`Sheet` alias), `Popover`, `Tooltip`, `Menu`, `ContextMenu`, `Toast`, `CommandPalette` |
+| Navigation and disclosure | `Tabs`, `Collapsible`, `Accordion`, `Breadcrumb`, `Pagination` |
+| Date | `Calendar`, `DatePicker`, `CalendarDate`, `CalendarMonth` |
+| Data | `DataTable`, sortable/selectable `DataGrid`, `TreeView`, `VirtualList` |
+| Feedback | `Progress`, `Spinner`, `Skeleton`, `Callout`, form validation messages |
+| Content and structure | `Image`, `Avatar`, `Badge`, `Card`, `Separator`, `FormField` |
 
 Layout primitives (`ContainerWidget`, `GridWidget`, flex direction, scroll
 styles, and portals) remain in `xui`; wrapping each one in a second component
@@ -39,8 +39,13 @@ horizontal pinning is intentionally not claimed.
 All 36 component implementations use `#[component]` and `view!`. The controls,
 forms, overlays, collections, calendar, command, and selection modules are
 exported at the crate root and participate in compilation and tests.
-`select`/`combo_box` are aliases for the same non-editable dropdown;
-`sheet` is an alias for `drawer`.
+`Select`/`ComboBox` are aliases for the same non-editable dropdown;
+`Sheet` is an alias for `Drawer`.
+
+A component is defined as a snake_case function and written in `view!` /
+`xui!` under its PascalCase tag: `#[component] fn date_picker(..)` is used as
+`DatePicker(..)`. Host widgets keep lowercase tags (`row`, `text`, `image`), so
+a component and a host can never be confused for one another.
 
 ```rust
 use xui_core::prelude::*;
@@ -51,9 +56,9 @@ use xui_macros::{component, view};
 fn account_actions() {
     view! {
         column(gap: 12.0) {
-            xui_components::input(accessibility_label: Some("Email".to_owned()),
+            xui_components::Input(accessibility_label: Some("Email".to_owned()),
                 required: true, width: 320.0)
-            button(text: "Save", variant: ButtonVariant::Primary,
+            Button(text: "Save", variant: ButtonVariant::Primary,
                 size: ButtonSize::Large)
         }
     }
@@ -61,7 +66,7 @@ fn account_actions() {
 ```
 
 A component forwards a prop it received with `.share()` instead of `.clone()`:
-`popover(trigger: trigger.share(), ..)`. The child then reads the value through
+`Popover(trigger: trigger.share(), ..)`. The child then reads the value through
 the parent's props allocation, however many levels it is passed down; anything
 that is not one of the rendering component's own props is cloned as before. A
 small value that owns nothing -- a hook handle (`State`, `Memo`, `HookRef`), an
@@ -76,25 +81,25 @@ The image component also accepts `style`, separate from pixel fitting via
 
 | Components | Configuration and customization |
 | --- | --- |
-| `button` | Variant, size, loading, disabled, full width, leading/trailing/loading elements, label style, transition duration, accessibility label |
-| `input` | Optional durable controller, disabled, read-only, invalid/required, accessibility label, root/input styles, padding, dimensions and bounds, border/background |
-| `drop_down`, `select`, `combo_box` | Controlled/default selection and open state, open/change callbacks, disabled options, placeholder, placement/collision behavior, z-index, independent style slots, custom ID prefix |
-| `tabs` | Controlled/default selection, horizontal/vertical orientation, automatic/manual activation, wrapping, disabled items, list/tab/panel styles, custom ID prefix |
-| `checkbox`, `switch`, `radio_group` | Controlled/default values, disabled, labels and callbacks; indicator/item styles or switch track/thumb styles; radio orientation |
-| `slider`, `progress` | Range/value settings, accessible value labels, track/fill/thumb or indicator styles; slider disabled and stepped keyboard interaction |
-| `badge`, `avatar`, `card`, `separator` | Badge variants, avatar size/image/fallback/fallback style, card content, separator orientation; root styles |
-| `skeleton`, `spinner`, `callout` | Skeleton dimensions; spinner size/period/pause and label; callout tone/title/content/title style; root styles |
-| `form_field` | Required/disabled/status, description/message, label/description/message styles, accessibility feedback |
-| `dialog`, `drawer`, `sheet` | Controlled/default open state, callbacks, panel/backdrop styles, drawer side; dialog title style and separate Escape/outside dismissal switches |
-| `popover`, `tooltip` | Trigger/content styles and anchor placement; popover controlled/default open state, disabled, modal and z-index; tooltip pointer/focus visibility and z-index |
-| `menu`, `context_menu`, `command_palette` | Disabled items, selection/open callbacks, item styles for menus, arrow/Home/End navigation; command filtering by externally supplied query |
-| `collapsible`, `accordion` | Controlled/default disclosure, callbacks, trigger/content styles; accordion collapsibility and disabled items |
-| `breadcrumb`, `pagination` | Navigation callbacks, item styles, breadcrumb separator, page/sibling settings |
-| `data_table`, `data_grid` | Explicit column tracks, header/cell/row styles; grid sort requests and row-selection callbacks. Sorting is performed by the caller. |
-| `tree_view` | Independent controlled/default selection and expansion, expansion/selection callbacks, item styles |
-| `calendar`, `date_picker` | Month/date selection callbacks, disabled, calendar header/day/selected-day styles; picker controlled/default open state and placement |
-| `image` | Asset/URL/path source, alt text, dimensions, opacity, root/image styles, fitting/alignment/repeat/sampling, loading/fallback elements |
-| `virtual_list` | Fixed row height, count, viewport hint, overscan, renderer and item style; actual viewport size follows layout observations |
+| `Button` | Variant, size, loading, disabled, full width, leading/trailing/loading elements, label style, transition duration, accessibility label |
+| `Input` | Optional durable controller, disabled, read-only, invalid/required, accessibility label, root/input styles, padding, dimensions and bounds, border/background |
+| `DropDown`, `Select`, `ComboBox` | Controlled/default selection and open state, open/change callbacks, disabled options, placeholder, placement/collision behavior, z-index, independent style slots, custom ID prefix |
+| `Tabs` | Controlled/default selection, horizontal/vertical orientation, automatic/manual activation, wrapping, disabled items, list/tab/panel styles, custom ID prefix |
+| `Checkbox`, `Switch`, `RadioGroup` | Controlled/default values, disabled, labels and callbacks; indicator/item styles or switch track/thumb styles; radio orientation |
+| `Slider`, `Progress` | Range/value settings, accessible value labels, track/fill/thumb or indicator styles; slider disabled and stepped keyboard interaction |
+| `Badge`, `Avatar`, `Card`, `Separator` | Badge variants, avatar size/image/fallback/fallback style, card content, separator orientation; root styles |
+| `Skeleton`, `Spinner`, `Callout` | Skeleton dimensions; spinner size/period/pause and label; callout tone/title/content/title style; root styles |
+| `FormField` | Required/disabled/status, description/message, label/description/message styles, accessibility feedback |
+| `Dialog`, `Drawer`, `Sheet` | Controlled/default open state, callbacks, panel/backdrop styles, drawer side; dialog title style and separate Escape/outside dismissal switches |
+| `Popover`, `Tooltip` | Trigger/content styles and anchor placement; popover controlled/default open state, disabled, modal and z-index; tooltip pointer/focus visibility and z-index |
+| `Menu`, `ContextMenu`, `CommandPalette` | Disabled items, selection/open callbacks, item styles for menus, arrow/Home/End navigation; command filtering by externally supplied query |
+| `Collapsible`, `Accordion` | Controlled/default disclosure, callbacks, trigger/content styles; accordion collapsibility and disabled items |
+| `Breadcrumb`, `Pagination` | Navigation callbacks, item styles, breadcrumb separator, page/sibling settings |
+| `DataTable`, `DataGrid` | Explicit column tracks, header/cell/row styles; grid sort requests and row-selection callbacks. Sorting is performed by the caller. |
+| `TreeView` | Independent controlled/default selection and expansion, expansion/selection callbacks, item styles |
+| `Calendar`, `DatePicker` | Month/date selection callbacks, disabled, calendar header/day/selected-day styles; picker controlled/default open state and placement |
+| `Image` | Asset/URL/path source, alt text, dimensions, opacity, root/image styles, fitting/alignment/repeat/sampling, loading/fallback elements |
+| `VirtualList` | Fixed row height, count, viewport hint, overscan, renderer and item style; actual viewport size follows layout observations |
 
 Default dropdown and tab accessibility IDs are unique per component instance
 and stable across rerenders. Supply `id_prefix` when external references need
@@ -110,7 +115,7 @@ an application-defined ID.
   scanning disabled items for each disabled tab. Keys follow item IDs through
   reorder operations.
 - Tree expansion lookup uses a shared hash set. Closed branches are not built;
-  very large visible collections should still use `virtual_list`.
+  very large visible collections should still use `VirtualList`.
 - Menus do not build their option elements while closed. Command matching
   normalizes the query once per pass; selection models cache folded labels.
 - Network images reuse an HTTP client and retain the resource across rerenders.
@@ -120,6 +125,13 @@ an application-defined ID.
   paused. Ordinary focus/hover styles change paint without changing layout.
 - Slider range/step normalization, finite geometry checks, and saturating
   pagination arithmetic handle reversed, non-finite, and extreme inputs.
+- `xui!` / `view!` build a *static* element — literals and constants all the
+  way down, no locals and no calls (`docs/template-slots.md` §5) — once per call
+  site, and the reconciler skips it by pointer. A component written that way,
+  such as `Button(label: "OK")`, is handed the same props every time, so it
+  re-renders only for its own state and the contexts it reads, like
+  `React.memo`. A component that reads something else (a thread-local, a
+  global) must take it as a prop or a context to stay current.
 
 ## Theme
 
@@ -147,12 +159,12 @@ controls (`XUI_THEME=dark` for the dark palette).
   changes through callbacks. Automatic focus trapping/restoration is not part
   of the current portal API.
 - Anchored overlays perform viewport collision handling in the runtime.
-- `input` supports single-line editing, IME, and disabled/read-only behavior.
+- `Input` supports single-line editing, IME, and disabled/read-only behavior.
   An omitted controller is retained for the component lifetime; an explicit
   `TextController` remains the external editing model.
 - Tables, trees, dialogs, listboxes, tabs, controls, ranges, and live feedback
   expose platform-neutral accessibility roles and state for host adapters.
-- Large collections use `virtual_list`; rendering cost is bounded by viewport
+- Large collections use `VirtualList`; rendering cost is bounded by viewport
   height plus overscan rather than total row count.
 
 ## Verification

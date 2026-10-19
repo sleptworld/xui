@@ -20,71 +20,11 @@ use crate::render::RenderTreeWriter;
 use crate::state::HookContext;
 use crate::style::ComputedStyle;
 
-macro_rules! no_event_handler_methods {
-    () => {
-        pub fn event_handlers(&self) -> Option<&crate::event_system::callbacks::EventHandlers> {
-            None
-        }
-
-        pub fn event_handlers_mut(
-            &mut self,
-        ) -> Option<&mut crate::event_system::callbacks::EventHandlers> {
-            None
-        }
-
-        pub fn take_event_handlers(
-            &mut self,
-        ) -> Option<crate::event_system::callbacks::EventHandlers> {
-            None
-        }
-
-        pub fn interaction_properties(
-            &self,
-        ) -> Option<&crate::event_system::interaction::InteractionProperties> {
-            None
-        }
-
-        pub fn take_host_interaction(
-            &mut self,
-        ) -> Option<crate::event_system::interaction::HostInteraction> {
-            None
-        }
-    };
-}
-
+/// The interaction builder methods (focus, accessibility, shortcuts) of a
+/// widget with `interaction` and `event_handlers` fields. Reading those fields
+/// back is [`HostWidget::interaction`]'s job.
 macro_rules! event_handler_methods {
     () => {
-        pub fn event_handlers(&self) -> Option<&EventHandlers> {
-            Some(&self.event_handlers)
-        }
-
-        pub fn event_handlers_mut(&mut self) -> Option<&mut EventHandlers> {
-            Some(&mut self.event_handlers)
-        }
-
-        pub fn take_event_handlers(&mut self) -> Option<EventHandlers> {
-            Some(std::mem::replace(
-                &mut self.event_handlers,
-                EventHandlers::default(),
-            ))
-        }
-
-        pub fn interaction_properties(
-            &self,
-        ) -> Option<&crate::event_system::interaction::InteractionProperties> {
-            Some(&self.interaction)
-        }
-
-        pub fn take_host_interaction(
-            &mut self,
-        ) -> Option<crate::event_system::interaction::HostInteraction> {
-            let interaction = crate::event_system::interaction::HostInteraction {
-                properties: std::mem::take(&mut self.interaction),
-                handlers: std::mem::take(&mut self.event_handlers),
-            };
-            (!interaction.is_empty()).then_some(interaction)
-        }
-
         pub fn focusable(mut self, focusable: bool) -> Self {
             self.interaction.focus = self.interaction.focus.focusable(focusable);
             self
@@ -311,8 +251,127 @@ impl_listen!(
 
 pub type RootComponentRender = fn(&mut HookContext) -> ElementDesc;
 
+/// What every host widget provides to the runtime.
+///
+/// [`Widgets`] dispatches each of its methods here, so a widget that leaves out
+/// a required item fails to compile at its own `impl`, and one that has no use
+/// for an optional item (it ignores events, has no text, takes no handlers)
+/// keeps the default. Builder methods are not part of it: they stay inherent,
+/// so what the DSL resolves `.attr(v)` to is unchanged.
+pub(crate) trait HostWidget: Sized {
+    /// What [`Widgets::node_type`] reports.
+    const TYPE: WidgetType;
+
+    /// Whether `handle_event` reads `EventRef::Raw`.
+    ///
+    /// Raw dispatch walks the whole ancestor path on every pointer move;
+    /// knowing that nobody on it is listening turns that walk into an integer
+    /// comparison. Raw events are widget-private — see the module docs on
+    /// `event_system` — so the widgets that set this are the complete set of
+    /// nodes raw dispatch has to visit.
+    const READS_RAW_EVENTS: bool = false;
+
+    fn get_key(&self) -> Option<&Key> {
+        None
+    }
+
+    /// The style the element wrote.
+    fn current_style(&self) -> &Style;
+
+    /// [`Self::current_style`], for a templated element's changed style
+    /// attributes to be written straight into a live widget. `None` for a
+    /// widget no element can write a style into.
+    fn style_mut(&mut self) -> Option<&mut Style> {
+        None
+    }
+
+    /// Sets the key the element wrote, for a templated element whose key is
+    /// computed per render. Ignored by a widget that takes no key.
+    fn set_key(&mut self, _key: Option<Key>) {}
+
+    /// The style under [`Self::current_style`].
+    fn default_style(&self) -> Style {
+        Style::new()
+    }
+
+    /// A hash of what the element wrote, interaction left out (the caller
+    /// hashes that).
+    fn props_hash(&self) -> u64;
+
+    /// See [`Widgets::instantiate`].
+    fn instantiate(&self) -> Self;
+
+    /// Takes what `next` wrote and reports what has to be redone; [`sync`]
+    /// does both for one field.
+    fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags;
+
+    fn render(
+        &self,
+        node_id: xui_interface::NodeId,
+        rect: Bounds,
+        style: &ComputedStyle,
+        writer: &mut RenderTreeWriter<'_>,
+    );
+
+    fn handle_event(
+        &mut self,
+        _event: EventRef<'_>,
+        _cx: &mut crate::event_system::EventContext<'_>,
+    ) -> EventResult {
+        EventResult::Ignored
+    }
+
+    fn text_content(&self) -> Option<TextContent> {
+        None
+    }
+
+    fn text_layout_props(&self, _style: &ComputedStyle) -> Option<TextProps> {
+        None
+    }
+
+    /// The interaction properties and handlers, for a widget that takes them.
+    fn interaction(&self) -> Option<(&InteractionProperties, &EventHandlers)> {
+        None
+    }
+
+    /// [`Self::interaction`], mutably.
+    fn interaction_mut(&mut self) -> Option<(&mut InteractionProperties, &mut EventHandlers)> {
+        None
+    }
+}
+
+/// Copies `next` into `current` when they differ, and reports `flags` if they
+/// did — one field of a [`HostWidget::update_from`].
+fn sync<T: PartialEq + Clone>(
+    current: &mut T,
+    next: &T,
+    flags: WidgetUpdateFlags,
+) -> WidgetUpdateFlags {
+    if *current == *next {
+        WidgetUpdateFlags::empty()
+    } else {
+        current.clone_from(next);
+        flags
+    }
+}
+
+fn widget_type<W: HostWidget>(_: &W) -> WidgetType {
+    W::TYPE
+}
+
+fn reads_raw_events<W: HostWidget>(_: &W) -> bool {
+    W::READS_RAW_EVENTS
+}
+
+/// Registers the host widgets: the [`Widgets`] enum, a `From` per widget, and
+/// `with_widget!`, which every [`Widgets`] method dispatches through. What a
+/// widget *does* is its [`HostWidget`] impl; nothing here needs to change when
+/// that trait grows a method.
+///
+/// The leading `$` is passed in so the generated `with_widget!` can have
+/// metavariables of its own.
 macro_rules! define_widgets {
-    ($($name:ident => $widget:ty $([$raw:ident])?),+ $(,)?) => {
+    ($d:tt $($name:ident => $widget:ty),+ $(,)?) => {
         #[derive(Debug)]
         pub enum Widgets {
             $(
@@ -328,190 +387,338 @@ macro_rules! define_widgets {
             }
         )+
 
+        /// `with_widget!(widgets, w => body)` evaluates `body` with `w` bound
+        /// to the widget inside `widgets`, whichever variant it is.
+        macro_rules! with_widget {
+            ($d widgets:expr, $d w:ident => $d body:expr) => {
+                match $d widgets {
+                    $(
+                        Widgets::$name($d w) => $d body,
+                    )+
+                }
+            };
+        }
+
         impl Widgets {
-            pub fn event_handlers(&self) -> Option<&EventHandlers> {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.event_handlers(),
-                    )+
-                }
-            }
-
-            pub fn take_event_handlers(&mut self) -> Option<EventHandlers> {
-
-                match self {
-                    $(
-                        Self::$name(widget) => widget.take_event_handlers(),
-                    )+
-                }
-
-            }
-
-            pub fn event_handlers_mut(&mut self) -> Option<&mut EventHandlers> {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.event_handlers_mut(),
-                    )+
-                }
-            }
-
-            pub fn interaction_properties(&self) -> Option<&InteractionProperties> {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.interaction_properties(),
-                    )+
-                }
-            }
-
-            pub fn take_host_interaction(&mut self) -> Option<HostInteraction> {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.take_host_interaction(),
-                    )+
-                }
-            }
-
-            pub fn node_type(&self) -> WidgetType {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.node_type(),
-                    )+
-                }
-            }
-
-            /// Whether this widget reads `EventRef::Raw` in `handle_event`.
-            ///
-            /// Raw dispatch walks the whole ancestor path on every pointer
-            /// move; knowing that nobody on it is listening turns that walk
-            /// into an integer comparison. Declared in the widget table rather
-            /// than in a hand-kept `match`, so it cannot drift from reality.
-            pub(crate) fn reads_raw_events(&self) -> bool {
-                match self {
-                    $(
-                        Self::$name(_) => false $( || stringify!($raw) == "raw" )? ,
-                    )+
-                }
-            }
-
-            pub fn key(&self) -> Option<&Key> {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.get_key(),
-                    )+
-                }
-            }
-
-            pub fn props_hash(&self) -> u64 {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.props_hash(),
-                    )+
-                }
-            }
-
             pub fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
                 match (self, next) {
                     $(
-                        (Self::$name(current), Self::$name(next)) => current.update_from(next),
+                        (Self::$name(current), Self::$name(next)) => {
+                            HostWidget::update_from(current, next)
+                        }
                     )+
                     _ => WidgetUpdateFlags::TREE,
-                }
-            }
-
-            pub fn default_style(&self) -> Style {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.default_style(),
-                    )+
-                }
-            }
-
-            pub fn style(&self) -> &Style {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.current_style(),
-                    )+
-                }
-            }
-
-            pub fn style_scope(&self) -> Option<&Style> {
-                None
-            }
-
-            pub(crate) fn render(
-                &self,
-                node_id: xui_interface::NodeId,
-                rect: Bounds,
-                style: &ComputedStyle,
-                writer: &mut RenderTreeWriter<'_>,
-            ) {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.render(node_id, rect, style, writer),
-                    )+
-                }
-            }
-
-            pub fn handle_event(
-                &mut self,
-                event: EventRef<'_>,
-                cx: &mut crate::event_system::EventContext<'_>,
-            ) -> EventResult {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.handle_event(event, cx),
-                    )+
-                }
-            }
-
-            pub fn on_click(&mut self) {}
-
-            pub fn text(&self) -> Option<TextContent> {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.text_content(),
-                    )+
-                }
-            }
-
-            pub fn text_layout_props(&self, style: &ComputedStyle) -> Option<TextProps> {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.text_layout_props(style),
-                    )+
-                }
-            }
-
-            pub(crate) fn platform_text_input_session(
-                &self,
-                content_rect: Bounds,
-                text_layout: &dyn crate::text::TextLayoutQuery,
-            ) -> Option<xui_interface::TextInputSession> {
-                match self {
-                    Self::TextInput(widget) => {
-                        Some(widget.platform_text_input_session(content_rect, text_layout))
-                    }
-                    _ => None,
                 }
             }
         }
     };
 }
 
-// `[raw]` marks a widget that reads `EventRef::Raw` in its `handle_event`.
-// Raw events are widget-private — see the module docs on `event_system` — so
-// this list is the complete set of nodes raw dispatch has to visit.
+/// Implements [`HostWidget`] by forwarding to inherent methods of the same
+/// names — how every widget wrote its part of the contract before the trait
+/// existed. A widget leaves this list once it implements the trait itself.
+macro_rules! legacy_host_widget {
+    ($widget:ty => $ty:ident, interactive: $interactive:tt, fields: $fields:tt, raw: $raw:literal) => {
+        impl HostWidget for $widget {
+            const TYPE: WidgetType = WidgetType::$ty;
+            const READS_RAW_EVENTS: bool = $raw;
+
+            fn get_key(&self) -> Option<&Key> {
+                <$widget>::get_key(self)
+            }
+
+            fn current_style(&self) -> &Style {
+                <$widget>::current_style(self)
+            }
+
+            fn default_style(&self) -> Style {
+                <$widget>::default_style(self)
+            }
+
+            fn props_hash(&self) -> u64 {
+                <$widget>::props_hash(self)
+            }
+
+            fn instantiate(&self) -> Self {
+                <$widget>::instantiate(self)
+            }
+
+            fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
+                <$widget>::update_from(self, next)
+            }
+
+            fn render(
+                &self,
+                node_id: xui_interface::NodeId,
+                rect: Bounds,
+                style: &ComputedStyle,
+                writer: &mut RenderTreeWriter<'_>,
+            ) {
+                <$widget>::render(self, node_id, rect, style, writer)
+            }
+
+            fn handle_event(
+                &mut self,
+                event: EventRef<'_>,
+                cx: &mut crate::event_system::EventContext<'_>,
+            ) -> EventResult {
+                <$widget>::handle_event(self, event, cx)
+            }
+
+            fn text_content(&self) -> Option<TextContent> {
+                <$widget>::text_content(self)
+            }
+
+            fn text_layout_props(&self, style: &ComputedStyle) -> Option<TextProps> {
+                <$widget>::text_layout_props(self, style)
+            }
+
+            legacy_host_widget!(@interaction $interactive);
+            legacy_host_widget!(@fields $fields);
+        }
+    };
+    // The `pub key` and `pub style` fields every element-built widget has.
+    (@fields true) => {
+        fn style_mut(&mut self) -> Option<&mut Style> {
+            Some(&mut self.style)
+        }
+
+        fn set_key(&mut self, key: Option<Key>) {
+            self.key = key;
+        }
+    };
+    (@fields false) => {};
+    (@interaction true) => {
+        fn interaction(&self) -> Option<(&InteractionProperties, &EventHandlers)> {
+            Some((&self.interaction, &self.event_handlers))
+        }
+
+        fn interaction_mut(&mut self) -> Option<(&mut InteractionProperties, &mut EventHandlers)> {
+            Some((&mut self.interaction, &mut self.event_handlers))
+        }
+    };
+    (@interaction false) => {};
+}
+
 define_widgets! {
+    $
     Container => ContainerWidget,
     ZStack => ZStackWidget,
     Text => TextWidget,
-    TextInput => TextInputWidget [raw],
+    TextInput => TextInputWidget,
     Canvas => CanvasWidget,
     Image => ImageWidget,
     Icon => IconWidget,
     Grid => GridWidget,
     RootOverlayer => RootOverlayerWidget,
     Root => RootWidget,
+}
+
+legacy_host_widget!(ZStackWidget => ZStack, interactive: true, fields: true, raw: false);
+legacy_host_widget!(TextInputWidget => TextInput, interactive: true, fields: true, raw: true);
+legacy_host_widget!(CanvasWidget => Canvas, interactive: true, fields: true, raw: false);
+legacy_host_widget!(ImageWidget => Image, interactive: true, fields: true, raw: false);
+legacy_host_widget!(IconWidget => Icon, interactive: true, fields: true, raw: false);
+legacy_host_widget!(GridWidget => Grid, interactive: true, fields: true, raw: false);
+legacy_host_widget!(RootOverlayerWidget => RootOverlayer, interactive: false, fields: false, raw: false);
+
+impl Widgets {
+    pub fn event_handlers(&self) -> Option<&EventHandlers> {
+        with_widget!(self, w => HostWidget::interaction(w)).map(|(_, handlers)| handlers)
+    }
+
+    pub fn take_event_handlers(&mut self) -> Option<EventHandlers> {
+        with_widget!(self, w => HostWidget::interaction_mut(w))
+            .map(|(_, handlers)| std::mem::take(handlers))
+    }
+
+    pub fn event_handlers_mut(&mut self) -> Option<&mut EventHandlers> {
+        with_widget!(self, w => HostWidget::interaction_mut(w)).map(|(_, handlers)| handlers)
+    }
+
+    pub fn interaction_properties(&self) -> Option<&InteractionProperties> {
+        with_widget!(self, w => HostWidget::interaction(w)).map(|(properties, _)| properties)
+    }
+
+    pub fn take_host_interaction(&mut self) -> Option<HostInteraction> {
+        let (properties, handlers) = with_widget!(self, w => HostWidget::interaction_mut(w))?;
+        let interaction = HostInteraction {
+            properties: std::mem::take(properties),
+            handlers: std::mem::take(handlers),
+        };
+        (!interaction.is_empty()).then_some(interaction)
+    }
+
+    /// [`Self::take_host_interaction`] for a description that may be shared,
+    /// and so cannot be emptied.
+    pub fn host_interaction(&self) -> Option<HostInteraction> {
+        let (properties, handlers) = with_widget!(self, w => HostWidget::interaction(w))?;
+        let interaction = HostInteraction {
+            properties: properties.clone(),
+            handlers: handlers.clone(),
+        };
+        (!interaction.is_empty()).then_some(interaction)
+    }
+
+    /// A live widget for a new host, built from this description: what the
+    /// element wrote is copied, the widget's own state starts fresh, and
+    /// handlers and interaction properties are left out because the
+    /// interaction system owns them once committed.
+    pub(crate) fn instantiate(&self) -> Self {
+        with_widget!(self, w => HostWidget::instantiate(w).into())
+    }
+
+    pub fn node_type(&self) -> WidgetType {
+        with_widget!(self, w => widget_type(w))
+    }
+
+    /// See [`HostWidget::READS_RAW_EVENTS`].
+    pub(crate) fn reads_raw_events(&self) -> bool {
+        with_widget!(self, w => reads_raw_events(w))
+    }
+
+    pub fn key(&self) -> Option<&Key> {
+        with_widget!(self, w => HostWidget::get_key(w))
+    }
+
+    pub fn props_hash(&self) -> u64 {
+        with_widget!(self, w => HostWidget::props_hash(w))
+    }
+
+    pub fn default_style(&self) -> Style {
+        with_widget!(self, w => HostWidget::default_style(w))
+    }
+
+    pub fn style(&self) -> &Style {
+        with_widget!(self, w => HostWidget::current_style(w))
+    }
+
+    pub fn style_scope(&self) -> Option<&Style> {
+        None
+    }
+
+    pub(crate) fn style_mut(&mut self) -> Option<&mut Style> {
+        with_widget!(self, w => HostWidget::style_mut(w))
+    }
+
+    pub(crate) fn set_key(&mut self, key: Option<Key>) {
+        with_widget!(self, w => HostWidget::set_key(w, key))
+    }
+
+    /// Gives a widget built from a description the interaction it would have
+    /// had as written: [`Self::instantiate`] leaves interaction out.
+    pub(crate) fn set_interaction(&mut self, interaction: HostInteraction) {
+        if let Some((properties, handlers)) = with_widget!(self, w => HostWidget::interaction_mut(w)) {
+            *properties = interaction.properties;
+            *handlers = interaction.handlers;
+        }
+    }
+
+    pub(crate) fn render(
+        &self,
+        node_id: xui_interface::NodeId,
+        rect: Bounds,
+        style: &ComputedStyle,
+        writer: &mut RenderTreeWriter<'_>,
+    ) {
+        with_widget!(self, w => HostWidget::render(w, node_id, rect, style, writer))
+    }
+
+    pub fn handle_event(
+        &mut self,
+        event: EventRef<'_>,
+        cx: &mut crate::event_system::EventContext<'_>,
+    ) -> EventResult {
+        with_widget!(self, w => HostWidget::handle_event(w, event, cx))
+    }
+
+    pub fn on_click(&mut self) {}
+
+    pub fn text(&self) -> Option<TextContent> {
+        with_widget!(self, w => HostWidget::text_content(w))
+    }
+
+    pub fn text_layout_props(&self, style: &ComputedStyle) -> Option<TextProps> {
+        with_widget!(self, w => HostWidget::text_layout_props(w, style))
+    }
+
+    pub(crate) fn platform_text_input_session(
+        &self,
+        content_rect: Bounds,
+        text_layout: &dyn crate::text::TextLayoutQuery,
+    ) -> Option<xui_interface::TextInputSession> {
+        match self {
+            Self::TextInput(widget) => {
+                Some(widget.platform_text_input_session(content_rect, text_layout))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// What an element describes: a widget as the DSL built it.
+///
+/// Immutable, so one description can be held by a memo, reused across renders
+/// and mounted at several places at once. A host never runs on it: mounting
+/// makes a [`WidgetI`] from it with [`WidgetProto::instantiate`], and later
+/// renders update that instance from the next description. Keeping the two
+/// apart is what lets the reconciler skip a description it has already
+/// committed by pointer alone.
+#[derive(Debug, Clone)]
+pub struct WidgetProto {
+    widget: Rc<Widgets>,
+}
+
+impl WidgetProto {
+    pub fn new(widget: impl Into<Widgets>) -> Self {
+        Self {
+            widget: Rc::new(widget.into()),
+        }
+    }
+
+    pub(crate) fn widgets(&self) -> &Widgets {
+        &self.widget
+    }
+
+    /// Whether `self` and `other` are the same description, not merely equal
+    /// ones.
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.widget, &other.widget)
+    }
+
+    pub fn key(&self) -> Option<Key> {
+        self.widget.key().cloned()
+    }
+
+    pub fn node_type(&self) -> WidgetType {
+        self.widget.node_type()
+    }
+
+    pub fn props_hash(&self) -> u64 {
+        props_hash(&(
+            self.widget.props_hash(),
+            self.widget.interaction_properties(),
+        ))
+    }
+
+    pub fn text(&self) -> Option<TextContent> {
+        self.widget.text()
+    }
+
+    /// The handlers and interaction properties to commit with this
+    /// description. Moved out when nothing else holds the description, cloned
+    /// (handlers are `Rc`s) when something does.
+    pub(crate) fn take_host_interaction(&mut self) -> Option<HostInteraction> {
+        match Rc::get_mut(&mut self.widget) {
+            Some(widget) => widget.take_host_interaction(),
+            None => self.widget.host_interaction(),
+        }
+    }
+
+    /// A live widget for a new host. See [`Widgets::instantiate`].
+    pub(crate) fn instantiate(&self) -> WidgetI {
+        WidgetI::new(self.widget.instantiate())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -615,7 +822,11 @@ impl WidgetI {
     }
 
     pub fn update_from(&self, next: &Self) -> xui_interface::WidgetUpdateFlags {
-        self.with_widgets_mut(|current| next.with_widgets(|next| current.update_from(next)))
+        next.with_widgets(|next| self.update_from_widgets(next))
+    }
+
+    pub(crate) fn update_from_widgets(&self, next: &Widgets) -> xui_interface::WidgetUpdateFlags {
+        self.with_widgets_mut(|current| current.update_from(next))
     }
 
     pub fn computed_style(
@@ -636,7 +847,7 @@ pub(crate) fn widget_element_desc(
     widget: impl Into<Widgets>,
     children: Vec<ElementDesc>,
 ) -> ElementDesc {
-    WidgetDesc::new(WidgetI::new(widget), children).into()
+    WidgetDesc::new(WidgetProto::new(widget), children).into()
 }
 
 pub trait WithChildren {

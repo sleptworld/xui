@@ -22,37 +22,37 @@ fn root(cx: &mut HookContext<'_>) -> ElementDesc {
     });
     match CASE.get() {
         0 => {
-            view! { checkbox(disabled: true, label: Some(view! { text("Label") }), on_change: Some(bool_change)) }
+            view! { Checkbox(disabled: true, label: Some(view! { text("Label") }), on_change: Some(bool_change)) }
         }
-        1 => view! { checkbox(checked: Some(true), on_change: Some(bool_change)) },
+        1 => view! { Checkbox(checked: Some(true), on_change: Some(bool_change)) },
         2 => {
-            view! { radio_group(orientation: SelectionOrientation::Horizontal, items: vec![RadioItem::new("a", "A", view! { text("A") }), RadioItem::new("b", "B", view! { text("B") }).disabled(true), RadioItem::new("c", "C", view! { text("C") })], on_change: Some(index_change)) }
+            view! { RadioGroup(orientation: SelectionOrientation::Horizontal, items: vec![RadioItem::new("a", "A", view! { text("A") }), RadioItem::new("b", "B", view! { text("B") }).disabled(true), RadioItem::new("c", "C", view! { text("C") })], on_change: Some(index_change)) }
         }
         3 => {
-            view! { slider(min: 10.0, max: 0.0, step: -2.0, default_value: 4.0, on_change: Some(number_change)) }
+            view! { Slider(min: 10.0, max: 0.0, step: -2.0, default_value: 4.0, on_change: Some(number_change)) }
         }
         4 => {
-            view! { xui_components::input(controller: CONTROLLER.with(Clone::clone), read_only: true) }
+            view! { xui_components::Input(controller: CONTROLLER.with(Clone::clone), read_only: true) }
         }
         5 => {
-            view! { xui_components::input(disabled: true, controller: CONTROLLER.with(Clone::clone)) }
+            view! { xui_components::Input(disabled: true, controller: CONTROLLER.with(Clone::clone)) }
         }
-        6 => view! { xui_components::input() },
+        6 => view! { xui_components::Input() },
         7 => {
-            view! { drop_down(items: vec![DropDownItem::new("a", "A"), DropDownItem::new("b", "B").disabled(true), DropDownItem::new("c", "C")], on_change: Some(index_change)) }
+            view! { DropDown(items: vec![DropDownItem::new("a", "A"), DropDownItem::new("b", "B").disabled(true), DropDownItem::new("c", "C")], on_change: Some(index_change)) }
         }
         8 => {
-            view! { menu(trigger: view! { text("Open") }, items: vec![MenuItem::new("a", "A"), MenuItem::new("b", "B").disabled(true), MenuItem::new("c", "C")], default_open: true, on_select: Some(index_change)) }
+            view! { Menu(trigger: view! { text("Open") }, items: vec![MenuItem::new("a", "A"), MenuItem::new("b", "B").disabled(true), MenuItem::new("c", "C")], default_open: true, on_select: Some(index_change)) }
         }
         9 => {
             let expansion = cx.use_callback((), |ids: Vec<String>| {
                 VALUES.with(|v| v.borrow_mut().push(ids.len() as f32))
             });
-            view! { tree_view(nodes: vec![TreeNode::branch("a", "A", vec![TreeNode::leaf("b", "B")])], expanded: Some(Vec::new()), on_expanded_change: Some(expansion)) }
+            view! { TreeView(nodes: vec![TreeNode::branch("a", "A", vec![TreeNode::leaf("b", "B")])], expanded: Some(Vec::new()), on_expanded_change: Some(expansion)) }
         }
         10 => {
             let render = cx.use_callback((), |index: usize| view! { text(index.to_string()) });
-            view! { virtual_list(item_count: 100_000usize, item_height: 20.0, viewport_height: 100.0, render_item: render, style: Style::new().height(Sizing::Fill)) }
+            view! { VirtualList(item_count: 100_000usize, item_height: 20.0, viewport_height: 100.0, render_item: render, style: Style::new().height(Sizing::Fill)) }
         }
         _ => unreachable!(),
     }

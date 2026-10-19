@@ -1,7 +1,7 @@
 use std::hash::{Hash, Hasher};
 
 use xui_interface::{
-    Bounds, ComputedStyle, EventRef, EventResult, Key, Style, TextContent, TextProps, WidgetType,
+    Bounds, ComputedStyle, EventRef, EventResult, Key, Style, TextContent, TextProps,
     WidgetUpdateFlags,
 };
 
@@ -221,16 +221,25 @@ impl GridWidget {
 
     event_handler_methods!();
 
-    pub(super) fn node_type(&self) -> WidgetType {
-        WidgetType::Grid
-    }
-
     pub(super) fn get_key(&self) -> Option<&Key> {
         self.key.as_ref()
     }
 
     pub(super) fn props_hash(&self) -> u64 {
         props_hash(&(&self.style, &self.columns, &self.rows, self.flow))
+    }
+
+    /// See [`Widgets::instantiate`](super::Widgets::instantiate).
+    pub(super) fn instantiate(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            style: self.style.clone(),
+            event_handlers: EventHandlers::default(),
+            columns: self.columns.clone(),
+            rows: self.rows.clone(),
+            flow: self.flow,
+            interaction: InteractionProperties::default(),
+        }
     }
 
     pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {

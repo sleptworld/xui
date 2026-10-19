@@ -1,7 +1,7 @@
 error[E0277]: `<LeafPropsBuilder<LeafPropsLabelSet>>` does not accept this kind of body
   --> tests/ui/component_rejects_children.rs:12:13
    |
-12 |     xui! { <leaf label={String::from("hi")}>{"unexpected"}</leaf> }
+12 |     xui! { <Leaf label={String::from("hi")}>{"unexpected"}</Leaf> }
    |     --------^^^^^^^^^^---------------------------------------------
    |     |       |
    |     |       not a valid body for this element

@@ -1,14 +1,14 @@
 //! Asynchronous raster images from packaged assets, URLs, and local files.
 //!
-//! [`ImageSrc`] identifies a source; [`image`](fn@self::image) retains the resource and
-//! supports fitting, opacity, accessibility text, and loading/error elements. Import the
-//! component explicitly to distinguish it from the host `image()` widget.
+//! [`ImageSrc`] identifies a source; [`Image`](fn@self::Image) retains the resource and
+//! supports fitting, opacity, accessibility text, and loading/error elements. It is
+//! distinct from the host `image()` widget: components are written in PascalCase.
 //!
 //! # Components
 //!
 //! | Component | Purpose |
 //! | --- | --- |
-//! | [`image`](fn@self::image) | An asynchronous image loaded from a packaged asset, URL, or local path. |
+//! | [`Image`](fn@self::Image) | An asynchronous image loaded from a packaged asset, URL, or local path. |
 
 use thiserror::Error;
 use tokio::fs::File;
@@ -208,7 +208,7 @@ impl From<u32> for ImageOpacity {
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { xui_components::image::image(src: "asset://images/logo.png", alt: Some("Logo".to_owned()), width: 64.0, height: 64.0) };
+/// let _ = view! { xui_components::image::Image(src: "asset://images/logo.png", alt: Some("Logo".to_owned()), width: 64.0, height: 64.0) };
 /// ```
 #[component]
 #[defaults(

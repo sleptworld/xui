@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XUI · 从 DSL 到增量 Fiber</title>
+<style>
+:root{--bg:#f7f8fa;--paper:#fff;--ink:#182336;--muted:#59677b;--line:#dbe1e9;--blue:#235cec;--soft:#edf2ff;--green:#13775b;--orange:#9b5114;--code:#142238;--codeText:#e0e9fa}*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:85px}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif}a{color:var(--blue);text-underline-offset:4px}button,select,input{font:inherit}button,select{cursor:pointer}button{border:1px solid var(--line);background:white;color:var(--ink);border-radius:8px;padding:8px 15px;transition:background .15s,transform .15s}button:hover{background:var(--soft)}button:active{transform:translateY(1px)}button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid #86a9ff;outline-offset:3px}button.primary,button[aria-pressed=true]{background:var(--blue);border-color:var(--blue);color:white}button:disabled{opacity:.45;cursor:default}header{position:sticky;top:0;background:#f7f8faf2;backdrop-filter:blur(12px);border-bottom:1px solid var(--line);z-index:10}.top{max-width:1280px;margin:auto;display:flex;gap:20px;align-items:center;padding:13px 28px}.brand{font-weight:800;letter-spacing:-1px;white-space:nowrap}.brand span{color:var(--blue)}nav{display:flex;gap:20px;flex:1;overflow:auto;white-space:nowrap}nav a{font-size:13px;color:var(--muted);text-decoration:none}main{max-width:1160px;margin:auto;padding:0 28px}section{padding:76px 0;border-bottom:1px solid var(--line)}.eyebrow{font-size:12px;font-weight:700;letter-spacing:2px;color:var(--blue);text-transform:uppercase}h1{font-size:clamp(38px,6vw,72px);line-height:1.12;letter-spacing:-3px;max-width:940px;margin:23px 0}h1 em{font-style:normal;color:var(--blue)}h2{font-size:clamp(27px,3.4vw,40px);line-height:1.25;letter-spacing:-1px;margin:12px 0 20px}h3{font-size:19px;line-height:1.4;margin:0 0 12px}p{margin:12px 0}.lead{font-size:20px;max-width:850px;color:var(--muted)}.muted,.source{color:var(--muted)}.source{font-size:12px;margin-top:22px}.pill{display:inline-flex;align-items:center;font-size:12px;padding:3px 9px;border-radius:5px;background:var(--soft);color:var(--blue);font-weight:650}.pill.green{background:#e5f5ed;color:var(--green)}.pill.orange{background:#fff1df;color:var(--orange)}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:26px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}.card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:26px}.dark{background:var(--code);color:var(--codeText);border-color:var(--code)}.dark .muted{color:#a7bad6}.number{display:block;font:600 14px ui-monospace,monospace;color:var(--blue);margin-bottom:16px}.mini{font-size:13px}.callout{border-left:3px solid var(--blue);padding:10px 0 10px 20px;margin:24px 0;background:linear-gradient(90deg,var(--soft),transparent)}code{font: .88em/1.6 ui-monospace,SFMono-Regular,Consolas,monospace}p code,td code,li code{background:#eaf0f8;padding:2px 4px;border-radius:4px}pre{background:var(--code);color:var(--codeText);border-radius:10px;padding:23px;overflow:auto;margin:16px 0;tab-size:2;font:13px/1.8 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre}pre code{font:inherit}.comment{color:#9eb4d5}.controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:20px 0}.controls label{display:flex;align-items:center;gap:9px}.controls select{background:white;border:1px solid var(--line);padding:8px;border-radius:7px;max-width:100%}.pipeline{display:flex;gap:8px;align-items:stretch;margin-top:30px}.stage{flex:1;padding:16px;background:var(--paper);border:1px solid var(--line);border-radius:9px;position:relative}.stage b{display:block;font-size:14px}.stage small{font-size:12px;color:var(--muted)}.stage.active{border-color:var(--blue);box-shadow:0 0 0 2px #235cec18;background:var(--soft)}.arrow{align-self:center;color:var(--muted)}.status{min-height:100px;padding:18px 22px;background:var(--soft);border-radius:10px}.status strong{display:block;color:var(--blue)}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;border-bottom:1px solid var(--line);padding:13px 12px;vertical-align:top}th{color:var(--muted);font-size:12px;font-weight:600}.tablewrap{overflow:auto}ul{padding-left:22px}.rule{padding:16px 0;border-bottom:1px solid var(--line)}.rule:last-child{border:0}.rule b{display:block}.label{font-size:12px;color:var(--muted);letter-spacing:.4px}.split{display:grid;grid-template-columns:1.1fr 1fr;gap:24px;align-items:start}.tree{display:grid;gap:10px;margin-top:16px}.node{border:1px solid var(--line);background:white;border-radius:9px;padding:13px 15px;display:flex;align-items:center;justify-content:space-between;gap:10px;font:13px/1.5 ui-monospace,monospace}.node.indent{margin-left:28px}.node.skip{background:#edf8f3;border-color:#9acdb8}.node.patch{background:var(--soft);border-color:#9fb6f8}.node small{font:12px/1.4 -apple-system,sans-serif;color:var(--muted)}.log{margin-top:16px;min-height:150px;max-height:240px;overflow:auto;background:var(--code);color:var(--codeText);border-radius:9px;padding:16px;font:12px/1.9 ui-monospace,monospace}.sample{padding:24px;background:white;border:1px solid var(--line);border-radius:12px;display:flex;gap:24px;align-items:center}.sample strong{font-size:27px;color:var(--blue)}.sample span{color:var(--muted)}.meter{display:grid;grid-template-columns:165px 1fr 84px;align-items:center;gap:12px;font-size:13px;margin:16px 0}.track{background:#e9edf4;border-radius:4px;height:23px;overflow:hidden}.bar{height:100%;background:var(--blue);transition:width .3s}.bar.alt{background:#7292e4}.bar.static{background:#14795e}.identity-list{display:flex;gap:12px;flex-wrap:wrap}.identity{flex:1;min-width:100px;padding:16px;background:white;border:1px solid var(--line);border-radius:9px;transition:background .2s}.identity b{font:600 22px ui-monospace,monospace}.identity small{display:block;color:var(--muted)}.identity.moved{background:var(--soft);border-color:#9fb6f8}.sourcelist{display:grid;grid-template-columns:1fr 1fr;gap:12px}.sourcelist a{display:block;padding:15px;background:white;border:1px solid var(--line);border-radius:8px;font-size:13px;overflow-wrap:anywhere}.sourcelist span{display:block;color:var(--muted);font-size:12px}.footer{padding:35px 0 60px;color:var(--muted);font-size:12px}.presentbar{display:none;position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:50;background:white;box-shadow:0 5px 30px #14223820;padding:8px;border:1px solid var(--line);border-radius:12px;gap:15px;align-items:center;white-space:nowrap}.presenting .presentbar{display:flex}.presenting header{display:none}.presenting main{max-width:1200px}.presenting section{display:none;min-height:100vh;padding-top:45px;padding-bottom:110px;border:0}.presenting section.current{display:block}.presenting .footer{display:none}body.presenting{background:var(--bg)}@media(max-width:780px){.grid2,.grid3,.split,.sourcelist{grid-template-columns:1fr}.top{padding:10px 18px;gap:12px}main{padding:0 19px}nav{display:none}header .top button{margin-left:auto;font-size:12px}section{padding:48px 0}h1{letter-spacing:-1.8px}.lead{font-size:18px}.pipeline{flex-wrap:wrap}.stage{flex-basis:42%}.arrow{display:none}.meter{grid-template-columns:120px 1fr 70px;font-size:11px}.card{padding:20px}.sample{padding:18px}.presenting section{padding-top:30px}.presentbar{font-size:12px;gap:7px}.presentbar button{padding:6px 9px}}@media print{header,.controls,.presentbar{display:none!important}section,.presenting section{display:block!important;min-height:0;page-break-before:always;padding:25px 0}section:first-child{page-break-before:auto}body{background:white;font-size:12px}h1{font-size:44px}h2{font-size:28px}.card,pre{break-inside:avoid}pre{white-space:pre-wrap}.source{font-size:10px}.footer{display:block!important}}
+</style>
+</head>
+<body>
+<header><div class="top"><div class="brand">xui<span> / </span>engineering notes</div><nav aria-label="章节"><a href="#overview">变化全貌</a><a href="#macro">宏展开</a><a href="#ownership">描述与实例</a><a href="#runtime">更新演示</a><a href="#identity">Fiber 身份</a><a href="#bench">性能证据</a><a href="#migration">迁移</a><a href="#sources">源码索引</a></nav><button id="present">进入讲解模式</button></div></header>
+<main>
+<section id="overview">
+<div class="eyebrow">Architecture walkthrough · 2026.10.19</div>
+<h1>从“重新描述一切”<br>到<em>复用静态、补丁动态。</em></h1>
+<p class="lead">DSL 开始参与增量更新：编译期切分 UI，运行时保留 Fiber 的身份、生命周期与调度，让 host 的更新走更短的路。</p>
+<div class="controls"><span class="pill green">阶段 0–3 已实现</span><span class="pill">工作区快照 · 基于 HEAD fc67e61 + 未提交改动</span></div>
+<p class="mini muted">本文以当前源代码为准，重点对比工作区与 HEAD。view!、Lanes、WIP、Prop&lt;T&gt; 等作为已有背景解释；Block Template 与 Signal 直接绑定仍是后续设计。交互区域为 JavaScript 机制模拟，不执行 Rust 或原生 XUI 渲染。</p>
+<div class="grid3" style="margin-top:36px">
+<article class="card"><span class="number">01 / 编译期</span><h3>一个 DSL，三条路径</h3><p>完全静态 → <code>Hoisted</code>。词汇表内的动态 host → <code>Templated</code>。其余 → 普通 builder。</p></article>
+<article class="card"><span class="number">02 / 数据所有权</span><h3>描述可以共享，实例各自独立</h3><p><code>WidgetProto</code> 描述 UI；<code>WidgetI</code> 承载活实例。缓存同一描述、挂载多次成为安全操作。</p></article>
+<article class="card"><span class="number">03 / Fiber 与提交</span><h3>少存副本，少做比较</h3><p>Fiber 保存 host 身份与复用依据；样式、布局和 widget 留在 UiRuntime。相同模板直接比较 slot。</p></article>
+</div>
+<div class="pipeline" aria-label="完整运行管线"><div class="stage"><b>xui! / view!</b><small>共享 Element AST</small></div><span class="arrow">→</span><div class="stage"><b>ElementDesc</b><small>普通 / 提升 / 模板</small></div><span class="arrow">→</span><div class="stage"><b>Fiber / WIP</b><small>Lanes · reconcile</small></div><span class="arrow">→</span><div class="stage"><b>UiRuntime</b><small>commit · 活 host</small></div><span class="arrow">→</span><div class="stage"><b>增量后处理</b><small>Style → Layout → Paint</small></div></div>
+<div class="callout">讲解主线：先解决“共享描述会污染活实例”，再实现“静态子树跳过”，最后让“同调用点的动态 host 只比较 slot”。这三步存在依赖。</div>
+<p class="source">依据：<a href="../../docs/template-slots.md">template-slots.md §11–12</a> · <a href="../../crates/xui-core/src/fiber.rs">fiber.rs / HostState</a></p>
+</section>
+
+<section id="macro">
+<div class="eyebrow">01 · Compile-time partition</div><h2>宏不再只有 builder 展开。</h2>
+<p>两套语法先进入同一棵 <code>Element</code> AST，再依次尝试提升、模板化、普通展开。语法与类型检查仍然配合工作，但模板化已经引入明确的 host / 样式词汇表。</p>
+<div class="grid2"><pre><code>// JSX 风格
+xui! {
+  &lt;row gap={8.0}&gt;
+    &lt;text&gt;{"Count"}&lt;/text&gt;
+    &lt;text&gt;{label}&lt;/text&gt;
+  &lt;/row&gt;
+}</code></pre><pre><code>// SwiftUI 风格：相同的中间表示
+view! {
+  row(gap: 8.0) {
+    text("Count")
+    text(label)
+  }
+}</code></pre></div>
+<div class="controls"><label for="preset">观察一种写法 <select id="preset"><option value="static">完全静态子树</option><option value="dynamic">动态文本 + 静态标签</option><option value="order">重叠样式的顺序</option><option value="fallback">动态非词汇属性</option><option value="style">动态样式之前的整体 style</option><option value="late">动态样式之后的整体 style</option><option value="component">PascalCase 组件</option><option value="call">函数调用并非静态常量</option></select></label></div>
+<div class="split"><div><div class="label">源码示例</div><pre id="macroCode"></pre></div><div><div class="label">宏路径 · 预设案例推演</div><div id="macroResult" class="card" aria-live="polite"></div></div></div>
+<div class="grid2" style="margin-top:28px"><article><h3>Hoisting：保守的语法判断</h3><p>字面量、常量路径、元组、数组、共享引用、部分一元表达式和原始类型 cast 可静态化。函数 / 方法调用不被视为纯；含 if / for / match / let 的父子树不整体提升，内部静态子树仍可单独提升。</p><p>最大静态子树在每个调用点、每个线程首次使用时构造一次。这里的“静态”指描述固定，内部组件自己的状态更新仍能发生。</p></article><article><h3>Template：受 schema 约束</h3><p>目前支持 <code>container / row / column / center / z_stack / grid / text</code>。动态 key 单独处理；事件通过每事件一个的类型化函数获得闭包签名。</p><p><code>canvas / text_input / image / icon</code> 不走模板路径；完全静态时仍先接受 hoisting 判断。未知小写 tag、泛型 tag、动态非词汇属性按普通方式构造。</p></article></div>
+<div class="callout"><b>实际 slot 粒度：</b>动态文本是 content slot；动态样式合并成一个 <code>Option&lt;Box&lt;Style&gt;&gt;</code> 片段，并非每个样式属性一个独立标量 slot。第一个动态样式之后的所有样式 setter 都进入片段，保留覆盖顺序。</div>
+<p class="source">依据：<a href="../../crates/xui-macros/src/element.rs">element.rs / expand_value</a> · <a href="../../crates/xui-macros/src/hoist.rs">hoist.rs</a> · <a href="../../crates/xui-macros/src/template.rs">template.rs</a> · <a href="../../crates/xui-schema/src/lib.rs">xui-schema</a></p>
+</section>
+
+<section id="ownership">
+<div class="eyebrow">02 · Ownership first</div><h2>共享的是描述，挂载的是独立实例。</h2>
+<div class="grid2"><article class="card"><span class="pill orange">之前 · HEAD</span><h3 style="margin-top:18px">描述与活 widget 共用 WidgetI</h3><pre><code>ElementDesc::Host
+  └─ WidgetI: Rc&lt;RefCell&lt;Widgets&gt;&gt;
+       ├─ 配置与样式
+       └─ 输入框 / 交互中的实例状态
+
+create_node → 直接持有同一个 WidgetI</code></pre><p>缓存一份描述再挂载两次，可能令活节点共享内部状态；prepare 时取走 handler 也会改变被缓存的描述。</p></article><article class="card"><span class="pill green">现在 · 工作区</span><h3 style="margin-top:18px">WidgetProto → instantiate → WidgetI</h3><pre><code>WidgetProto: Rc&lt;Widgets&gt;
+  ├─ instantiate() → WidgetI A
+  └─ instantiate() → WidgetI B
+
+UiRuntime host A / host B
+  └─ 各自 Rc&lt;RefCell&lt;Widgets&gt;&gt;</code></pre><p>共享描述保持可复用；每次挂载创建独立 host 实例。实例化由各 widget 的实现负责，交互信息单独提交给交互系统。</p></article></div>
+<h3 style="margin-top:36px">Fiber 的 host 记忆变轻了</h3>
+<div class="tablewrap"><table><thead><tr><th>HEAD 的 HostState</th><th>当前 HostState</th><th>实际意义</th></tr></thead><tbody><tr><td>widget、taffy Style、ComputedStyle、layout、previous_layout</td><td>移除这些副本；通过 <code>node_id</code> 访问 UiRuntime</td><td>commit 不再为每个 host 复制整份计算样式和布局快照</td></tr><tr><td>node_id、props_hash</td><td>保留，并增加 <code>proto</code>、<code>hoisted</code>、<code>template</code></td><td>保存描述身份、提升子树身份，以及模板 base 和上次 slots</td></tr><tr><td>更新时比较完整描述</td><td>同 proto 可按指针识别；同 hoisted 可跳过子树；同 base 可比较 slots</td><td>按复用条件选择不同粒度的工作</td></tr></tbody></table></div>
+<div class="callout"><b>Handler 不属于视觉属性相等性。</b>即使 props hash 没变，也要在已重渲染的 host 上替换本次 handler；移除 handler 要清空旧回调。这个路径不额外标记视觉工作。</div>
+<p class="source">依据：<a href="../../crates/xui-core/src/widgets.rs">widgets.rs / WidgetProto、instantiate</a> · <a href="../../crates/xui-core/src/fiber.rs">fiber.rs / HostState</a> · <a href="../../crates/xui-core/src/component.rs">component.rs / freeze_host_state、commit_handlers_if_host</a></p>
+</section>
+
+<section id="runtime">
+<div class="eyebrow">03 · Update, step by step</div><h2>同一个计数器，这一帧到底做了什么？</h2>
+<p>模拟一棵已挂载的树。选择更新内容，再逐步观察；只有 commit 才改变右侧的已提交值。用于说明控制流，节点编号是演示标识。</p>
+<pre><code>view! {
+  row(gap: 8.0).background(shade) {
+    text("Count")     // Hoisted：相同描述分配
+    text(label)       // Templated：动态 content
+  }
+}                    // row：Templated，动态样式片段</code></pre>
+<div class="controls"><label for="scenario">本次更新 <select id="scenario"><option value="text">文本 +1</option><option value="same">值完全相同</option><option value="paint">只改背景</option><option value="handler">只更新 handler 捕获值</option><option value="plain">切回普通 builder，恢复初始文本</option></select></label><button id="step" class="primary">下一步</button><button id="run">运行到提交</button><button id="reset">重置演示</button></div>
+<div class="pipeline" id="steps"><div class="stage"><b>1 · Schedule</b><small>选择 render lanes</small></div><div class="stage"><b>2 · Render</b><small>产生 ElementDesc</small></div><div class="stage"><b>3 · Reconcile</b><small>复用身份 / 比较 slot</small></div><div class="stage"><b>4 · Commit</b><small>写入活 host</small></div><div class="stage"><b>5 · 后处理</b><small>按失效标记处理</small></div></div>
+<div class="split" style="margin-top:24px"><div><div class="label">逻辑 Fiber → 已挂载 host</div><div class="tree"><div class="node"><span>Counter · Component</span><small>组件拥有 hooks</small></div><div class="node indent" id="rowNode"><span>row · host #21</span><small id="rowState">Template base A</small></div><div class="node indent" id="staticNode"><span>text("Count") · #22</span><small id="staticState">Hoisted H</small></div><div class="node indent" id="textNode"><span>text(label) · #23</span><small id="textState">Template base B</small></div></div><div class="log" id="trace" aria-live="polite">已挂载：label = "0"；本次更新尚未开始。</div></div><div><div class="label">已提交的视图 · 示意</div><div class="sample" id="sample"><span>Count</span><strong id="count">0</strong></div><div class="controls"><button id="invoke">调用当前 handler</button><span id="handlerValue" class="mini muted">捕获值：0</span></div><div class="status" id="stepDetail" aria-live="polite"><strong>准备完成</strong>点击“下一步”，从 Lanes 调度开始。</div></div></div>
+<div class="grid2" style="margin-top:28px"><div class="rule"><b>同调用点不等于同节点身份</b>先按 key / 位置和 tag 匹配可复用的 Fiber，再检查模板 base 的 Rc 是否相同。新挂载或切换 base 时需要构造完整描述。</div><div class="rule"><b>PATCH 后要使完整描述缓存失效</b>置 <code>proto = None</code>，并使用 <code>STALE_PROPS_HASH</code>。切回普通元素，即使等于最初的值，也必须覆盖已 patch 的活 widget。</div></div>
+<p class="mini muted">模板 children 仍按 Fiber reconcile；本演示没有把一个模板里的多个 host 合并成一个 Fiber。样式变化先报告 STYLE_TARGET，后续精细 StyleDiff 决定是否需要布局或绘制。</p>
+<p class="source">依据：<a href="../../crates/xui-core/src/element.rs">element.rs / TemplateSlots::write</a> · <a href="../../crates/xui-core/src/component.rs">component.rs / patch_committed_template</a> · <a href="../../crates/xui-core/src/ui_runtime/commit.rs">commit.rs / patch_node、replace_handlers</a></p>
+</section>
+
+<section id="identity">
+<div class="eyebrow">04 · Fiber still owns identity</div><h2>模板缩短 host 更新，Fiber 继续管理树。</h2>
+<div class="grid3"><article><h3>Lanes：决定谁有工作</h3><p>组件自身的 lanes 与 child_lanes 决定是否进入 begin work。Sync、连续输入、Default、Transition 等优先级仍由调度体系负责。</p></article><article><h3>WIP：描述这次提交</h3><p><code>WorkNode</code> 区分 HostWork / ComponentWork / PortalWork，持有 current 绑定、children 与 effect。commit 后形成新的已提交 Fiber 状态。</p></article><article><h3>Commit：写入保留树</h3><p><code>PLACEMENT / MOVE / UPDATE</code> 与删除列表决定树修改。UiRuntime 的 commit 接口负责创建、定位、更新和移除活 host。</p></article></div>
+<div class="callout">即使提升描述的 Rc 相同，只要其内部组件存在匹配 render lanes 的排期工作，运行时仍会下降处理。Hoisted 不会冻结 hooks 状态。</div>
+<div class="card"><h3>演示：有 key 的兄弟重排，host 身份保持</h3><p class="mini muted">初始顺序 A → B → C。算法维护 last_placed_index；旧下标小于该值的复用项带 MOVE。这里仅模拟同类型、有 key 的三个兄弟。</p><div class="controls"><button id="reorder" class="primary">重排为 C → A → B</button><button id="identityReset">恢复初始顺序</button></div><div class="identity-list" id="identityList"></div><p id="identityNote" class="mini" aria-live="polite">所有节点已经挂载；每个 key 对应固定的 host ID。</p></div>
+<p class="mini muted">无 key 时按位置匹配；key 相同还要满足类型兼容。key 改变会影响节点复用，动态 key 并非普通视觉属性 patch。</p>
+<p class="source">依据：<a href="../../crates/xui-core/src/component.rs">component.rs / reconcile_children、find_reusable_child_fast、should_render_component</a> · <a href="../../crates/xui-core/src/lanes.rs">lanes.rs</a>。本节调度与身份机制是现有体系背景，不宣称均由本次未提交改动新增。</p>
+</section>
+
+<section id="bench">
+<div class="eyebrow">05 · Evidence & limits</div><h2>收益发生在 render → reconcile → commit。</h2>
+<p>下图重绘设计文档 §11.4 的 <code>template_row_rebuild</code> 记录。每行改一个文本，比较同类卡片写法；view 版本少了 padding，因此不能把差值全部归因于模板。</p>
+<div class="controls"><label for="rows">列表规模 <select id="rows"><option>25</option><option>100</option><option>400</option><option selected>1600</option></select> 行</label><span class="pill">release · 五次运行的逐行最小值</span></div>
+<div class="card"><div class="label">耗时 / ms · 越短越好 · 每个规模内使用同一线性比例</div><div id="bars"></div><p id="benchNote" class="mini" aria-live="polite"></p></div>
+<div class="grid2" style="margin-top:30px"><article><h3>现在减少了什么</h3><p>静态树首次构造后跳过重建与深层 reconcile；同 base 的模板避免完整描述构造和 props hash，改为比较 style / content slots，直接 patch 活 widget。</p><p>并非零分配：children、样式片段、handler 仍有构造和存储成本；文字变化还可能触发文本排版。</p></article><article><h3>一次重要的布局回退</h3><p>文档记录 <code>Style</code> 为 2480 字节。最初内联样式 slot 曾把 ElementDesc / WorkNode / Fiber Node 膨胀到数 KB；现用 Box 限制枚举体积。</p><p>记录中的 <code>TemplatedDesc</code> 为 144 字节，<code>ElementDesc</code> 为 152 字节。尺寸与耗时均是当时构建记录，不是浏览器或本页实时测量。</p></article></div>
+<pre><code># 文档中基准的复现入口；不是浏览器测量
+cargo test -p xui-core --release --lib frame_bench -- \
+  --ignored --nocapture --test-threads=1</code></pre>
+<p class="source">数据来源：<a href="../../docs/template-slots.md">template-slots.md §11.4</a> · 基准实现：<a href="../../crates/xui-core/src/frame_bench.rs">frame_bench.rs</a>。历史阶段 2 与阶段 3 数据来自不同运行，仅用于观察趋势，不作为受控因果实验。</p>
+</section>
+
+<section id="migration">
+<div class="eyebrow">06 · What changes for authors</div><h2>迁移重点是组件名字与扩展边界。</h2>
+<div class="grid2"><div><h3>组件函数 snake_case，tag PascalCase</h3><pre><code>#[component]
+fn date_picker(value: &amp;String) -&gt; ElementDesc {
+  view! { text(value.as_str()) }
+}
+
+// 之前的 &lt;date_picker /&gt; / date_picker(...)
+// 改用生成的 PascalCase tag：
+xui! { &lt;DatePicker value={value} /&gt; }
+view! { DatePicker(value: value) }</code></pre><p>更新导入、重导出、组件别名和 builder 调用；例如 <code>Select / ComboBox / Sheet</code>。host tag 保持小写。</p></div><div><h3>扩展仍有普通 builder 路径</h3><div class="rule"><b>新样式属性</b>在 <code>style_props!</code> 加 setter；若符合模板化语义，同步 <code>xui_schema::STYLE_PROPS</code>。一致性测试约束这两张表。</div><div class="rule"><b>新 host</b>构造函数、Styled 与 IntoElement 决定基本 DSL 能力；加入 HOST_TAGS 前需验证实例状态与同名固有方法语义。</div><div class="rule"><b>检查元素形状</b>ElementDesc 新增 Hoisted / Templated 变体。<code>resolved()</code> 看穿 Hoisted；需要普通 host 描述时使用 <code>to_host()</code>。</div></div></div>
+<h3 style="margin-top:30px">哪些已落地，哪些还没有</h3><div class="tablewrap"><table><thead><tr><th>阶段</th><th>内容</th><th>状态</th></tr></thead><tbody><tr><td>0</td><td>修复 handler 更新、移除 Fiber 中冗余宿主状态副本、补充基准</td><td><span class="pill green">已实现</span></td></tr><tr><td>1</td><td>WidgetProto / WidgetI 描述实例分离</td><td><span class="pill green">已实现</span></td></tr><tr><td>2</td><td>静态子树 Hoisted 与指针 bailout</td><td><span class="pill green">已实现</span></td></tr><tr><td>3</td><td>schema + 命名约定 + 样式片段 / 文本 slots</td><td><span class="pill green">已实现 · §12 实际方案</span></td></tr><tr><td>4</td><td>Block Template：一个 Fiber 管理一组 host</td><td><span class="pill orange">条件性后续设计</span></td></tr><tr><td>S</td><td>Signal 直接绑定属性，绕开组件 render</td><td><span class="pill orange">后续设计</span></td></tr></tbody></table></div>
+<p class="mini muted">文档早期 §6 的属性 witness 方案以及 §11.3 的“未实施”分析是历史设计过程；最终阶段 3 采用 §12，不应把它描述为已经实现的逐属性 witness 系统。源码顶部仍有“宏完全不认识标签/属性”的早期注释，当前模板实现以 xui-schema 与 template.rs 为准。</p>
+<p class="source">依据：<a href="../../crates/xui-macros/src/component.rs">component.rs / component_tag_name</a> · <a href="../../docs/components.md">components.md</a> · <a href="../../docs/template-slots.md">template-slots.md §11–12</a></p>
+</section>
+
+<section id="sources">
+<div class="eyebrow">07 · Read the implementation</div><h2>沿着这条路径回到源码。</h2>
+<p>建议阅读顺序：宏分流 → 描述结构 → 宿主实例 → reconcile → commit → 回归测试。链接指向当前仓库文件；将 HTML 单独复制出去后，正文和演示仍可离线使用，源码链接需要保留目录关系。</p>
+<div class="sourcelist">
+<a href="../../crates/xui-macros/src/element.rs">① xui-macros/src/element.rs<span>Element::expand_value：hoist → template → 普通 builder</span></a>
+<a href="../../crates/xui-macros/src/template.rs">② xui-macros/src/template.rs<span>静态前缀、动态样式片段、handler / key / content</span></a>
+<a href="../../crates/xui-macros/src/hoist.rs">③ xui-macros/src/hoist.rs<span>静态表达式判定与 thread_local 提升</span></a>
+<a href="../../crates/xui-schema/src/lib.rs">④ xui-schema/src/lib.rs<span>允许模板化的 host 与样式词汇</span></a>
+<a href="../../crates/xui-core/src/element.rs">⑤ xui-core/src/element.rs<span>TemplateBase、TemplateSlots::write、Hoisted</span></a>
+<a href="../../crates/xui-core/src/widgets.rs">⑥ xui-core/src/widgets.rs<span>WidgetProto、WidgetI 与 instantiate</span></a>
+<a href="../../crates/xui-core/src/component.rs">⑦ xui-core/src/component.rs<span>reconcile_children、模板 patch 判定、freeze_host_state</span></a>
+<a href="../../crates/xui-core/src/fiber.rs">⑧ xui-core/src/fiber.rs<span>HostState / TemplateState 与 FiberArena</span></a>
+<a href="../../crates/xui-core/src/ui_runtime/commit.rs">⑨ ui_runtime/commit.rs<span>patch_node、update_node_from、replace_handlers</span></a>
+<a href="../../crates/xui-core/src/ui_runtime/tests.rs">⑩ ui_runtime/tests.rs<span>templated_hosts：slot 写入、handler 更新、普通元素回退</span></a>
+<a href="../../crates/xui-core/tests/dsl.rs">⑪ xui-core/tests/dsl.rs<span>模板 / builder 等价、属性覆盖、动态 key 与回退</span></a>
+<a href="../../docs/template-slots.md">⑫ docs/template-slots.md<span>阶段记录、基准与实际方案 §12</span></a>
+</div>
+<div class="callout"><b>建议的 10 分钟讲解：</b>全貌 1 分钟 → 宏路径 2 分钟 → 描述 / 实例 1 分钟 → 单步提交 3 分钟 → Fiber 身份 1 分钟 → 性能与迁移 2 分钟。右上角可进入逐章节讲解模式，使用 ← / → 切换，Esc 退出。</div>
+</section>
+<div class="footer">XUI / DSL & Fiber · 当前工作区研究说明 · 2026-10-19 · 单文件、无外部依赖 · 浏览器可打印为 PDF</div>
+</main>
+<div class="presentbar" aria-label="讲解控制"><button id="prevSlide">← 上一节</button><span id="slideIndex" aria-live="polite"></span><button id="nextSlide">下一节 →</button><button id="exitPresent">退出 Esc</button></div>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const presets={
+static:{code:'view! {\n  row(gap: 8.0) {\n    text("Count")\n    text("0")\n  }\n}',kind:'Hoisted',desc:'整棵 row 是最大的静态子树。首次使用在调用点 thread_local 中构造一次，再次返回同一个 Rc<Hoisted>。',lower:'thread_local! { static H = Hoisted::new(/* 整树 */); }\ndsl::hoisted(&H)',note:'不会为内部每个静态子元素各建一份提升缓存。相同 Rc 且无内部排期工作时，整树 bailout。'},
+dynamic:{code:'view! {\n  row(gap: 8.0) {\n    text("Count")\n    text(label)\n  }\n}',kind:'Templated + Hoisted',desc:'row 的 base 含 gap；children 每次生成。静态标签被提升，动态 text 的 base 固定，label 转为 content slot。',lower:'row → base(gap: 8.0) + children\n"Count" → Hoisted\nlabel → TemplateBase(text) + content slot',note:'模板仍逐 host 参与 Fiber；不是把整个 row 编译为一个 Block Template。'},
+order:{code:'view! {\n  row().width(w).size((80.0, 20.0))\n}',kind:'Templated',desc:'width 是第一个动态样式属性。其后的 size 即使值是静态，也必须进入样式片段，维持 source order。',lower:'base = row()\nfragment = empty_style()\n  → width(w)\n  → size((80.0, 20.0))',note:'size 在 width 后覆盖宽度；若错误地提前放入 base，动态 width 会改变原本的最终结果。'},
+fallback:{code:'view! {\n  container().focusable(can_focus)\n}',kind:'普通 builder',desc:'focusable 不在 STYLE_PROPS 中，且值动态；整个元素回退到普通 builder 展开。',lower:'Content / Children / NoChildren\n  .build(container().focusable(can_focus))',note:'能否模板化影响优化路径；具体属性和 body 的合法性仍由方法解析和 IntoElement 约束。'},
+style:{code:'view! {\n  row().style(BASE_STYLE).width(w)\n}',kind:'Templated',desc:'假设 BASE_STYLE 是可用的静态常量路径，整体 style 在动态 width 之前，可以进入 base。',lower:'base = row().style(BASE_STYLE)\nfragment = empty_style() → width(w)',note:'style / scrollbar 属于有顺序意义的整体操作，必须是静态值，且位于所有动态样式之前。'},
+late:{code:'view! {\n  row().width(w).style(BASE_STYLE)\n}',kind:'普通 builder',desc:'整体 style 出现在动态样式之后，模板化无法安全把它移到静态前缀，整元素回退。',lower:'NoChildren.build(\n  row().width(w).style(BASE_STYLE)\n)',note:'即使 BASE_STYLE 是常量，位置仍然会触发回退。动态 style 同样不进入模板。'},
+component:{code:'#[component]\nfn counter(label: &String) -> ElementDesc { /* … */ }\n\nview! { Counter(label: label) }',kind:'普通组件 builder',desc:'Counter 是生成的 PascalCase 组件构造函数；带动态 props 时不走 host 模板。组件内部的宏元素可分别提升或模板化。',lower:'Counter().label(label)\n  → ElementDesc::Component\n  → Fiber component render',note:'若整个组件描述完全静态，它也能先被 hoisting 捕获。是否调用组件 render 还受 props 指针、上下文与 lanes 影响。'},
+call:{code:'view! {\n  row().padding(EdgeInsets::all(16.0))\n}',kind:'Templated，非 Hoisted',desc:'EdgeInsets::all 是函数调用，静态分析不假设其纯度。padding 属于样式词汇，所以可作为样式片段进入模板。',lower:'base = row()\nfragment = empty_style()\n  → padding(EdgeInsets::all(16.0))',note:'“人看起来不变”与“宏按语法判定为静态”是两件事。'}
+};
+function renderPreset(){const p=presets[$('preset').value];$('macroCode').textContent=p.code;const root=$('macroResult');root.replaceChildren();const badge=document.createElement('span');badge.className='pill';badge.textContent=p.kind;const desc=document.createElement('p');desc.textContent=p.desc;const pre=document.createElement('pre');pre.textContent=p.lower;const note=document.createElement('p');note.className='mini muted';note.textContent=p.note;root.append(badge,desc,pre,note)}
+$('preset').addEventListener('change',renderPreset);renderPreset();
+
+let phase=-1,count=0,capture=0,nextCount=0,nextCapture=0,isBlue=false;
+const phaseNames=['Schedule','Render','Reconcile','Commit','后处理'];
+function log(line){$('trace').textContent+='\n'+line;$('trace').scrollTop=$('trace').scrollHeight}
+function detail(title,text){$('stepDetail').replaceChildren();const strong=document.createElement('strong');strong.textContent=title;$('stepDetail').append(strong,document.createTextNode(text))}
+function resetDemo(){phase=-1;count=0;capture=0;nextCount=0;nextCapture=0;isBlue=false;$('scenario').disabled=false;$('count').textContent='0';$('sample').style.background='white';$('handlerValue').textContent='捕获值：0';$('trace').textContent='已挂载：label = "0"；本次更新尚未开始。';$('step').textContent='下一步';$('steps').querySelectorAll('.stage').forEach(n=>n.classList.remove('active'));['rowNode','staticNode','textNode'].forEach(id=>$(id).classList.remove('skip','patch'));$('rowState').textContent='Template base A';$('textState').textContent='Template base B';$('staticState').textContent='Hoisted H';detail('准备完成','点击“下一步”，从 Lanes 调度开始。')}
+function step(){
+ if(phase===4)phase=-1;
+ const s=$('scenario').value;
+ if(phase===-1){nextCount=s==='text'?count+1:s==='plain'?0:count;nextCapture=s==='handler'?capture+1:capture;$('scenario').disabled=true;$('trace').textContent='开始新一轮更新：'+$('scenario').selectedOptions[0].textContent;['rowNode','staticNode','textNode'].forEach(id=>$(id).classList.remove('skip','patch'));}
+ phase++;$('steps').querySelectorAll('.stage').forEach((n,i)=>n.classList.toggle('active',i===phase));
+ if(phase===0){log('[schedule] Counter 在 SYNC_LANE 排期');detail('1 / Schedule','用按钮事件的同步 lane 作为示例。先确定需要 render 的组件，尚未改动活 host。')}
+ if(phase===1){log('[render] 产生 '+(s==='plain'?'普通 text 描述':'base A / B + slots')+'；静态标签返回同一 Rc');detail('2 / Render','计算本次描述和动态值。模板静态 base 已缓存，仍需产生本次 children 与 slots。')}
+ if(phase===2){$('staticNode').classList.add('skip');$('staticState').textContent='Rc 相同 → 子树 bailout';const textChanged=nextCount!==count;const paint=s==='paint';$('rowNode').classList.toggle('patch',paint);$('textNode').classList.toggle('patch',textChanged||s==='plain');$('rowState').textContent=paint?'style slot 不同 → UPDATE':'slots 相同';$('textState').textContent=s==='plain'?'普通路径 → 检查缓存有效性':textChanged?'content 不同 → UPDATE':'content 相同 → 无 UPDATE';log('[reconcile] 按 key / 位置 + tag 复用 #21 / #22 / #23');log('[bailout] #22 Hoisted 指针相同，无内部排期');log(s==='plain'?'[fallback] 先前若已 patch，proto=None / STALE hash 禁止旧值误跳过':('[compare] 同 base；style '+(paint?'≠':'=')+'，content '+(textChanged?'≠':'=')));detail('3 / Reconcile',s==='plain'?'切到普通描述，不能把初始描述的旧 hash 当作当前活 widget 的真值。':'比较上次 slots，决定 UPDATE；静态标签跳过。handler 的本轮替换独立于视觉属性比较。')}
+ if(phase===3){const before=count;count=nextCount;capture=nextCapture;$('count').textContent=String(count);$('handlerValue').textContent='捕获值：'+capture;if(s==='paint'){isBlue=!isBlue;$('sample').style.background=isBlue?'#e4edff':'white'}log(s==='plain'?'[commit] update_node_from(#23)，按普通描述更新':s==='paint'?'[commit] patch_node(#21) → STYLE_TARGET':before!==count?'[commit] patch_node(#23) → LAYOUT_INPUT | PAINT_OUTPUT':'[commit] slot 未变；跳过视觉属性写入');log('[handlers] 替换本次 handlers；捕获值 = '+capture);detail('4 / Commit','现在才把变化写进已存在的活 widget，host ID 保持。没有视觉 UPDATE 时仍提交本次 handler。')}
+ if(phase===4){log(s==='paint'?'[work] STYLE_TARGET → 样式差异 → 按实际差异安排后处理':s==='same'||s==='handler'?'[work] 没有额外视觉失效标记':'[work] 文本实际变化时需要布局输入 / 绘制输出工作');detail('5 / 后处理',s==='paint'?'背景变化先重算目标样式；单纯颜色差异通常只需绘制，不意味着必然重排。':s==='same'||s==='handler'?'本例没有属性变化，不为这轮提交额外请求样式 / 布局 / 绘制。':'文字变化会影响布局输入与绘制。运行时根据增量工作标记继续处理。');$('scenario').disabled=false;$('step').textContent='开始下一轮'}
+}
+$('step').addEventListener('click',step);$('run').addEventListener('click',()=>{if(phase===4)phase=-1;while(phase<4)step()});$('reset').addEventListener('click',resetDemo);$('invoke').addEventListener('click',()=>{log('[dispatch] 当前 handler 读取捕获值 '+capture);detail('调用当前 handler','当前回调捕获值 = '+capture+'。选择“只更新 handler 捕获值”并运行，视图不变但回调会更新。')});resetDemo();
+
+const keys=['A','B','C'],hostIds={A:31,B:32,C:33};let reordered=false;
+function renderIdentity(){const order=reordered?['C','A','B']:keys;$('identityList').replaceChildren();let last=0;const moves=[];order.forEach((k,i)=>{const old=keys.indexOf(k),moved=old<last;if(moved)moves.push(k);else last=old;const item=document.createElement('div');item.className='identity'+(moved?' moved':'');const b=document.createElement('b');b.textContent=k;const small=document.createElement('small');small.textContent='host #'+hostIds[k]+' · 位置 '+i;const effect=document.createElement('small');effect.textContent=moved?'MOVE':'复用 · 无 MOVE';item.append(b,small,effect);$('identityList').append(item)});$('identityNote').textContent=reordered?'旧下标序列 2 → 0 → 1；C 将 last_placed_index 提升到 2，A、B 标记 MOVE。三个 host ID 全部保持。':'所有节点已经挂载；每个 key 对应固定的 host ID。';$('reorder').disabled=reordered}
+$('reorder').addEventListener('click',()=>{reordered=true;renderIdentity()});$('identityReset').addEventListener('click',()=>{reordered=false;renderIdentity()});renderIdentity();
+
+const bench={25:[.093,.153,.010,.085,.295],100:[.366,.583,.038,.314,.608],400:[1.513,2.628,.146,1.278,2.429],1600:[7.544,13.733,.587,7.581,13.413]};
+function renderBench(){const v=bench[$('rows').value],max=Math.max(...v);const labels=['builder · 未变','builder · 每行改文本','view · 全静态','view · 每行改文本','阶段 2 · view 动态'];$('bars').replaceChildren();v.forEach((n,i)=>{const row=document.createElement('div');row.className='meter';const label=document.createElement('span');label.textContent=labels[i];const track=document.createElement('div');track.className='track';const bar=document.createElement('div');bar.className='bar'+(i===2?' static':i===3?'':' alt');bar.style.width=(n/max*100)+'%';track.append(bar);const value=document.createElement('span');value.textContent=n.toFixed(3)+' ms';row.append(label,track,value);$('bars').append(row)});$('benchNote').textContent=$('rows').value+' 行：动态 view 相比同表动态 builder 的记录耗时降低 '+((1-v[3]/v[1])*100).toFixed(1)+'%；相对历史阶段 2 的动态 view 降低 '+((1-v[3]/v[4])*100).toFixed(1)+'%。数据为文档记录，不是本页运行结果。'}
+$('rows').addEventListener('change',renderBench);renderBench();
+
+const sections=[...document.querySelectorAll('main > section')];let slide=0;
+function showSlide(){sections.forEach((s,i)=>s.classList.toggle('current',i===slide));$('slideIndex').textContent=(slide+1)+' / '+sections.length;$('prevSlide').disabled=slide===0;$('nextSlide').disabled=slide===sections.length-1;window.scrollTo(0,0)}
+function enterPresent(){slide=Math.max(0,sections.findIndex(s=>s.getBoundingClientRect().bottom>100));document.body.classList.add('presenting');showSlide();$('exitPresent').focus()}
+function exitPresent(){document.body.classList.remove('presenting');sections[slide].scrollIntoView();$('present').focus()}
+$('present').addEventListener('click',enterPresent);$('exitPresent').addEventListener('click',exitPresent);$('prevSlide').addEventListener('click',()=>{slide=Math.max(0,slide-1);showSlide()});$('nextSlide').addEventListener('click',()=>{slide=Math.min(sections.length-1,slide+1);showSlide()});document.addEventListener('keydown',e=>{if(!document.body.classList.contains('presenting'))return;if(e.key==='Escape'){exitPresent();return}if(['INPUT','SELECT','TEXTAREA'].includes(document.activeElement.tagName))return;if(e.key==='ArrowRight'){e.preventDefault();slide=Math.min(sections.length-1,slide+1);showSlide()}if(e.key==='ArrowLeft'){e.preventDefault();slide=Math.max(0,slide-1);showSlide()}});
+</script>
+</body>
+</html>

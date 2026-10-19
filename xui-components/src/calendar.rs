@@ -1,16 +1,16 @@
 //! Gregorian dates, month arithmetic, calendar grids, and date selection.
 //!
 //! [`CalendarMonth`] provides normalized month arithmetic and [`CalendarDate`] validates
-//! dates. [`calendar`](fn@self::calendar) requests date/month updates, and
-//! [`date_picker`] places that calendar in a popover with independently controlled
+//! dates. [`Calendar`](fn@self::Calendar) requests date/month updates, and
+//! [`DatePicker`] places that calendar in a popover with independently controlled
 //! disclosure.
 //!
 //! # Components
 //!
 //! | Component | Purpose |
 //! | --- | --- |
-//! | [`calendar`](fn@self::calendar) | A month grid with selectable dates and previous/next navigation requests. |
-//! | [`date_picker`](fn@self::date_picker) | A date-selection popover combining a supplied trigger and month calendar. |
+//! | [`Calendar`](fn@self::Calendar) | A month grid with selectable dates and previous/next navigation requests. |
+//! | [`DatePicker`](fn@self::DatePicker) | A date-selection popover combining a supplied trigger and month calendar. |
 
 use crate::layout::MergeClone;
 use xui_core::prelude::*;
@@ -119,7 +119,7 @@ fn weekday_monday_zero(year: i32, month: u8, day: u8) -> usize {
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { calendar(month: CalendarMonth::new(2026, 10)) };
+/// let _ = view! { Calendar(month: CalendarMonth::new(2026, 10)) };
 /// ```
 #[component]
 #[defaults(
@@ -340,7 +340,7 @@ pub fn calendar(
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { date_picker(trigger: view! { text("Choose date") }, month: CalendarMonth::new(2026, 10)) };
+/// let _ = view! { DatePicker(trigger: view! { text("Choose date") }, month: CalendarMonth::new(2026, 10)) };
 /// ```
 #[component]
 #[defaults(
@@ -392,7 +392,7 @@ pub fn date_picker(
         },
     );
     let content = view! {
-        calendar(
+        Calendar(
             month: *month,
             selected: *selected,
             on_select: Some(select),
@@ -413,7 +413,7 @@ pub fn date_picker(
         }
     });
     view! {
-        crate::popover(
+        crate::Popover(
             trigger: trigger.share(),
             content: content,
             open: Some(shown),

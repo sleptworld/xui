@@ -1,6 +1,6 @@
 //! Single-line text editing with durable controllers and validation chrome.
 //!
-//! The [`input`](fn@self::input) component wraps the host text-input widget. Use a shared
+//! The [`Input`](fn@self::Input) component wraps the host text-input widget. Use a shared
 //! [`xui_core::widgets::TextController`] for external editing state or let the component
 //! retain an internal controller.
 //!
@@ -8,7 +8,7 @@
 //!
 //! | Component | Purpose |
 //! | --- | --- |
-//! | [`input`](fn@self::input) | A single-line text field with IME, validation styling, and durable editing state. |
+//! | [`Input`](fn@self::Input) | A single-line text field with IME, validation styling, and durable editing state. |
 
 use std::time::Duration;
 
@@ -57,7 +57,7 @@ use crate::layout::{ComponentColor, ComponentInsets, ComponentLength, ComponentS
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { xui_components::input(accessibility_label: Some("Email".to_owned()), required: true) };
+/// let _ = view! { xui_components::Input(accessibility_label: Some("Email".to_owned()), required: true) };
 /// ```
 #[component]
 #[defaults(

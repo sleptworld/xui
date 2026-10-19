@@ -9,5 +9,5 @@ fn badge(label: &String, tone: &String) {
 }
 
 fn missing() -> ElementDesc {
-    xui! { <badge label={String::from("hi")} /> }
+    xui! { <Badge label={String::from("hi")} /> }
 }

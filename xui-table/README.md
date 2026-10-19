@@ -1,7 +1,7 @@
 # xui-table
 
 `xui-table` is the advanced data-table layer for XUI. It keeps row processing
-in a deterministic `TableModel` and rendering in the `advanced_table`
+in a deterministic `TableModel` and rendering in the `AdvancedTable`
 component, so query behavior can be tested without a window.
 
 ## Capabilities
@@ -42,7 +42,7 @@ let rows = vec![
 ];
 
 xui! {
-    <advanced_table
+    <AdvancedTable
         columns={columns}
         rows={rows}
         selection_mode={SelectionMode::Multiple}

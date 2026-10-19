@@ -4,14 +4,14 @@
 use std::f32::consts::FRAC_PI_2;
 use std::time::{Duration, Instant};
 
-use xui_components::spinner;
+use xui_components::Spinner;
 use xui_core::prelude::*;
 use xui_core::widgets::WidgetType;
 use xui_cosmic::CosmicEngine;
 use xui_macros::xui;
 
 fn root(_cx: &mut HookContext<'_>) -> ElementDesc {
-    xui! { <spinner size={24.0} /> }
+    xui! { <Spinner size={24.0} /> }
 }
 
 fn runtime() -> GuiRuntime<MockRenderBackend, CosmicEngine> {

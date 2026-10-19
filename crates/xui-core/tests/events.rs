@@ -29,8 +29,8 @@ fn clickable(label: &String, on_click: &Handler<ClickEvent>) {
 #[test]
 fn a_component_accepts_a_host_event_handler_as_a_prop() {
     let handler = Handler::<ClickEvent>::new(|_, _| {});
-    let element = xui! { <clickable label={String::from("go")} on_click={handler} /> };
-    assert!(matches!(element, ElementDesc::Component(_)));
+    let element = xui! { <Clickable label={String::from("go")} on_click={handler} /> };
+    assert!(matches!(element.resolved(), ElementDesc::Component(_)));
 }
 
 #[test]
@@ -50,8 +50,8 @@ fn a_forwarded_handler_keeps_the_context_the_old_callback_type_could_not_carry()
     let clone = handler.clone();
     assert!(handler.ptr_eq(&clone));
 
-    let element = xui! { <clickable label={String::from("go")} on_click={clone} /> };
-    assert!(matches!(element, ElementDesc::Component(_)));
+    let element = xui! { <Clickable label={String::from("go")} on_click={clone} /> };
+    assert!(matches!(element.resolved(), ElementDesc::Component(_)));
     assert_eq!(seen_phase.get(), None, "nothing has been dispatched yet");
 }
 

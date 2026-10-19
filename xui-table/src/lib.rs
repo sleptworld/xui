@@ -1,7 +1,7 @@
 //! Advanced, model-driven tables for XUI.
 //!
 //! `xui-table` separates deterministic row processing from rendering. The
-//! [`TableModel`] can be tested without a UI, while [`advanced_table`] adds
+//! [`TableModel`] can be tested without a UI, while [`AdvancedTable`] adds
 //! custom cells, sorting, filtering, pagination, selection, keyboard grid
 //! navigation, column resizing callbacks, and viewport-bounded row rendering.
 

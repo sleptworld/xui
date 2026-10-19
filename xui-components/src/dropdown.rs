@@ -1,6 +1,6 @@
 //! Option selection with independently controlled value and disclosure.
 //!
-//! [`drop_down`] renders its option list in an anchored portal. [`DropDownItem`] supplies
+//! [`DropDown`] renders its option list in an anchored portal. [`DropDownItem`] supplies
 //! identity/disabled state and [`DropDownStyle`] defines complete visual slots.
 //! Crate-root `select` and `combo_box` are aliases for the same non-editable picker.
 //!
@@ -8,7 +8,7 @@
 //!
 //! | Component | Purpose |
 //! | --- | --- |
-//! | [`drop_down`](fn@self::drop_down) | An accessible option picker with a portal-mounted dropdown list. |
+//! | [`DropDown`](fn@self::DropDown) | An accessible option picker with a portal-mounted dropdown list. |
 
 use crate::{SelectionItem, SelectionModel};
 use std::rc::Rc;
@@ -215,7 +215,7 @@ fn normalized_selection(items: &[DropDownItem], requested: usize) -> Option<usiz
 /// use xui_components::*;
 /// use xui_macros::view;
 ///
-/// let _ = view! { drop_down(items: vec![DropDownItem::new("a", "Alpha"), DropDownItem::new("b", "Beta")]) };
+/// let _ = view! { DropDown(items: vec![DropDownItem::new("a", "Alpha"), DropDownItem::new("b", "Beta")]) };
 /// ```
 #[component]
 #[defaults(

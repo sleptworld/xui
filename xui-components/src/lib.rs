@@ -14,8 +14,8 @@
 //!
 //! let content = view! {
 //!     column(gap: 12.0) {
-//!         xui_components::input(accessibility_label: Some("Email".to_owned()), required: true)
-//!         button(text: "Save", variant: ButtonVariant::Primary)
+//!         xui_components::Input(accessibility_label: Some("Email".to_owned()), required: true)
+//!         Button(text: "Save", variant: ButtonVariant::Primary)
 //!     }
 //! };
 //! ```
@@ -24,50 +24,50 @@
 //!
 //! | Module | Component | Purpose |
 //! | --- | --- | --- |
-//! | [`button`](mod@crate::button) | [`button`](fn@crate::button::button) | A focusable action button with semantic variants, loading state, and keyboard activation. |
-//! | [`calendar`](mod@crate::calendar) | [`calendar`](fn@crate::calendar::calendar) | A month grid with selectable dates and previous/next navigation requests. |
-//! | [`calendar`](mod@crate::calendar) | [`date_picker`](fn@crate::calendar::date_picker) | A date-selection popover combining a supplied trigger and month calendar. |
-//! | [`collections`](mod@crate::collections) | [`accordion`](fn@crate::collections::accordion) | A single-expanded-item accordion with optional collapse behavior. |
-//! | [`collections`](mod@crate::collections) | [`breadcrumb`](fn@crate::collections::breadcrumb) | A breadcrumb trail with callback-driven navigation and a configurable separator. |
-//! | [`collections`](mod@crate::collections) | [`collapsible`](fn@crate::collections::collapsible) | A disclosure section showing content when its trigger is activated. |
-//! | [`collections`](mod@crate::collections) | [`data_grid`](fn@crate::collections::data_grid) | A tabular string-data surface with sortable headers and selectable rows. |
-//! | [`collections`](mod@crate::collections) | [`data_table`](fn@crate::collections::data_table) | A presentational table of arbitrary element cells with optional headers. |
-//! | [`collections`](mod@crate::collections) | [`pagination`](fn@crate::collections::pagination) | A page-navigation row with endpoint buttons and visible sibling pages. |
-//! | [`collections`](mod@crate::collections) | [`tree_view`](fn@crate::collections::tree_view) | A tree with independent controlled selection and expansion. |
-//! | [`command`](mod@crate::command) | [`command_palette`](fn@crate::command::command_palette) | A dialog listing commands filtered by a caller-supplied query. |
-//! | [`controls`](mod@crate::controls) | [`avatar`](fn@crate::controls::avatar) | A circular avatar showing a supplied image element or text fallback. |
-//! | [`controls`](mod@crate::controls) | [`badge`](fn@crate::controls::badge) | A compact text badge with semantic color variants. |
-//! | [`controls`](mod@crate::controls) | [`card`](fn@crate::controls::card) | A themed, bordered content panel with rounded corners. |
-//! | [`controls`](mod@crate::controls) | [`checkbox`](fn@crate::controls::checkbox) | A labeled checkbox supporting controlled, uncontrolled, and indeterminate states. |
-//! | [`controls`](mod@crate::controls) | [`progress`](fn@crate::controls::progress) | A determinate progress bar with accessible numeric value metadata. |
-//! | [`controls`](mod@crate::controls) | [`radio_group`](fn@crate::controls::radio_group) | A group of mutually exclusive radio choices with roving keyboard focus. |
-//! | [`controls`](mod@crate::controls) | [`separator`](fn@crate::controls::separator) | A decorative horizontal or vertical divider. |
-//! | [`controls`](mod@crate::controls) | [`slider`](fn@crate::controls::slider) | A numeric slider with stepped pointer and keyboard adjustment. |
-//! | [`controls`](mod@crate::controls) | [`switch`](fn@crate::controls::switch) | A boolean switch with a sliding thumb and optional label. |
-//! | [`dropdown`](mod@crate::dropdown) | [`drop_down`](fn@crate::dropdown::drop_down) | An accessible option picker with a portal-mounted dropdown list. |
-//! | [`feedback`](mod@crate::feedback) | [`callout`](fn@crate::feedback::callout) | A bordered message panel with an optional title and semantic tone. |
-//! | [`feedback`](mod@crate::feedback) | [`skeleton`](fn@crate::feedback::skeleton) | A static, decorative placeholder for content that has not loaded. |
-//! | [`feedback`](mod@crate::feedback) | [`spinner`](fn@crate::feedback::spinner) | An indeterminate loading indicator rendered as a rotating cached vector icon. |
-//! | [`forms`](mod@crate::forms) | [`form_field`](fn@crate::forms::form_field) | A labeled form-control wrapper with description and validation feedback. |
-//! | [`image`](mod@crate::image) | [`image`](fn@crate::image::image) | An asynchronous image loaded from a packaged asset, URL, or local path. |
-//! | [`input`](mod@crate::input) | [`input`](fn@crate::input::input) | A single-line text field with IME, validation styling, and durable editing state. |
-//! | [`overlays`](mod@crate::overlays) | [`context_menu`](fn@crate::overlays::context_menu) | A menu opened by semantic context-menu events at a pointer or keyboard-requested position. |
-//! | [`overlays`](mod@crate::overlays) | [`dialog`](fn@crate::overlays::dialog) | A modal portal containing a titled dialog panel and backdrop. |
-//! | [`overlays`](mod@crate::overlays) | [`drawer`](fn@crate::overlays::drawer) | An edge-mounted modal sheet with a configurable side and backdrop. |
-//! | [`overlays`](mod@crate::overlays) | [`menu`](fn@crate::overlays::menu) | A trigger-based menu with disabled actions and keyboard focus navigation. |
-//! | [`overlays`](mod@crate::overlays) | [`popover`](fn@crate::overlays::popover) | An anchored portal opened by a focusable trigger. |
-//! | [`overlays`](mod@crate::overlays) | [`toast`](fn@crate::overlays::toast) | A portal-mounted transient message with a semantic tone and live announcement. |
-//! | [`overlays`](mod@crate::overlays) | [`tooltip`](fn@crate::overlays::tooltip) | A non-interactive anchored hint shown on pointer hover or descendant focus. |
-//! | [`tabs`](mod@crate::tabs) | [`tabs`](fn@crate::tabs::tabs) | An accessible tab list with one mounted content panel and configurable keyboard activation. |
-//! | [`virtual_list`](mod@crate::virtual_list) | [`virtual_list`](fn@crate::virtual_list::virtual_list) | A fixed-row-height scrolling list that materializes only the visible window and overscan. |
+//! | [`button`](mod@crate::button) | [`Button`](fn@crate::button::Button) | A focusable action button with semantic variants, loading state, and keyboard activation. |
+//! | [`calendar`](mod@crate::calendar) | [`Calendar`](fn@crate::calendar::Calendar) | A month grid with selectable dates and previous/next navigation requests. |
+//! | [`calendar`](mod@crate::calendar) | [`DatePicker`](fn@crate::calendar::DatePicker) | A date-selection popover combining a supplied trigger and month calendar. |
+//! | [`collections`](mod@crate::collections) | [`Accordion`](fn@crate::collections::Accordion) | A single-expanded-item accordion with optional collapse behavior. |
+//! | [`collections`](mod@crate::collections) | [`Breadcrumb`](fn@crate::collections::Breadcrumb) | A breadcrumb trail with callback-driven navigation and a configurable separator. |
+//! | [`collections`](mod@crate::collections) | [`Collapsible`](fn@crate::collections::Collapsible) | A disclosure section showing content when its trigger is activated. |
+//! | [`collections`](mod@crate::collections) | [`DataGrid`](fn@crate::collections::DataGrid) | A tabular string-data surface with sortable headers and selectable rows. |
+//! | [`collections`](mod@crate::collections) | [`DataTable`](fn@crate::collections::DataTable) | A presentational table of arbitrary element cells with optional headers. |
+//! | [`collections`](mod@crate::collections) | [`Pagination`](fn@crate::collections::Pagination) | A page-navigation row with endpoint buttons and visible sibling pages. |
+//! | [`collections`](mod@crate::collections) | [`TreeView`](fn@crate::collections::TreeView) | A tree with independent controlled selection and expansion. |
+//! | [`command`](mod@crate::command) | [`CommandPalette`](fn@crate::command::CommandPalette) | A dialog listing commands filtered by a caller-supplied query. |
+//! | [`controls`](mod@crate::controls) | [`Avatar`](fn@crate::controls::Avatar) | A circular avatar showing a supplied image element or text fallback. |
+//! | [`controls`](mod@crate::controls) | [`Badge`](fn@crate::controls::Badge) | A compact text badge with semantic color variants. |
+//! | [`controls`](mod@crate::controls) | [`Card`](fn@crate::controls::Card) | A themed, bordered content panel with rounded corners. |
+//! | [`controls`](mod@crate::controls) | [`Checkbox`](fn@crate::controls::Checkbox) | A labeled checkbox supporting controlled, uncontrolled, and indeterminate states. |
+//! | [`controls`](mod@crate::controls) | [`Progress`](fn@crate::controls::Progress) | A determinate progress bar with accessible numeric value metadata. |
+//! | [`controls`](mod@crate::controls) | [`RadioGroup`](fn@crate::controls::RadioGroup) | A group of mutually exclusive radio choices with roving keyboard focus. |
+//! | [`controls`](mod@crate::controls) | [`Separator`](fn@crate::controls::Separator) | A decorative horizontal or vertical divider. |
+//! | [`controls`](mod@crate::controls) | [`Slider`](fn@crate::controls::Slider) | A numeric slider with stepped pointer and keyboard adjustment. |
+//! | [`controls`](mod@crate::controls) | [`Switch`](fn@crate::controls::Switch) | A boolean switch with a sliding thumb and optional label. |
+//! | [`dropdown`](mod@crate::dropdown) | [`DropDown`](fn@crate::dropdown::DropDown) | An accessible option picker with a portal-mounted dropdown list. |
+//! | [`feedback`](mod@crate::feedback) | [`Callout`](fn@crate::feedback::Callout) | A bordered message panel with an optional title and semantic tone. |
+//! | [`feedback`](mod@crate::feedback) | [`Skeleton`](fn@crate::feedback::Skeleton) | A static, decorative placeholder for content that has not loaded. |
+//! | [`feedback`](mod@crate::feedback) | [`Spinner`](fn@crate::feedback::Spinner) | An indeterminate loading indicator rendered as a rotating cached vector icon. |
+//! | [`forms`](mod@crate::forms) | [`FormField`](fn@crate::forms::FormField) | A labeled form-control wrapper with description and validation feedback. |
+//! | [`image`](mod@crate::image) | [`Image`](fn@crate::image::Image) | An asynchronous image loaded from a packaged asset, URL, or local path. |
+//! | [`input`](mod@crate::input) | [`Input`](fn@crate::input::Input) | A single-line text field with IME, validation styling, and durable editing state. |
+//! | [`overlays`](mod@crate::overlays) | [`ContextMenu`](fn@crate::overlays::ContextMenu) | A menu opened by semantic context-menu events at a pointer or keyboard-requested position. |
+//! | [`overlays`](mod@crate::overlays) | [`Dialog`](fn@crate::overlays::Dialog) | A modal portal containing a titled dialog panel and backdrop. |
+//! | [`overlays`](mod@crate::overlays) | [`Drawer`](fn@crate::overlays::Drawer) | An edge-mounted modal sheet with a configurable side and backdrop. |
+//! | [`overlays`](mod@crate::overlays) | [`Menu`](fn@crate::overlays::Menu) | A trigger-based menu with disabled actions and keyboard focus navigation. |
+//! | [`overlays`](mod@crate::overlays) | [`Popover`](fn@crate::overlays::Popover) | An anchored portal opened by a focusable trigger. |
+//! | [`overlays`](mod@crate::overlays) | [`Toast`](fn@crate::overlays::Toast) | A portal-mounted transient message with a semantic tone and live announcement. |
+//! | [`overlays`](mod@crate::overlays) | [`Tooltip`](fn@crate::overlays::Tooltip) | A non-interactive anchored hint shown on pointer hover or descendant focus. |
+//! | [`tabs`](mod@crate::tabs) | [`Tabs`](fn@crate::tabs::Tabs) | An accessible tab list with one mounted content panel and configurable keyboard activation. |
+//! | [`virtual_list`](mod@crate::virtual_list) | [`VirtualList`](fn@crate::virtual_list::VirtualList) | A fixed-row-height scrolling list that materializes only the visible window and overscan. |
 //!
 //! # Aliases
 //!
 //! | Alias | Implementation | Behavior |
 //! | --- | --- | --- |
-//! | [`select`](fn@crate::select) | [`drop_down`](fn@crate::drop_down) | Non-editable option picker. |
-//! | [`combo_box`](fn@crate::combo_box) | [`drop_down`](fn@crate::drop_down) | The same non-editable picker; no search editor is added. |
-//! | [`sheet`](fn@crate::sheet) | [`drawer`](fn@crate::drawer) | The same edge-mounted modal panel. |
+//! | [`Select`](fn@crate::Select) | [`DropDown`](fn@crate::DropDown) | Non-editable option picker. |
+//! | [`ComboBox`](fn@crate::ComboBox) | [`DropDown`](fn@crate::DropDown) | The same non-editable picker; no search editor is added. |
+//! | [`Sheet`](fn@crate::Sheet) | [`Drawer`](fn@crate::Drawer) | The same edge-mounted modal panel. |
 //!
 //! # Shared contracts
 //!
@@ -83,7 +83,7 @@
 //! - Anchored portals follow their trigger and handle viewport collisions.
 //!   Modal portals block background pointer input; automatic focus trapping and
 //!   restoration are not part of the current portal API.
-//! - [`virtual_list`](fn@crate::virtual_list) bounds row construction by viewport
+//! - [`VirtualList`](fn@crate::VirtualList) bounds row construction by viewport
 //!   height and overscan. Presentational tables materialize all supplied rows.
 //!
 //! # Supporting modules
@@ -97,9 +97,9 @@
 //!
 //! # Image imports
 //!
-//! The image component is available as [`image::image`](fn@crate::image::image) rather
+//! The image component is available as [`image::Image`](fn@crate::image::Image) rather
 //! than a crate-root function, to distinguish it from the host image widget. Use
-//! `use xui_components::image::image;` for an unqualified `view! { image(...) }`.
+//! `use xui_components::image::Image;` for an unqualified `view! { Image(...) }`.
 //! `ImageSrc` and `ImageError` are also re-exported at the crate root.
 
 pub mod button;
@@ -138,8 +138,8 @@ pub mod command;
 pub use command::*;
 
 /// The dropdown component under a familiar native-control name.
-pub use dropdown::drop_down as select;
-/// The dropdown component; accepts the same props as [`select`].
-pub use dropdown::drop_down as combo_box;
+pub use dropdown::DropDown as Select;
+/// The dropdown component; accepts the same props as [`Select`].
+pub use dropdown::DropDown as ComboBox;
 /// The drawer component under a sheet-style name.
-pub use overlays::drawer as sheet;
+pub use overlays::Drawer as Sheet;

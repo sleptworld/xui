@@ -128,7 +128,7 @@ fn component_button(text_value: &str, active: bool) -> ElementDesc {
     row(
         Style::new().height(26.0).font_size(11.0),
         vec![xui! {
-            <button
+            <Button
                 text={text_value}
                 variant={variant}
                 size={ButtonSize::Small}
@@ -402,7 +402,7 @@ fn icing_product_drop_down_style() -> DropDownStyle {
 
 fn map_panel(selected_product: usize, on_product_change: DropDownChangeCallback) -> ElementDesc {
     let product_selector = xui! {
-        <drop_down
+        <DropDown
             items={icing_product_items()}
             selected={Some(selected_product)}
             on_change={Some(on_product_change)}
@@ -821,7 +821,7 @@ pub fn flight_icing_dashboard() {
             .padding(EdgeInsets::zero()),
     };
     let analytics = xui! {
-        <tabs
+        <Tabs
             items={items}
             selected={Some(*selected_tab.get())}
             on_change={Some(on_tab_change)}

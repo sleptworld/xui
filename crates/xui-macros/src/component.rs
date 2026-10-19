@@ -291,6 +291,7 @@ pub fn expand_component_function(
     let module_name = component_module_name(&original_name);
     let props_name = component_props_name(&original_name);
     let element_name = component_element_name(&original_name);
+    let tag_name = component_tag_name(&original_name);
     let xui_core = krate::xui()?;
     function.sig.ident = component_name.clone();
     function.sig.output = ReturnType::Type(
@@ -349,6 +350,7 @@ pub fn expand_component_function(
             &props_name,
             &xui_core,
             &component_handle_name,
+            &tag_name,
             &original_name,
         )?;
         let cx_arg = function
@@ -403,7 +405,7 @@ pub fn expand_component_function(
             }
         }
     };
-    let tag_docs = component_documentation(function, &original_name);
+    let tag_docs = component_documentation(function, &tag_name);
     let attrs: Vec<_> = function
         .attrs
         .iter()
@@ -426,8 +428,8 @@ pub fn expand_component_function(
         .map(|_| quote!(#[allow(unused_imports)] #vis use #module_name::#props_name;))
         .unwrap_or_default();
 
-    // `<tag>` resolves to a plain `tag()` call, so a component needs a
-    // zero-argument constructor under its own name. With props, the props
+    // `<Tag>` resolves to a plain `Tag()` call, so a component needs a
+    // zero-argument constructor under its tag name. With props, the props
     // builder already is that builder; without them there is nothing to build,
     // so a minimal one is generated.
     let element_builder = if generated_props.is_some() {
@@ -464,7 +466,7 @@ pub fn expand_component_function(
             }
 
             #tag_docs
-            pub fn #original_name() -> #element_name {
+            pub fn #tag_name() -> #element_name {
                 #element_name::default()
             }
         }
@@ -515,7 +517,7 @@ pub fn expand_component_function(
             #vis use #module_name::{#component_handle_name, #component_name};
             #[doc(inline)]
             #[allow(unused_imports)]
-            #vis use #module_name::#original_name;
+            #vis use #module_name::#tag_name;
             #props_reexport
         },
     })
@@ -544,6 +546,7 @@ fn generate_component_props(
     xui_core: &TokenStream2,
     handle_name: &TokenIdent,
     tag_name: &Ident,
+    fn_name: &Ident,
 ) -> Result<GeneratedComponentProps> {
     // Unconditionally public: these items live inside the support module, and
     // the facade decides what the outside world can reach.
@@ -585,7 +588,7 @@ fn generate_component_props(
                 format!(
                     "component prop `{field}` cannot use `impl Trait`: props are stored in a \
                      struct, so declare a named generic parameter instead, as in \
-                     `fn {tag_name}<F: Trait>({field}: &F)`"
+                     `fn {fn_name}<F: Trait>({field}: &F)`"
                 ),
             ));
         }
@@ -1089,6 +1092,15 @@ fn component_props_type(sig: &Signature) -> Result<Option<Type>> {
 /// prop plus four free functions.
 fn component_module_name(original_name: &Ident) -> TokenIdent {
     TokenIdent::new(&format!("__xui_{}", original_name), original_name.span())
+}
+
+/// The name a component is written under in `view!` / `xui!`: the function's
+/// name in PascalCase (`fn date_picker` → `DatePicker`).
+///
+/// Host tags are lowercase and components are not, so the DSL can tell the two
+/// apart from the syntax alone, the way `rsx!` tells `div` from `MyComp`.
+fn component_tag_name(original_name: &Ident) -> TokenIdent {
+    TokenIdent::new(&ident_pascal_case(original_name), original_name.span())
 }
 
 fn component_render_name(original_name: &Ident) -> TokenIdent {

@@ -4,7 +4,7 @@ use crate::element::PortalDesc;
 use crate::event_system::interaction::HostInteraction;
 use crate::fiber::{
     ComponentRender, ComponentState, EffectTag, ErasedProps, FiberArena, FiberId, FiberTag,
-    HostState, Key, Node, PortalState,
+    HostState, Key, Node, PortalState, TemplateState,
 };
 use crate::lanes::{
     Lanes, NO_LANES, current_update_lane, get_highest_priority_lane, includes_some_lane,
@@ -14,7 +14,8 @@ use crate::state::{AsyncDispatcher, HookContext, HookStorage, Scheduler};
 use crate::ticker::TickerRegistry;
 use crate::ui_runtime::UiRuntime;
 use crate::widgets::{OverlayEntryId, OverlayEntryOptions, OverlayScopeId};
-use crate::widgets::{RootComponentRender, WidgetI};
+use crate::widgets::{RootComponentRender, WidgetProto};
+use crate::element::{Hoisted, TemplateBase, TemplateSlots, TemplatedDesc};
 use crate::{ComponentDesc, ElementDesc, ErasedPropsRef};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
@@ -56,11 +57,29 @@ struct WorkBinding {
 }
 
 struct HostWork {
-    widget: Option<WidgetI>,
+    widget: WidgetProto,
     interaction: Option<HostInteraction>,
     props_hash: u64,
     pending_children: Vec<ElementDesc>,
+    /// Set when the host came from a hoisted subtree, whose children stay in
+    /// the shared allocation until they are needed.
+    hoisted: Option<Rc<Hoisted>>,
+    template: Option<TemplateWork>,
 }
+
+/// A templated host's slot values. With `patch`, the host was committed from
+/// the same call site and only the slots that changed are written into it;
+/// otherwise `widget` holds the full description, built from the base, and the
+/// host is created or updated from that as usual.
+struct TemplateWork {
+    base: Rc<TemplateBase>,
+    slots: TemplateSlots,
+    patch: bool,
+}
+
+/// The `props_hash` of a host whose widget was patched in place: no hash was
+/// taken, so it must never compare equal to one.
+const STALE_PROPS_HASH: u64 = u64::MAX;
 
 struct ComponentWork {
     render: ComponentRender,
@@ -179,11 +198,15 @@ impl WorkNode {
                 interaction,
                 props_hash,
                 children,
+                hoisted,
+                template,
             } => Work::HostWork(HostWork {
-                widget: Some(widget),
+                widget,
                 interaction,
                 props_hash,
                 pending_children: children,
+                hoisted,
+                template,
             }),
             PreparedPending::Component { key, render, props } => {
                 Work::ComponentWork(ComponentWork { render, key, props })
@@ -277,7 +300,13 @@ impl WorkNode {
 
     fn take_work_nodes(&mut self) -> Option<Vec<ElementDesc>> {
         match &mut self.work {
-            Some(Work::HostWork(h)) => Some(std::mem::take(&mut h.pending_children)),
+            Some(Work::HostWork(h)) => Some(match &h.hoisted {
+                Some(hoisted) => match hoisted.element() {
+                    ElementDesc::Host(host) => host.children.clone(),
+                    _ => unreachable!("only a hoisted host becomes host work"),
+                },
+                None => std::mem::take(&mut h.pending_children),
+            }),
             Some(Work::PortalWork(p)) => Some(std::mem::take(&mut p.pending_children)),
             _ => None,
         }
@@ -312,10 +341,12 @@ struct PreparedElement {
 
 enum PreparedPending {
     Host {
-        widget: WidgetI,
+        widget: WidgetProto,
         interaction: Option<HostInteraction>,
         props_hash: u64,
         children: Vec<ElementDesc>,
+        hoisted: Option<Rc<Hoisted>>,
+        template: Option<TemplateWork>,
     },
     Component {
         key: Option<Key>,
@@ -745,9 +776,11 @@ impl ComponentRuntime {
         let work_node = self.wip_nodes.get(parent).unwrap();
         let work_node_current = work_node.binding.current;
 
-        let old_children = work_node_current
+        // Inline up to a typical sibling count: this runs for every parent
+        // that re-renders, and most have only a handful of children.
+        let old_children: SmallVec<[FiberId; 16]> = work_node_current
             .and_then(|id| self.nodes.node(id))
-            .map(|node| node.children(&self.nodes).map(|n| n.id).collect::<Vec<_>>())
+            .map(|node| node.children(&self.nodes).map(|n| n.id).collect())
             .unwrap_or_default();
         let new_children = new_children.into_iter();
         let render_lanes = self
@@ -756,8 +789,8 @@ impl ComponentRuntime {
             .map(|work| work.render_lanes)
             .unwrap_or(NO_LANES);
 
-        let mut used = vec![false; old_children.len()];
-        let mut next_children = SmallVec::with_capacity(20);
+        let mut used: SmallVec<[bool; 16]> = SmallVec::from_elem(false, old_children.len());
+        let mut next_children = SmallVec::new();
         let mut last_placed_index = 0;
 
         let old_key_map = old_children
@@ -772,7 +805,7 @@ impl ComponentRuntime {
             .collect();
 
         for (position, element) in new_children.enumerate() {
-            let prepared = self.prepare_element(element);
+            let mut prepared = self.prepare_element(element);
 
             let wip_node = if let Some(matched) = find_reusable_child_fast(
                 &self.nodes,
@@ -796,30 +829,55 @@ impl ComponentRuntime {
                     render_lanes,
                 );
 
-                let mut effect = if prepared_needs_update(reused_child_node, &prepared) {
-                    EffectTag::UPDATE
+                let moved = if old_index < last_placed_index {
+                    EffectTag::MOVE
                 } else {
+                    last_placed_index = old_index;
                     EffectTag::empty()
                 };
 
-                if old_index < last_placed_index {
-                    effect |= EffectTag::MOVE;
+                if is_committed_hoisted(reused_child_node, &prepared) {
+                    // The very subtree already committed: nothing in it can
+                    // differ, so it is carried over like a bailed-out
+                    // component's and only descended into for work scheduled
+                    // below it.
+                    let mut node = WorkNode::from_current(
+                        reused_child_node,
+                        Some(parent),
+                        position,
+                        current_lane,
+                        children_lanes,
+                    );
+                    node.effect = moved;
+                    node
                 } else {
-                    last_placed_index = old_index;
+                    let effect = match patch_committed_template(reused_child_node, &mut prepared)
+                    {
+                        Some(true) => EffectTag::UPDATE,
+                        Some(false) => EffectTag::empty(),
+                        None => {
+                            build_template(&mut prepared);
+                            if prepared_needs_update(reused_child_node, &prepared) {
+                                EffectTag::UPDATE
+                            } else {
+                                EffectTag::empty()
+                            }
+                        }
+                    };
+                    WorkNode::from_prepared(
+                        &self.nodes,
+                        old_id,
+                        parent,
+                        position,
+                        prepared,
+                        Some(old_id),
+                        effect | moved,
+                        current_lane,
+                        children_lanes,
+                    )
                 }
-
-                WorkNode::from_prepared(
-                    &self.nodes,
-                    old_id,
-                    parent,
-                    position,
-                    prepared,
-                    Some(old_id),
-                    effect,
-                    current_lane,
-                    children_lanes,
-                )
             } else {
+                build_template(&mut prepared);
                 let id = self.nodes.new_id();
                 WorkNode::from_prepared(
                     &self.nodes,
@@ -857,7 +915,7 @@ impl ComponentRuntime {
         match element {
             ElementDesc::Component(component) => self.prepare_component_element(component, key),
             ElementDesc::Host(host) => {
-                let widget = host.widget;
+                let mut widget = host.widget;
                 let props_hash = widget.props_hash();
                 let tag = FiberTag::Host(widget.node_type());
 
@@ -870,10 +928,75 @@ impl ComponentRuntime {
                         interaction,
                         props_hash,
                         children: host.children,
+                        hoisted: None,
+                        template: None,
                     },
                 }
             }
             ElementDesc::Portal(portal) => self.prepare_portal_element(portal, key),
+            ElementDesc::Hoisted(hoisted) => self.prepare_hoisted_element(hoisted, key),
+            ElementDesc::Templated(templated) => self.prepare_templated_element(templated, key),
+        }
+    }
+
+    /// The base stands in for the description until reconciliation decides
+    /// between patching the committed host ([`patch_committed_template`]) and
+    /// building the description in full ([`build_template`]).
+    fn prepare_templated_element(
+        &self,
+        templated: TemplatedDesc,
+        key: Option<Key>,
+    ) -> PreparedElement {
+        let TemplatedDesc {
+            base,
+            slots,
+            handlers,
+            children,
+            ..
+        } = templated;
+        PreparedElement {
+            key,
+            tag: FiberTag::Host(base.proto().node_type()),
+            pending: PreparedPending::Host {
+                widget: base.proto().clone(),
+                interaction: base.interaction(handlers),
+                props_hash: STALE_PROPS_HASH,
+                children,
+                hoisted: None,
+                template: Some(TemplateWork {
+                    base,
+                    slots,
+                    patch: false,
+                }),
+            },
+        }
+    }
+
+    /// A hoisted host keeps its hash and children in the shared allocation; a
+    /// hoisted component or Portal is prepared like any other (a component's
+    /// props are then the same allocation every time, which already bails out).
+    fn prepare_hoisted_element(&self, hoisted: Rc<Hoisted>, key: Option<Key>) -> PreparedElement {
+        let ElementDesc::Host(host) = hoisted.element() else {
+            return self.prepare_element(hoisted.element().clone());
+        };
+        let mut widget = host.widget.clone();
+        let tag = FiberTag::Host(widget.node_type());
+        // The call site still holds the description, so this clones.
+        let interaction = widget.take_host_interaction();
+        let props_hash = hoisted
+            .props_hash()
+            .expect("a hoisted host has its props hash");
+        PreparedElement {
+            key,
+            tag,
+            pending: PreparedPending::Host {
+                widget,
+                interaction,
+                props_hash,
+                children: Vec::new(),
+                hoisted: Some(hoisted),
+                template: None,
+            },
         }
     }
 
@@ -986,6 +1109,8 @@ impl ComponentRuntime {
         if effect.contains(EffectTag::UPDATE) {
             self.commit_update_if_host(wip_id, arena);
             self.commit_update_if_portal(wip_id, parent_host, arena);
+        } else {
+            self.commit_handlers_if_host(wip_id, arena);
         }
 
         let child_parent_host = match tag {
@@ -1028,7 +1153,7 @@ impl ComponentRuntime {
             let wip = self.wip_nodes.get_mut(wip_id)?;
             let key = wip.key;
             let host_work = wip.host_work_mut()?;
-            let widget = host_work.widget.take()?;
+            let widget = host_work.widget.instantiate();
             let interaction = host_work.interaction.take();
             (key, host_work.props_hash, widget, interaction)
         };
@@ -1131,12 +1256,63 @@ impl ComponentRuntime {
             .get_mut(wip_id)
             .expect("update host fiber missing work node");
         let key = wip.key;
+        let current = wip.binding.current;
         let host_work = wip.host_work_mut().expect("host update missing host work");
-        let widget = host_work.widget.take().expect("host update missing widget");
         let interaction = host_work.interaction.take();
 
-        arena.update_node(node_id, key, host_work.props_hash, widget, interaction);
+        match host_work.template.as_ref().filter(|template| template.patch) {
+            Some(template) => {
+                let committed = current
+                    .and_then(|id| self.nodes.node(id))
+                    .and_then(|node| node.host.as_ref())
+                    .and_then(|host| host.template.as_ref())
+                    .expect("a patched template host has committed slots");
+                arena.patch_node(
+                    node_id,
+                    key,
+                    |widget| {
+                        template
+                            .slots
+                            .write(&template.base, Some(&committed.slots), widget)
+                    },
+                    interaction,
+                );
+            }
+            None => {
+                arena.update_node_from(
+                    node_id,
+                    key,
+                    host_work.props_hash,
+                    host_work.widget.widgets(),
+                    interaction,
+                );
+            }
+        }
         wip.binding.current_host = Some(node_id);
+    }
+
+    /// A re-rendered host whose `props_hash` did not change still carries this
+    /// render's handlers, which the hash cannot see. A host created in this
+    /// commit already took them along with its widget.
+    fn commit_handlers_if_host(&mut self, wip_id: WipId, arena: &mut UiRuntime) {
+        let Some(wip) = self.wip_nodes.get_mut(wip_id) else {
+            return;
+        };
+        if wip.is_uncommited() {
+            return;
+        }
+        let Some(host_work) = wip.host_work_mut() else {
+            return;
+        };
+        let handlers = host_work
+            .interaction
+            .take()
+            .map(|interaction| interaction.handlers)
+            .unwrap_or_default();
+        let node_id = self
+            .host_node_for_wip(wip_id)
+            .expect("reused host fiber missing host node");
+        arena.replace_handlers(node_id, handlers);
     }
 
     fn commit_update_if_portal(
@@ -1331,26 +1507,37 @@ impl ComponentRuntime {
             .current_host
             .or_else(|| current_host.as_ref().and_then(|host| host.node_id))
             .expect("host fiber missing committed host node");
-        let arena_node = arena
-            .node(node_id)
-            .expect("committed host node missing from arena");
-        let props_hash = wip
-            .host_work()
-            .map(|host| host.props_hash)
-            .or_else(|| current_host.as_ref().map(|host| host.props_hash))
-            .unwrap_or(arena_node.new_props_hash);
+        let template = wip
+            .host_work_mut()
+            .and_then(|work| work.template.take());
+        // A patched widget is no longer the description `widget` holds.
+        let patched = template.as_ref().is_some_and(|template| template.patch);
+        let template = template.map(|template| TemplateState {
+            base: template.base,
+            slots: template.slots,
+        });
+        let (props_hash, proto, hoisted, template) = match (wip.host_work(), current_host) {
+            (Some(work), _) => (
+                work.props_hash,
+                (!patched).then(|| work.widget.clone()),
+                work.hoisted.clone(),
+                template,
+            ),
+            (None, Some(current)) => (
+                current.props_hash,
+                current.proto,
+                current.hoisted,
+                current.template,
+            ),
+            (None, None) => (arena.host_props_hash(node_id), None, None, None),
+        };
 
         Some(HostState {
             node_id: Some(node_id),
-            widget: Some(arena_node.widget.clone()),
-            style: current_host
-                .as_ref()
-                .map(|host| host.style.clone())
-                .unwrap_or_default(),
-            computed_style: arena_node.target_style.clone(),
-            layout: arena_node.layout,
-            previous_layout: arena_node.previous_layout,
             props_hash,
+            proto,
+            hoisted,
+            template,
         })
     }
 
@@ -1628,14 +1815,97 @@ fn can_reuse_prepared(old: &Node, prepared: &PreparedElement) -> bool {
     }
 }
 
+/// Readies a templated `prepared` to be written over `current` when `current`
+/// was committed from the same call site: only the slots are compared, and the
+/// commit writes the changed ones into the live widget. Returns whether any
+/// changed, or `None` when `current` came from elsewhere.
+fn patch_committed_template(current: &Node, prepared: &mut PreparedElement) -> Option<bool> {
+    let same_identity = current.tag == prepared.tag && current.key == prepared.key;
+    let host = current.host.as_ref()?;
+    let committed = host.template.as_ref()?;
+    let PreparedPending::Host {
+        template: Some(work),
+        props_hash,
+        ..
+    } = &mut prepared.pending
+    else {
+        return None;
+    };
+    if !same_identity || !Rc::ptr_eq(&committed.base, &work.base) {
+        return None;
+    }
+    let changed = committed.slots != work.slots;
+    work.patch = true;
+    *props_hash = if changed {
+        STALE_PROPS_HASH
+    } else {
+        host.props_hash
+    };
+    Some(changed)
+}
+
+/// Turns a templated `prepared` into the full description its builder chain
+/// would have produced, for a host created or updated the ordinary way.
+fn build_template(prepared: &mut PreparedElement) {
+    let PreparedPending::Host {
+        template: Some(work),
+        widget,
+        props_hash,
+        interaction,
+        ..
+    } = &mut prepared.pending
+    else {
+        return;
+    };
+    let mut built = work.base.build(&work.slots);
+    if let Some(interaction) = interaction {
+        built.set_interaction(HostInteraction {
+            properties: interaction.properties.clone(),
+            handlers: interaction.handlers.clone(),
+        });
+    }
+    *widget = WidgetProto::new(built);
+    *props_hash = widget.props_hash();
+}
+
+/// Whether `prepared` is the hoisted subtree `current` was committed from.
+fn is_committed_hoisted(current: &Node, prepared: &PreparedElement) -> bool {
+    let PreparedPending::Host {
+        hoisted: Some(next),
+        ..
+    } = &prepared.pending
+    else {
+        return false;
+    };
+    current.tag == prepared.tag
+        && current.key == prepared.key
+        && current
+            .host
+            .as_ref()
+            .and_then(|host| host.hoisted.as_ref())
+            .is_some_and(|committed| Rc::ptr_eq(committed, next))
+}
+
 fn prepared_needs_update(current: &Node, prepared: &PreparedElement) -> bool {
     if current.tag != prepared.tag || current.key != prepared.key {
         return true;
     }
 
     match (&current.host, &current.component, &prepared.pending) {
-        (Some(host_state), _, PreparedPending::Host { props_hash, .. }) => {
-            host_state.props_hash != *props_hash
+        // The very description already committed cannot differ from it; that
+        // is what a memoized element hands back, and it skips the hash too.
+        (
+            Some(host_state),
+            _,
+            PreparedPending::Host {
+                widget, props_hash, ..
+            },
+        ) => {
+            !host_state
+                .proto
+                .as_ref()
+                .is_some_and(|committed| committed.ptr_eq(widget))
+                && (host_state.props_hash != *props_hash || *props_hash == STALE_PROPS_HASH)
         }
         (_, Some(_), PreparedPending::Component { .. }) => false,
         (
@@ -2076,5 +2346,205 @@ mod portal_tests {
             mounted_middle,
             "the middle re-ran although only its child had work"
         );
+    }
+}
+
+/// Static subtrees from `view!` (`docs/template-slots.md` §5): built once per
+/// call site and skipped by pointer when handed back.
+#[cfg(test)]
+mod hoist_tests {
+    use super::*;
+    use crate::dsl::{IntoElement, NoChildren};
+    use crate::fiber::ComponentType;
+    use crate::state::State;
+    use crate::widgets::{TextWidget, column, component, text};
+    use std::cell::{Cell, RefCell};
+    use xui_macros::view;
+
+    thread_local! {
+        static BRANCH: Cell<bool> = const { Cell::new(false) };
+        static LEAF_RENDERS: Cell<usize> = const { Cell::new(0) };
+        static LEAF_STATE: RefCell<Option<State<u32>>> = const { RefCell::new(None) };
+    }
+
+    /// Every host's text, in tree order.
+    fn texts(arena: &UiRuntime) -> Vec<String> {
+        let mut texts = Vec::new();
+        let mut stack = vec![arena.root()];
+        while let Some(id) = stack.pop() {
+            if let Some(text) = arena.node(id).and_then(|node| node.widget.text()) {
+                texts.push(text.as_str().to_owned());
+            }
+            stack.extend(arena.children(id).rev());
+        }
+        texts
+    }
+
+    fn mount(root: RootComponentRender) -> (UiRuntime, ComponentRuntime) {
+        let mut arena = UiRuntime::new();
+        let mut runtime = ComponentRuntime::new(arena.root(), Scheduler::default(), root);
+        runtime.flush_sync(&mut arena);
+        (arena, runtime)
+    }
+
+    /// Re-renders the root and reports how many work nodes the render took.
+    fn rerender(runtime: &mut ComponentRuntime, arena: &mut UiRuntime) -> usize {
+        runtime.mark_root_dirty();
+        runtime.flush_sync(arena);
+        runtime.wip_nodes.len()
+    }
+
+    fn static_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        static_tree()
+    }
+
+    fn static_tree() -> ElementDesc {
+        view! {
+            column {
+                column {
+                    text("a")
+                    text("b")
+                }
+                text("c")
+            }
+        }
+    }
+
+    fn partly_static_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        let label = "c";
+        view! {
+            column {
+                column {
+                    text("a")
+                    text("b")
+                }
+                text(label)
+            }
+        }
+    }
+
+    #[test]
+    fn a_static_tree_is_one_allocation_per_call_site() {
+        let first = static_tree();
+        let second = static_tree();
+        let (ElementDesc::Hoisted(first), ElementDesc::Hoisted(second)) = (first, second) else {
+            panic!("a static tree is hoisted as a whole");
+        };
+        assert!(Rc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn a_hoisted_subtree_is_not_reconciled_again() {
+        let (mut arena, mut runtime) = mount(static_root);
+        assert_eq!(texts(&arena), ["a", "b", "c"]);
+        // The root fiber, and the hoisted column carried over whole.
+        assert_eq!(rerender(&mut runtime, &mut arena), 2);
+        assert_eq!(texts(&arena), ["a", "b", "c"]);
+
+        let (mut arena, mut runtime) = mount(partly_static_root);
+        // Root, the dynamic outer column, the hoisted inner column, `text(label)`.
+        assert_eq!(rerender(&mut runtime, &mut arena), 4);
+        assert_eq!(texts(&arena), ["a", "b", "c"]);
+    }
+
+    fn repeated_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        view! {
+            column {
+                for _ in 0..2 {
+                    text("x")
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn one_call_site_mounted_twice_is_two_hosts() {
+        let (mut arena, mut runtime) = mount(repeated_root);
+        let column = arena.children(arena.root()).next().unwrap();
+        let rows: Vec<_> = arena.children(column).collect();
+        assert_eq!(rows.len(), 2);
+        assert_ne!(rows[0], rows[1]);
+
+        rerender(&mut runtime, &mut arena);
+        assert_eq!(arena.children(column).collect::<Vec<_>>(), rows);
+        assert_eq!(texts(&arena), ["x", "x"]);
+    }
+
+    fn branch_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        let on = BRANCH.with(Cell::get);
+        view! {
+            column {
+                if on {
+                    text("on")
+                } else {
+                    text("off")
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn switching_between_two_hoisted_branches_updates_the_host() {
+        BRANCH.with(|branch| branch.set(false));
+        let (mut arena, mut runtime) = mount(branch_root);
+        assert_eq!(texts(&arena), ["off"]);
+
+        BRANCH.with(|branch| branch.set(true));
+        rerender(&mut runtime, &mut arena);
+        assert_eq!(texts(&arena), ["on"]);
+
+        BRANCH.with(|branch| branch.set(false));
+        rerender(&mut runtime, &mut arena);
+        assert_eq!(texts(&arena), ["off"]);
+    }
+
+    struct LeafProps;
+
+    fn leaf_component(cx: &mut HookContext<'_>, _props: Option<ErasedPropsRef<'_>>) -> ElementDesc {
+        let state = cx.use_state(|| 0u32);
+        LEAF_STATE.with(|slot| *slot.borrow_mut() = Some(state));
+        LEAF_RENDERS.with(|renders| renders.set(renders.get() + 1));
+        TextWidget::new(state.get().to_string()).into_element_desc()
+    }
+
+    /// `leaf()` as a tag: a component with no attributes, so a static element.
+    struct Leaf;
+
+    impl IntoElement<NoChildren> for Leaf {
+        fn into_element(self, _: NoChildren) -> ElementDesc {
+            component(ComponentRender::new(
+                ComponentType::of::<LeafProps>("leaf"),
+                leaf_component,
+            ))
+            .props(LeafProps)
+            .into()
+        }
+    }
+
+    fn leaf() -> Leaf {
+        Leaf
+    }
+
+    fn leaf_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        view! {
+            column {
+                leaf()
+            }
+        }
+    }
+
+    #[test]
+    fn work_scheduled_inside_a_hoisted_subtree_still_runs() {
+        LEAF_RENDERS.with(|renders| renders.set(0));
+        let (mut arena, mut runtime) = mount(leaf_root);
+        assert_eq!(LEAF_RENDERS.with(Cell::get), 1);
+
+        rerender(&mut runtime, &mut arena);
+        assert_eq!(LEAF_RENDERS.with(Cell::get), 1, "skipped with its subtree");
+
+        LEAF_STATE.with(|slot| slot.borrow().as_ref().expect("leaf mounted").set(1));
+        runtime.flush_sync(&mut arena);
+        assert_eq!(LEAF_RENDERS.with(Cell::get), 2);
+        assert_eq!(texts(&arena), ["1"]);
     }
 }

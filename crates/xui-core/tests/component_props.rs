@@ -39,19 +39,19 @@ fn one_prop_forwarding_children(children: &Vec<ElementDesc>) {
 
 #[test]
 fn a_single_prop_component_is_usable_from_the_macro() {
-    let _: ElementDesc = xui! { <one_prop label={"hello".to_string()} /> };
+    let _: ElementDesc = xui! { <OneProp label={"hello".to_string()} /> };
 }
 
 #[test]
 fn a_single_prop_component_accepts_defaults() {
-    let _: ElementDesc = xui! { <one_prop_with_default /> };
-    let _: ElementDesc = xui! { <one_prop_with_default label={"given".to_string()} /> };
+    let _: ElementDesc = xui! { <OnePropWithDefault /> };
+    let _: ElementDesc = xui! { <OnePropWithDefault label={"given".to_string()} /> };
 }
 
 #[test]
 fn multiple_and_zero_prop_components_still_work() {
-    let _: ElementDesc = xui! { <two_props label={"a".to_string()} size={2.0} /> };
-    let _: ElementDesc = xui! { <no_props /> };
+    let _: ElementDesc = xui! { <TwoProps label={"a".to_string()} size={2.0} /> };
+    let _: ElementDesc = xui! { <NoProps /> };
 }
 
 /// The generated props struct is what `xui!` builds, so it has to exist by name
@@ -86,10 +86,10 @@ fn support_items_live_behind_a_per_component_module() {
 #[test]
 fn a_single_prop_component_accepts_children() {
     let element = xui! {
-        <one_prop_forwarding_children>
+        <OnePropForwardingChildren>
             <container key={"child-a"} />
             <container key={"child-b"} />
-        </one_prop_forwarding_children>
+        </OnePropForwardingChildren>
     };
-    assert!(matches!(element, ElementDesc::Component(_)));
+    assert!(matches!(element.resolved(), ElementDesc::Component(_)));
 }

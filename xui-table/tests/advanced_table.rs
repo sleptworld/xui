@@ -33,7 +33,7 @@ fn table_root(_: &mut HookContext<'_>) -> ElementDesc {
         })
         .collect::<Vec<_>>();
     xui! {
-        <advanced_table
+        <AdvancedTable
             columns={columns}
             rows={rows}
             selection_mode={SelectionMode::Multiple}

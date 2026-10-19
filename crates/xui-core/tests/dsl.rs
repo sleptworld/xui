@@ -10,11 +10,12 @@ use xui_core::prelude::*;
 use xui_core::widgets::{container, WidgetType};
 use xui_macros::{component, xui};
 
-fn host(element: &ElementDesc) -> &WidgetDesc {
-    match element {
-        ElementDesc::Host(desc) => desc,
-        other => panic!("expected a host element, got {other:?}"),
-    }
+/// The element as the builder chain would have described it, however the
+/// macro chose to build it (plainly, hoisted, or templated).
+fn host(element: &ElementDesc) -> WidgetDesc {
+    element
+        .to_host()
+        .unwrap_or_else(|| panic!("expected a host element, got {element:?}"))
 }
 
 #[test]
@@ -118,8 +119,8 @@ fn keys_are_carried_by_hosts_and_components() {
     let keyed_host = xui! { <container key="row" /> };
     assert_eq!(host(&keyed_host).widget.key(), Some("row".into()));
 
-    let keyed_component = xui! { <greeting name={String::from("x")} key="hi" /> };
-    match keyed_component {
+    let keyed_component = xui! { <Greeting name={String::from("x")} key="hi" /> };
+    match keyed_component.resolved() {
         ElementDesc::Component(desc) => assert_eq!(desc.key, Some("hi".into())),
         other => panic!("expected a component element, got {other:?}"),
     }
@@ -138,19 +139,19 @@ fn shell(children: &Vec<ElementDesc>) {
 
 #[test]
 fn component_tags_build_component_elements() {
-    let element = xui! { <greeting name={String::from("world")} /> };
-    assert!(matches!(element, ElementDesc::Component(_)));
+    let element = xui! { <Greeting name={String::from("world")} /> };
+    assert!(matches!(element.resolved(), ElementDesc::Component(_)));
 }
 
 #[test]
 fn a_component_that_declares_children_accepts_a_body() {
     let element = xui! {
-        <shell>
+        <Shell>
             <container />
             <container />
-        </shell>
+        </Shell>
     };
-    assert!(matches!(element, ElementDesc::Component(_)));
+    assert!(matches!(element.resolved(), ElementDesc::Component(_)));
 }
 
 #[test]
@@ -280,4 +281,125 @@ fn merging_a_style_keeps_its_state_rules() {
             .paint
             .border_color,
     );
+}
+
+fn static_card() -> ElementDesc {
+    xui! {
+        <column gap={8.0}>
+            <text>{"title"}</text>
+            <container key="body" />
+        </column>
+    }
+}
+
+/// Literals and constants all the way down: built once per call site.
+#[test]
+fn a_static_element_is_hoisted() {
+    let (ElementDesc::Hoisted(first), ElementDesc::Hoisted(second)) =
+        (static_card(), static_card())
+    else {
+        panic!("a static element is hoisted");
+    };
+    assert!(std::rc::Rc::ptr_eq(&first, &second));
+    assert_eq!(host(&ElementDesc::Hoisted(first)).children.len(), 2);
+}
+
+/// One local anywhere in the subtree keeps the element from being hoisted;
+/// its static children are still hoisted on their own.
+#[test]
+fn a_dynamic_value_keeps_an_element_out_of_hoisting() {
+    let gap = 8.0;
+    let element = xui! {
+        <column gap={gap}>
+            <text>{"title"}</text>
+        </column>
+    };
+    assert!(matches!(element, ElementDesc::Templated(_)));
+    assert!(matches!(host(&element).children[0], ElementDesc::Hoisted(_)));
+
+    let call = xui! { <container padding={EdgeInsets::all(4.0)} /> };
+    assert!(
+        !matches!(call, ElementDesc::Hoisted(_)),
+        "a call is never static, however pure it looks"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Templated hosts (docs/template-slots.md §12)
+// ---------------------------------------------------------------------------
+
+const SQUARE: Size<Sizing> = Size {
+    width: Sizing::Fill,
+    height: Sizing::Hug,
+};
+
+/// A templated element must describe exactly what its builder chain does.
+fn assert_same_as_builder(templated: ElementDesc, builder: ElementDesc) {
+    assert!(
+        matches!(templated, ElementDesc::Templated(_)),
+        "expected a templated element, got {templated:?}"
+    );
+    let (templated, builder) = (host(&templated), host(&builder));
+    assert_eq!(templated.widget.props_hash(), builder.widget.props_hash());
+    assert_eq!(templated.widget.key(), builder.widget.key());
+    assert_eq!(templated.children.len(), builder.children.len());
+}
+
+#[test]
+fn a_templated_host_describes_what_its_builder_chain_does() {
+    let color = Color::BLACK;
+    let width = 120.0;
+    let label = String::from("hello");
+
+    // Static attributes before the changing one go into the base.
+    assert_same_as_builder(
+        xui! { <row gap={8.0} background={color} /> },
+        xui_core::widgets::row()
+            .gap(8.0)
+            .background(color)
+            .into_element_desc(Vec::new()),
+    );
+    // A static attribute after a changing one that writes the same field
+    // stays after it.
+    assert_same_as_builder(
+        xui! { <container width={width} size={SQUARE} /> },
+        container().width(width).size(SQUARE).into_element_desc(Vec::new()),
+    );
+    // And one before it stays before it.
+    assert_same_as_builder(
+        xui! { <container size={SQUARE} width={width} /> },
+        container().size(SQUARE).width(width).into_element_desc(Vec::new()),
+    );
+    // Content, a style chain, and a computed key.
+    assert_same_as_builder(
+        xui_macros::view! { text(&label).color(color).font_size(14.0).key(label.as_str()) },
+        xui_core::widgets::text()
+            .text(&label)
+            .color(color)
+            .font_size(14.0)
+            .key(label.as_str())
+            .into_element_desc(),
+    );
+    // Static interaction alongside a handler.
+    assert_same_as_builder(
+        xui! { <container focusable={true} on_click={move |_, _| EventResult::Consumed} /> },
+        container()
+            .focusable(true)
+            .on_click(move |_: &ClickEvent, _| EventResult::Consumed)
+            .into_element_desc(Vec::new()),
+    );
+}
+
+#[test]
+fn a_changing_attribute_outside_the_vocabulary_builds_the_element_as_before() {
+    let wrap = true;
+    assert!(matches!(
+        xui! { <row flex_wrap={wrap} /> },
+        ElementDesc::Host(_)
+    ));
+    let style = Style::new().gap(4.0);
+    assert!(matches!(
+        xui! { <row style={style} /> },
+        ElementDesc::Host(_)
+    ));
 }
