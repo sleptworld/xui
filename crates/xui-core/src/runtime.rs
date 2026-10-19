@@ -1252,4 +1252,100 @@ mod tests {
             );
         }
     }
+
+    /// A state update re-renders the component that owns the state and
+    /// nothing else: not the root, and not the owner's siblings.
+    mod scoped_rerender {
+        use super::*;
+        use crate::ErasedPropsRef;
+        use crate::event_system::callbacks::EventProps;
+        use crate::fiber::{ComponentRender, ComponentType};
+        use crate::widgets::component;
+        use xui_interface::events::{
+            Modifiers, PointerButton, PointerButtons, PointerKind, RawPointerButton, XuiPointerId,
+        };
+        use xui_interface::{Point, Style};
+
+        thread_local! {
+            static ROOT_RENDERS: Cell<usize> = const { Cell::new(0) };
+            static PRESSED_RENDERS: Cell<usize> = const { Cell::new(0) };
+            static SIBLING_RENDERS: Cell<usize> = const { Cell::new(0) };
+        }
+
+        struct NoProps;
+
+        fn counter(cx: &mut HookContext<'_>, _: Option<ErasedPropsRef<'_>>) -> ElementDesc {
+            PRESSED_RENDERS.with(|renders| renders.set(renders.get() + 1));
+            let presses = cx.use_state(|| 0u32);
+            container()
+                .style(Style::new().width(100.0).height(100.0))
+                .on_press_start(move |_, _| presses.update(|presses| *presses += 1))
+                .into_element_desc(Vec::new())
+        }
+
+        fn sibling(_cx: &mut HookContext<'_>, _: Option<ErasedPropsRef<'_>>) -> ElementDesc {
+            SIBLING_RENDERS.with(|renders| renders.set(renders.get() + 1));
+            container()
+                .style(Style::new().width(100.0).height(100.0))
+                .into_element_desc(Vec::new())
+        }
+
+        fn root(_cx: &mut HookContext<'_>) -> ElementDesc {
+            ROOT_RENDERS.with(|renders| renders.set(renders.get() + 1));
+            container().into_element_desc(vec![
+                component(ComponentRender::new(
+                    ComponentType::of::<NoProps>("counter"),
+                    counter,
+                ))
+                .props(NoProps)
+                .into(),
+                component(ComponentRender::new(
+                    ComponentType::of::<NoProps>("sibling"),
+                    sibling,
+                ))
+                .props(NoProps)
+                .into(),
+            ])
+        }
+
+        fn renders() -> (usize, usize, usize) {
+            (
+                ROOT_RENDERS.with(Cell::get),
+                PRESSED_RENDERS.with(Cell::get),
+                SIBLING_RENDERS.with(Cell::get),
+            )
+        }
+
+        fn press_counter() -> RuntimeEvent {
+            RuntimeEvent::Input(RawEvent::PointerDown(RawPointerButton {
+                position: Point::new(10.0, 10.0),
+                pointer_id: XuiPointerId::new(0),
+                device_id: None,
+                kind: PointerKind::Mouse,
+                button: PointerButton::Primary,
+                buttons: PointerButtons::default(),
+                modifiers: Modifiers::default(),
+                timestamp: Instant::now(),
+            }))
+        }
+
+        #[test]
+        fn a_state_update_re_renders_only_the_component_that_owns_it() {
+            for renders in [&ROOT_RENDERS, &PRESSED_RENDERS, &SIBLING_RENDERS] {
+                renders.with(|renders| renders.set(0));
+            }
+            let mut runtime = runtime_with(root);
+            runtime.frame().unwrap();
+            assert_eq!(renders(), (1, 1, 1), "mount");
+
+            runtime.handle_event(press_counter());
+            runtime.frame().unwrap();
+            assert!(!runtime.app().is_dirty(), "the update was not fully rendered");
+
+            let (root, pressed, sibling) = renders();
+            assert_eq!(pressed, 2, "the component that owns the state re-ran once");
+            assert_eq!(root, 1, "the root re-ran for a descendant's state");
+            assert_eq!(sibling, 1, "a sibling re-ran for another component's state");
+        }
+    }
 }

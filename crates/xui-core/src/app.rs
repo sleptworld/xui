@@ -88,9 +88,6 @@ impl App {
         let result =
             crate::event_system::dispatcher::dispatch_semantic(&mut self.ui_runtime, text, event)
                 .result;
-        if self.scheduler().is_dirty() {
-            self.components.mark_root_dirty();
-        }
         result
     }
 
@@ -101,10 +98,7 @@ impl App {
         id: xui_interface::RequestId,
         reply: xui_interface::PlatformReply,
     ) {
-        let delivered = self.platform.deliver_reply(id, reply);
-        if delivered && self.scheduler().is_dirty() {
-            self.components.mark_root_dirty();
-        }
+        self.platform.deliver_reply(id, reply);
     }
 
     /// Delivers every wake due at `now` to the node that asked for it.
@@ -123,9 +117,6 @@ impl App {
         for (node, deadline) in due {
             let event = self.event_translator.wake_event(node, deadline, now);
             crate::event_system::dispatcher::dispatch_semantic(&mut self.ui_runtime, text, event);
-        }
-        if self.scheduler().is_dirty() {
-            self.components.mark_root_dirty();
         }
     }
 
@@ -160,9 +151,6 @@ impl App {
                 result = EventResult::Consumed;
             }
         }
-        if self.scheduler().is_dirty() {
-            self.components.mark_root_dirty();
-        }
         result
     }
 
@@ -193,9 +181,6 @@ impl App {
         let result =
             crate::event_system::dispatcher::dispatch_semantic(&mut self.ui_runtime, text, event)
                 .result;
-        if self.scheduler().is_dirty() {
-            self.components.mark_root_dirty();
-        }
         result
     }
     pub fn new(root_component: ComponentFn) -> Self {
@@ -326,10 +311,6 @@ impl App {
         while let Ok(message) = self.async_receiver.try_recv() {
             changed |= self.components.scheduler().enqueue_async_message(message);
         }
-
-        if changed {
-            self.components.mark_root_dirty();
-        }
         changed
     }
 
@@ -359,9 +340,6 @@ impl App {
             self.ui_runtime
                 .dispatch_event(text, &mut self.event_translator, event)
         });
-        if self.scheduler().is_dirty() {
-            self.components.mark_root_dirty();
-        }
         result
     }
 
@@ -523,9 +501,6 @@ impl App {
                 dispatcher::dispatch_semantic(ui_runtime, text, event);
             }
         });
-        if self.scheduler().is_dirty() {
-            self.components.mark_root_dirty();
-        }
     }
 
     /// Scrolls for a navigation key -- arrows, Page Up/Down, Home/End, Space --
@@ -554,9 +529,6 @@ impl App {
                 dispatcher::dispatch_semantic(ui_runtime, text, event);
             }
         });
-        if self.scheduler().is_dirty() {
-            self.components.mark_root_dirty();
-        }
         EventResult::Consumed
     }
 
