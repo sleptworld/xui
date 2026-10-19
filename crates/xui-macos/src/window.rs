@@ -11,8 +11,8 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSApplication, NSBackingStoreType, NSColor, NSScreen, NSView, NSWindow, NSWindowDelegate,
-    NSWindowOcclusionState, NSWindowStyleMask, NSWindowTitleVisibility,
+    NSApplication, NSBackingStoreType, NSColor, NSScreen, NSView, NSWindow, NSWindowButton,
+    NSWindowDelegate, NSWindowOcclusionState, NSWindowStyleMask, NSWindowTitleVisibility,
 };
 use objc2_foundation::{
     NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -118,6 +118,19 @@ impl MacWindow {
         window.center();
         if options.maximized {
             window.zoom(None);
+        }
+
+        for kind in [
+            NSWindowButton::CloseButton,
+            NSWindowButton::MiniaturizeButton,
+            NSWindowButton::ZoomButton,
+        ] {
+            if let Some(button) = window.standardWindowButton(kind) {
+                let mut origin = button.frame().origin;
+                origin.y += options.macos.btn_translation.1 as f64;
+                origin.x += options.macos.btn_translation.0 as f64;
+                button.setFrameOrigin(origin);
+            }
         }
 
         let this = Self {

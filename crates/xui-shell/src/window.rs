@@ -256,4 +256,5 @@ pub struct MacOsWindowOptions {
     pub titlebar_transparent: bool,
     /// Extends the content view under the titlebar.
     pub fullsize_content_view: bool,
+    pub btn_translation: (i32, i32),
 }
