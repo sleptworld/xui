@@ -24,6 +24,12 @@
 //! already is, so a value passed down any number of levels still points
 //! straight at the component that first received it.
 //!
+//! A small value that owns nothing (no drop glue, no larger than a projection)
+//! is copied even when it is a prop: hook handles such as `State` and `Memo`
+//! are already just a slot pointer, so a projection would only add an
+//! indirection to every read. Handles that hold an `Rc`, like `Callback`, are
+//! projected like any other prop.
+//!
 //! Projections cannot form cycles: a props allocation is immutable once built,
 //! and only elements built *while its component renders* can point into it --
 //! none of which it can contain.
@@ -183,6 +189,9 @@ impl<T: 'static, U: Into<T>> IntoProp<T, ViaInto> for U {
 
 impl<T: Clone + 'static> IntoProp<T, ViaShare> for Shared<'_, T> {
     fn into_prop(self) -> Prop<T> {
+        if copies_inline::<T>() {
+            return Prop::new(self.0.clone());
+        }
         project::<T>(|value| std::ptr::eq(value, self.0))
             .unwrap_or_else(|| Prop::new(self.0.clone()))
     }
@@ -192,8 +201,23 @@ impl<T: Clone + 'static> IntoProp<T, ViaShare> for Shared<'_, T> {
 /// the body.
 impl<T: Clone + 'static> IntoProp<T, ViaShare> for Shared<'_, Prop<T>> {
     fn into_prop(self) -> Prop<T> {
+        if copies_inline::<T>() {
+            return Prop::new((**self.0).clone());
+        }
         project::<T>(|value| std::ptr::eq(value, &**self.0)).unwrap_or_else(|| self.0.clone())
     }
+}
+
+/// Whether sharing a `T` copies it instead of projecting onto it.
+///
+/// A value without drop glue owns nothing -- no heap buffer, no reference
+/// count -- so when it is no larger than the projection itself, copying it
+/// costs no more than building the projection, and reading it then skips the
+/// indirection and leaves the owner's props free. Hook handles (`State`,
+/// `Memo`, `HookRef`), ids and plain numbers are all such values.
+const fn copies_inline<T>() -> bool {
+    !std::mem::needs_drop::<T>()
+        && std::mem::size_of::<T>() <= std::mem::size_of::<(ErasedProps, PropGetter)>()
 }
 
 /// A `&str` binding is how `#[component]` hands out a `&str` prop, which is
@@ -328,6 +352,40 @@ mod tests {
         assert!(std::ptr::eq(&*grandchild, &*props.items));
         // Only the projections hold the child's props, not the grandchild's.
         assert_eq!(Rc::strong_count(&child), 1);
+    }
+
+    struct PlainProps {
+        count: Prop<u32>,
+        wide: Prop<[u64; 8]>,
+    }
+
+    impl PropFields for PlainProps {
+        const FIELDS: &'static [PropGetter] = &[
+            |props| &props.downcast_ref::<Self>().unwrap().count,
+            |props| &props.downcast_ref::<Self>().unwrap().wide,
+        ];
+    }
+
+    #[test]
+    fn a_small_value_that_owns_nothing_is_copied_not_projected() {
+        let owner: ErasedProps = Rc::new(PlainProps {
+            count: Prop::new(7),
+            wide: Prop::new([1; 8]),
+        });
+        let props = owner.downcast_ref::<PlainProps>().unwrap();
+        let (count, from_field, wide) = render_with_props::<PlainProps, _>(&owner, || {
+            (
+                into_prop::<u32, _>((*props.count).share()),
+                into_prop::<u32, _>(props.count.share()),
+                into_prop::<[u64; 8], _>((*props.wide).share()),
+            )
+        });
+
+        assert!(!count.is_projected() && count == 7);
+        assert!(!from_field.is_projected() && from_field == 7);
+        // Too large to copy for free: still read through the owner.
+        assert!(wide.is_projected());
+        assert_eq!(Rc::strong_count(&owner), 2);
     }
 
     #[test]

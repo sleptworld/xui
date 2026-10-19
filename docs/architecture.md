@@ -149,7 +149,8 @@ Compile-time DSLs that produce `ElementDesc` / `Style` / components:
   instantiation is a distinct `ComponentType`, keyed by name and props `TypeId`.
   Every props field is a `Prop<T>` (`xui-core/src/prop.rs`): inline, or a
   projection into an ancestor's props allocation. `binding.share()` forwards a
-  prop to a child without copying it; the body still sees plain `&T` bindings.
+  prop to a child without copying it (small values without drop glue, such as
+  hook handles, are copied instead); the body still sees plain `&T` bindings.
 - `#[main]` — includes the asset bootstrap module and installs the
   `AssetManager` before the user's `main` body runs.
 - `#[derive(Animatable)]` — field-wise `Animatable` impl.

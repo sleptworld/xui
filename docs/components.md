@@ -63,7 +63,10 @@ fn account_actions() {
 A component forwards a prop it received with `.share()` instead of `.clone()`:
 `popover(trigger: trigger.share(), ..)`. The child then reads the value through
 the parent's props allocation, however many levels it is passed down; anything
-that is not one of the rendering component's own props is cloned as before.
+that is not one of the rendering component's own props is cloned as before. A
+small value that owns nothing -- a hook handle (`State`, `Memo`, `HookRef`), an
+id, a number -- is always copied, since it is already no bigger than the
+projection would be; `Callback` and `Handler` hold an `Rc` and are projected.
 
 Every component accepts a `style` override. Named visual slots are merged after
 their defaults, so callers can change decoration without replacing behavior.
