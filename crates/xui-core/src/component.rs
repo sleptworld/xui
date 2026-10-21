@@ -229,6 +229,7 @@ impl WorkNode {
             PreparedPending::Fragment { children } => Work::FragmentWork(FragmentWork {
                 pending_children: children,
             }),
+            PreparedPending::Keep => unreachable!("a kept fiber is cloned, not prepared"),
             PreparedPending::Portal {
                 scope,
                 options,
@@ -374,6 +375,9 @@ enum PreparedPending {
     Fragment {
         children: Vec<ElementDesc>,
     },
+    /// The fiber already in this place, as it is: a template's constant
+    /// component on an update.
+    Keep,
 }
 
 pub struct WorkInProgress {
@@ -805,6 +809,11 @@ impl ComponentRuntime {
                                 tag: FiberTag::Fragment,
                                 pending: PreparedPending::Fragment { children },
                             },
+                            TemplateSlot::Keep => PreparedElement {
+                                key: None,
+                                tag: FiberTag::Component,
+                                pending: PreparedPending::Keep,
+                            },
                         })
                         .collect::<Vec<_>>();
                     self.reconcile_prepared(id, prepared);
@@ -859,6 +868,23 @@ impl ComponentRuntime {
             .collect();
 
         for (position, prepared) in new_children.into_iter().enumerate() {
+            if matches!(prepared.pending, PreparedPending::Keep) {
+                let old_id = old_children[position];
+                used[position] = true;
+                let old = self.nodes.node(old_id).expect("a kept fiber is committed");
+                let lanes = self.scheduler.component_lanes(old_id) & render_lanes;
+                let child_lanes = child_tree_lanes(&self.nodes, old, &self.scheduler, render_lanes);
+                let child = self.alloc_wip_node(WorkNode::from_current(
+                    old,
+                    Some(parent),
+                    position,
+                    lanes,
+                    child_lanes,
+                ));
+                next_children.push(child);
+                last_placed_index = last_placed_index.max(position);
+                continue;
+            }
 
             let wip_node = if let Some(matched) = find_reusable_child_fast(
                 &self.nodes,
@@ -1447,6 +1473,20 @@ impl ComponentRuntime {
             return Some(host_id);
         }
 
+        // A portal's hosts live under the overlayer, not beside this one.
+        if matches!(node.tag, FiberTag::Portal) {
+            return None;
+        }
+
+        if !node.children_resolved {
+            // Not visited this render: its committed subtree is what is
+            // mounted.
+            return node
+                .binding
+                .current
+                .and_then(|current| self.first_committed_host(current));
+        }
+
         for child in &node.children {
             if let Some(host) = self.find_stable_host_in_wip_subtree(*child) {
                 return Some(host);
@@ -1454,6 +1494,19 @@ impl ComponentRuntime {
         }
 
         None
+    }
+
+    /// The first host in a committed fiber subtree, not looking into portals.
+    fn first_committed_host(&self, fiber: FiberId) -> Option<NodeId> {
+        let node = self.nodes.node(fiber)?;
+        if let Some(host) = node.host.as_ref().and_then(|host| host.node_id) {
+            return Some(host);
+        }
+        if matches!(node.tag, FiberTag::Portal) {
+            return None;
+        }
+        node.children(&self.nodes)
+            .find_map(|child| self.first_committed_host(child.id))
     }
 
     fn freeze_work_tree(
@@ -1826,7 +1879,7 @@ fn can_reuse_prepared(old: &Node, prepared: &PreparedElement) -> bool {
             .template
             .as_ref()
             .is_some_and(|template| template.identity == desc.identity),
-        PreparedPending::Fragment { .. } => true,
+        PreparedPending::Fragment { .. } | PreparedPending::Keep => true,
     }
 }
 
@@ -1841,6 +1894,7 @@ fn prepared_needs_update(current: &Node, prepared: &PreparedElement) -> bool {
         (Some(_), _, PreparedPending::Host { .. }) => true,
         (_, Some(_), PreparedPending::Component { .. }) => false,
         (_, _, PreparedPending::Template { .. } | PreparedPending::Fragment { .. }) => true,
+        (_, _, PreparedPending::Keep) => false,
         (
             _,
             _,

@@ -92,6 +92,24 @@ fn is_constant(expr: &Expr) -> bool {
     }
 }
 
+/// Whether everything `element` is given is a constant: its attributes, and
+/// its body. Such a component is built once, when the template mounts.
+fn element_is_constant(element: &Element) -> bool {
+    let attrs = element.attrs.iter().all(|Attribute { name, value }| {
+        Setter::of(name, value) == Setter::Value
+            && syn::parse2::<Expr>(value.clone()).is_ok_and(|expr| is_constant(&expr))
+    });
+    attrs
+        && match &element.body {
+            Body::None => true,
+            Body::Content(expr) => is_constant(expr),
+            Body::Children(children) => children.iter().all(|child| match child {
+                Child::Element(child) => element_is_constant(child),
+                _ => false,
+            }),
+        }
+}
+
 fn constant_path(path: &Path) -> bool {
     let last = path.segments.last().map(|segment| segment.ident.to_string());
     path.segments.len() > 1
@@ -253,17 +271,27 @@ impl Ir<'_> {
         let xui = self.xui;
         self.index(element.tag.span(), errors);
         let built = element.expand_eager(xui, errors);
-        let input = self.input(
-            element.tag.span(),
-            quote!(::core::convert::Into::<#xui::ElementDesc>::into(#built)),
-        );
+        let built = quote!(::core::convert::Into::<#xui::ElementDesc>::into(#built));
         self.meta.push(quote! {
             #xui::template::TemplateNode {
                 kind: #xui::template::TemplateNodeKind::Component,
                 parent: ::core::option::Option::Some(#parent),
             }
         });
-        self.build.push(quote!(__xui_out.component(#input);));
+        if element_is_constant(element) {
+            // Built once, in the build function, and kept on every update:
+            // the same constant props cannot render anything new.
+            self.build.push(quote! {
+                if __xui_out.mounting() {
+                    __xui_out.component(#built);
+                } else {
+                    __xui_out.keep();
+                }
+            });
+        } else {
+            let input = self.input(element.tag.span(), built);
+            self.build.push(quote!(__xui_out.component(#input);));
+        }
     }
 
     fn fragment(&mut self, parent: u16, list: TokenStream2, errors: &mut Errors) {

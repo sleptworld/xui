@@ -261,6 +261,9 @@ pub(crate) enum BuildMode {
 pub(crate) enum TemplateSlot {
     Component(ElementDesc),
     Fragment(Vec<ElementDesc>),
+    /// A component whose attributes are all constants, on an update: it is
+    /// what it was, so its fiber is kept as it is.
+    Keep,
 }
 
 /// What a template's build function fills in. Public only because generated
@@ -303,8 +306,16 @@ impl TemplateBuild {
         self.slots.push(TemplateSlot::Fragment(children));
     }
 
-    pub(crate) fn mode(&self) -> BuildMode {
-        self.mode
+    /// Whether this build mounts (or expands) the template.
+    pub fn mounting(&self) -> bool {
+        self.mode == BuildMode::Mount
+    }
+
+    /// The next slot: a constant component, unchanged since the template
+    /// mounted. Only on an update.
+    pub fn keep(&mut self) {
+        debug_assert!(!self.mounting(), "a template mounts every component");
+        self.slots.push(TemplateSlot::Keep);
     }
 }
 
@@ -735,5 +746,33 @@ mod tests {
         harness.render();
         assert!(harness.children(overlayer).is_empty());
         assert!(!harness.ui().contains(layers[0]));
+    }
+
+    fn constant_component(cx: &mut HookContext<'_>) -> ElementDesc {
+        let count = cx.use_state(|| 1u32);
+        COUNT.with(|slot| *slot.borrow_mut() = Some(count));
+        let width = *count.get() as f32;
+        xui! {
+            <row width={width}>
+                <swapping flag={true} />
+                <swapping flag={width > 1.0} />
+            </row>
+        }
+    }
+
+    #[test]
+    fn a_constant_component_is_not_rendered_again() {
+        let mut harness = Harness::new(constant_component);
+        let renders = CHILD_RENDERS.with(Cell::get);
+
+        set(&COUNT, 2);
+        harness.render();
+
+        assert_eq!(
+            CHILD_RENDERS.with(Cell::get) - renders,
+            1,
+            "only the component given a dynamic prop renders again"
+        );
+        assert_eq!(texts(&harness, harness.top()), ["swapped", "swapped"]);
     }
 }
