@@ -8,7 +8,7 @@ help: consider importing one of these enums
    |
  6 + use crate::common::everything::width;
    |
- 6 + use xui_core::caps::style::box_size::props::width;
+ 6 + use xui_core::z_stack::width;
    |
 help: if you import `width`, refer to it directly
    |

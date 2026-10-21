@@ -47,14 +47,12 @@
 //! below it. Each type may be provided at most once per render.
 
 use std::any::{Any, TypeId, type_name};
-use std::rc::Rc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
-use crate::dsl::{Children, Content, IntoElement};
-use crate::element::{ComponentDesc, ElementDesc};
-use crate::fiber::{ComponentRender, ComponentType, ErasedPropsRef, FiberArena, FiberId, Key};
+use crate::element::ElementDesc;
+use crate::fiber::{FiberArena, FiberId};
 use crate::lanes::{Lane, current_update_lane};
 use crate::state::{HookContext, Scheduler};
 
@@ -445,97 +443,22 @@ impl HookContext<'_> {
 // <context_provider>
 // ---------------------------------------------------------------------------
 
-/// The value of a [`context_provider`] that has not been given one yet.
-/// Deliberately not `Clone`, so such a provider cannot become an element.
-pub struct NoValue;
-
 /// `<context_provider value={v}>{child}</context_provider>` — provides `v` to
 /// one child element, for when the subtree is not rendered by a component of
 /// your own that could call [`HookContext::provide_context`].
-pub struct ContextProvider<T> {
-    value: T,
-    key: Option<Key>,
-}
-
-/// Starts a [`ContextProvider`]; give it a value with
-/// [`ContextProvider::value`].
-pub fn context_provider() -> ContextProvider<NoValue> {
-    ContextProvider {
-        value: NoValue,
-        key: None,
-    }
-}
-
-impl ContextProvider<NoValue> {
-    pub fn value<T: Clone + PartialEq + 'static>(self, value: T) -> ContextProvider<T> {
-        ContextProvider {
-            value,
-            key: self.key,
-        }
-    }
-}
-
-impl<T> ContextProvider<T> {
-    pub fn key(mut self, key: impl Into<Key>) -> Self {
-        self.key = Some(key.into());
-        self
-    }
-}
-
-impl<T: Clone + PartialEq + 'static> ContextProvider<T> {
-    /// The provider around `child`.
-    pub fn child(self, child: impl Into<ElementDesc>) -> ElementDesc {
-        let mut desc = ComponentDesc::new(
-            ComponentRender::new(
-                ComponentType::of::<ProviderProps<T>>("context_provider"),
-                render_provider::<T>,
-            ),
-            Some(Rc::new(ProviderProps {
-                value: self.value,
-                child: child.into(),
-            })),
-        );
-        desc.key = self.key;
-        desc.into()
-    }
-}
-
-impl<T, E> IntoElement<Content<E>> for ContextProvider<T>
-where
-    T: Clone + PartialEq + 'static,
-    E: Into<ElementDesc>,
-{
-    fn into_element(self, content: Content<E>) -> ElementDesc {
-        self.child(content.0)
-    }
-}
-
-impl<T: Clone + PartialEq + 'static> IntoElement<Children> for ContextProvider<T> {
-    fn into_element(self, children: Children) -> ElementDesc {
-        let mut children = children.collect();
-        assert_eq!(
-            children.len(),
-            1,
-            "<context_provider> takes exactly one child; wrap several in a container"
-        );
-        self.child(children.remove(0))
-    }
-}
-
-struct ProviderProps<T> {
-    value: T,
-    child: ElementDesc,
-}
-
-fn render_provider<T: Clone + PartialEq + 'static>(
-    cx: &mut HookContext<'_>,
-    props: Option<ErasedPropsRef<'_>>,
-) -> ElementDesc {
-    let props = props
-        .and_then(|props| props.downcast_ref::<ProviderProps<T>>())
-        .expect("context_provider props changed type");
-    cx.provide_context(props.value.clone());
-    props.child.clone()
+///
+/// # Panics
+///
+/// When given other than exactly one child: wrap several in a container.
+#[xui_macros::component]
+pub fn context_provider<T: Clone + PartialEq>(value: &T, children: &Vec<ElementDesc>) {
+    cx.provide_context(value.clone());
+    assert_eq!(
+        children.len(),
+        1,
+        "<context_provider> takes exactly one child; wrap several in a container"
+    );
+    children[0].clone()
 }
 
 #[cfg(test)]

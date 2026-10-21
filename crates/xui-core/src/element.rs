@@ -4,6 +4,7 @@ use crate::{
     fiber::{ErasedProps, Key},
     widgets::{DismissHandler, DismissReason, ErasedDraft, OverlayEntryOptions, OverlayScopeId},
 };
+use crate::node::{Draft, NodeDef};
 use crate::widgets::WidgetType;
 
 pub type Component = ElementDesc;
@@ -134,6 +135,21 @@ impl WidgetDesc {
     pub fn with_children(mut self, children: Vec<ElementDesc>) -> Self {
         self.children = children;
         self
+    }
+
+    /// Which host widget it describes.
+    pub fn node_type(&self) -> WidgetType {
+        self.draft.node_type()
+    }
+
+    /// Its key among its siblings.
+    pub fn key(&self) -> Option<&Key> {
+        self.draft.key()
+    }
+
+    /// The draft it was built from, if it is a draft of `N`.
+    pub fn draft<N: NodeDef>(&self) -> Option<&Draft<N>> {
+        self.draft.as_any().downcast_ref::<Draft<N>>()
     }
 }
 

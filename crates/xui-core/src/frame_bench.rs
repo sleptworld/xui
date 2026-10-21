@@ -21,19 +21,23 @@
 //! Nothing here reaches into private state beyond what the crate already
 //! exposes, so the production path carries no profiling hooks.
 
+#[allow(unused_imports)]
+use crate::test_prelude::*;
+use crate::widgets::container::ContainerStyleSet;
+use crate::style::WidgetStateMatcher;
 use crate::app::ComponentFn;
 use crate::fiber::{ComponentRender, ComponentType};
 use crate::prelude::*;
 use crate::render::{BuiltFrame, RenderBackend};
 use crate::state::State;
 use crate::text::{TextHost, testing::ZeroTextBackend};
-use crate::widgets::{WidgetI, container, text};
+
 use core::convert::Infallible;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
-use xui_interface::{Color, NodeId, Size, Style, WidgetState};
+use xui_interface::{Color, NodeId, Size, WidgetState};
 
 /// Tree sizes to sweep. Each row expands to 4 hosts and ~21 scene nodes, so
 /// 1600 rows is ~6.4k hosts / ~34k scene nodes.
@@ -88,44 +92,37 @@ fn long_transition() -> Transition {
 
 /// One list row: a hoverable card with a label and two swatches (4 hosts).
 fn row(index: usize) -> ElementDesc {
-    row_with(index, |patch| patch.background(Color::hex("#2a2a2a")))
+    row_with(index, |layer| layer.set::<container::background>(Color::hex("#2a2a2a")))
 }
 
 /// A row whose hover transitions the text color its label inherits, so every
 /// animated frame has to push the parent's sample down to the label.
 fn inheriting_row(index: usize) -> ElementDesc {
-    row_with(index, |patch| patch.color(Color::WHITE))
+    row_with(index, |layer| layer.set::<container::color>(Color::WHITE))
 }
 
-fn row_with(index: usize, hovered: fn(StylePatch) -> StylePatch) -> ElementDesc {
-    let style = Style::new()
-        .width(Sizing::fill())
-        .height(28.0)
-        .padding(EdgeInsets::all(4.0))
-        .background(Color::hex("#141414"))
-        .when(WidgetState::HOVERED, hovered)
-        .transition(long_transition());
+fn row_with(index: usize, hovered: fn(&mut Layer<ContainerStyleSet>)) -> ElementDesc {
+    let style = StyleOf::<Container>::new()
+        .with::<container::width>(Sizing::fill())
+        .with::<container::height>(28.0)
+        .with::<container::padding>(EdgeInsets::all(4.0))
+        .with::<container::background>(Color::hex("#141414"))
+        .when(WidgetStateMatcher::new(WidgetState::HOVERED, WidgetState::empty()), hovered);
 
-    container().style(style).into_element_desc(vec![
-        TextWidget::new(if index % 3 == 0 { "row label" } else { "item" })
-            .style(Style::new().width(120.0).height(20.0))
-            .into_element_desc(),
-        container()
-            .style(
-                Style::new()
-                    .width(16.0)
-                    .height(16.0)
-                    .background(Color::hex("#3b82f6")),
-            )
+    container()
+        .with::<container::transition>(long_transition())
+        .with::<container::style>(style)
+        .into_element_desc(vec![
+        text().with::<text::content>(if index % 3 == 0 { "row label" } else { "item" })
+            .with::<text::width>(120.0)
+            .with::<text::height>(20.0)
             .into_element_desc(Vec::new()),
-        container()
-            .style(
-                Style::new()
-                    .width(16.0)
-                    .height(16.0)
-                    .background(Color::hex("#22c55e")),
-            )
-            .into_element_desc(Vec::new()),
+        container().with::<container::style>(
+                StyleOf::<Container>::new().with::<container::width>(16.0).with::<container::height>(16.0).with::<container::background>(Color::hex("#3b82f6")),
+            ).into_element_desc(Vec::new()),
+        container().with::<container::style>(
+                StyleOf::<Container>::new().with::<container::width>(16.0).with::<container::height>(16.0).with::<container::background>(Color::hex("#22c55e")),
+            ).into_element_desc(Vec::new()),
     ])
 }
 
@@ -146,14 +143,9 @@ fn list_of(cx: &mut HookContext<'_>, row: fn(usize) -> ElementDesc) -> ElementDe
     let rows: Vec<ElementDesc> = (0..ROWS.load(Ordering::Relaxed) - dropped)
         .map(row)
         .collect();
-    container()
-        .style(
-            Style::new()
-                .size(Size::fill())
-                .background(Color::hex("#0a0a0a"))
-                .scroll_vertical(),
-        )
-        .into_element_desc(rows)
+    container().with::<container::style>(
+            StyleOf::<Container>::new().with::<container::size>(Size::fill()).with::<container::background>(Color::hex("#0a0a0a")).with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical),
+        ).into_element_desc(rows)
 }
 
 /// The row list as a component, so the reconciler can bail out on it. Host
@@ -164,9 +156,7 @@ fn row_list(_cx: &mut HookContext<'_>, props: Option<ErasedPropsRef<'_>>) -> Ele
         .copied()
         .expect("row count props");
     let rows: Vec<ElementDesc> = (0..count).map(row).collect();
-    container()
-        .style(Style::new().size(Size::fill()).scroll_vertical())
-        .into_element_desc(rows)
+    container().with::<container::size>(Size::fill()).with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical).into_element_desc(rows)
 }
 
 fn row_list_render() -> ComponentRender {
@@ -494,11 +484,8 @@ fn structural_frame_cost() {
         for iteration in 0..40 {
             let runtime = harness.app.ui_runtime_mut();
             let added = if iteration % 2 == 0 {
-                let widget = WidgetI::new(container().style(Style::new().width(16.0).height(16.0)));
-                let key = widget.key();
-                let props_hash = widget.props_hash();
-                let interaction = widget.take_host_interaction();
-                let id = runtime.create_node(key, props_hash, widget, interaction);
+                let widget = container().with::<container::width>(16.0).with::<container::height>(16.0);
+                let id = runtime.create_node(Box::new(widget));
                 runtime.place(list, id, None);
                 Some(id)
             } else {

@@ -413,9 +413,39 @@ fn scroll_overflow(direction: ScrollDirectionStyle) -> TaffyPoint<Overflow> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widgets::{
-        GridFlow, GridTrackSize, GridTracks, GridWidget, WidgetI, ZStackWidget, container,
-    };
+    use crate::test_prelude::*;
+    use crate::widgets::{GridFlow, GridTrackSize, GridTracks};
+    use xui_interface::{NodeId, Theme, WidgetState};
+
+    /// `draft` mounted as a lone node under `parent`: its widget, and its
+    /// computed style.
+    fn mounted(
+        draft: impl ErasedDraft + 'static,
+        parent: &ComputedStyle,
+        theme: &Theme,
+    ) -> (WidgetI, ComputedStyle) {
+        let mut ids = slotmap::SlotMap::<NodeId, ()>::with_key();
+        let id = ids.insert(());
+        let mut columns = crate::caps::Columns::default();
+        let requests = crate::scroll::ScrollRequestQueue::default();
+        let mut detached = Vec::new();
+        let mut cx = crate::capability::CommitCx {
+            scroll_requests: &requests,
+            detached_size_observers: &mut detached,
+        };
+        let (widget, _) = Box::new(draft).mount(id, &mut columns, &mut cx);
+        let widget = WidgetI::new(widget);
+        let initial = ComputedStyle::initial(theme);
+        let computed = columns.compute_style(
+            id,
+            widget.caps(),
+            WidgetState::empty(),
+            parent,
+            &initial,
+            theme,
+        );
+        (widget, computed)
+    }
 
     fn fixed_grid_child(width: f32, height: f32) -> tf::Style {
         tf::Style {
@@ -435,24 +465,28 @@ mod tests {
     /// exact failure that made `Sizing::Fill` silently do nothing.
     #[test]
     fn container_layout_matches_the_taffy_display() {
-        use crate::widgets::{GridWidget, TextWidget, root_widget, text_input};
-
         let theme = Theme::default();
         let parent = ComputedStyle::initial(&theme);
-        let cases: Vec<WidgetI> = vec![
-            WidgetI::new(container()),
-            WidgetI::new(container().flex_direction(FlexDirectionStyle::Row)),
-            WidgetI::new(container().flex_direction(FlexDirectionStyle::Column)),
-            WidgetI::new(ZStackWidget::new()),
-            WidgetI::new(GridWidget::new()),
-            WidgetI::new(TextWidget::new("t")),
-            WidgetI::new(text_input()),
-            root_widget(),
+        let cases: Vec<(WidgetI, ComputedStyle)> = vec![
+            mounted(container(), &parent, &theme),
+            mounted(
+                container().with::<container::flex_direction>(FlexDirectionStyle::Row),
+                &parent,
+                &theme,
+            ),
+            mounted(
+                container().with::<container::flex_direction>(FlexDirectionStyle::Column),
+                &parent,
+                &theme,
+            ),
+            mounted(z_stack(), &parent, &theme),
+            mounted(grid(), &parent, &theme),
+            mounted(text().with::<text::content>("t"), &parent, &theme),
+            mounted(text_input(), &parent, &theme),
+            mounted(crate::widgets::root_widget(), &parent, &theme),
         ];
 
-        for widget in cases {
-            let computed =
-                computed_style_for_widget(&widget, &parent, &theme, WidgetState::empty());
+        for (widget, computed) in cases {
             let style = taffy_style_for_widget(&widget, ParentLayout::Block, &computed);
             let expected = match container_layout(&widget) {
                 ParentLayout::Block => tf::Display::Block,
@@ -477,14 +511,13 @@ mod tests {
     fn fill_resolves_against_the_parents_actual_layout_mode() {
         let theme = Theme::default();
         let root = ComputedStyle::initial(&theme);
-        let widget = WidgetI::new(
-            container().style(
-                xui_interface::Style::new()
-                    .width(Sizing::Fill)
-                    .height(Sizing::Fill),
-            ),
+        let (widget, computed) = mounted(
+            container()
+                .with::<container::width>(Sizing::Fill)
+                .with::<container::height>(Sizing::Fill),
+            &root,
+            &theme,
         );
-        let computed = computed_style_for_widget(&widget, &root, &theme, WidgetState::empty());
 
         let full = tf::Dimension::percent(1.0);
         let auto = tf::Dimension::auto();
@@ -530,21 +563,18 @@ mod tests {
         let theme = Theme::default();
         let root = ComputedStyle::initial(&theme);
 
-        let filler = WidgetI::new(
-            container().style(
-                xui_interface::Style::new()
-                    .width(Sizing::Fill)
-                    .height(Sizing::Fill),
-            ),
+        let (filler, filler_computed) = mounted(
+            container()
+                .with::<container::width>(Sizing::Fill)
+                .with::<container::height>(Sizing::Fill),
+            &root,
+            &theme,
         );
-        let filler_computed =
-            computed_style_for_widget(&filler, &root, &theme, WidgetState::empty());
         let filler_style = taffy_style_for_widget(&filler, ParentLayout::ZStack, &filler_computed);
 
         let filler_node = taffy.new_leaf(filler_style).unwrap();
         let sizer = taffy.new_leaf(fixed_grid_child(40.0, 30.0)).unwrap();
-        let stack = WidgetI::new(ZStackWidget::new());
-        let stack_computed = computed_style_for_widget(&stack, &root, &theme, WidgetState::empty());
+        let (stack, stack_computed) = mounted(z_stack(), &root, &theme);
         let stack_node = taffy
             .new_with_children(
                 taffy_style_for_widget(&stack, ParentLayout::Block, &stack_computed),
@@ -611,21 +641,17 @@ mod tests {
     fn z_stack_host_and_its_children_map_to_one_grid_cell() {
         let theme = Theme::default();
         let parent = ComputedStyle::initial(&theme);
-        let stack = WidgetI::new(ZStackWidget::new().alignment(xui_interface::Alignment::END));
-        let stack_computed =
-            computed_style_for_widget(&stack, &parent, &theme, xui_interface::WidgetState::empty());
+        let (stack, stack_computed) = mounted(
+            z_stack().with::<z_stack::alignment>(xui_interface::Alignment::END),
+            &parent,
+            &theme,
+        );
         let stack_style = taffy_style_for_widget(&stack, ParentLayout::Block, &stack_computed);
         assert_eq!(stack_style.display, tf::Display::Grid);
         assert_eq!(stack_style.align_items, Some(tf::AlignItems::END));
         assert_eq!(stack_style.justify_items, Some(tf::AlignItems::END));
 
-        let child = WidgetI::new(container());
-        let child_computed = computed_style_for_widget(
-            &child,
-            &stack_computed,
-            &theme,
-            xui_interface::WidgetState::empty(),
-        );
+        let (child, child_computed) = mounted(container(), &stack_computed, &theme);
         let child_style = taffy_style_for_widget(&child, ParentLayout::ZStack, &child_computed);
         assert_eq!(child_style.grid_row, tf::line(1));
         assert_eq!(child_style.grid_column, tf::line(1));
@@ -635,18 +661,14 @@ mod tests {
     fn grid_widget_style_is_used_by_the_layout_pipeline() {
         let theme = Theme::default();
         let parent = ComputedStyle::initial(&theme);
-        let widget = WidgetI::new(
-            GridWidget::new()
-                .columns(GridTracks::repeat(3, GridTrackSize::flexible()))
-                .rows(GridTracks::explicit([GridTrackSize::fixed(24.0)]))
-                .flow(GridFlow::ColumnDense)
-                .style(xui_interface::Style::new().gap(12.0)),
-        );
-        let computed = computed_style_for_widget(
-            &widget,
+        let (widget, computed) = mounted(
+            grid()
+                .with::<grid::columns>(GridTracks::repeat(3, GridTrackSize::flexible()))
+                .with::<grid::rows>(GridTracks::explicit([GridTrackSize::fixed(24.0)]))
+                .with::<grid::flow>(GridFlow::ColumnDense)
+                .with::<grid::gap>(12.0),
             &parent,
             &theme,
-            xui_interface::WidgetState::empty(),
         );
 
         let style = taffy_style_for_widget(&widget, ParentLayout::Block, &computed);
@@ -701,18 +723,12 @@ mod tests {
     fn absolute_and_inset_style_are_forwarded_to_taffy() {
         let theme = Theme::default();
         let parent = ComputedStyle::initial(&theme);
-        let widget = WidgetI::new(
-            container().style(
-                xui_interface::Style::new()
-                    .absolute()
-                    .inset(EdgeInsets::new(3.0, 4.0, 5.0, 6.0)),
-            ),
-        );
-        let computed = computed_style_for_widget(
-            &widget,
+        let (widget, computed) = mounted(
+            container()
+                .with::<container::position>(xui_interface::PositionStyle::Absolute)
+                .with::<container::inset>(EdgeInsets::new(3.0, 4.0, 5.0, 6.0)),
             &parent,
             &theme,
-            xui_interface::WidgetState::empty(),
         );
         let style = taffy_style_for_widget(&widget, ParentLayout::Block, &computed);
         assert_eq!(style.position, tf::Position::Absolute);
@@ -726,12 +742,10 @@ mod tests {
     fn absolute_without_inset_keeps_taffy_auto_offsets() {
         let theme = Theme::default();
         let parent = ComputedStyle::initial(&theme);
-        let widget = WidgetI::new(container().style(xui_interface::Style::new().absolute()));
-        let computed = computed_style_for_widget(
-            &widget,
+        let (widget, computed) = mounted(
+            container().with::<container::position>(xui_interface::PositionStyle::Absolute),
             &parent,
             &theme,
-            xui_interface::WidgetState::empty(),
         );
         let style = taffy_style_for_widget(&widget, ParentLayout::Block, &computed);
 

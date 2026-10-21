@@ -6,7 +6,7 @@
 //! fn panel(cx: &mut HookContext<'_>) -> ElementDesc {
 //!     let size = cx.use_size();
 //!     let latest = size.get(); // None until the widget has been laid out
-//!     container().observe_size(size).into_element_desc(Vec::new())
+//!     container().with::<container::size_observer>(size).into_element_desc(Vec::new())
 //! }
 //! ```
 
@@ -30,7 +30,7 @@ struct SizeState {
 
 /// A stable subscription created by [`crate::state::HookContext::use_size`].
 ///
-/// Bind it to one widget using `.observe_size(observer.clone())`. Sizes are
+/// Bind it to one widget using `.with::<container::size_observer>(observer.clone())`. Sizes are
 /// the final layout border box in logical pixels, including padding, excluding
 /// transforms and overflowing content. A change schedules the owning component
 /// on the ordinary update lane, for a subsequent render. There is no layout
@@ -118,6 +118,8 @@ impl Hash for SizeObserver {
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
+    use crate::test_prelude::*;
     use std::cell::RefCell;
 
     use super::*;
@@ -127,8 +129,8 @@ mod tests {
     use crate::runtime::{GuiRuntime, RuntimeEvent};
     use crate::state::{HookContext, State};
     use crate::text::testing::ZeroTextBackend;
-    use crate::widgets::{container, text};
-    use xui_interface::{EdgeInsets, Style};
+    
+    use xui_interface::{EdgeInsets};
 
     thread_local! {
         static LOG: RefCell<Vec<Option<Size<f32>>>> = const { RefCell::new(Vec::new()) };
@@ -164,13 +166,8 @@ mod tests {
 
     fn root(cx: &mut HookContext<'_>) -> ElementDesc {
         let observer = observe(cx);
-        container()
-            .observe_size(observer)
-            .style(Style::new().padding(EdgeInsets::all(10.0)))
-            .into_element_desc(vec![
-                container()
-                    .style(Style::new().height(40.0))
-                    .into_element_desc(Vec::new()),
+        container().with::<container::size_observer>(observer).with::<container::padding>(EdgeInsets::all(10.0)).into_element_desc(vec![
+                container().with::<container::style>(StyleOf::<Container>::new().with::<container::height>(40.0)).into_element_desc(Vec::new()),
             ])
     }
 
@@ -214,9 +211,9 @@ mod tests {
         let observer = observe(cx);
         let visible = cx.use_state(|| true);
         VISIBLE.with(|slot| *slot.borrow_mut() = Some(visible));
-        let child = container().style(Style::new().width(120.0).height(40.0));
+        let child = container().with::<container::width>(120.0).with::<container::height>(40.0);
         let child = if *visible.get() {
-            child.observe_size(observer)
+            child.with::<container::size_observer>(observer)
         } else {
             child
         };
@@ -262,11 +259,7 @@ mod tests {
     }
 
     fn leaf_root(cx: &mut HookContext<'_>) -> ElementDesc {
-        text()
-            .text("observed leaf")
-            .observe_size(observe(cx))
-            .style(Style::new().width(80.0).height(20.0))
-            .into_element_desc()
+        text().with::<text::content>("observed leaf").with::<text::size_observer>(observe(cx)).with::<text::width>(80.0).with::<text::height>(20.0).into_element_desc(Vec::new())
     }
 
     #[test]
@@ -286,10 +279,7 @@ mod tests {
         VISIBLE.with(|slot| *slot.borrow_mut() = Some(visible));
         let children = if *visible.get() {
             vec![
-                container()
-                    .observe_size(observer)
-                    .style(Style::new().width(90.0).height(30.0))
-                    .into_element_desc(Vec::new()),
+                container().with::<container::size_observer>(observer).with::<container::width>(90.0).with::<container::height>(30.0).into_element_desc(Vec::new()),
             ]
         } else {
             Vec::new()

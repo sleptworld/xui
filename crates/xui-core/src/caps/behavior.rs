@@ -129,6 +129,8 @@ pub mod events {
     pub mod props {
         pub use crate::event_system::callbacks::handler_props::*;
     }
+
+    pub use props::Properties;
 }
 
 pub use events::Events;

@@ -4,6 +4,10 @@
 //! work of its own -- whatever reaches `reader` past `middle` came through the
 //! context. Tests run on their own threads, so the thread-locals are theirs.
 
+#[allow(unused_imports)]
+use crate::test_prelude::*;
+use crate::fiber::{ComponentRender, ComponentType, ErasedPropsRef};
+
 use std::any::TypeId;
 use std::cell::{Cell, RefCell};
 
@@ -15,7 +19,7 @@ use crate::dsl::{Content, ElementBody};
 use crate::element::portal;
 use crate::state::State;
 use crate::ui_runtime::UiRuntime;
-use crate::widgets::{component, container};
+use crate::widgets::{component};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Level(u32);
@@ -92,7 +96,8 @@ fn middle(_cx: &mut HookContext<'_>, _: Option<ErasedPropsRef<'_>>) -> ElementDe
         Middle::Reader => reader,
         Middle::Nested => container().into_element_desc(vec![
             reader,
-            Content(component(render("inner", inner))).build(context_provider().value(Level(100))),
+            Content(component(render("inner", inner)))
+                .build(context_provider().with::<crate::context::__xui_context_provider::value<Level>>(Level(100))),
         ]),
         Middle::Portal => container().into_element_desc(vec![portal(vec![reader]).into()]),
     }

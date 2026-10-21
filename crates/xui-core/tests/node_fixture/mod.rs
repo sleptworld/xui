@@ -60,6 +60,7 @@ pub mod counter {
         type Props = Props;
         type Style = ();
         type Behavior = ();
+        type Properties = ();
     }
 
     /// No `HostProperty`: a changed component prop means "render again",
@@ -69,6 +70,7 @@ pub mod counter {
     impl Property for count {
         type Scope = OwnProps<Counter>;
         type Value = u32;
+        type Requirement = xui_core::property::NotRequired;
         fn set(props: &mut Props, value: u32) {
             props.count = value;
         }

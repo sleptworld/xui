@@ -29,7 +29,7 @@ use super::roles::PaintContent;
 use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc, sync::Arc};
 
 use crate::clock::FrameTime;
-use crate::node::{Draft, WidgetInstance, WidgetT};
+use crate::node::{Draft, WidgetT};
 use crate::render::{
     BatchContent, BatchItem, BatchPrimitive, ClipShape, Primitive, RenderTreeWriter,
     ShapePrimitive, TextPrimitive, VectorPrimitive,
@@ -1555,7 +1555,7 @@ pub(crate) fn canvas_text_slot(id: CanvasTextId) -> TextLayoutSlot {
     TextLayoutSlot::new(id.get())
 }
 
-impl PaintContent for WidgetInstance<Canvas> {
+impl PaintContent for CanvasState {
     fn paint(
         &self,
         node_id: xui_interface::NodeId,
@@ -1565,7 +1565,7 @@ impl PaintContent for WidgetInstance<Canvas> {
     ) {
         // One clip and one leaf, however much is drawn: the items hang off
         // the leaf rather than each taking a node of its own.
-        let content = self.state.compiled.content(node_id);
+        let content = self.compiled.content(node_id);
         writer
             .clip(ClipShape::Rect(rect), |writer| {
                 if !content.items().is_empty() {
@@ -1617,6 +1617,7 @@ impl CanvasState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_prelude::*;
     use crate::render::{RenderNodeKind, RenderScene};
     use crate::style::Theme as StyleTheme;
     use slotmap::Key as _;
@@ -1969,24 +1970,24 @@ mod tests {
     }
 
     #[test]
-    fn the_props_hash_ignores_content_so_edits_do_not_churn_the_component_diff() {
-        let controller = CanvasController::with_scene(VectorScene::default());
-        let widget = CanvasState::new(controller.clone());
-        let before = widget.props_hash();
+    fn content_edits_leave_the_props_unchanged() {
+        use crate::node::HostNode;
 
+        let controller = CanvasController::with_scene(VectorScene::default());
+        let before = CanvasProps::builder().controller(controller.clone()).build();
         controller.set_scene({
             let mut scene = VectorSceneBuilder::new();
             scene.fill_path(line_path(), Affine::IDENTITY, PathFill::new(Color::BLACK));
             scene.build()
         });
-        assert_eq!(
-            widget.props_hash(),
-            before,
+        let after = CanvasProps::builder().controller(controller.clone()).build();
+        assert!(
+            Canvas::props_dirty(&before, &after).is_empty(),
             "content reaches the host through the invalidation channel, not the props diff"
         );
 
-        let replacement = CanvasState::new(CanvasController::new());
-        assert_ne!(replacement.props_hash(), before);
+        let replaced = CanvasProps::builder().controller(CanvasController::new()).build();
+        assert!(Canvas::props_dirty(&before, &replaced).contains(WidgetUpdateFlags::PAINT_OUTPUT));
     }
 
     #[test]
@@ -1999,8 +2000,7 @@ mod tests {
         let mut widget = CanvasState::new(first.clone());
         widget.bind(node, invalidator.clone());
 
-        let flags = widget.update_from(&CanvasState::new(second.clone()));
-        assert!(flags.contains(WidgetUpdateFlags::PAINT_OUTPUT));
+        widget.follow_controller(&second);
 
         first.invalidate();
         assert!(

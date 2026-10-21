@@ -609,6 +609,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_prelude::*;
     use crate::event_system::callbacks::EventProps;
     use crate::lanes::{DEFAULT_LANE, NO_LANES};
     use crate::prelude::{CanvasController, canvas, container};
@@ -622,7 +623,7 @@ mod tests {
         Modifiers, PointerButton, PointerButtons, PointerKind, RawPointerButton, XuiPointerId,
     };
     use xui_interface::{
-        Affine, Color, ComputedColorStyle, PathBuilder, PathFill, Point, Style, VectorScene,
+        Affine, Color, ComputedColorStyle, PathBuilder, PathFill, Point, VectorScene,
         VectorSceneBuilder,
     };
 
@@ -679,10 +680,7 @@ mod tests {
         CANVAS_SLOT.with(|slot| {
             *slot.borrow_mut() = Some(canvas_handle.clone());
         });
-        canvas()
-            .controller(canvas_handle)
-            .style(Style::new().width(40.0).height(20.0))
-            .on_click(move |_, _| {
+        canvas().with::<canvas::controller>(canvas_handle).with::<canvas::width>(40.0).with::<canvas::height>(20.0).with_on::<canvas::on_click, _>(move |_, _| {
                 let next = !*highlighted.get();
                 click_handle.set_scene(canvas_scene(if next {
                     Color::WHITE
@@ -691,19 +689,13 @@ mod tests {
                 }));
                 highlighted.set(next);
                 EventResult::Consumed
-            })
-            .into_element_desc()
+            }).into_element_desc(Vec::new())
     }
 
     fn static_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-        container()
-            .style(
-                Style::new()
-                    .width(40.0)
-                    .height(20.0)
-                    .background(Color::BLACK),
-            )
-            .into_element_desc(Vec::new())
+        container().with::<container::style>(
+                StyleOf::<Container>::new().with::<container::width>(40.0).with::<container::height>(20.0).with::<container::background>(Color::BLACK),
+            ).into_element_desc(Vec::new())
     }
 
     fn stateful_root(cx: &mut HookContext<'_>) -> ElementDesc {
@@ -716,8 +708,6 @@ mod tests {
         } else {
             Color::BLACK
         };
-        container()
-            .style(Style::new().width(40.0).height(20.0).background(color))
-            .into_element_desc(Vec::new())
+        container().with::<container::width>(40.0).with::<container::height>(20.0).with::<container::background>(color).into_element_desc(Vec::new())
     }
 }

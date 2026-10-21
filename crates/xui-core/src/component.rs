@@ -1652,10 +1652,12 @@ fn child_tree_lanes(
 
 #[cfg(test)]
 mod portal_tests {
+    #[allow(unused_imports)]
+    use crate::test_prelude::*;
     use super::*;
     use crate::element::portal;
     use crate::fiber::ComponentType;
-    use crate::widgets::{component, container};
+    use crate::widgets::{component};
     use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
     static PORTAL_MODE: AtomicU8 = AtomicU8::new(0);
@@ -1747,13 +1749,11 @@ mod portal_tests {
         let mode = PORTAL_MODE.load(Ordering::SeqCst);
         if mode < 2 {
             portal(vec![
-                container()
-                    .key(if mode == 0 {
+                container().key(if mode == 0 {
                         "portal-visual-root"
                     } else {
                         "portal-replacement-root"
-                    })
-                    .into_element_desc(Vec::new()),
+                    }).into_element_desc(Vec::new()),
             ])
             .key("portal")
             .z_index(100)
@@ -1800,30 +1800,20 @@ mod portal_tests {
 
     fn anchored_portal_root(_cx: &mut HookContext<'_>) -> ElementDesc {
         use crate::anchor::AnchorPlacement;
-        use xui_interface::{EdgeInsets, Size, Style};
+        use xui_interface::{EdgeInsets, Size};
 
-        let menu = container()
-            .key("menu")
-            .style(Style::new().size(Size::fix(60.0, 40.0)))
-            .into_element_desc(Vec::new());
+        let menu = container().key("menu").with::<container::size>(Size::fix(60.0, 40.0)).into_element_desc(Vec::new());
         // Written inside the trigger, so the trigger owns the Portal.
-        let trigger = container()
-            .key("trigger")
-            .style(Style::new().size(Size::fix(80.0, 20.0)))
-            .into_element_desc(vec![
+        let trigger = container().key("trigger").with::<container::size>(Size::fix(80.0, 20.0)).into_element_desc(vec![
                 portal(vec![menu])
                     .key("portal")
                     .anchor(AnchorPlacement::default().offset(0.0))
                     .on_dismiss(|_| {})
                     .into(),
             ]);
-        container()
-            .style(
-                Style::new()
-                    .size(Size::fill())
-                    .padding(EdgeInsets::new(30.0, 0.0, 50.0, 0.0)),
-            )
-            .into_element_desc(vec![trigger])
+        container().with::<container::style>(
+                StyleOf::<Container>::new().with::<container::size>(Size::fill()).with::<container::padding>(EdgeInsets::new(30.0, 0.0, 50.0, 0.0)),
+            ).into_element_desc(vec![trigger])
     }
 
     /// 0: anchored. 1: the same Portal without an anchor. 2: anchored again,
@@ -1834,9 +1824,7 @@ mod portal_tests {
         let mode = ANCHOR_MODE.load(Ordering::SeqCst);
         let mut children = Vec::new();
         if mode < 3 {
-            let menu = container()
-                .key(if mode < 2 { "menu" } else { "replacement" })
-                .into_element_desc(Vec::new());
+            let menu = container().key(if mode < 2 { "menu" } else { "replacement" }).into_element_desc(Vec::new());
             let mut desc = portal(vec![menu]).key("portal");
             if mode != 1 {
                 desc = desc.anchor(AnchorPlacement::default());

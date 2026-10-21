@@ -61,6 +61,7 @@ macro_rules! handler_property {
         #[allow(deprecated)]
         impl crate::property::Property for $name {
             type Scope = crate::property::CapScope<crate::caps::behavior::Events>;
+            type Requirement = crate::property::NotRequired;
             type Value = Handler<$event>;
 
             fn set(handlers: &mut EventHandlers, handler: Handler<$event>) {
@@ -260,6 +261,10 @@ macro_rules! events {
                 );
                 $(handler_property!($capture_method: $event => $kind, Capture);)?
             )*
+
+            crate::__property_table! {
+                on_event, on_event_capture, $($method, $($capture_method,)?)*
+            }
         }
     };
 }

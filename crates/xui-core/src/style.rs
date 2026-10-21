@@ -108,6 +108,7 @@ impl TransitionStyleHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_prelude::*;
     use std::sync::Arc;
     use xui_interface::Color;
 
@@ -115,11 +116,9 @@ mod tests {
     fn effect_chain_and_paint_properties_transition_together() {
         let theme = Theme::default();
         let initial = ComputedStyle::initial(&theme);
-        let next = ComputedStyle::compute(
+        let next = computed(
             &initial,
-            &StylePatch::new()
-                .background(Color::BLACK)
-                .effects(Arc::from([Effect::blur(6.0)])),
+            StyleOf::<Container>::new().with::<container::background>(Color::BLACK).with::<container::effects>(Arc::from([Effect::blur(6.0)])),
             &theme,
         );
         let mut style = XStyle::new(initial.clone())
@@ -135,9 +134,9 @@ mod tests {
     fn compatible_effect_change_creates_an_animation_handler() {
         let theme = Theme::default();
         let initial = ComputedStyle::initial(&theme);
-        let next = ComputedStyle::compute(
+        let next = computed(
             &initial,
-            &StylePatch::new().effects(Arc::from([Effect::blur(6.0)])),
+            StyleOf::<Container>::new().with::<container::effects>(Arc::from([Effect::blur(6.0)])),
             &theme,
         );
         let mut style =

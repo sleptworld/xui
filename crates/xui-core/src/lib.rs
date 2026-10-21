@@ -68,6 +68,38 @@ pub mod state;
 pub mod style;
 pub mod ticker;
 pub mod widgets;
+
+/// What unit tests build nodes with: every tag, its marker and property
+/// module, and the draft types.
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) mod test_prelude {
+    pub(crate) use crate::node::{Draft, Layer, StyleOf};
+    pub(crate) use crate::widgets::ErasedDraft;
+    pub(crate) use crate::widgets::canvas::{Canvas, canvas};
+    pub(crate) use crate::widgets::container::{Container, center, column, container, row};
+    pub(crate) use crate::widgets::grid::{Grid, grid};
+    pub(crate) use crate::widgets::icon::{Icon, icon};
+    pub(crate) use crate::widgets::image::{Image, image};
+    pub(crate) use crate::widgets::text::{Text, text};
+    pub(crate) use crate::widgets::text_input::{TextInput, text_input};
+    pub(crate) use crate::widgets::z_stack::{ZStack, z_stack};
+
+    /// What a container styled `style` computes to under `parent`.
+    pub(crate) fn computed(
+        parent: &crate::style::ComputedStyle,
+        style: StyleOf<Container>,
+        theme: &crate::style::Theme,
+    ) -> crate::style::ComputedStyle {
+        crate::node::compute_style(
+            &style.base.0,
+            &style.rules,
+            crate::style::WidgetState::empty(),
+            parent,
+            theme,
+        )
+    }
+}
 pub use crate::prelude::*;
 
 /// The `xui-interface` items the capability macros expand to, and nothing

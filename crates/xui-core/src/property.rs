@@ -37,9 +37,51 @@ pub trait Scope {
 pub trait Property {
     type Scope: Scope;
     type Value: 'static;
+    /// What setting the property fulfils in a draft's requirement state:
+    /// [`NotRequired`] for every property but a component's required props,
+    /// which a draft has to be given before it is an element.
+    type Requirement;
 
     fn set(storage: &mut <Self::Scope as Scope>::Storage, value: Self::Value);
 }
+
+/// The [`Property::Requirement`] of a property a draft never has to be given.
+pub enum NotRequired {}
+
+/// The requirement state of a draft that lacks nothing: every host widget's,
+/// and a component's with no required props.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Complete;
+
+/// The requirement state a draft in state `Self` moves to once it is given
+/// a property with requirement `Q`. A component with required props
+/// implements it for each of them on its own state type.
+pub trait Fulfil<Q> {
+    type Output;
+}
+
+impl<R> Fulfil<NotRequired> for R {
+    type Output = R;
+}
+
+/// Names property `P` as a value. What a node's property table hands out,
+/// one method per property: the element macros find a property by asking
+/// the node's table for it, by name, rather than by a path.
+pub struct PropertyMarker<P>(PhantomData<fn() -> P>);
+
+impl<P> PropertyMarker<P> {
+    pub const fn new() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<P> Clone for PropertyMarker<P> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<P> Copy for PropertyMarker<P> {}
 
 /// A property stored as one field, so that it reads back what was set.
 pub trait FieldProperty: Property {
@@ -253,6 +295,7 @@ mod tests {
     impl Property for Width {
         type Scope = CapScope<BoxLayout>;
         type Value = Option<f32>;
+        type Requirement = NotRequired;
         fn set(storage: &mut BoxStorage, value: Option<f32>) {
             storage.width = value;
         }

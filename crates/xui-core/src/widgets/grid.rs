@@ -246,6 +246,7 @@ pub(crate) fn grid_widget_to_taffy(style: &mut TaffyStyle, widget: &GridProps) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_prelude::*;
 
     #[test]
     fn converts_every_track_size_variant() {
@@ -296,12 +297,9 @@ mod tests {
         ];
 
         for (flow, expected_flow) in cases {
-            let widget = GridWidget::new()
-                .columns(GridTracks::adaptive(20.0))
-                .rows(GridTracks::adaptive_max(10.0, 40.0))
-                .flow(flow);
+            let widget = grid().with::<grid::columns>(GridTracks::adaptive(20.0)).with::<grid::rows>(GridTracks::adaptive_max(10.0, 40.0)).with::<grid::flow>(flow);
             let mut style = TaffyStyle::default();
-            grid_widget_to_taffy(&mut style, &widget);
+            grid_widget_to_taffy(&mut style, &widget.storage.props);
 
             assert_eq!(style.display, Display::Grid);
             assert_eq!(style.grid_auto_flow, expected_flow);
@@ -323,9 +321,9 @@ mod tests {
     }
 
     fn adaptive_card_locations(width: f32) -> Vec<taffy::Point<f32>> {
-        let widget = GridWidget::new().adaptive_columns(200.0);
+        let widget = grid().with::<grid::columns>(GridTracks::adaptive(200.0));
         let mut style = TaffyStyle::default();
-        grid_widget_to_taffy(&mut style, &widget);
+        grid_widget_to_taffy(&mut style, &widget.storage.props);
         style.size.width = taffy::Dimension::percent(1.0);
         style.gap = taffy::Size {
             width: taffy::LengthPercentage::length(12.0),
@@ -376,15 +374,15 @@ mod tests {
     }
 
     #[test]
-    fn flow_changes_are_layout_changes_and_affect_props_hash() {
-        let mut current = GridWidget::new();
-        let next = GridWidget::new().flow(GridFlow::ColumnDense);
-        let previous_hash = current.props_hash();
+    fn flow_changes_are_layout_changes() {
+        use crate::node::HostNode;
 
-        let flags = current.update_from(&next);
+        let current = grid();
+        let next = grid().with::<grid::flow>(GridFlow::ColumnDense);
 
-        assert!(flags.contains(WidgetUpdateFlags::LAYOUT_INPUT));
-        assert_eq!(current.flow, GridFlow::ColumnDense);
-        assert_ne!(previous_hash, next.props_hash());
+        let flags = Grid::props_dirty(&current.storage.props, &next.storage.props);
+
+        assert!(flags.contains(xui_interface::WidgetUpdateFlags::LAYOUT_INPUT));
+        assert_eq!(next.storage.props.flow, GridFlow::ColumnDense);
     }
 }

@@ -868,7 +868,8 @@ fn lerp(from: f32, to: f32, progress: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xui_interface::{StylePatch, Theme};
+    use crate::test_prelude::*;
+    use xui_interface::{Theme};
 
     fn near(actual: f32, expected: f32) {
         assert!((actual - expected).abs() < 0.0001, "{actual} != {expected}");
@@ -879,15 +880,9 @@ mod tests {
         let theme = Theme::default();
         let mut from = ComputedStyle::initial(&theme);
         from.layout.width = Sizing::from(100.0);
-        let to = ComputedStyle::compute(
+        let to = computed(
             &from,
-            &StylePatch::new()
-                .color(Color::WHITE)
-                .font_size(24.0)
-                .width(200.0)
-                .padding(EdgeInsets::all(20.0))
-                .background(Color::WHITE)
-                .scrollbar_width(16.0),
+            StyleOf::<Container>::new().with::<container::color>(Color::WHITE).with::<container::font_size>(24.0).with::<container::width>(200.0).with::<container::padding>(EdgeInsets::all(20.0)).with::<container::background>(Color::WHITE).with::<container::scrollbar_width>(16.0),
             &theme,
         );
         let sampled = interpolate_style(&from, &to, 0.5);

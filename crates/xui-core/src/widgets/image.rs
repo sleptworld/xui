@@ -2,7 +2,7 @@
 
 use xui_interface::{
     Alignment, Bounds, ComputedStyle, ImageData, ImageFit, ImageKey, ImageRepeat, ImageStyle,
-    ImageVariant, NodeId, Sampling, Size,
+    ImageVariant, NodeId, Sampling, Size, WidgetUpdateFlags,
 };
 use xui_macros::widget;
 
@@ -32,7 +32,7 @@ pub struct Image {
     pub image_key: ImageKey,
     /// The decoded pixels. Compared by identity, not content.
     #[default]
-    #[dirty(PAINT_OUTPUT | LAYOUT_INPUT)]
+    #[dirty(fn = image_data_dirty)]
     pub image_data: Option<ImageData>,
     /// Fit, alignment, repetition and sampling.
     #[default]
@@ -48,6 +48,16 @@ impl WidgetT for Image {
     type State = ();
 
     fn create_state(_: &ImageProps) {}
+}
+
+/// New pixels repaint; they lay out again only at a new natural size.
+fn image_data_dirty(old: &Option<ImageData>, new: &Option<ImageData>) -> WidgetUpdateFlags {
+    let size = |data: &Option<ImageData>| data.as_ref().map(|data| data.size);
+    if size(old) == size(new) {
+        WidgetUpdateFlags::PAINT_OUTPUT
+    } else {
+        WidgetUpdateFlags::PAINT_OUTPUT | WidgetUpdateFlags::LAYOUT_INPUT
+    }
 }
 
 pub fn image() -> Draft<Image> {
@@ -74,7 +84,7 @@ mod sources {
         /// current UI thread, every time the node is built; a component that
         /// builds often can load once with `HookContext::use_asset` and set
         /// `asset_data` instead.
-        asset: Image, AssetId, |props, asset| {
+        asset: Image => ImageProperties, AssetId, |props, asset| {
             let data = load_image_asset(asset);
             props.image_key = ImageKey::AssetId(*asset.as_bytes());
             props.image_data = data;
@@ -83,7 +93,7 @@ mod sources {
 
     shorthand! {
         /// An image asset already loaded, under the key `asset` would give it.
-        asset_data: Image, (AssetId, Option<ImageData>), |props, value| {
+        asset_data: Image => ImageProperties, (AssetId, Option<ImageData>), |props, value| {
             props.image_key = ImageKey::AssetId(*value.0.as_bytes());
             props.image_data = value.1;
         }
@@ -91,7 +101,7 @@ mod sources {
 
     shorthand! {
         /// Loads an image by its normalized path in the configured bundle.
-        asset_path: Image, String, |props, path| {
+        asset_path: Image => ImageProperties, String, |props, path| {
             props.image_data = load_image_asset_path(&path);
             props.image_key = ImageKey::AssetPath(path.into());
         }
@@ -99,16 +109,16 @@ mod sources {
 
     shorthand! {
         /// Decoded pixels and their renderer cache key.
-        source: Image, (ImageKey, ImageData), |props, source| {
+        source: Image => ImageProperties, (ImageKey, ImageData), |props, source| {
             props.image_key = source.0;
             props.image_data = Some(source.1);
         }
     }
 
-    shorthand! { fit: Image, ImageFit, |props, fit| props.image_style.fit = fit }
-    shorthand! { alignment: Image, Alignment, |props, alignment| props.image_style.alignment = alignment }
-    shorthand! { repeat: Image, ImageRepeat, |props, repeat| props.image_style.repeat = repeat }
-    shorthand! { sampling: Image, Sampling, |props, sampling| props.image_style.sampling = sampling }
+    shorthand! { fit: Image => ImageProperties, ImageFit, |props, fit| props.image_style.fit = fit }
+    shorthand! { alignment: Image => ImageProperties, Alignment, |props, alignment| props.image_style.alignment = alignment }
+    shorthand! { repeat: Image => ImageProperties, ImageRepeat, |props, repeat| props.image_style.repeat = repeat }
+    shorthand! { sampling: Image => ImageProperties, Sampling, |props, sampling| props.image_style.sampling = sampling }
 }
 
 impl IntrinsicSize for WidgetInstance<Image> {
@@ -147,6 +157,7 @@ impl PaintContent for WidgetInstance<Image> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_prelude::*;
 
     fn pixels(width: u32, height: u32, value: u8) -> ImageData {
         ImageData::rgba8(
@@ -155,8 +166,15 @@ mod tests {
         )
     }
 
+    fn mounted(draft: Draft<Image>) -> WidgetInstance<Image> {
+        WidgetInstance {
+            props: draft.storage.props,
+            state: (),
+        }
+    }
+
     fn rendered_images(
-        widget: &ImageWidget,
+        widget: &WidgetInstance<Image>,
         rect: Bounds,
         style: &ComputedStyle,
     ) -> Vec<ImagePrimitive> {
@@ -182,10 +200,10 @@ mod tests {
     #[test]
     fn decoded_data_controls_intrinsic_size_and_paint() {
         let data = pixels(3, 2, 255);
-        let widget = ImageWidget::new().image_data(ImageKey::UserProvided(7), data.clone());
+        let widget = mounted(image().with::<image::source>((ImageKey::UserProvided(7), data.clone())));
         assert_eq!(widget.intrinsic_size(), Some(Size::new(3.0, 2.0)));
 
-        let style = ComputedStyle::initial(&Theme::default());
+        let style = ComputedStyle::initial(&xui_interface::Theme::default());
         let rect = Bounds::from_origin_size((1.0, 2.0), (30.0, 20.0));
         let images = rendered_images(&widget, rect, &style);
         let command = images.last().unwrap();
@@ -196,41 +214,45 @@ mod tests {
         assert_eq!(command.variant.sampling, Sampling::Linear);
     }
 
+    /// What replacing the props of `old` with those of `new` dirties.
+    fn update(old: &Draft<Image>, new: &Draft<Image>) -> WidgetUpdateFlags {
+        use crate::node::HostNode;
+        Image::props_dirty(&old.storage.props, &new.storage.props)
+    }
+
     #[test]
     fn data_updates_relayout_only_when_intrinsic_size_changes() {
-        let mut widget = ImageWidget::new().image_data("first", pixels(2, 2, 1));
-        let same_size = ImageWidget::new().image_data("second", pixels(2, 2, 2));
-        let flags = widget.update_from(&same_size);
+        let widget = image().with::<image::source>((ImageKey::from("first"), pixels(2, 2, 1)));
+        let same_size = image().with::<image::source>((ImageKey::from("second"), pixels(2, 2, 2)));
+        let flags = update(&widget, &same_size);
         assert!(flags.contains(WidgetUpdateFlags::PAINT_OUTPUT));
         assert!(!flags.contains(WidgetUpdateFlags::LAYOUT_INPUT));
 
-        let different_size = ImageWidget::new().image_data("third", pixels(4, 3, 3));
-        let flags = widget.update_from(&different_size);
+        let different_size = image().with::<image::source>((ImageKey::from("third"), pixels(4, 3, 3)));
+        let flags = update(&same_size, &different_size);
         assert!(flags.contains(WidgetUpdateFlags::PAINT_OUTPUT | WidgetUpdateFlags::LAYOUT_INPUT));
-        assert_eq!(widget.intrinsic_size(), Some(Size::new(4.0, 3.0)));
+        assert_eq!(mounted(different_size).intrinsic_size(), Some(Size::new(4.0, 3.0)));
     }
 
     #[test]
     fn image_style_updates_repaint_without_relayout() {
-        let mut widget = ImageWidget::new().image_data("image", pixels(2, 2, 1));
-        let next = ImageWidget::new()
-            .image_data("image", widget.image_data.clone().unwrap())
-            .fit(ImageFit::Contain);
+        let data = pixels(2, 2, 1);
+        let widget = image().with::<image::source>((ImageKey::from("image"), data.clone()));
+        let next = image()
+            .with::<image::source>((ImageKey::from("image"), data))
+            .with::<image::fit>(ImageFit::Contain);
 
-        let flags = widget.update_from(&next);
+        let flags = update(&widget, &next);
 
         assert!(flags.contains(WidgetUpdateFlags::PAINT_OUTPUT));
         assert!(!flags.contains(WidgetUpdateFlags::LAYOUT_INPUT));
-        assert_eq!(widget.image_style.fit, ImageFit::Contain);
+        assert_eq!(next.storage.props.image_style.fit, ImageFit::Contain);
     }
 
     #[test]
     fn contain_fit_preserves_aspect_ratio_and_alignment() {
-        let widget = ImageWidget::new()
-            .image_data("image", pixels(2, 1, 1))
-            .fit(ImageFit::Contain)
-            .sampling(Sampling::Nearest);
-        let style = ComputedStyle::initial(&Theme::default());
+        let widget = mounted(image().with::<image::source>((ImageKey::from("image"), pixels(2, 1, 1))).with::<image::fit>(ImageFit::Contain).with::<image::sampling>(Sampling::Nearest));
+        let style = ComputedStyle::initial(&xui_interface::Theme::default());
         let images = rendered_images(
             &widget,
             Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
@@ -248,10 +270,8 @@ mod tests {
 
     #[test]
     fn cover_fit_is_carried_in_retained_image_style() {
-        let widget = ImageWidget::new()
-            .image_data("image", pixels(2, 1, 1))
-            .fit(ImageFit::Cover);
-        let style = ComputedStyle::initial(&Theme::default());
+        let widget = mounted(image().with::<image::source>((ImageKey::from("image"), pixels(2, 1, 1))).with::<image::fit>(ImageFit::Cover));
+        let style = ComputedStyle::initial(&xui_interface::Theme::default());
         let rect = Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0));
         let images = rendered_images(&widget, rect, &style);
         assert_eq!(images.len(), 1);
@@ -261,12 +281,8 @@ mod tests {
 
     #[test]
     fn repeat_x_is_carried_in_retained_image_style() {
-        let widget = ImageWidget::new()
-            .image_data("image", pixels(10, 10, 1))
-            .fit(ImageFit::None)
-            .alignment(Alignment::START)
-            .repeat(ImageRepeat::RepeatX);
-        let style = ComputedStyle::initial(&Theme::default());
+        let widget = mounted(image().with::<image::source>((ImageKey::from("image"), pixels(10, 10, 1))).with::<image::fit>(ImageFit::None).with::<image::alignment>(Alignment::START).with::<image::repeat>(ImageRepeat::RepeatX));
+        let style = ComputedStyle::initial(&xui_interface::Theme::default());
         let images = rendered_images(
             &widget,
             Bounds::from_origin_size((0.0, 0.0), (25.0, 10.0)),
@@ -284,10 +300,8 @@ mod tests {
 
     #[test]
     fn scale_down_is_carried_in_retained_image_style() {
-        let style = ComputedStyle::initial(&Theme::default());
-        let widget = ImageWidget::new()
-            .image_data("image", pixels(20, 10, 1))
-            .fit(ImageFit::ScaleDown);
+        let style = ComputedStyle::initial(&xui_interface::Theme::default());
+        let widget = mounted(image().with::<image::source>((ImageKey::from("image"), pixels(20, 10, 1))).with::<image::fit>(ImageFit::ScaleDown));
 
         let images = rendered_images(
             &widget,

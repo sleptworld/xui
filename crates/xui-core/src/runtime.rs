@@ -416,20 +416,21 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
+    use crate::test_prelude::*;
     use super::*;
+    use crate::test_prelude::*;
     use crate::app::App;
     use crate::element::ElementDesc;
     use crate::render::MockRenderBackend;
     use crate::state::HookContext;
     use crate::text::testing::ZeroTextBackend;
-    use crate::widgets::container;
+    
     use std::cell::{Cell, RefCell};
     use std::time::Duration;
 
     fn body() -> ElementDesc {
-        container()
-            .style(xui_interface::Style::new().width(40.0).height(20.0))
-            .into_element_desc(Vec::new())
+        container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(40.0).with::<container::height>(20.0)).into_element_desc(Vec::new())
     }
 
     fn root(_cx: &mut HookContext<'_>) -> ElementDesc {
@@ -493,25 +494,18 @@ mod tests {
         /// A 200x100 vertical scroller over a focusable 400px row that claims
         /// End through a shortcut, the way a tab list claims its arrows.
         fn root(_cx: &mut HookContext<'_>) -> ElementDesc {
-            container()
-                .style(
-                    xui_interface::Style::new()
-                        .width(200.0)
-                        .height(100.0)
-                        .scroll_vertical(),
-                )
-                .on_scroll(|event, _| {
+            container().with::<container::style>(
+                    StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(100.0)
+                        .with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical),
+                ).with_on::<container::on_scroll, _>(|event, _| {
                     if let Some(after) = event.offset_after {
                         SCROLLS.with(|scrolls| scrolls.borrow_mut().push((event.source, after.y)));
                     }
-                })
-                .into_element_desc(vec![
-                    container()
-                        .style(xui_interface::Style::new().width(200.0).height(400.0))
-                        .tab_index(0)
-                        .shortcut(Shortcut::named(NamedKey::End), CommandId("test.end"))
-                        .on_command(|_, _| EventResult::Consumed)
-                        .into_element_desc(Vec::new()),
+                }).into_element_desc(vec![
+                    container().with::<container::width>(200.0).with::<container::height>(400.0).with::<container::tab_index>(0).with::<container::shortcuts>([xui_interface::ShortcutBinding {
+                        shortcut: Shortcut::named(NamedKey::End),
+                        command: CommandId("test.end"),
+                    }]).with_on::<container::on_command, _>(|_, _| EventResult::Consumed).into_element_desc(Vec::new()),
                 ])
         }
 
@@ -858,17 +852,11 @@ mod tests {
 
         /// A handler on the outer node, and a focusable inner node with none.
         fn bubbling_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-            container()
-                .style(xui_interface::Style::new().width(100.0).height(100.0))
-                .on_command(|event, _| {
+            container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(100.0).with::<container::height>(100.0)).with_on::<container::on_command, _>(|event, _| {
                     record(event);
                     xui_interface::events::EventResult::Consumed
-                })
-                .into_element_desc(vec![
-                    container()
-                        .style(xui_interface::Style::new().width(50.0).height(50.0))
-                        .tab_index(0)
-                        .into_element_desc(Vec::new()),
+                }).into_element_desc(vec![
+                    container().with::<container::width>(50.0).with::<container::height>(50.0).with::<container::tab_index>(0).into_element_desc(Vec::new()),
                 ])
         }
 
@@ -1004,10 +992,7 @@ mod tests {
         }
 
         fn leaving_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-            container()
-                .style(xui_interface::Style::new().width(100.0).height(100.0))
-                .on_pointer_leave(|_, _| LEAVES.with(|leaves| leaves.set(leaves.get() + 1)))
-                .into_element_desc(Vec::new())
+            container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(100.0).with::<container::height>(100.0)).with_on::<container::on_pointer_leave, _>(|_, _| LEAVES.with(|leaves| leaves.set(leaves.get() + 1))).into_element_desc(Vec::new())
         }
 
         fn pointer_at(x: f32, y: f32) -> RuntimeEvent {
@@ -1056,26 +1041,20 @@ mod tests {
     /// and nothing else asks for a frame in between.
     mod caret_blink {
         use super::*;
-        use crate::widgets::{Widgets, text_input};
+        use crate::widgets::{Widgets};
         use xui_interface::events::{
             KeyState, Modifiers, NamedKey, PhysicalKey, PointerButton, PointerButtons, PointerKind,
             RawKeyboard, RawPointerButton, XuiPointerId,
         };
-        use xui_interface::{HostCapabilities, KeyText, NodeId, Point, Size as XSize, Style};
+        use xui_interface::{HostCapabilities, KeyText, NodeId, Point, Size as XSize};
 
         const HALF: Duration = Duration::from_millis(500);
 
         /// Two fields side by side, so focus has somewhere to move.
         fn fields(_cx: &mut HookContext<'_>) -> ElementDesc {
-            container()
-                .style(Style::new().width(400.0).height(300.0))
-                .into_element_desc(vec![
-                    text_input()
-                        .style(Style::new().size(XSize::fix(120.0, 30.0)))
-                        .into_element_desc(),
-                    text_input()
-                        .style(Style::new().size(XSize::fix(120.0, 30.0)))
-                        .into_element_desc(),
+            container().with::<container::width>(400.0).with::<container::height>(300.0).into_element_desc(vec![
+                    text_input().with::<text_input::style>(StyleOf::<TextInput>::new().with::<text_input::size>(XSize::fix(120.0, 30.0))).into_element_desc(Vec::new()),
+                    text_input().with::<text_input::style>(StyleOf::<TextInput>::new().with::<text_input::size>(XSize::fix(120.0, 30.0))).into_element_desc(Vec::new()),
                 ])
         }
 
@@ -1143,7 +1122,7 @@ mod tests {
                 .node_view(node)
                 .widget
                 .with_widgets(|widget| match widget {
-                    Widgets::TextInput(input) => input.caret_shown(),
+                    Widgets::TextInput(input) => input.state.caret_shown(),
                     _ => panic!("not a text input"),
                 })
         }
@@ -1264,7 +1243,7 @@ mod tests {
         use xui_interface::events::{
             Modifiers, PointerButton, PointerButtons, PointerKind, RawPointerButton, XuiPointerId,
         };
-        use xui_interface::{Point, Style};
+        use xui_interface::{Point};
 
         thread_local! {
             static ROOT_RENDERS: Cell<usize> = const { Cell::new(0) };
@@ -1277,17 +1256,12 @@ mod tests {
         fn counter(cx: &mut HookContext<'_>, _: Option<ErasedPropsRef<'_>>) -> ElementDesc {
             PRESSED_RENDERS.with(|renders| renders.set(renders.get() + 1));
             let presses = cx.use_state(|| 0u32);
-            container()
-                .style(Style::new().width(100.0).height(100.0))
-                .on_press_start(move |_, _| presses.update(|presses| *presses += 1))
-                .into_element_desc(Vec::new())
+            container().with::<container::width>(100.0).with::<container::height>(100.0).with_on::<container::on_press_start, _>(move |_, _| presses.update(|presses| *presses += 1)).into_element_desc(Vec::new())
         }
 
         fn sibling(_cx: &mut HookContext<'_>, _: Option<ErasedPropsRef<'_>>) -> ElementDesc {
             SIBLING_RENDERS.with(|renders| renders.set(renders.get() + 1));
-            container()
-                .style(Style::new().width(100.0).height(100.0))
-                .into_element_desc(Vec::new())
+            container().with::<container::width>(100.0).with::<container::height>(100.0).into_element_desc(Vec::new())
         }
 
         fn root(_cx: &mut HookContext<'_>) -> ElementDesc {

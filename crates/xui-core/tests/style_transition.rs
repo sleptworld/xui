@@ -2,16 +2,18 @@ use std::time::Duration;
 use xui_core::prelude::*;
 use xui_macros::{style, xui};
 
+/// A transition is the node's `motion`, not part of a style: a style can be
+/// shared by nodes that move differently, and a state rule cannot change how
+/// the node moves.
 #[test]
-fn style_owned_transition_compiles_for_builder_and_xui_sugar() {
+fn a_transition_is_an_attribute_beside_the_style() {
     let transition = Transition::new(Duration::from_millis(120)).ease(Easing::CubicOut);
-    let style = style! {
+    let style = style!(container {
         background: Color::BLACK,
         border_radius: 4.0,
-    }
-    .transition(transition);
+    });
 
-    let _: ElementDesc = xui! { <container style={style} /> };
+    let _: ElementDesc = xui! { <container style={style} transition={transition} /> };
     let _: ElementDesc = xui! {
         <container
             background={Color::WHITE}
@@ -19,8 +21,8 @@ fn style_owned_transition_compiles_for_builder_and_xui_sugar() {
         />
     };
     let _: ElementDesc = xui! {
-        <text style={Style::new().transition(transition)}>
-            {"style-owned transition"}
+        <text transition={transition}>
+            {"transitioned text"}
         </text>
     };
     let _: ElementDesc = xui! {

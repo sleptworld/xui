@@ -16,7 +16,7 @@ error: `#[state]` takes no initial value: build `count` in your `WidgetT::create
 20 |     #[state(1)]
    |     ^
 
-error: expected `style(..)` or `behavior(..)`, listing the capabilities the widget selects
+error: expected `style(..)` or `behavior(..)`, listing the capabilities the widget selects, or `shorthands(..)`, listing modules of its own hand-written properties
   --> tests/ui/widget_rejects_bad_fields.rs:24:10
    |
 24 | #[widget(update = sync)]

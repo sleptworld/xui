@@ -23,15 +23,15 @@
 //! | `view!`                  | `xui!`                       | lowers to                     |
 //! |--------------------------|------------------------------|-------------------------------|
 //! | `tag()`                  | `<tag />`                    | body `NoChildren`             |
-//! | `tag(name: v)`           | `<tag name={v} />`           | `tag().name(v)`               |
-//! | `tag().name(v)`          | `<tag name={v} />`           | `tag().name(v)`               |
-//! | `tag().name(a, b)`       | `<tag name={(a, b)} />`      | `tag().name((a, b))`          |
+//! | `tag(name: v)`           | `<tag name={v} />`           | property `name` set to `v`    |
+//! | `tag().name(v)`          | `<tag name={v} />`           | property `name` set to `v`    |
+//! | `tag().name(a, b)`       | `<tag name={(a, b)} />`      | property `name` set to `(a, b)` |
 //! | `tag(expr)`              | `<tag>{expr}</tag>`          | body `Content(expr)`          |
 //! | `tag { a() b() }`        | `<tag><a /><b /></tag>`      | body `Children(vec)`          |
 //! | `..expr` as a child      | `{expr}` among siblings      | `IntoChildren` splice         |
 //!
-//! Named arguments and trailing modifiers are the same thing — both become a
-//! builder method call — so which to use is a matter of reading order: what
+//! Named arguments and trailing modifiers are the same thing — both set a
+//! property of the node — so which to use is a matter of reading order: what
 //! the element *is* in the parentheses, how it looks after them. Setting one
 //! name twice across the two is still an error.
 //!
@@ -171,9 +171,9 @@ fn parse_element(input: ParseStream<'_>) -> Result<Element> {
         let args;
         let paren = parenthesized!(args in input);
         let values = Punctuated::<Expr, Token![,]>::parse_terminated(&args)?;
-        // Builder methods take exactly one value, and multi-argument setters
-        // take a tuple (see `xui_core::dsl::StyleProps`), so `.m(a, b)` is
-        // sugar for `.m((a, b))`.
+        // A property takes exactly one value, and a multi-part one takes a
+        // tuple (`box_shadow`, `stroke_style`), so `.m(a, b)` is sugar for
+        // `.m((a, b))`.
         let value = match values.len() {
             0 => {
                 return Err(Error::new(

@@ -12,7 +12,7 @@ help: the trait `Selects<BoxSize>` is not implemented for `common::Text`
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    = help: for that trait implementation, expected `Typography`, found `BoxSize`
    = note: required for `Draft<common::Text>` to implement `Access<CapScope<BoxSize>>`
-note: required by a bound in `xui_core::node::Node::set`
+note: required by a bound in `xui_core::Node::set`
   --> src/node.rs
    |
    |     fn set<P: Property>(&mut self, value: impl IntoProp<P>)

@@ -9,18 +9,18 @@ use xui_macros::{component, xui};
 
 #[component]
 fn one_prop(label: &String) {
-    TextWidget::new(label.clone()).into_element_desc()
+    text().with::<text::content>(label.clone()).into_element_desc(Vec::new())
 }
 
 #[component]
 #[defaults(label = "fallback".to_string())]
 fn one_prop_with_default(label: &String) {
-    TextWidget::new(label.clone()).into_element_desc()
+    text().with::<text::content>(label.clone()).into_element_desc(Vec::new())
 }
 
 #[component]
 fn two_props(label: &String, size: &f32) {
-    TextWidget::new(format!("{label}:{size}")).into_element_desc()
+    text().with::<text::content>(format!("{label}:{size}")).into_element_desc(Vec::new())
 }
 
 #[component]
@@ -54,15 +54,20 @@ fn multiple_and_zero_prop_components_still_work() {
     let _: ElementDesc = xui! { <no_props /> };
 }
 
-/// The generated props struct is what `xui!` builds, so it has to exist by name
-/// and take the parameter as a field.
+/// The generated props struct is what the render function reads, so it has to
+/// exist by name and take the parameter as a field; the tag's draft holds each
+/// prop until the element is built.
 #[test]
 fn the_props_struct_is_named_after_the_component() {
-    let props = OnePropProps::builder().label("direct".to_string()).build();
-    assert_eq!(props.label, "direct");
+    let props = OnePropProps {
+        label: Prop::new("direct".to_string()),
+    };
+    assert_eq!(*props.label, "direct");
 
-    let defaulted = OnePropWithDefaultProps::builder().build();
-    assert_eq!(defaulted.label, "fallback");
+    let draft = one_prop().with::<__xui_one_prop::label>("direct");
+    assert_eq!(draft.storage.props.label.as_deref().map(String::as_str), Some("direct"));
+    // A default is applied when the element is built, not stored in the draft.
+    assert!(one_prop_with_default().storage.props.label.is_none());
 }
 
 /// The macro puts its support items in a per-component module and re-exports
@@ -75,14 +80,17 @@ fn support_items_live_behind_a_per_component_module() {
     // Reachable through the module, absent from module scope.
     let _ = __xui_one_prop::one_prop_component_type();
     let _: __xui_one_prop::OnePropPropsLabelSet = __xui_one_prop::OnePropPropsLabelSet;
+    let _: xui_core::node::Draft<__xui_one_prop::OneProp, _> = one_prop();
 
     // The facade.
     let _ = one_prop_component_render();
-    let _ = OnePropProps::builder().label("x".to_string()).build();
+    let _ = OnePropProps {
+        label: Prop::new("x".to_string()),
+    };
 }
 
-/// A single-prop component must also accept children, which routes through
-/// `WithChildren` on the generated props rather than a plain builder call.
+/// A single-prop component must also accept children, which its draft takes as
+/// the `children` prop.
 #[test]
 fn a_single_prop_component_accepts_children() {
     let element = xui! {

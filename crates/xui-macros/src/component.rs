@@ -1,5 +1,24 @@
-//! `#[component]` / `component_fn!` — props struct, typed builder, and the tag
-//! constructor that lets `xui!` treat a component exactly like a host widget.
+//! `#[component]` / `component_fn!` — a component as a node: its props, its
+//! node definition and property table, one property per prop, and the tag
+//! constructor returning a `Draft`, so that `xui!` treats a component exactly
+//! like a host widget.
+//!
+//! For `fn badge(label: &String, tone: &String)` the support module
+//! `__xui_badge` holds
+//!
+//! - `BadgeProps`, the props the render function reads, each a `Prop<T>`;
+//! - `Badge`, the node marker, whose `NodeDef::Props` is `BadgePropsDraft`
+//!   (each prop optional until set) and whose table is `BadgeProperties`;
+//! - one property per prop (`__xui_badge::label`), accepting anything
+//!   `Into` the prop's type;
+//! - for the props without a default, a requirement state
+//!   (`BadgeRequirements<..>`, one `Missing`/`Set` parameter per required
+//!   prop) that setting each moves along; only a draft with every required
+//!   prop set implements `IntoElement`;
+//! - the render function, and the handle and type identifying it.
+//!
+//! `badge()` is re-exported next to the function's own name, with
+//! `BadgeProps` and the render handle.
 //!
 //! # Generic components
 //!
@@ -76,11 +95,6 @@ struct ComponentParam {
 
 struct DefaultsAttr {
     defaults: Vec<(Ident, Expr)>,
-}
-
-struct GeneratedComponentProps {
-    tokens: TokenStream2,
-    bindings: Vec<TokenStream2>,
 }
 
 impl Parse for DefaultsAttr {
@@ -290,7 +304,6 @@ pub fn expand_component_function(
     let component_handle_name = component_handle_name(&original_name);
     let module_name = component_module_name(&original_name);
     let props_name = component_props_name(&original_name);
-    let element_name = component_element_name(&original_name);
     let xui_core = krate::xui()?;
     function.sig.ident = component_name.clone();
     function.sig.output = ReturnType::Type(
@@ -334,17 +347,23 @@ pub fn expand_component_function(
         function.input_defaults.insert(0, None);
     }
 
+    // Items inside the support module are as visible as the component: `pub`
+    // would leak a private prop type through a property's `Value`.
+    let inner_vis = match &function.vis {
+        Visibility::Inherited => quote!(pub(super)),
+        Visibility::Public(_) => quote!(pub),
+        restricted => quote!(#restricted),
+    };
     let props_arg_count = function.sig.inputs.len().saturating_sub(1);
     // Every parameter after `cx` becomes a field of the generated props
-    // struct, whatever the count. Treating a lone parameter as an
-    // already-written props type instead would be indistinguishable from a
-    // one-field component, and would leave `{Name}Props` undefined for the
-    // `xui!` call site. A generic component always has one, even without
-    // parameters, since the props type is what carries its type arguments.
+    // struct, whatever the count. A generic component always has one, even
+    // without parameters, since the props type is what carries its type
+    // arguments.
     let props_ty = generics.ty(&props_name, &[]);
-    let generated_props = if props_arg_count >= 1 || !generics.is_empty() {
-        let generated = generate_component_props(
+    let node = if props_arg_count >= 1 || !generics.is_empty() {
+        let generated = generate_component_node(
             function,
+            &inner_vis,
             &generics,
             &props_name,
             &xui_core,
@@ -361,9 +380,15 @@ pub fn expand_component_function(
         inputs.push(cx_arg);
         inputs.push(parse_quote!(__xui_props: &#props_ty));
         function.sig.inputs = inputs;
-        Some(generated)
+        generated
     } else {
-        None
+        generate_propless_node(
+            &xui_core,
+            &inner_vis,
+            &component_handle_name,
+            &original_name,
+            function,
+        )
     };
 
     let fn_params = generics.params(&[]);
@@ -371,10 +396,11 @@ pub fn expand_component_function(
     let turbofish = generics.turbofish();
     let props_type = component_props_type(&function.sig)?;
     // What tells monomorphizations apart in the fiber tree; see `ComponentType`.
+    let marker_name = component_marker_name(&original_name);
     let identity_type = if props_type.is_some() {
         props_ty.clone()
     } else {
-        quote!(#element_name)
+        quote!(#marker_name)
     };
     let component_call = if let Some(props_type) = props_type {
         quote! {
@@ -403,7 +429,6 @@ pub fn expand_component_function(
             }
         }
     };
-    let tag_docs = component_documentation(function, &original_name);
     let attrs: Vec<_> = function
         .attrs
         .iter()
@@ -412,86 +437,37 @@ pub fn expand_component_function(
     let vis = &function.vis;
     let sig = &function.sig;
     let body = &function.body;
-    let props_tokens = generated_props
-        .as_ref()
-        .map(|props| props.tokens.clone())
-        .unwrap_or_default();
-    let prop_bindings = generated_props
-        .as_ref()
-        .map(|props| props.bindings.as_slice())
-        .unwrap_or(&[]);
+    let node_tokens = &node.tokens;
+    let prop_bindings = &node.bindings;
     // A component with no props has no props struct to surface.
-    let props_reexport = generated_props
-        .as_ref()
-        .map(|_| quote!(#[allow(unused_imports)] #vis use #module_name::#props_name;))
+    let props_reexport = node
+        .has_props
+        .then(|| quote!(#[allow(unused_imports)] #vis use #module_name::#props_name;))
         .unwrap_or_default();
 
-    // `<tag>` resolves to a plain `tag()` call, so a component needs a
-    // zero-argument constructor under its own name. With props, the props
-    // builder already is that builder; without them there is nothing to build,
-    // so a minimal one is generated.
-    let element_builder = if generated_props.is_some() {
-        // Emitted by `generate_component_props`, which knows the builder's
-        // initial typestate.
-        quote!()
-    } else {
-        quote! {
-            #[doc(hidden)]
-            #[derive(Default)]
-            pub struct #element_name {
-                __xui_key: ::std::option::Option<#xui_core::fiber::Key>,
-            }
-
-            impl #element_name {
-                pub fn key(
-                    mut self,
-                    key: impl ::std::convert::Into<#xui_core::fiber::Key>,
-                ) -> Self {
-                    self.__xui_key = ::std::option::Option::Some(key.into());
-                    self
-                }
-            }
-
-            impl #xui_core::dsl::IntoElement<#xui_core::dsl::NoChildren> for #element_name {
-                fn into_element(self, _: #xui_core::dsl::NoChildren) -> #xui_core::ElementDesc {
-                    let element = #xui_core::component(#component_handle_name());
-                    let element = match self.__xui_key {
-                        ::std::option::Option::Some(key) => element.key(key),
-                        ::std::option::Option::None => element,
-                    };
-                    ::std::convert::Into::into(element)
-                }
-            }
-
-            #tag_docs
-            pub fn #original_name() -> #element_name {
-                #element_name::default()
-            }
-        }
-    };
-
-    // The typestate markers appear in `Props::builder()`'s signature, so the
-    // module has to be reachable or every builder method trips
-    // `private_interfaces`. It is hidden from docs instead.
+    // The support module holds everything the component needs but nobody
+    // names directly: its node definition, property table and properties,
+    // the requirement markers, and the erased call adapter. Its items are
+    // public, since the tag's signature names them; it is hidden from docs.
     Ok(ExpandedComponentFunction {
         tokens: quote! {
             #[doc(hidden)]
-            #[allow(non_snake_case)]
+            #[allow(non_snake_case, non_camel_case_types)]
             #vis mod #module_name {
                 #[allow(unused_imports)]
                 use super::*;
 
-                #props_tokens
+                #node_tokens
 
                 #(#attrs)*
                 #[doc(hidden)]
-                pub #sig {
+                #inner_vis #sig {
                     #(#prop_bindings)*
                     #body
                 }
 
                 #[doc(hidden)]
-                pub fn #component_type_name #fn_params () -> #xui_core::ComponentType #fn_where {
+                #inner_vis fn #component_type_name #fn_params () -> #xui_core::ComponentType #fn_where {
                     #xui_core::ComponentType::of::<#identity_type>(
                         concat!(module_path!(), "::", stringify!(#original_name)),
                     )
@@ -500,14 +476,12 @@ pub fn expand_component_function(
                 #component_call
 
                 #[doc(hidden)]
-                pub fn #component_handle_name #fn_params () -> #xui_core::ComponentRender #fn_where {
+                #inner_vis fn #component_handle_name #fn_params () -> #xui_core::ComponentRender #fn_where {
                     #xui_core::ComponentRender::new(
                         #component_type_name #turbofish (),
                         #component_call_name #turbofish,
                     )
                 }
-
-                #element_builder
             }
 
             #[allow(unused_imports)]
@@ -537,19 +511,84 @@ fn component_documentation(function: &ComponentFunction, tag: &Ident) -> TokenSt
     }
 }
 
-fn generate_component_props(
+struct GeneratedComponentNode {
+    tokens: TokenStream2,
+    /// `let label = &*__xui_props.label;`, one per prop, at the top of the
+    /// render function.
+    bindings: Vec<TokenStream2>,
+    has_props: bool,
+}
+
+/// A component without props or type parameters: a node with `()` props and
+/// an empty property table.
+fn generate_propless_node(
+    xui_core: &TokenStream2,
+    vis: &TokenStream2,
+    handle_name: &TokenIdent,
+    tag_name: &Ident,
     function: &ComponentFunction,
+) -> GeneratedComponentNode {
+    let marker = component_marker_name(tag_name);
+    let table = component_table_name(tag_name);
+    let tag_docs = component_documentation(function, tag_name);
+    let marker_doc = format!("The `{tag_name}` component, as a node.");
+    GeneratedComponentNode {
+        tokens: quote! {
+            #[doc = #marker_doc]
+            #vis struct #marker;
+
+            #[doc(hidden)]
+            #[derive(Clone, Copy, Debug, Default)]
+            #vis struct #table;
+
+            impl #xui_core::node::NodeDef for #marker {
+                type Kind = #xui_core::node::ComponentKind;
+                type Props = ();
+                type Style = ();
+                type Behavior = ();
+                type Properties = #table;
+            }
+
+            impl #xui_core::dsl::NodeElement<#xui_core::property::Complete, #xui_core::dsl::NoChildren>
+                for #marker
+            {
+                fn into_element(
+                    draft: #xui_core::node::Draft<#marker>,
+                    _: #xui_core::dsl::NoChildren,
+                ) -> #xui_core::ElementDesc {
+                    let element = #xui_core::component(#handle_name());
+                    let element = match draft.key {
+                        ::std::option::Option::Some(key) => element.key(key),
+                        ::std::option::Option::None => element,
+                    };
+                    ::std::convert::Into::into(element)
+                }
+            }
+
+            #tag_docs
+            #vis fn #tag_name() -> #xui_core::node::Draft<#marker> {
+                #xui_core::node::Draft::new(())
+            }
+        },
+        bindings: Vec::new(),
+        has_props: false,
+    }
+}
+
+fn generate_component_node(
+    function: &ComponentFunction,
+    vis: &TokenStream2,
     generics: &ComponentGenerics,
     props_name: &TokenIdent,
     xui_core: &TokenStream2,
     handle_name: &TokenIdent,
     tag_name: &Ident,
-) -> Result<GeneratedComponentProps> {
-    // Unconditionally public: these items live inside the support module, and
-    // the facade decides what the outside world can reach.
-    let vis = quote!(pub);
-    let builder_name = component_props_builder_name(props_name);
+) -> Result<GeneratedComponentNode> {
     let tag_docs = component_documentation(function, tag_name);
+    let marker = component_marker_name(tag_name);
+    let table = component_table_name(tag_name);
+    let draft_props = TokenIdent::new(&format!("{props_name}Draft"), Span::call_site());
+    let requirements = TokenIdent::new(&format!("{marker}Requirements"), Span::call_site());
     let mut props = Vec::new();
     let mut has_children = false;
 
@@ -576,6 +615,12 @@ fn generate_component_props(
             ));
         }
         let field = &pat.ident;
+        if field == "key" {
+            return Err(Error::new(
+                field.span(),
+                "`key` is every element's identity among its siblings, not a prop",
+            ));
+        }
         // A props field cannot be `impl Trait`, and an anonymous parameter
         // could not be named in the props type anyway.
         let ty = &arg.ty;
@@ -596,26 +641,20 @@ fn generate_component_props(
                 "named component props must be shared references like `name: &Type`",
             ));
         };
-        if field == "children" {
-            has_children = true;
-        }
-        let field_pascal = ident_pascal_case(field);
-        let field_state = TokenIdent::new(&format!("__Xui{field_pascal}State"), Span::call_site());
-        let field_missing = component_prop_state_name(props_name, field, "Missing");
-        let field_set = component_prop_state_name(props_name, field, "Set");
-        let field_required_trait =
-            component_prop_state_name(props_name, field, "RequiredPropIsSet");
         let is_children = field == "children";
+        has_children |= is_children;
         let default_value = default
             .as_ref()
             .map(|expr| quote!(#expr))
             .or_else(|| is_children.then(|| quote!(::std::vec::Vec::new())));
-
-        let required_state = default_value.is_none().then_some(RequiredPropState {
-            param: field_state,
-            missing: field_missing,
-            set: field_set,
-            required_trait: field_required_trait,
+        let required = default_value.is_none().then(|| RequiredPropState {
+            param: TokenIdent::new(
+                &format!("__Xui{}State", ident_pascal_case(field)),
+                Span::call_site(),
+            ),
+            missing: component_prop_state_name(props_name, field, "Missing"),
+            set: component_prop_state_name(props_name, field, "Set"),
+            required_trait: component_prop_state_name(props_name, field, "RequiredPropIsSet"),
         });
 
         props.push(ComponentProp {
@@ -623,16 +662,41 @@ fn generate_component_props(
             generic: generics.mentioned_by(&field_type),
             field_type,
             default_value,
-            required_state,
+            required,
             binding,
         });
     }
 
-    // A type parameter no field names would be unused by the struct, so the
-    // props carry it as phantom data. `fn() -> T` keeps the props `Send`,
-    // `Sync` and covariant whatever `T` is.
-    let phantom_params = generics
-        .type_params
+    // Every item is generic over the component's parameters: a property's
+    // scope is the props of one instantiation. A type parameter that a struct
+    // does not otherwise name is carried as phantom data; `fn() -> T` keeps it
+    // `Send`, `Sync` and covariant whatever `T` is.
+    let type_params = &generics.type_params;
+    let phantom = quote!(::core::marker::PhantomData<fn() -> (#(#type_params,)*)>);
+    let params = generics.params(&[]);
+    let args = &generics.args;
+    let args = if args.is_empty() {
+        quote!()
+    } else {
+        quote!(<#(#args),*>)
+    };
+    let user_where = generics.where_clause(&[]);
+    let marker_ty = quote!(#marker #args);
+    let props_ty = quote!(#props_name #args);
+    // The same type in expression position: a parameter that only the
+    // phantom field names cannot be inferred from a struct literal.
+    let props_expr = if generics.args.is_empty() {
+        quote!(#props_name)
+    } else {
+        let args = &generics.args;
+        quote!(#props_name::<#(#args),*>)
+    };
+    let draft_props_ty = quote!(#draft_props #args);
+    let table_ty = quote!(#table #args);
+    let property_ty = |field: &Ident| quote!(#field #args);
+
+    // ---- the props, as the component renders them, and as a draft holds them ----
+    let phantom_params = type_params
         .iter()
         .filter(|param| {
             !props.iter().any(|prop| {
@@ -641,259 +705,48 @@ fn generate_component_props(
             })
         })
         .collect::<Vec<_>>();
-    let (phantom_field, phantom_value) = if phantom_params.is_empty() {
+    let (props_phantom_field, props_phantom_value) = if phantom_params.is_empty() {
         (quote!(), quote!())
     } else {
         (
-            quote!(__xui_phantom: ::std::marker::PhantomData<fn() -> (#(#phantom_params,)*)>,),
-            quote!(__xui_phantom: ::std::marker::PhantomData,),
+            quote!(__xui_phantom: ::core::marker::PhantomData<fn() -> (#(#phantom_params,)*)>,),
+            quote!(__xui_phantom: ::core::marker::PhantomData,),
         )
     };
-
-    let fields = props
-        .iter()
-        .map(|prop| {
-            let field = &prop.field;
-            let field_type = &prop.field_type;
-            let doc = match &prop.default_value {
-                Some(default) => format!("The `{field}` prop. Defaults to `{default}` when omitted."),
-                None => format!("The required `{field}` prop; it must be supplied when constructing the component."),
-            };
-            quote!(#[doc = #doc] pub #field: #xui_core::prop::Prop<#field_type>)
-        })
-        .collect::<Vec<_>>();
-    let builder_fields = props
-        .iter()
-        .map(|prop| {
-            let field = &prop.field;
-            let field_type = &prop.field_type;
-            quote!(#field: ::std::option::Option<#xui_core::prop::Prop<#field_type>>)
-        })
-        .collect::<Vec<_>>();
-    let builder_init_values = props
-        .iter()
-        .map(|prop| {
-            let field = &prop.field;
-            quote!(#field: ::std::option::Option::None)
-        })
-        .collect::<Vec<_>>();
-    let build_values = props
-        .iter()
-        .map(|prop| {
-            let field = &prop.field;
-            if let Some(default_value) = &prop.default_value {
-                quote!(#field: self.#field.unwrap_or_else(|| #xui_core::prop::Prop::new(#default_value)))
-            } else {
-                quote! {
-                    #field: self.#field.expect(concat!(
-                        "required component prop `",
-                        stringify!(#field),
-                        "` was marked as set by its typed builder state"
-                    ))
-                }
-            }
-        })
-        .collect::<Vec<_>>();
-    let bindings = props
-        .iter()
-        .map(|prop| prop.binding.clone())
-        .collect::<Vec<_>>();
-    let required_states = props
-        .iter()
-        .filter_map(|prop| prop.required_state.as_ref())
-        .collect::<Vec<_>>();
-    let required_markers = required_states
-        .iter()
-        .zip(props.iter().filter(|prop| prop.required_state.is_some()))
-        .map(|(state, prop)| {
-            let field = &prop.field;
-            let required_trait = &state.required_trait;
-            let missing = &state.missing;
-            let set = &state.set;
-            let missing_message =
-                format!("required prop `{field}` of `<{tag_name}>` was never set");
-            let missing_label = format!("`{field}` is missing here");
-            let missing_note = format!(
-                "set it with `{field}={{..}}` on the tag, or give the parameter a \
-                 default value with `#[defaults({field} = ..)]`"
-            );
-            quote! {
-                #[doc(hidden)]
-                #[diagnostic::on_unimplemented(
-                    message = #missing_message,
-                    label = #missing_label,
-                    note = #missing_note,
-                )]
-                #vis trait #required_trait {}
-                #[doc(hidden)]
-                #vis struct #missing;
-                #[doc(hidden)]
-                #vis struct #set;
-                impl #required_trait for #set {}
-            }
-        })
-        .collect::<Vec<_>>();
-    let state_params = required_states
-        .iter()
-        .map(|state| state.param.clone())
-        .collect::<Vec<_>>();
-    let missing_state_args = required_states
-        .iter()
-        .map(|state| state.missing.clone())
-        .collect::<Vec<_>>();
-    let required_trait_bounds = required_states
-        .iter()
-        .map(|state| {
-            let param = &state.param;
-            let required_trait = &state.required_trait;
-            quote!(#param: #required_trait)
-        })
-        .collect::<Vec<_>>();
-    // The component's own parameters come first, the typestate after them.
-    let props_params = generics.params(&[]);
-    let props_type = generics.ty(props_name, &[]);
-    let user_where = generics.where_clause(&[]);
-    let builder_generics = generics.params(&state_params);
-    let builder_current_type = generics.ty(&builder_name, &state_params);
-    let builder_initial_type = generics.ty(&builder_name, &missing_state_args);
-    let state_phantom_type = phantom_type(&state_params);
-    let builder_phantom_type = if generics.type_params.is_empty() {
-        state_phantom_type
-    } else {
-        let type_params = &generics.type_params;
-        quote!((fn() -> (#(#type_params,)*), #state_phantom_type))
-    };
-    let build_where_clause = generics.where_clause(&required_trait_bounds);
-    let handle_turbofish = generics.turbofish();
-    let setters = props
-        .iter()
-        .map(|prop| {
-            let field = &prop.field;
-            let field_type = &prop.field_type;
-            // A field whose type names a component parameter is where that
-            // parameter is inferred from, and `IntoProp`'s blanket over
-            // `Into<T<?>>` would leave it ambiguous as soon as a second `From`
-            // impl exists. Such a setter takes the value itself or a shared
-            // prop, which `Prop`'s two `From` impls tell apart by shape.
-            let (setter_params, param_type, value) = if prop.generic {
-                (
-                    quote!(),
-                    quote!(impl ::std::convert::Into<#xui_core::prop::Prop<#field_type>>),
-                    quote!(::std::convert::Into::into(#field)),
-                )
-            } else {
-                (
-                    quote!(<__XuiVia>),
-                    quote!(impl #xui_core::prop::IntoProp<#field_type, __XuiVia>),
-                    quote!(#xui_core::prop::IntoProp::into_prop(#field)),
-                )
-            };
-            if let Some(required_state) = prop.required_state.as_ref() {
-                let result_state_args = required_states
-                    .iter()
-                    .map(|state| {
-                        if state.param == required_state.param {
-                            required_state.set.clone()
-                        } else {
-                            state.param.clone()
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                let builder_type = generics.ty(&builder_name, &result_state_args);
-                let destructure_fields = props
-                    .iter()
-                    .map(|prop| {
-                        let name = &prop.field;
-                        if name == field {
-                            quote!(#name: _)
-                        } else {
-                            quote!(#name)
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                let reconstruct_fields = props
-                    .iter()
-                    .map(|prop| {
-                        let name = &prop.field;
-                        if name == field {
-                            quote!(#name: ::std::option::Option::Some(#value))
-                        } else {
-                            quote!(#name)
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                quote! {
-                    pub fn #field #setter_params (self, #field: #param_type) -> #builder_type {
-                        let Self {
-                            #(#destructure_fields),*,
-                            __xui_key,
-                            _states: _,
-                        } = self;
-                        #builder_name {
-                            #(#reconstruct_fields),*,
-                            __xui_key,
-                            _states: ::std::marker::PhantomData,
-                        }
-                    }
-                }
-            } else {
-                quote! {
-                    pub fn #field #setter_params (mut self, #field: #param_type) -> Self {
-                        self.#field = ::std::option::Option::Some(#value);
-                        self
-                    }
-                }
-            }
-        })
-        .collect::<Vec<_>>();
-
-    // Only a component that declares a `children` prop accepts a body, and that
-    // is expressed by *not* implementing the child-bearing `IntoElement`s —
-    // `<no_children_component>{x}</no_children_component>` is a type error.
-    let take_children = if has_children {
-        quote! {
-            if let ::std::option::Option::Some(children) = children {
-                self.children = ::std::option::Option::Some(#xui_core::prop::Prop::new(children));
-            }
-        }
-    } else {
-        quote!(let _ = children;)
-    };
-
-    let children_element_impls = has_children.then(|| {
-        let mut content_params = vec![TokenIdent::new("__XuiChildren", Span::call_site())];
-        content_params.extend(state_params.iter().cloned());
-        let content_generics = generics.params(&content_params);
-        let mut content_bounds = vec![quote!(__XuiChildren: #xui_core::IntoChildren)];
-        content_bounds.extend(required_trait_bounds.iter().cloned());
-        let content_where = generics.where_clause(&content_bounds);
-        quote! {
-            impl #builder_generics #xui_core::dsl::IntoElement<#xui_core::dsl::Children>
-                for #builder_current_type
-            #build_where_clause
-            {
-                fn into_element(self, children: #xui_core::dsl::Children) -> #xui_core::ElementDesc {
-                    self.__xui_into_element(::std::option::Option::Some(children.collect()))
-                }
-            }
-
-            impl #content_generics #xui_core::dsl::IntoElement<#xui_core::dsl::Content<__XuiChildren>>
-                for #builder_current_type
-            #content_where
-            {
-                fn into_element(
-                    self,
-                    content: #xui_core::dsl::Content<__XuiChildren>,
-                ) -> #xui_core::ElementDesc {
-                    self.__xui_into_element(::std::option::Option::Some(content.collect()))
-                }
-            }
+    let fields = props.iter().map(|prop| {
+        let ComponentProp { field, field_type, .. } = prop;
+        let doc = match &prop.default_value {
+            Some(default) => format!("The `{field}` prop. Defaults to `{default}` when omitted."),
+            None => format!("The required `{field}` prop."),
+        };
+        quote!(#[doc = #doc] pub #field: #xui_core::prop::Prop<#field_type>)
+    });
+    let draft_fields = props.iter().map(|prop| {
+        let ComponentProp { field, field_type, .. } = prop;
+        quote!(pub #field: ::core::option::Option<#xui_core::prop::Prop<#field_type>>)
+    });
+    let draft_defaults = props.iter().map(|prop| {
+        let field = &prop.field;
+        quote!(#field: ::core::option::Option::None)
+    });
+    let build_values = props.iter().map(|prop| {
+        let field = &prop.field;
+        match &prop.default_value {
+            Some(default) => quote! {
+                #field: draft.#field.unwrap_or_else(|| #xui_core::prop::Prop::new(#default))
+            },
+            None => quote! {
+                #field: draft.#field.expect(concat!(
+                    "required component prop `",
+                    stringify!(#field),
+                    "` was marked as set by its draft's requirement state"
+                ))
+            },
         }
     });
-
     let field_names = props.iter().map(|prop| &prop.field).collect::<Vec<_>>();
     let prop_fields_impl = quote! {
-        impl #props_params #xui_core::prop::PropFields for #props_type #user_where {
+        impl #params #xui_core::prop::PropFields for #props_ty #user_where {
             const FIELDS: &'static [#xui_core::prop::PropGetter] = &[
                 #(
                     |props| &props
@@ -905,108 +758,329 @@ fn generate_component_props(
         }
     };
 
-    let children_impl = has_children.then(|| {
+    // ---- requirements ----
+    let required = props
+        .iter()
+        .filter_map(|prop| prop.required.as_ref().map(|state| (prop, state)))
+        .collect::<Vec<_>>();
+    let required_markers = required.iter().map(|(prop, state)| {
+        let field = &prop.field;
+        let RequiredPropState {
+            missing,
+            set,
+            required_trait,
+            ..
+        } = state;
+        let message = format!("required prop `{field}` of `<{tag_name}>` was never set");
+        let label = format!("`{field}` is missing here");
+        let note = format!(
+            "set it with `{field}={{..}}` on the tag, or give the parameter a default value \
+             with `#[defaults({field} = ..)]`"
+        );
         quote! {
-            impl #props_params #xui_core::WithChildren for #props_type #user_where {
-                fn with_children(
-                    mut self,
-                    children: ::std::vec::Vec<#xui_core::ElementDesc>,
-                ) -> Self {
-                    self.children = #xui_core::prop::Prop::new(children);
-                    self
+            #[doc(hidden)]
+            #[diagnostic::on_unimplemented(message = #message, label = #label, note = #note)]
+            #vis trait #required_trait {}
+            #[doc(hidden)]
+            #vis struct #missing;
+            #[doc(hidden)]
+            #vis struct #set;
+            impl #required_trait for #set {}
+        }
+    });
+    let state_params = required
+        .iter()
+        .map(|(_, state)| state.param.clone())
+        .collect::<Vec<_>>();
+    let (requirements_def, initial_state, complete_bounds, state_ty) = if required.is_empty() {
+        (
+            quote!(),
+            quote!(#xui_core::property::Complete),
+            Vec::new(),
+            quote!(#xui_core::property::Complete),
+        )
+    } else {
+        let missing = required.iter().map(|(_, state)| &state.missing);
+        let doc = format!(
+            "Which required props of `<{tag_name}>` a draft has been given, one parameter each."
+        );
+        let fulfils = required.iter().map(|(prop, state)| {
+            let property = property_ty(&prop.field);
+            let output = required.iter().map(|(_, other)| {
+                if other.param == state.param {
+                    other.set.clone()
+                } else {
+                    other.param.clone()
+                }
+            });
+            let impl_params = generics.params(&state_params);
+            quote! {
+                impl #impl_params #xui_core::property::Fulfil<#property>
+                    for #requirements<#(#state_params),*>
+                #user_where
+                {
+                    type Output = #requirements<#(#output),*>;
+                }
+            }
+        });
+        let bounds = required
+            .iter()
+            .map(|(_, state)| {
+                let RequiredPropState {
+                    param,
+                    required_trait,
+                    ..
+                } = state;
+                quote!(#param: #required_trait)
+            })
+            .collect::<Vec<_>>();
+        (
+            quote! {
+                #[doc = #doc]
+                #vis struct #requirements<#(#state_params),*>(
+                    ::core::marker::PhantomData<fn() -> (#(#state_params,)*)>,
+                );
+
+                #(#fulfils)*
+            },
+            quote!(#requirements<#(#missing),*>),
+            bounds,
+            quote!(#requirements<#(#state_params),*>),
+        )
+    };
+    let impl_params = generics.params(&state_params);
+    let complete_where = generics.where_clause(&complete_bounds);
+
+    // ---- properties ----
+    let property_defs = props.iter().map(|prop| {
+        let field = &prop.field;
+        let doc = format!("The `{field}` prop of `<{tag_name}>`.");
+        if generics.is_empty() {
+            quote!(#[doc = #doc] #vis enum #field {})
+        } else {
+            // An enum, like every property: a `let` binding of the prop's
+            // name in the render function must not read as a pattern.
+            quote! {
+                #[doc = #doc]
+                #vis enum #field #params #user_where {
+                    #[doc(hidden)]
+                    __Never(::core::convert::Infallible, #phantom),
                 }
             }
         }
     });
+    let property_impls = props.iter().map(|prop| {
+        let ComponentProp {
+            field, field_type, ..
+        } = prop;
+        let property = property_ty(field);
+        let requirement = if prop.required.is_some() {
+            quote!(Self)
+        } else {
+            quote!(#xui_core::property::NotRequired)
+        };
+        // A field whose type names a component parameter is where that
+        // parameter is inferred from, so it takes the field type itself: an
+        // `Into` blanket would leave the parameter ambiguous as soon as a
+        // second `From` impl exists. A primitive takes only itself, so that
+        // literals infer.
+        let accepts = if prop.generic || crate::widget::is_primitive(field_type) {
+            quote! {
+                impl #params #xui_core::property::Accepts<#field_type> for #property #user_where {
+                    fn accept(value: #field_type) -> #xui_core::prop::Prop<#field_type> {
+                        #xui_core::prop::Prop::new(value)
+                    }
+                }
+            }
+        } else {
+            let value_params = generics.params(&[TokenIdent::new("__XuiValue", Span::call_site())]);
+            let value_where =
+                generics.where_clause(&[quote!(__XuiValue: ::core::convert::Into<#field_type>)]);
+            quote! {
+                impl #value_params #xui_core::property::Accepts<__XuiValue> for #property #value_where {
+                    fn accept(value: __XuiValue) -> #xui_core::prop::Prop<#field_type> {
+                        #xui_core::prop::Prop::new(::core::convert::Into::into(value))
+                    }
+                }
+            }
+        };
+        quote! {
+            impl #params #xui_core::property::Property for #property #user_where {
+                type Scope = #xui_core::node::OwnProps<#marker_ty>;
+                type Value = #xui_core::prop::Prop<#field_type>;
+                type Requirement = #requirement;
 
-    Ok(GeneratedComponentProps {
+                fn set(props: &mut #draft_props_ty, value: #xui_core::prop::Prop<#field_type>) {
+                    props.#field = ::core::option::Option::Some(value);
+                }
+            }
+
+            #accepts
+        }
+    });
+    let table_methods = props.iter().map(|prop| {
+        let field = &prop.field;
+        let property = property_ty(field);
+        quote! {
+            #[doc(hidden)]
+            #[inline(always)]
+            #vis fn #field(&self) -> #xui_core::property::PropertyMarker<#property> {
+                #xui_core::property::PropertyMarker::new()
+            }
+        }
+    });
+
+    // ---- elements ----
+    // Only a component that declares a `children` prop accepts a body, and
+    // that is expressed by *not* implementing the child-bearing
+    // `IntoElement`s: `<no_children_component>{x}</no_children_component>` is
+    // a type error.
+    let take_children = if has_children {
+        quote! {
+            if let ::core::option::Option::Some(children) = children {
+                draft.children = ::core::option::Option::Some(#xui_core::prop::Prop::new(children));
+            }
+        }
+    } else {
+        quote!(let _ = children;)
+    };
+    let children_impls = has_children.then(|| {
+        let mut content_params = vec![TokenIdent::new("__XuiChildren", Span::call_site())];
+        content_params.extend(state_params.iter().cloned());
+        let content_generics = generics.params(&content_params);
+        let mut content_bounds = vec![quote!(__XuiChildren: #xui_core::IntoChildren)];
+        content_bounds.extend(complete_bounds.iter().cloned());
+        let content_where = generics.where_clause(&content_bounds);
+        quote! {
+            impl #impl_params #xui_core::dsl::NodeElement<#state_ty, #xui_core::dsl::Children>
+                for #marker_ty
+            #complete_where
+            {
+                fn into_element(
+                    draft: #xui_core::node::Draft<Self, #state_ty>,
+                    children: #xui_core::dsl::Children,
+                ) -> #xui_core::ElementDesc {
+                    __xui_into_element(draft, ::core::option::Option::Some(children.collect()))
+                }
+            }
+
+            impl #content_generics
+                #xui_core::dsl::NodeElement<#state_ty, #xui_core::dsl::Content<__XuiChildren>>
+                for #marker_ty
+            #content_where
+            {
+                fn into_element(
+                    draft: #xui_core::node::Draft<Self, #state_ty>,
+                    content: #xui_core::dsl::Content<__XuiChildren>,
+                ) -> #xui_core::ElementDesc {
+                    __xui_into_element(draft, ::core::option::Option::Some(content.collect()))
+                }
+            }
+        }
+    });
+    let into_params = generics.params(&[TokenIdent::new("__XuiState", Span::call_site())]);
+    let handle_turbofish = generics.turbofish();
+    let marker_doc = format!("The `{tag_name}` component, as a node.");
+    let props_doc = format!(
+        "Owned props for [`{tag_name}()`]. See the component documentation for behavior, \
+         defaults, and examples."
+    );
+
+    Ok(GeneratedComponentNode {
         tokens: quote! {
-            #[doc = concat!("Owned props for [`", stringify!(#tag_name), "()`]. See the component documentation for behavior, defaults, and examples.")]
-            #vis struct #props_name #props_params #user_where {
+            #[doc = #props_doc]
+            #vis struct #props_name #params #user_where {
                 #(#fields,)*
-                #phantom_field
+                #props_phantom_field
             }
 
             #prop_fields_impl
 
-            #(#required_markers)*
+            #[doc = #marker_doc]
+            #vis struct #marker #params (#phantom) #user_where;
 
             #[doc(hidden)]
-            #vis struct #builder_name #builder_generics #user_where {
-                #(#builder_fields,)*
-                __xui_key: ::std::option::Option<#xui_core::fiber::Key>,
-                _states: ::std::marker::PhantomData<#builder_phantom_type>,
+            #vis struct #draft_props #params #user_where {
+                #(#draft_fields,)*
+                __xui_phantom: #phantom,
             }
+
+            impl #params ::core::default::Default for #draft_props_ty #user_where {
+                fn default() -> Self {
+                    Self {
+                        #(#draft_defaults,)*
+                        __xui_phantom: ::core::marker::PhantomData,
+                    }
+                }
+            }
+
+            #[doc(hidden)]
+            #vis struct #table #params (#phantom) #user_where;
+
+            impl #params ::core::default::Default for #table_ty #user_where {
+                fn default() -> Self {
+                    Self(::core::marker::PhantomData)
+                }
+            }
+
+            impl #params #table_ty #user_where {
+                #(#table_methods)*
+            }
+
+            impl #params #xui_core::node::NodeDef for #marker_ty #user_where {
+                type Kind = #xui_core::node::ComponentKind;
+                type Props = #draft_props_ty;
+                type Style = ();
+                type Behavior = ();
+                type Properties = #table_ty;
+            }
+
+            #(#property_defs)*
+            #(#property_impls)*
+
+            #(#required_markers)*
+            #requirements_def
 
             #tag_docs
-            pub fn #tag_name #props_params () -> #builder_initial_type #user_where {
-                <#props_type>::builder()
+            #vis fn #tag_name #params () -> #xui_core::node::Draft<#marker_ty, #initial_state> #user_where {
+                #xui_core::node::Draft::with_requirements(::core::default::Default::default())
             }
 
-            impl #props_params #props_type #user_where {
-                #[doc(hidden)]
-                pub fn builder() -> #builder_initial_type {
-                    #builder_name {
-                        #(#builder_init_values,)*
-                        __xui_key: ::std::option::Option::None,
-                        _states: ::std::marker::PhantomData,
-                    }
-                }
+            fn __xui_into_element #into_params (
+                draft: #xui_core::node::Draft<#marker_ty, __XuiState>,
+                children: ::core::option::Option<::std::vec::Vec<#xui_core::ElementDesc>>,
+            ) -> #xui_core::ElementDesc #user_where {
+                let #xui_core::node::Draft { key, storage, .. } = draft;
+                let mut draft = storage.props;
+                #take_children
+                let props = #props_expr {
+                    #(#build_values,)*
+                    #props_phantom_value
+                };
+                let element = #xui_core::component(#handle_name #handle_turbofish ()).props(props);
+                let element = match key {
+                    ::core::option::Option::Some(key) => element.key(key),
+                    ::core::option::Option::None => element,
+                };
+                ::core::convert::Into::into(element)
             }
 
-            impl #builder_generics #builder_current_type #user_where {
-                #(#setters)*
-
-                /// Available in every builder state: a key never affects
-                /// whether the required props are satisfied.
-                pub fn key(mut self, key: impl ::std::convert::Into<#xui_core::fiber::Key>) -> Self {
-                    self.__xui_key = ::std::option::Option::Some(key.into());
-                    self
-                }
-            }
-
-            impl #builder_generics #builder_current_type
-            #build_where_clause
+            impl #impl_params #xui_core::dsl::NodeElement<#state_ty, #xui_core::dsl::NoChildren>
+                for #marker_ty
+            #complete_where
             {
-                pub fn build(self) -> #props_type {
-                    #props_name {
-                        #(#build_values,)*
-                        #phantom_value
-                    }
-                }
-
-                fn __xui_into_element(
-                    mut self,
-                    children: ::std::option::Option<
-                        ::std::vec::Vec<#xui_core::ElementDesc>,
-                    >,
+                fn into_element(
+                    draft: #xui_core::node::Draft<Self, #state_ty>,
+                    _: #xui_core::dsl::NoChildren,
                 ) -> #xui_core::ElementDesc {
-                    let key = self.__xui_key.take();
-                    #take_children
-                    let element = #xui_core::component(#handle_name #handle_turbofish ())
-                        .props(self.build());
-                    let element = match key {
-                        ::std::option::Option::Some(key) => element.key(key),
-                        ::std::option::Option::None => element,
-                    };
-                    ::std::convert::Into::into(element)
+                    __xui_into_element(draft, ::core::option::Option::None)
                 }
             }
 
-            impl #builder_generics #xui_core::dsl::IntoElement<#xui_core::dsl::NoChildren>
-                for #builder_current_type
-            #build_where_clause
-            {
-                fn into_element(self, _: #xui_core::dsl::NoChildren) -> #xui_core::ElementDesc {
-                    self.__xui_into_element(::std::option::Option::None)
-                }
-            }
-
-            #children_element_impls
-
-            #children_impl
+            #children_impls
         },
-        bindings,
+        bindings: props.iter().map(|prop| prop.binding.clone()).collect(),
+        has_props: true,
     })
 }
 
@@ -1023,7 +1097,7 @@ struct ComponentProp {
     generic: bool,
     field_type: Type,
     default_value: Option<TokenStream2>,
-    required_state: Option<RequiredPropState>,
+    required: Option<RequiredPropState>,
     binding: TokenStream2,
 }
 
@@ -1136,14 +1210,16 @@ fn component_props_name(original_name: &Ident) -> TokenIdent {
     TokenIdent::new(&name, original_name.span())
 }
 
-fn component_element_name(original_name: &TokenIdent) -> TokenIdent {
-    let mut name = ident_pascal_case(original_name);
-    name.push_str("Element");
-    TokenIdent::new(&name, original_name.span())
+/// The component's node marker: `badge` → `Badge`, inside the support module.
+fn component_marker_name(original_name: &Ident) -> TokenIdent {
+    TokenIdent::new(&ident_pascal_case(original_name), original_name.span())
 }
 
-fn component_props_builder_name(props_name: &TokenIdent) -> TokenIdent {
-    TokenIdent::new(&format!("{props_name}Builder"), props_name.span())
+fn component_table_name(original_name: &Ident) -> TokenIdent {
+    TokenIdent::new(
+        &format!("{}Properties", ident_pascal_case(original_name)),
+        original_name.span(),
+    )
 }
 
 fn component_prop_state_name(props_name: &TokenIdent, field: &Ident, suffix: &str) -> TokenIdent {
@@ -1296,14 +1372,6 @@ fn find_ident(tokens: TokenStream2, matches: &dyn Fn(&Ident) -> bool) -> Option<
         TokenTree::Group(group) => find_ident(group.stream(), matches),
         _ => None,
     })
-}
-
-fn phantom_type(params: &[TokenIdent]) -> TokenStream2 {
-    match params {
-        [] => quote!(()),
-        [param] => quote!(#param),
-        _ => quote!((#(#params),*)),
-    }
 }
 
 fn is_hook_context_arg(arg: &FnArg) -> bool {

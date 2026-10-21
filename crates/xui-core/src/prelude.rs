@@ -1,7 +1,7 @@
 pub use crate::animation::{AnimablePaintStyle, AnimableStyle};
 pub use crate::app::App;
 pub use crate::component::ComponentRuntime;
-pub use crate::context::{ContextProvider, context_provider};
+pub use crate::context::context_provider;
 pub use crate::core::{Color, EdgeInsets, Point, Rect, Size};
 pub use crate::dsl::{Children, Content, IntoElement, NoChildren};
 pub use crate::element::{

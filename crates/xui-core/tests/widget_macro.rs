@@ -1,7 +1,8 @@
 //! `#[widget]` turns one struct into a widget's empty marker type, props, state
 //! and typed props builder; `WidgetT` is implemented by hand.
 
-use xui_core::widgets::WidgetT;
+use xui_core::node::WidgetT;
+use xui_interface::WidgetUpdateFlags;
 use xui_macros::widget;
 
 const DEFAULT_MAX: f32 = 10.0;
@@ -27,7 +28,6 @@ pub struct Slider {
 }
 
 impl WidgetT for Slider {
-    type Props = SliderProps;
     type State = SliderState;
 
     fn create_state(props: &SliderProps) -> SliderState {
@@ -37,10 +37,11 @@ impl WidgetT for Slider {
         }
     }
 
-    fn update(old: &SliderProps, new: &SliderProps, state: &mut SliderState) {
+    fn update(old: &SliderProps, new: &SliderProps, state: &mut SliderState) -> WidgetUpdateFlags {
         if old.value != new.value {
             state.shown = new.value.clamp(new.min, new.max);
         }
+        WidgetUpdateFlags::empty()
     }
 }
 
@@ -123,7 +124,7 @@ fn primitive_setters_infer_integer_literals() {
 }
 
 #[test]
-fn a_widget_without_fields_has_empty_props_and_state() {
+fn a_widget_without_fields_has_empty_props_and_no_state_struct() {
     let _: SpacerProps = SpacerProps::builder().build();
-    let _ = SpacerState {};
+    assert_eq!(std::mem::size_of::<SpacerProps>(), 0);
 }

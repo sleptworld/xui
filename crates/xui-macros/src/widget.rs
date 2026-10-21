@@ -64,7 +64,9 @@
 //! Props:
 //!
 //! - `#[dirty(FLAG | ..)]` names the `WidgetUpdateFlags` a change of the prop
-//!   dirties; left out, a change dirties `WidgetUpdateFlags::default()`.
+//!   dirties; `#[dirty(fn = path)]` computes them, as `path(&old, &new)`, for
+//!   a prop whose cost depends on how it changed. Left out, a change dirties
+//!   `WidgetUpdateFlags::default()`.
 //! - A prop's property accepts anything `Into` its type, except a primitive
 //!   one, which accepts only its own type so integer literals infer. Its
 //!   change detection is `PartialEq`.
@@ -103,8 +105,29 @@ struct PropField {
     name: Ident,
     ty: Type,
     default: Option<TokenStream2>,
-    /// `#[dirty(..)]`: the flags a change dirties.
-    dirty: Option<Vec<Ident>>,
+    /// `#[dirty(..)]`: what a change dirties.
+    dirty: Option<Dirty>,
+}
+
+/// What a change of a prop dirties.
+enum Dirty {
+    /// `#[dirty(A | B)]`: always these flags.
+    Flags(Vec<Ident>),
+    /// `#[dirty(fn = path)]`: `path(&old, &new)`, for a prop whose cost
+    /// depends on how it changed.
+    Fn(syn::Path),
+}
+
+impl Parse for Dirty {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        if input.peek(Token![fn]) {
+            input.parse::<Token![fn]>()?;
+            input.parse::<Token![=]>()?;
+            return Ok(Self::Fn(input.parse()?));
+        }
+        let flags = Punctuated::<Ident, Token![|]>::parse_separated_nonempty(input)?;
+        Ok(Self::Flags(flags.into_iter().collect()))
+    }
 }
 
 struct StateField {
@@ -207,9 +230,7 @@ pub fn expand_widget(args: WidgetArgs, item: ItemStruct) -> Result<TokenStream2>
                 if dirty.is_some() {
                     return Err(Error::new(attr.span(), "duplicate `#[dirty]`"));
                 }
-                let flags =
-                    attr.parse_args_with(Punctuated::<Ident, Token![|]>::parse_separated_nonempty)?;
-                dirty = Some((attr, flags.into_iter().collect::<Vec<_>>()));
+                dirty = Some((attr, attr.parse_args::<Dirty>()?));
             } else {
                 attrs.push(attr.clone());
             }
@@ -543,7 +564,7 @@ fn generate_builder(
     }
 }
 
-fn is_primitive(ty: &Type) -> bool {
+pub(crate) fn is_primitive(ty: &Type) -> bool {
     const PRIMITIVES: &[&str] = &[
         "bool", "char", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16",
         "u32", "u64", "u128", "usize",
@@ -872,8 +893,9 @@ fn generate_node(
                 columns: &mut #xui::caps::Columns,
                 cx: &mut #xui::capability::CommitCx<'_>,
             ) -> (#props_name, #flags) {
-                let #xui::node::Draft { storage, rules, mut keyframes, .. } = draft;
-                let #xui::node::NodeStorage { props, style, behavior } = storage;
+                let #xui::node::Draft { storage, .. } = draft;
+                let #xui::node::NodeStorage { props, style, behavior, rules, mut keyframes } =
+                    storage;
                 let mut dirty = <#flags>::empty();
                 #(#layer_inits)*
                 for rule in rules {
@@ -916,12 +938,13 @@ fn generate_node(
     let prop_impls = props.iter().map(|prop| {
         let PropField { name, ty, .. } = prop;
         let dirty = match &prop.dirty {
-            Some(flags) => {
+            Some(Dirty::Flags(flags)) => {
                 let flags = flags
                     .iter()
                     .map(|flag| quote_spanned!(flag.span()=> #xui::__interface::WidgetUpdateFlags::#flag));
                 quote!(#(#flags)|*)
             }
+            Some(Dirty::Fn(path)) => quote!(#path(old, new)),
             None => quote!(<#xui::__interface::WidgetUpdateFlags as ::core::default::Default>::default()),
         };
         let accepts = if is_primitive(ty) {
@@ -946,6 +969,7 @@ fn generate_node(
         quote! {
             impl #xui::property::Property for #module_name::#name {
                 type Scope = #xui::node::OwnProps<#widget_name>;
+                type Requirement = #xui::property::NotRequired;
                 type Value = #ty;
 
                 fn set(props: &mut #props_name, value: #ty) {
@@ -964,7 +988,8 @@ fn generate_node(
             }
 
             impl #xui::property::HostProperty for #module_name::#name {
-                fn dirty(_: &#ty, _: &#ty) -> #xui::__interface::WidgetUpdateFlags {
+                #[allow(unused_variables)]
+                fn dirty(old: &#ty, new: &#ty) -> #xui::__interface::WidgetUpdateFlags {
                     #dirty
                 }
             }
@@ -972,6 +997,64 @@ fn generate_node(
             #accepts
         }
     });
+
+    // ---- the property table ----
+    let table_name = format_ident!("{}Properties", widget_name);
+    let table_doc = format!(
+        "The property table of [`{widget_name}`]: what `xui!` asks for an attribute by name."
+    );
+    let table_caps = caps.iter().map(|cap| {
+        let module = &cap.module;
+        quote!(impl #module::Properties for #table_name {})
+    });
+    let table_props = props.iter().map(|prop| {
+        let name = &prop.name;
+        quote! {
+            #[doc(hidden)]
+            #[inline(always)]
+            pub fn #name(&self) -> #xui::property::PropertyMarker<#module_name::#name> {
+                #xui::property::PropertyMarker::new()
+            }
+        }
+    });
+    let table = quote! {
+        #[doc = #table_doc]
+        #[doc(hidden)]
+        #[derive(Clone, Copy, Debug, Default)]
+        #vis struct #table_name;
+
+        #(#table_caps)*
+
+        impl #table_name {
+            #(#table_props)*
+
+            #[doc(hidden)]
+            #[inline(always)]
+            pub fn style(&self) -> #xui::property::PropertyMarker<#module_name::style> {
+                #xui::property::PropertyMarker::new()
+            }
+        }
+    };
+    let style_property = quote! {
+        impl #xui::property::Property for #module_name::style {
+            type Scope = #xui::node::WholeNode<#widget_name>;
+            type Value = #xui::node::StyleOf<#widget_name>;
+            type Requirement = #xui::property::NotRequired;
+
+            fn set(
+                node: &mut #xui::node::NodeStorage<#widget_name>,
+                style: #xui::node::StyleOf<#widget_name>,
+            ) {
+                node.apply_style(style);
+            }
+        }
+
+        impl #xui::property::Accepts<#xui::node::StyleOf<#widget_name>> for #module_name::style {
+            fn accept(style: #xui::node::StyleOf<#widget_name>) -> #xui::node::StyleOf<#widget_name> {
+                style
+            }
+        }
+    };
 
     let reexports = caps.iter().map(|cap| {
         let inner = &cap.inner_module;
@@ -1034,6 +1117,7 @@ fn generate_node(
             type Props = #props_name;
             type Style = #style_name;
             type Behavior = #behavior_name;
+            type Properties = #table_name;
 
             #transition
         }
@@ -1048,9 +1132,17 @@ fn generate_node(
             #(#reexports)*
             #(#shorthand_reexports)*
             #(#prop_enums)*
+
+            /// Layers a style for this widget over its own: declarations and
+            /// state rules, as `style!` builds them.
+            #inner_vis enum style {}
         }
 
         #(#prop_impls)*
+
+        #style_property
+
+        #table
     })
 }
 

@@ -148,6 +148,15 @@ macro_rules! capabilities {
             pub const STYLE: Self = Self::EMPTY $(.with::<style::$scap>())*;
         }
 
+        /// Every capability's property table, imported unnamed: what the
+        /// element macros glob-import so that a node's table answers for the
+        /// capabilities it selected.
+        #[doc(hidden)]
+        pub mod tables {
+            $(pub use super::style::$sfield::Properties as _;)*
+            $(pub use super::behavior::$bfield::Properties as _;)*
+        }
+
         /// One column per capability, and one per style capability for its
         /// state layers.
         #[doc(hidden)]
@@ -252,6 +261,9 @@ macro_rules! capabilities {
                     columns.$bfield.get(id)
                 }
 
+                /// A default row is not stored: a node that sets nothing of
+                /// a behaviour has no row for it, so a column holds only
+                /// the nodes that use it.
                 #[allow(unused_variables)]
                 fn write(
                     columns: &mut Columns,
@@ -259,8 +271,18 @@ macro_rules! capabilities {
                     value: behavior::$bfield::Storage,
                     cx: &mut CommitCx<'_>,
                 ) -> WidgetUpdateFlags {
-                    if columns.$bfield.get(id) == Some(&value) {
+                    let unset = value == behavior::$bfield::Storage::default();
+                    if columns.$bfield.get(id) == Some(&value)
+                        || (unset && columns.$bfield.get(id).is_none())
+                    {
                         return WidgetUpdateFlags::empty();
+                    }
+                    if unset {
+                        let old = columns.$bfield.remove(id);
+                        capabilities!(
+                            @commit [$($bcommit)?] behavior::$bcap, id, old.as_ref(), None, cx
+                        );
+                        return capabilities!(@dirty Self, old, Some(&value));
                     }
                     let old = columns.$bfield.insert(id, value);
                     capabilities!(
@@ -532,7 +554,7 @@ mod tests {
     use crate::focus::FocusHandle;
     use crate::node::{Draft, HostNode, Mounted, Node};
     use crate::scroll::{ScrollController, ScrollRequestQueue};
-    use crate::widgets::host_style::{HostStyle, NodeStyle};
+    use crate::capability::StyleSet;
 
     fn ids(n: usize) -> Vec<NodeId> {
         let mut map = SlotMap::<NodeId, ()>::with_key();
@@ -684,10 +706,16 @@ mod tests {
         let mut parent = initial.clone();
         parent.text.color = Color::rgb(0.5, 0.5, 0.5);
 
+        // The reference: the draft itself, its rules merged in place.
         let draft = swatch();
-        let node = NodeStyle {
-            storage: &draft.storage,
-            rules: &draft.rules,
+        let effective = |state: WidgetState| {
+            let mut style = draft.storage.style.clone();
+            for rule in &draft.storage.rules {
+                if rule.matcher.matches(state) {
+                    style.merge(&rule.style.0);
+                }
+            }
+            style
         };
         let [id] = ids(1)[..] else { unreachable!() };
         let mut columns = Columns::default();
@@ -712,23 +740,28 @@ mod tests {
         for state in states {
             let mut computed = parent.inherited_from(&theme);
             columns.apply_style(id, SWATCH, state, &mut computed, &parent, &initial, &theme);
-            assert_eq!(computed, node.compute(&parent, &theme, state), "{state:?}");
+            assert_eq!(computed, draft.compute_style(state, &parent, &theme), "{state:?}");
 
             assert_eq!(
                 columns.inherits_differently(id, SWATCH, state, &initial, &parent),
-                node.inherits_differently(state, &initial, &parent),
+                effective(state).inherits_differently(&initial, &parent),
                 "{state:?}"
             );
             // FOCUSED: a change no layer depends on.
             for after in states.into_iter().chain([state | WidgetState::FOCUSED]) {
                 assert_eq!(
                     columns.affects_state_change(id, SWATCH, state, after),
-                    node.affects_state_change(state, after),
+                    state != after
+                        && draft
+                            .storage
+                            .rules
+                            .iter()
+                            .any(|rule| rule.matcher.matches_state_change(state, after)),
                     "{state:?} -> {after:?}"
                 );
             }
         }
-        assert_eq!(columns.transition(id), node.transition());
+        assert_eq!(columns.transition(id), draft.storage.behavior.motion.transition);
     }
 
     #[test]

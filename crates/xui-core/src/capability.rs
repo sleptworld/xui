@@ -141,6 +141,30 @@ pub trait StyleProperty: HostProperty {
     fn inherit_unset(value: &Self::Value, target: &mut ComputedStyle, parent: &ComputedStyle);
 }
 
+/// A capability's property table: the trait `Properties`, with one method
+/// per property in scope, each returning that property's marker. A node
+/// selecting the capability implements it for its own table, and the element
+/// macros bring every capability's table into scope, so `<tag attr={..}>`
+/// finds `attr` by asking the node.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __property_table {
+    ($($prop:ident),* $(,)?) => {
+        /// The capability's properties, one method each, for a node's
+        /// property table.
+        #[allow(non_camel_case_types, deprecated)]
+        pub trait Properties {
+            $(
+                #[doc(hidden)]
+                #[inline(always)]
+                fn $prop(&self) -> $crate::property::PropertyMarker<$prop> {
+                    $crate::property::PropertyMarker::new()
+                }
+            )*
+        }
+    };
+}
+
 /// Defines a style capability: its marker, its storage, and one
 /// [`Property`](crate::property::Property) per field.
 ///
@@ -194,6 +218,8 @@ macro_rules! style_capability {
         $vis mod $module {
             #[allow(unused_imports)]
             use super::*;
+
+            pub use props::Properties;
 
             $(#[$cap_meta])*
             pub struct $cap;
@@ -274,12 +300,17 @@ macro_rules! style_capability {
                 // shorthand is named like a module (`box_shadow`).
                 $(pub use super::super::$extra::{$($short),*};)?
 
+                $crate::__property_table! {
+                    $($field,)* $($($short,)*)?
+                }
+
                 $(
                     $(#[$field_meta])*
                     pub enum $field {}
 
                     impl $crate::property::Property for $field {
                         type Scope = $crate::property::CapScope<$cap>;
+                        type Requirement = $crate::property::NotRequired;
                         type Value = $crate::__interface::StyleValue<$declared>;
 
                         fn set(storage: &mut Storage, value: Self::Value) {
@@ -432,6 +463,8 @@ macro_rules! behavior_capability {
             #[allow(unused_imports)]
             use super::*;
 
+            pub use props::Properties;
+
             #[doc = concat!("The storage of [`", stringify!($cap), "`].")]
             #[derive(Debug, Clone, PartialEq, Default)]
             pub struct Storage {
@@ -454,6 +487,8 @@ macro_rules! behavior_capability {
                         @prop $cap, $dirty, $(#[$field_meta])* $prop : $ty => $prop $([$kind])?
                     );
                 )*
+
+                $crate::__property_table! { $($prop,)* }
             }
         }
 
@@ -477,6 +512,8 @@ macro_rules! behavior_capability {
             #[allow(unused_imports)]
             use super::*;
 
+            pub use props::Properties;
+
             #[doc = concat!("The storage of [`", stringify!($cap), "`].")]
             pub type Storage = $storage;
 
@@ -495,6 +532,8 @@ macro_rules! behavior_capability {
                 )*
 
                 $($crate::behavior_capability!(@whole $cap, $dirty, $whole);)?
+
+                $crate::__property_table! { $($prop,)* $($whole,)? }
             }
         }
 
@@ -532,6 +571,7 @@ macro_rules! behavior_capability {
 
         impl $crate::property::Property for $prop {
             type Scope = $crate::property::CapScope<$cap>;
+            type Requirement = $crate::property::NotRequired;
             type Value = $crate::behavior_capability!(@value $ty $([$kind])?);
 
             fn set(storage: &mut Storage, value: Self::Value) {
@@ -586,6 +626,7 @@ macro_rules! behavior_capability {
 
         impl $crate::property::Property for $whole {
             type Scope = $crate::property::CapScope<$cap>;
+            type Requirement = $crate::property::NotRequired;
             type Value = Storage;
 
             fn set(storage: &mut Storage, value: Storage) {

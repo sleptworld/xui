@@ -17,7 +17,7 @@ use xui_macros::{component, xui};
 
 #[component]
 fn labeled<T: Display>(value: &T) {
-    TextWidget::new(value.to_string()).into_element_desc()
+    text().with::<text::content>(value.to_string()).into_element_desc(Vec::new())
 }
 
 #[component]
@@ -34,18 +34,18 @@ where
 /// signature scanner must not mistake for the parameter list.
 #[component]
 fn rendered<F: Fn(i32) -> String>(render: &F, value: &i32) {
-    TextWidget::new(render(*value)).into_element_desc()
+    text().with::<text::content>(render(*value)).into_element_desc(Vec::new())
 }
 
 #[component]
 fn fixed<const N: usize>(values: &[f32; N]) {
-    TextWidget::new(format!("{N}:{}", values.iter().sum::<f32>())).into_element_desc()
+    text().with::<text::content>(format!("{N}:{}", values.iter().sum::<f32>())).into_element_desc(Vec::new())
 }
 
 /// No field names `T`, so it can only be given with a turbofish.
 #[component]
 fn typed<T: Default + Display>(label: &String) {
-    TextWidget::new(format!("{label}={}", T::default())).into_element_desc()
+    text().with::<text::content>(format!("{label}={}", T::default())).into_element_desc(Vec::new())
 }
 
 #[component]
@@ -66,8 +66,8 @@ fn type_parameters_are_inferred_from_the_props_that_name_them() {
         </listing>
     };
 
-    let props = LabeledProps::builder().value(7i64).build();
-    assert_eq!(props.value, 7);
+    let draft = labeled().with::<__xui_labeled::value<i64>>(7i64);
+    assert_eq!(draft.storage.props.value.as_deref(), Some(&7));
 }
 
 #[test]
@@ -75,8 +75,8 @@ fn parameters_no_prop_names_take_a_turbofish() {
     let _: ElementDesc = xui! { <typed::<u8> label={"n".to_string()} /> };
     let _: ElementDesc = xui! { <marker::<String> /> };
 
-    let props = TypedProps::<u8>::builder().label("n").build();
-    assert_eq!(props.label, "n");
+    let draft = typed::<u8>().with::<__xui_typed::label<u8>>("n");
+    assert_eq!(draft.storage.props.label.as_deref().map(String::as_str), Some("n"));
 }
 
 #[test]

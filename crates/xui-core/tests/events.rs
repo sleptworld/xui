@@ -20,7 +20,7 @@ use xui_macros::{component, xui};
 #[defaults(label = String::new())]
 fn clickable(label: &String, on_click: &Handler<ClickEvent>) {
     xui! {
-        <container on_click={on_click.clone().into_fn()}>
+        <container on_click={on_click.clone()}>
             <text>{label.clone()}</text>
         </container>
     }

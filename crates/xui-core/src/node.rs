@@ -25,7 +25,9 @@ use crate::caps::behavior::{Motion, motion};
 use crate::caps::{CapMask, Columns, Registered};
 use crate::fiber::Key;
 use crate::event_system::{EventContext, Flow, Handler, HandlerValue};
-use crate::property::{Access, CapScope, Capability, IntoProp, Property, Scope};
+use crate::property::{
+    Access, CapScope, Capability, Complete, Fulfil, IntoProp, Property, PropertyMarker, Scope,
+};
 use crate::property::HostProperty;
 use xui_interface::style::{ComputedStyle, Theme, WidgetStateMatcher};
 use xui_interface::{Animation, NodeId, WidgetState, WidgetUpdateFlags};
@@ -58,6 +60,11 @@ pub trait NodeDef: Sized + 'static {
     type Style: StyleSet;
     /// The selected non-style capabilities' storage; `()` for none.
     type Behavior: Default + 'static;
+    /// The node's property table: one method per property it has, returning
+    /// that property's [`PropertyMarker`]. How `xui!` and `view!` find an
+    /// attribute — by asking the node's own table, so a tag needs no
+    /// property module beside its constructor.
+    type Properties: Default;
 
     /// The node's style transition, when it selects the `motion` capability.
     fn transition(_node: &NodeStorage<Self>) -> Option<xui_interface::Transition> {
@@ -76,11 +83,17 @@ pub trait Selects<C: Capability>: NodeDef {
     fn storage_mut(node: &mut NodeStorage<Self>) -> &mut C::Storage;
 }
 
-/// Everything about a node that a property can set.
+/// Everything about a node that a property can set: its props, its
+/// capabilities' storage, and the state rules and keyframes layered over its
+/// style.
 pub struct NodeStorage<N: NodeDef> {
     pub props: N::Props,
     pub style: N::Style,
     pub behavior: N::Behavior,
+    pub rules: Vec<StyleRule<N::Style>>,
+    /// The keyframes of the node's animation, whose timing is the `motion`
+    /// capability's.
+    pub keyframes: Option<Keyframes<N::Style>>,
 }
 
 impl<N: NodeDef> NodeStorage<N> {
@@ -89,7 +102,16 @@ impl<N: NodeDef> NodeStorage<N> {
             props,
             style: N::Style::default(),
             behavior: N::Behavior::default(),
+            rules: Vec::new(),
+            keyframes: None,
         }
+    }
+
+    /// Layers `style` over the node's: its declarations over the node's
+    /// own, its state rules after the node's.
+    pub fn apply_style(&mut self, style: StyleOf<N>) {
+        self.style.merge(&style.base.0);
+        self.rules.extend(style.rules);
     }
 }
 
@@ -103,6 +125,8 @@ where
             props: self.props.clone(),
             style: self.style.clone(),
             behavior: self.behavior.clone(),
+            rules: self.rules.clone(),
+            keyframes: self.keyframes.clone(),
         }
     }
 }
@@ -112,6 +136,14 @@ pub struct OwnProps<N>(PhantomData<fn() -> N>);
 
 impl<N: NodeDef> Scope for OwnProps<N> {
     type Storage = N::Props;
+}
+
+/// The scope of everything node `N` has at once, for a property that writes
+/// across it: a node's `style`, which layers declarations and rules.
+pub struct WholeNode<N>(PhantomData<fn() -> N>);
+
+impl<N: NodeDef> Scope for WholeNode<N> {
+    type Storage = NodeStorage<N>;
 }
 
 /// A node's prototype or its mounted instance: anything holding a
@@ -162,6 +194,16 @@ impl<T: Node> Access<OwnProps<T::Def>> for T {
     }
 }
 
+impl<T: Node> Access<WholeNode<T::Def>> for T {
+    fn access(&self) -> &NodeStorage<T::Def> {
+        self.storage()
+    }
+
+    fn access_mut(&mut self) -> &mut NodeStorage<T::Def> {
+        self.storage_mut()
+    }
+}
+
 impl<T: Node, C: Capability> Access<CapScope<C>> for T
 where
     T::Def: Selects<C>,
@@ -200,6 +242,44 @@ pub struct StyleOf<N: NodeDef> {
 impl<N: NodeDef> StyleOf<N> {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A style for the node `tag` constructs: `StyleOf::for_tag(container)`
+    /// is a `StyleOf<Container>`. What `style!` starts from, since a tag
+    /// names its constructor rather than its node type.
+    pub fn for_tag<R>(_tag: fn() -> Draft<N, R>) -> Self {
+        Self::default()
+    }
+
+    /// Adds `rule`'s declarations as a layer applying while `matcher`
+    /// matches; its own rules are dropped.
+    pub fn when_style(mut self, matcher: WidgetStateMatcher, rule: StyleOf<N>) -> Self {
+        self.rules.push(StyleRule {
+            matcher,
+            style: rule.base,
+        });
+        self
+    }
+
+    /// The node's property table, for `style!`; see [`NodeDef::Properties`].
+    #[doc(hidden)]
+    pub fn __properties(&self) -> N::Properties {
+        N::Properties::default()
+    }
+
+    /// [`with`](Self::with), for `style!`.
+    #[doc(hidden)]
+    pub fn __with<P: Property>(self, _: PropertyMarker<P>, value: impl IntoProp<P>) -> Self
+    where
+        Layer<N::Style>: Access<P::Scope>,
+    {
+        self.with::<P>(value)
+    }
+
+    /// [`when_style`](Self::when_style), for `style!`.
+    #[doc(hidden)]
+    pub fn __rule(self, matcher: WidgetStateMatcher, rule: StyleOf<N>) -> Self {
+        self.when_style(matcher, rule)
     }
 
     /// Sets style property `P`, chained.
@@ -297,17 +377,20 @@ impl<S: crate::property::Has<C>, C: Capability> Access<CapScope<C>> for Layer<S>
     }
 }
 
-/// A node as written: its storage and its state rules, before it mounts.
-pub struct Draft<N: NodeDef> {
+/// A node as written: its key and its storage, before it mounts.
+///
+/// `R` is what the draft still lacks: [`Complete`] for every host widget
+/// and for a component without required props; otherwise the component's
+/// own state type, which each required prop's [`Property::Requirement`]
+/// moves along (`with` returns the next state). Only a draft that lacks
+/// nothing becomes an element.
+pub struct Draft<N: NodeDef, R = Complete> {
     pub key: Option<Key>,
     pub storage: NodeStorage<N>,
-    pub rules: Vec<StyleRule<N::Style>>,
-    /// The keyframes of the node's animation, whose timing is the `motion`
-    /// capability's.
-    pub keyframes: Option<Keyframes<N::Style>>,
+    required: PhantomData<fn() -> R>,
 }
 
-impl<N: NodeDef> Clone for Draft<N>
+impl<N: NodeDef, R> Clone for Draft<N, R>
 where
     N::Props: Clone,
     N::Behavior: Clone,
@@ -316,19 +399,25 @@ where
         Self {
             key: self.key.clone(),
             storage: self.storage.clone(),
-            rules: self.rules.clone(),
-            keyframes: self.keyframes.clone(),
+            required: PhantomData,
         }
     }
 }
 
 impl<N: NodeDef> Draft<N> {
     pub fn new(props: N::Props) -> Self {
+        Self::with_requirements(props)
+    }
+}
+
+impl<N: NodeDef, R> Draft<N, R> {
+    /// A draft of `props`, in requirement state `R`: a component's tag
+    /// starts with every required prop missing.
+    pub fn with_requirements(props: N::Props) -> Self {
         Self {
             key: None,
             storage: NodeStorage::new(props),
-            rules: Vec::new(),
-            keyframes: None,
+            required: PhantomData,
         }
     }
 
@@ -338,11 +427,62 @@ impl<N: NodeDef> Draft<N> {
         self
     }
 
-    /// Layers `style` over the node's: its declarations over the node's own,
-    /// its state rules after the node's.
-    pub fn style(mut self, style: StyleOf<N>) -> Self {
-        self.storage.style.merge(&style.base.0);
-        self.rules.extend(style.rules);
+    /// [`Node::set`], chained; setting a required prop moves the draft to
+    /// its next requirement state.
+    pub fn with<P: Property>(
+        mut self,
+        value: impl IntoProp<P>,
+    ) -> Draft<N, <R as Fulfil<P::Requirement>>::Output>
+    where
+        Self: Access<P::Scope>,
+        R: Fulfil<P::Requirement>,
+    {
+        self.set::<P>(value);
+        self.fulfilled()
+    }
+
+    /// [`Node::on`], chained.
+    pub fn with_on<P: Property, F: Into<Flow>>(
+        mut self,
+        handler: impl for<'a> FnMut(&<P::Value as HandlerValue>::Event, &mut EventContext<'a>) -> F
+        + 'static,
+    ) -> Draft<N, <R as Fulfil<P::Requirement>>::Output>
+    where
+        P::Value: HandlerValue,
+        Self: Access<P::Scope>,
+        R: Fulfil<P::Requirement>,
+    {
+        self.on::<P, F>(handler);
+        self.fulfilled()
+    }
+
+    /// Sets component prop `P` to a prop forwarded with
+    /// [`Share::share`](crate::prop::Share::share), projected into the
+    /// props it came from instead of copied.
+    pub fn with_shared<P, T, Via>(
+        mut self,
+        value: impl crate::prop::IntoProp<T, Via>,
+    ) -> Draft<N, <R as Fulfil<P::Requirement>>::Output>
+    where
+        P: Property<Value = crate::prop::Prop<T>>,
+        T: 'static,
+        Self: Access<P::Scope>,
+        R: Fulfil<P::Requirement>,
+    {
+        P::set(self.access_mut(), crate::prop::IntoProp::into_prop(value));
+        self.fulfilled()
+    }
+
+    /// Adds a style layer that applies while `matcher` matches the node's
+    /// state. Later rules win over earlier ones.
+    pub fn when(
+        mut self,
+        matcher: WidgetStateMatcher,
+        build: impl FnOnce(&mut Layer<N::Style>),
+    ) -> Self {
+        let mut style = Layer::default();
+        build(&mut style);
+        self.storage.rules.push(StyleRule { matcher, style });
         self
     }
 
@@ -364,43 +504,7 @@ impl<N: NodeDef> Draft<N> {
         from(&mut keyframes.from);
         to(&mut keyframes.to);
         self.set::<motion::props::animation>(animation);
-        self.keyframes = Some(keyframes);
-        self
-    }
-
-    /// [`Node::set`], chained.
-    pub fn with<P: Property>(mut self, value: impl IntoProp<P>) -> Self
-    where
-        Self: Access<P::Scope>,
-    {
-        self.set::<P>(value);
-        self
-    }
-
-    /// [`Node::on`], chained.
-    pub fn with_on<P: Property, R: Into<Flow>>(
-        mut self,
-        handler: impl for<'a> FnMut(&<P::Value as HandlerValue>::Event, &mut EventContext<'a>) -> R
-        + 'static,
-    ) -> Self
-    where
-        P::Value: HandlerValue,
-        Self: Access<P::Scope>,
-    {
-        self.on::<P, R>(handler);
-        self
-    }
-
-    /// Adds a style layer that applies while `matcher` matches the node's
-    /// state. Later rules win over earlier ones.
-    pub fn when(
-        mut self,
-        matcher: WidgetStateMatcher,
-        build: impl FnOnce(&mut Layer<N::Style>),
-    ) -> Self {
-        let mut style = Layer::default();
-        build(&mut style);
-        self.rules.push(StyleRule { matcher, style });
+        self.storage.keyframes = Some(keyframes);
         self
     }
 
@@ -411,11 +515,73 @@ impl<N: NodeDef> Draft<N> {
         parent: &ComputedStyle,
         theme: &Theme,
     ) -> ComputedStyle {
-        compute_style(&self.storage.style, &self.rules, state, parent, theme)
+        compute_style(&self.storage.style, &self.storage.rules, state, parent, theme)
+    }
+
+    /// The node's property table; see [`NodeDef::Properties`].
+    #[doc(hidden)]
+    pub fn __properties(&self) -> N::Properties {
+        N::Properties::default()
+    }
+
+    /// [`with`](Self::with), for the element macros: the property comes from
+    /// the node's table rather than a turbofish.
+    #[doc(hidden)]
+    pub fn __with<P: Property>(
+        self,
+        _: PropertyMarker<P>,
+        value: impl IntoProp<P>,
+    ) -> Draft<N, <R as Fulfil<P::Requirement>>::Output>
+    where
+        Self: Access<P::Scope>,
+        R: Fulfil<P::Requirement>,
+    {
+        self.with::<P>(value)
+    }
+
+    /// [`with_on`](Self::with_on), for the element macros.
+    #[doc(hidden)]
+    pub fn __with_on<P: Property, F: Into<Flow>>(
+        self,
+        _: PropertyMarker<P>,
+        handler: impl for<'a> FnMut(&<P::Value as HandlerValue>::Event, &mut EventContext<'a>) -> F
+        + 'static,
+    ) -> Draft<N, <R as Fulfil<P::Requirement>>::Output>
+    where
+        P::Value: HandlerValue,
+        Self: Access<P::Scope>,
+        R: Fulfil<P::Requirement>,
+    {
+        self.with_on::<P, F>(handler)
+    }
+
+    /// [`with_shared`](Self::with_shared), for the element macros.
+    #[doc(hidden)]
+    pub fn __with_shared<P, T, Via>(
+        self,
+        _: PropertyMarker<P>,
+        value: impl crate::prop::IntoProp<T, Via>,
+    ) -> Draft<N, <R as Fulfil<P::Requirement>>::Output>
+    where
+        P: Property<Value = crate::prop::Prop<T>>,
+        T: 'static,
+        Self: Access<P::Scope>,
+        R: Fulfil<P::Requirement>,
+    {
+        self.with_shared::<P, T, Via>(value)
+    }
+
+    /// The same draft in the requirement state its type now says.
+    fn fulfilled<S>(self) -> Draft<N, S> {
+        Draft {
+            key: self.key,
+            storage: self.storage,
+            required: PhantomData,
+        }
     }
 }
 
-impl<N: NodeDef> Node for Draft<N> {
+impl<N: NodeDef, R> Node for Draft<N, R> {
     type Def = N;
 
     fn storage(&self) -> &NodeStorage<N> {
@@ -543,9 +709,8 @@ where
     C: Registered,
 {
     fn set<P: Property<Scope = CapScope<C>>>(&mut self, value: P::Value) -> WidgetUpdateFlags {
-        let mut row = C::get(self.columns, self.id)
-            .expect("a node has a row for every capability it selects")
-            .clone();
+        // A behaviour row left at its default is not stored.
+        let mut row = C::get(self.columns, self.id).cloned().unwrap_or_default();
         P::set(&mut row, value);
         C::write(self.columns, self.id, row, self.cx)
     }
@@ -580,12 +745,10 @@ where
         &mut self,
         value: P::Value,
     ) -> WidgetUpdateFlags {
-        let row = C::get(self.columns, self.id)
-            .expect("a node has a row for every capability it selects");
-        if P::same(P::get(row), &value) {
+        let mut row = C::get(self.columns, self.id).cloned().unwrap_or_default();
+        if P::same(P::get(&row), &value) {
             return WidgetUpdateFlags::empty();
         }
-        let mut row = row.clone();
         P::set(&mut row, value);
         C::write(self.columns, self.id, row, self.cx)
     }

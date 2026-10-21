@@ -2,20 +2,29 @@
 //!
 //! This module is deliberately ignorant. It knows the *shape* of the syntax and
 //! nothing else: no tag names, no attribute names, no widget methods. Every
-//! `<tag attr={value}>` becomes
+//! `<tag attr={value}>` becomes, in effect,
 //!
 //! ```text
-//! IntoElement::into_element(tag().attr(value), <children>)
+//! let node = tag();
+//! let node = node.__with(node.__properties().attr(), value);
+//! ElementBody::build(<children>, node)
 //! ```
 //!
-//! and the type system decides whether that is legal. Consequences:
+//! `tag()` returns a `Draft` of the node, and the draft's property table —
+//! one method per property the node has, its capabilities' included — names
+//! the property. A closure given to an `on_*` attribute goes to `__with_on`,
+//! which spells out the handler's `Fn` bound so the closure infers its
+//! argument types; a
+//! `value.share()` goes to `__with_shared`, which projects a forwarded prop.
+//! `key` is the draft's key. The type system decides whether the rest is
+//! legal. Consequences:
 //!
 //! - A new host widget or component needs no change here — it only needs a
 //!   constructor function in scope.
-//! - A new style property needs no change here — `xui_core::dsl::StyleProps` picks it
-//!   up for every widget at once.
-//! - A misspelled tag or attribute is reported by rustc against the real method
-//!   set, with its own "did you mean" suggestion, pointed at the offending
+//! - A new capability property needs no change here — every node selecting
+//!   the capability has it in its table.
+//! - A misspelled tag or attribute is reported by rustc against the node's
+//!   table, with its own "did you mean" suggestion, pointed at the offending
 //!   token (see [`Element::expand`]'s use of `quote_spanned!`).
 //!
 //! The one thing this module *does* enforce is what it can see without types:
@@ -215,20 +224,51 @@ impl Element {
         let tag = &self.tag;
         // The constructor call carries the tag's span, so `cannot find function`
         // underlines the tag rather than the whole macro invocation.
-        let mut builder = quote_spanned!(tag.span()=> #tag());
-        for attr in &self.attrs {
+        let constructor = quote_spanned!(tag.span()=> #tag());
+        let attrs = self.attrs.iter().map(|attr| {
             let name = &attr.name;
             let value = &attr.value;
-            // Likewise for `no method named ...`: it points at the attribute.
-            builder = quote_spanned!(name.span()=> #builder.#name(#value));
-        }
+            if name == "key" {
+                return quote_spanned!(name.span()=> let __xui_node = __xui_node.key(#value););
+            }
+            // A closure set to an `on_*` attribute is a handler, whose
+            // argument types come from the property it is set to; a
+            // forwarded prop is projected rather than copied. Anything else
+            // -- a closure prop of a component included -- is a value the
+            // property accepts.
+            let setter = match syn::parse2::<Expr>(value.clone()) {
+                Ok(Expr::Closure(_)) if name.to_string().starts_with("on_") => {
+                    quote_spanned!(name.span()=> __with_on)
+                }
+                Ok(Expr::MethodCall(call)) if call.method == "share" && call.args.is_empty() => {
+                    quote_spanned!(name.span()=> __with_shared)
+                }
+                _ => quote_spanned!(name.span()=> __with),
+            };
+            // The property comes from the node's own table, so `no method
+            // named ..` points at the attribute and lists the node's
+            // properties with a similar name.
+            quote_spanned! {name.span()=>
+                let __xui_property = __xui_node.__properties().#name();
+                let __xui_node = __xui_node.#setter(__xui_property, #value);
+            }
+        });
 
         let children = self.expand_children(xui_core, errors);
         // The body's span, so that "does not accept this kind of body"
         // underlines the body rather than the whole invocation.
         let span = self.body_span().unwrap_or_else(|| tag.span());
-        quote_spanned! {span=>
-            #xui_core::dsl::ElementBody::build(#children, #builder)
+        let build = quote_spanned! {span=>
+            #xui_core::dsl::ElementBody::build(#children, __xui_node)
+        };
+        quote! {
+            {
+                #[allow(unused_imports)]
+                use #xui_core::caps::tables::*;
+                let __xui_node = #constructor;
+                #(#attrs)*
+                #build
+            }
         }
     }
 

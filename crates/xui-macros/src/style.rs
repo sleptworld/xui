@@ -1,11 +1,15 @@
-//! `style!(padding: 16.0, color: if hovered { A } else { B })`.
+//! `style!(container { padding: 16.0, background: if hovered { A } else { B } })`.
 //!
-//! Property names are passed straight through to `StylePatch` methods, so the
-//! macro carries no property vocabulary of its own. State conditions are
-//! lowered to `WidgetStateMatcher` rules at compile time.
+//! A style is typed by the node it is for: the tag names it, and the result
+//! is a `StyleOf<N>` for that tag's node. Property names are looked up in the
+//! node's property table, as `xui!` attributes are, so the macro carries no
+//! property vocabulary of its own, and a property the node's style cannot
+//! hold — a prop, a handler, a capability it did not select — fails to
+//! compile. State conditions are lowered to `WidgetStateMatcher` rules at
+//! compile time.
 
 use proc_macro2::TokenStream as TokenStream2;
-use quote::quote;
+use quote::{quote, quote_spanned};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
@@ -14,6 +18,8 @@ use syn::{Error, Expr, Ident, Result, Token};
 use crate::krate;
 
 pub struct StyleInput {
+    /// The tag whose node the style is for: its constructor, as in `xui!`.
+    tag: syn::Path,
     entries: Punctuated<StyleEntry, Token![,]>,
 }
 
@@ -48,8 +54,17 @@ struct StyleEntryTokens {
 
 impl Parse for StyleInput {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
+        let tag = input.parse::<syn::Path>().map_err(|error| {
+            Error::new(
+                error.span(),
+                "`style!` names the node it styles first, as in `style!(container { padding: 8.0 })`",
+            )
+        })?;
+        let content;
+        syn::braced!(content in input);
         Ok(Self {
-            entries: Punctuated::<StyleEntry, Token![,]>::parse_terminated(input)?,
+            tag,
+            entries: Punctuated::<StyleEntry, Token![,]>::parse_terminated(&content)?,
         })
     }
 }
@@ -86,30 +101,47 @@ pub fn expand_style(style: &StyleInput) -> Result<TokenStream2> {
         )?;
     }
 
-    let mut base_patch = quote!(#xui_core::StylePatch::default());
-    for entry in &base_entries {
-        let name = &entry.name;
-        let value = &entry.value;
-        base_patch = quote!(#base_patch.#name(#value));
-    }
-
-    let mut style_expr = quote!(#xui_core::Style::from_patch(#base_patch));
-    for rule in &rules {
+    let tag = &style.tag;
+    let new_style = quote_spanned!(tag.span()=> #xui_core::node::StyleOf::for_tag(#tag));
+    let sets = |entries: &[StyleEntryTokens]| {
+        entries
+            .iter()
+            .map(|entry| {
+                let name = &entry.name;
+                let value = &entry.value;
+                quote_spanned! {name.span()=>
+                    let __xui_property = __xui_style.__properties().#name();
+                    let __xui_style = __xui_style.__with(__xui_property, #value);
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    let base = sets(&base_entries);
+    let rules = rules.iter().map(|rule| {
         let required = widget_state_tokens(rule.mask.required, &xui_core);
         let forbidden = widget_state_tokens(rule.mask.forbidden, &xui_core);
-        let mut rule_patch = quote!(s);
-        for entry in &rule.entries {
-            let name = &entry.name;
-            let value = &entry.value;
-            rule_patch = quote!(#rule_patch.#name(#value));
-        }
-        style_expr = quote! {
-            #style_expr.when_state(
+        let sets = sets(&rule.entries);
+        quote! {
+            let __xui_style = __xui_style.__rule(
                 #xui_core::WidgetStateMatcher::new(#required, #forbidden),
-                |s| #rule_patch,
-            )
-        };
-    }
+                {
+                    let __xui_style = #new_style;
+                    #(#sets)*
+                    __xui_style
+                },
+            );
+        }
+    });
+    let style_expr = quote! {
+        {
+            #[allow(unused_imports)]
+            use #xui_core::caps::tables::*;
+            let __xui_style = #new_style;
+            #(#base)*
+            #(#rules)*
+            __xui_style
+        }
+    };
 
     Ok(style_expr)
 }

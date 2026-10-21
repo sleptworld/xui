@@ -1,24 +1,25 @@
-error[E0277]: `<CanvasWidget>` does not accept this kind of body
- --> tests/ui/leaf_rejects_children.rs:7:13
+error[E0277]: `<xui_core::Canvas>` does not accept this kind of body
+ --> tests/ui/leaf_rejects_children.rs:7:45
   |
 7 |     xui! { <canvas controller={controller}>{"canvas takes no body"}</canvas> }
-  |     --------^^^^^^^^^^^^^^^^^-------------------------------------------------
-  |     |       |
-  |     |       not a valid body for this element
+  |     ----------------------------------------^^^^^^^^^^^^^^^^^^^^^^------------
+  |     |                                       |
+  |     |                                       not a valid body for this element
   |     required by a bound introduced by this call
   |
   = note: `NoChildren` = `<tag />` or `tag()`, `Children` = `<tag><a /><b /></tag>` or `tag { a() b() }`, `Content<T>` = `<tag>{expr}</tag>` or `tag(expr)`
   = note: a leaf element such as `canvas` or `icon` accepts no body at all
-help: the trait `IntoElement<Content<&str>>` is not implemented for `CanvasWidget`
-      but trait `IntoElement<NoChildren>` is implemented for it
+help: the trait `NodeElement<xui_core::property::Complete, Content<&str>>` is not implemented for `xui_core::Canvas`
+      but trait `NodeElement<xui_core::property::Complete, NoChildren>` is implemented for it
  --> src/dsl.rs
   |
-  |         impl IntoElement<NoChildren> for $widget {
-  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |         impl NodeElement<Complete, NoChildren> for $widget {
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ...
-  | impl_host_element!(leaf CanvasWidget);
-  | ------------------------------------- in this macro invocation
+  | impl_host_element!(leaf Canvas);
+  | ------------------------------- in this macro invocation
   = help: for that trait implementation, expected `NoChildren`, found `Content<&str>`
+  = note: required for `Draft<xui_core::Canvas>` to implement `IntoElement<Content<&str>>`
 note: required by a bound in `build`
  --> src/dsl.rs
   |

@@ -1,12 +1,12 @@
-error[E0277]: property `flex_wrap` does not accept `&str`
+error[E0277]: property `common::container::flex_wrap` does not accept `&str`
   --> tests/ui/node_property_rejects_wrong_value.rs:12:38
    |
 12 |     node.set::<container::flex_wrap>("yes");
-   |          ---                         ^^^^^ not a value of `flex_wrap`
+   |          ---                         ^^^^^ not a value of `common::container::flex_wrap`
    |          |
    |          required by a bound introduced by this call
    |
-help: the trait `Accepts<&str>` is not implemented for `flex_wrap`
+help: the trait `Accepts<&str>` is not implemented for `common::container::flex_wrap`
       but trait `Accepts<bool>` is implemented for it
   --> tests/ui/../node_fixture/mod.rs
    |
@@ -16,8 +16,8 @@ help: the trait `Accepts<&str>` is not implemented for `flex_wrap`
    | | )]
    | |__^
    = help: for that trait implementation, expected `bool`, found `&str`
-   = note: required for `&str` to implement `xui_core::property::IntoProp<flex_wrap>`
-note: required by a bound in `xui_core::node::Node::set`
+   = note: required for `&str` to implement `xui_core::IntoProp<common::container::flex_wrap>`
+note: required by a bound in `xui_core::Node::set`
   --> src/node.rs
    |
    |     fn set<P: Property>(&mut self, value: impl IntoProp<P>)
@@ -45,9 +45,9 @@ help: the following other types implement trait `From<T>`
    | ^^^^^^^^^^^^^^^^^^^^^^^^^ `Sizing` implements `From<u32>`
    = note: required for `&str` to implement `Into<Sizing>`
    = note: required for `&str` to implement `IntoStyleValue<Sizing>`
-   = note: required for `xui_core::caps::style::box_size::props::width` to implement `xui_core::property::Accepts<&str>`
-   = note: required for `&str` to implement `xui_core::property::IntoProp<xui_core::caps::style::box_size::props::width>`
-note: required by a bound in `xui_core::node::Node::set`
+   = note: required for `xui_core::canvas::width` to implement `xui_core::Accepts<&str>`
+   = note: required for `&str` to implement `xui_core::IntoProp<xui_core::canvas::width>`
+note: required by a bound in `xui_core::Node::set`
   --> src/node.rs
    |
    |     fn set<P: Property>(&mut self, value: impl IntoProp<P>)
@@ -72,7 +72,7 @@ error[E0277]: the trait bound `String: From<u8>` is not satisfied
              `String` implements `From<char>`
            and $N others
    = note: required for `u8` to implement `Into<String>`
-note: required for `content` to implement `xui_core::property::Accepts<u8>`
+note: required for `common::text::content` to implement `xui_core::Accepts<u8>`
   --> tests/ui/../node_fixture/mod.rs
    |
    |   #[widget(style(typography))]
@@ -83,8 +83,8 @@ note: required for `content` to implement `xui_core::property::Accepts<u8>`
    | |     #[dirty(TEXT_SHAPE | LAYOUT_INPUT)]
    | |     pub content: String,
    | |_______________^
-   = note: required for `u8` to implement `xui_core::property::IntoProp<content>`
-note: required by a bound in `xui_core::node::Node::set`
+   = note: required for `u8` to implement `xui_core::IntoProp<common::text::content>`
+note: required by a bound in `xui_core::Node::set`
   --> src/node.rs
    |
    |     fn set<P: Property>(&mut self, value: impl IntoProp<P>)

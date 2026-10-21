@@ -1865,14 +1865,15 @@ fn scroll_acceleration_factor(magnitude: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
+    use crate::test_prelude::*;
     use super::*;
-    use crate::widgets::{WidgetI, container};
+    use crate::test_prelude::*;
+    
 
-    fn append(arena: &mut UiRuntime, widget: crate::widgets::ContainerWidget) -> NodeId {
-        let widget = WidgetI::new(widget);
-        let props_hash = widget.props_hash();
-        let handlers = widget.take_host_interaction();
-        let node = arena.create_node(None, props_hash, widget, handlers);
+    fn append(arena: &mut UiRuntime, widget: impl ErasedDraft + 'static) -> NodeId {
+        let widget = widget;
+        let node = arena.create_node(Box::new(widget));
         arena.place(arena.root(), node, None);
         node
     }
@@ -1880,11 +1881,11 @@ mod tests {
     #[test]
     fn sequential_focus_uses_tab_index_and_skips_negative_values() {
         let mut arena = UiRuntime::new();
-        let zero = append(&mut arena, container().tab_index(0));
-        let second = append(&mut arena, container().tab_index(2));
-        let first = append(&mut arena, container().tab_index(1));
-        let negative = append(&mut arena, container().tab_index(-1));
-        let disabled = append(&mut arena, container().focusable(false).tab_index(0));
+        let zero = append(&mut arena, container().with::<container::tab_index>(0));
+        let second = append(&mut arena, container().with::<container::tab_index>(2));
+        let first = append(&mut arena, container().with::<container::tab_index>(1));
+        let negative = append(&mut arena, container().with::<container::tab_index>(-1));
+        let disabled = append(&mut arena, container().with::<container::focusable>(false).with::<container::tab_index>(0));
 
         assert_eq!(focusable_nodes(&arena), vec![first, second, zero]);
         assert!(is_focusable(&arena, negative));
@@ -1894,9 +1895,9 @@ mod tests {
     #[test]
     fn tab_from_programmatic_only_focus_enters_at_order_boundary() {
         let mut arena = UiRuntime::new();
-        let first = append(&mut arena, container().tab_index(0));
-        let second = append(&mut arena, container().tab_index(0));
-        let programmatic = append(&mut arena, container().tab_index(-1));
+        let first = append(&mut arena, container().with::<container::tab_index>(0));
+        let second = append(&mut arena, container().with::<container::tab_index>(0));
+        let programmatic = append(&mut arena, container().with::<container::tab_index>(-1));
 
         assert_eq!(
             next_focusable(&arena, Some(programmatic), false),
@@ -1916,7 +1917,7 @@ mod tests {
     use crate::state::HookContext;
     use crate::text::{TextHost, testing::ZeroTextBackend};
     use core::convert::Infallible;
-    use xui_interface::{Color, Size, Style};
+    use xui_interface::{Color, Size};
 
     #[derive(Default)]
     struct NullBackend;
@@ -1938,24 +1939,15 @@ mod tests {
     /// content is 400 tall) followed by a 200x400 filler, so both levels have
     /// somewhere to scroll.
     fn nested_scroll_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-        container()
-            .style(Style::new().width(200.0).height(200.0).scroll_vertical())
-            .into_element_desc(vec![
-                container()
-                    .style(Style::new().width(200.0).height(100.0).scroll_vertical())
-                    .into_element_desc(vec![
+        container().with::<container::width>(200.0).with::<container::height>(200.0).with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical).into_element_desc(vec![
+                container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(100.0).with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical)).into_element_desc(vec![
                         container()
-                            .style(
-                                Style::new()
-                                    .width(200.0)
-                                    .height(400.0)
-                                    .background(Color::hex("#3b82f6")),
+                            .with::<container::style>(
+                                StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(400.0).with::<container::background>(Color::hex("#3b82f6")),
                             )
                             .into_element_desc(Vec::new()),
                     ]),
-                container()
-                    .style(Style::new().width(200.0).height(400.0))
-                    .into_element_desc(Vec::new()),
+                container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(400.0)).into_element_desc(Vec::new()),
             ])
     }
 
@@ -1969,20 +1961,14 @@ mod tests {
     fn controlled_scroll_root(_cx: &mut HookContext<'_>) -> ElementDesc {
         use crate::event_system::callbacks::EventProps;
 
-        container()
-            .style(Style::new().width(200.0).height(100.0).scroll_vertical())
-            .scroll_controller(SCROLL_CONTROLLER.with(Clone::clone))
-            .on_scroll(|event, _| {
+        container().with::<container::width>(200.0).with::<container::height>(100.0).with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical).with::<container::scroll_controller>(SCROLL_CONTROLLER.with(Clone::clone)).with_on::<container::on_scroll, _>(|event, _| {
                 if let Some(after) = event.offset_after {
                     SCROLL_SOURCES.with(|sources| {
                         sources.borrow_mut().push((event.source, after.y));
                     });
                 }
-            })
-            .into_element_desc(vec![
-                container()
-                    .style(Style::new().width(200.0).height(400.0))
-                    .into_element_desc(Vec::new()),
+            }).into_element_desc(vec![
+                container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(400.0)).into_element_desc(Vec::new()),
             ])
     }
 
@@ -2022,25 +2008,16 @@ mod tests {
     fn filling_scroll_root(_cx: &mut HookContext<'_>) -> ElementDesc {
         use crate::event_system::callbacks::EventProps;
 
-        container()
-            .style(
-                Style::new()
-                    .width(200.0)
-                    .height(xui_interface::core::Sizing::Fill)
-                    .scroll_vertical(),
-            )
-            .scroll_controller(CLAMP_CONTROLLER.with(Clone::clone))
-            .on_scroll(|event, _| {
+        container().with::<container::style>(
+                StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(xui_interface::core::Sizing::Fill).with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical),
+            ).with::<container::scroll_controller>(CLAMP_CONTROLLER.with(Clone::clone)).with_on::<container::on_scroll, _>(|event, _| {
                 if let Some(after) = event.offset_after {
                     CLAMP_SCROLLS.with(|scrolls| {
                         scrolls.borrow_mut().push((event.source, after.y));
                     });
                 }
-            })
-            .into_element_desc(vec![
-                container()
-                    .style(Style::new().width(200.0).height(400.0))
-                    .into_element_desc(Vec::new()),
+            }).into_element_desc(vec![
+                container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(400.0)).into_element_desc(Vec::new()),
             ])
     }
 

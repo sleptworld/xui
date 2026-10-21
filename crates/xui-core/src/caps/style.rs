@@ -185,6 +185,7 @@ macro_rules! cap_shorthand {
 
         impl crate::property::Property for $name {
             type Scope = crate::property::CapScope<$cap>;
+            type Requirement = crate::property::NotRequired;
             type Value = $value;
 
             fn set($storage: &mut <$cap as crate::property::Capability>::Storage, $v: $value) {
@@ -392,19 +393,16 @@ fn resolve_stroke(
 
 #[cfg(test)]
 mod tests {
-    //! Every capability must resolve exactly like the matching fields of the
-    //! monolithic `StylePatch` did.
+    //! Each capability resolves its declarations into the computed style:
+    //! values, tokens through the theme, `Initial`, `Inherit` and `Unset`.
 
     use super::*;
     use crate::capability::StyleCapability;
     use crate::property::{Access, CapScope, Capability, Has, Slot};
     use xui_interface::WidgetUpdateFlags;
     use xui_interface::core::Color;
-    use xui_interface::style::{
-        EffectStylePatch, LayoutStylePatch, PaintStylePatch, ScrollStylePatch, StylePatch,
-        TextStylePatch, TransformStylePatch,
-    };
     use xui_interface::styles::units::{ColorToken, FilterQuality, SpacingToken};
+    use xui_interface::{ComputedColorStyle, ComputedStrokeStyle};
 
     fn parent(theme: &Theme) -> ComputedStyle {
         let mut parent = ComputedStyle::initial(theme);
@@ -415,10 +413,6 @@ mod tests {
         parent.layout.height = Sizing::Fill;
         parent.paint.background = Color::WHITE.into();
         parent
-    }
-
-    fn old(parent: &ComputedStyle, patch: &StylePatch, theme: &Theme) -> ComputedStyle {
-        ComputedStyle::compute(parent, patch, theme)
     }
 
     fn new<C: StyleCapability>(
@@ -433,40 +427,18 @@ mod tests {
     }
 
     #[test]
-    fn layout_groups_match_layout_patch() {
+    fn layout_groups_resolve_their_declarations() {
         let theme = Theme::default();
         let parent = parent(&theme);
-        let patch = StylePatch {
-            layout: LayoutStylePatch {
-                gap: StyleValue::Value(LengthValue::Spacing(SpacingToken::Md)),
+        let initial = ComputedStyle::initial(&theme);
+        let mut computed = parent.inherited_from(&theme);
+        BoxSize::apply(
+            &box_size::Storage {
                 width: StyleValue::Value(Sizing::from(120.0)),
                 height: StyleValue::Inherit,
                 min_width: StyleValue::Value(Sizing::from(10.0)),
                 max_height: StyleValue::Initial,
-                margin: StyleValue::Value(EdgeInsets::all(4.0)),
-                padding: StyleValue::Value(EdgeInsets::symmetric(8.0, 2.0)),
-                align: StyleValue::Value(AlignStyle::Center),
-                justify: StyleValue::Value(JustifyStyle::SpaceBetween),
-                position: StyleValue::Value(PositionStyle::Absolute),
-                inset: StyleValue::Value(EdgeInsets::all(1.0)),
-                display: StyleValue::Value(DisplayStyle::None),
                 ..Default::default()
-            },
-            ..Default::default()
-        };
-        let expected = old(&parent, &patch, &theme);
-
-        let initial = ComputedStyle::initial(&theme);
-        let mut computed = parent.inherited_from(&theme);
-        let layout = &patch.layout;
-        BoxSize::apply(
-            &box_size::Storage {
-                width: layout.width,
-                height: layout.height,
-                min_width: layout.min_width,
-                max_width: layout.max_width,
-                min_height: layout.min_height,
-                max_height: layout.max_height,
             },
             &mut computed,
             &parent,
@@ -475,7 +447,7 @@ mod tests {
         );
         Margin::apply(
             &margin::Storage {
-                margin: layout.margin,
+                margin: StyleValue::Value(EdgeInsets::all(4.0)),
             },
             &mut computed,
             &parent,
@@ -484,7 +456,7 @@ mod tests {
         );
         Padding::apply(
             &padding::Storage {
-                padding: layout.padding,
+                padding: StyleValue::Value(EdgeInsets::symmetric(8.0, 2.0)),
             },
             &mut computed,
             &parent,
@@ -493,9 +465,9 @@ mod tests {
         );
         FlexLayout::apply(
             &flex_layout::Storage {
-                gap: layout.gap,
-                align: layout.align,
-                justify: layout.justify,
+                gap: StyleValue::Value(LengthValue::Spacing(SpacingToken::Md)),
+                align: StyleValue::Value(AlignStyle::Center),
+                justify: StyleValue::Value(JustifyStyle::SpaceBetween),
             },
             &mut computed,
             &parent,
@@ -504,8 +476,8 @@ mod tests {
         );
         Position::apply(
             &position::Storage {
-                position: layout.position,
-                inset: layout.inset,
+                position: StyleValue::Value(PositionStyle::Absolute),
+                inset: StyleValue::Value(EdgeInsets::all(1.0)),
             },
             &mut computed,
             &parent,
@@ -514,7 +486,7 @@ mod tests {
         );
         Display::apply(
             &display::Storage {
-                display: layout.display,
+                display: StyleValue::Value(DisplayStyle::None),
             },
             &mut computed,
             &parent,
@@ -522,13 +494,27 @@ mod tests {
             &theme,
         );
 
-        assert_eq!(computed, expected);
+        let layout = &computed.layout;
+        assert_eq!(layout.width, Sizing::from(120.0));
         // `Inherit` on a non-inherited property keeps what the node had.
-        assert_eq!(computed.layout.height, Sizing::Hug);
+        assert_eq!(layout.height, Sizing::Hug);
+        assert_eq!(layout.min_width, Some(Sizing::from(10.0)));
+        assert_eq!(layout.max_height, initial.layout.max_height);
+        assert_eq!(layout.margin, EdgeInsets::all(4.0));
+        assert_eq!(layout.padding, EdgeInsets::symmetric(8.0, 2.0));
+        assert_eq!(layout.gap, theme.spacing(SpacingToken::Md));
+        assert_eq!(layout.align, AlignStyle::Center);
+        assert_eq!(layout.justify, JustifyStyle::SpaceBetween);
+        assert_eq!(layout.position, PositionStyle::Absolute);
+        assert_eq!(layout.inset, Some(EdgeInsets::all(1.0)));
+        assert_eq!(layout.display, DisplayStyle::None);
+        // Nothing it did not declare moved.
+        assert_eq!(computed.text, parent.inherited_from(&theme).text);
+        assert_eq!(computed.paint, initial.paint);
     }
 
     #[test]
-    fn typography_matches_text_patch() {
+    fn typography_resolves_tokens_and_keywords() {
         let theme = Theme::default();
         let parent = parent(&theme);
         let storage = typography::Storage {
@@ -541,55 +527,38 @@ mod tests {
             letter_spacing: StyleValue::Value(LengthValue::Px(0.5)),
             decoration: StyleValue::Unset,
         };
-        let patch = StylePatch {
-            text: TextStylePatch {
-                color: storage.color,
-                font_family: storage.font_family.clone(),
-                font_size: storage.font_size,
-                font_weight: storage.font_weight,
-                font_style: storage.font_style,
-                line_height: storage.line_height,
-                letter_spacing: storage.letter_spacing,
-                decoration: storage.decoration,
-            },
-            ..Default::default()
-        };
 
         let computed = new::<Typography>(&parent, &storage, &theme);
-        assert_eq!(computed, old(&parent, &patch, &theme));
-        assert_eq!(computed.text.font_weight, FontWeight::SemiBold);
-        assert_eq!(
-            computed.text.font_size,
-            ComputedStyle::initial(&theme).text.font_size
-        );
+        let text = &computed.text;
+        assert_eq!(text.color, theme.color(ColorToken::Primary));
+        assert_eq!(text.font_family, parent.text.font_family);
+        assert_eq!(text.font_size, ComputedStyle::initial(&theme).text.font_size);
+        assert_eq!(text.font_weight, FontWeight::SemiBold);
+        assert_eq!(text.font_style, FontStyle::Italic);
+        assert_eq!(text.line_height, LineHeight::Px(30.0));
+        assert_eq!(text.letter_spacing, 0.5);
+        assert_eq!(text.decoration, parent.text.decoration);
     }
 
     #[test]
-    fn inheritance_helpers_match_style_patch() {
+    fn unset_inherited_properties_follow_the_parent() {
         let theme = Theme::default();
         let parent = parent(&theme);
         let storage = typography::Storage {
             color: StyleValue::Value(ColorValue::Color(Color::BLACK)),
             ..Default::default()
         };
-        let patch = StylePatch {
-            text: TextStylePatch {
-                color: storage.color,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
         let current = ComputedStyle::initial(&theme);
 
-        assert_eq!(
-            Typography::inherits_differently(&storage, &current, &parent),
-            current.inherits_differently_from(&parent, &patch),
-        );
-        let mut by_cap = current.clone();
-        Typography::inherit_unset(&storage, &mut by_cap, &parent);
-        let mut by_patch = current.clone();
-        by_patch.inherit_unset_from(&parent, &patch);
-        assert_eq!(by_cap, by_patch);
+        // The parent's font size differs, and the size is left unset.
+        assert!(Typography::inherits_differently(&storage, &current, &parent));
+        let mut synced = current.clone();
+        Typography::inherit_unset(&storage, &mut synced, &parent);
+        assert_eq!(synced.text.font_size, parent.text.font_size);
+        assert_eq!(synced.text.font_weight, parent.text.font_weight);
+        // The colour is the node's own, so the parent's does not reach it.
+        assert_eq!(synced.text.color, current.text.color);
+        assert!(!Typography::inherits_differently(&storage, &synced, &parent));
         // A non-inherited capability never takes anything from the parent.
         assert!(!BoxSize::inherits_differently(
             &Default::default(),
@@ -599,15 +568,21 @@ mod tests {
     }
 
     #[test]
-    fn paint_groups_match_paint_patch() {
+    fn paint_groups_resolve_and_the_stroke_follows_the_border() {
         let theme = Theme::default();
         let parent = parent(&theme);
+        let border = |color: Color, width: f32| ComputedStrokeStyle {
+            color: ComputedColorStyle::Solid(color),
+            width,
+            line_style: StrokeLineStyle::Solid,
+        };
         let cases = [
             // The stroke follows the border.
             (
                 StyleValue::Value(ColorStyle::from(Color::BLACK)),
                 StyleValue::Value(LengthValue::Px(2.0)),
                 StyleValue::Unset,
+                Some(border(Color::BLACK, 2.0)),
             ),
             // An explicit stroke wins over the border.
             (
@@ -616,6 +591,11 @@ mod tests {
                 StyleValue::Value(StrokeStyle {
                     color: Color::WHITE.into(),
                     width: LengthValue::Px(3.0),
+                    line_style: StrokeLineStyle::Dashed,
+                }),
+                Some(ComputedStrokeStyle {
+                    color: ComputedColorStyle::Solid(Color::WHITE),
+                    width: 3.0,
                     line_style: StrokeLineStyle::Dashed,
                 }),
             ),
@@ -628,35 +608,23 @@ mod tests {
                     width: LengthValue::Px(0.0),
                     line_style: StrokeLineStyle::Solid,
                 }),
+                None,
             ),
+            // A width without a visible colour draws nothing.
             (
                 StyleValue::Unset,
                 StyleValue::Value(LengthValue::Px(2.0)),
                 StyleValue::Initial,
+                None,
             ),
         ];
 
-        for (border_color, border_width, stroke) in cases {
-            let patch = StylePatch {
-                paint: PaintStylePatch {
-                    background: StyleValue::Value(ColorToken::Muted.into()),
-                    border_color,
-                    border_width,
-                    border_radius: StyleValue::Value(LengthValue::Px(6.0)),
-                    stroke,
-                    shadow: StyleValue::Value(ShadowStyle::new().color(Color::BLACK).blur(4.0)),
-                    clip: StyleValue::Value(true),
-                    visibility: StyleValue::Value(VisibilityStyle::Hidden),
-                },
-                ..Default::default()
-            };
-            let paint = &patch.paint;
-
+        for (border_color, border_width, stroke, expected_stroke) in cases {
             let initial = ComputedStyle::initial(&theme);
             let mut computed = parent.inherited_from(&theme);
             Background::apply(
                 &background::Storage {
-                    background: paint.background,
+                    background: StyleValue::Value(ColorToken::Muted.into()),
                 },
                 &mut computed,
                 &parent,
@@ -665,7 +633,7 @@ mod tests {
             );
             CornerRadius::apply(
                 &corner_radius::Storage {
-                    border_radius: paint.border_radius,
+                    border_radius: StyleValue::Value(LengthValue::Px(6.0)),
                 },
                 &mut computed,
                 &parent,
@@ -674,9 +642,9 @@ mod tests {
             );
             Border::apply(
                 &border::Storage {
-                    border_color: paint.border_color,
-                    border_width: paint.border_width,
-                    stroke: paint.stroke,
+                    border_color,
+                    border_width,
+                    stroke,
                 },
                 &mut computed,
                 &parent,
@@ -685,7 +653,7 @@ mod tests {
             );
             BoxShadow::apply(
                 &box_shadow::Storage {
-                    shadow: paint.shadow,
+                    shadow: StyleValue::Value(ShadowStyle::new().color(Color::BLACK).blur(4.0)),
                 },
                 &mut computed,
                 &parent,
@@ -693,7 +661,9 @@ mod tests {
                 &theme,
             );
             Clip::apply(
-                &clip::Storage { clip: paint.clip },
+                &clip::Storage {
+                    clip: StyleValue::Value(true),
+                },
                 &mut computed,
                 &parent,
                 &initial,
@@ -701,7 +671,7 @@ mod tests {
             );
             Visibility::apply(
                 &visibility::Storage {
-                    visibility: paint.visibility,
+                    visibility: StyleValue::Value(VisibilityStyle::Hidden),
                 },
                 &mut computed,
                 &parent,
@@ -709,12 +679,22 @@ mod tests {
                 &theme,
             );
 
-            assert_eq!(computed, old(&parent, &patch, &theme), "{paint:?}");
+            let paint = &computed.paint;
+            assert_eq!(
+                paint.background,
+                ComputedColorStyle::Solid(theme.color(ColorToken::Muted))
+            );
+            assert_eq!(paint.border_radius, 6.0);
+            assert_eq!(paint.stroke, expected_stroke, "{border_color:?} {border_width:?}");
+            let shadow = paint.shadow.as_ref().expect("a shadow");
+            assert_eq!(shadow.blur, 4.0);
+            assert!(paint.clip);
+            assert_eq!(paint.visibility, VisibilityStyle::Hidden);
         }
     }
 
     #[test]
-    fn transform_effects_scroll_and_cursor_match() {
+    fn transform_effects_scroll_and_cursor_resolve() {
         let theme = Theme::default();
         let parent = parent(&theme);
         let transform = transform::Storage {
@@ -746,33 +726,6 @@ mod tests {
             cursor: StyleValue::Value(CursorIcon::Pointer),
         };
 
-        let mut patch = StylePatch {
-            transform: TransformStylePatch {
-                translate_x: transform.translate_x,
-                translate_y: transform.translate_y,
-                scale_x: transform.scale_x,
-                scale_y: transform.scale_y,
-                rotate: transform.rotate,
-                origin_x: transform.origin_x,
-                origin_y: transform.origin_y,
-            },
-            effect: EffectStylePatch {
-                backdrop: effects.backdrop.clone(),
-                effects: effects.effects.clone(),
-            },
-            scroll: ScrollStylePatch {
-                direction: scroll.scroll_direction,
-                ..Default::default()
-            },
-            cursor: cursor.cursor,
-            ..Default::default()
-        };
-        patch.scroll.scrollbar.width = scroll.scrollbar_width;
-        patch.scroll.scrollbar.track_color = scroll.scrollbar_track_color;
-        patch.scroll.scrollbar.thumb_color = scroll.scrollbar_thumb_color;
-        patch.scroll.scrollbar.radius = scroll.scrollbar_radius;
-        patch.scroll.scrollbar.visibility = scroll.scrollbar_visibility;
-
         let initial = ComputedStyle::initial(&theme);
         let mut computed = parent.inherited_from(&theme);
         Transform::apply(&transform, &mut computed, &parent, &initial, &theme);
@@ -780,7 +733,24 @@ mod tests {
         Scroll::apply(&scroll, &mut computed, &parent, &initial, &theme);
         Cursor::apply(&cursor, &mut computed, &parent, &initial, &theme);
 
-        assert_eq!(computed, old(&parent, &patch, &theme));
+        let t = &computed.transform;
+        assert_eq!((t.translate.x, t.translate.y), (3.0, -2.0));
+        assert_eq!((t.scale.x, t.scale.y), (1.5, initial.transform.scale.y));
+        assert_eq!(t.rotate, 0.25);
+        assert_eq!((t.origin.x, t.origin.y), (0.0, initial.transform.origin.y));
+        assert!(computed.effect.backdrop.is_some());
+        assert_eq!(computed.effect.effects.len(), 1);
+        assert_eq!(computed.scroll.direction, ScrollDirectionStyle::Vertical);
+        let bar = &computed.scroll.scrollbar;
+        assert_eq!(bar.width, 6.0);
+        assert_eq!(bar.track_color, initial.scroll.scrollbar.track_color);
+        assert_eq!(
+            bar.thumb_color,
+            ComputedColorStyle::Solid(theme.color(ColorToken::Border))
+        );
+        assert_eq!(bar.radius, initial.scroll.scrollbar.radius);
+        assert_eq!(bar.visibility, ScrollbarVisibilityStyle::Always);
+        assert_eq!(computed.cursor, Some(CursorIcon::Pointer));
     }
 
     #[test]

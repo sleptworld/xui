@@ -403,16 +403,17 @@ pub(crate) fn style_change_requires_layout(from: &ComputedStyle, to: &ComputedSt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_prelude::*;
     use slotmap::SlotMap;
-    use xui_interface::{Color, ComputedColorStyle, StylePatch, Theme};
+    use xui_interface::{Color, ComputedColorStyle, Theme};
 
     #[test]
     fn animation_override_is_sparse_and_falls_back_to_computed_style() {
         let theme = Theme::default();
         let initial = ComputedStyle::initial(&theme);
-        let target = ComputedStyle::compute(
+        let target = computed(
             &initial,
-            &StylePatch::new().background(Color::BLACK),
+            StyleOf::<Container>::new().with::<container::background>(Color::BLACK),
             &theme,
         );
         let mut ids = SlotMap::<NodeId, ()>::with_key();
@@ -464,9 +465,9 @@ mod tests {
     fn syncing_target_keeps_animated_paint_and_applies_discrete_values() {
         let theme = Theme::default();
         let initial = ComputedStyle::initial(&theme);
-        let target = ComputedStyle::compute(
+        let target = computed(
             &initial,
-            &StylePatch::new().background(Color::WHITE),
+            StyleOf::<Container>::new().with::<container::background>(Color::WHITE),
             &theme,
         );
         let mut ids = SlotMap::<NodeId, ()>::with_key();

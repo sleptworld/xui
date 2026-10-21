@@ -16,19 +16,35 @@ fn host(element: &ElementDesc) -> &WidgetDesc {
     }
 }
 
-fn texts(element: &ElementDesc) -> Vec<String> {
+fn text_of(element: &ElementDesc) -> String {
     host(element)
-        .children
-        .iter()
-        .map(|child| {
-            host(child)
-                .widget
-                .text()
-                .expect("a text child")
-                .as_str()
-                .to_owned()
-        })
-        .collect()
+        .draft::<Text>()
+        .expect("a text")
+        .storage
+        .props
+        .content
+        .as_str()
+        .to_owned()
+}
+
+fn texts(element: &ElementDesc) -> Vec<String> {
+    host(element).children.iter().map(text_of).collect()
+}
+
+/// Whether two elements are drafts of the same widget, set alike.
+fn same_draft(a: &ElementDesc, b: &ElementDesc) -> bool {
+    let (a, b) = (host(a), host(b));
+    if let (Some(a), Some(b)) = (a.draft::<Container>(), b.draft::<Container>()) {
+        return a.storage.props == b.storage.props
+            && a.storage.style == b.storage.style
+            && a.storage.rules == b.storage.rules;
+    }
+    if let (Some(a), Some(b)) = (a.draft::<Text>(), b.draft::<Text>()) {
+        return a.storage.props == b.storage.props
+            && a.storage.style == b.storage.style
+            && a.storage.rules == b.storage.rules;
+    }
+    false
 }
 
 #[test]
@@ -53,14 +69,8 @@ fn every_form_matches_its_xui_counterpart() {
         ),
     ];
     for (view, xui) in pairs {
-        assert_eq!(
-            host(&view).widget.node_type(),
-            host(&xui).widget.node_type()
-        );
-        assert_eq!(
-            host(&view).widget.props_hash(),
-            host(&xui).widget.props_hash()
-        );
+        assert_eq!(host(&view).node_type(), host(&xui).node_type());
+        assert!(same_draft(&view, &xui));
         assert_eq!(host(&view).children.len(), host(&xui).children.len());
     }
 }
@@ -73,17 +83,14 @@ fn a_multi_argument_modifier_is_passed_as_a_tuple() {
     let xui = xui! {
         <container box_shadow={(Color::BLACK, Point::new(0.0, 2.0), 4.0, 0.0)} />
     };
-    assert_eq!(
-        host(&view).widget.props_hash(),
-        host(&xui).widget.props_hash()
-    );
+    assert!(same_draft(&view, &xui));
 }
 
 #[test]
 fn an_unnamed_argument_is_content() {
     // `text` reads it as its text...
     let label = view! { text("hello") };
-    assert_eq!(host(&label).widget.text().unwrap().as_str(), "hello");
+    assert_eq!(text_of(&label), "hello");
 
     // ...a container as children.
     let rows: Vec<ElementDesc> = vec![view! { container() }, view! { container() }];
@@ -138,8 +145,8 @@ fn for_contributes_one_child_per_iteration() {
     };
     assert_eq!(texts(&tree), ["header", "a", "b", "c", "footer"]);
     assert_eq!(
-        host(&host(&tree).children[2]).widget.key(),
-        Some("b".into())
+        host(&host(&tree).children[2]).key(),
+        Some(&"b".into())
     );
 }
 
@@ -244,6 +251,6 @@ fn components_take_named_props_and_bodies() {
 
 #[test]
 fn a_path_can_be_used_as_an_element() {
-    let element = view! { xui_core::widgets::container() };
-    assert_eq!(host(&element).widget.node_type(), WidgetType::Container);
+    let element = view! { xui_core::prelude::container() };
+    assert_eq!(host(&element).node_type(), WidgetType::Container);
 }

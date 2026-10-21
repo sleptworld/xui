@@ -27,14 +27,27 @@ use crate::state::HookContext;
 pub use crate::event_system::callbacks::EventHandlers;
 
 /// A write-only own property of a widget: a shorthand setting several of its
-/// props at once. Accepts anything `Into` its value.
+/// props at once, listed in the widget's property table. Accepts anything
+/// `Into` its value.
 macro_rules! shorthand {
-    ($(#[$meta:meta])* $name:ident : $widget:ty, $value:ty, |$props:ident, $v:ident| $body:expr) => {
+    (
+        $(#[$meta:meta])* $name:ident : $widget:ty => $table:ty, $value:ty,
+        |$props:ident, $v:ident| $body:expr
+    ) => {
         $(#[$meta])*
         pub enum $name {}
 
+        impl $table {
+            #[doc(hidden)]
+            #[inline(always)]
+            pub fn $name(&self) -> crate::property::PropertyMarker<$name> {
+                crate::property::PropertyMarker::new()
+            }
+        }
+
         impl crate::property::Property for $name {
             type Scope = crate::node::OwnProps<$widget>;
+            type Requirement = crate::property::NotRequired;
             type Value = $value;
 
             fn set($props: &mut <$widget as crate::node::NodeDef>::Props, $v: $value) {
@@ -234,7 +247,7 @@ define_widgets! {
     ZStack => ZStack [arrange],
     Text => Text [paint, text],
     TextInput => TextInput [paint, text, events, text_input, default_focus] via state,
-    Canvas => Canvas [paint],
+    Canvas => Canvas [paint] via state,
     Image => Image [paint, intrinsic_size],
     Icon => Icon [paint],
     Grid => Grid [arrange],
@@ -329,6 +342,8 @@ pub(crate) trait ErasedDraft {
     ) -> WidgetUpdateFlags;
 
     fn clone_box(&self) -> Box<dyn ErasedDraft>;
+
+    fn as_any(&self) -> &dyn Any;
 }
 
 impl<N> ErasedDraft for Draft<N>
@@ -372,6 +387,10 @@ where
 
     fn clone_box(&self) -> Box<dyn ErasedDraft> {
         Box::new(self.clone())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
