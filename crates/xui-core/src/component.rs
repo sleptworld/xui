@@ -3,7 +3,10 @@ use crate::element::PortalBehavior;
 use crate::element::PortalDesc;
 use crate::fiber::{
     ComponentRender, ComponentState, EffectTag, ErasedProps, FiberArena, FiberId, FiberTag,
-    HostState, Key, Node, PortalState,
+    HostState, Key, Node, PortalState, TemplateState,
+};
+use crate::template::{
+    BuildMode, TemplateDesc, TemplateIdentity, TemplateMeta, TemplateNodeKind, TemplateSlot,
 };
 use crate::lanes::{
     Lanes, NO_LANES, current_update_lane, get_highest_priority_lane, includes_some_lane,
@@ -46,6 +49,26 @@ enum Work {
     HostWork(HostWork),
     ComponentWork(ComponentWork),
     PortalWork(PortalWork),
+    TemplateWork(TemplateWork),
+    FragmentWork(FragmentWork),
+}
+
+struct TemplateWork {
+    meta: &'static TemplateMeta,
+    identity: TemplateIdentity,
+    /// The render's inputs, until `begin_work` builds them.
+    desc: Option<TemplateDesc>,
+    /// What the build is for: mounting every host, or updating the dynamic
+    /// ones of a mounted template.
+    mode: BuildMode,
+    /// The drafts the commit mounts or updates, by node index.
+    hosts: Vec<Option<Box<dyn ErasedDraft>>>,
+    /// The hosts once mounted, by node index.
+    nodes: Vec<Option<NodeId>>,
+}
+
+struct FragmentWork {
+    pending_children: Vec<ElementDesc>,
 }
 
 #[derive(Default)]
@@ -117,6 +140,20 @@ impl WorkNode {
         }
     }
 
+    fn template_work(&self) -> Option<&TemplateWork> {
+        match self.work.as_ref() {
+            Some(Work::TemplateWork(work)) => Some(work),
+            _ => None,
+        }
+    }
+
+    fn template_work_mut(&mut self) -> Option<&mut TemplateWork> {
+        match self.work.as_mut() {
+            Some(Work::TemplateWork(work)) => Some(work),
+            _ => None,
+        }
+    }
+
     fn take_portal_work(&mut self) -> Option<PortalWork> {
         if !matches!(self.work, Some(Work::PortalWork(_))) {
             return None;
@@ -172,6 +209,26 @@ impl WorkNode {
             PreparedPending::Component { key, render, props } => {
                 Work::ComponentWork(ComponentWork { render, key, props })
             }
+            PreparedPending::Template { desc } => {
+                let current = current
+                    .and_then(|id| nodes.node(id))
+                    .and_then(|node| node.template.as_ref());
+                Work::TemplateWork(TemplateWork {
+                    meta: desc.meta,
+                    identity: desc.identity,
+                    mode: if current.is_some() {
+                        BuildMode::Update
+                    } else {
+                        BuildMode::Mount
+                    },
+                    nodes: current.map_or_else(Vec::new, |state| state.nodes.clone()),
+                    desc: Some(desc),
+                    hosts: Vec::new(),
+                })
+            }
+            PreparedPending::Fragment { children } => Work::FragmentWork(FragmentWork {
+                pending_children: children,
+            }),
             PreparedPending::Portal {
                 scope,
                 options,
@@ -263,6 +320,7 @@ impl WorkNode {
         match &mut self.work {
             Some(Work::HostWork(h)) => Some(std::mem::take(&mut h.pending_children)),
             Some(Work::PortalWork(p)) => Some(std::mem::take(&mut p.pending_children)),
+            Some(Work::FragmentWork(f)) => Some(std::mem::take(&mut f.pending_children)),
             _ => None,
         }
     }
@@ -308,6 +366,12 @@ enum PreparedPending {
         scope: Option<OverlayScopeId>,
         options: OverlayEntryOptions,
         behavior: PortalBehavior,
+        children: Vec<ElementDesc>,
+    },
+    Template {
+        desc: TemplateDesc,
+    },
+    Fragment {
         children: Vec<ElementDesc>,
     },
 }
@@ -704,13 +768,46 @@ impl ComponentRuntime {
                     self.clone_current_children(id);
                 }
             }
-            FiberTag::Portal => {
+            FiberTag::Portal | FiberTag::Fragment => {
                 let pending_children = self
                     .wip_nodes
                     .get_mut(id)
                     .and_then(WorkNode::take_work_nodes);
                 if let Some(children) = pending_children {
                     self.reconcile_children(id, children);
+                } else {
+                    self.clone_current_children(id);
+                }
+            }
+            FiberTag::Template => {
+                let build = self
+                    .wip_nodes
+                    .get_mut(id)
+                    .and_then(WorkNode::template_work_mut)
+                    .and_then(|work| work.desc.take().map(|desc| (desc, work.mode)))
+                    .map(|(desc, mode)| desc.build(mode));
+                if let Some(mut build) = build {
+                    let slots = std::mem::take(&mut build.slots);
+                    let work = self
+                        .wip_nodes
+                        .get_mut(id)
+                        .and_then(WorkNode::template_work_mut)
+                        .expect("template work missing");
+                    work.hosts = std::mem::take(&mut build.hosts);
+                    // Slots match by position: the same template has the
+                    // same slots.
+                    let prepared = slots
+                        .into_iter()
+                        .map(|slot| match slot {
+                            TemplateSlot::Component(element) => self.prepare_element(element),
+                            TemplateSlot::Fragment(children) => PreparedElement {
+                                key: None,
+                                tag: FiberTag::Fragment,
+                                pending: PreparedPending::Fragment { children },
+                            },
+                        })
+                        .collect::<Vec<_>>();
+                    self.reconcile_prepared(id, prepared);
                 } else {
                     self.clone_current_children(id);
                 }
@@ -724,6 +821,14 @@ impl ComponentRuntime {
     where
         I: IntoIterator<Item = ElementDesc>,
     {
+        let prepared = new_children
+            .into_iter()
+            .map(|element| self.prepare_element(element))
+            .collect::<Vec<_>>();
+        self.reconcile_prepared(parent, prepared);
+    }
+
+    fn reconcile_prepared(&mut self, parent: WipId, new_children: Vec<PreparedElement>) {
         let work_node = self.wip_nodes.get(parent).unwrap();
         let work_node_current = work_node.binding.current;
 
@@ -753,8 +858,7 @@ impl ComponentRuntime {
             .map(|(k, pos)| (k.unwrap(), pos))
             .collect();
 
-        for (position, element) in new_children.enumerate() {
-            let prepared = self.prepare_element(element);
+        for (position, prepared) in new_children.into_iter().enumerate() {
 
             let wip_node = if let Some(matched) = find_reusable_child_fast(
                 &self.nodes,
@@ -847,6 +951,11 @@ impl ComponentRuntime {
                 },
             },
             ElementDesc::Portal(portal) => self.prepare_portal_element(portal, key),
+            ElementDesc::Template(desc) => PreparedElement {
+                key,
+                tag: FiberTag::Template,
+                pending: PreparedPending::Template { desc },
+            },
         }
     }
 
@@ -959,6 +1068,18 @@ impl ComponentRuntime {
         if effect.contains(EffectTag::UPDATE) {
             self.commit_update_if_host(wip_id, arena);
             self.commit_update_if_portal(wip_id, parent_host, arena);
+            self.commit_update_if_template(wip_id, arena);
+        }
+
+        if matches!(tag, FiberTag::Template) {
+            // Each slot sits under the host the template wrote it in.
+            let (meta, nodes) = self.template_nodes(wip_id);
+            for (child, (_, slot)) in children.into_iter().zip(meta.slots()) {
+                let parent = slot.parent.expect("a template's root is a host") as usize;
+                let parent_host = nodes[parent].expect("a template's hosts are mounted");
+                self.commit_mutation_effects(child, parent_host, arena);
+            }
+            return;
         }
 
         let child_parent_host = match tag {
@@ -1024,6 +1145,17 @@ impl ComponentRuntime {
             if let Some(node) = self.wip_nodes.get_mut(wip_id) {
                 node.effect.remove(EffectTag::PLACEMENT);
                 node.effect.remove(EffectTag::MOVE);
+            }
+            return;
+        }
+
+        if matches!(tag, FiberTag::Template) {
+            // Its slots are placed under its own hosts as the mutation pass
+            // reaches them.
+            let root = self.ensure_template_mounted(wip_id, arena);
+            arena.place(parent_host, root, before);
+            if let Some(node) = self.wip_nodes.get_mut(wip_id) {
+                node.effect.remove(EffectTag::PLACEMENT | EffectTag::MOVE);
             }
             return;
         }
@@ -1100,6 +1232,100 @@ impl ComponentRuntime {
 
         arena.update_node(node_id, draft);
         wip.binding.current_host = Some(node_id);
+    }
+
+    /// Mounts a new template's hosts, each under its parent, and returns its
+    /// root, unplaced. A mounted template's root as it is.
+    fn ensure_template_mounted(&mut self, wip_id: WipId, arena: &mut UiRuntime) -> NodeId {
+        if let Some(root) = self.wip_nodes.get(wip_id).and_then(|n| n.binding.current_host) {
+            return root;
+        }
+        let work = self
+            .wip_nodes
+            .get_mut(wip_id)
+            .and_then(WorkNode::template_work_mut)
+            .expect("a new template has its work");
+        debug_assert_eq!(work.mode, BuildMode::Mount);
+        let meta = work.meta;
+        let mut nodes = vec![None; meta.nodes.len()];
+        for (index, node) in meta.nodes.iter().enumerate() {
+            if !matches!(node.kind, TemplateNodeKind::Host { .. }) {
+                continue;
+            }
+            let draft = work.hosts[index]
+                .take()
+                .unwrap_or_else(|| panic!("template {} built no draft for a host", meta.location));
+            let id = arena.create_node(draft);
+            if let Some(parent) = node.parent {
+                // In preorder, so each lands after its earlier siblings.
+                arena.place(nodes[parent as usize].expect("parents come first"), id, None);
+            }
+            nodes[index] = Some(id);
+        }
+        let root = nodes[0].expect("a template's root is a host");
+        work.nodes = nodes;
+        self.wip_nodes.get_mut(wip_id).unwrap().binding.current_host = Some(root);
+        root
+    }
+
+    /// Rebuilds a mounted template's dynamic hosts from this render's drafts.
+    fn commit_update_if_template(&mut self, wip_id: WipId, arena: &mut UiRuntime) {
+        let Some(work) = self
+            .wip_nodes
+            .get_mut(wip_id)
+            .and_then(WorkNode::template_work_mut)
+        else {
+            return;
+        };
+        if work.mode != BuildMode::Update {
+            return;
+        }
+        for (index, draft) in work.hosts.iter_mut().enumerate() {
+            if let Some(draft) = draft.take() {
+                let id = work.nodes[index].expect("a mounted template keeps its hosts");
+                arena.update_node(id, draft);
+            }
+        }
+    }
+
+    /// A template's structure and hosts: from its work this render, or as it
+    /// was committed.
+    fn template_nodes(&self, wip_id: WipId) -> (&'static TemplateMeta, Vec<Option<NodeId>>) {
+        let wip = self.wip_nodes.get(wip_id).expect("template work node");
+        if let Some(work) = wip.template_work() {
+            return (work.meta, work.nodes.clone());
+        }
+        let state = wip
+            .binding
+            .current
+            .and_then(|id| self.nodes.node(id))
+            .and_then(|node| node.template.as_ref())
+            .expect("a template fiber without work is committed");
+        (state.meta, state.nodes.clone())
+    }
+
+    /// The host a slot of `template` is placed before: the first sibling after
+    /// it in the template that has one.
+    fn template_anchor(&self, template: WipId, slot_child: WipId) -> Option<NodeId> {
+        let (meta, nodes) = self.template_nodes(template);
+        let children = &self.wip_nodes.get(template)?.children;
+        let position = children.iter().position(|child| *child == slot_child)?;
+        let (slot_index, _) = meta.slots().nth(position)?;
+        for sibling in meta.following_siblings(slot_index) {
+            match meta.nodes[sibling].kind {
+                TemplateNodeKind::Host { .. } => return nodes[sibling],
+                _ => {
+                    let slot_position = meta.slots().position(|(index, _)| index == sibling)?;
+                    if let Some(host) = children
+                        .get(slot_position)
+                        .and_then(|child| self.find_stable_host_in_wip_subtree(*child))
+                    {
+                        return Some(host);
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn commit_update_if_portal(
@@ -1186,6 +1412,10 @@ impl ComponentRuntime {
 
         loop {
             let parent = self.wip_nodes.get(node)?.parent?;
+            if matches!(self.wip_nodes.get(parent)?.tag, FiberTag::Template) {
+                // A slot's siblings are the template's, not its fiber's.
+                return self.template_anchor(parent, node);
+            }
             let siblings = &self.wip_nodes.get(parent)?.children;
             let index = siblings.iter().position(|id| *id == node)?;
 
@@ -1251,6 +1481,7 @@ impl ComponentRuntime {
         let host = self.freeze_host_state(&mut wip, arena);
         let component = self.freeze_component_state(&mut wip);
         let portal = self.freeze_portal_state(&mut wip);
+        let template = self.freeze_template_state(&mut wip);
         let frozen = crate::fiber::Node {
             id: fiber_id,
             parent: parent_fiber,
@@ -1262,6 +1493,7 @@ impl ComponentRuntime {
             host,
             component,
             portal,
+            template,
             position: wip.position,
         };
 
@@ -1280,7 +1512,8 @@ impl ComponentRuntime {
     }
 
     fn freeze_host_state(&mut self, wip: &mut WorkNode, arena: &UiRuntime) -> Option<HostState> {
-        if !matches!(wip.tag, FiberTag::Host(_)) {
+        // A template's host is its root.
+        if !matches!(wip.tag, FiberTag::Host(_) | FiberTag::Template) {
             return None;
         }
 
@@ -1314,6 +1547,23 @@ impl ComponentRuntime {
             .current
             .and_then(|id| self.nodes.node_mut(id))
             .and_then(|node| node.component.take())
+    }
+
+    fn freeze_template_state(&mut self, wip: &mut WorkNode) -> Option<TemplateState> {
+        if !matches!(wip.tag, FiberTag::Template) {
+            return None;
+        }
+        if let Some(Work::TemplateWork(work)) = wip.work.take() {
+            return Some(TemplateState {
+                meta: work.meta,
+                identity: work.identity,
+                nodes: work.nodes,
+            });
+        }
+        wip.binding
+            .current
+            .and_then(|id| self.nodes.node_mut(id))
+            .and_then(|node| node.template.take())
     }
 
     fn freeze_portal_state(&mut self, wip: &mut WorkNode) -> Option<PortalState> {
@@ -1572,6 +1822,11 @@ fn can_reuse_prepared(old: &Node, prepared: &PreparedElement) -> bool {
             .is_some_and(|component| component.render == *render),
         PreparedPending::Host { .. } => true,
         PreparedPending::Portal { .. } => true,
+        PreparedPending::Template { desc } => old
+            .template
+            .as_ref()
+            .is_some_and(|template| template.identity == desc.identity),
+        PreparedPending::Fragment { .. } => true,
     }
 }
 
@@ -1585,6 +1840,7 @@ fn prepared_needs_update(current: &Node, prepared: &PreparedElement) -> bool {
         // what changed is what the capabilities' and props' `dirty` say.
         (Some(_), _, PreparedPending::Host { .. }) => true,
         (_, Some(_), PreparedPending::Component { .. }) => false,
+        (_, _, PreparedPending::Template { .. } | PreparedPending::Fragment { .. }) => true,
         (
             _,
             _,

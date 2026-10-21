@@ -9,9 +9,12 @@ use xui_core::prelude::*;
 use xui_core::widgets::WidgetType;
 use xui_macros::{component, view, xui};
 
+/// The host element `element` is, a template expanded into the plain tree it
+/// stands for (and leaked: these are tests).
 fn host(element: &ElementDesc) -> &WidgetDesc {
     match element {
         ElementDesc::Host(desc) => desc,
+        ElementDesc::Template(template) => host(Box::leak(Box::new(template.clone().expand()))),
         other => panic!("expected a host element, got {other:?}"),
     }
 }

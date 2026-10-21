@@ -539,6 +539,22 @@ impl<N: NodeDef, R> Draft<N, R> {
         self.with::<P>(value)
     }
 
+    /// Sets `P` to a value already converted, for templates: their inputs
+    /// hold each property's value.
+    #[doc(hidden)]
+    pub fn __set<P: Property>(
+        mut self,
+        _: PropertyMarker<P>,
+        value: P::Value,
+    ) -> Draft<N, <R as Fulfil<P::Requirement>>::Output>
+    where
+        Self: Access<P::Scope>,
+        R: Fulfil<P::Requirement>,
+    {
+        P::set(self.access_mut(), value);
+        self.fulfilled()
+    }
+
     /// [`with_on`](Self::with_on), for the element macros.
     #[doc(hidden)]
     pub fn __with_on<P: Property, F: Into<Flow>>(

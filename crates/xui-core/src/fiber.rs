@@ -116,6 +116,11 @@ pub enum FiberTag {
     Host(WidgetType),
     Component,
     Portal,
+    /// A template: the hosts it owns, and its slots as children.
+    Template,
+    /// A template's fragment slot: a child list standing in for its parent
+    /// host's children.
+    Fragment,
 }
 
 bitflags::bitflags! {
@@ -164,6 +169,15 @@ pub struct Node {
     pub host: Option<HostState>,
     pub component: Option<ComponentState>,
     pub portal: Option<PortalState>,
+    pub template: Option<TemplateState>,
+}
+
+/// A mounted template: which call site it is, and its hosts.
+pub struct TemplateState {
+    pub(crate) meta: &'static crate::template::TemplateMeta,
+    pub(crate) identity: crate::template::TemplateIdentity,
+    /// The host each node is, by node index; `None` for a slot.
+    pub(crate) nodes: Vec<Option<NodeId>>,
 }
 
 impl Node {
@@ -180,6 +194,7 @@ impl Node {
             host: None,
             component: None,
             portal: None,
+            template: None,
         }
     }
 
@@ -200,6 +215,7 @@ impl Node {
                 props: element.props,
             }),
             portal: None,
+            template: None,
         }
     }
 

@@ -1,8 +1,8 @@
 //! Procedural macros for the `xui` framework.
 //!
-//! - `xui! { <tag attr={expr}>{children}</tag> }` — the element DSL. It is a
-//!   purely syntactic transform into a builder chain; see [`element`] for what
-//!   that buys and what it costs.
+//! - `xui! { <tag attr={expr}>{children}</tag> }` — the element DSL, compiled
+//!   to a static template of host nodes with the changing values as its
+//!   inputs; see [`template`], and [`element`] for the grammar.
 //! - `view! { column(gap: 8.0) { text("hi").color(c) } }` — the same DSL
 //!   spelled like SwiftUI, with `if`/`for`/`match`/`let` among children. A
 //!   second parser over the same tree; see [`view`].
@@ -22,12 +22,17 @@
 //!
 //! # Design note
 //!
-//! The macros own the grammar; the runtime owns the vocabulary. No list of tag
-//! names, attribute names, or style properties lives in this crate — adding any
-//! of those is a change to `xui`/`xui-interface` alone. The one deliberate
-//! exception is nothing: where a DSL name has to differ from a runtime method
-//! (`position` vs `position_type`), the alias is defined in `xui_core::dsl`, not
-//! here, so that this crate keeps zero special cases to drift out of sync.
+//! The macros own the grammar; the runtime owns the vocabulary. No list of
+//! attribute names or style properties lives in this crate — adding any of
+//! those is a change to `xui-core` alone: an attribute is looked up in the
+//! node's property table.
+//!
+//! The one list that does live here is the host widgets' tag names
+//! (`template.rs`). The set of host widgets is closed, and knowing them by
+//! name is what lets `xui!` / `view!` compile a tree to a static template:
+//! which nodes are hosts the template owns, and which are component slots, is
+//! decided before any type is known. The generated code asserts that a tag
+//! treated as a host is one.
 
 mod animatable;
 mod component;
@@ -36,6 +41,7 @@ mod errors;
 mod krate;
 mod main_fn;
 mod style;
+mod template;
 mod view;
 mod widget;
 

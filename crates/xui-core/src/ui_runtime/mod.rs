@@ -138,6 +138,8 @@ pub(crate) struct FrameStats {
     pub repaint_passes: usize,
     /// Paint transforms re-derived, over the runtime's lifetime.
     pub transform_syncs: usize,
+    /// Hosts handed a new draft by a commit, over the runtime's lifetime.
+    pub host_updates: usize,
 }
 
 /// A read-only projection assembled from host and layout subsystem storage.

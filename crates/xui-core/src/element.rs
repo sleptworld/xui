@@ -5,6 +5,7 @@ use crate::{
     widgets::{DismissHandler, DismissReason, ErasedDraft, OverlayEntryOptions, OverlayScopeId},
 };
 use crate::node::{Draft, NodeDef};
+use crate::template::TemplateDesc;
 use crate::widgets::WidgetType;
 
 pub type Component = ElementDesc;
@@ -14,6 +15,9 @@ pub enum ElementDesc {
     Host(WidgetDesc),
     Component(ComponentDesc),
     Portal(PortalDesc),
+    /// What `xui!` and `view!` produce: a static structure of hosts and the
+    /// values that change. See [`crate::template`].
+    Template(TemplateDesc),
 }
 
 /// A host element: a widget's draft, and its children.
@@ -151,6 +155,10 @@ impl WidgetDesc {
     pub fn draft<N: NodeDef>(&self) -> Option<&Draft<N>> {
         self.draft.as_any().downcast_ref::<Draft<N>>()
     }
+
+    pub(crate) fn set_key(&mut self, key: Key) {
+        self.draft.set_key(key);
+    }
 }
 
 impl ComponentDesc {
@@ -169,13 +177,28 @@ impl ElementDesc {
             Self::Host(widget) => widget.draft.key().cloned(),
             Self::Component(component) => component.key,
             Self::Portal(portal) => portal.key,
+            Self::Template(template) => template.key,
         }
     }
 
     pub fn node_type(&self) -> Option<WidgetType> {
         match self {
             Self::Host(widget) => Some(widget.draft.node_type()),
+            Self::Template(template) => Some(template.root_type),
             Self::Component(_) | Self::Portal(_) => None,
+        }
+    }
+
+    /// The element with every template in it expanded into the plain tree
+    /// it stands for: what to inspect, in a test, of what a macro built.
+    pub fn expanded(self) -> ElementDesc {
+        match self {
+            Self::Template(template) => template.expand().expanded(),
+            Self::Host(mut host) => {
+                host.children = host.children.into_iter().map(Self::expanded).collect();
+                Self::Host(host)
+            }
+            other => other,
         }
     }
 }
@@ -246,6 +269,18 @@ impl From<PortalDesc> for ElementDesc {
     }
 }
 
+impl From<TemplateDesc> for ElementDesc {
+    fn from(template: TemplateDesc) -> Self {
+        Self::Template(template)
+    }
+}
+
+impl IntoChildren for TemplateDesc {
+    fn append_children(self, output: &mut Vec<ElementDesc>) {
+        output.push(self.into());
+    }
+}
+
 pub fn portal(children: Vec<ElementDesc>) -> PortalDesc {
     PortalDesc::new(children)
 }
@@ -254,6 +289,7 @@ impl From<ElementDesc> for WidgetDesc {
     fn from(val: ElementDesc) -> Self {
         match val {
             ElementDesc::Host(widget) => widget,
+            ElementDesc::Template(template) => template.expand().into(),
             ElementDesc::Component(_) => {
                 unreachable!()
             }
@@ -269,7 +305,7 @@ impl From<ElementDesc> for ComponentDesc {
                 unreachable!()
             }
             ElementDesc::Component(component) => component,
-            ElementDesc::Portal(_) => unreachable!(),
+            ElementDesc::Portal(_) | ElementDesc::Template(_) => unreachable!(),
         }
     }
 }

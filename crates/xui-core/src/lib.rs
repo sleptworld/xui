@@ -66,6 +66,7 @@ pub mod shortcut;
 pub mod size;
 pub mod state;
 pub mod style;
+pub mod template;
 pub mod ticker;
 pub mod widgets;
 

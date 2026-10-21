@@ -1,0 +1,47 @@
+error[E0308]: mismatched types
+  --> tests/ui/component_named_like_a_host.rs:18:13
+   |
+18 |     xui! { <text label={String::from("x")} /> }
+   |     --------^^^^-------------------------------
+   |     |       |
+   |     |       expected fn pointer, found fn item
+   |     arguments to this function are incorrect
+   |
+   = note: expected fn pointer `fn() -> Draft<_, xui_core::property::Complete>`
+                 found fn item `fn() -> Draft<__xui_text::Text, TextRequirements<TextPropsLabelMissing>> {__xui_text::text}`
+note: function defined here
+  --> src/template.rs
+   |
+   | pub fn host_type<N: WidgetVariant>(_tag: fn() -> Draft<N>) -> WidgetType {
+   |        ^^^^^^^^^
+
+error[E0308]: mismatched types
+  --> tests/ui/component_named_like_a_host.rs:18:13
+   |
+18 |     xui! { <text label={String::from("x")} /> }
+   |     --------^^^^-------------------------------
+   |     |       |
+   |     |       expected fn pointer, found fn item
+   |     arguments to this function are incorrect
+   |
+   = note: expected fn pointer `fn() -> Draft<_, xui_core::property::Complete>`
+                 found fn item `fn() -> Draft<__xui_text::Text, TextRequirements<TextPropsLabelMissing>> {__xui_text::text}`
+note: function defined here
+  --> src/template.rs
+   |
+   | pub fn host<N, R>(tag: fn() -> Draft<N, R>) -> fn() -> Draft<N, R>
+   |        ^^^^
+
+error[E0282]: type annotations needed
+  --> tests/ui/component_named_like_a_host.rs:18:18
+   |
+18 |     xui! { <text label={String::from("x")} /> }
+   |                  ^^^^^ cannot infer type
+
+warning: unused variable: `label`
+  --> tests/ui/component_named_like_a_host.rs:10:17
+   |
+10 |     pub fn text(label: &String) {
+   |                 ^^^^^ help: if this is intentional, prefix it with an underscore: `_label`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default

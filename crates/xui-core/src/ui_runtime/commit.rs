@@ -362,6 +362,7 @@ impl UiRuntime {
 
     /// Spreads `draft` over `id`'s rows and props, and queues what changed.
     pub(crate) fn update_node(&mut self, id: NodeId, draft: Box<dyn ErasedDraft>) {
+        self.stats.host_updates += 1;
         let node = &mut self.hosts[id];
         node.key = draft.key().cloned();
         let columns = &mut self.columns;

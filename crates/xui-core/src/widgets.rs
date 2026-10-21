@@ -323,6 +323,8 @@ pub(crate) trait ErasedDraft {
 
     fn key(&self) -> Option<&Key>;
 
+    fn set_key(&mut self, key: Key);
+
     /// Spreads the draft over node `id`'s rows and builds its instance.
     fn mount(
         self: Box<Self>,
@@ -358,6 +360,10 @@ where
 
     fn key(&self) -> Option<&Key> {
         self.key.as_ref()
+    }
+
+    fn set_key(&mut self, key: Key) {
+        self.key = Some(key);
     }
 
     fn mount(

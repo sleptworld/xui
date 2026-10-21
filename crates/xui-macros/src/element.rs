@@ -210,15 +210,42 @@ fn path_name(path: &Path) -> String {
         .join("::")
 }
 
+/// How an attribute's value reaches its property.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Setter {
+    /// A value the property accepts.
+    Value,
+    /// A closure given to an `on_*` attribute: a handler, whose argument
+    /// types come from the property it is set to.
+    Handler,
+    /// `x.share()`: a forwarded prop, projected rather than copied.
+    Shared,
+}
+
+impl Setter {
+    pub(crate) fn of(name: &Ident, value: &TokenStream2) -> Self {
+        match syn::parse2::<Expr>(value.clone()) {
+            Ok(Expr::Closure(_)) if name.to_string().starts_with("on_") => Self::Handler,
+            Ok(Expr::MethodCall(call)) if call.method == "share" && call.args.is_empty() => {
+                Self::Shared
+            }
+            _ => Self::Value,
+        }
+    }
+}
+
 impl Element {
     pub fn expand(&self, xui: &TokenStream2) -> Result<TokenStream2> {
         let mut errors = Errors::default();
-        let tokens = self.expand_inner(xui, &mut errors);
+        let tokens = crate::template::lower(self, xui, &mut errors);
         errors.into_result()?;
         Ok(tokens)
     }
 
-    fn expand_inner(&self, xui_core: &TokenStream2, errors: &mut Errors) -> TokenStream2 {
+    /// The element built now, as an expression: its draft with every
+    /// attribute set, given its body. What a component (or any tag a
+    /// template does not hold) lowers to.
+    pub(crate) fn expand_eager(&self, xui_core: &TokenStream2, errors: &mut Errors) -> TokenStream2 {
         self.check_duplicate_attrs(errors);
 
         let tag = &self.tag;
@@ -231,19 +258,10 @@ impl Element {
             if name == "key" {
                 return quote_spanned!(name.span()=> let __xui_node = __xui_node.key(#value););
             }
-            // A closure set to an `on_*` attribute is a handler, whose
-            // argument types come from the property it is set to; a
-            // forwarded prop is projected rather than copied. Anything else
-            // -- a closure prop of a component included -- is a value the
-            // property accepts.
-            let setter = match syn::parse2::<Expr>(value.clone()) {
-                Ok(Expr::Closure(_)) if name.to_string().starts_with("on_") => {
-                    quote_spanned!(name.span()=> __with_on)
-                }
-                Ok(Expr::MethodCall(call)) if call.method == "share" && call.args.is_empty() => {
-                    quote_spanned!(name.span()=> __with_shared)
-                }
-                _ => quote_spanned!(name.span()=> __with),
+            let setter = match Setter::of(name, value) {
+                Setter::Handler => quote_spanned!(name.span()=> __with_on),
+                Setter::Shared => quote_spanned!(name.span()=> __with_shared),
+                Setter::Value => quote_spanned!(name.span()=> __with),
             };
             // The property comes from the node's own table, so `no method
             // named ..` points at the attribute and lists the node's
@@ -280,7 +298,7 @@ impl Element {
         }
     }
 
-    fn check_duplicate_attrs(&self, errors: &mut Errors) {
+    pub(crate) fn check_duplicate_attrs(&self, errors: &mut Errors) {
         let mut seen: HashMap<String, Span> = HashMap::new();
         for attr in &self.attrs {
             let name = attr.name.to_string();
@@ -338,14 +356,14 @@ impl Child {
 /// flow children become the same control flow around their own pushes, so a
 /// branch that is not taken contributes nothing and a loop contributes one
 /// entry per iteration.
-fn expand_statements(
+pub(crate) fn expand_statements(
     children: &[Child],
     xui_core: &TokenStream2,
     errors: &mut Errors,
 ) -> TokenStream2 {
     let statements = children.iter().map(|child| match child {
         Child::Element(element) => {
-            let element = element.expand_inner(xui_core, errors);
+            let element = crate::template::lower(element, xui_core, errors);
             quote!(__xui_children.push(#element);)
         }
         Child::Expr(expr) => quote_spanned! {expr.span()=>

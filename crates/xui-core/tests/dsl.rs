@@ -10,9 +10,12 @@ use xui_core::prelude::*;
 use xui_core::widgets::WidgetType;
 use xui_macros::{component, style, xui};
 
+/// The host element `element` is, a template expanded into the plain tree it
+/// stands for (and leaked: these are tests).
 fn host(element: &ElementDesc) -> &WidgetDesc {
     match element {
         ElementDesc::Host(desc) => desc,
+        ElementDesc::Template(template) => host(Box::leak(Box::new(template.clone().expand()))),
         other => panic!("expected a host element, got {other:?}"),
     }
 }
@@ -30,6 +33,11 @@ fn host_tags_resolve_to_host_widgets_not_components() {
         (xui! { <z_stack /> }, WidgetType::ZStack),
         (xui! { <text /> }, WidgetType::Text),
         (xui! { <icon /> }, WidgetType::Icon),
+        (xui! { <row /> }, WidgetType::Container),
+        (xui! { <column /> }, WidgetType::Container),
+        (xui! { <center /> }, WidgetType::Container),
+        (xui! { <image /> }, WidgetType::Image),
+        (xui! { <text_input /> }, WidgetType::TextInput),
         (
             xui! { <canvas controller={controller.clone()} /> },
             WidgetType::Canvas,
