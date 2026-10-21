@@ -5,8 +5,8 @@ pub use crate::context::context_provider;
 pub use crate::core::{Color, EdgeInsets, Point, Rect, Size};
 pub use crate::dsl::{Children, Content, IntoElement, NoChildren};
 pub use crate::element::{
-    Component, ComponentDesc, ElementDesc, IntoChildren, PortalBehavior, PortalDesc, WidgetDesc,
-    portal,
+    Component, ComponentDesc, ElementDesc, Expanded, ExpandedHost, FragmentDesc, IntoChildren,
+    PortalBehavior, PortalDesc, portal,
 };
 pub use xui_animation::{Easing, Transition};
 #[allow(deprecated)]
@@ -23,8 +23,10 @@ pub use crate::event_system::EventState;
 pub use crate::event_system::callbacks::{AnyHandler, EventKind, EventMask, ListenPhase};
 pub use crate::event_system::{Flow, Handler};
 pub use crate::fiber::{ComponentCall, ComponentRender, ComponentType, ErasedPropsRef};
-pub use crate::prop::{Prop, Share};
 pub use crate::focus::{FocusHandle, FocusManager, FocusRequest, FocusTransition};
+pub use crate::node::{Draft, Layer, Node, StyleOf, StyleRule, WidgetInstance, WidgetT};
+pub use crate::prop::{Prop, Share};
+pub use crate::property::{Accepts, FieldProperty, HostProperty, IntoProp, Property, Slot};
 pub use crate::render::{MockRenderBackend, RenderBackend};
 pub use crate::runtime::{ControlFlow, FrameReport, GuiRuntime, QueueEventSource, RuntimeEvent};
 pub use crate::scroll::{ScrollController, ScrollMetrics};
@@ -48,14 +50,12 @@ pub use crate::style::{
 };
 pub use crate::ticker::{Tick, Ticker};
 pub use crate::ui_runtime::{NodeView, RenderFrameError, UiRuntime};
-pub use crate::node::{Draft, Layer, Node, StyleOf, StyleRule, WidgetInstance, WidgetT};
-pub use crate::property::{Accepts, FieldProperty, HostProperty, IntoProp, Property, Slot};
 pub use crate::widgets::{
     CanvasContent, CanvasController, CanvasPainter, CanvasPick, CanvasPickTag, CanvasTextLayout,
     CanvasTextMetrics, DismissReason, GridFlow, GridTrackSize, GridTracks, IconData, IconLayer,
-    IconStroke, OverlayChild, OverlayEntry, OverlayEntryId, OverlayEntryOptions,
-    OverlayModelError, OverlayScope, OverlayScopeId, SvgIconError, TextCommand, TextController,
-    TextInputChange, TextKeymap, TextSelection, WidgetI, WithChildren, component,
+    IconStroke, OverlayChild, OverlayEntry, OverlayEntryId, OverlayEntryOptions, OverlayModelError,
+    OverlayScope, OverlayScopeId, SvgIconError, TextCommand, TextController, TextInputChange,
+    TextKeymap, TextSelection, WidgetI, WithChildren, component,
 };
 // Each tag: its marker, its property module and its constructor, which share
 // the tag's name (`container`, `container::width`, `container()`).

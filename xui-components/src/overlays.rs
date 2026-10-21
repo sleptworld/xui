@@ -17,7 +17,6 @@
 //! | [`context_menu`](fn@self::context_menu) | A menu opened by semantic context-menu events at a pointer or keyboard-requested position. |
 //! | [`toast`](fn@self::toast) | A portal-mounted transient message with a semantic tone and live announcement. |
 
-use crate::layout::MergeClone;
 use xui_core::prelude::*;
 use xui_macros::{component, view};
 
@@ -37,13 +36,13 @@ fn notify_open(
     }
 }
 
-fn overlay_panel_style() -> Style {
-    Style::new()
-        .padding(EdgeInsets::all(16.0))
-        .background(ColorToken::Surface)
-        .border_width(1.0)
-        .border_color(ColorToken::Border)
-        .border_radius(RadiusToken::Lg)
+fn overlay_panel_style() -> StyleOf<Container> {
+    StyleOf::new()
+        .with::<container::padding>(EdgeInsets::all(16.0))
+        .with::<container::background>(ColorToken::Surface)
+        .with::<container::border_width>(1.0)
+        .with::<container::border_color>(ColorToken::Border)
+        .with::<container::border_radius>(RadiusToken::Lg)
 }
 
 /// A modal portal containing a titled dialog panel and backdrop.
@@ -66,9 +65,9 @@ fn overlay_panel_style() -> Style {
 /// | `close_on_escape` | `bool` | `true` |
 /// | `close_on_pointer_outside` | `bool` | `true` |
 /// | `z_index` | `i32` | `2000` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `title_style` | `Style` | `Style::new()` |
-/// | `backdrop_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `title_style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `backdrop_style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -88,9 +87,9 @@ fn overlay_panel_style() -> Style {
     close_on_escape = true,
     close_on_pointer_outside = true,
     z_index = 2000,
-    style = Style::new(),
-    title_style = Style::new(),
-    backdrop_style = Style::new(),
+    style = StyleOf::new(),
+    title_style = StyleOf::new(),
+    backdrop_style = StyleOf::new(),
 )]
 pub fn dialog(
     content: &ElementDesc,
@@ -101,9 +100,9 @@ pub fn dialog(
     close_on_escape: &bool,
     close_on_pointer_outside: &bool,
     z_index: &i32,
-    style: &Style,
-    title_style: &Style,
-    backdrop_style: &Style,
+    style: &StyleOf<Container>,
+    title_style: &StyleOf<Text>,
+    backdrop_style: &StyleOf<Container>,
 ) {
     let state = cx.use_state(|| *default_open);
     let controlled = open.is_some();
@@ -119,20 +118,20 @@ pub fn dialog(
     let close_escape = *close_on_escape;
     let close_outside = *close_on_pointer_outside;
     let mut panel_style = overlay_panel_style()
-        .min_width(0.0)
-        .width(Sizing::percent(0.9))
-        .max_width(640.0)
-        .max_height(Sizing::percent(0.9))
-        .scroll_vertical();
+        .with::<container::min_width>(0.0)
+        .with::<container::width>(Sizing::percent(0.9))
+        .with::<container::max_width>(640.0)
+        .with::<container::max_height>(Sizing::percent(0.9))
+        .with::<container::scroll_direction>(ScrollDirectionStyle::Vertical);
     panel_style.merge(style);
     let mut panel_children = Vec::with_capacity(2);
     if let Some(title) = title {
         panel_children.push(view! {
-            xui_core::widgets::text(
+            xui_core::prelude::text(
                 title.clone(),
-                style: Style::new()
-                    .font_size(FontSizeToken::Lg)
-                    .font_weight(FontWeight::Bold).merge_clone(title_style),
+                style: StyleOf::new()
+                    .with::<container::font_size>(FontSizeToken::Lg)
+                    .with::<container::font_weight>(FontWeight::Bold).merged(title_style),
             )
         });
     }
@@ -153,29 +152,29 @@ pub fn dialog(
     };
     let root = view! {
         container(
-            style: Style::new()
-                .absolute()
-                .inset(EdgeInsets::zero())
-                .size(Size::fill())
-                .align(AlignStyle::Center)
-                .justify(JustifyStyle::Center)
-                .background(Color::rgba(0.0, 0.0, 0.0, 0.46)).merge_clone(backdrop_style),
+            style: StyleOf::new()
+                .with::<container::position>(PositionStyle::Absolute)
+                .with::<container::inset>(EdgeInsets::zero())
+                .with::<container::size>(Size::fill())
+                .with::<container::align>(AlignStyle::Center)
+                .with::<container::justify>(JustifyStyle::Center)
+                .with::<container::background>(Color::rgba(0.0, 0.0, 0.0, 0.46)).merged(backdrop_style),
             on_click: { let callback = on_open_change.clone(); move |_, _| { if close_outside { notify_open(false, controlled, state, &callback); } EventResult::Consumed } },
         ) {
             ..panel
         }
     };
-    view! {
-        xui_core::element::portal_view(
-            on_dismiss: move |reason| { if (reason == DismissReason::Escape && close_escape) || (reason == DismissReason::PointerOutside && close_outside) {
-                    notify_open(false, controlled, state, &callback);
-                } },
-            z_index: *z_index,
-            modal: true,
-        ) {
-            ..root
-        }
-    }
+    portal(vec![root])
+        .on_dismiss(move |reason| {
+            if (reason == DismissReason::Escape && close_escape)
+                || (reason == DismissReason::PointerOutside && close_outside)
+            {
+                notify_open(false, controlled, state, &callback);
+            }
+        })
+        .z_index(*z_index)
+        .modal(true)
+        .into()
 }
 
 /// An anchored portal opened by a focusable trigger.
@@ -198,8 +197,8 @@ pub fn dialog(
 /// | `placement` | `AnchorPlacement` | `AnchorPlacement::default()` |
 /// | `modal` | `bool` | `false` |
 /// | `z_index` | `i32` | `1500` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `trigger_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `trigger_style` | `StyleOf<Container>` | `StyleOf::new()` |
 /// | `disabled` | `bool` | `false` |
 ///
 /// # Example
@@ -219,8 +218,8 @@ pub fn dialog(
     placement = AnchorPlacement::default(),
     modal = false,
     z_index = 1500,
-    style = Style::new(),
-    trigger_style = Style::new(),
+    style = StyleOf::new(),
+    trigger_style = StyleOf::new(),
     disabled = false,
 )]
 pub fn popover(
@@ -232,8 +231,8 @@ pub fn popover(
     placement: &AnchorPlacement,
     modal: &bool,
     z_index: &i32,
-    style: &Style,
-    trigger_style: &Style,
+    style: &StyleOf<Container>,
+    trigger_style: &StyleOf<Container>,
     disabled: &bool,
 ) {
     let state = cx.use_state(|| *default_open);
@@ -243,7 +242,7 @@ pub fn popover(
     let callback = on_open_change.clone();
     let trigger_root = view! {
         container(
-            style: crate::layout::control_style(disabled).merge_clone(trigger_style),
+            style: crate::layout::control_style(disabled).merged(trigger_style),
             accessibility_role: AccessibilityRole::Button,
             accessibility_expanded: shown,
             focusable: !disabled,
@@ -266,24 +265,22 @@ pub fn popover(
         panel_style.merge(style);
         let panel = view! {
             container(
-                style: panel_style.absolute(),
+                style: panel_style.with::<container::position>(PositionStyle::Absolute),
                 on_click: |_, _| EventResult::Consumed,
             ) {
                 ..content.clone()
             }
         };
-        children.push(view! {
-            xui_core::element::portal_view(
-                on_dismiss: move |_| {
+        children.push(
+            portal(vec![panel])
+                .on_dismiss(move |_| {
                     notify_open(false, controlled, state, &callback);
-                },
-                z_index: *z_index,
-                modal: *modal,
-                anchor: *placement,
-            ) {
-                ..panel
-            }
-        });
+                })
+                .z_index(*z_index)
+                .modal(*modal)
+                .anchor(*placement)
+                .into(),
+        );
     }
     view! {
         container() {
@@ -307,8 +304,8 @@ pub fn popover(
 /// | `text` | `String` | **Required** |
 /// | `placement` | `AnchorPlacement` | `AnchorPlacement::new(AnchorSide::Top).align(AnchorAlign::Center)` |
 /// | `z_index` | `i32` | `3000` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `trigger_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `trigger_style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -323,16 +320,16 @@ pub fn popover(
 #[defaults(
     placement = AnchorPlacement::new(AnchorSide::Top).align(AnchorAlign::Center),
     z_index = 3000,
-    style = Style::new(),
-    trigger_style = Style::new(),
+    style = StyleOf::new(),
+    trigger_style = StyleOf::new(),
 )]
 pub fn tooltip(
     trigger: &ElementDesc,
     text: &String,
     placement: &AnchorPlacement,
     z_index: &i32,
-    style: &Style,
-    trigger_style: &Style,
+    style: &StyleOf<Container>,
+    trigger_style: &StyleOf<Container>,
 ) {
     let hovered = cx.use_state(|| false);
     let focused = cx.use_state(|| false);
@@ -361,14 +358,14 @@ pub fn tooltip(
     };
     let mut children = vec![trigger];
     if *hovered.get() || *focused.get() {
-        let mut tooltip_style = Style::new()
-            .absolute()
-            .padding(EdgeInsets::symmetric(8.0, 5.0))
-            .background(ColorToken::Foreground)
-            .color(ColorToken::Background)
-            .border_radius(RadiusToken::Sm)
-            .max_width(280.0)
-            .font_size(FontSizeToken::Sm);
+        let mut tooltip_style = StyleOf::new()
+            .with::<container::position>(PositionStyle::Absolute)
+            .with::<container::padding>(EdgeInsets::symmetric(8.0, 5.0))
+            .with::<container::background>(ColorToken::Foreground)
+            .with::<container::color>(ColorToken::Background)
+            .with::<container::border_radius>(RadiusToken::Sm)
+            .with::<container::max_width>(280.0)
+            .with::<container::font_size>(FontSizeToken::Sm);
         tooltip_style.merge(style);
         let tip = view! {
             container(
@@ -376,20 +373,18 @@ pub fn tooltip(
                 accessibility_role: AccessibilityRole::Tooltip,
                 accessibility_label: text.clone(),
             ) {
-                xui_core::widgets::text(
+                xui_core::prelude::text(
                     text.clone(),
                 )
             }
         };
-        children.push(view! {
-            xui_core::element::portal_view(
-                z_index: *z_index,
-                hit_test: false,
-                anchor: (*placement).offset(6.0),
-            ) {
-                ..tip
-            }
-        });
+        children.push(
+            portal(vec![tip])
+                .z_index(*z_index)
+                .hit_test(false)
+                .anchor((*placement).offset(6.0))
+                .into(),
+        );
     }
     view! {
         container() {
@@ -424,8 +419,8 @@ pub enum DrawerSide {
 /// | `side` | `DrawerSide` | `DrawerSide::Right` |
 /// | `on_open_change` | `Option<BoolChangeCallback>` | `None` |
 /// | `z_index` | `i32` | `2200` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `backdrop_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `backdrop_style` | `StyleOf<Container>` | `StyleOf::new()` |
 /// | `default_open` | `bool` | `false` |
 ///
 /// # Example
@@ -443,8 +438,8 @@ pub enum DrawerSide {
     side = DrawerSide::Right,
     on_open_change = None,
     z_index = 2200,
-    style = Style::new(),
-    backdrop_style = Style::new(),
+    style = StyleOf::new(),
+    backdrop_style = StyleOf::new(),
     default_open = false,
 )]
 pub fn drawer(
@@ -453,8 +448,8 @@ pub fn drawer(
     side: &DrawerSide,
     on_open_change: &Option<BoolChangeCallback>,
     z_index: &i32,
-    style: &Style,
-    backdrop_style: &Style,
+    style: &StyleOf<Container>,
+    backdrop_style: &StyleOf<Container>,
     default_open: &bool,
 ) {
     let state = cx.use_state(|| *default_open);
@@ -472,39 +467,39 @@ pub fn drawer(
         DrawerSide::Left => (
             FlexDirectionStyle::Row,
             JustifyStyle::Start,
-            Style::new()
-                .width(Sizing::percent(0.9))
-                .max_width(360.0)
-                .height(Sizing::Fill),
+            StyleOf::new()
+                .with::<container::width>(Sizing::percent(0.9))
+                .with::<container::max_width>(360.0)
+                .with::<container::height>(Sizing::Fill),
         ),
         DrawerSide::Right => (
             FlexDirectionStyle::Row,
             JustifyStyle::End,
-            Style::new()
-                .width(Sizing::percent(0.9))
-                .max_width(360.0)
-                .height(Sizing::Fill),
+            StyleOf::new()
+                .with::<container::width>(Sizing::percent(0.9))
+                .with::<container::max_width>(360.0)
+                .with::<container::height>(Sizing::Fill),
         ),
         DrawerSide::Top => (
             FlexDirectionStyle::Column,
             JustifyStyle::Start,
-            Style::new()
-                .width(Sizing::Fill)
-                .height(Sizing::percent(0.8))
-                .max_height(280.0),
+            StyleOf::new()
+                .with::<container::width>(Sizing::Fill)
+                .with::<container::height>(Sizing::percent(0.8))
+                .with::<container::max_height>(280.0),
         ),
         DrawerSide::Bottom => (
             FlexDirectionStyle::Column,
             JustifyStyle::End,
-            Style::new()
-                .width(Sizing::Fill)
-                .height(Sizing::percent(0.8))
-                .max_height(280.0),
+            StyleOf::new()
+                .with::<container::width>(Sizing::Fill)
+                .with::<container::height>(Sizing::percent(0.8))
+                .with::<container::max_height>(280.0),
         ),
     };
     let mut panel_style = sizing
-        .padding(EdgeInsets::all(20.0))
-        .background(ColorToken::Surface);
+        .with::<container::padding>(EdgeInsets::all(20.0))
+        .with::<container::background>(ColorToken::Surface);
     panel_style.merge(style);
     let panel = view! {
         container(
@@ -519,29 +514,25 @@ pub fn drawer(
     };
     let root = view! {
         container(
-            style: Style::new()
-                .absolute()
-                .inset(EdgeInsets::zero())
-                .size(Size::fill())
-                .justify(justify)
-                .background(Color::rgba(0.0, 0.0, 0.0, 0.4)).merge_clone(backdrop_style),
+            style: StyleOf::new()
+                .with::<container::position>(PositionStyle::Absolute)
+                .with::<container::inset>(EdgeInsets::zero())
+                .with::<container::size>(Size::fill())
+                .with::<container::justify>(justify)
+                .with::<container::background>(Color::rgba(0.0, 0.0, 0.0, 0.4)).merged(backdrop_style),
             flex_direction: direction,
             on_click: { let callback = on_open_change.clone(); move |_, _| { notify_open(false, controlled, state, &callback); EventResult::Consumed } },
         ) {
             ..panel
         }
     };
-    view! {
-        xui_core::element::portal_view(
-            on_dismiss: move |_| {
-                notify_open(false, controlled, state, &callback);
-            },
-            z_index: *z_index,
-            modal: true,
-        ) {
-            ..root
-        }
-    }
+    portal(vec![root])
+        .on_dismiss(move |_| {
+            notify_open(false, controlled, state, &callback);
+        })
+        .z_index(*z_index)
+        .modal(true)
+        .into()
 }
 
 /// An identified menu action with a display label and disabled state.
@@ -590,8 +581,8 @@ pub type MenuSelectCallback = Callback<usize>;
 /// | `on_select` | `Option<MenuSelectCallback>` | `None` |
 /// | `placement` | `AnchorPlacement` | `AnchorPlacement::default()` |
 /// | `z_index` | `i32` | `1600` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `item_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `item_style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -610,8 +601,8 @@ pub type MenuSelectCallback = Callback<usize>;
     on_select = None,
     placement = AnchorPlacement::default(),
     z_index = 1600,
-    style = Style::new(),
-    item_style = Style::new(),
+    style = StyleOf::new(),
+    item_style = StyleOf::new(),
 )]
 pub fn menu(
     trigger: &ElementDesc,
@@ -622,8 +613,8 @@ pub fn menu(
     on_select: &Option<MenuSelectCallback>,
     placement: &AnchorPlacement,
     z_index: &i32,
-    style: &Style,
-    item_style: &Style,
+    style: &StyleOf<Container>,
+    item_style: &StyleOf<Container>,
 ) {
     let handles = cx.use_memo_with(
         items.iter().map(|item| item.id.clone()).collect::<Vec<_>>(),
@@ -657,15 +648,13 @@ pub fn menu(
 
             view! {
                 container(
-                    style: Style::new()
-                        .padding(EdgeInsets::symmetric(10.0, 7.0))
-                        .border_radius(RadiusToken::Sm)
-                        .when(WidgetState::HOVERED, |style| {
-                            style.background(ColorToken::Accent)
-                    }).merge_clone(&crate::layout::control_style(disabled)).merge_clone(item_style),
+                    style: StyleOf::new()
+                        .with::<container::padding>(EdgeInsets::symmetric(10.0, 7.0))
+                        .with::<container::border_radius>(RadiusToken::Sm)
+                        .when_style(WidgetStateMatcher::all(WidgetState::HOVERED), StyleOf::<Container>::new().with::<container::background>(ColorToken::Accent)).merged(&crate::layout::control_style(disabled)).merged(item_style),
                     key: item.id.clone(),
                     focus_handle: handles[index].clone(),
-                    shortcuts: crate::selection::selection_shortcuts(),
+                    shortcuts: crate::selection::selection_shortcuts().map(|(shortcut, command)| ShortcutBinding { shortcut, command }).to_vec(),
                     on_command: move |event, event_cx| {
                         if disabled { return EventResult::Ignored; }
                         let Some(target) = crate::selection::selection_target(&model, index, event.command) else { return EventResult::Ignored; };
@@ -690,7 +679,7 @@ pub fn menu(
                         EventResult::Consumed
                     },
                 ) {
-                    xui_core::widgets::text(
+                    xui_core::prelude::text(
                         item.label.clone(),
                     )
                 }
@@ -700,7 +689,9 @@ pub fn menu(
     } else {
         Vec::new()
     };
-    let mut content_style = Style::new().min_width(180.0).padding(EdgeInsets::all(4.0));
+    let mut content_style = StyleOf::new()
+        .with::<container::min_width>(180.0)
+        .with::<container::padding>(EdgeInsets::all(4.0));
     content_style.merge(style);
     let content = view! {
         container(
@@ -754,8 +745,8 @@ pub fn menu(
 /// | `on_open_change` | `Option<BoolChangeCallback>` | `None` |
 /// | `on_select` | `Option<MenuSelectCallback>` | `None` |
 /// | `z_index` | `i32` | `1700` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `item_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `item_style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -773,8 +764,8 @@ pub fn menu(
     on_open_change = None,
     on_select = None,
     z_index = 1700,
-    style = Style::new(),
-    item_style = Style::new(),
+    style = StyleOf::new(),
+    item_style = StyleOf::new(),
 )]
 pub fn context_menu(
     trigger: &ElementDesc,
@@ -784,8 +775,8 @@ pub fn context_menu(
     on_open_change: &Option<BoolChangeCallback>,
     on_select: &Option<MenuSelectCallback>,
     z_index: &i32,
-    style: &Style,
-    item_style: &Style,
+    style: &StyleOf<Container>,
+    item_style: &StyleOf<Container>,
 ) {
     let handles = cx.use_memo_with(
         items.iter().map(|item| item.id.clone()).collect::<Vec<_>>(),
@@ -842,15 +833,13 @@ pub fn context_menu(
 
                 view! {
                     container(
-                        style: Style::new()
-                            .padding(EdgeInsets::symmetric(10.0, 7.0))
-                            .border_radius(RadiusToken::Sm)
-                            .when(WidgetState::HOVERED, |style| {
-                                style.background(ColorToken::Accent)
-                        }).merge_clone(&crate::layout::control_style(disabled)).merge_clone(item_style),
+                        style: StyleOf::new()
+                            .with::<container::padding>(EdgeInsets::symmetric(10.0, 7.0))
+                            .with::<container::border_radius>(RadiusToken::Sm)
+                            .when_style(WidgetStateMatcher::all(WidgetState::HOVERED), StyleOf::<Container>::new().with::<container::background>(ColorToken::Accent)).merged(&crate::layout::control_style(disabled)).merged(item_style),
                         key: item.id.clone(),
                         focus_handle: handles[index].clone(),
-                        shortcuts: crate::selection::selection_shortcuts(),
+                        shortcuts: crate::selection::selection_shortcuts().map(|(shortcut, command)| ShortcutBinding { shortcut, command }).to_vec(),
                         on_command: move |event, event_cx| {
                             if disabled { return EventResult::Ignored; }
                             let Some(target) = crate::selection::selection_target(&model, index, event.command) else { return EventResult::Ignored; };
@@ -875,7 +864,7 @@ pub fn context_menu(
                             EventResult::Consumed
                         },
                     ) {
-                        xui_core::widgets::text(
+                        xui_core::prelude::text(
                             item.label.clone(),
                         )
                     }
@@ -884,9 +873,9 @@ pub fn context_menu(
             .collect::<Vec<_>>();
         let point = *position.get();
         let mut panel_style = overlay_panel_style()
-            .min_width(180.0)
-            .padding(EdgeInsets::all(4.0))
-            .margin(EdgeInsets::new(
+            .with::<container::min_width>(180.0)
+            .with::<container::padding>(EdgeInsets::all(4.0))
+            .with::<container::margin>(EdgeInsets::new(
                 point.x.max(0.0),
                 0.0,
                 point.y.max(0.0),
@@ -906,31 +895,29 @@ pub fn context_menu(
         let closed = on_open_change.clone();
         let root = view! {
             container(
-                style: Style::new()
-                    .absolute()
-                    .inset(EdgeInsets::zero())
-                    .size(Size::fill()),
+                style: StyleOf::new()
+                    .with::<container::position>(PositionStyle::Absolute)
+                    .with::<container::inset>(EdgeInsets::zero())
+                    .with::<container::size>(Size::fill()),
                 on_click: { let callback = on_open_change.clone(); move |_, _| { notify_open(false, controlled, state, &callback); EventResult::Consumed } },
             ) {
                 ..panel
             }
         };
-        children.push(view! {
-            xui_core::element::portal_view(
-                on_dismiss: move |_| {
+        children.push(
+            portal(vec![root])
+                .on_dismiss(move |_| {
                     if !controlled {
                         state.set(false);
                     }
                     if let Some(callback) = &closed {
                         callback.call(false);
                     }
-                },
-                z_index: *z_index,
-                modal: true,
-            ) {
-                ..root
-            }
-        });
+                })
+                .z_index(*z_index)
+                .modal(true)
+                .into(),
+        );
     }
     view! {
         container() {
@@ -963,7 +950,7 @@ pub enum ToastTone {
 /// | `open` | `bool` | `true` |
 /// | `tone` | `ToastTone` | `ToastTone::Neutral` |
 /// | `z_index` | `i32` | `4000` |
-/// | `style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -979,9 +966,15 @@ pub enum ToastTone {
     open = true,
     tone = ToastTone::Neutral,
     z_index = 4000,
-    style = Style::new(),
+    style = StyleOf::new(),
 )]
-pub fn toast(message: &String, open: &bool, tone: &ToastTone, z_index: &i32, style: &Style) {
+pub fn toast(
+    message: &String,
+    open: &bool,
+    tone: &ToastTone,
+    z_index: &i32,
+    style: &StyleOf<Container>,
+) {
     if !*open {
         return view! {
             container(
@@ -995,11 +988,11 @@ pub fn toast(message: &String, open: &bool, tone: &ToastTone, z_index: &i32, sty
         ToastTone::Warning => Color::hex("#92400e").into(),
         ToastTone::Danger => Color::hex("#991b1b").into(),
     };
-    let mut toast_style = Style::new()
-        .max_width(420.0)
-        .padding(EdgeInsets::all(12.0))
-        .background(background)
-        .border_radius(RadiusToken::Md);
+    let mut toast_style = StyleOf::new()
+        .with::<container::max_width>(420.0)
+        .with::<container::padding>(EdgeInsets::all(12.0))
+        .with::<container::background>(background)
+        .with::<container::border_radius>(RadiusToken::Md);
     toast_style.merge(style);
     let item = view! {
         container(
@@ -1007,30 +1000,23 @@ pub fn toast(message: &String, open: &bool, tone: &ToastTone, z_index: &i32, sty
             accessibility_live_region: AccessibilityLiveRegion::Polite,
             accessibility_label: message.clone(),
         ) {
-            xui_core::widgets::text(
+            xui_core::prelude::text(
                 message.clone(),
             )
         }
     };
     let root = view! {
         container(
-            style: Style::new()
-                .absolute()
-                .inset(EdgeInsets::zero())
-                .size(Size::fill())
-                .padding(EdgeInsets::all(16.0))
-                .align(AlignStyle::End)
-                .justify(JustifyStyle::Start),
+            style: StyleOf::new()
+                .with::<container::position>(PositionStyle::Absolute)
+                .with::<container::inset>(EdgeInsets::zero())
+                .with::<container::size>(Size::fill())
+                .with::<container::padding>(EdgeInsets::all(16.0))
+                .with::<container::align>(AlignStyle::End)
+                .with::<container::justify>(JustifyStyle::Start),
         ) {
             ..item
         }
     };
-    view! {
-        xui_core::element::portal_view(
-            z_index: *z_index,
-            hit_test: false,
-        ) {
-            ..root
-        }
-    }
+    portal(vec![root]).z_index(*z_index).hit_test(false).into()
 }

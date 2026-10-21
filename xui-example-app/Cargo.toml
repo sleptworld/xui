@@ -29,8 +29,8 @@ leanplot = { git = "https://github.com/sleptworld/LeanPlot.git" }
 
 [dev-dependencies]
 png = "0.18.1"
-# The gallery and dashboard snapshots are rendered by Skia, headless.
-xui-skia = { path = "../crates/xui-skia" }
+# Pixel snapshots use the optional `skia` feature; default smoke tests use
+# the backend-independent scene with a real text engine.
 xui-cosmic = { path = "../crates/xui-cosmic" }
 
 [build-dependencies]

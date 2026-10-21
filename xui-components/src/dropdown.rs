@@ -46,15 +46,15 @@ impl DropDownItem {
 }
 
 /// Complete styles for the dropdown root, trigger, menu, and option states.
-#[derive(Clone, Debug, Hash)]
+#[derive(Clone, Debug)]
 pub struct DropDownStyle {
-    pub root: Style,
-    pub trigger: Style,
-    pub trigger_open: Style,
-    pub menu: Style,
-    pub option: Style,
-    pub selected_option: Style,
-    pub disabled_option: Style,
+    pub root: StyleOf<Container>,
+    pub trigger: StyleOf<Container>,
+    pub trigger_open: StyleOf<Container>,
+    pub menu: StyleOf<Container>,
+    pub option: StyleOf<Container>,
+    pub selected_option: StyleOf<Container>,
+    pub disabled_option: StyleOf<Container>,
 }
 
 impl Default for DropDownStyle {
@@ -63,77 +63,82 @@ impl Default for DropDownStyle {
             .color(ColorToken::Ring.alpha(0.5))
             .blur(0.0)
             .spread(3.0);
-        let option = Style::new()
-            .width(Sizing::fill())
-            .gap(8.0)
-            .padding(EdgeInsets::new(8.0, 8.0, 6.0, 6.0))
-            .align(AlignStyle::Center)
-            .justify(JustifyStyle::SpaceBetween)
-            .border_radius(RadiusToken::Sm)
-            .font_size(FontSizeToken::Md)
-            .color(ColorToken::PopoverForeground)
-            .when(WidgetState::HOVERED, |style| {
-                style
-                    .background(ColorToken::Accent)
-                    .color(ColorToken::AccentForeground)
-            })
-            .when(WidgetState::FOCUS_VISIBLE, |style| {
-                style
-                    .background(ColorToken::Accent)
-                    .color(ColorToken::AccentForeground)
-            });
+        let option = StyleOf::new()
+            .with::<container::width>(Sizing::fill())
+            .with::<container::gap>(8.0)
+            .with::<container::padding>(EdgeInsets::new(8.0, 8.0, 6.0, 6.0))
+            .with::<container::align>(AlignStyle::Center)
+            .with::<container::justify>(JustifyStyle::SpaceBetween)
+            .with::<container::border_radius>(RadiusToken::Sm)
+            .with::<container::font_size>(FontSizeToken::Md)
+            .with::<container::color>(ColorToken::PopoverForeground)
+            .when_style(
+                WidgetStateMatcher::all(WidgetState::HOVERED),
+                StyleOf::<Container>::new()
+                    .with::<container::background>(ColorToken::Accent)
+                    .with::<container::color>(ColorToken::AccentForeground),
+            )
+            .when_style(
+                WidgetStateMatcher::all(WidgetState::FOCUS_VISIBLE),
+                StyleOf::<Container>::new()
+                    .with::<container::background>(ColorToken::Accent)
+                    .with::<container::color>(ColorToken::AccentForeground),
+            );
         Self {
-            root: Style::new().min_width(180.0),
-            trigger: Style::new()
-                .height(36.0)
-                .gap(8.0)
-                .padding(EdgeInsets::symmetric(12.0, 8.0))
-                .align(AlignStyle::Center)
-                .justify(JustifyStyle::SpaceBetween)
-                .background(ColorToken::Background)
-                .color(ColorToken::Foreground)
-                .font_size(FontSizeToken::Md)
-                .border_color(ColorToken::Input)
-                .border_width(1.0)
-                .border_radius(RadiusToken::Md)
-                .shadow(
+            root: StyleOf::new().with::<container::min_width>(180.0),
+            trigger: StyleOf::new()
+                .with::<container::height>(36.0)
+                .with::<container::gap>(8.0)
+                .with::<container::padding>(EdgeInsets::symmetric(12.0, 8.0))
+                .with::<container::align>(AlignStyle::Center)
+                .with::<container::justify>(JustifyStyle::SpaceBetween)
+                .with::<container::background>(ColorToken::Background)
+                .with::<container::color>(ColorToken::Foreground)
+                .with::<container::font_size>(FontSizeToken::Md)
+                .with::<container::border_color>(ColorToken::Input)
+                .with::<container::border_width>(1.0)
+                .with::<container::border_radius>(RadiusToken::Md)
+                .with::<container::shadow>(
                     ShadowStyle::new()
                         .color(Color::rgba(0.0, 0.0, 0.0, 0.05))
                         .offset(Point::new(0.0, 1.0))
                         .blur(2.0),
                 )
-                .when(WidgetState::FOCUS_VISIBLE, |style| {
-                    style.border_color(ColorToken::Ring).shadow(focus_ring)
-                }),
+                .when_style(
+                    WidgetStateMatcher::all(WidgetState::FOCUS_VISIBLE),
+                    StyleOf::<Container>::new()
+                        .with::<container::border_color>(ColorToken::Ring)
+                        .with::<container::shadow>(focus_ring),
+                ),
             // Like the focus ring, shown only for keyboard focus, not because
             // the menu is open.
-            trigger_open: Style::new(),
-            menu: Style::new()
-                .padding(EdgeInsets::all(4.0))
-                .background(ColorToken::Popover)
-                .color(ColorToken::PopoverForeground)
-                .border_color(ColorToken::Border)
-                .border_width(1.0)
-                .border_radius(RadiusToken::Md)
-                .shadow(
+            trigger_open: StyleOf::new(),
+            menu: StyleOf::new()
+                .with::<container::padding>(EdgeInsets::all(4.0))
+                .with::<container::background>(ColorToken::Popover)
+                .with::<container::color>(ColorToken::PopoverForeground)
+                .with::<container::border_color>(ColorToken::Border)
+                .with::<container::border_width>(1.0)
+                .with::<container::border_radius>(RadiusToken::Md)
+                .with::<container::shadow>(
                     ShadowStyle::new()
                         .color(Color::rgba(0.0, 0.0, 0.0, 0.1))
                         .offset(Point::new(0.0, 4.0))
                         .blur(6.0)
                         .spread(-1.0),
                 )
-                .max_height(280.0)
-                .scroll_vertical(),
+                .with::<container::max_height>(280.0)
+                .with::<container::scroll_direction>(ScrollDirectionStyle::Vertical),
             selected_option: option.clone(),
-            disabled_option: Style::new()
-                .width(Sizing::fill())
-                .gap(8.0)
-                .padding(EdgeInsets::new(8.0, 8.0, 6.0, 6.0))
-                .align(AlignStyle::Center)
-                .justify(JustifyStyle::SpaceBetween)
-                .border_radius(RadiusToken::Sm)
-                .font_size(FontSizeToken::Md)
-                .color(ColorToken::PopoverForeground.alpha(0.5)),
+            disabled_option: StyleOf::new()
+                .with::<container::width>(Sizing::fill())
+                .with::<container::gap>(8.0)
+                .with::<container::padding>(EdgeInsets::new(8.0, 8.0, 6.0, 6.0))
+                .with::<container::align>(AlignStyle::Center)
+                .with::<container::justify>(JustifyStyle::SpaceBetween)
+                .with::<container::border_radius>(RadiusToken::Sm)
+                .with::<container::font_size>(FontSizeToken::Md)
+                .with::<container::color>(ColorToken::PopoverForeground.alpha(0.5)),
             option,
         }
     }
@@ -163,14 +168,8 @@ fn check_icon() -> IconData {
     .clone()
 }
 
-fn indicator(data: IconData, style: Style) -> ElementDesc {
-    view! {
-        icon(
-            from_icon_data: data,
-            size: 16.0,
-            style: style,
-        )
-    }
+fn indicator(data: IconData, style: StyleOf<Container>) -> ElementDesc {
+    view! { container(style: style) { icon(data: data, size: Size::fix(16.0, 16.0)) } }
 }
 
 fn normalized_selection(items: &[DropDownItem], requested: usize) -> Option<usize> {
@@ -295,8 +294,8 @@ pub fn drop_down(
     let mut trigger_style = style.trigger.clone();
     if *disabled {
         trigger_style = trigger_style
-            .color(ColorToken::Foreground.alpha(0.5))
-            .border_color(ColorToken::Input.alpha(0.5));
+            .with::<container::color>(ColorToken::Foreground.alpha(0.5))
+            .with::<container::border_color>(ColorToken::Input.alpha(0.5));
     }
     if shown {
         trigger_style.merge(&style.trigger_open);
@@ -304,18 +303,18 @@ pub fn drop_down(
 
     let mut trigger_children = vec![
         view! {
-            xui_core::widgets::text(
+            xui_core::prelude::text(
                 label.clone(),
                 style: if has_selection {
-                    Style::new()
+                    StyleOf::new()
                 } else {
-                    Style::new().color(ColorToken::MutedForeground)
+                    StyleOf::new().with::<container::color>(ColorToken::MutedForeground)
                 },
             )
         },
         indicator(
             chevron_down_icon(),
-            Style::new().color(ColorToken::MutedForeground),
+            StyleOf::new().with::<container::color>(ColorToken::MutedForeground),
         ),
     ];
     if shown {
@@ -354,16 +353,16 @@ pub fn drop_down(
                         EventResult::Consumed
                     },
                 ) {
-                    xui_core::widgets::text(
+                    xui_core::prelude::text(
                         item.label.clone(),
                     )
                     ..// Keep the slot when unselected so labels don't shift.
                     indicator(
                         check_icon(),
                         if is_selected {
-                            Style::new()
+                            StyleOf::new()
                         } else {
-                            Style::new().color(Color::TRANSPARENT)
+                            StyleOf::new().with::<container::color>(Color::TRANSPARENT)
                         },
                     )
                 }
@@ -386,17 +385,18 @@ pub fn drop_down(
         // menu follows it through resizes, layout changes and scrolling. Modal:
         // a press outside reaches nothing but the dismiss handler, which is
         // also what keeps the trigger from reopening it.
-        trigger_children.push(view! {
-            xui_core::element::portal_view(
-                key: format!("{id_prefix}-portal"),
-                z_index: *z_index,
-                modal: true,
-                anchor: *placement,
-                on_dismiss: { let set_open = set_open.clone(); move |_| set_open.call(false) },
-            ) {
-                ..menu
-            }
-        });
+        trigger_children.push(
+            portal(vec![menu])
+                .key(format!("{id_prefix}-portal"))
+                .z_index(*z_index)
+                .modal(true)
+                .anchor(*placement)
+                .on_dismiss({
+                    let set_open = set_open.clone();
+                    move |_| set_open.call(false)
+                })
+                .into(),
+        );
     }
 
     view! {
@@ -419,7 +419,7 @@ pub fn drop_down(
                     (Shortcut::named(NamedKey::ArrowUp).allow_repeat(true), PREVIOUS_OPTION),
                     (Shortcut::named(NamedKey::ArrowDown).allow_repeat(true), NEXT_OPTION),
                     (Shortcut::named(NamedKey::Home), FIRST_OPTION), (Shortcut::named(NamedKey::End), LAST_OPTION),
-                ],
+                ].map(|(shortcut, command)| ShortcutBinding { shortcut, command }).to_vec(),
                 on_command: move |event, _| {
                     if nav_disabled { return EventResult::Ignored; }
                     let target = match event.command {

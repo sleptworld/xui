@@ -80,7 +80,7 @@ fn command_matches(item: &CommandItem, query: &str) -> bool {
 /// | `on_open_change` | `Option<BoolChangeCallback>` | `None` |
 /// | `on_select` | `Option<MenuSelectCallback>` | `None` |
 /// | `empty_text` | `String` | `"No commands found".to_string()` |
-/// | `style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -98,7 +98,7 @@ fn command_matches(item: &CommandItem, query: &str) -> bool {
     on_open_change = None,
     on_select = None,
     empty_text = "No commands found".to_string(),
-    style = Style::new(),
+    style = StyleOf::new(),
 )]
 pub fn command_palette(
     items: &Vec<CommandItem>,
@@ -107,7 +107,7 @@ pub fn command_palette(
     on_open_change: &Option<BoolChangeCallback>,
     on_select: &Option<MenuSelectCallback>,
     empty_text: &String,
-    style: &Style,
+    style: &StyleOf<Container>,
 ) {
     let handles = cx.use_memo_with(
         items.iter().map(|item| item.id.clone()).collect::<Vec<_>>(),
@@ -141,24 +141,24 @@ pub fn command_palette(
         .collect::<Vec<_>>();
     let mut rows = Vec::with_capacity(visible.len().max(1) + 1);
     rows.push(view! {
-        xui_core::widgets::text(
+        xui_core::prelude::text(
             if query.is_empty() {
                 "Type to filter commands".to_owned()
             } else {
                 format!("Results for “{query}”")
             },
-            style: Style::new()
-                .padding(EdgeInsets::all(10.0))
-                .font_size(FontSizeToken::Sm),
+            style: StyleOf::new()
+                .with::<container::padding>(EdgeInsets::all(10.0))
+                .with::<container::font_size>(FontSizeToken::Sm),
         )
     });
     if visible.is_empty() {
         rows.push(view! {
             container(
-                style: Style::new().padding(EdgeInsets::all(16.0)),
+                style: StyleOf::new().with::<container::padding>(EdgeInsets::all(16.0)),
                 accessibility_live_region: AccessibilityLiveRegion::Polite,
             ) {
-                xui_core::widgets::text(
+                xui_core::prelude::text(
                     empty_text.clone(),
                 )
             }
@@ -171,15 +171,15 @@ pub fn command_palette(
             let handles = handles.get().clone();
             let model = model.clone();
             let mut children = vec![view! {
-                xui_core::widgets::text(
+                xui_core::prelude::text(
                     item.label.clone(),
                 )
             }];
             if let Some(shortcut) = &item.shortcut {
                 children.push(view! {
-                    xui_core::widgets::text(
+                    xui_core::prelude::text(
                         shortcut.clone(),
-                        style: Style::new().font_size(FontSizeToken::Sm),
+                        style: StyleOf::new().with::<container::font_size>(FontSizeToken::Sm),
                     )
                 });
             }
@@ -188,16 +188,14 @@ pub fn command_palette(
             rows.push(view! {
                 container(
                     key: item.id.clone(),
-                    style: Style::new()
-                        .padding(EdgeInsets::all(10.0))
-                        .justify(JustifyStyle::SpaceBetween)
-                        .border_radius(RadiusToken::Sm)
-                        .when(WidgetState::HOVERED, |style| {
-                            style.background(ColorToken::MutedSurface)
-                    }),
+                    style: StyleOf::new()
+                        .with::<container::padding>(EdgeInsets::all(10.0))
+                        .with::<container::justify>(JustifyStyle::SpaceBetween)
+                        .with::<container::border_radius>(RadiusToken::Sm)
+                        .when_style(WidgetStateMatcher::all(WidgetState::HOVERED), StyleOf::<Container>::new().with::<container::background>(ColorToken::MutedSurface)),
                     flex_direction: FlexDirectionStyle::Row,
                     focus_handle: handles[index].clone(),
-                    shortcuts: crate::selection::selection_shortcuts(),
+                    shortcuts: crate::selection::selection_shortcuts().map(|(shortcut, command)| ShortcutBinding { shortcut, command }).to_vec(),
                     on_command: move |event, event_cx| {
                         if disabled { return EventResult::Ignored; }
                         let Some(target) = crate::selection::selection_target(&model, index, event.command) else { return EventResult::Ignored; };
@@ -223,10 +221,10 @@ pub fn command_palette(
             });
         }
     }
-    let mut content_style = Style::new()
-        .min_width(420.0)
-        .max_height(480.0)
-        .scroll_vertical();
+    let mut content_style = StyleOf::new()
+        .with::<container::min_width>(420.0)
+        .with::<container::max_height>(480.0)
+        .with::<container::scroll_direction>(ScrollDirectionStyle::Vertical);
     content_style.merge(style);
     let content = view! {
         container(

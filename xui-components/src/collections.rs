@@ -18,7 +18,6 @@
 //! | [`data_grid`](fn@self::data_grid) | A tabular string-data surface with sortable headers and selectable rows. |
 //! | [`tree_view`](fn@self::tree_view) | A tree with independent controlled selection and expansion. |
 
-use crate::layout::MergeClone;
 use xui_core::prelude::*;
 use xui_macros::{component, view};
 
@@ -39,8 +38,8 @@ use crate::{BoolChangeCallback, IndexChangeCallback};
 /// | `open` | `Option<bool>` | `None` |
 /// | `default_open` | `bool` | `false` |
 /// | `on_open_change` | `Option<BoolChangeCallback>` | `None` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `trigger_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `trigger_style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -56,8 +55,8 @@ use crate::{BoolChangeCallback, IndexChangeCallback};
     open = None,
     default_open = false,
     on_open_change = None,
-    style = Style::new(),
-    trigger_style = Style::new(),
+    style = StyleOf::new(),
+    trigger_style = StyleOf::new(),
 )]
 pub fn collapsible(
     trigger: &ElementDesc,
@@ -65,8 +64,8 @@ pub fn collapsible(
     open: &Option<bool>,
     default_open: &bool,
     on_open_change: &Option<BoolChangeCallback>,
-    style: &Style,
-    trigger_style: &Style,
+    style: &StyleOf<Container>,
+    trigger_style: &StyleOf<Container>,
 ) {
     let state = cx.use_state(|| *default_open);
     let controlled = open.is_some();
@@ -74,7 +73,7 @@ pub fn collapsible(
     let callback = on_open_change.clone();
     let trigger = view! {
         container(
-            style: crate::layout::control_style(false).merge_clone(trigger_style),
+            style: crate::layout::control_style(false).merged(trigger_style),
             focusable: true,
             tab_index: 0,
             accessibility_role: AccessibilityRole::Button,
@@ -98,7 +97,7 @@ pub fn collapsible(
     if shown {
         children.push(content.clone());
     }
-    let mut root_style = Style::new();
+    let mut root_style = StyleOf::new();
     root_style.merge(style);
     view! {
         container(
@@ -154,9 +153,9 @@ pub type OptionalIndexChangeCallback = Callback<Option<usize>>;
 /// | `default_expanded` | `Option<usize>` | `None` |
 /// | `collapsible` | `bool` | `true` |
 /// | `on_change` | `Option<OptionalIndexChangeCallback>` | `None` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `trigger_style` | `Style` | `Style::new()` |
-/// | `content_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `trigger_style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `content_style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -173,9 +172,9 @@ pub type OptionalIndexChangeCallback = Callback<Option<usize>>;
     default_expanded = None,
     collapsible = true,
     on_change = None,
-    style = Style::new(),
-    trigger_style = Style::new(),
-    content_style = Style::new(),
+    style = StyleOf::new(),
+    trigger_style = StyleOf::new(),
+    content_style = StyleOf::new(),
 )]
 pub fn accordion(
     items: &Vec<AccordionItem>,
@@ -183,9 +182,9 @@ pub fn accordion(
     default_expanded: &Option<usize>,
     collapsible: &bool,
     on_change: &Option<OptionalIndexChangeCallback>,
-    style: &Style,
-    trigger_style: &Style,
-    content_style: &Style,
+    style: &StyleOf<Container>,
+    trigger_style: &StyleOf<Container>,
+    content_style: &StyleOf<Container>,
 ) {
     let state = cx.use_state(|| *default_expanded);
     let controlled = expanded.is_some();
@@ -200,10 +199,10 @@ pub fn accordion(
 
         let mut section = vec![view! {
             container(
-                style: Style::new()
-                    .padding(EdgeInsets::symmetric(12.0, 10.0))
-                    .border_color(ColorToken::Border)
-                    .border_width(1.0).merge_clone(&crate::layout::control_style(disabled)).merge_clone(trigger_style),
+                style: StyleOf::new()
+                    .with::<container::padding>(EdgeInsets::symmetric(12.0, 10.0))
+                    .with::<container::border_color>(ColorToken::Border)
+                    .with::<container::border_width>(1.0).merged(&crate::layout::control_style(disabled)).merged(trigger_style),
                 focusable: !disabled,
                 tab_index: if disabled { -1 } else { 0 },
                 accessibility_role: AccessibilityRole::Button,
@@ -231,7 +230,7 @@ pub fn accordion(
         if shown {
             section.push(view! {
                 container(
-                    style: Style::new().padding(EdgeInsets::all(12.0)).merge_clone(content_style),
+                    style: StyleOf::new().with::<container::padding>(EdgeInsets::all(12.0)).merged(content_style),
                 ) {
                     ..item.content.clone()
                 }
@@ -246,7 +245,7 @@ pub fn accordion(
             }
         });
     }
-    let mut root_style = Style::new();
+    let mut root_style = StyleOf::new();
     root_style.merge(style);
     view! {
         container(
@@ -287,8 +286,8 @@ impl BreadcrumbItem {
 /// | `items` | `Vec<BreadcrumbItem>` | **Required** |
 /// | `on_navigate` | `Option<IndexChangeCallback>` | `None` |
 /// | `separator` | `String` | `"/".to_string()` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `item_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `item_style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -303,21 +302,21 @@ impl BreadcrumbItem {
 #[defaults(
     on_navigate = None,
     separator = "/".to_string(),
-    style = Style::new(),
-    item_style = Style::new(),
+    style = StyleOf::new(),
+    item_style = StyleOf::new(),
 )]
 pub fn breadcrumb(
     items: &Vec<BreadcrumbItem>,
     on_navigate: &Option<IndexChangeCallback>,
     separator: &String,
-    style: &Style,
-    item_style: &Style,
+    style: &StyleOf<Container>,
+    item_style: &StyleOf<Container>,
 ) {
     let mut children = Vec::new();
     for (index, item) in items.iter().enumerate() {
         if index > 0 {
             children.push(view! {
-                xui_core::widgets::text(
+                xui_core::prelude::text(
                     separator.clone(),
                 )
             });
@@ -329,7 +328,7 @@ pub fn breadcrumb(
 
         children.push(view! {
             container(
-                style: crate::layout::control_style(disabled).merge_clone(item_style),
+                style: crate::layout::control_style(disabled).merged(item_style),
                 focusable: !disabled,
                 tab_index: if disabled { -1 } else { 0 },
                 accessibility_role: if current {
@@ -347,13 +346,13 @@ pub fn breadcrumb(
                     EventResult::Consumed
                 },
             ) {
-                xui_core::widgets::text(
+                xui_core::prelude::text(
                     item.label.clone(),
                 )
             }
         });
     }
-    let mut root_style = Style::new().gap(8.0);
+    let mut root_style = StyleOf::new().with::<container::gap>(8.0);
     root_style.merge(style);
     view! {
         container(
@@ -381,8 +380,8 @@ pub fn breadcrumb(
 /// | `page` | `usize` | `0` |
 /// | `sibling_count` | `usize` | `1` |
 /// | `on_change` | `Option<IndexChangeCallback>` | `None` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `item_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `item_style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -398,16 +397,16 @@ pub fn breadcrumb(
     page = 0,
     sibling_count = 1,
     on_change = None,
-    style = Style::new(),
-    item_style = Style::new(),
+    style = StyleOf::new(),
+    item_style = StyleOf::new(),
 )]
 pub fn pagination(
     page_count: &usize,
     page: &usize,
     sibling_count: &usize,
     on_change: &Option<IndexChangeCallback>,
-    style: &Style,
-    item_style: &Style,
+    style: &StyleOf<Container>,
+    item_style: &StyleOf<Container>,
 ) {
     let page_count = *page_count;
     if page_count == 0 {
@@ -429,10 +428,10 @@ pub fn pagination(
 
         view! {
             container(
-                style: Style::new()
-                    .size(Size::fix(36.0, 36.0))
-                    .align(AlignStyle::Center)
-                    .justify(JustifyStyle::Center).merge_clone(&crate::layout::control_style(disabled)).merge_clone(item_style),
+                style: StyleOf::new()
+                    .with::<container::size>(Size::fix(36.0, 36.0))
+                    .with::<container::align>(AlignStyle::Center)
+                    .with::<container::justify>(JustifyStyle::Center).merged(&crate::layout::control_style(disabled)).merged(item_style),
                 focusable: !disabled,
                 tab_index: if disabled { -1 } else { 0 },
                 accessibility_role: AccessibilityRole::Button,
@@ -446,7 +445,7 @@ pub fn pagination(
                     EventResult::Consumed
                 },
             ) {
-                xui_core::widgets::text(
+                xui_core::prelude::text(
                     label.clone(),
                 )
             }
@@ -465,16 +464,16 @@ pub fn pagination(
         let selected = index == current;
         children.push(view! {
             container(
-                style: Style::new()
-                    .size(Size::fix(36.0, 36.0))
-                    .align(AlignStyle::Center)
-                    .justify(JustifyStyle::Center)
-                    .background(if selected {
+                style: StyleOf::new()
+                    .with::<container::size>(Size::fix(36.0, 36.0))
+                    .with::<container::align>(AlignStyle::Center)
+                    .with::<container::justify>(JustifyStyle::Center)
+                    .with::<container::background>(if selected {
                         ColorStyle::from(ColorToken::Primary)
                     } else {
                         ColorStyle::from(Color::TRANSPARENT)
                 })
-                    .border_radius(RadiusToken::Sm),
+                    .with::<container::border_radius>(RadiusToken::Sm),
                 focusable: true,
                 tab_index: 0,
                 accessibility_role: AccessibilityRole::Button,
@@ -488,7 +487,7 @@ pub fn pagination(
                     EventResult::Consumed
                 },
             ) {
-                xui_core::widgets::text(
+                xui_core::prelude::text(
                     (index + 1).to_string(),
                 )
             }
@@ -504,7 +503,7 @@ pub fn pagination(
         page_count - 1,
         current + 1 >= page_count,
     ));
-    let mut root_style = Style::new().gap(4.0);
+    let mut root_style = StyleOf::new().with::<container::gap>(4.0);
     root_style.merge(style);
     view! {
         container(
@@ -545,10 +544,10 @@ impl TableRow {
 /// | --- | --- | --- |
 /// | `rows` | `Vec<TableRow>` | **Required** |
 /// | `headers` | `Vec<ElementDesc>` | `Vec::new()` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `row_style` | `Style` | `Style::new()` |
-/// | `header_style` | `Style` | `Style::new()` |
-/// | `cell_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `row_style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `header_style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `cell_style` | `StyleOf<Container>` | `StyleOf::new()` |
 /// | `column_tracks` | `Option<GridTracks>` | `None` |
 ///
 /// # Example
@@ -563,19 +562,19 @@ impl TableRow {
 #[component]
 #[defaults(
     headers = Vec::new(),
-    style = Style::new(),
-    row_style = Style::new(),
-    header_style = Style::new(),
-    cell_style = Style::new(),
+    style = StyleOf::new(),
+    row_style = StyleOf::new(),
+    header_style = StyleOf::new(),
+    cell_style = StyleOf::new(),
     column_tracks = None,
 )]
 pub fn data_table(
     rows: &Vec<TableRow>,
     headers: &Vec<ElementDesc>,
-    style: &Style,
-    row_style: &Style,
-    header_style: &Style,
-    cell_style: &Style,
+    style: &StyleOf<Container>,
+    row_style: &StyleOf<Grid>,
+    header_style: &StyleOf<Grid>,
+    cell_style: &StyleOf<Container>,
     column_tracks: &Option<GridTracks>,
 ) {
     let columns = headers
@@ -587,9 +586,9 @@ pub fn data_table(
             .map(|cell| {
                 view! {
                     container(
-                        style: Style::new()
-                            .padding(EdgeInsets::all(10.0))
-                            .width(Sizing::Fill).merge_clone(cell_style),
+                        style: StyleOf::new()
+                            .with::<container::padding>(EdgeInsets::all(10.0))
+                            .with::<container::width>(Sizing::Fill).merged(cell_style),
                         accessibility_role: if header {
                             AccessibilityRole::ColumnHeader
                         } else {
@@ -601,14 +600,14 @@ pub fn data_table(
                 }
             })
             .collect();
-        let mut style = Style::new()
-            .width(Sizing::Fill)
-            .border_color(ColorToken::Border)
-            .border_width(1.0);
+        let mut style = StyleOf::new()
+            .with::<container::width>(Sizing::Fill)
+            .with::<container::border_color>(ColorToken::Border)
+            .with::<container::border_width>(1.0);
         if header {
             style = style
-                .background(ColorToken::MutedSurface)
-                .merge_clone(header_style);
+                .with::<container::background>(ColorToken::MutedSurface)
+                .merged(header_style);
         } else {
             style.merge(row_style);
         }
@@ -631,7 +630,7 @@ pub fn data_table(
         rows.iter()
             .map(|row| make_row(row.id.clone(), row.cells.clone(), false)),
     );
-    let mut root_style = Style::new().width(Sizing::Fill);
+    let mut root_style = StyleOf::new().with::<container::width>(Sizing::Fill);
     root_style.merge(style);
     view! {
         container(
@@ -725,10 +724,10 @@ pub type GridSortCallback = Callback<GridSort>;
 /// | `sort` | `Option<GridSort>` | `None` |
 /// | `on_row_select` | `Option<StringSelectCallback>` | `None` |
 /// | `on_sort` | `Option<GridSortCallback>` | `None` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `header_style` | `Style` | `Style::new()` |
-/// | `row_style` | `Style` | `Style::new()` |
-/// | `cell_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `header_style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `row_style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `cell_style` | `StyleOf<Container>` | `StyleOf::new()` |
 /// | `column_tracks` | `Option<GridTracks>` | `None` |
 ///
 /// # Example
@@ -746,10 +745,10 @@ pub type GridSortCallback = Callback<GridSort>;
     sort = None,
     on_row_select = None,
     on_sort = None,
-    style = Style::new(),
-    header_style = Style::new(),
-    row_style = Style::new(),
-    cell_style = Style::new(),
+    style = StyleOf::new(),
+    header_style = StyleOf::new(),
+    row_style = StyleOf::new(),
+    cell_style = StyleOf::new(),
     column_tracks = None,
 )]
 pub fn data_grid(
@@ -759,10 +758,10 @@ pub fn data_grid(
     sort: &Option<GridSort>,
     on_row_select: &Option<StringSelectCallback>,
     on_sort: &Option<GridSortCallback>,
-    style: &Style,
-    header_style: &Style,
-    row_style: &Style,
-    cell_style: &Style,
+    style: &StyleOf<Container>,
+    header_style: &StyleOf<Container>,
+    row_style: &StyleOf<Grid>,
+    cell_style: &StyleOf<Container>,
     column_tracks: &Option<GridTracks>,
 ) {
     let count = columns.len().max(1);
@@ -790,10 +789,10 @@ pub fn data_grid(
 
             view! {
                 container(
-                    style: Style::new()
-                        .padding(EdgeInsets::all(10.0))
-                        .background(ColorToken::MutedSurface)
-                        .font_weight(FontWeight::Bold).merge_clone(&crate::layout::control_style(!column.sortable)).merge_clone(header_style),
+                    style: StyleOf::new()
+                        .with::<container::padding>(EdgeInsets::all(10.0))
+                        .with::<container::background>(ColorToken::MutedSurface)
+                        .with::<container::font_weight>(FontWeight::Bold).merged(&crate::layout::control_style(!column.sortable)).merged(header_style),
                     focusable: column.sortable,
                     tab_index: if column.sortable { 0 } else { -1 },
                     accessibility_role: AccessibilityRole::ColumnHeader,
@@ -806,7 +805,7 @@ pub fn data_grid(
                         EventResult::Consumed
                     },
                 ) {
-                    xui_core::widgets::text(
+                    xui_core::prelude::text(
                         format!("{}{indicator}", column.label),
                     )
                 }
@@ -831,10 +830,10 @@ pub fn data_grid(
             .map(|index| {
                 view! {
                     container(
-                        style: Style::new().padding(EdgeInsets::all(10.0)).merge_clone(cell_style),
+                        style: StyleOf::new().with::<container::padding>(EdgeInsets::all(10.0)).merged(cell_style),
                         accessibility_role: AccessibilityRole::Cell,
                     ) {
-                        xui_core::widgets::text(
+                        xui_core::prelude::text(
                             row.cells.get(index).cloned().unwrap_or_default(),
                         )
                     }
@@ -846,14 +845,14 @@ pub fn data_grid(
         children.push(view! {
             grid(
                 key: row.id.clone(),
-                style: Style::new()
-                    .background(if selected {
+                style: StyleOf::new()
+                    .with::<container::background>(if selected {
                         ColorStyle::from(ColorToken::MutedSurface)
                     } else {
                         ColorStyle::from(Color::TRANSPARENT)
                 })
-                    .border_color(ColorToken::Border)
-                    .border_width(1.0).merge_clone(&crate::layout::control_style(disabled)).merge_clone(row_style),
+                    .with::<container::border_color>(ColorToken::Border)
+                    .with::<container::border_width>(1.0).merged(&crate::layout::control_style(disabled)).merged(row_style),
                 columns: tracks.clone(),
                 focusable: !disabled,
                 tab_index: if disabled { -1 } else { 0 },
@@ -873,7 +872,7 @@ pub fn data_grid(
             }
         });
     }
-    let mut root_style = Style::new().width(Sizing::Fill);
+    let mut root_style = StyleOf::new().with::<container::width>(Sizing::Fill);
     root_style.merge(style);
     view! {
         container(
@@ -936,7 +935,7 @@ fn tree_nodes(
     selection_state: xui_core::state::State<Option<String>>,
     selection_controlled: bool,
     on_select: &Option<StringSelectCallback>,
-    item_style: &Style,
+    item_style: &StyleOf<Container>,
 ) -> Vec<ElementDesc> {
     let mut output = Vec::with_capacity(nodes.len());
     for node in nodes {
@@ -953,14 +952,17 @@ fn tree_nodes(
         };
         let disabled = node.disabled;
         let row_style = crate::layout::control_style(disabled)
-            .padding(EdgeInsets::new(8.0 + depth as f32 * 16.0, 8.0, 6.0, 6.0))
-            .background(if selected_now {
+            .with::<container::padding>(EdgeInsets::new(8.0 + depth as f32 * 16.0, 8.0, 6.0, 6.0))
+            .with::<container::background>(if selected_now {
                 ColorStyle::from(ColorToken::Accent)
             } else {
                 ColorStyle::from(Color::TRANSPARENT)
             })
-            .when(WidgetState::HOVERED, |s| s.background(ColorToken::Muted))
-            .merge_clone(item_style);
+            .when_style(
+                WidgetStateMatcher::all(WidgetState::HOVERED),
+                StyleOf::<Container>::new().with::<container::background>(ColorToken::Muted),
+            )
+            .merged(item_style);
         output.push(view! {
             row(style: row_style, key: node.id.clone(), gap: 6.0,
                 focusable: !disabled, tab_index: if disabled { -1 } else { 0 },
@@ -983,8 +985,8 @@ fn tree_nodes(
                     event_cx.request_focus();
                     EventResult::Consumed
             }) {
-                xui_core::widgets::text(if has_children { if is_expanded { "▾" } else { "▸" } } else { "" })
-                xui_core::widgets::text(node.label.clone())
+                xui_core::prelude::text(if has_children { if is_expanded { "▾" } else { "▸" } } else { "" })
+                xui_core::prelude::text(node.label.clone())
             }
         });
         if is_expanded {
@@ -1025,8 +1027,8 @@ fn tree_nodes(
 /// | `default_expanded` | `Vec<String>` | `Vec::new()` |
 /// | `on_expanded_change` | `Option<TreeExpansionCallback>` | `None` |
 /// | `on_select` | `Option<StringSelectCallback>` | `None` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `item_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `item_style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -1045,8 +1047,8 @@ fn tree_nodes(
     default_expanded = Vec::new(),
     on_expanded_change = None,
     on_select = None,
-    style = Style::new(),
-    item_style = Style::new(),
+    style = StyleOf::new(),
+    item_style = StyleOf::new(),
 )]
 pub fn tree_view(
     nodes: &Vec<TreeNode>,
@@ -1056,8 +1058,8 @@ pub fn tree_view(
     default_expanded: &Vec<String>,
     on_expanded_change: &Option<TreeExpansionCallback>,
     on_select: &Option<StringSelectCallback>,
-    style: &Style,
-    item_style: &Style,
+    style: &StyleOf<Container>,
+    item_style: &StyleOf<Container>,
 ) {
     let expansion = cx.use_state(|| default_expanded.clone());
     let selection = cx.use_state(|| default_selected.clone());

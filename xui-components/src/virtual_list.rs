@@ -87,8 +87,8 @@ fn visible_range(
 /// | `viewport_height` | `f32` | **Required** |
 /// | `render_item` | `VirtualItemRenderer` | **Required** |
 /// | `overscan` | `usize` | `3` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `item_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `item_style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -115,8 +115,8 @@ fn visible_range(
 #[component]
 #[defaults(
     overscan = 3,
-    style = Style::new(),
-    item_style = Style::new(),
+    style = StyleOf::new(),
+    item_style = StyleOf::new(),
 )]
 pub fn virtual_list(
     item_count: &usize,
@@ -124,8 +124,8 @@ pub fn virtual_list(
     viewport_height: &f32,
     render_item: &VirtualItemRenderer,
     overscan: &usize,
-    style: &Style,
-    item_style: &Style,
+    style: &StyleOf<Container>,
+    item_style: &StyleOf<Container>,
 ) {
     let scroll_top = cx.use_state(|| 0.0f32);
     // The prop seeds layout; size observations also follow resizes without a wheel event.
@@ -166,10 +166,10 @@ pub fn virtual_list(
                         key: format!("xui-virtual-row-{index}"),
                         style: item_style
                             .clone()
-                            .absolute()
-                            .inset(EdgeInsets::new(0.0, 0.0, index as f32 * item_height, 0.0))
-                            .width(Sizing::Fill)
-                            .height(item_height),
+                            .with::<container::position>(PositionStyle::Absolute)
+                            .with::<container::inset>(EdgeInsets::new(0.0, 0.0, index as f32 * item_height, 0.0))
+                            .with::<container::width>(Sizing::Fill)
+                            .with::<container::height>(item_height),
                     ) {
                         ..row
                     }
@@ -184,26 +184,27 @@ pub fn virtual_list(
     let content = view! {
         container(
             key: "xui-virtual-content",
-            style: Style::new()
-                .relative()
-                .width(Sizing::Fill)
-                .height(total_height),
+            style: StyleOf::new()
+                .with::<container::position>(PositionStyle::Relative)
+                .with::<container::width>(Sizing::Fill)
+                .with::<container::height>(total_height),
         ) {
             ..rows.get().clone()
         }
     };
 
-    let mut viewport_style = Style::new().height(if height_hint.is_finite() {
+    let mut viewport_style = StyleOf::new().with::<container::height>(if height_hint.is_finite() {
         height_hint.max(0.0)
     } else {
         0.0
     });
     viewport_style.merge(style);
-    viewport_style = viewport_style.scroll_vertical();
+    viewport_style =
+        viewport_style.with::<container::scroll_direction>(ScrollDirectionStyle::Vertical);
     view! {
         container(
             style: viewport_style,
-            observe_size: size,
+            size_observer: size,
             on_scroll: move |event, event_cx| {
                 // The translator emits a `Scroll` for every node on the wheel's
                 // path, and those for the rows beneath bubble through here with
@@ -322,7 +323,7 @@ mod tests {
         let render_item: VirtualItemRenderer = cx.use_callback((), |_index: usize| {
             view! {
                 container(
-                    style: Style::new().width(Sizing::Fill).height(20.0),
+                    style: StyleOf::new().with::<container::width>(Sizing::Fill).with::<container::height>(20.0),
                 )
             }
         });
@@ -332,7 +333,7 @@ mod tests {
                 item_height: 20.0f32,
                 viewport_height: 200.0f32,
                 render_item: render_item,
-                style: Style::new().width(Sizing::Fill).height(200.0),
+                style: StyleOf::new().with::<container::width>(Sizing::Fill).with::<container::height>(200.0),
             )
         }
     }

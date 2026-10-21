@@ -25,13 +25,12 @@
 //! Host tags are known by name: the set of host widgets is closed, and the
 //! generated code asserts that a tag treated as a host is one.
 //!
-//! [`TemplateDesc::expand`] turns a template into the plain element tree it
-//! stands for; the runtime's handling of a template is equivalent to
-//! reconciling that tree.
+//! [`TemplateDesc::expand`] produces an inspection-only [`Expanded`] tree.
+//! Rendering always uses the template; expanded hosts are not render inputs.
 
 use std::any::TypeId;
 
-use crate::element::{ElementDesc, WidgetDesc};
+use crate::element::{ElementDesc, Expanded, ExpandedHost, FragmentDesc};
 use crate::event_system::{EventContext, Flow, Handler, HandlerValue};
 use crate::fiber::Key;
 use crate::node::{Draft, NodeDef};
@@ -192,59 +191,76 @@ impl TemplateDesc {
         out
     }
 
-    /// The plain element tree this template stands for: each host a
-    /// [`WidgetDesc`] with its draft, each slot in its place.
-    pub fn expand(self) -> ElementDesc {
-        let key = self.key.clone();
+    /// The hosts this template holds, each with its draft and what is
+    /// under it: each slot in its place, expanded too.
+    pub fn expand(self) -> Expanded {
         let meta = self.meta;
         let mut built = self.build(BuildMode::Mount);
         let mut slots = std::mem::take(&mut built.slots).into_iter();
-        let mut elements: Vec<Option<ElementDesc>> = (0..meta.nodes.len()).map(|_| None).collect();
-        let mut fragments: Vec<Option<Vec<ElementDesc>>> =
-            (0..meta.nodes.len()).map(|_| None).collect();
+        // Each node's expansion: a host's, or a slot's (a fragment's spliced).
+        let mut expanded: Vec<Vec<Expanded>> = (0..meta.nodes.len()).map(|_| Vec::new()).collect();
         // Slots arrive in node order.
         for (index, node) in meta.nodes.iter().enumerate() {
-            match node.kind {
-                TemplateNodeKind::Component => {
-                    let Some(TemplateSlot::Component(element)) = slots.next() else {
-                        panic!("template {} lost a component slot", meta.location);
-                    };
-                    elements[index] = Some(element);
-                }
-                TemplateNodeKind::Fragment => {
-                    let Some(TemplateSlot::Fragment(children)) = slots.next() else {
-                        panic!("template {} lost a fragment slot", meta.location);
-                    };
-                    fragments[index] = Some(children);
-                }
-                TemplateNodeKind::Host { .. } => {}
+            if !matches!(node.kind, TemplateNodeKind::Host { .. }) {
+                let Some(TemplateSlot::Element(element)) = slots.next() else {
+                    panic!("template {} lost a slot", meta.location);
+                };
+                element.expand_into(&mut expanded[index]);
             }
         }
         // Children come after their parent, so assembling back to front
         // finds every child finished.
         for index in (0..meta.nodes.len()).rev() {
-            let TemplateNodeKind::Host { .. } = meta.nodes[index].kind else {
+            if !matches!(meta.nodes[index].kind, TemplateNodeKind::Host { .. }) {
                 continue;
-            };
-            let mut children = Vec::new();
-            for child in (index + 1..meta.nodes.len()).filter(|&c| meta.nodes[c].parent == Some(index as u16)) {
-                match meta.nodes[child].kind {
-                    TemplateNodeKind::Fragment => {
-                        children.extend(fragments[child].take().expect("fragment built once"))
-                    }
-                    _ => children.push(elements[child].take().expect("child built once")),
-                }
             }
+            let children = (index + 1..meta.nodes.len())
+                .filter(|&child| meta.nodes[child].parent == Some(index as u16))
+                .flat_map(|child| std::mem::take(&mut expanded[child]))
+                .collect();
             let draft = built.hosts[index]
                 .take()
                 .unwrap_or_else(|| panic!("template {} built no draft for a host", meta.location));
-            elements[index] = Some(WidgetDesc::new(draft, children).into());
+            expanded[index] = vec![Expanded::Host(ExpandedHost { draft, children })];
         }
-        let mut root = elements[0].take().expect("a template has a root");
-        if let (Some(key), ElementDesc::Host(host)) = (key, &mut root) {
-            host.set_key(key);
+        expanded[0].pop().expect("a template's root is a host")
+    }
+
+    /// A draft written by hand, with `children`, as a template of one host:
+    /// rebuilt whole on every update, its children a fragment.
+    pub(crate) fn draft<N>(draft: Draft<N>, children: Vec<ElementDesc>) -> Self
+    where
+        N: WidgetVariant,
+        N::Props: Clone,
+        N::Behavior: Clone,
+    {
+        static DRAFT: TemplateMeta = TemplateMeta {
+            location: "a draft",
+            nodes: &[
+                TemplateNode {
+                    kind: TemplateNodeKind::Host {
+                        tag: "draft",
+                        dynamic: true,
+                    },
+                    parent: None,
+                },
+                TemplateNode {
+                    kind: TemplateNodeKind::Fragment,
+                    parent: Some(0),
+                },
+            ],
+        };
+        fn build<N>((draft, children): (Draft<N>, Vec<ElementDesc>), out: &mut TemplateBuild)
+        where
+            N: WidgetVariant,
+            N::Props: Clone,
+            N::Behavior: Clone,
+        {
+            out.host(0, draft);
+            out.fragment(children);
         }
-        root
+        let key = draft.key.clone();
+        Self::new(&DRAFT, key, N::NODE_TYPE, (draft, children), build::<N>)
     }
 }
 
@@ -259,8 +275,8 @@ pub(crate) enum BuildMode {
 
 /// A slot's content, one render's worth.
 pub(crate) enum TemplateSlot {
-    Component(ElementDesc),
-    Fragment(Vec<ElementDesc>),
+    /// A component, or a child list as a fragment.
+    Element(ElementDesc),
     /// A component whose attributes are all constants, on an update: it is
     /// what it was, so its fiber is kept as it is.
     Keep,
@@ -298,12 +314,13 @@ impl TemplateBuild {
 
     /// The next slot: a component element.
     pub fn component(&mut self, element: ElementDesc) {
-        self.slots.push(TemplateSlot::Component(element));
+        self.slots.push(TemplateSlot::Element(element));
     }
 
     /// The next slot: a child list.
     pub fn fragment(&mut self, children: Vec<ElementDesc>) {
-        self.slots.push(TemplateSlot::Fragment(children));
+        self.slots
+            .push(TemplateSlot::Element(FragmentDesc::new(children).into()));
     }
 
     /// Whether this build mounts (or expands) the template.
@@ -438,7 +455,9 @@ mod tests {
         }
 
         fn render(&mut self) {
-            self.app.render(&mut self.backend, &mut self.text).expect("mock backend");
+            self.app
+                .render(&mut self.backend, &mut self.text)
+                .expect("mock backend");
         }
 
         fn ui(&self) -> &crate::ui_runtime::UiRuntime {
@@ -451,7 +470,10 @@ mod tests {
 
         /// The application's root host.
         fn top(&self) -> NodeId {
-            self.ui().children(self.ui().root()).next().expect("a root element")
+            self.ui()
+                .children(self.ui().root())
+                .next()
+                .expect("a root element")
         }
 
         fn children(&self, id: NodeId) -> Vec<NodeId> {
@@ -504,7 +526,11 @@ mod tests {
 
         let after = harness.children(harness.top());
         assert_eq!(before, after, "the hosts were remounted");
-        assert_eq!(harness.width(after[1]), 30.0, "the dynamic attribute did not arrive");
+        assert_eq!(
+            harness.width(after[1]),
+            30.0,
+            "the dynamic attribute did not arrive"
+        );
         assert_eq!(
             harness.host_updates() - updates,
             1,
@@ -557,9 +583,15 @@ mod tests {
 
         assert_eq!(texts(&harness, top), ["c", "a", "d"]);
         let after = harness.children(top);
-        assert_eq!(after[0], before[2], "a keyed template moved rather than remounted");
+        assert_eq!(
+            after[0], before[2],
+            "a keyed template moved rather than remounted"
+        );
         assert_eq!(after[1], before[0]);
-        assert!(!harness.ui().contains(before[1]), "the dropped row was removed");
+        assert!(
+            !harness.ui().contains(before[1]),
+            "the dropped row was removed"
+        );
     }
 
     struct Unmount;
@@ -658,7 +690,11 @@ mod tests {
         assert!(harness.children(top).is_empty());
         assert!(!harness.ui().contains(column));
         assert!(!harness.ui().contains(inner));
-        assert_eq!(UNMOUNTED.with(Cell::get), unmounted + 1, "the component did not unmount");
+        assert_eq!(
+            UNMOUNTED.with(Cell::get),
+            unmounted + 1,
+            "the component did not unmount"
+        );
     }
 
     #[test]
@@ -669,7 +705,7 @@ mod tests {
                 <container on_click={|_, _| EventResult::Consumed} />
             </column>
         };
-        let ElementDesc::Host(column) = element.expanded() else {
+        let crate::element::Expanded::Host(column) = element.expand_one() else {
             panic!("a host root");
         };
         let draft = column.draft::<Container>().expect("a container");
@@ -811,7 +847,9 @@ mod tests {
                     .with::<container::gap>(4.0)
                     .with::<container::background>(Color::BLACK)
                     .into_element_desc(vec![
-                        text().with::<text::content>("label").into_element_desc(Vec::new()),
+                        text()
+                            .with::<text::content>("label")
+                            .into_element_desc(Vec::new()),
                         container()
                             .with::<container::width>(16.0)
                             .with::<container::height>(16.0)

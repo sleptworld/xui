@@ -31,6 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 title_hidden: true,
                 fullsize_content_view: true,
                 titlebar_transparent: true,
+                ..Default::default()
             }),
         ..Default::default()
     };
@@ -44,10 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// `xui_macos::runner` with a theme applied before the first frame.
 #[cfg(not(feature = "skia"))]
-fn run_vello(
-    theme: Theme,
-    options: MacRunnerOptions,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn run_vello(theme: Theme, options: MacRunnerOptions) -> Result<(), Box<dyn std::error::Error>> {
     MacRunner::with_fallible_options(
         move |window| -> Result<_, std::io::Error> {
             let mut app = App::new(gallery::gallery_component);
@@ -69,10 +67,7 @@ fn run_vello(
 
 /// The same gallery on Skia: `cargo run -p xui-example-app --features skia`.
 #[cfg(feature = "skia")]
-fn run_skia(
-    theme: Theme,
-    options: MacRunnerOptions,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn run_skia(theme: Theme, options: MacRunnerOptions) -> Result<(), Box<dyn std::error::Error>> {
     MacRunner::with_fallible_options(
         move |window| -> Result<_, std::io::Error> {
             let mut app = App::new(gallery::gallery_component);

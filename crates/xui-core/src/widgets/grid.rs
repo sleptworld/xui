@@ -1,6 +1,5 @@
 use std::hash::{Hash, Hasher};
 
-
 use taffy::{
     Display, Style as TaffyStyle,
     style::{
@@ -136,11 +135,32 @@ impl GridTracks {
 /// Children placed on a grid of tracks.
 #[widget(
     style(
-        box_size, margin, padding, flex_layout, position, display, typography, background,
-        corner_radius, border, box_shadow, clip, visibility, transform, effects, scroll, cursor
+        box_size,
+        margin,
+        padding,
+        flex_layout,
+        position,
+        display,
+        typography,
+        background,
+        corner_radius,
+        border,
+        box_shadow,
+        clip,
+        visibility,
+        transform,
+        effects,
+        scroll,
+        cursor
     ),
     behavior(
-        focus, accessibility, shortcuts, motion, focus_binding, scroll_binding, size_observation,
+        focus,
+        accessibility,
+        shortcuts,
+        motion,
+        focus_binding,
+        scroll_binding,
+        size_observation,
         events
     )
 )]
@@ -297,7 +317,10 @@ mod tests {
         ];
 
         for (flow, expected_flow) in cases {
-            let widget = grid().with::<grid::columns>(GridTracks::adaptive(20.0)).with::<grid::rows>(GridTracks::adaptive_max(10.0, 40.0)).with::<grid::flow>(flow);
+            let widget = grid()
+                .with::<grid::columns>(GridTracks::adaptive(20.0))
+                .with::<grid::rows>(GridTracks::adaptive_max(10.0, 40.0))
+                .with::<grid::flow>(flow);
             let mut style = TaffyStyle::default();
             grid_widget_to_taffy(&mut style, &widget.storage.props);
 

@@ -39,6 +39,15 @@ enum HostKind {
 /// from a component by name; the generated code asserts each one
 /// (`xui_core::template::host`).
 fn host_kind(tag: &Path) -> Option<HostKind> {
+    // Qualified application components may share a built-in tag's name.
+    // Only canonical runtime paths are eligible for host-template lowering.
+    if tag.segments.len() > 1 {
+        let names: Vec<_> = tag.segments.iter().map(|s| s.ident.to_string()).collect();
+        let runtime = matches!(names[0].as_str(), "xui" | "xui_core");
+        if !runtime || !(names.len() == 2 || names.get(1).is_some_and(|s| s == "prelude")) {
+            return None;
+        }
+    }
     let segment = tag.segments.last()?;
     if !segment.arguments.is_none() {
         return None;
@@ -111,7 +120,10 @@ fn element_is_constant(element: &Element) -> bool {
 }
 
 fn constant_path(path: &Path) -> bool {
-    let last = path.segments.last().map(|segment| segment.ident.to_string());
+    let last = path
+        .segments
+        .last()
+        .map(|segment| segment.ident.to_string());
     path.segments.len() > 1
         || last.is_some_and(|name| name.chars().next().is_some_and(char::is_uppercase))
 }
@@ -130,7 +142,10 @@ struct Ir<'a> {
 
 impl Ir<'_> {
     fn input(&mut self, span: Span, value: TokenStream2) -> Ident {
-        let name = Ident::new(&format!("__xui_v{}", self.input_names.len()), Span::call_site());
+        let name = Ident::new(
+            &format!("__xui_v{}", self.input_names.len()),
+            Span::call_site(),
+        );
         self.inputs.push(quote_spanned!(span=> let #name = #value;));
         self.input_names.push(name.clone());
         name
@@ -200,19 +215,28 @@ impl Ir<'_> {
                 Setter::Handler => quote_spanned!(name.span()=> handler),
                 Setter::Shared => quote_spanned!(name.span()=> shared),
             };
-            let input = self.input(
-                name.span(),
+            let convert_value = |value| {
                 quote_spanned! {name.span()=>
                     #xui::template::#convert(#host_tag, |__xui_table| __xui_table.#name(), #value)
-                },
-            );
+                }
+            };
+            let expression = if setter == Setter::Handler {
+                crate::element::map_handler(value, convert_value)
+            } else {
+                convert_value(value)
+            };
+            let input = self.input(name.span(), expression);
             sets.push(quote_spanned! {name.span()=>
                 let __xui_property = __xui_node.__properties().#name();
                 let __xui_node = __xui_node.__set(__xui_property, #input);
             });
         }
 
-        let tag_name = tag.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
+        let tag_name = tag
+            .segments
+            .last()
+            .map(|s| s.ident.to_string())
+            .unwrap_or_default();
         let parent_tokens = Self::parent_tokens(parent);
         self.meta[meta_slot] = quote! {
             #xui::template::TemplateNode {
@@ -243,9 +267,14 @@ impl Ir<'_> {
                 }
             }
             Body::Children(children) => {
-                if children.iter().all(|child| matches!(child, Child::Element(_))) {
+                if children
+                    .iter()
+                    .all(|child| matches!(child, Child::Element(_)))
+                {
                     for child in children {
-                        let Child::Element(child) = child else { unreachable!() };
+                        let Child::Element(child) = child else {
+                            unreachable!()
+                        };
                         if is_template_host(child) {
                             self.host(child, Some(index), errors);
                         } else {

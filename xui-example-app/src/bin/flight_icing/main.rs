@@ -21,6 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 title_hidden: true,
                 titlebar_transparent: true,
                 fullsize_content_view: true,
+                ..Default::default()
             }),
         ..Default::default()
     };

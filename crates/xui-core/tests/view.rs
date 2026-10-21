@@ -9,19 +9,20 @@ use xui_core::prelude::*;
 use xui_core::widgets::WidgetType;
 use xui_macros::{component, view, xui};
 
-/// The host element `element` is, a template expanded into the plain tree it
-/// stands for (and leaked: these are tests).
-fn host(element: &ElementDesc) -> &WidgetDesc {
-    match element {
-        ElementDesc::Host(desc) => desc,
-        ElementDesc::Template(template) => host(Box::leak(Box::new(template.clone().expand()))),
-        other => panic!("expected a host element, got {other:?}"),
+/// Expands a template for inspection without retaining runtime state.
+fn host(element: &ElementDesc) -> ExpandedHost {
+    match element.clone().expand_one() {
+        Expanded::Host(desc) => desc,
+        other => panic!("expected a host, got {other:?}"),
     }
 }
 
 fn text_of(element: &ElementDesc) -> String {
-    host(element)
-        .draft::<Text>()
+    expanded_text(&host(element))
+}
+
+fn expanded_text(host: &ExpandedHost) -> String {
+    host.draft::<Text>()
         .expect("a text")
         .storage
         .props
@@ -31,7 +32,14 @@ fn text_of(element: &ElementDesc) -> String {
 }
 
 fn texts(element: &ElementDesc) -> Vec<String> {
-    host(element).children.iter().map(text_of).collect()
+    host(element)
+        .children
+        .iter()
+        .map(|child| match child {
+            Expanded::Host(host) => expanded_text(host),
+            other => panic!("expected a text, got {other:?}"),
+        })
+        .collect()
 }
 
 /// Whether two elements are drafts of the same widget, set alike.
@@ -147,10 +155,7 @@ fn for_contributes_one_child_per_iteration() {
         }
     };
     assert_eq!(texts(&tree), ["header", "a", "b", "c", "footer"]);
-    assert_eq!(
-        host(&host(&tree).children[2]).key(),
-        Some(&"b".into())
-    );
+    assert_eq!(host(&tree).children[2].key(), Some("b".into()));
 }
 
 #[test]

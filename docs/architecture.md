@@ -62,8 +62,7 @@ The shared vocabulary every other crate agrees on:
 
 - **Geometry** — `Color`, `Point`, `Rect`, `Size`, `Sizing`, `EdgeInsets`,
   `Bounds`, `Translation`.
-- **Style** — `Style`, `StylePatch`, `ComputedStyle`, `*StylePatch` per layer
-  (layout, paint, text, scroll, transform, effect), tokens (`ColorToken`,
+- **Style** — `ComputedStyle`, style values and units, tokens (`ColorToken`,
   `SpacingToken`, `FontSizeToken`, `RadiusToken`), `Theme`, `WidgetStateMatcher`
   for state rules.
 - **Events** — raw window/pointer/keyboard events (`RawWindowEvent`,
@@ -72,8 +71,8 @@ The shared vocabulary every other crate agrees on:
 - **Widget** — `Component`, `NodeId`, `Key`, `WidgetType`, `AccessibilityRole`.
 - **Platform** — `TextInputSession`, `PlatformOutput`.
 - **Transition** — `Easing`, `Transition`, `AnimationProgress`, and the looping
-  keyframe `Animation` (`Iterations`, `AnimationDirection`). A `Style` carries
-  either or both: a transition animates a change of target and stops; an
+  keyframe `Animation` (`Iterations`, `AnimationDirection`). The motion capability carries
+  timing; typed node layers carry keyframes: a transition animates a change of target and stops; an
   animation moves on its own (a spinner) and keeps the loop asking for frames
   while it runs. They stack per property -- target, then transition sample,
   then the properties the keyframes name -- so a transition shows through
@@ -114,7 +113,7 @@ The heart of the framework:
 - **`lanes`** — update lanes (default, retry, …) for concurrent and batched
   state propagation.
 - **`layout`** — `taffy` flexbox over retained spatial nodes.
-- **`style`** — merges patches/tokens/themes into `ComputedStyle`, applies
+- **`style`** — resolves capability layers, tokens and themes into `ComputedStyle`, applies
   `WidgetStateMatcher` rules.
 - **`render`** — backend-independent scene (`RenderNodeId`, `PictureId`,
   `PrimitiveId`), scene compiler, compiled scene, and `RenderBackend` trait.
@@ -124,13 +123,36 @@ The heart of the framework:
   callbacks; focus manager; shortcut manager.
 - **`assets`** — installs the process-global `AssetManager` and exposes
   `load_image_asset` and friends.
-- **`element`** — `ElementDesc`, `ComponentDesc`, `WidgetDesc`, `portal`.
+- **`element`** — `ElementDesc`, `ComponentDesc`, `FragmentDesc`, `PortalDesc`;
+  `Expanded` and `ExpandedHost` are inspection-only output.
 - **`size`** — `HookContext::use_size()` creates a stable size subscription;
   `.observe_size(handle)` binds it to one widget without adding a wrapper.
   `handle.get()` returns `None` before layout or while unbound, otherwise the
   final border-box size in logical pixels. Layout publishes changes on the
   ordinary update lane for a subsequent render; no containment or frame-local
   layout/rebuild loop is involved.
+
+### Node descriptions and retained state
+
+`ElementDesc` has four variants: `Template`, `Component`, `Fragment`, and
+`Portal`. Every host belongs to a template. Macro-generated templates group
+hosts with fixed structure; a manually constructed `Draft` becomes a single-host
+template with a fragment slot for its children. There is no separate host-fiber
+reconciliation path.
+
+A draft is temporary input. Commit consumes it: generated `scatter` writes
+capability values to `UiRuntime`'s `Columns`, and the widget instance retains its
+own props and state under a `NodeId`. Reusing a template preserves these IDs;
+only hosts with dynamic inputs produce replacement drafts. Their values are
+compared at commit to derive dirty flags. Static hosts skip this update. Dynamic
+child slots still reconcile keys and element identity; this is node-level
+updating, not property-slot patching.
+
+The retained fiber uses `FiberKind` to hold exactly one kind of state. The WIP
+tree carries one `Pending` payload, consumed at commit. The root is an ordinary
+component. Fragments represent dynamic child lists; portals own a separate
+physical subtree and release it even when their logical host ancestor is removed.
+`Expanded` is only an inspection tree and cannot be submitted for reconciliation.
 
 ### Macros — `xui-macros`
 
@@ -195,7 +217,7 @@ GuiRuntime  ──►  App
          │
          ├─ fiber reconciler diffs ElementDesc → retained widget + layout tree
          │
-         ├─ style system: patches + theme + state → ComputedStyle per node
+         ├─ style system: capability layers + theme + state → ComputedStyle per node
          │
          ├─ taffy layout pass → node Bounds
          │

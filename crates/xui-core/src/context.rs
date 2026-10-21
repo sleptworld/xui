@@ -62,13 +62,6 @@ pub(crate) trait Ancestors {
     fn find(&self, visit: &mut dyn FnMut(FiberId) -> bool);
 }
 
-/// The ancestors of the root component, which has none.
-pub(crate) struct NoAncestors;
-
-impl Ancestors for NoAncestors {
-    fn find(&self, _visit: &mut dyn FnMut(FiberId) -> bool) {}
-}
-
 /// What a [`HookContext`] needs to provide and read contexts: the runtime's
 /// registry, and the way up from the component it renders.
 pub(crate) struct ContextScope<'a> {

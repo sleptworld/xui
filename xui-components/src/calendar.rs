@@ -12,7 +12,6 @@
 //! | [`calendar`](fn@self::calendar) | A month grid with selectable dates and previous/next navigation requests. |
 //! | [`date_picker`](fn@self::date_picker) | A date-selection popover combining a supplied trigger and month calendar. |
 
-use crate::layout::MergeClone;
 use xui_core::prelude::*;
 use xui_macros::{component, view};
 
@@ -107,10 +106,10 @@ fn weekday_monday_zero(year: i32, month: u8, day: u8) -> usize {
 /// | `on_select` | `Option<DateSelectCallback>` | `None` |
 /// | `on_month_change` | `Option<MonthChangeCallback>` | `None` |
 /// | `disabled` | `bool` | `false` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `header_style` | `Style` | `Style::new()` |
-/// | `day_style` | `Style` | `Style::new()` |
-/// | `selected_day_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `header_style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `day_style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `selected_day_style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -127,10 +126,10 @@ fn weekday_monday_zero(year: i32, month: u8, day: u8) -> usize {
     on_select = None,
     on_month_change = None,
     disabled = false,
-    style = Style::new(),
-    header_style = Style::new(),
-    day_style = Style::new(),
-    selected_day_style = Style::new(),
+    style = StyleOf::new(),
+    header_style = StyleOf::new(),
+    day_style = StyleOf::new(),
+    selected_day_style = StyleOf::new(),
 )]
 pub fn calendar(
     month: &CalendarMonth,
@@ -138,10 +137,10 @@ pub fn calendar(
     on_select: &Option<DateSelectCallback>,
     on_month_change: &Option<MonthChangeCallback>,
     disabled: &bool,
-    style: &Style,
-    header_style: &Style,
-    day_style: &Style,
-    selected_day_style: &Style,
+    style: &StyleOf<Container>,
+    header_style: &StyleOf<Container>,
+    day_style: &StyleOf<Container>,
+    selected_day_style: &StyleOf<Container>,
 ) {
     let month = &CalendarMonth::new(month.year, month.month);
     let disabled_navigation = *disabled;
@@ -163,9 +162,9 @@ pub fn calendar(
     let next = on_month_change.clone();
     let header = view! {
         container(
-            style: Style::new()
-                .align(AlignStyle::Center)
-                .justify(JustifyStyle::SpaceBetween).merge_clone(header_style),
+            style: StyleOf::new()
+                .with::<container::align>(AlignStyle::Center)
+                .with::<container::justify>(JustifyStyle::SpaceBetween).merged(header_style),
             flex_direction: FlexDirectionStyle::Row,
         ) {
             container(
@@ -184,17 +183,17 @@ pub fn calendar(
                     }
                 },
             ) {
-                xui_core::widgets::text(
+                xui_core::prelude::text(
                     "‹",
                 )
             }
-            xui_core::widgets::text(
+            xui_core::prelude::text(
                 format!(
                     "{} {}",
                     month_names[usize::from(month.month.saturating_sub(1))],
                     month.year
                 ),
-                style: Style::new().font_weight(FontWeight::Bold),
+                style: StyleOf::new().with::<container::font_weight>(FontWeight::Bold),
             )
             container(
                 focusable: !*disabled,
@@ -212,7 +211,7 @@ pub fn calendar(
                     }
                 },
             ) {
-                xui_core::widgets::text(
+                xui_core::prelude::text(
                     "›",
                 )
             }
@@ -222,9 +221,9 @@ pub fn calendar(
         .into_iter()
         .map(|label| {
             view! {
-                xui_core::widgets::text(
+                xui_core::prelude::text(
                     label,
-                    style: Style::new().font_size(FontSizeToken::Sm),
+                    style: StyleOf::new().with::<container::font_size>(FontSizeToken::Sm),
                 )
             }
         })
@@ -250,18 +249,18 @@ pub fn calendar(
         cells.push(
             view! {
                 container(
-                    style: Style::new()
-                        .size(Size::fix(34.0, 34.0))
-                        .align(AlignStyle::Center)
-                        .justify(JustifyStyle::Center)
-                        .border_radius(RadiusToken::Sm)
-                        .background(if is_selected {
+                    style: StyleOf::new()
+                        .with::<container::size>(Size::fix(34.0, 34.0))
+                        .with::<container::align>(AlignStyle::Center)
+                        .with::<container::justify>(JustifyStyle::Center)
+                        .with::<container::border_radius>(RadiusToken::Sm)
+                        .with::<container::background>(if is_selected {
                             ColorStyle::from(ColorToken::Primary)
                         } else {
                             ColorStyle::from(Color::TRANSPARENT)
-                    }).merge_clone(&crate::layout::control_style(*disabled))
-                        .color(if *disabled { ColorToken::MutedForeground } else if is_selected { ColorToken::PrimaryForeground } else { ColorToken::Foreground })
-                        .merge_clone(day_style).merge_clone(if is_selected { selected_day_style } else { day_style }),
+                    }).merged(&crate::layout::control_style(*disabled))
+                        .with::<container::color>(if *disabled { ColorToken::MutedForeground } else if is_selected { ColorToken::PrimaryForeground } else { ColorToken::Foreground })
+                        .merged(day_style).merged(if is_selected { selected_day_style } else { day_style }),
                     focusable: !*disabled,
                     tab_index: if *disabled { -1 } else { 0 },
                     accessibility_role: AccessibilityRole::Button,
@@ -276,7 +275,7 @@ pub fn calendar(
                         EventResult::Consumed
                     },
                 ) {
-                    xui_core::widgets::text(
+                    xui_core::prelude::text(
                         day.to_string(),
                     )
                 }
@@ -291,7 +290,9 @@ pub fn calendar(
             ..cells
         }
     };
-    let mut root_style = Style::new().gap(10.0).padding(EdgeInsets::all(12.0));
+    let mut root_style = StyleOf::new()
+        .with::<container::gap>(10.0)
+        .with::<container::padding>(EdgeInsets::all(12.0));
     root_style.merge(style);
     view! {
         container(
@@ -330,7 +331,7 @@ pub fn calendar(
 /// | `on_select` | `Option<DateSelectCallback>` | `None` |
 /// | `on_month_change` | `Option<MonthChangeCallback>` | `None` |
 /// | `placement` | `AnchorPlacement` | `AnchorPlacement::default()` |
-/// | `style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
 /// | `disabled` | `bool` | `false` |
 ///
 /// # Example
@@ -351,7 +352,7 @@ pub fn calendar(
     on_select = None,
     on_month_change = None,
     placement = AnchorPlacement::default(),
-    style = Style::new(),
+    style = StyleOf::new(),
     disabled = false,
 )]
 pub fn date_picker(
@@ -364,7 +365,7 @@ pub fn date_picker(
     on_select: &Option<DateSelectCallback>,
     on_month_change: &Option<MonthChangeCallback>,
     placement: &AnchorPlacement,
-    style: &Style,
+    style: &StyleOf<Container>,
     disabled: &bool,
 ) {
     let internal_open = cx.use_state(|| *default_open);

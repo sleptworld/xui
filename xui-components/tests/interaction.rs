@@ -52,7 +52,7 @@ fn root(cx: &mut HookContext<'_>) -> ElementDesc {
         }
         10 => {
             let render = cx.use_callback((), |index: usize| view! { text(index.to_string()) });
-            view! { virtual_list(item_count: 100_000usize, item_height: 20.0, viewport_height: 100.0, render_item: render, style: Style::new().height(Sizing::Fill)) }
+            view! { virtual_list(item_count: 100_000usize, item_height: 20.0, viewport_height: 100.0, render_item: render, style: StyleOf::new().with::<container::height>(Sizing::Fill)) }
         }
         _ => unreachable!(),
     }

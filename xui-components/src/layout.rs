@@ -15,7 +15,11 @@ pub enum ComponentLength {
 }
 
 impl ComponentLength {
-    pub(crate) fn apply(self, style: Style, f: impl FnOnce(Style, LengthValue) -> Style) -> Style {
+    pub(crate) fn apply<N: xui_core::node::NodeDef>(
+        self,
+        style: StyleOf<N>,
+        f: impl FnOnce(StyleOf<N>, LengthValue) -> StyleOf<N>,
+    ) -> StyleOf<N> {
         match self {
             Self::Auto => style,
             Self::Value(value) => f(style, value),
@@ -62,7 +66,11 @@ pub enum ComponentSizing {
 }
 
 impl ComponentSizing {
-    pub(crate) fn apply(self, style: Style, f: impl FnOnce(Style, Sizing) -> Style) -> Style {
+    pub(crate) fn apply<N: xui_core::node::NodeDef>(
+        self,
+        style: StyleOf<N>,
+        f: impl FnOnce(StyleOf<N>, Sizing) -> StyleOf<N>,
+    ) -> StyleOf<N> {
         match self {
             Self::Auto => style,
             Self::Value(value) => f(style, value),
@@ -97,7 +105,11 @@ pub enum ComponentInsets {
 }
 
 impl ComponentInsets {
-    pub(crate) fn apply(self, style: Style, f: impl FnOnce(Style, EdgeInsets) -> Style) -> Style {
+    pub(crate) fn apply<N: xui_core::node::NodeDef>(
+        self,
+        style: StyleOf<N>,
+        f: impl FnOnce(StyleOf<N>, EdgeInsets) -> StyleOf<N>,
+    ) -> StyleOf<N> {
         match self {
             Self::Auto => style,
             Self::Value(value) => f(style, value),
@@ -126,7 +138,11 @@ pub enum ComponentColor {
 }
 
 impl ComponentColor {
-    pub(crate) fn apply(self, style: Style, f: impl FnOnce(Style, ColorStyle) -> Style) -> Style {
+    pub(crate) fn apply<N: xui_core::node::NodeDef>(
+        self,
+        style: StyleOf<N>,
+        f: impl FnOnce(StyleOf<N>, ColorStyle) -> StyleOf<N>,
+    ) -> StyleOf<N> {
         match self {
             Self::Auto => style,
             Self::Value(value) => f(style, value),
@@ -160,27 +176,28 @@ impl From<ColorToken> for ComponentColor {
 
 /// Shared interaction chrome. State rules change paint only, keeping pointer
 /// targets and text layout stable while hovering or focusing.
-pub(crate) fn control_style(disabled: bool) -> Style {
-    let style = Style::new().color(ColorToken::Foreground).min_width(0.0);
+pub(crate) fn control_style<N: xui_core::node::NodeDef>(disabled: bool) -> StyleOf<N>
+where
+    N::Style: xui_core::property::Has<xui_core::caps::style::Typography>
+        + xui_core::property::Has<xui_core::caps::style::BoxSize>
+        + xui_core::property::Has<xui_core::caps::style::Border>
+        + xui_core::property::Has<xui_core::caps::style::BoxShadow>,
+{
+    let style = StyleOf::new()
+        .with::<container::color>(ColorToken::Foreground)
+        .with::<container::min_width>(0.0);
     if disabled {
-        return style.color(ColorToken::MutedForeground);
+        return style.with::<container::color>(ColorToken::MutedForeground);
     }
-    style.when(WidgetState::FOCUS_VISIBLE, |s| {
-        s.border_color(ColorToken::Ring).shadow(
-            ShadowStyle::new()
-                .color(ColorToken::Ring.alpha(0.5))
-                .spread(3.0)
-                .blur(0.0),
-        )
-    })
-}
-
-pub(crate) trait MergeClone {
-    fn merge_clone(self, custom: &Style) -> Style;
-}
-impl MergeClone for Style {
-    fn merge_clone(mut self, custom: &Style) -> Style {
-        self.merge(custom);
-        self
-    }
+    style.when_style(
+        WidgetStateMatcher::all(WidgetState::FOCUS_VISIBLE),
+        StyleOf::<N>::new()
+            .with::<container::border_color>(ColorToken::Ring)
+            .with::<container::shadow>(
+                ShadowStyle::new()
+                    .color(ColorToken::Ring.alpha(0.5))
+                    .spread(3.0)
+                    .blur(0.0),
+            ),
+    )
 }

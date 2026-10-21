@@ -18,7 +18,7 @@ use xui_interface::{WidgetUpdateFlags, style::ComputedStyle};
 
 use crate::capability::CommitCx;
 use crate::caps::{CapMask, Columns};
-use crate::element::{ComponentDesc, ElementDesc, WidgetDesc};
+use crate::element::{ComponentDesc, ElementDesc};
 use crate::fiber::{ComponentRender, Key};
 use crate::node::{Draft, HostNode, WidgetInstance, WidgetT};
 use crate::render::RenderTreeWriter;
@@ -83,8 +83,8 @@ pub use canvas::{
     CanvasTextLayout, CanvasTextMetrics,
 };
 pub(crate) use canvas::{CanvasFrame, canvas_text_slot};
-pub use grid::{GridFlow, GridTrackSize, GridTracks};
 pub(crate) use grid::grid_widget_to_taffy;
+pub use grid::{GridFlow, GridTrackSize, GridTracks};
 pub use icon::{IconData, IconLayer, IconStroke, SvgIconError};
 pub use overlay::{
     DismissHandler, DismissReason, OverlayChild, OverlayEntry, OverlayEntryId, OverlayEntryOptions,
@@ -258,7 +258,9 @@ define_widgets! {
 impl Widgets {
     /// Whether it reads `EventRef::Raw` — see [`roles::HandleEvent::raw_events`].
     pub(crate) fn reads_raw_events(&self) -> bool {
-        self.roles().as_handle_event().is_some_and(|it| it.raw_events())
+        self.roles()
+            .as_handle_event()
+            .is_some_and(|it| it.raw_events())
     }
 
     /// Paints the widget's own content, if it has any.
@@ -323,8 +325,6 @@ pub(crate) trait ErasedDraft {
 
     fn key(&self) -> Option<&Key>;
 
-    fn set_key(&mut self, key: Key);
-
     /// Spreads the draft over node `id`'s rows and builds its instance.
     fn mount(
         self: Box<Self>,
@@ -360,10 +360,6 @@ where
 
     fn key(&self) -> Option<&Key> {
         self.key.as_ref()
-    }
-
-    fn set_key(&mut self, key: Key) {
-        self.key = Some(key);
     }
 
     fn mount(
@@ -490,7 +486,7 @@ where
 {
     /// This draft, with `children`, as an element.
     pub fn into_element_desc(self, children: Vec<ElementDesc>) -> ElementDesc {
-        WidgetDesc::new(Box::new(self), children).into()
+        crate::template::TemplateDesc::draft(self, children).into()
     }
 }
 
@@ -514,7 +510,6 @@ impl ComponentDesc {
         self
     }
 }
-
 
 /// The root of every host tree.
 pub(crate) fn root_widget() -> Draft<Root> {

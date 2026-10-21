@@ -224,14 +224,43 @@ pub(crate) enum Setter {
 
 impl Setter {
     pub(crate) fn of(name: &Ident, value: &TokenStream2) -> Self {
+        fn returns_closure(expr: &Expr) -> bool {
+            match expr {
+                Expr::Closure(_) => true,
+                Expr::Paren(expr) => returns_closure(&expr.expr),
+                Expr::Group(expr) => returns_closure(&expr.expr),
+                Expr::Block(expr) => {
+                    matches!(expr.block.stmts.last(), Some(Stmt::Expr(expr, None)) if returns_closure(expr))
+                }
+                _ => false,
+            }
+        }
         match syn::parse2::<Expr>(value.clone()) {
-            Ok(Expr::Closure(_)) if name.to_string().starts_with("on_") => Self::Handler,
+            Ok(expr) if name.to_string().starts_with("on_") && returns_closure(&expr) => {
+                Self::Handler
+            }
             Ok(Expr::MethodCall(call)) if call.method == "share" && call.args.is_empty() => {
                 Self::Shared
             }
             _ => Self::Value,
         }
     }
+}
+
+/// Keep closure inference at the handler call, even when local bindings
+/// precede the closure in an attribute block.
+pub(crate) fn map_handler(
+    value: TokenStream2,
+    call: impl FnOnce(TokenStream2) -> TokenStream2,
+) -> TokenStream2 {
+    if let Ok(Expr::Block(mut block)) = syn::parse2::<Expr>(value.clone()) {
+        if let Some(Stmt::Expr(tail, None)) = block.block.stmts.pop() {
+            let statements = block.block.stmts;
+            let mapped = map_handler(quote!(#tail), call);
+            return quote!({ #(#statements)* #mapped });
+        }
+    }
+    call(value)
 }
 
 impl Element {
@@ -245,7 +274,11 @@ impl Element {
     /// The element built now, as an expression: its draft with every
     /// attribute set, given its body. What a component (or any tag a
     /// template does not hold) lowers to.
-    pub(crate) fn expand_eager(&self, xui_core: &TokenStream2, errors: &mut Errors) -> TokenStream2 {
+    pub(crate) fn expand_eager(
+        &self,
+        xui_core: &TokenStream2,
+        errors: &mut Errors,
+    ) -> TokenStream2 {
         self.check_duplicate_attrs(errors);
 
         let tag = &self.tag;
@@ -258,7 +291,8 @@ impl Element {
             if name == "key" {
                 return quote_spanned!(name.span()=> let __xui_node = __xui_node.key(#value););
             }
-            let setter = match Setter::of(name, value) {
+            let kind = Setter::of(name, value);
+            let setter = match kind {
                 Setter::Handler => quote_spanned!(name.span()=> __with_on),
                 Setter::Shared => quote_spanned!(name.span()=> __with_shared),
                 Setter::Value => quote_spanned!(name.span()=> __with),
@@ -266,9 +300,16 @@ impl Element {
             // The property comes from the node's own table, so `no method
             // named ..` points at the attribute and lists the node's
             // properties with a similar name.
+            let invoke =
+                |value| quote_spanned! {name.span()=> __xui_node.#setter(__xui_property, #value) };
+            let assigned = if kind == Setter::Handler {
+                map_handler(value.clone(), invoke)
+            } else {
+                invoke(value.clone())
+            };
             quote_spanned! {name.span()=>
                 let __xui_property = __xui_node.__properties().#name();
-                let __xui_node = __xui_node.#setter(__xui_property, #value);
+                let __xui_node = #assigned;
             }
         });
 

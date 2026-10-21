@@ -1,7 +1,6 @@
 //! The Component Gallery: every `xui-components` control on the shadcn/ui-style
 //! theme, one page per component, behind a sidebar.
 
-use xui_components::image::image;
 use xui_components::*;
 use xui_core::core::Bounds;
 use xui_core::prelude::*;
@@ -79,89 +78,105 @@ pub struct InitialPage(pub Page);
 
 // ---- building blocks -------------------------------------------------------
 
-fn label_text(value: impl Into<String>, style: Style) -> ElementDesc {
-    TextWidget::new(value.into())
-        .style(style)
-        .into_element_desc()
+fn label_text(value: impl Into<String>, style: StyleOf<Text>) -> ElementDesc {
+    text()
+        .with::<text::content>(value.into())
+        .with::<text::style>(style)
+        .into_element_desc(Vec::new())
 }
 
 fn muted(value: impl Into<String>) -> ElementDesc {
     label_text(
         value,
-        Style::new()
-            .color(ColorToken::MutedForeground)
-            .font_size(FontSizeToken::Md),
+        StyleOf::new()
+            .with::<container::color>(ColorToken::MutedForeground)
+            .with::<container::font_size>(FontSizeToken::Md),
     )
 }
 
 fn lucide(data: IconData, size: f32) -> ElementDesc {
-    icon().from_icon_data(data).size(size).into_element_desc()
+    icon()
+        .with::<icon::data>(data)
+        .with::<icon::size>(Size::fix(size, size))
+        .into_element_desc(Vec::new())
 }
 
 fn hstack(gap: f32, children: Vec<ElementDesc>) -> ElementDesc {
-    ContainerWidget::new()
-        .style(Style::new().gap(gap).align(AlignStyle::Center))
-        .flex_direction(FlexDirectionStyle::Row)
+    container()
+        .with::<container::style>(
+            StyleOf::new()
+                .with::<container::gap>(gap)
+                .with::<container::align>(AlignStyle::Center),
+        )
+        .with::<container::flex_direction>(FlexDirectionStyle::Row)
         .into_element_desc(children)
 }
 
 /// A centered row that wraps onto new lines when the preview is too narrow,
 /// like shadcn's `flex flex-wrap items-center justify-center gap-2`.
 fn wrap_row(gap: f32, children: Vec<ElementDesc>) -> ElementDesc {
-    ContainerWidget::new()
-        .style(
-            Style::new()
-                .gap(gap)
-                .align(AlignStyle::Center)
-                .justify(JustifyStyle::Center),
+    container()
+        .with::<container::style>(
+            StyleOf::new()
+                .with::<container::gap>(gap)
+                .with::<container::align>(AlignStyle::Center)
+                .with::<container::justify>(JustifyStyle::Center),
         )
-        .flex_direction(FlexDirectionStyle::Row)
-        .flex_wrap(true)
+        .with::<container::flex_direction>(FlexDirectionStyle::Row)
+        .with::<container::flex_wrap>(true)
         .into_element_desc(children)
 }
 
 fn vstack(gap: f32, children: Vec<ElementDesc>) -> ElementDesc {
-    ContainerWidget::new()
-        .style(Style::new().gap(gap))
-        .flex_direction(FlexDirectionStyle::Column)
+    container()
+        .with::<container::style>(StyleOf::new().with::<container::gap>(gap))
+        .with::<container::flex_direction>(FlexDirectionStyle::Column)
         .into_element_desc(children)
 }
 
 /// A page body: examples stacked at full content width.
 fn page(children: Vec<ElementDesc>) -> ElementDesc {
-    ContainerWidget::new()
-        .style(Style::new().gap(40.0).width(Sizing::fill()))
-        .flex_direction(FlexDirectionStyle::Column)
+    container()
+        .with::<container::style>(
+            StyleOf::new()
+                .with::<container::gap>(40.0)
+                .with::<container::width>(Sizing::fill()),
+        )
+        .with::<container::flex_direction>(FlexDirectionStyle::Column)
         .into_element_desc(children)
 }
 
 /// A titled example: a heading over a bordered preview area, like the demo
 /// blocks on ui.shadcn.com.
 fn example(title: &str, preview: ElementDesc) -> ElementDesc {
-    ContainerWidget::new()
-        .style(Style::new().gap(12.0).width(Sizing::fill()))
-        .flex_direction(FlexDirectionStyle::Column)
+    container()
+        .with::<container::style>(
+            StyleOf::new()
+                .with::<container::gap>(12.0)
+                .with::<container::width>(Sizing::fill()),
+        )
+        .with::<container::flex_direction>(FlexDirectionStyle::Column)
         .into_element_desc(vec![
             label_text(
                 title,
-                Style::new()
-                    .font_size(FontSizeToken::Lg)
-                    .font_weight(FontWeight::SemiBold),
+                StyleOf::new()
+                    .with::<container::font_size>(FontSizeToken::Lg)
+                    .with::<container::font_weight>(FontWeight::SemiBold),
             ),
-            ContainerWidget::new()
-                .style(
-                    Style::new()
-                        .width(Sizing::fill())
-                        .min_height(140.0)
-                        .padding(EdgeInsets::all(32.0))
-                        .align(AlignStyle::Center)
-                        .justify(JustifyStyle::Center)
-                        .background(ColorToken::Background)
-                        .border_color(ColorToken::Border)
-                        .border_width(1.0)
-                        .border_radius(RadiusToken::Lg),
+            container()
+                .with::<container::style>(
+                    StyleOf::new()
+                        .with::<container::width>(Sizing::fill())
+                        .with::<container::min_height>(140.0)
+                        .with::<container::padding>(EdgeInsets::all(32.0))
+                        .with::<container::align>(AlignStyle::Center)
+                        .with::<container::justify>(JustifyStyle::Center)
+                        .with::<container::background>(ColorToken::Background)
+                        .with::<container::border_color>(ColorToken::Border)
+                        .with::<container::border_width>(1.0)
+                        .with::<container::border_radius>(RadiusToken::Lg),
                 )
-                .flex_direction(FlexDirectionStyle::Column)
+                .with::<container::flex_direction>(FlexDirectionStyle::Column)
                 .into_element_desc(vec![preview]),
         ])
 }
@@ -170,23 +185,27 @@ fn field(label: &str, control: ElementDesc, hint: Option<&str>) -> ElementDesc {
     let mut children = vec![
         label_text(
             label,
-            Style::new()
-                .font_size(FontSizeToken::Md)
-                .font_weight(FontWeight::Medium),
+            StyleOf::new()
+                .with::<container::font_size>(FontSizeToken::Md)
+                .with::<container::font_weight>(FontWeight::Medium),
         ),
         control,
     ];
     if let Some(hint) = hint {
         children.push(label_text(
             hint,
-            Style::new()
-                .color(ColorToken::MutedForeground)
-                .font_size(FontSizeToken::Sm),
+            StyleOf::new()
+                .with::<container::color>(ColorToken::MutedForeground)
+                .with::<container::font_size>(FontSizeToken::Sm),
         ));
     }
-    ContainerWidget::new()
-        .style(Style::new().gap(8.0).width(320.0))
-        .flex_direction(FlexDirectionStyle::Column)
+    container()
+        .with::<container::style>(
+            StyleOf::new()
+                .with::<container::gap>(8.0)
+                .with::<container::width>(320.0),
+        )
+        .with::<container::flex_direction>(FlexDirectionStyle::Column)
         .into_element_desc(children)
 }
 
@@ -286,15 +305,15 @@ fn spinner_page() {
     };
     let colors = xui! {
         <row gap={24.0} align={AlignStyle::Center} justify={JustifyStyle::Center}>
-            <spinner style={Style::new().color(ColorToken::MutedForeground)} />
-            <spinner style={Style::new().color(ColorToken::Primary)} />
-            <spinner style={Style::new().color(ColorToken::Destructive)} />
+            <spinner style={StyleOf::new().with::<container::color>(ColorToken::MutedForeground)} />
+            <spinner style={StyleOf::new().with::<container::color>(ColorToken::Primary)} />
+            <spinner style={StyleOf::new().with::<container::color>(ColorToken::Destructive)} />
         </row>
     };
     let in_context = hstack(
         8.0,
         vec![
-            xui! { <spinner size={16.0} style={Style::new().color(ColorToken::MutedForeground)} /> },
+            xui! { <spinner size={16.0} style={StyleOf::new().with::<container::color>(ColorToken::MutedForeground)} /> },
             muted("Syncing your changes"),
         ],
     );
@@ -313,8 +332,8 @@ fn input_page() {
     page(vec![
         example(
             "Default",
-            ContainerWidget::new()
-                .style(Style::new().width(320.0))
+            container()
+                .with::<container::style>(StyleOf::new().with::<container::width>(320.0))
                 .into_element_desc(vec![xui! { <input controller={email.get().clone()} /> }]),
         ),
         example(
@@ -383,9 +402,9 @@ fn tab_card(title: &str, description: &str, fields: Vec<ElementDesc>, action: &s
         vec![
             label_text(
                 title,
-                Style::new()
-                    .font_size(FontSizeToken::Lg)
-                    .font_weight(FontWeight::SemiBold),
+                StyleOf::new()
+                    .with::<container::font_size>(FontSizeToken::Lg)
+                    .with::<container::font_weight>(FontWeight::SemiBold),
             ),
             muted(description),
         ],
@@ -395,25 +414,25 @@ fn tab_card(title: &str, description: &str, fields: Vec<ElementDesc>, action: &s
         0.0,
         vec![xui! { <button text={action.to_string()} variant={ButtonVariant::Primary} /> }],
     ));
-    ContainerWidget::new()
-        .style(
-            Style::new()
-                .width(Sizing::fill())
-                .gap(20.0)
-                .padding(EdgeInsets::all(24.0))
-                .background(ColorToken::Card)
-                .color(ColorToken::CardForeground)
-                .border_color(ColorToken::Border)
-                .border_width(1.0)
-                .border_radius(RadiusToken::Xl)
-                .shadow(
+    container()
+        .with::<container::style>(
+            StyleOf::new()
+                .with::<container::width>(Sizing::fill())
+                .with::<container::gap>(20.0)
+                .with::<container::padding>(EdgeInsets::all(24.0))
+                .with::<container::background>(ColorToken::Card)
+                .with::<container::color>(ColorToken::CardForeground)
+                .with::<container::border_color>(ColorToken::Border)
+                .with::<container::border_width>(1.0)
+                .with::<container::border_radius>(RadiusToken::Xl)
+                .with::<container::shadow>(
                     ShadowStyle::new()
                         .color(Color::rgba(0.0, 0.0, 0.0, 0.05))
                         .offset(Point::new(0.0, 1.0))
                         .blur(2.0),
                 ),
         )
-        .flex_direction(FlexDirectionStyle::Column)
+        .with::<container::flex_direction>(FlexDirectionStyle::Column)
         .into_element_desc(children)
 }
 
@@ -472,7 +491,7 @@ fn tabs_page() {
         TabItem::new("billing", "Billing", muted("Unavailable")).disabled(true),
     ];
     let mut style = TabsStyle::default();
-    style.root = style.root.width(420.0);
+    style.root = style.root.with::<container::width>(420.0);
 
     page(vec![
         example(
@@ -497,16 +516,16 @@ fn image_page() {
         vstack(
             8.0,
             vec![
-                ContainerWidget::new()
-                    .style(
-                        Style::new()
-                            .size(Size::fix(180.0, 120.0))
-                            .background(ColorToken::Muted)
-                            .border_radius(RadiusToken::Md)
-                            .clip(true),
+                container()
+                    .with::<container::style>(
+                        StyleOf::new()
+                            .with::<container::size>(Size::fix(180.0, 120.0))
+                            .with::<container::background>(ColorToken::Muted)
+                            .with::<container::border_radius>(RadiusToken::Md)
+                            .with::<container::clip>(true),
                     )
                     .into_element_desc(vec![xui! {
-                        <image
+                        <xui_components::image::image
                             src={ImageSrc::AssetId(crate::xui_assets::refs::images::DEMO_PNG)}
                             width={180.0}
                             height={120.0}
@@ -536,41 +555,43 @@ const ROW_HEIGHT: f32 = 36.0;
 #[component]
 fn virtual_list_page() {
     let render_item: VirtualItemRenderer = cx.use_callback((), |index: usize| {
-        ContainerWidget::new()
-            .style(
-                Style::new()
-                    .width(Sizing::fill())
-                    .height(ROW_HEIGHT)
-                    .padding(EdgeInsets::symmetric(16.0, 0.0))
-                    .align(AlignStyle::Center)
-                    .justify(JustifyStyle::SpaceBetween)
-                    .border_color(ColorToken::Border)
-                    .when(WidgetState::HOVERED, |style| {
-                        style.background(ColorToken::Muted)
-                    }),
+        container()
+            .with::<container::style>(
+                StyleOf::new()
+                    .with::<container::width>(Sizing::fill())
+                    .with::<container::height>(ROW_HEIGHT)
+                    .with::<container::padding>(EdgeInsets::symmetric(16.0, 0.0))
+                    .with::<container::align>(AlignStyle::Center)
+                    .with::<container::justify>(JustifyStyle::SpaceBetween)
+                    .with::<container::border_color>(ColorToken::Border)
+                    .when_style(
+                        WidgetStateMatcher::all(WidgetState::HOVERED),
+                        StyleOf::<Container>::new()
+                            .with::<container::background>(ColorToken::Muted),
+                    ),
             )
-            .flex_direction(FlexDirectionStyle::Row)
+            .with::<container::flex_direction>(FlexDirectionStyle::Row)
             .into_element_desc(vec![
                 label_text(
                     format!("Item {}", index + 1),
-                    Style::new().font_size(FontSizeToken::Md),
+                    StyleOf::new().with::<container::font_size>(FontSizeToken::Md),
                 ),
                 label_text(
                     format!("#{index:05}"),
-                    Style::new()
-                        .color(ColorToken::MutedForeground)
-                        .font_size(FontSizeToken::Sm),
+                    StyleOf::new()
+                        .with::<container::color>(ColorToken::MutedForeground)
+                        .with::<container::font_size>(FontSizeToken::Sm),
                 ),
             ])
     });
-    let list = ContainerWidget::new()
-        .style(
-            Style::new()
-                .width(360.0)
-                .border_color(ColorToken::Border)
-                .border_width(1.0)
-                .border_radius(RadiusToken::Md)
-                .clip(true),
+    let list = container()
+        .with::<container::style>(
+            StyleOf::new()
+                .with::<container::width>(360.0)
+                .with::<container::border_color>(ColorToken::Border)
+                .with::<container::border_width>(1.0)
+                .with::<container::border_radius>(RadiusToken::Md)
+                .with::<container::clip>(true),
         )
         .into_element_desc(vec![xui! {
             <virtual_list
@@ -578,7 +599,7 @@ fn virtual_list_page() {
                 item_height={ROW_HEIGHT}
                 viewport_height={320.0}
                 render_item={render_item}
-                style={Style::new().width(Sizing::fill()).height(320.0)}
+                style={StyleOf::new().with::<container::width>(Sizing::fill()).with::<container::height>(320.0)}
             />
         }]);
     page(vec![
@@ -760,41 +781,61 @@ fn canvas_page() {
     let icons = wrap_row(
         24.0,
         vec![
-            icon()
-                .from_icon_data(filled_icon())
-                .size(32.0)
-                .style(Style::new().color(ColorToken::Primary))
-                .into_element_desc(),
-            icon()
-                .from_icon_data(stroked_icon())
-                .size(32.0)
-                .style(Style::new().color(ColorToken::Foreground))
-                .into_element_desc(),
-            icon()
-                .from_icon_data(svg_icon())
-                .size(32.0)
-                .style(Style::new().color(ColorToken::MutedForeground))
-                .into_element_desc(),
-            icon()
-                .from_icon_data(lucide_rs::icons::palette())
-                .size(32.0)
-                .style(Style::new().color(ColorToken::Destructive))
-                .into_element_desc(),
+            container()
+                .with::<container::style>(
+                    StyleOf::new().with::<container::color>(ColorToken::Primary),
+                )
+                .into_element_desc(vec![
+                    icon()
+                        .with::<icon::data>(filled_icon())
+                        .with::<icon::size>(Size::fix(32.0, 32.0))
+                        .into_element_desc(Vec::new()),
+                ]),
+            container()
+                .with::<container::style>(
+                    StyleOf::new().with::<container::color>(ColorToken::Foreground),
+                )
+                .into_element_desc(vec![
+                    icon()
+                        .with::<icon::data>(stroked_icon())
+                        .with::<icon::size>(Size::fix(32.0, 32.0))
+                        .into_element_desc(Vec::new()),
+                ]),
+            container()
+                .with::<container::style>(
+                    StyleOf::new().with::<container::color>(ColorToken::MutedForeground),
+                )
+                .into_element_desc(vec![
+                    icon()
+                        .with::<icon::data>(svg_icon())
+                        .with::<icon::size>(Size::fix(32.0, 32.0))
+                        .into_element_desc(Vec::new()),
+                ]),
+            container()
+                .with::<container::style>(
+                    StyleOf::new().with::<container::color>(ColorToken::Destructive),
+                )
+                .into_element_desc(vec![
+                    icon()
+                        .with::<icon::data>(lucide_rs::icons::palette())
+                        .with::<icon::size>(Size::fix(32.0, 32.0))
+                        .into_element_desc(Vec::new()),
+                ]),
         ],
     );
 
     let glass = xui! {
-        <z_stack style={Style::new().size(Size::fix(440.0, 220.0))}>
+        <z_stack style={StyleOf::new().with::<container::size>(Size::fix(440.0, 220.0))}>
             <canvas controller={canvas_handle} width={440.0} height={220.0} />
             <container
-                style={Style::new()
-                    .size(Size::fix(310.0, 118.0))
-                    .padding(EdgeInsets::all(22.0))
-                    .background(Color::rgba(0.92, 0.96, 1.0, 0.16))
-                    .border_color(Color::rgba(1.0, 1.0, 1.0, 0.48))
-                    .border_width(1.0)
-                    .border_radius(20.0)
-                    .clip(true)}
+                style={StyleOf::new()
+                    .with::<container::size>(Size::fix(310.0, 118.0))
+                    .with::<container::padding>(EdgeInsets::all(22.0))
+                    .with::<container::background>(Color::rgba(0.92, 0.96, 1.0, 0.16))
+                    .with::<container::border_color>(Color::rgba(1.0, 1.0, 1.0, 0.48))
+                    .with::<container::border_width>(1.0)
+                    .with::<container::border_radius>(20.0)
+                    .with::<container::clip>(true)}
                 backdrop_blur={18.0}
                 on_click={move |_, _| {
                     let next = !*highlighted.get();
@@ -824,17 +865,17 @@ fn canvas_page() {
 // ---- shell -----------------------------------------------------------------
 
 fn nav_item(page: Page, active: bool, on_select: Callback<()>) -> ElementDesc {
-    let mut style = Style::new()
-        .width(Sizing::fill())
-        .justify(JustifyStyle::Start)
-        .padding(EdgeInsets::symmetric(8.0, 6.0))
-        .min_height(32.0);
+    let mut style = StyleOf::new()
+        .with::<container::width>(Sizing::fill())
+        .with::<container::justify>(JustifyStyle::Start)
+        .with::<container::padding>(EdgeInsets::symmetric(8.0, 6.0))
+        .with::<container::min_height>(32.0);
     if active {
         style = style
-            .background(ColorToken::Accent)
-            .color(ColorToken::AccentForeground);
+            .with::<container::background>(ColorToken::Accent)
+            .with::<container::color>(ColorToken::AccentForeground);
     } else {
-        style = style.color(ColorToken::MutedForeground);
+        style = style.with::<container::color>(ColorToken::MutedForeground);
     }
     xui! {
         <button
@@ -850,45 +891,45 @@ fn nav_item(page: Page, active: bool, on_select: Callback<()>) -> ElementDesc {
 
 fn sidebar(active: Page, callbacks: Vec<Callback<()>>) -> ElementDesc {
     let mut items = vec![
-        ContainerWidget::new()
-            .style(
-                Style::new()
-                    .gap(8.0)
-                    .padding(EdgeInsets::new(8.0, 8.0, 4.0, 20.0))
-                    .align(AlignStyle::Center),
+        container()
+            .with::<container::style>(
+                StyleOf::new()
+                    .with::<container::gap>(8.0)
+                    .with::<container::padding>(EdgeInsets::new(8.0, 8.0, 4.0, 20.0))
+                    .with::<container::align>(AlignStyle::Center),
             )
-            .flex_direction(FlexDirectionStyle::Row)
+            .with::<container::flex_direction>(FlexDirectionStyle::Row)
             .into_element_desc(vec![
                 lucide(lucide_rs::icons::component(), 20.0),
                 label_text(
                     "xui components",
-                    Style::new()
-                        .font_size(FontSizeToken::Lg)
-                        .font_weight(FontWeight::SemiBold),
+                    StyleOf::new()
+                        .with::<container::font_size>(FontSizeToken::Lg)
+                        .with::<container::font_weight>(FontWeight::SemiBold),
                 ),
             ]),
         label_text(
             "Components",
-            Style::new()
-                .padding(EdgeInsets::new(8.0, 8.0, 0.0, 4.0))
-                .color(ColorToken::MutedForeground)
-                .font_size(FontSizeToken::Sm)
-                .font_weight(FontWeight::Medium),
+            StyleOf::new()
+                .with::<container::padding>(EdgeInsets::new(8.0, 8.0, 0.0, 4.0))
+                .with::<container::color>(ColorToken::MutedForeground)
+                .with::<container::font_size>(FontSizeToken::Sm)
+                .with::<container::font_weight>(FontWeight::Medium),
         ),
     ];
     for (page, on_select) in Page::ALL.into_iter().zip(callbacks) {
         items.push(nav_item(page, page == active, on_select));
     }
-    ContainerWidget::new()
-        .style(
-            Style::new()
-                .width(240.0)
-                .height(Sizing::fill())
-                .gap(2.0)
-                .padding(EdgeInsets::all(12.0))
-                .background(ColorToken::Card),
+    container()
+        .with::<container::style>(
+            StyleOf::new()
+                .with::<container::width>(240.0)
+                .with::<container::height>(Sizing::fill())
+                .with::<container::gap>(2.0)
+                .with::<container::padding>(EdgeInsets::all(12.0))
+                .with::<container::background>(ColorToken::Card),
         )
-        .flex_direction(FlexDirectionStyle::Column)
+        .with::<container::flex_direction>(FlexDirectionStyle::Column)
         .into_element_desc(items)
 }
 
@@ -915,37 +956,39 @@ pub fn gallery() {
         Page::Canvas => xui! { <canvas_page /> },
     };
 
-    let main = ContainerWidget::new()
-        .style(
-            Style::new()
-                .size(Size::fill())
-                .padding(EdgeInsets::new(48.0, 48.0, 40.0, 64.0))
-                .scroll_vertical(),
+    let main = container()
+        .with::<container::style>(
+            StyleOf::new()
+                .with::<container::size>(Size::fill())
+                .with::<container::padding>(EdgeInsets::new(48.0, 48.0, 40.0, 64.0))
+                .with::<container::scroll_direction>(ScrollDirectionStyle::Vertical),
         )
-        .flex_direction(FlexDirectionStyle::Column)
+        .with::<container::flex_direction>(FlexDirectionStyle::Column)
         .into_element_desc(vec![
-            ContainerWidget::new()
+            container()
                 .key(format!("page-{page:?}"))
-                .style(
-                    Style::new()
-                        .width(Sizing::fill())
-                        .max_width(760.0)
-                        .gap(40.0),
+                .with::<container::style>(
+                    StyleOf::new()
+                        .with::<container::width>(Sizing::fill())
+                        .with::<container::max_width>(760.0)
+                        .with::<container::gap>(40.0),
                 )
-                .flex_direction(FlexDirectionStyle::Column)
+                .with::<container::flex_direction>(FlexDirectionStyle::Column)
                 .into_element_desc(vec![
                     vstack(
                         8.0,
                         vec![
                             label_text(
                                 page.title(),
-                                Style::new().font_size(30.0).font_weight(FontWeight::Bold),
+                                StyleOf::new()
+                                    .with::<container::font_size>(30.0)
+                                    .with::<container::font_weight>(FontWeight::Bold),
                             ),
                             label_text(
                                 page.description(),
-                                Style::new()
-                                    .color(ColorToken::MutedForeground)
-                                    .font_size(FontSizeToken::Lg),
+                                StyleOf::new()
+                                    .with::<container::color>(ColorToken::MutedForeground)
+                                    .with::<container::font_size>(FontSizeToken::Lg),
                             ),
                         ],
                     ),
@@ -953,30 +996,30 @@ pub fn gallery() {
                 ]),
         ]);
 
-    ContainerWidget::new()
-        .style(
-            Style::new()
-                .size(Size::fill())
-                .background(ColorToken::Background)
-                .padding(EdgeInsets::zero().set_top(32.))
-                .color(ColorToken::Foreground),
+    container()
+        .with::<container::style>(
+            StyleOf::new()
+                .with::<container::size>(Size::fill())
+                .with::<container::background>(ColorToken::Background)
+                .with::<container::padding>(EdgeInsets::zero().set_top(32.))
+                .with::<container::color>(ColorToken::Foreground),
         )
-        .flex_direction(FlexDirectionStyle::Row)
+        .with::<container::flex_direction>(FlexDirectionStyle::Row)
         .into_element_desc(vec![
             sidebar(page, callbacks),
-            ContainerWidget::new()
-                .style(
-                    Style::new()
-                        .width(1.0)
-                        .height(Sizing::fill())
-                        .background(ColorToken::Border),
+            container()
+                .with::<container::style>(
+                    StyleOf::new()
+                        .with::<container::width>(1.0)
+                        .with::<container::height>(Sizing::fill())
+                        .with::<container::background>(ColorToken::Border),
                 )
                 .into_element_desc(Vec::new()),
             main,
         ])
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "skia"))]
 mod tests {
     use super::*;
     use std::fs::File;
@@ -1097,5 +1140,41 @@ mod tests {
             .filter(|(a, b)| a != b)
             .count();
         assert!(changed > 100, "only {changed} pixels changed");
+    }
+}
+
+#[cfg(test)]
+mod smoke_tests {
+    use super::*;
+    use xui_core::text::TextHost;
+    use xui_cosmic::CosmicEngine;
+
+    #[test]
+    fn gallery_pages_build_scenes_in_both_themes() {
+        xui_core::assets::install_asset_manager(crate::xui_assets::manager().unwrap());
+        for theme in [Theme::light(), Theme::dark()] {
+            for page in Page::ALL {
+                let mut app = App::new(gallery_component);
+                app.provide_context(InitialPage(page));
+                app.set_theme(theme.clone());
+                let mut backend = MockRenderBackend::default();
+                let mut text = TextHost::new(CosmicEngine::new(1.0));
+                for width in [1280.0, 820.0] {
+                    app.resize(Size::new(width, 860.0));
+                    app.render(&mut backend, &mut text).expect("gallery scene");
+                    let tree = app.ui_runtime();
+                    let mut pending = vec![tree.root()];
+                    let mut count = 0;
+                    while let Some(id) = pending.pop() {
+                        let node = tree.node(id).unwrap();
+                        assert!(node.layout.width().is_finite(), "{page:?}");
+                        assert!(node.layout.height().is_finite(), "{page:?}");
+                        pending.extend(tree.children(id));
+                        count += 1;
+                    }
+                    assert!(count > 10, "{page:?} did not build its content");
+                }
+            }
+        }
     }
 }

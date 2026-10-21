@@ -14,11 +14,32 @@ use crate::node::{Draft, WidgetT};
 /// text style it declares flows to its children.
 #[widget(
     style(
-        box_size, margin, padding, flex_layout, position, display, typography, background,
-        corner_radius, border, box_shadow, clip, visibility, transform, effects, scroll, cursor
+        box_size,
+        margin,
+        padding,
+        flex_layout,
+        position,
+        display,
+        typography,
+        background,
+        corner_radius,
+        border,
+        box_shadow,
+        clip,
+        visibility,
+        transform,
+        effects,
+        scroll,
+        cursor
     ),
     behavior(
-        focus, accessibility, shortcuts, motion, focus_binding, scroll_binding, size_observation,
+        focus,
+        accessibility,
+        shortcuts,
+        motion,
+        focus_binding,
+        scroll_binding,
+        size_observation,
         events
     )
 )]

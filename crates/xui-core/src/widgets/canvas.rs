@@ -40,8 +40,8 @@ use xui_interface::ExternalTextureHandle;
 use xui_interface::{
     Affine, Bounds, CanvasTextId, Color, ComputedColorStyle, ComputedStrokeStyle, ComputedStyle,
     ExternalTextureId, NodeId, PathData, PathFill, PathStroke, Point, Sampling, Shape, Size,
-    StrokeLineStyle, TextLayoutConstraints, TextPaintProps, TextPaintStyle, TextProps,
-    Theme, VectorCommand, VectorScene, WidgetUpdateFlags,
+    StrokeLineStyle, TextLayoutConstraints, TextPaintProps, TextPaintStyle, TextProps, Theme,
+    VectorCommand, VectorScene, WidgetUpdateFlags,
 };
 
 use super::props_hash;
@@ -1257,8 +1257,18 @@ impl Default for CanvasController {
 /// painters, text, a GPU painter's texture. It paints its picture only, so it
 /// selects no decoration.
 #[widget(
-    style(box_size, margin, position, display, visibility, transform, effects, cursor),
-    behavior(focus, accessibility, shortcuts, motion, focus_binding, size_observation, events)
+    style(
+        box_size, margin, position, display, visibility, transform, effects, cursor
+    ),
+    behavior(
+        focus,
+        accessibility,
+        shortcuts,
+        motion,
+        focus_binding,
+        size_observation,
+        events
+    )
 )]
 #[props(derive(Debug, Clone, PartialEq))]
 pub struct Canvas {
@@ -1617,9 +1627,9 @@ impl CanvasState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_prelude::*;
     use crate::render::{RenderNodeKind, RenderScene};
     use crate::style::Theme as StyleTheme;
+    use crate::test_prelude::*;
     use slotmap::Key as _;
     use xui_interface::{PathBuilder, VectorSceneBuilder};
 
@@ -1974,19 +1984,25 @@ mod tests {
         use crate::node::HostNode;
 
         let controller = CanvasController::with_scene(VectorScene::default());
-        let before = CanvasProps::builder().controller(controller.clone()).build();
+        let before = CanvasProps::builder()
+            .controller(controller.clone())
+            .build();
         controller.set_scene({
             let mut scene = VectorSceneBuilder::new();
             scene.fill_path(line_path(), Affine::IDENTITY, PathFill::new(Color::BLACK));
             scene.build()
         });
-        let after = CanvasProps::builder().controller(controller.clone()).build();
+        let after = CanvasProps::builder()
+            .controller(controller.clone())
+            .build();
         assert!(
             Canvas::props_dirty(&before, &after).is_empty(),
             "content reaches the host through the invalidation channel, not the props diff"
         );
 
-        let replaced = CanvasProps::builder().controller(CanvasController::new()).build();
+        let replaced = CanvasProps::builder()
+            .controller(CanvasController::new())
+            .build();
         assert!(Canvas::props_dirty(&before, &replaced).contains(WidgetUpdateFlags::PAINT_OUTPUT));
     }
 

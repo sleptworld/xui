@@ -1,26 +1,24 @@
-use crate::context::{Ancestors, ContextRegistry, ContextScope, NoAncestors};
+use crate::context::{Ancestors, ContextRegistry, ContextScope};
 use crate::element::PortalBehavior;
-use crate::element::PortalDesc;
 use crate::fiber::{
-    ComponentRender, ComponentState, EffectTag, ErasedProps, FiberArena, FiberId, FiberTag,
-    HostState, Key, Node, PortalState, TemplateState,
-};
-use crate::template::{
-    BuildMode, TemplateDesc, TemplateIdentity, TemplateMeta, TemplateNodeKind, TemplateSlot,
+    ComponentRender, ComponentState, ComponentType, EffectTag, ErasedProps, FiberArena, FiberId,
+    FiberKind, FiberTag, Key, Node, PortalState, TemplateState,
 };
 use crate::lanes::{
     Lanes, NO_LANES, current_update_lane, get_highest_priority_lane, includes_some_lane,
     should_interrupt,
 };
 use crate::state::{AsyncDispatcher, HookContext, HookStorage, Scheduler};
+use crate::template::{
+    BuildMode, TemplateDesc, TemplateIdentity, TemplateMeta, TemplateNodeKind, TemplateSlot,
+};
 use crate::ticker::TickerRegistry;
 use crate::ui_runtime::UiRuntime;
-use crate::widgets::{OverlayEntryId, OverlayEntryOptions, OverlayScopeId};
 use crate::widgets::{ErasedDraft, RootComponentRender};
-use crate::{ComponentDesc, ElementDesc, ErasedPropsRef};
+use crate::widgets::{OverlayEntryId, OverlayEntryOptions, OverlayScopeId};
+use crate::{ElementDesc, ErasedPropsRef};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
-use std::fmt;
 use std::ops::RangeBounds;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -35,22 +33,28 @@ pub struct WorkNode {
     key: Option<Key>,
     tag: FiberTag,
     position: usize,
-    // Signature of current fiber
     effect: EffectTag,
     children_resolved: bool,
     children: SmallVec<[WipId; 8]>,
     lanes: Lanes,
     child_lanes: Lanes,
-    work: Option<Work>,
+    /// What this render brought the fiber; `None` for one cloned as it was.
+    work: Option<Pending>,
     binding: WorkBinding,
 }
 
-enum Work {
-    HostWork(HostWork),
-    ComponentWork(ComponentWork),
-    PortalWork(PortalWork),
-    TemplateWork(TemplateWork),
-    FragmentWork(FragmentWork),
+/// What a render brings a fiber, by kind.
+enum Pending {
+    Component(ComponentWork),
+    Template(TemplateWork),
+    Fragment(Vec<ElementDesc>),
+    Portal(PortalWork),
+}
+
+struct ComponentWork {
+    render: ComponentRender,
+    key: Option<Key>,
+    props: Option<ErasedProps>,
 }
 
 struct TemplateWork {
@@ -67,28 +71,6 @@ struct TemplateWork {
     nodes: Vec<Option<NodeId>>,
 }
 
-struct FragmentWork {
-    pending_children: Vec<ElementDesc>,
-}
-
-#[derive(Default)]
-struct WorkBinding {
-    current: Option<FiberId>,
-    current_host: Option<NodeId>,
-}
-
-struct HostWork {
-    /// Taken by the commit that mounts or updates the host.
-    draft: Option<Box<dyn ErasedDraft>>,
-    pending_children: Vec<ElementDesc>,
-}
-
-struct ComponentWork {
-    render: ComponentRender,
-    key: Option<Key>,
-    props: Option<ErasedProps>,
-}
-
 struct PortalWork {
     scope: Option<OverlayScopeId>,
     options: OverlayEntryOptions,
@@ -96,6 +78,14 @@ struct PortalWork {
     pending_children: Vec<ElementDesc>,
     entry: Option<crate::widgets::OverlayEntryId>,
     visual_root: Option<NodeId>,
+}
+
+#[derive(Default)]
+struct WorkBinding {
+    /// The committed fiber this one is the next version of.
+    current: Option<FiberId>,
+    /// The host this fiber is, once known: a template's root.
+    current_host: Option<NodeId>,
 }
 
 impl From<ComponentWork> for ComponentState {
@@ -109,58 +99,31 @@ impl From<ComponentWork> for ComponentState {
 }
 
 impl WorkNode {
-    fn host_work_mut(&mut self) -> Option<&mut HostWork> {
-        match self.work.as_mut() {
-            Some(Work::HostWork(work)) => Some(work),
-            _ => None,
-        }
-    }
-
-    fn portal_work(&self) -> Option<&PortalWork> {
-        match self.work.as_ref() {
-            Some(Work::PortalWork(work)) => Some(work),
-            _ => None,
-        }
-    }
-
-    fn portal_work_mut(&mut self) -> Option<&mut PortalWork> {
-        match self.work.as_mut() {
-            Some(Work::PortalWork(work)) => Some(work),
-            _ => None,
-        }
-    }
-
-    fn take_component_work(&mut self) -> Option<ComponentWork> {
-        if !matches!(self.work, Some(Work::ComponentWork(_))) {
-            return None;
-        }
-        match self.work.take() {
-            Some(Work::ComponentWork(work)) => Some(work),
-            _ => unreachable!(),
-        }
-    }
-
     fn template_work(&self) -> Option<&TemplateWork> {
         match self.work.as_ref() {
-            Some(Work::TemplateWork(work)) => Some(work),
+            Some(Pending::Template(work)) => Some(work),
             _ => None,
         }
     }
 
     fn template_work_mut(&mut self) -> Option<&mut TemplateWork> {
         match self.work.as_mut() {
-            Some(Work::TemplateWork(work)) => Some(work),
+            Some(Pending::Template(work)) => Some(work),
             _ => None,
         }
     }
 
-    fn take_portal_work(&mut self) -> Option<PortalWork> {
-        if !matches!(self.work, Some(Work::PortalWork(_))) {
-            return None;
+    fn portal_work(&self) -> Option<&PortalWork> {
+        match self.work.as_ref() {
+            Some(Pending::Portal(work)) => Some(work),
+            _ => None,
         }
-        match self.work.take() {
-            Some(Work::PortalWork(work)) => Some(work),
-            _ => unreachable!(),
+    }
+
+    fn portal_work_mut(&mut self) -> Option<&mut PortalWork> {
+        match self.work.as_mut() {
+            Some(Pending::Portal(work)) => Some(work),
+            _ => None,
         }
     }
 
@@ -176,7 +139,7 @@ impl WorkNode {
             parent,
             key: current.key,
             position,
-            tag: current.tag,
+            tag: current.tag(),
             children: SmallVec::new(),
             children_resolved: false,
             effect: EffectTag::empty(),
@@ -185,7 +148,7 @@ impl WorkNode {
             work: None,
             binding: WorkBinding {
                 current: Some(current.id),
-                current_host: current.host.as_ref().and_then(|h| h.node_id),
+                current_host: current.host(),
             },
         }
     }
@@ -201,55 +164,24 @@ impl WorkNode {
         lanes: Lanes,
         child_lanes: Lanes,
     ) -> Self {
-        let work = match prepared.pending {
-            PreparedPending::Host { draft, children } => Work::HostWork(HostWork {
-                draft: Some(draft),
-                pending_children: children,
-            }),
-            PreparedPending::Component { key, render, props } => {
-                Work::ComponentWork(ComponentWork { render, key, props })
+        let current_node = current.and_then(|id| nodes.node(id));
+        let mut work = prepared.pending;
+        match &mut work {
+            Pending::Template(template) => {
+                // A template matched to a committed one updates it.
+                if let Some(state) = current_node.and_then(Node::template) {
+                    template.mode = BuildMode::Update;
+                    template.nodes = state.nodes.clone();
+                }
             }
-            PreparedPending::Template { desc } => {
-                let current = current
-                    .and_then(|id| nodes.node(id))
-                    .and_then(|node| node.template.as_ref());
-                Work::TemplateWork(TemplateWork {
-                    meta: desc.meta,
-                    identity: desc.identity,
-                    mode: if current.is_some() {
-                        BuildMode::Update
-                    } else {
-                        BuildMode::Mount
-                    },
-                    nodes: current.map_or_else(Vec::new, |state| state.nodes.clone()),
-                    desc: Some(desc),
-                    hosts: Vec::new(),
-                })
+            Pending::Portal(portal) => {
+                if let Some(state) = current_node.and_then(Node::portal) {
+                    portal.entry = state.entry;
+                    portal.visual_root = state.visual_root;
+                }
             }
-            PreparedPending::Fragment { children } => Work::FragmentWork(FragmentWork {
-                pending_children: children,
-            }),
-            PreparedPending::Keep => unreachable!("a kept fiber is cloned, not prepared"),
-            PreparedPending::Portal {
-                scope,
-                options,
-                behavior,
-                children,
-            } => Work::PortalWork(PortalWork {
-                scope,
-                options,
-                behavior,
-                pending_children: children,
-                entry: current
-                    .and_then(|id| nodes.node(id))
-                    .and_then(|node| node.portal.as_ref())
-                    .and_then(|portal| portal.entry),
-                visual_root: current
-                    .and_then(|id| nodes.node(id))
-                    .and_then(|node| node.portal.as_ref())
-                    .and_then(|portal| portal.visual_root),
-            }),
-        };
+            Pending::Component(_) | Pending::Fragment(_) => {}
+        }
 
         Self {
             fiber_id,
@@ -265,10 +197,7 @@ impl WorkNode {
             work: Some(work),
             binding: WorkBinding {
                 current,
-                current_host: current
-                    .and_then(|c| nodes.node(c))
-                    .and_then(|n| n.host.as_ref())
-                    .and_then(|n| n.node_id),
+                current_host: current_node.and_then(Node::host),
             },
         }
     }
@@ -296,14 +225,14 @@ impl WorkNode {
         if self.is_uncommited() || includes_some_lane(self.lanes, render_lanes) {
             return true;
         }
-        let Some(Work::ComponentWork(work)) = &self.work else {
+        let Some(Pending::Component(work)) = &self.work else {
             return false;
         };
         let Some(committed) = self
             .binding
             .current
             .and_then(|id| fiber_tree.node(id))
-            .and_then(|node| node.component.as_ref())
+            .and_then(Node::component)
         else {
             return true;
         };
@@ -317,11 +246,11 @@ impl WorkNode {
         }
     }
 
-    fn take_work_nodes(&mut self) -> Option<Vec<ElementDesc>> {
+    /// A fragment's or a portal's new children.
+    fn take_pending_children(&mut self) -> Option<Vec<ElementDesc>> {
         match &mut self.work {
-            Some(Work::HostWork(h)) => Some(std::mem::take(&mut h.pending_children)),
-            Some(Work::PortalWork(p)) => Some(std::mem::take(&mut p.pending_children)),
-            Some(Work::FragmentWork(f)) => Some(std::mem::take(&mut f.pending_children)),
+            Some(Pending::Fragment(children)) => Some(std::mem::take(children)),
+            Some(Pending::Portal(portal)) => Some(std::mem::take(&mut portal.pending_children)),
             _ => None,
         }
     }
@@ -336,48 +265,22 @@ impl WorkNode {
         fiber_tree: &'b FiberArena,
     ) -> Option<(ComponentRender, Option<ErasedPropsRef<'a>>)> {
         match &self.work {
-            Some(Work::ComponentWork(c)) => Some((c.render, c.props.as_ref())),
+            Some(Pending::Component(c)) => Some((c.render, c.props.as_ref())),
             _ => self
                 .binding
                 .current
                 .and_then(|id| fiber_tree.node(id))
-                .and_then(|node| node.component.as_ref())
+                .and_then(Node::component)
                 .map(|component| (component.render, component.props.as_ref())),
         }
     }
 }
 
+/// An element, ready to be matched against the fiber in its place.
 struct PreparedElement {
     key: Option<Key>,
     tag: FiberTag,
-    pending: PreparedPending,
-}
-
-enum PreparedPending {
-    Host {
-        draft: Box<dyn ErasedDraft>,
-        children: Vec<ElementDesc>,
-    },
-    Component {
-        key: Option<Key>,
-        render: ComponentRender,
-        props: Option<ErasedProps>,
-    },
-    Portal {
-        scope: Option<OverlayScopeId>,
-        options: OverlayEntryOptions,
-        behavior: PortalBehavior,
-        children: Vec<ElementDesc>,
-    },
-    Template {
-        desc: TemplateDesc,
-    },
-    Fragment {
-        children: Vec<ElementDesc>,
-    },
-    /// The fiber already in this place, as it is: a template's constant
-    /// component on an update.
-    Keep,
+    pending: Pending,
 }
 
 pub struct WorkInProgress {
@@ -475,7 +378,6 @@ impl WipArena {
 pub struct ComponentRuntime {
     nodes: FiberArena,
     current: FiberId,
-    root_render: RootComponentRender,
     work_in_progress: Option<WorkInProgress>,
     scheduler: Scheduler,
     async_dispatcher: AsyncDispatcher,
@@ -514,15 +416,21 @@ impl ComponentRuntime {
         tickers: TickerRegistry,
         root_render: fn(&mut HookContext) -> ElementDesc,
     ) -> Self {
-        let arena = FiberArena::new();
+        let mut arena = FiberArena::new();
         let current = arena.root();
+        // The root is a component like any other, rendering `root_render`.
+        arena.node_mut(current).expect("the arena has a root").kind =
+            FiberKind::Component(ComponentState {
+                render: ComponentRender::new(ComponentType::ROOT, render_root),
+                key: None,
+                props: Some(Rc::new(root_render)),
+            });
         scheduler.set_root(current);
         scheduler.mark_component_dirty(current, current_update_lane());
 
         Self {
             nodes: arena,
             current,
-            root_render,
             root_widget,
             work_in_progress: None,
             scheduler,
@@ -733,16 +641,6 @@ impl ComponentRuntime {
         }
 
         match tag {
-            FiberTag::Root => {
-                if should_render {
-                    let mut cx = cx!(fiber_id, &NoAncestors);
-                    let element = (self.root_render)(&mut cx);
-                    finish_render!(&NoAncestors);
-                    self.reconcile_children(id, [element]);
-                } else {
-                    self.clone_current_children(id);
-                }
-            }
             FiberTag::Component => {
                 if should_render {
                     let ancestors = WipAncestors {
@@ -760,23 +658,11 @@ impl ComponentRuntime {
                     self.clone_current_children(id);
                 }
             }
-            FiberTag::Host(_) => {
+            FiberTag::Fragment | FiberTag::Portal => {
                 let pending_children = self
                     .wip_nodes
                     .get_mut(id)
-                    .and_then(WorkNode::take_work_nodes);
-
-                if let Some(children) = pending_children {
-                    self.reconcile_children(id, children);
-                } else {
-                    self.clone_current_children(id);
-                }
-            }
-            FiberTag::Portal | FiberTag::Fragment => {
-                let pending_children = self
-                    .wip_nodes
-                    .get_mut(id)
-                    .and_then(WorkNode::take_work_nodes);
+                    .and_then(WorkNode::take_pending_children);
                 if let Some(children) = pending_children {
                     self.reconcile_children(id, children);
                 } else {
@@ -799,21 +685,12 @@ impl ComponentRuntime {
                         .expect("template work missing");
                     work.hosts = std::mem::take(&mut build.hosts);
                     // Slots match by position: the same template has the
-                    // same slots.
+                    // same slots. A kept one stays as it is.
                     let prepared = slots
                         .into_iter()
                         .map(|slot| match slot {
-                            TemplateSlot::Component(element) => self.prepare_element(element),
-                            TemplateSlot::Fragment(children) => PreparedElement {
-                                key: None,
-                                tag: FiberTag::Fragment,
-                                pending: PreparedPending::Fragment { children },
-                            },
-                            TemplateSlot::Keep => PreparedElement {
-                                key: None,
-                                tag: FiberTag::Component,
-                                pending: PreparedPending::Keep,
-                            },
+                            TemplateSlot::Element(element) => Some(self.prepare_element(element)),
+                            TemplateSlot::Keep => None,
                         })
                         .collect::<Vec<_>>();
                     self.reconcile_prepared(id, prepared);
@@ -832,12 +709,14 @@ impl ComponentRuntime {
     {
         let prepared = new_children
             .into_iter()
-            .map(|element| self.prepare_element(element))
+            .map(|element| Some(self.prepare_element(element)))
             .collect::<Vec<_>>();
         self.reconcile_prepared(parent, prepared);
     }
 
-    fn reconcile_prepared(&mut self, parent: WipId, new_children: Vec<PreparedElement>) {
+    /// Matches `new_children` against the committed children of `parent`.
+    /// A `None` keeps the committed child in that position as it is.
+    fn reconcile_prepared(&mut self, parent: WipId, new_children: Vec<Option<PreparedElement>>) {
         let work_node = self.wip_nodes.get(parent).unwrap();
         let work_node_current = work_node.binding.current;
 
@@ -868,7 +747,7 @@ impl ComponentRuntime {
             .collect();
 
         for (position, prepared) in new_children.into_iter().enumerate() {
-            if matches!(prepared.pending, PreparedPending::Keep) {
+            let Some(prepared) = prepared else {
                 let old_id = old_children[position];
                 used[position] = true;
                 let old = self.nodes.node(old_id).expect("a kept fiber is committed");
@@ -884,7 +763,7 @@ impl ComponentRuntime {
                 next_children.push(child);
                 last_placed_index = last_placed_index.max(position);
                 continue;
-            }
+            };
 
             let wip_node = if let Some(matched) = find_reusable_child_fast(
                 &self.nodes,
@@ -966,52 +845,44 @@ impl ComponentRuntime {
 
     fn prepare_element(&self, element: ElementDesc) -> PreparedElement {
         let key = element.key();
-        match element {
-            ElementDesc::Component(component) => self.prepare_component_element(component, key),
-            ElementDesc::Host(host) => PreparedElement {
-                key,
-                tag: FiberTag::Host(host.draft.node_type()),
-                pending: PreparedPending::Host {
-                    draft: host.draft,
-                    children: host.children,
-                },
-            },
-            ElementDesc::Portal(portal) => self.prepare_portal_element(portal, key),
-            ElementDesc::Template(desc) => PreparedElement {
-                key,
-                tag: FiberTag::Template,
-                pending: PreparedPending::Template { desc },
-            },
-        }
-    }
-
-    fn prepare_portal_element(&self, portal: PortalDesc, key: Option<Key>) -> PreparedElement {
-        PreparedElement {
-            key,
-            tag: FiberTag::Portal,
-            pending: PreparedPending::Portal {
-                scope: portal.scope,
-                options: portal.options,
-                behavior: portal.behavior,
-                children: portal.children,
-            },
-        }
-    }
-
-    fn prepare_component_element(
-        &self,
-        component: ComponentDesc,
-        key: Option<Key>,
-    ) -> PreparedElement {
-        PreparedElement {
-            key,
-            tag: FiberTag::Component,
-            pending: PreparedPending::Component {
-                key,
-                render: component.render,
-                props: component.props,
-            },
-        }
+        let (tag, pending) = match element {
+            ElementDesc::Component(component) => (
+                FiberTag::Component,
+                Pending::Component(ComponentWork {
+                    render: component.render,
+                    key,
+                    props: component.props,
+                }),
+            ),
+            ElementDesc::Template(desc) => (
+                FiberTag::Template,
+                Pending::Template(TemplateWork {
+                    meta: desc.meta,
+                    identity: desc.identity,
+                    desc: Some(desc),
+                    // Made an update in `from_prepared` when it matches a
+                    // committed template.
+                    mode: BuildMode::Mount,
+                    hosts: Vec::new(),
+                    nodes: Vec::new(),
+                }),
+            ),
+            ElementDesc::Fragment(fragment) => {
+                (FiberTag::Fragment, Pending::Fragment(fragment.children))
+            }
+            ElementDesc::Portal(portal) => (
+                FiberTag::Portal,
+                Pending::Portal(PortalWork {
+                    scope: portal.scope,
+                    options: portal.options,
+                    behavior: portal.behavior,
+                    pending_children: portal.children,
+                    entry: None,
+                    visual_root: None,
+                }),
+            ),
+        };
+        PreparedElement { key, tag, pending }
     }
 
     fn commit_finished_work(&mut self, arena: &mut UiRuntime) {
@@ -1039,15 +910,14 @@ impl ComponentRuntime {
 
     fn commit_deletion(&mut self, id: FiberId, arena: &mut UiRuntime, remove_host: bool) {
         let children = self.nodes.children(id);
-        let host_node = self
-            .nodes
-            .node(id)
-            .and_then(|node| node.host.as_ref())
-            .and_then(|host| host.node_id);
+        let host_node = self.nodes.node(id).and_then(Node::host);
+        // A portal starts a separate physical subtree, even when its logical
+        // ancestor's host subtree has already been removed.
+        let remove_host = remove_host || self.nodes.node(id).and_then(Node::portal).is_some();
         let portal_entry = self
             .nodes
             .node(id)
-            .and_then(|node| node.portal.as_ref())
+            .and_then(Node::portal)
             .and_then(|portal| portal.entry);
         self.scheduler.mark_unmounted(id);
         self.hooks.remove(&id);
@@ -1092,7 +962,6 @@ impl ComponentRuntime {
         }
 
         if effect.contains(EffectTag::UPDATE) {
-            self.commit_update_if_host(wip_id, arena);
             self.commit_update_if_portal(wip_id, parent_host, arena);
             self.commit_update_if_template(wip_id, arena);
         }
@@ -1109,9 +978,6 @@ impl ComponentRuntime {
         }
 
         let child_parent_host = match tag {
-            FiberTag::Host(_) => self
-                .host_node_for_wip(wip_id)
-                .expect("host fiber missing host node after mutation"),
             FiberTag::Portal => arena.root_overlayer(),
             _ => parent_host,
         };
@@ -1125,29 +991,9 @@ impl ComponentRuntime {
         }
     }
 
+    /// The host a fiber is: a template's root, once mounted.
     fn host_node_for_wip(&self, wip_id: WipId) -> Option<NodeId> {
-        let wip = self.wip_nodes.get(wip_id)?;
-
-        if let Some(node_id) = wip.binding.current_host {
-            return Some(node_id);
-        }
-
-        wip.binding.current_host
-    }
-
-    fn ensure_host_created(&mut self, wip_id: WipId, arena: &mut UiRuntime) -> Option<NodeId> {
-        if let Some(id) = self
-            .wip_nodes
-            .get(wip_id)
-            .and_then(|n| n.binding.current_host.as_ref())
-        {
-            return Some(*id);
-        }
-
-        let draft = self.wip_nodes.get_mut(wip_id)?.host_work_mut()?.draft.take()?;
-        let node_id = arena.create_node(draft);
-        self.wip_nodes.get_mut(wip_id)?.binding.current_host = Some(node_id);
-        Some(node_id)
+        self.wip_nodes.get(wip_id)?.binding.current_host
     }
 
     fn commit_placement_subtree(
@@ -1164,16 +1010,6 @@ impl ComponentRuntime {
         else {
             return;
         };
-
-        if matches!(tag, FiberTag::Host(_)) {
-            let host_id = self.ensure_host_created(wip_id, arena).expect("missing");
-            arena.place(parent_host, host_id, before);
-            if let Some(node) = self.wip_nodes.get_mut(wip_id) {
-                node.effect.remove(EffectTag::PLACEMENT);
-                node.effect.remove(EffectTag::MOVE);
-            }
-            return;
-        }
 
         if matches!(tag, FiberTag::Template) {
             // Its slots are placed under its own hosts as the mutation pass
@@ -1237,33 +1073,14 @@ impl ComponentRuntime {
         }
     }
 
-    fn commit_update_if_host(&mut self, wip_id: WipId, arena: &mut UiRuntime) {
-        if !self
-            .wip_nodes
-            .get(wip_id)
-            .is_some_and(|node| matches!(node.tag, FiberTag::Host(_)))
-        {
-            return;
-        }
-
-        let node_id = self
-            .host_node_for_wip(wip_id)
-            .expect("update host fiber missing host node");
-        let wip = self
-            .wip_nodes
-            .get_mut(wip_id)
-            .expect("update host fiber missing work node");
-        let host_work = wip.host_work_mut().expect("host update missing host work");
-        let draft = host_work.draft.take().expect("host update missing its draft");
-
-        arena.update_node(node_id, draft);
-        wip.binding.current_host = Some(node_id);
-    }
-
     /// Mounts a new template's hosts, each under its parent, and returns its
     /// root, unplaced. A mounted template's root as it is.
     fn ensure_template_mounted(&mut self, wip_id: WipId, arena: &mut UiRuntime) -> NodeId {
-        if let Some(root) = self.wip_nodes.get(wip_id).and_then(|n| n.binding.current_host) {
+        if let Some(root) = self
+            .wip_nodes
+            .get(wip_id)
+            .and_then(|n| n.binding.current_host)
+        {
             return root;
         }
         let work = self
@@ -1284,7 +1101,11 @@ impl ComponentRuntime {
             let id = arena.create_node(draft);
             if let Some(parent) = node.parent {
                 // In preorder, so each lands after its earlier siblings.
-                arena.place(nodes[parent as usize].expect("parents come first"), id, None);
+                arena.place(
+                    nodes[parent as usize].expect("parents come first"),
+                    id,
+                    None,
+                );
             }
             nodes[index] = Some(id);
         }
@@ -1325,7 +1146,7 @@ impl ComponentRuntime {
             .binding
             .current
             .and_then(|id| self.nodes.node(id))
-            .and_then(|node| node.template.as_ref())
+            .and_then(Node::template)
             .expect("a template fiber without work is committed");
         (state.meta, state.nodes.clone())
     }
@@ -1386,7 +1207,6 @@ impl ComponentRuntime {
         let Some((scope, options, behavior, current_entry, current_visual_root)) = self
             .wip_nodes
             .get(wip_id)
-            // .filter(|node| matches!(node.tag, FiberTag::Portal))
             .and_then(WorkNode::portal_work)
             .map(|portal| {
                 (
@@ -1433,29 +1253,29 @@ impl ComponentRuntime {
             .find_map(|child| self.first_host_in_wip_subtree(*child))
     }
 
+    /// The host a newly placed fiber goes before: the first host after it
+    /// among its siblings, looking up through fibers that own no host.
     fn find_host_sibling_for_wip(&self, wip_id: WipId) -> Option<NodeId> {
         let mut node = wip_id;
-
         loop {
             let parent = self.wip_nodes.get(node)?.parent?;
-            if matches!(self.wip_nodes.get(parent)?.tag, FiberTag::Template) {
+            let parent_tag = self.wip_nodes.get(parent)?.tag;
+            if parent_tag == FiberTag::Template {
                 // A slot's siblings are the template's, not its fiber's.
                 return self.template_anchor(parent, node);
             }
             let siblings = &self.wip_nodes.get(parent)?.children;
             let index = siblings.iter().position(|id| *id == node)?;
-
             for sibling in siblings.iter().copied().skip(index + 1) {
                 if let Some(host) = self.find_stable_host_in_wip_subtree(sibling) {
                     return Some(host);
                 }
             }
-
-            node = parent;
-
-            if matches!(self.wip_nodes.get(node)?.tag, FiberTag::Host(_)) {
+            if parent_tag == FiberTag::Portal {
+                // Its children are the overlay entry's; nothing follows them.
                 return None;
             }
+            node = parent;
         }
     }
 
@@ -1499,10 +1319,10 @@ impl ComponentRuntime {
     /// The first host in a committed fiber subtree, not looking into portals.
     fn first_committed_host(&self, fiber: FiberId) -> Option<NodeId> {
         let node = self.nodes.node(fiber)?;
-        if let Some(host) = node.host.as_ref().and_then(|host| host.node_id) {
+        if let Some(host) = node.host() {
             return Some(host);
         }
-        if matches!(node.tag, FiberTag::Portal) {
+        if node.tag() == FiberTag::Portal {
             return None;
         }
         node.children(&self.nodes)
@@ -1531,22 +1351,15 @@ impl ComponentRuntime {
             self.collect_current_child_ids(wip.binding.current)
         };
 
-        let host = self.freeze_host_state(&mut wip, arena);
-        let component = self.freeze_component_state(&mut wip);
-        let portal = self.freeze_portal_state(&mut wip);
-        let template = self.freeze_template_state(&mut wip);
+        let kind = self.freeze_kind(&mut wip, arena);
         let frozen = crate::fiber::Node {
             id: fiber_id,
             parent: parent_fiber,
             child: None,
             sibling: None,
             key: wip.key,
-            tag: wip.tag,
             effect: EffectTag::empty(),
-            host,
-            component,
-            portal,
-            template,
+            kind,
             position: wip.position,
         };
 
@@ -1564,83 +1377,39 @@ impl ComponentRuntime {
             .unwrap_or_default()
     }
 
-    fn freeze_host_state(&mut self, wip: &mut WorkNode, arena: &UiRuntime) -> Option<HostState> {
-        // A template's host is its root.
-        if !matches!(wip.tag, FiberTag::Host(_) | FiberTag::Template) {
-            return None;
-        }
-
-        let current_host = wip
-            .binding
-            .current
-            .and_then(|id| self.nodes.node_mut(id))
-            .and_then(|node| node.host.take());
-        let node_id = wip
-            .binding
-            .current_host
-            .or_else(|| current_host.as_ref().and_then(|host| host.node_id))
-            .expect("host fiber missing committed host node");
-        debug_assert!(arena.contains(node_id), "committed host node missing from arena");
-
-        Some(HostState {
-            node_id: Some(node_id),
-        })
-    }
-
-    fn freeze_component_state(&mut self, wip: &mut WorkNode) -> Option<ComponentState> {
-        if !matches!(wip.tag, FiberTag::Component) {
-            return None;
-        }
-
-        if let Some(component) = wip.take_component_work() {
-            return Some(component.into());
-        }
-
-        wip.binding
-            .current
-            .and_then(|id| self.nodes.node_mut(id))
-            .and_then(|node| node.component.take())
-    }
-
-    fn freeze_template_state(&mut self, wip: &mut WorkNode) -> Option<TemplateState> {
-        if !matches!(wip.tag, FiberTag::Template) {
-            return None;
-        }
-        if let Some(Work::TemplateWork(work)) = wip.work.take() {
-            return Some(TemplateState {
+    /// What the fiber keeps: this render's work, or what it kept before.
+    fn freeze_kind(&mut self, wip: &mut WorkNode, arena: &UiRuntime) -> FiberKind {
+        let kind = match wip.work.take() {
+            Some(Pending::Component(work)) => FiberKind::Component(work.into()),
+            Some(Pending::Template(work)) => FiberKind::Template(TemplateState {
                 meta: work.meta,
                 identity: work.identity,
                 nodes: work.nodes,
-            });
-        }
-        wip.binding
-            .current
-            .and_then(|id| self.nodes.node_mut(id))
-            .and_then(|node| node.template.take())
-    }
-
-    fn freeze_portal_state(&mut self, wip: &mut WorkNode) -> Option<PortalState> {
-        if !matches!(wip.tag, FiberTag::Portal) {
-            return None;
-        }
-        if let Some(portal) = wip.take_portal_work() {
-            return Some(PortalState {
+            }),
+            Some(Pending::Fragment(_)) => FiberKind::Fragment,
+            Some(Pending::Portal(portal)) => FiberKind::Portal(PortalState {
                 scope: portal.scope,
                 options: portal.options,
                 behavior: portal.behavior,
                 entry: portal.entry,
                 visual_root: portal.visual_root,
-            });
+            }),
+            None => {
+                let current = wip
+                    .binding
+                    .current
+                    .and_then(|id| self.nodes.node_mut(id))
+                    .expect("a fiber without work is committed");
+                std::mem::replace(&mut current.kind, FiberKind::Fragment)
+            }
+        };
+        if let FiberKind::Template(template) = &kind {
+            debug_assert!(
+                arena.contains(template.root()),
+                "committed template root missing from arena"
+            );
         }
-        wip.binding
-            .current
-            .and_then(|id| self.nodes.node_mut(id))
-            .and_then(|node| node.portal.take())
-    }
-
-    fn trace_commit_work_node(&self, depth: usize, event: fmt::Arguments<'_>) {
-        let indent = "  ".repeat(depth);
-        eprintln!("[xui_core::commit] {indent}{event}");
+        kind
     }
 
     fn clone_current_children(&mut self, parent: WipId) {
@@ -1828,87 +1597,41 @@ fn find_reusable_child_fast(
     })
 }
 
-fn find_reusable_child(
-    nodes: &FiberArena,
-    old_children: &[FiberId],
-    used: &[bool],
-    prepared: &PreparedElement,
-    position: usize,
-) -> Option<usize> {
-    if let Some(key) = prepared.key.as_ref() {
-        return old_children
-            .iter()
-            .copied()
-            .enumerate()
-            .find(|(index, old_id)| {
-                !used[*index]
-                    && nodes.node(*old_id).is_some_and(|old| {
-                        old.key.as_ref() == Some(key) && can_reuse_prepared(old, prepared)
-                    })
-            })
-            .map(|(index, _)| index);
-    }
-
-    old_children
-        .get(position)
-        .copied()
-        .filter(|old_id| {
-            !used[position]
-                && nodes.node(*old_id).is_some_and(|old| {
-                    old.key.is_none()
-                        && old.position == position
-                        && can_reuse_prepared(old, prepared)
-                })
-        })
-        .map(|_| position)
-}
-
+/// Whether the committed `old` can take `prepared`: the same kind, and for
+/// a component the same render function, for a template the same template.
 fn can_reuse_prepared(old: &Node, prepared: &PreparedElement) -> bool {
-    if old.tag != prepared.tag {
-        return false;
-    }
-
-    match &prepared.pending {
-        PreparedPending::Component { render, .. } => old
-            .component
-            .as_ref()
-            .is_some_and(|component| component.render == *render),
-        PreparedPending::Host { .. } => true,
-        PreparedPending::Portal { .. } => true,
-        PreparedPending::Template { desc } => old
-            .template
-            .as_ref()
-            .is_some_and(|template| template.identity == desc.identity),
-        PreparedPending::Fragment { .. } | PreparedPending::Keep => true,
+    match (&old.kind, &prepared.pending) {
+        (FiberKind::Component(old), Pending::Component(new)) => old.render == new.render,
+        (FiberKind::Template(old), Pending::Template(new)) => old.identity == new.identity,
+        (FiberKind::Fragment, Pending::Fragment(_)) => true,
+        (FiberKind::Portal(_), Pending::Portal(_)) => true,
+        _ => false,
     }
 }
 
+/// Whether a reused fiber has anything to update. A component decides in
+/// `should_render_component`; a template and a fragment always carry this
+/// render's inputs and children.
 fn prepared_needs_update(current: &Node, prepared: &PreparedElement) -> bool {
-    if current.tag != prepared.tag || current.key != prepared.key {
+    if current.key != prepared.key {
         return true;
     }
-
-    match (&current.host, &current.component, &prepared.pending) {
-        // A host is always updated: its draft is spread over its rows, and
-        // what changed is what the capabilities' and props' `dirty` say.
-        (Some(_), _, PreparedPending::Host { .. }) => true,
-        (_, Some(_), PreparedPending::Component { .. }) => false,
-        (_, _, PreparedPending::Template { .. } | PreparedPending::Fragment { .. }) => true,
-        (_, _, PreparedPending::Keep) => false,
-        (
-            _,
-            _,
-            PreparedPending::Portal {
-                scope,
-                options,
-                behavior,
-                ..
-            },
-        ) => current.portal.as_ref().is_none_or(|portal| {
-            portal.scope != *scope || portal.options != *options || portal.behavior != *behavior
-        }),
+    match (&current.kind, &prepared.pending) {
+        (FiberKind::Component(_), Pending::Component(_)) => false,
+        (FiberKind::Portal(old), Pending::Portal(new)) => {
+            old.scope != new.scope || old.options != new.options || old.behavior != new.behavior
+        }
         _ => true,
     }
+}
+
+/// The root component's call: its props are the application's render
+/// function.
+fn render_root(cx: &mut HookContext<'_>, props: Option<ErasedPropsRef<'_>>) -> ElementDesc {
+    let render = props
+        .and_then(|props| props.downcast_ref::<RootComponentRender>())
+        .expect("the root component's props are its render function");
+    render(cx)
 }
 
 /// Hands each part of a Portal's behavior to the runtime subsystem that runs
@@ -1962,12 +1685,12 @@ fn child_tree_lanes(
 
 #[cfg(test)]
 mod portal_tests {
-    #[allow(unused_imports)]
-    use crate::test_prelude::*;
     use super::*;
     use crate::element::portal;
     use crate::fiber::ComponentType;
-    use crate::widgets::{component};
+    #[allow(unused_imports)]
+    use crate::test_prelude::*;
+    use crate::widgets::component;
     use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
     static PORTAL_MODE: AtomicU8 = AtomicU8::new(0);
@@ -2001,7 +1724,10 @@ mod portal_tests {
     }
 
     fn counted_child_render() -> ComponentRender {
-        ComponentRender::new(ComponentType::of::<NotHashProps>("counted_child"), counted_child)
+        ComponentRender::new(
+            ComponentType::of::<NotHashProps>("counted_child"),
+            counted_child,
+        )
     }
 
     fn component_parent(_cx: &mut HookContext<'_>) -> ElementDesc {
@@ -2018,7 +1744,10 @@ mod portal_tests {
     }
 
     fn stateful_leaf_render() -> ComponentRender {
-        ComponentRender::new(ComponentType::of::<NotHashProps>("stateful_leaf"), stateful_leaf)
+        ComponentRender::new(
+            ComponentType::of::<NotHashProps>("stateful_leaf"),
+            stateful_leaf,
+        )
     }
 
     fn middle(_cx: &mut HookContext<'_>, _props: Option<ErasedPropsRef<'_>>) -> ElementDesc {
@@ -2059,11 +1788,13 @@ mod portal_tests {
         let mode = PORTAL_MODE.load(Ordering::SeqCst);
         if mode < 2 {
             portal(vec![
-                container().key(if mode == 0 {
+                container()
+                    .key(if mode == 0 {
                         "portal-visual-root"
                     } else {
                         "portal-replacement-root"
-                    }).into_element_desc(Vec::new()),
+                    })
+                    .into_element_desc(Vec::new()),
             ])
             .key("portal")
             .z_index(100)
@@ -2082,7 +1813,7 @@ mod portal_tests {
 
         let portal_fiber = runtime.nodes.children(runtime.root())[0];
         assert_eq!(
-            runtime.nodes.node(portal_fiber).unwrap().tag,
+            runtime.nodes.node(portal_fiber).unwrap().tag(),
             FiberTag::Portal
         );
         let visual_children = arena.children(arena.root_overlayer()).collect::<Vec<_>>();
@@ -2108,22 +1839,58 @@ mod portal_tests {
         assert!(arena.children(arena.root_overlayer()).next().is_none());
     }
 
+    #[test]
+    fn removing_a_template_releases_nested_portal_hosts() {
+        thread_local! {
+            static VISIBLE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+        }
+        fn root(_cx: &mut HookContext<'_>) -> ElementDesc {
+            if VISIBLE.get() {
+                container().into_element_desc(vec![
+                    portal(vec![container().into_element_desc(Vec::new())]).into(),
+                ])
+            } else {
+                crate::element::FragmentDesc::default().into()
+            }
+        }
+        VISIBLE.set(true);
+        let mut arena = UiRuntime::new();
+        let mut runtime = ComponentRuntime::new(arena.root(), Scheduler::default(), root);
+        runtime.flush_sync(&mut arena);
+        let visual_root = arena.children(arena.root_overlayer()).next().unwrap();
+        VISIBLE.set(false);
+        runtime.mark_root_dirty();
+        runtime.flush_sync(&mut arena);
+        assert!(arena.children(arena.root_overlayer()).next().is_none());
+        assert!(arena.node(visual_root).is_none());
+    }
+
     fn anchored_portal_root(_cx: &mut HookContext<'_>) -> ElementDesc {
         use crate::anchor::AnchorPlacement;
         use xui_interface::{EdgeInsets, Size};
 
-        let menu = container().key("menu").with::<container::size>(Size::fix(60.0, 40.0)).into_element_desc(Vec::new());
+        let menu = container()
+            .key("menu")
+            .with::<container::size>(Size::fix(60.0, 40.0))
+            .into_element_desc(Vec::new());
         // Written inside the trigger, so the trigger owns the Portal.
-        let trigger = container().key("trigger").with::<container::size>(Size::fix(80.0, 20.0)).into_element_desc(vec![
+        let trigger = container()
+            .key("trigger")
+            .with::<container::size>(Size::fix(80.0, 20.0))
+            .into_element_desc(vec![
                 portal(vec![menu])
                     .key("portal")
                     .anchor(AnchorPlacement::default().offset(0.0))
                     .on_dismiss(|_| {})
                     .into(),
             ]);
-        container().with::<container::style>(
-                StyleOf::<Container>::new().with::<container::size>(Size::fill()).with::<container::padding>(EdgeInsets::new(30.0, 0.0, 50.0, 0.0)),
-            ).into_element_desc(vec![trigger])
+        container()
+            .with::<container::style>(
+                StyleOf::<Container>::new()
+                    .with::<container::size>(Size::fill())
+                    .with::<container::padding>(EdgeInsets::new(30.0, 0.0, 50.0, 0.0)),
+            )
+            .into_element_desc(vec![trigger])
     }
 
     /// 0: anchored. 1: the same Portal without an anchor. 2: anchored again,
@@ -2134,7 +1901,9 @@ mod portal_tests {
         let mode = ANCHOR_MODE.load(Ordering::SeqCst);
         let mut children = Vec::new();
         if mode < 3 {
-            let menu = container().key(if mode < 2 { "menu" } else { "replacement" }).into_element_desc(Vec::new());
+            let menu = container()
+                .key(if mode < 2 { "menu" } else { "replacement" })
+                .into_element_desc(Vec::new());
             let mut desc = portal(vec![menu]).key("portal");
             if mode != 1 {
                 desc = desc.anchor(AnchorPlacement::default());

@@ -52,68 +52,69 @@ fn source_icon(kind: SourceIcon) -> IconData {
 
 fn box_element(
     direction: FlexDirectionStyle,
-    style: Style,
+    style: StyleOf<Container>,
     children: Vec<ElementDesc>,
 ) -> ElementDesc {
-    ContainerWidget::new()
-        .flex_direction(direction)
-        .style(style)
+    container()
+        .with::<container::flex_direction>(direction)
+        .with::<container::style>(style)
         .into_element_desc(children)
 }
 
-fn row(style: Style, children: Vec<ElementDesc>) -> ElementDesc {
+fn row(style: StyleOf<Container>, children: Vec<ElementDesc>) -> ElementDesc {
     box_element(FlexDirectionStyle::Row, style, children)
 }
 
-fn column(style: Style, children: Vec<ElementDesc>) -> ElementDesc {
+fn column(style: StyleOf<Container>, children: Vec<ElementDesc>) -> ElementDesc {
     box_element(FlexDirectionStyle::Column, style, children)
 }
 
-fn empty(style: Style) -> ElementDesc {
-    ContainerWidget::new()
-        .style(style)
+fn empty(style: StyleOf<Container>) -> ElementDesc {
+    container()
+        .with::<container::style>(style)
         .into_element_desc(Vec::new())
 }
 
 fn label(value: impl Into<String>, size: f32, color: Color, weight: FontWeight) -> ElementDesc {
     let mut paragraph = ParagraphStyle::default();
     paragraph.vertical_align = TextVerticalAlign::Middle;
-    TextWidget::new(value.into())
-        .style(
-            Style::new()
-                .color(color)
-                .font_family("Microsoft YaHei")
-                .font_size(size)
-                .font_weight(weight),
+    text()
+        .with::<text::content>(value.into())
+        .with::<text::style>(
+            StyleOf::new()
+                .with::<container::color>(color)
+                .with::<container::font_family>("Microsoft YaHei")
+                .with::<container::font_size>(size)
+                .with::<container::font_weight>(weight),
         )
-        .paragraph(paragraph)
-        .into_element_desc()
+        .with::<text::paragraph>(paragraph)
+        .into_element_desc(Vec::new())
 }
 
 fn icon_view(kind: SourceIcon, size: f32, color: Color) -> ElementDesc {
     icon()
-        .from_icon_data(source_icon(kind))
-        .color(color)
-        .style(Style::new().size(Size::fix(size, size)))
-        .into_element_desc()
+        .with::<icon::data>(source_icon(kind))
+        .with::<icon::color>(color)
+        .with::<icon::style>(StyleOf::new().with::<container::size>(Size::fix(size, size)))
+        .into_element_desc(Vec::new())
 }
 
 fn dot(color: Color) -> ElementDesc {
     empty(
-        Style::new()
-            .size(Size::fix(7.0, 7.0))
-            .background(color)
-            .border_radius(4.0),
+        StyleOf::new()
+            .with::<container::size>(Size::fix(7.0, 7.0))
+            .with::<container::background>(color)
+            .with::<container::border_radius>(4.0),
     )
 }
 
 fn icon_button(kind: SourceIcon) -> ElementDesc {
     row(
-        Style::new()
-            .size(Size::fix(26.0, 26.0))
-            .align(AlignStyle::Center)
-            .justify(JustifyStyle::Center)
-            .border_radius(3.0),
+        StyleOf::new()
+            .with::<container::size>(Size::fix(26.0, 26.0))
+            .with::<container::align>(AlignStyle::Center)
+            .with::<container::justify>(JustifyStyle::Center)
+            .with::<container::border_radius>(3.0),
         vec![icon_view(kind, 14.0, MUTED)],
     )
 }
@@ -126,15 +127,17 @@ fn component_button(text_value: &str, active: bool) -> ElementDesc {
     };
     let text_value = text_value.to_string();
     row(
-        Style::new().height(26.0).font_size(11.0),
+        StyleOf::new()
+            .with::<container::height>(26.0)
+            .with::<container::font_size>(11.0),
         vec![xui! {
             <button
                 text={text_value}
                 variant={variant}
                 size={ButtonSize::Small}
-                style={Style::new()
-                    .min_height(26.0)
-                    .padding(EdgeInsets::symmetric(8.0, 4.0))}
+                style={StyleOf::new()
+                    .with::<container::min_height>(26.0)
+                    .with::<container::padding>(EdgeInsets::symmetric(8.0, 4.0))}
             />
         }],
     )
@@ -142,7 +145,9 @@ fn component_button(text_value: &str, active: bool) -> ElementDesc {
 
 fn legend_item(color: Color, text_value: &str) -> ElementDesc {
     row(
-        Style::new().gap(5.0).align(AlignStyle::Center),
+        StyleOf::new()
+            .with::<container::gap>(5.0)
+            .with::<container::align>(AlignStyle::Center),
         vec![
             dot(color),
             label(text_value, 11.0, MUTED, FontWeight::Normal),
@@ -153,23 +158,25 @@ fn legend_item(color: Color, text_value: &str) -> ElementDesc {
 fn chart_card(title: &str, primary: bool) -> ElementDesc {
     let legend_none = if title == "Time" { "无风险" } else { "无" };
     let chart_placeholder = empty(
-        Style::new()
-            .width(Sizing::fill())
-            .height(124.0)
-            .background(PAGE)
-            .border_color(BORDER)
-            .border_width(1.0)
-            .border_radius(3.0),
+        StyleOf::new()
+            .with::<container::width>(Sizing::fill())
+            .with::<container::height>(124.0)
+            .with::<container::background>(PAGE)
+            .with::<container::border_color>(BORDER)
+            .with::<container::border_width>(1.0)
+            .with::<container::border_radius>(3.0),
     );
 
     let header = row(
-        Style::new()
-            .height(30.0)
-            .align(AlignStyle::Center)
-            .justify(JustifyStyle::SpaceBetween),
+        StyleOf::new()
+            .with::<container::height>(30.0)
+            .with::<container::align>(AlignStyle::Center)
+            .with::<container::justify>(JustifyStyle::SpaceBetween),
         vec![
             row(
-                Style::new().gap(8.0).align(AlignStyle::Center),
+                StyleOf::new()
+                    .with::<container::gap>(8.0)
+                    .with::<container::align>(AlignStyle::Center),
                 vec![
                     dot(if primary {
                         GREEN
@@ -180,7 +187,9 @@ fn chart_card(title: &str, primary: bool) -> ElementDesc {
                 ],
             ),
             row(
-                Style::new().gap(5.0).align(AlignStyle::Center),
+                StyleOf::new()
+                    .with::<container::gap>(5.0)
+                    .with::<container::align>(AlignStyle::Center),
                 vec![
                     component_button("散点图", false),
                     component_button("配置参数", false),
@@ -191,13 +200,15 @@ fn chart_card(title: &str, primary: bool) -> ElementDesc {
     );
 
     let footer = row(
-        Style::new()
-            .height(28.0)
-            .align(AlignStyle::Center)
-            .justify(JustifyStyle::SpaceBetween),
+        StyleOf::new()
+            .with::<container::height>(28.0)
+            .with::<container::align>(AlignStyle::Center)
+            .with::<container::justify>(JustifyStyle::SpaceBetween),
         vec![
             row(
-                Style::new().gap(10.0).align(AlignStyle::Center),
+                StyleOf::new()
+                    .with::<container::gap>(10.0)
+                    .with::<container::align>(AlignStyle::Center),
                 vec![
                     legend_item(Color::hex("#6B7280"), legend_none),
                     legend_item(BLUE, "轻度"),
@@ -210,22 +221,22 @@ fn chart_card(title: &str, primary: bool) -> ElementDesc {
     );
 
     column(
-        Style::new()
-            .width(Sizing::fill())
-            .height(232.0)
-            .padding(EdgeInsets::all(12.0))
-            .gap(9.0)
-            .background(PANEL)
-            .border_color(if primary { Color::WHITE } else { BORDER })
-            .border_width(1.0)
-            .border_radius(3.0),
+        StyleOf::new()
+            .with::<container::width>(Sizing::fill())
+            .with::<container::height>(232.0)
+            .with::<container::padding>(EdgeInsets::all(12.0))
+            .with::<container::gap>(9.0)
+            .with::<container::background>(PANEL)
+            .with::<container::border_color>(if primary { Color::WHITE } else { BORDER })
+            .with::<container::border_width>(1.0)
+            .with::<container::border_radius>(3.0),
         vec![
             header,
             empty(
-                Style::new()
-                    .height(1.0)
-                    .width(Sizing::fill())
-                    .background(BORDER),
+                StyleOf::new()
+                    .with::<container::height>(1.0)
+                    .with::<container::width>(Sizing::fill())
+                    .with::<container::background>(BORDER),
             ),
             chart_placeholder,
             footer,
@@ -235,14 +246,14 @@ fn chart_card(title: &str, primary: bool) -> ElementDesc {
 
 fn map_guide() -> ElementDesc {
     column(
-        Style::new()
-            .width(270.0)
-            .padding(EdgeInsets::all(12.0))
-            .gap(7.0)
-            .background(Color::hex("#121214").alpha(0.96))
-            .border_color(BORDER)
-            .border_width(1.0)
-            .border_radius(3.0),
+        StyleOf::new()
+            .with::<container::width>(270.0)
+            .with::<container::padding>(EdgeInsets::all(12.0))
+            .with::<container::gap>(7.0)
+            .with::<container::background>(Color::hex("#121214").alpha(0.96))
+            .with::<container::border_color>(BORDER)
+            .with::<container::border_width>(1.0)
+            .with::<container::border_radius>(3.0),
         vec![
             label("地图操作指南", 13.0, TEXT, FontWeight::Bold),
             label(
@@ -264,10 +275,10 @@ fn map_guide() -> ElementDesc {
                 FontWeight::Normal,
             ),
             empty(
-                Style::new()
-                    .height(1.0)
-                    .width(Sizing::fill())
-                    .background(BORDER),
+                StyleOf::new()
+                    .with::<container::height>(1.0)
+                    .with::<container::width>(Sizing::fill())
+                    .with::<container::background>(BORDER),
             ),
             label(
                 "白色实线箭头: 预估可航行距离",
@@ -281,53 +292,53 @@ fn map_guide() -> ElementDesc {
 
 fn flight_selector() -> ElementDesc {
     column(
-        Style::new()
-            .width(260.0)
-            .padding(EdgeInsets::all(12.0))
-            .gap(10.0)
-            .background(Color::hex("#121214").alpha(0.96))
-            .border_color(BORDER)
-            .border_width(1.0)
-            .border_radius(3.0),
+        StyleOf::new()
+            .with::<container::width>(260.0)
+            .with::<container::padding>(EdgeInsets::all(12.0))
+            .with::<container::gap>(10.0)
+            .with::<container::background>(Color::hex("#121214").alpha(0.96))
+            .with::<container::border_color>(BORDER)
+            .with::<container::border_width>(1.0)
+            .with::<container::border_radius>(3.0),
         vec![
             row(
-                Style::new()
-                    .height(34.0)
-                    .padding(EdgeInsets::all(4.0))
-                    .background(PAGE)
-                    .border_color(BORDER)
-                    .border_width(1.0)
-                    .border_radius(3.0),
+                StyleOf::new()
+                    .with::<container::height>(34.0)
+                    .with::<container::padding>(EdgeInsets::all(4.0))
+                    .with::<container::background>(PAGE)
+                    .with::<container::border_color>(BORDER)
+                    .with::<container::border_width>(1.0)
+                    .with::<container::border_radius>(3.0),
                 vec![
                     row(
-                        Style::new()
-                            .width(Sizing::percent(0.5))
-                            .height(Sizing::fill())
-                            .gap(5.0)
-                            .align(AlignStyle::Center)
-                            .justify(JustifyStyle::Center)
-                            .background(CONTROL),
+                        StyleOf::new()
+                            .with::<container::width>(Sizing::percent(0.5))
+                            .with::<container::height>(Sizing::fill())
+                            .with::<container::gap>(5.0)
+                            .with::<container::align>(AlignStyle::Center)
+                            .with::<container::justify>(JustifyStyle::Center)
+                            .with::<container::background>(CONTROL),
                         vec![dot(RED), label("实况", 11.0, ACCENT, FontWeight::Bold)],
                     ),
                     row(
-                        Style::new()
-                            .width(Sizing::fill())
-                            .height(Sizing::fill())
-                            .align(AlignStyle::Center)
-                            .justify(JustifyStyle::Center),
+                        StyleOf::new()
+                            .with::<container::width>(Sizing::fill())
+                            .with::<container::height>(Sizing::fill())
+                            .with::<container::align>(AlignStyle::Center)
+                            .with::<container::justify>(JustifyStyle::Center),
                         vec![label("历史", 11.0, MUTED, FontWeight::Bold)],
                     ),
                 ],
             ),
             row(
-                Style::new()
-                    .height(44.0)
-                    .padding(EdgeInsets::symmetric(12.0, 6.0))
-                    .align(AlignStyle::Center)
-                    .background(PAGE)
-                    .border_color(BORDER)
-                    .border_width(1.0)
-                    .border_radius(3.0),
+                StyleOf::new()
+                    .with::<container::height>(44.0)
+                    .with::<container::padding>(EdgeInsets::symmetric(12.0, 6.0))
+                    .with::<container::align>(AlignStyle::Center)
+                    .with::<container::background>(PAGE)
+                    .with::<container::border_color>(BORDER)
+                    .with::<container::border_width>(1.0)
+                    .with::<container::border_radius>(3.0),
                 vec![label("20260702_B651N_01", 14.0, ACCENT, FontWeight::Bold)],
             ),
         ],
@@ -354,49 +365,56 @@ fn icing_product_items() -> Vec<DropDownItem> {
 
 fn icing_product_drop_down_style() -> DropDownStyle {
     DropDownStyle {
-        root: Style::new().size(Size::fix(158.0, 30.0)),
-        trigger: Style::new()
-            .size(Size::fix(158.0, 30.0))
-            .padding(EdgeInsets::symmetric(12.0, 4.0))
-            .align(AlignStyle::Center)
-            .background(CONTROL)
-            .color(TEXT)
-            .font_size(13.0)
-            .font_weight(FontWeight::Medium)
-            .border_color(Color::hex("#55555A"))
-            .border_width(1.0)
-            .border_radius(4.0)
-            .when(WidgetState::HOVERED, |style| {
-                style.background(Color::hex("#343438"))
-            })
-            .when(WidgetState::FOCUSED, |style| style.border_color(ACCENT)),
-        trigger_open: Style::new().border_color(ACCENT),
-        menu: Style::new()
-            .padding(EdgeInsets::all(4.0))
-            .background(Color::hex("#1A1A1C"))
-            .border_color(Color::hex("#55555A"))
-            .border_width(1.0)
-            .border_radius(4.0)
-            .max_height(280.0)
-            .scroll_vertical(),
-        option: Style::new()
-            .padding(EdgeInsets::symmetric(10.0, 7.0))
-            .color(TEXT)
-            .font_size(12.0)
-            .border_radius(3.0)
-            .when(WidgetState::HOVERED, |style| style.background(CONTROL)),
-        selected_option: Style::new()
-            .padding(EdgeInsets::symmetric(10.0, 7.0))
-            .background(Color::hex("#253526"))
-            .color(ACCENT)
-            .font_size(12.0)
-            .font_weight(FontWeight::Bold)
-            .border_radius(3.0),
-        disabled_option: Style::new()
-            .padding(EdgeInsets::symmetric(10.0, 7.0))
-            .color(DIM)
-            .font_size(12.0)
-            .border_radius(3.0),
+        root: StyleOf::new().with::<container::size>(Size::fix(158.0, 30.0)),
+        trigger: StyleOf::new()
+            .with::<container::size>(Size::fix(158.0, 30.0))
+            .with::<container::padding>(EdgeInsets::symmetric(12.0, 4.0))
+            .with::<container::align>(AlignStyle::Center)
+            .with::<container::background>(CONTROL)
+            .with::<container::color>(TEXT)
+            .with::<container::font_size>(13.0)
+            .with::<container::font_weight>(FontWeight::Medium)
+            .with::<container::border_color>(Color::hex("#55555A"))
+            .with::<container::border_width>(1.0)
+            .with::<container::border_radius>(4.0)
+            .when_style(
+                WidgetStateMatcher::all(WidgetState::HOVERED),
+                StyleOf::<Container>::new().with::<container::background>(Color::hex("#343438")),
+            )
+            .when_style(
+                WidgetStateMatcher::all(WidgetState::FOCUSED),
+                StyleOf::<Container>::new().with::<container::border_color>(ACCENT),
+            ),
+        trigger_open: StyleOf::new().with::<container::border_color>(ACCENT),
+        menu: StyleOf::new()
+            .with::<container::padding>(EdgeInsets::all(4.0))
+            .with::<container::background>(Color::hex("#1A1A1C"))
+            .with::<container::border_color>(Color::hex("#55555A"))
+            .with::<container::border_width>(1.0)
+            .with::<container::border_radius>(4.0)
+            .with::<container::max_height>(280.0)
+            .with::<container::scroll_direction>(ScrollDirectionStyle::Vertical),
+        option: StyleOf::new()
+            .with::<container::padding>(EdgeInsets::symmetric(10.0, 7.0))
+            .with::<container::color>(TEXT)
+            .with::<container::font_size>(12.0)
+            .with::<container::border_radius>(3.0)
+            .when_style(
+                WidgetStateMatcher::all(WidgetState::HOVERED),
+                StyleOf::<Container>::new().with::<container::background>(CONTROL),
+            ),
+        selected_option: StyleOf::new()
+            .with::<container::padding>(EdgeInsets::symmetric(10.0, 7.0))
+            .with::<container::background>(Color::hex("#253526"))
+            .with::<container::color>(ACCENT)
+            .with::<container::font_size>(12.0)
+            .with::<container::font_weight>(FontWeight::Bold)
+            .with::<container::border_radius>(3.0),
+        disabled_option: StyleOf::new()
+            .with::<container::padding>(EdgeInsets::symmetric(10.0, 7.0))
+            .with::<container::color>(DIM)
+            .with::<container::font_size>(12.0)
+            .with::<container::border_radius>(3.0),
     }
 }
 
@@ -412,22 +430,26 @@ fn map_panel(selected_product: usize, on_product_change: DropDownChangeCallback)
         />
     };
     let toolbar = row(
-        Style::new()
-            .height(42.0)
-            .padding(EdgeInsets::symmetric(12.0, 6.0))
-            .align(AlignStyle::Center)
-            .justify(JustifyStyle::SpaceBetween)
-            .background(SURFACE),
+        StyleOf::new()
+            .with::<container::height>(42.0)
+            .with::<container::padding>(EdgeInsets::symmetric(12.0, 6.0))
+            .with::<container::align>(AlignStyle::Center)
+            .with::<container::justify>(JustifyStyle::SpaceBetween)
+            .with::<container::background>(SURFACE),
         vec![
             row(
-                Style::new().gap(9.0).align(AlignStyle::Center),
+                StyleOf::new()
+                    .with::<container::gap>(9.0)
+                    .with::<container::align>(AlignStyle::Center),
                 vec![
                     label("当前积冰监测产品:", 12.0, MUTED, FontWeight::SemiBold),
                     product_selector,
                 ],
             ),
             row(
-                Style::new().gap(2.0).align(AlignStyle::Center),
+                StyleOf::new()
+                    .with::<container::gap>(2.0)
+                    .with::<container::align>(AlignStyle::Center),
                 vec![
                     icon_button(SourceIcon::Crosshair),
                     icon_button(SourceIcon::ZoomIn),
@@ -438,31 +460,42 @@ fn map_panel(selected_product: usize, on_product_change: DropDownChangeCallback)
         ],
     );
 
-    let map_placeholder = empty(Style::new().size(Size::fill()).background(PAGE));
+    let map_placeholder = empty(
+        StyleOf::new()
+            .with::<container::size>(Size::fill())
+            .with::<container::background>(PAGE),
+    );
     let overlay = row(
-        Style::new()
-            .width(Sizing::fill())
-            .padding(EdgeInsets::all(16.0))
-            .gap(14.0)
-            .justify(JustifyStyle::SpaceBetween)
-            .align(AlignStyle::Start),
+        StyleOf::new()
+            .with::<container::width>(Sizing::fill())
+            .with::<container::padding>(EdgeInsets::all(16.0))
+            .with::<container::gap>(14.0)
+            .with::<container::justify>(JustifyStyle::SpaceBetween)
+            .with::<container::align>(AlignStyle::Start),
         vec![map_guide(), flight_selector()],
     );
-    let map = ZStackWidget::new()
-        .alignment(Alignment::TOP_LEADING)
-        .style(Style::new().size(Size::fill()).background(PAGE).clip(true))
+    let map = z_stack()
+        .with::<z_stack::alignment>(Alignment::TOP_LEADING)
+        .with::<z_stack::style>(
+            StyleOf::new()
+                .with::<container::size>(Size::fill())
+                .with::<container::background>(PAGE)
+                .with::<container::clip>(true),
+        )
         .into_element_desc(vec![map_placeholder, overlay]);
 
     let footer = row(
-        Style::new()
-            .height(31.0)
-            .padding(EdgeInsets::symmetric(12.0, 5.0))
-            .align(AlignStyle::Center)
-            .justify(JustifyStyle::SpaceBetween)
-            .background(SURFACE),
+        StyleOf::new()
+            .with::<container::height>(31.0)
+            .with::<container::padding>(EdgeInsets::symmetric(12.0, 5.0))
+            .with::<container::align>(AlignStyle::Center)
+            .with::<container::justify>(JustifyStyle::SpaceBetween)
+            .with::<container::background>(SURFACE),
         vec![
             row(
-                Style::new().gap(15.0).align(AlignStyle::Center),
+                StyleOf::new()
+                    .with::<container::gap>(15.0)
+                    .with::<container::align>(AlignStyle::Center),
                 vec![
                     label(
                         "图区中心: 35.5000°N, 119.0000°E",
@@ -475,7 +508,9 @@ fn map_panel(selected_product: usize, on_product_change: DropDownChangeCallback)
                 ],
             ),
             row(
-                Style::new().gap(6.0).align(AlignStyle::Center),
+                StyleOf::new()
+                    .with::<container::gap>(6.0)
+                    .with::<container::align>(AlignStyle::Center),
                 vec![
                     label("系统连线状态: 正常", 10.0, MUTED, FontWeight::Normal),
                     dot(GREEN),
@@ -485,21 +520,23 @@ fn map_panel(selected_product: usize, on_product_change: DropDownChangeCallback)
     );
 
     column(
-        Style::new()
-            .width(Sizing::percent(0.4))
-            .height(Sizing::fill())
-            .background(PANEL)
-            .border_color(BORDER)
-            .border_width(1.0)
-            .border_radius(3.0)
-            .clip(true),
+        StyleOf::new()
+            .with::<container::width>(Sizing::percent(0.4))
+            .with::<container::height>(Sizing::fill())
+            .with::<container::background>(PANEL)
+            .with::<container::border_color>(BORDER)
+            .with::<container::border_width>(1.0)
+            .with::<container::border_radius>(3.0)
+            .with::<container::clip>(true),
         vec![toolbar, map, footer],
     )
 }
 
 fn icing_monitor_content() -> ElementDesc {
     let left_cards = column(
-        Style::new().width(Sizing::fill()).gap(12.0),
+        StyleOf::new()
+            .with::<container::width>(Sizing::fill())
+            .with::<container::gap>(12.0),
         vec![
             chart_card("LWC", true),
             chart_card("IC指数", false),
@@ -509,7 +546,9 @@ fn icing_monitor_content() -> ElementDesc {
         ],
     );
     let right_cards = column(
-        Style::new().width(Sizing::fill()).gap(12.0),
+        StyleOf::new()
+            .with::<container::width>(Sizing::fill())
+            .with::<container::gap>(12.0),
         vec![
             chart_card("Time", false),
             chart_card("IC改进", false),
@@ -519,47 +558,47 @@ fn icing_monitor_content() -> ElementDesc {
         ],
     );
     let cards = row(
-        Style::new()
-            .width(Sizing::fill())
-            .gap(12.0)
-            .align(AlignStyle::Start),
+        StyleOf::new()
+            .with::<container::width>(Sizing::fill())
+            .with::<container::gap>(12.0)
+            .with::<container::align>(AlignStyle::Start),
         vec![left_cards, right_cards],
     );
-    let scroller = ContainerWidget::new()
-        .flex_direction(FlexDirectionStyle::Column)
-        .style(
-            Style::new()
-                .width(Sizing::fill())
-                .height(Sizing::fill())
-                .scroll_vertical()
-                .scrollbar_width(5.0)
-                .scrollbar_track_color(Color::TRANSPARENT)
-                .scrollbar_thumb_color(Color::hex("#3A3A3D")),
+    let scroller = container()
+        .with::<container::flex_direction>(FlexDirectionStyle::Column)
+        .with::<container::style>(
+            StyleOf::new()
+                .with::<container::width>(Sizing::fill())
+                .with::<container::height>(Sizing::fill())
+                .with::<container::scroll_direction>(ScrollDirectionStyle::Vertical)
+                .with::<container::scrollbar_width>(5.0)
+                .with::<container::scrollbar_track_color>(Color::TRANSPARENT)
+                .with::<container::scrollbar_thumb_color>(Color::hex("#3A3A3D")),
         )
         .into_element_desc(vec![cards]);
 
     column(
-        Style::new()
-            .width(Sizing::fill())
-            .height(Sizing::fill())
-            .padding(EdgeInsets::new(0.0, 0.0, 12.0, 0.0))
-            .gap(10.0),
+        StyleOf::new()
+            .with::<container::width>(Sizing::fill())
+            .with::<container::height>(Sizing::fill())
+            .with::<container::padding>(EdgeInsets::new(0.0, 0.0, 12.0, 0.0))
+            .with::<container::gap>(10.0),
         vec![
             row(
-                Style::new()
-                    .height(24.0)
-                    .align(AlignStyle::Center)
-                    .justify(JustifyStyle::SpaceBetween),
+                StyleOf::new()
+                    .with::<container::height>(24.0)
+                    .with::<container::align>(AlignStyle::Center)
+                    .with::<container::justify>(JustifyStyle::SpaceBetween),
                 vec![
                     label("积冰算法产品", 12.0, TEXT, FontWeight::SemiBold),
                     label("10 项算法产品", 10.0, DIM, FontWeight::Normal),
                 ],
             ),
             empty(
-                Style::new()
-                    .height(1.0)
-                    .width(Sizing::fill())
-                    .background(BORDER),
+                StyleOf::new()
+                    .with::<container::height>(1.0)
+                    .with::<container::width>(Sizing::fill())
+                    .with::<container::background>(BORDER),
             ),
             scroller,
         ],
@@ -568,19 +607,21 @@ fn icing_monitor_content() -> ElementDesc {
 
 fn metric_card(title: &str, value: &str, unit: &str) -> ElementDesc {
     column(
-        Style::new()
-            .width(Sizing::fill())
-            .height(112.0)
-            .padding(EdgeInsets::all(14.0))
-            .gap(9.0)
-            .background(PANEL)
-            .border_color(BORDER)
-            .border_width(1.0)
-            .border_radius(3.0),
+        StyleOf::new()
+            .with::<container::width>(Sizing::fill())
+            .with::<container::height>(112.0)
+            .with::<container::padding>(EdgeInsets::all(14.0))
+            .with::<container::gap>(9.0)
+            .with::<container::background>(PANEL)
+            .with::<container::border_color>(BORDER)
+            .with::<container::border_width>(1.0)
+            .with::<container::border_radius>(3.0),
         vec![
             label(title, 12.0, MUTED, FontWeight::Medium),
             row(
-                Style::new().gap(8.0).align(AlignStyle::End),
+                StyleOf::new()
+                    .with::<container::gap>(8.0)
+                    .with::<container::align>(AlignStyle::End),
                 vec![
                     label(value, 28.0, TEXT, FontWeight::Bold),
                     label(unit, 11.0, MUTED, FontWeight::Normal),
@@ -592,7 +633,7 @@ fn metric_card(title: &str, value: &str, unit: &str) -> ElementDesc {
 
 fn flight_monitor_content() -> ElementDesc {
     let metrics = xui! {
-        <grid adaptive_columns={200.0} width={Sizing::fill()} gap={12.0}>
+        <grid columns={GridTracks::adaptive(200.0)} width={Sizing::fill()} gap={12.0}>
             {metric_card("当前飞行高度 (ALT)", "7462", "米 (m)")}
             {metric_card("当前真空速 (TAS)", "440", "公里/小时")}
             {metric_card("磁航向 (HDG)", "213°", "导航姿态稳定")}
@@ -600,18 +641,20 @@ fn flight_monitor_content() -> ElementDesc {
         </grid>
     };
     column(
-        Style::new().size(Size::fill()).gap(12.0),
+        StyleOf::new()
+            .with::<container::size>(Size::fill())
+            .with::<container::gap>(12.0),
         vec![
             metrics,
             column(
-                Style::new()
-                    .size(Size::fill())
-                    .padding(EdgeInsets::all(14.0))
-                    .gap(10.0)
-                    .background(PANEL)
-                    .border_color(BORDER)
-                    .border_width(1.0)
-                    .border_radius(3.0),
+                StyleOf::new()
+                    .with::<container::size>(Size::fill())
+                    .with::<container::padding>(EdgeInsets::all(14.0))
+                    .with::<container::gap>(10.0)
+                    .with::<container::background>(PANEL)
+                    .with::<container::border_color>(BORDER)
+                    .with::<container::border_width>(1.0)
+                    .with::<container::border_radius>(3.0),
                 vec![
                     label(
                         "全航程高度 / 真空速 实时剖面趋势图",
@@ -620,12 +663,12 @@ fn flight_monitor_content() -> ElementDesc {
                         FontWeight::Bold,
                     ),
                     empty(
-                        Style::new()
-                            .size(Size::fill())
-                            .background(PAGE)
-                            .border_color(BORDER)
-                            .border_width(1.0)
-                            .border_radius(3.0),
+                        StyleOf::new()
+                            .with::<container::size>(Size::fill())
+                            .with::<container::background>(PAGE)
+                            .with::<container::border_color>(BORDER)
+                            .with::<container::border_width>(1.0)
+                            .with::<container::border_radius>(3.0),
                     ),
                 ],
             ),
@@ -635,36 +678,39 @@ fn flight_monitor_content() -> ElementDesc {
 
 fn playback_button(kind: SourceIcon) -> ElementDesc {
     row(
-        Style::new()
-            .size(Size::fix(28.0, 28.0))
-            .align(AlignStyle::Center)
-            .justify(JustifyStyle::Center)
-            .background(SURFACE)
-            .border_color(BORDER)
-            .border_width(1.0)
-            .border_radius(3.0),
+        StyleOf::new()
+            .with::<container::size>(Size::fix(28.0, 28.0))
+            .with::<container::align>(AlignStyle::Center)
+            .with::<container::justify>(JustifyStyle::Center)
+            .with::<container::background>(SURFACE)
+            .with::<container::border_color>(BORDER)
+            .with::<container::border_width>(1.0)
+            .with::<container::border_radius>(3.0),
         vec![icon_view(kind, 13.0, MUTED)],
     )
 }
 
 fn select_box(value: &str, width: f32) -> ElementDesc {
     row(
-        Style::new()
-            .size(Size::fix(width, 27.0))
-            .padding(EdgeInsets::symmetric(9.0, 4.0))
-            .align(AlignStyle::Center)
-            .justify(JustifyStyle::SpaceBetween)
-            .background(PAGE)
-            .border_color(BORDER)
-            .border_width(1.0)
-            .border_radius(3.0),
+        StyleOf::new()
+            .with::<container::size>(Size::fix(width, 27.0))
+            .with::<container::padding>(EdgeInsets::symmetric(9.0, 4.0))
+            .with::<container::align>(AlignStyle::Center)
+            .with::<container::justify>(JustifyStyle::SpaceBetween)
+            .with::<container::background>(PAGE)
+            .with::<container::border_color>(BORDER)
+            .with::<container::border_width>(1.0)
+            .with::<container::border_radius>(3.0),
         vec![label(value, 11.0, TEXT, FontWeight::Medium)],
     )
 }
 
 fn timeline() -> ElementDesc {
     let controls = row(
-        Style::new().height(32.0).gap(7.0).align(AlignStyle::Center),
+        StyleOf::new()
+            .with::<container::height>(32.0)
+            .with::<container::gap>(7.0)
+            .with::<container::align>(AlignStyle::Center),
         vec![
             playback_button(SourceIcon::Previous),
             playback_button(SourceIcon::Play),
@@ -678,20 +724,20 @@ fn timeline() -> ElementDesc {
     );
 
     let track = row(
-        Style::new()
-            .width(Sizing::fill())
-            .height(42.0)
-            .padding(EdgeInsets::symmetric(14.0, 7.0))
-            .align(AlignStyle::Center)
-            .background(Color::hex("#2B2112"))
-            .border_color(Color::hex("#6D4D20"))
-            .border_width(1.0)
-            .border_radius(3.0),
+        StyleOf::new()
+            .with::<container::width>(Sizing::fill())
+            .with::<container::height>(42.0)
+            .with::<container::padding>(EdgeInsets::symmetric(14.0, 7.0))
+            .with::<container::align>(AlignStyle::Center)
+            .with::<container::background>(Color::hex("#2B2112"))
+            .with::<container::border_color>(Color::hex("#6D4D20"))
+            .with::<container::border_width>(1.0)
+            .with::<container::border_radius>(3.0),
         vec![row(
-            Style::new()
-                .width(Sizing::fill())
-                .align(AlignStyle::Center)
-                .justify(JustifyStyle::SpaceBetween),
+            StyleOf::new()
+                .with::<container::width>(Sizing::fill())
+                .with::<container::align>(AlignStyle::Center)
+                .with::<container::justify>(JustifyStyle::SpaceBetween),
             vec![
                 label("12:00", 9.0, MUTED, FontWeight::Normal),
                 label("12:05", 9.0, MUTED, FontWeight::Normal),
@@ -704,32 +750,34 @@ fn timeline() -> ElementDesc {
     );
 
     column(
-        Style::new()
-            .width(Sizing::fill())
-            .height(104.0)
-            .padding(EdgeInsets::symmetric(16.0, 9.0))
-            .gap(7.0)
-            .background(PAGE)
-            .border_color(BORDER)
-            .border_width(1.0),
+        StyleOf::new()
+            .with::<container::width>(Sizing::fill())
+            .with::<container::height>(104.0)
+            .with::<container::padding>(EdgeInsets::symmetric(16.0, 9.0))
+            .with::<container::gap>(7.0)
+            .with::<container::background>(PAGE)
+            .with::<container::border_color>(BORDER)
+            .with::<container::border_width>(1.0),
         vec![controls, track],
     )
 }
 
 fn status_bar() -> ElementDesc {
     row(
-        Style::new()
-            .width(Sizing::fill())
-            .height(30.0)
-            .padding(EdgeInsets::symmetric(16.0, 5.0))
-            .align(AlignStyle::Center)
-            .justify(JustifyStyle::SpaceBetween)
-            .background(SURFACE)
-            .border_color(BORDER)
-            .border_width(1.0),
+        StyleOf::new()
+            .with::<container::width>(Sizing::fill())
+            .with::<container::height>(30.0)
+            .with::<container::padding>(EdgeInsets::symmetric(16.0, 5.0))
+            .with::<container::align>(AlignStyle::Center)
+            .with::<container::justify>(JustifyStyle::SpaceBetween)
+            .with::<container::background>(SURFACE)
+            .with::<container::border_color>(BORDER)
+            .with::<container::border_width>(1.0),
         vec![
             row(
-                Style::new().gap(18.0).align(AlignStyle::Center),
+                StyleOf::new()
+                    .with::<container::gap>(18.0)
+                    .with::<container::align>(AlignStyle::Center),
                 vec![
                     label("演示系统状态: 运行正常", 10.0, MUTED, FontWeight::Normal),
                     label("数据源: 动态气象仿真数据", 10.0, MUTED, FontWeight::Normal),
@@ -737,7 +785,9 @@ fn status_bar() -> ElementDesc {
                 ],
             ),
             row(
-                Style::new().gap(6.0).align(AlignStyle::Center),
+                StyleOf::new()
+                    .with::<container::gap>(6.0)
+                    .with::<container::align>(AlignStyle::Center),
                 vec![dot(GREEN), label("ONLINE", 10.0, MUTED, FontWeight::Bold)],
             ),
         ],
@@ -750,19 +800,22 @@ fn dashboard_view(
     on_product_change: DropDownChangeCallback,
 ) -> ElementDesc {
     let workspace = row(
-        Style::new().width(Sizing::fill()).height(714.0).gap(16.0),
+        StyleOf::new()
+            .with::<container::width>(Sizing::fill())
+            .with::<container::height>(714.0)
+            .with::<container::gap>(16.0),
         vec![map_panel(selected_product, on_product_change), analytics],
     );
 
     column(
-        Style::new()
-            .size(Size::fill())
-            .padding(EdgeInsets::all(16.0).set_top(48.0))
-            .gap(10.0)
-            .background(PAGE)
-            .color(TEXT)
-            .font_family("Hiragino Sans GB")
-            .clip(true),
+        StyleOf::new()
+            .with::<container::size>(Size::fill())
+            .with::<container::padding>(EdgeInsets::all(16.0).set_top(48.0))
+            .with::<container::gap>(10.0)
+            .with::<container::background>(PAGE)
+            .with::<container::color>(TEXT)
+            .with::<container::font_family>("Hiragino Sans GB")
+            .with::<container::clip>(true),
         vec![workspace, timeline(), status_bar()],
     )
 }
@@ -779,46 +832,46 @@ pub fn flight_icing_dashboard() {
         TabItem::new("icing", "积冰监测", icing_monitor_content()),
     ];
     let tab_style = TabsStyle {
-        root: Style::new()
-            .width(Sizing::fill())
-            .height(Sizing::fill())
-            .padding(EdgeInsets::all(16.0))
-            .gap(12.0)
-            .background(PANEL)
-            .border_color(BORDER)
-            .border_width(1.0)
-            .border_radius(3.0)
-            .clip(true),
-        list: Style::new()
-            .gap(3.0)
-            .padding(EdgeInsets::all(4.0))
-            .background(Color::hex("#17171A"))
-            .border_color(BORDER)
-            .border_width(1.0)
-            .border_radius(3.0),
-        tab: Style::new()
-            .padding(EdgeInsets::symmetric(16.0, 6.0))
-            .color(MUTED)
-            .font_size(12.0)
-            .border_color(Color::TRANSPARENT)
-            .border_width(1.0)
-            .border_radius(2.0),
-        selected_tab: Style::new()
-            .padding(EdgeInsets::symmetric(16.0, 6.0))
-            .background(CONTROL)
-            .color(ACCENT)
-            .font_size(12.0)
-            .font_weight(FontWeight::Bold)
-            .border_color(Color::TRANSPARENT)
-            .border_width(1.0)
-            .border_radius(2.0),
-        disabled_tab: Style::new()
-            .padding(EdgeInsets::symmetric(16.0, 6.0))
-            .color(DIM),
-        panel: Style::new()
-            .width(Sizing::fill())
-            .height(Sizing::fill())
-            .padding(EdgeInsets::zero()),
+        root: StyleOf::new()
+            .with::<container::width>(Sizing::fill())
+            .with::<container::height>(Sizing::fill())
+            .with::<container::padding>(EdgeInsets::all(16.0))
+            .with::<container::gap>(12.0)
+            .with::<container::background>(PANEL)
+            .with::<container::border_color>(BORDER)
+            .with::<container::border_width>(1.0)
+            .with::<container::border_radius>(3.0)
+            .with::<container::clip>(true),
+        list: StyleOf::new()
+            .with::<container::gap>(3.0)
+            .with::<container::padding>(EdgeInsets::all(4.0))
+            .with::<container::background>(Color::hex("#17171A"))
+            .with::<container::border_color>(BORDER)
+            .with::<container::border_width>(1.0)
+            .with::<container::border_radius>(3.0),
+        tab: StyleOf::new()
+            .with::<container::padding>(EdgeInsets::symmetric(16.0, 6.0))
+            .with::<container::color>(MUTED)
+            .with::<container::font_size>(12.0)
+            .with::<container::border_color>(Color::TRANSPARENT)
+            .with::<container::border_width>(1.0)
+            .with::<container::border_radius>(2.0),
+        selected_tab: StyleOf::new()
+            .with::<container::padding>(EdgeInsets::symmetric(16.0, 6.0))
+            .with::<container::background>(CONTROL)
+            .with::<container::color>(ACCENT)
+            .with::<container::font_size>(12.0)
+            .with::<container::font_weight>(FontWeight::Bold)
+            .with::<container::border_color>(Color::TRANSPARENT)
+            .with::<container::border_width>(1.0)
+            .with::<container::border_radius>(2.0),
+        disabled_tab: StyleOf::new()
+            .with::<container::padding>(EdgeInsets::symmetric(16.0, 6.0))
+            .with::<container::color>(DIM),
+        panel: StyleOf::new()
+            .with::<container::width>(Sizing::fill())
+            .with::<container::height>(Sizing::fill())
+            .with::<container::padding>(EdgeInsets::zero()),
     };
     let analytics = xui! {
         <tabs
@@ -832,7 +885,7 @@ pub fn flight_icing_dashboard() {
     dashboard_view(analytics, *selected_product.get(), on_product_change)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "skia"))]
 mod tests {
     use super::*;
     use std::fs::File;
@@ -951,5 +1004,34 @@ mod tests {
         // detect oscillation: a label flickers if diff_count alternates high/low/high
         let diffs: Vec<usize> = report.iter().map(|(_, _, d)| *d).collect();
         eprintln!("diff series: {:?}", diffs);
+    }
+}
+
+#[cfg(test)]
+mod smoke_tests {
+    use super::*;
+    use xui_core::text::TextHost;
+    use xui_cosmic::CosmicEngine;
+
+    #[test]
+    fn dashboard_builds_and_resizes_its_scene() {
+        let mut app = App::new(flight_icing_dashboard_component);
+        let mut backend = MockRenderBackend::default();
+        let mut text = TextHost::new(CosmicEngine::new(1.0));
+        for width in [1600.0, 1100.0, 1600.0] {
+            app.resize(Size::new(width, 900.0));
+            app.render(&mut backend, &mut text).expect("dashboard scene");
+            let tree = app.ui_runtime();
+            let mut pending = vec![tree.root()];
+            let mut count = 0;
+            while let Some(id) = pending.pop() {
+                let node = tree.node(id).unwrap();
+                assert!(node.layout.width().is_finite());
+                assert!(node.layout.height().is_finite());
+                pending.extend(tree.children(id));
+                count += 1;
+            }
+            assert!(count > 30);
+        }
     }
 }

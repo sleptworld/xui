@@ -53,68 +53,78 @@ impl TabItem {
 
 /// Visual slots for `tabs`. Each slot is a complete style and can be
 /// replaced independently.
-#[derive(Clone, Debug, Hash)]
+#[derive(Clone, Debug)]
 pub struct TabsStyle {
-    pub root: Style,
-    pub list: Style,
-    pub tab: Style,
-    pub selected_tab: Style,
-    pub disabled_tab: Style,
-    pub panel: Style,
+    pub root: StyleOf<Container>,
+    pub list: StyleOf<Container>,
+    pub tab: StyleOf<Container>,
+    pub selected_tab: StyleOf<Container>,
+    pub disabled_tab: StyleOf<Container>,
+    pub panel: StyleOf<Container>,
 }
 
 impl Default for TabsStyle {
     fn default() -> Self {
-        let trigger = Style::new()
-            .height(29.0)
-            .gap(6.0)
-            .padding(EdgeInsets::symmetric(8.0, 4.0))
-            .align(AlignStyle::Center)
-            .justify(JustifyStyle::Center)
-            .font_size(FontSizeToken::Md)
-            .font_weight(FontWeight::Medium)
-            .background(Color::TRANSPARENT)
-            .border_color(Color::TRANSPARENT)
-            .border_width(1.0)
-            .border_radius(RadiusToken::Md)
-            .transition(Transition::new(Duration::from_millis(150)));
-        let focused = |style: StylePatch| {
-            style.border_color(ColorToken::Ring).shadow(
-                ShadowStyle::new()
-                    .color(ColorToken::Ring.alpha(0.5))
-                    .blur(0.0)
-                    .spread(3.0),
-            )
+        let trigger = StyleOf::new()
+            .with::<container::height>(29.0)
+            .with::<container::gap>(6.0)
+            .with::<container::padding>(EdgeInsets::symmetric(8.0, 4.0))
+            .with::<container::align>(AlignStyle::Center)
+            .with::<container::justify>(JustifyStyle::Center)
+            .with::<container::font_size>(FontSizeToken::Md)
+            .with::<container::font_weight>(FontWeight::Medium)
+            .with::<container::background>(Color::TRANSPARENT)
+            .with::<container::border_color>(Color::TRANSPARENT)
+            .with::<container::border_width>(1.0)
+            .with::<container::border_radius>(RadiusToken::Md);
+        let focused = |style: StyleOf<Container>| {
+            style
+                .with::<container::border_color>(ColorToken::Ring)
+                .with::<container::shadow>(
+                    ShadowStyle::new()
+                        .color(ColorToken::Ring.alpha(0.5))
+                        .blur(0.0)
+                        .spread(3.0),
+                )
         };
         Self {
-            root: Style::new().gap(8.0).align(AlignStyle::Start),
-            list: Style::new()
-                .height(36.0)
-                .padding(EdgeInsets::all(3.0))
-                .align(AlignStyle::Center)
-                .background(ColorToken::Muted)
-                .color(ColorToken::MutedForeground)
-                .border_radius(RadiusToken::Lg),
+            root: StyleOf::new()
+                .with::<container::gap>(8.0)
+                .with::<container::align>(AlignStyle::Start),
+            list: StyleOf::new()
+                .with::<container::height>(36.0)
+                .with::<container::padding>(EdgeInsets::all(3.0))
+                .with::<container::align>(AlignStyle::Center)
+                .with::<container::background>(ColorToken::Muted)
+                .with::<container::color>(ColorToken::MutedForeground)
+                .with::<container::border_radius>(RadiusToken::Lg),
             tab: trigger
                 .clone()
-                .color(ColorToken::MutedForeground)
-                .when(WidgetState::HOVERED, |style| {
-                    style.color(ColorToken::Foreground)
-                })
-                .when(WidgetState::FOCUS_VISIBLE, focused),
+                .with::<container::color>(ColorToken::MutedForeground)
+                .when_style(
+                    WidgetStateMatcher::all(WidgetState::HOVERED),
+                    StyleOf::<Container>::new().with::<container::color>(ColorToken::Foreground),
+                )
+                .when_style(
+                    WidgetStateMatcher::all(WidgetState::FOCUS_VISIBLE),
+                    focused(StyleOf::new()),
+                ),
             selected_tab: trigger
                 .clone()
-                .background(ColorToken::Background)
-                .color(ColorToken::Foreground)
-                .shadow(
+                .with::<container::background>(ColorToken::Background)
+                .with::<container::color>(ColorToken::Foreground)
+                .with::<container::shadow>(
                     ShadowStyle::new()
                         .color(Color::rgba(0.0, 0.0, 0.0, 0.1))
                         .offset(Point::new(0.0, 1.0))
                         .blur(3.0),
                 )
-                .when(WidgetState::FOCUS_VISIBLE, focused),
-            disabled_tab: trigger.color(ColorToken::MutedForeground.alpha(0.5)),
-            panel: Style::new().width(Sizing::fill()),
+                .when_style(
+                    WidgetStateMatcher::all(WidgetState::FOCUS_VISIBLE),
+                    focused(StyleOf::new()),
+                ),
+            disabled_tab: trigger.with::<container::color>(ColorToken::MutedForeground.alpha(0.5)),
+            panel: StyleOf::new().with::<container::width>(Sizing::fill()),
         }
     }
 }
@@ -289,6 +299,7 @@ pub fn tabs(
             container(
                 key: format!("tab-{}", item.id),
                 style: tab_style,
+                transition: Transition::new(Duration::from_millis(150)),
                 flex_direction: FlexDirectionStyle::Row,
                 focusable: !disabled,
                 tab_index: if is_active && !disabled { 0 } else { -1 },
@@ -304,7 +315,7 @@ pub fn tabs(
                     ),(
                         Shortcut::named(if orientation == SelectionOrientation::Horizontal { NamedKey::ArrowRight } else { NamedKey::ArrowDown }).allow_repeat(true),
                         NEXT_TAB,
-                    ),(Shortcut::named(NamedKey::Home), FIRST_TAB),(Shortcut::named(NamedKey::End), LAST_TAB)],
+                    ),(Shortcut::named(NamedKey::Home), FIRST_TAB),(Shortcut::named(NamedKey::End), LAST_TAB)].map(|(shortcut, command)| ShortcutBinding { shortcut, command }).to_vec(),
                 on_click: move |_, event_cx| {
                     if disabled {
                         return EventResult::Ignored;
@@ -341,7 +352,7 @@ pub fn tabs(
     }
 
     let list_style = if orientation == SelectionOrientation::Vertical {
-        style.list.clone().height(Sizing::Hug)
+        style.list.clone().with::<container::height>(Sizing::Hug)
     } else {
         style.list.clone()
     };
@@ -390,7 +401,7 @@ mod tests {
             id,
             id.to_string(),
             view! {
-                xui_core::widgets::text(
+                xui_core::prelude::text(
                     id.to_string(),
                 )
             },

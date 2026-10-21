@@ -11,7 +11,6 @@
 //! | --- | --- |
 //! | [`form_field`](fn@self::form_field) | A labeled form-control wrapper with description and validation feedback. |
 
-use crate::layout::MergeClone;
 use xui_core::prelude::*;
 use xui_macros::{component, view};
 
@@ -43,10 +42,10 @@ pub enum FieldStatus {
 /// | `required` | `bool` | `false` |
 /// | `disabled` | `bool` | `false` |
 /// | `status` | `FieldStatus` | `FieldStatus::Normal` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `label_style` | `Style` | `Style::new()` |
-/// | `description_style` | `Style` | `Style::new()` |
-/// | `message_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `label_style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `description_style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `message_style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -64,10 +63,10 @@ pub enum FieldStatus {
     required = false,
     disabled = false,
     status = FieldStatus::Normal,
-    style = Style::new(),
-    label_style = Style::new(),
-    description_style = Style::new(),
-    message_style = Style::new(),
+    style = StyleOf::new(),
+    label_style = StyleOf::new(),
+    description_style = StyleOf::new(),
+    message_style = StyleOf::new(),
 )]
 pub fn form_field(
     label: &String,
@@ -77,25 +76,25 @@ pub fn form_field(
     required: &bool,
     disabled: &bool,
     status: &FieldStatus,
-    style: &Style,
-    label_style: &Style,
-    description_style: &Style,
-    message_style: &Style,
+    style: &StyleOf<Container>,
+    label_style: &StyleOf<Container>,
+    description_style: &StyleOf<Text>,
+    message_style: &StyleOf<Container>,
 ) {
     let mut children = vec![view! {
         container(
-            style: Style::new().gap(4.0).color(if *disabled {
+            style: StyleOf::new().with::<container::gap>(4.0).with::<container::color>(if *disabled {
                     ColorValue::from(ColorToken::MutedForeground)
                 } else {
                     ColorValue::from(ColorToken::Foreground)
-            }).merge_clone(label_style),
+            }).merged(label_style),
             flex_direction: FlexDirectionStyle::Row,
             accessibility_role: AccessibilityRole::Label,
         ) {
-            xui_core::widgets::text(
+            xui_core::prelude::text(
                 label.clone(),
             )
-            xui_core::widgets::text(
+            xui_core::prelude::text(
                 if *required { "*" } else { "" },
             )
         }
@@ -103,11 +102,11 @@ pub fn form_field(
     if let Some(description) = description {
         children.push(
             view! {
-                xui_core::widgets::text(
+                xui_core::prelude::text(
                     description.clone(),
-                    style: Style::new()
-                        .font_size(FontSizeToken::Sm)
-                        .color(ColorValue::from(ColorToken::MutedForeground)).merge_clone(description_style),
+                    style: StyleOf::new()
+                        .with::<container::font_size>(FontSizeToken::Sm)
+                        .with::<container::color>(ColorValue::from(ColorToken::MutedForeground)).merged(description_style),
                 )
             },
         );
@@ -133,18 +132,20 @@ pub fn form_field(
         children.push(
             view! {
                 container(
-                    style: Style::new().font_size(FontSizeToken::Sm).color(color).merge_clone(message_style),
+                    style: StyleOf::new().with::<container::font_size>(FontSizeToken::Sm).with::<container::color>(color).merged(message_style),
                     accessibility_label: message.clone(),
                     accessibility: AccessibilityProperties { live_region: live, label: Some(message.clone()), ..Default::default() },
                 ) {
-                    xui_core::widgets::text(
+                    xui_core::prelude::text(
                         message.clone(),
                     )
                 }
             },
         );
     }
-    let mut root_style = Style::new().gap(6.0).width(Sizing::Fill);
+    let mut root_style = StyleOf::new()
+        .with::<container::gap>(6.0)
+        .with::<container::width>(Sizing::Fill);
     root_style.merge(style);
     view! {
         container(

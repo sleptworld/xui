@@ -7,9 +7,7 @@ pub use xui_interface::Key;
 use xui_interface::NodeId;
 
 use crate::HookContext;
-use crate::element::{ComponentDesc, ElementDesc};
-use crate::lanes::{Lanes, NO_LANES};
-use crate::widgets::WidgetType;
+use crate::element::ElementDesc;
 use crate::element::PortalBehavior;
 use crate::widgets::{OverlayEntryId, OverlayEntryOptions, OverlayScopeId};
 
@@ -90,37 +88,18 @@ impl Hash for ComponentRender {
     }
 }
 
-pub struct FiberContext<'a> {
-    node_id: FiberId,
-    hook_context: HookContext<'a>,
-    _marker: std::marker::PhantomData<&'a mut ()>,
-}
-
-impl<'a> FiberContext<'a> {
-    pub fn new(node_id: FiberId, hook_context: HookContext<'a>) -> Self {
-        Self {
-            node_id,
-            hook_context,
-            _marker: std::marker::PhantomData,
-        }
-    }
-
-    pub fn node_id(&self) -> FiberId {
-        self.node_id
-    }
-}
-
+/// Which kind of fiber a node is, without its state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FiberTag {
-    Root,
-    Host(WidgetType),
+    /// A component, the root included: hooks and a render function.
     Component,
-    Portal,
-    /// A template: the hosts it owns, and its slots as children.
+    /// A template: the hosts it owns, and its slots as children. The only
+    /// fiber that owns hosts.
     Template,
-    /// A template's fragment slot: a child list standing in for its parent
-    /// host's children.
+    /// A list of elements standing in one place.
     Fragment,
+    /// Elements mounted under the overlayer, kept in the logical tree here.
+    Portal,
 }
 
 bitflags::bitflags! {
@@ -132,10 +111,6 @@ bitflags::bitflags! {
         const MOVE      = 1 << 2;
         const DELETION  = 1 << 3;
     }
-}
-
-pub struct HostState {
-    pub node_id: Option<NodeId>,
 }
 
 pub struct ComponentState {
@@ -152,11 +127,6 @@ pub struct PortalState {
     pub visual_root: Option<NodeId>,
 }
 
-pub struct ComponentProps {
-    pub render: ComponentRender,
-    pub props: Option<ErasedProps>,
-}
-
 pub struct Node {
     pub id: FiberId,
     pub parent: Option<FiberId>,
@@ -164,12 +134,27 @@ pub struct Node {
     pub sibling: Option<FiberId>,
     pub key: Option<Key>,
     pub position: usize,
-    pub tag: FiberTag,
     pub effect: EffectTag,
-    pub host: Option<HostState>,
-    pub component: Option<ComponentState>,
-    pub portal: Option<PortalState>,
-    pub template: Option<TemplateState>,
+    pub kind: FiberKind,
+}
+
+/// A fiber's kind, with what it keeps between renders.
+pub enum FiberKind {
+    Component(ComponentState),
+    Template(TemplateState),
+    Fragment,
+    Portal(PortalState),
+}
+
+impl FiberKind {
+    pub fn tag(&self) -> FiberTag {
+        match self {
+            Self::Component(_) => FiberTag::Component,
+            Self::Template(_) => FiberTag::Template,
+            Self::Fragment => FiberTag::Fragment,
+            Self::Portal(_) => FiberTag::Portal,
+        }
+    }
 }
 
 /// A mounted template: which call site it is, and its hosts.
@@ -178,6 +163,13 @@ pub struct TemplateState {
     pub(crate) identity: crate::template::TemplateIdentity,
     /// The host each node is, by node index; `None` for a slot.
     pub(crate) nodes: Vec<Option<NodeId>>,
+}
+
+impl TemplateState {
+    /// The template's root host.
+    pub(crate) fn root(&self) -> NodeId {
+        self.nodes[0].expect("a template's root is a host")
+    }
 }
 
 impl Node {
@@ -189,33 +181,42 @@ impl Node {
             sibling: None,
             key: None,
             position: 0,
-            tag: FiberTag::Root,
             effect: EffectTag::empty(),
-            host: None,
-            component: None,
-            portal: None,
-            template: None,
+            // Made the root component by the runtime that owns the arena.
+            kind: FiberKind::Fragment,
         }
     }
 
-    pub fn component(id: FiberId, element: ComponentDesc) -> Self {
-        Self {
-            id,
-            parent: None,
-            child: None,
-            sibling: None,
-            key: element.key,
-            position: 0,
-            tag: FiberTag::Component,
-            effect: EffectTag::PLACEMENT,
-            host: None,
-            component: Some(ComponentState {
-                render: element.render,
-                key: element.key,
-                props: element.props,
-            }),
-            portal: None,
-            template: None,
+    pub fn tag(&self) -> FiberTag {
+        self.kind.tag()
+    }
+
+    /// The host this fiber is, when it is a template: its root.
+    pub(crate) fn host(&self) -> Option<NodeId> {
+        match &self.kind {
+            FiberKind::Template(template) => Some(template.root()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn component(&self) -> Option<&ComponentState> {
+        match &self.kind {
+            FiberKind::Component(component) => Some(component),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn template(&self) -> Option<&TemplateState> {
+        match &self.kind {
+            FiberKind::Template(template) => Some(template),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn portal(&self) -> Option<&PortalState> {
+        match &self.kind {
+            FiberKind::Portal(portal) => Some(portal),
+            _ => None,
         }
     }
 
@@ -252,9 +253,6 @@ pub struct FiberArena {
     ids: SlotMap<FiberId, ()>,
     nodes: SecondaryMap<FiberId, Node>,
     root: FiberId,
-    next_work: Option<FiberId>,
-    deletions: Vec<FiberId>,
-    render_lanes: Lanes,
 }
 
 impl FiberArena {
@@ -263,14 +261,7 @@ impl FiberArena {
         let mut nodes = SecondaryMap::new();
         let root = ids.insert(());
         nodes.insert(root, Node::root(root));
-        Self {
-            ids,
-            nodes,
-            root,
-            next_work: None,
-            deletions: Vec::new(),
-            render_lanes: NO_LANES,
-        }
+        Self { ids, nodes, root }
     }
 
     pub fn root(&self) -> FiberId {
@@ -295,11 +286,6 @@ impl FiberArena {
         }
     }
 
-    #[inline]
-    pub fn next_work(&self) -> Option<FiberId> {
-        self.next_work
-    }
-
     pub fn children(&self, parent: FiberId) -> Vec<FiberId> {
         let mut output = Vec::new();
         let mut child = self.nodes.get(parent).and_then(|node| node.child);
@@ -308,19 +294,6 @@ impl FiberArena {
             child = self.nodes.get(id).and_then(|node| node.sibling);
         }
         output
-    }
-
-    pub fn cursor(&self, start: FiberId) -> Cursor<'_> {
-        Cursor {
-            arena: self,
-            next: self.nodes.contains_key(start).then_some(start),
-        }
-    }
-
-    pub fn append_child(&mut self, parent: FiberId, child: FiberId) {
-        let mut children = self.children(parent);
-        children.push(child);
-        self.set_children(parent, &children);
     }
 
     pub fn set_children(&mut self, parent: FiberId, children: &[FiberId]) {
@@ -337,19 +310,6 @@ impl FiberArena {
             self.nodes[child].position = position;
             self.nodes[child].sibling = children.get(position + 1).copied();
         }
-    }
-
-    fn remove_subtree_detached(&mut self, id: FiberId) {
-        if id == self.root || !self.nodes.contains_key(id) {
-            return;
-        }
-
-        let children = self.children(id);
-        for child in children {
-            self.remove_subtree_detached(child);
-        }
-
-        self.nodes.remove(id);
     }
 
     pub fn new_id(&mut self) -> FiberId {
@@ -369,36 +329,5 @@ impl FiberArena {
 impl Default for FiberArena {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-pub struct Cursor<'a> {
-    arena: &'a FiberArena,
-    next: Option<FiberId>,
-}
-
-impl Iterator for Cursor<'_> {
-    type Item = FiberId;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let current = self.next?;
-        self.next = self.next_after(current);
-        Some(current)
-    }
-}
-
-impl Cursor<'_> {
-    fn next_after(&self, current: FiberId) -> Option<FiberId> {
-        if let Some(child) = self.arena.nodes.get(current).and_then(|node| node.child) {
-            return Some(child);
-        }
-
-        let mut cursor = current;
-        loop {
-            if let Some(sibling) = self.arena.nodes.get(cursor).and_then(|node| node.sibling) {
-                return Some(sibling);
-            }
-            cursor = self.arena.nodes.get(cursor).and_then(|node| node.parent)?;
-        }
     }
 }

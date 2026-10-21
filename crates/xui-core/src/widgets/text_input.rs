@@ -1,15 +1,15 @@
 use super::roles::{DefaultFocus, HandleEvent, PaintContent, PlatformTextInput, TextSource};
 use crate::node::{Draft, WidgetT};
-use xui_macros::widget;
 use std::time::{Duration, Instant};
+use xui_macros::widget;
 
 use xui_interface::events::{PointerButton, RawEvent, SemanticEvent, XuiPointerId};
 use xui_interface::{
     Affine, Bounds, ClipboardContent, ClipboardTarget, Color, CommandId, ComputedStyle, EventRef,
-    EventResult, PlatformCommand, PlatformReply, PlatformRequest, Point, RawIme, Rect,
-    RequestId, TextCaret, TextContent, TextInputPurpose, TextInputSession, TextOffset,
-    TextOffsetUnit, TextPaintProps, TextPaintStyle, TextProps, TextSelectionPaint, WhiteSpace,
-    WidgetUpdateFlags, commands,
+    EventResult, PlatformCommand, PlatformReply, PlatformRequest, Point, RawIme, Rect, RequestId,
+    TextCaret, TextContent, TextInputPurpose, TextInputSession, TextOffset, TextOffsetUnit,
+    TextPaintProps, TextPaintStyle, TextProps, TextSelectionPaint, WhiteSpace, WidgetUpdateFlags,
+    commands,
 };
 
 use crate::event_system::EventContext;
@@ -35,7 +35,15 @@ pub struct TextInputChange {
         box_size, margin, padding, position, display, typography, visibility, transform, effects,
         cursor
     ),
-    behavior(focus, accessibility, shortcuts, motion, focus_binding, size_observation, events)
+    behavior(
+        focus,
+        accessibility,
+        shortcuts,
+        motion,
+        focus_binding,
+        size_observation,
+        events
+    )
 )]
 #[props(derive(Debug, Clone, PartialEq))]
 pub struct TextInput {
@@ -65,7 +73,11 @@ impl WidgetT for TextInput {
         TextInputState::mounted(props)
     }
 
-    fn update(_: &TextInputProps, new: &TextInputProps, state: &mut TextInputState) -> WidgetUpdateFlags {
+    fn update(
+        _: &TextInputProps,
+        new: &TextInputProps,
+        state: &mut TextInputState,
+    ) -> WidgetUpdateFlags {
         state.follow(new)
     }
 }
@@ -737,7 +749,6 @@ impl Default for TextInputState {
 }
 
 impl TextInputState {
-
     fn handle_input(&mut self, event: EventRef<'_>, cx: &mut EventContext<'_>) -> EventResult {
         if self.disabled
             && !matches!(

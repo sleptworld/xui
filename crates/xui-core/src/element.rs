@@ -1,33 +1,68 @@
+use crate::node::{Draft, NodeDef};
+use crate::template::TemplateDesc;
+use crate::widgets::WidgetType;
 use crate::{
     ComponentRender,
     anchor::AnchorPlacement,
     fiber::{ErasedProps, Key},
     widgets::{DismissHandler, DismissReason, ErasedDraft, OverlayEntryOptions, OverlayScopeId},
 };
-use crate::node::{Draft, NodeDef};
-use crate::template::TemplateDesc;
-use crate::widgets::WidgetType;
 
 pub type Component = ElementDesc;
 
+/// One element of a tree, as a render describes it.
+///
+/// Four kinds, each reconciled its own way:
+///
+/// - a [`Template`](TemplateDesc) — the host widgets, in a structure fixed
+///   where it is written, with the values that change. Every host is part of
+///   a template: `xui!` and `view!` compile to one, and a draft written by
+///   hand ([`Draft::into_element_desc`]) is a template of one host;
+/// - a [`Component`](ComponentDesc) — a render function and its props;
+/// - a [`Fragment`](FragmentDesc) — a list of elements standing in one place;
+/// - a [`Portal`](PortalDesc) — elements mounted under the overlayer.
 #[derive(Clone, Debug)]
 pub enum ElementDesc {
-    Host(WidgetDesc),
-    Component(ComponentDesc),
-    Portal(PortalDesc),
-    /// What `xui!` and `view!` produce: a static structure of hosts and the
-    /// values that change. See [`crate::template`].
     Template(TemplateDesc),
+    Component(ComponentDesc),
+    Fragment(FragmentDesc),
+    Portal(PortalDesc),
 }
 
-/// A host element: a widget's draft, and its children.
-#[derive(Debug)]
-pub struct WidgetDesc {
-    pub(crate) draft: Box<dyn ErasedDraft>,
+/// A list of elements standing in one place among its siblings.
+#[derive(Clone, Debug, Default)]
+pub struct FragmentDesc {
+    pub key: Option<Key>,
     pub children: Vec<ElementDesc>,
 }
 
-impl Clone for WidgetDesc {
+impl FragmentDesc {
+    pub fn new(children: Vec<ElementDesc>) -> Self {
+        Self {
+            key: None,
+            children,
+        }
+    }
+}
+
+/// An element with every template in it expanded into the hosts it holds:
+/// what to inspect, in a test, of what a macro built. Not an element: it
+/// is never rendered.
+#[derive(Clone, Debug)]
+pub enum Expanded {
+    Host(ExpandedHost),
+    Component(ComponentDesc),
+    Portal(PortalDesc),
+}
+
+/// A host of an expanded template: its draft, and what is under it.
+#[derive(Debug)]
+pub struct ExpandedHost {
+    pub(crate) draft: Box<dyn ErasedDraft>,
+    pub children: Vec<Expanded>,
+}
+
+impl Clone for ExpandedHost {
     fn clone(&self) -> Self {
         Self {
             draft: self.draft.clone_box(),
@@ -126,22 +161,8 @@ impl PortalDesc {
     }
 }
 
-impl WidgetDesc {
-    pub(crate) fn new(draft: Box<dyn ErasedDraft>, children: Vec<ElementDesc>) -> Self {
-        Self { draft, children }
-    }
-
-    pub fn child(mut self, child: impl Into<ElementDesc>) -> Self {
-        self.children.push(child.into());
-        self
-    }
-
-    pub fn with_children(mut self, children: Vec<ElementDesc>) -> Self {
-        self.children = children;
-        self
-    }
-
-    /// Which host widget it describes.
+impl ExpandedHost {
+    /// Which host widget it is.
     pub fn node_type(&self) -> WidgetType {
         self.draft.node_type()
     }
@@ -155,9 +176,22 @@ impl WidgetDesc {
     pub fn draft<N: NodeDef>(&self) -> Option<&Draft<N>> {
         self.draft.as_any().downcast_ref::<Draft<N>>()
     }
+}
 
-    pub(crate) fn set_key(&mut self, key: Key) {
-        self.draft.set_key(key);
+impl Expanded {
+    pub fn key(&self) -> Option<Key> {
+        match self {
+            Self::Host(host) => host.key().cloned(),
+            Self::Component(component) => component.key,
+            Self::Portal(portal) => portal.key,
+        }
+    }
+
+    pub fn node_type(&self) -> Option<WidgetType> {
+        match self {
+            Self::Host(host) => Some(host.node_type()),
+            _ => None,
+        }
     }
 }
 
@@ -174,31 +208,51 @@ impl ComponentDesc {
 impl ElementDesc {
     pub fn key(&self) -> Option<Key> {
         match self {
-            Self::Host(widget) => widget.draft.key().cloned(),
-            Self::Component(component) => component.key,
-            Self::Portal(portal) => portal.key,
             Self::Template(template) => template.key,
+            Self::Component(component) => component.key,
+            Self::Fragment(fragment) => fragment.key,
+            Self::Portal(portal) => portal.key,
         }
     }
 
+    /// Which host widget the element's root is, when it is a template.
     pub fn node_type(&self) -> Option<WidgetType> {
         match self {
-            Self::Host(widget) => Some(widget.draft.node_type()),
             Self::Template(template) => Some(template.root_type),
-            Self::Component(_) | Self::Portal(_) => None,
+            _ => None,
         }
     }
 
-    /// The element with every template in it expanded into the plain tree
-    /// it stands for: what to inspect, in a test, of what a macro built.
-    pub fn expanded(self) -> ElementDesc {
+    /// The element with every template in it expanded: the hosts it holds,
+    /// fragments spliced into the list they stand in.
+    pub fn expand(self) -> Vec<Expanded> {
+        let mut out = Vec::new();
+        self.expand_into(&mut out);
+        out
+    }
+
+    /// [`expand`](Self::expand) of an element that stands for exactly one.
+    pub fn expand_one(self) -> Expanded {
+        let mut expanded = self.expand();
+        assert_eq!(
+            expanded.len(),
+            1,
+            "the element expands to {} elements",
+            expanded.len()
+        );
+        expanded.pop().unwrap()
+    }
+
+    pub(crate) fn expand_into(self, out: &mut Vec<Expanded>) {
         match self {
-            Self::Template(template) => template.expand().expanded(),
-            Self::Host(mut host) => {
-                host.children = host.children.into_iter().map(Self::expanded).collect();
-                Self::Host(host)
+            Self::Template(template) => out.push(template.expand()),
+            Self::Component(component) => out.push(Expanded::Component(component)),
+            Self::Fragment(fragment) => {
+                for child in fragment.children {
+                    child.expand_into(out);
+                }
             }
-            other => other,
+            Self::Portal(portal) => out.push(Expanded::Portal(portal)),
         }
     }
 }
@@ -220,12 +274,6 @@ pub trait IntoChildren {
 impl IntoChildren for ElementDesc {
     fn append_children(self, output: &mut Vec<ElementDesc>) {
         output.push(self);
-    }
-}
-
-impl IntoChildren for WidgetDesc {
-    fn append_children(self, output: &mut Vec<ElementDesc>) {
-        output.push(self.into());
     }
 }
 
@@ -251,9 +299,9 @@ where
     }
 }
 
-impl From<WidgetDesc> for ElementDesc {
-    fn from(val: WidgetDesc) -> Self {
-        ElementDesc::Host(val)
+impl From<FragmentDesc> for ElementDesc {
+    fn from(fragment: FragmentDesc) -> Self {
+        Self::Fragment(fragment)
     }
 }
 
@@ -283,31 +331,6 @@ impl IntoChildren for TemplateDesc {
 
 pub fn portal(children: Vec<ElementDesc>) -> PortalDesc {
     PortalDesc::new(children)
-}
-
-impl From<ElementDesc> for WidgetDesc {
-    fn from(val: ElementDesc) -> Self {
-        match val {
-            ElementDesc::Host(widget) => widget,
-            ElementDesc::Template(template) => template.expand().into(),
-            ElementDesc::Component(_) => {
-                unreachable!()
-            }
-            ElementDesc::Portal(_) => unreachable!(),
-        }
-    }
-}
-
-impl From<ElementDesc> for ComponentDesc {
-    fn from(val: ElementDesc) -> Self {
-        match val {
-            ElementDesc::Host(_) => {
-                unreachable!()
-            }
-            ElementDesc::Component(component) => component,
-            ElementDesc::Portal(_) | ElementDesc::Template(_) => unreachable!(),
-        }
-    }
 }
 
 /// Empty portal builder for use in the declarative `view!` DSL.

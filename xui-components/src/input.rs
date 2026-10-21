@@ -13,7 +13,7 @@
 use std::time::Duration;
 
 use xui_core::prelude::*;
-use xui_core::widgets::text_input;
+
 use xui_macros::{component, view};
 
 use crate::layout::{ComponentColor, ComponentInsets, ComponentLength, ComponentSizing};
@@ -36,8 +36,8 @@ use crate::layout::{ComponentColor, ComponentInsets, ComponentLength, ComponentS
 /// | `invalid` | `bool` | `false` |
 /// | `required` | `bool` | `false` |
 /// | `accessibility_label` | `Option<String>` | `None` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `input_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `input_style` | `StyleOf<Container>` | `StyleOf::new()` |
 /// | `padding` | `ComponentInsets` | `ComponentInsets::Value(EdgeInsets::symmetric(12.0, 4.0))` |
 /// | `width` | `ComponentSizing` | `ComponentSizing::Value(Sizing::fill())` |
 /// | `height` | `ComponentSizing` | `ComponentSizing::Value(Sizing::fix(36.0))` |
@@ -67,8 +67,8 @@ use crate::layout::{ComponentColor, ComponentInsets, ComponentLength, ComponentS
     invalid = false,
     required = false,
     accessibility_label = None,
-    style = Style::new(),
-    input_style = Style::new(),
+    style = StyleOf::new(),
+    input_style = StyleOf::new(),
     padding = ComponentInsets::Value(EdgeInsets::symmetric(12.0, 4.0)),
     width = ComponentSizing::Value(Sizing::fill()),
     height = ComponentSizing::Value(Sizing::fix(36.0)),
@@ -88,8 +88,8 @@ pub fn input(
     invalid: &bool,
     required: &bool,
     accessibility_label: &Option<String>,
-    style: &Style,
-    input_style: &Style,
+    style: &StyleOf<Container>,
+    input_style: &StyleOf<TextInput>,
     padding: &ComponentInsets,
     width: &ComponentSizing,
     height: &ComponentSizing,
@@ -112,49 +112,69 @@ pub fn input(
     let internal_controller = cx.use_memo(TextController::new);
     let controller = controller.as_ref().unwrap_or(internal_controller.get());
     let focused = cx.use_state(|| false);
-    let mut container_style = Style::new()
-        .min_width(0.0)
-        .justify(JustifyStyle::Center)
+    let mut container_style = StyleOf::new()
+        .with::<container::min_width>(0.0)
+        .with::<container::justify>(JustifyStyle::Center)
         // Opaque, not transparent: shadows paint beneath the whole box, so a
         // see-through fill would show the shadow tint.
-        .background(ColorToken::Background)
-        .color(ColorToken::Foreground)
-        .border_color(ColorToken::Input)
-        .border_width(1.0)
-        .border_radius(RadiusToken::Md)
-        .font_size(FontSizeToken::Md)
-        .shadow(
+        .with::<container::background>(ColorToken::Background)
+        .with::<container::color>(ColorToken::Foreground)
+        .with::<container::border_color>(ColorToken::Input)
+        .with::<container::border_width>(1.0)
+        .with::<container::border_radius>(RadiusToken::Md)
+        .with::<container::font_size>(FontSizeToken::Md)
+        .with::<container::shadow>(
             ShadowStyle::new()
                 .color(Color::rgba(0.0, 0.0, 0.0, 0.05))
                 .offset(Point::new(0.0, 1.0))
                 .blur(2.0),
-        )
-        .transition(Transition::new(Duration::from_millis(150)));
-    if *focused.get() {
-        container_style = container_style.border_color(ColorToken::Ring).shadow(
-            ShadowStyle::new()
-                .color(ColorToken::Ring.alpha(0.5))
-                .blur(0.0)
-                .spread(3.0),
         );
+    if *focused.get() {
+        container_style = container_style
+            .with::<container::border_color>(ColorToken::Ring)
+            .with::<container::shadow>(
+                ShadowStyle::new()
+                    .color(ColorToken::Ring.alpha(0.5))
+                    .blur(0.0)
+                    .spread(3.0),
+            );
     }
-    container_style = container_style.line_height(LineHeight::Normal);
-    container_style = width.apply(container_style, |style, value| style.width(value));
-    container_style = height.apply(container_style, |style, value| style.height(value));
-    container_style = min_width.apply(container_style, |style, value| style.min_width(value));
-    container_style = min_height.apply(container_style, |style, value| style.min_height(value));
-    container_style = max_width.apply(container_style, |style, value| style.max_width(value));
-    container_style = max_height.apply(container_style, |style, value| style.max_height(value));
-    container_style = background.apply(container_style, |style, value| style.background(value));
-    container_style = border_color.apply(container_style, |style, value| style.border_color(value));
-    container_style = border_width.apply(container_style, |style, value| style.border_width(value));
-    container_style =
-        border_radius.apply(container_style, |style, value| style.border_radius(value));
+    container_style = container_style.with::<container::line_height>(LineHeight::Normal);
+    container_style = width.apply(container_style, |style, value| {
+        style.with::<container::width>(value)
+    });
+    container_style = height.apply(container_style, |style, value| {
+        style.with::<container::height>(value)
+    });
+    container_style = min_width.apply(container_style, |style, value| {
+        style.with::<container::min_width>(value)
+    });
+    container_style = min_height.apply(container_style, |style, value| {
+        style.with::<container::min_height>(value)
+    });
+    container_style = max_width.apply(container_style, |style, value| {
+        style.with::<container::max_width>(value)
+    });
+    container_style = max_height.apply(container_style, |style, value| {
+        style.with::<container::max_height>(value)
+    });
+    container_style = background.apply(container_style, |style, value| {
+        style.with::<container::background>(value)
+    });
+    container_style = border_color.apply(container_style, |style, value| {
+        style.with::<container::border_color>(value)
+    });
+    container_style = border_width.apply(container_style, |style, value| {
+        style.with::<container::border_width>(value)
+    });
+    container_style = border_radius.apply(container_style, |style, value| {
+        style.with::<container::border_radius>(value)
+    });
     if *invalid {
-        container_style = container_style.border_color(ColorToken::Destructive);
+        container_style = container_style.with::<container::border_color>(ColorToken::Destructive);
     }
     if *disabled {
-        container_style = container_style.color(ColorToken::MutedForeground);
+        container_style = container_style.with::<container::color>(ColorToken::MutedForeground);
     }
     container_style.merge(style);
 
@@ -163,14 +183,16 @@ pub fn input(
     // the non-focusable container (which would clear focus). It centers its
     // line vertically. `input_style` can still override this for a
     // differently sized editing area.
-    let mut text_input_style = padding.apply(Style::new().size(Size::fill()), |style, value| {
-        style.padding(value)
-    });
+    let mut text_input_style = padding.apply(
+        StyleOf::new().with::<container::size>(Size::fill()),
+        |style, value| style.with::<container::padding>(value),
+    );
     text_input_style.merge(input_style);
 
     view! {
         container(
             style: container_style,
+            transition: Transition::new(Duration::from_millis(150)),
             focusable: false,
             on_focus_in: move |_, _| {
                 focused.set(true);

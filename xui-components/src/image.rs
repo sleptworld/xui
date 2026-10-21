@@ -100,17 +100,17 @@ pub enum ImageSize {
 }
 
 impl ImageSize {
-    fn apply_width(self, style: Style) -> Style {
+    fn apply_width(self, style: StyleOf<Container>) -> StyleOf<Container> {
         match self {
             ImageSize::Auto => style,
-            ImageSize::Value(width) => style.width(width),
+            ImageSize::Value(width) => style.with::<container::width>(width),
         }
     }
 
-    fn apply_height(self, style: Style) -> Style {
+    fn apply_height(self, style: StyleOf<Container>) -> StyleOf<Container> {
         match self {
             ImageSize::Auto => style,
-            ImageSize::Value(height) => style.height(height),
+            ImageSize::Value(height) => style.with::<container::height>(height),
         }
     }
 }
@@ -197,7 +197,7 @@ impl From<u32> for ImageOpacity {
 /// | `alignment` | `Option<Alignment>` | `None` |
 /// | `repeat` | `Option<ImageRepeat>` | `None` |
 /// | `sampling` | `Option<Sampling>` | `None` |
-/// | `style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
 /// | `loading` | `Option<ElementDesc>` | `None` |
 /// | `fallback` | `Option<ElementDesc>` | `None` |
 ///
@@ -221,7 +221,7 @@ impl From<u32> for ImageOpacity {
     alignment = None,
     repeat = None,
     sampling = None,
-    style = Style::new(),
+    style = StyleOf::new(),
     loading = None,
     fallback = None,
 )]
@@ -236,7 +236,7 @@ pub fn image(
     alignment: &Option<Alignment>,
     repeat: &Option<ImageRepeat>,
     sampling: &Option<Sampling>,
-    style: &Style,
+    style: &StyleOf<Container>,
     loading: &Option<ElementDesc>,
     fallback: &Option<ElementDesc>,
 ) {
@@ -260,14 +260,14 @@ pub fn image(
             .clone()
             .unwrap_or_else(|| placeholder(style, alt.as_deref())),
         Ready(image_data) => view! {
-            xui_core::widgets::image(
+            container(style: style) { xui_core::prelude::image(
                 source: (image_key, image_data),
-                style: style,
+                size: Size::fill(),
                 image_style: image_style,
                 opacity: opacity.get(),
                 accessibility_role: AccessibilityRole::Image,
                 accessibility_label: alt.clone().unwrap_or_default(),
-            )
+            ) }
         },
 
         Error(_) => fallback
@@ -298,20 +298,12 @@ fn resolve_image_style(
     image_style
 }
 
-fn placeholder(style: Style, alt: Option<&str>) -> ElementDesc {
-    match alt.filter(|text| !text.is_empty()) {
-        Some(text) => view! {
-            xui_core::widgets::text(
-                text.to_string(),
-                style: style,
-            )
-        },
-        None => view! {
-            container(
-                style: style,
-            )
-        },
-    }
+fn placeholder(style: StyleOf<Container>, alt: Option<&str>) -> ElementDesc {
+    let children = alt
+        .filter(|text| !text.is_empty())
+        .map(|text| vec![ElementDesc::from(text.to_owned())])
+        .unwrap_or_default();
+    view! { container(style: style) { ..children } }
 }
 
 async fn get_network_image(path: &str) -> Result<ImageData, ImageError> {

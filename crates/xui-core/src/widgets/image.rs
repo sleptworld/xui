@@ -15,11 +15,31 @@ use crate::render::{ImagePrimitive, Primitive, RenderTreeWriter};
 /// is any box's, decoration and children included.
 #[widget(
     style(
-        box_size, margin, padding, position, display, typography, background, corner_radius,
-        border, box_shadow, clip, visibility, transform, effects, scroll, cursor
+        box_size,
+        margin,
+        padding,
+        position,
+        display,
+        typography,
+        background,
+        corner_radius,
+        border,
+        box_shadow,
+        clip,
+        visibility,
+        transform,
+        effects,
+        scroll,
+        cursor
     ),
     behavior(
-        focus, accessibility, shortcuts, motion, focus_binding, scroll_binding, size_observation,
+        focus,
+        accessibility,
+        shortcuts,
+        motion,
+        focus_binding,
+        scroll_binding,
+        size_observation,
         events
     ),
     shorthands(sources)
@@ -200,7 +220,8 @@ mod tests {
     #[test]
     fn decoded_data_controls_intrinsic_size_and_paint() {
         let data = pixels(3, 2, 255);
-        let widget = mounted(image().with::<image::source>((ImageKey::UserProvided(7), data.clone())));
+        let widget =
+            mounted(image().with::<image::source>((ImageKey::UserProvided(7), data.clone())));
         assert_eq!(widget.intrinsic_size(), Some(Size::new(3.0, 2.0)));
 
         let style = ComputedStyle::initial(&xui_interface::Theme::default());
@@ -228,10 +249,14 @@ mod tests {
         assert!(flags.contains(WidgetUpdateFlags::PAINT_OUTPUT));
         assert!(!flags.contains(WidgetUpdateFlags::LAYOUT_INPUT));
 
-        let different_size = image().with::<image::source>((ImageKey::from("third"), pixels(4, 3, 3)));
+        let different_size =
+            image().with::<image::source>((ImageKey::from("third"), pixels(4, 3, 3)));
         let flags = update(&same_size, &different_size);
         assert!(flags.contains(WidgetUpdateFlags::PAINT_OUTPUT | WidgetUpdateFlags::LAYOUT_INPUT));
-        assert_eq!(mounted(different_size).intrinsic_size(), Some(Size::new(4.0, 3.0)));
+        assert_eq!(
+            mounted(different_size).intrinsic_size(),
+            Some(Size::new(4.0, 3.0))
+        );
     }
 
     #[test]
@@ -251,7 +276,12 @@ mod tests {
 
     #[test]
     fn contain_fit_preserves_aspect_ratio_and_alignment() {
-        let widget = mounted(image().with::<image::source>((ImageKey::from("image"), pixels(2, 1, 1))).with::<image::fit>(ImageFit::Contain).with::<image::sampling>(Sampling::Nearest));
+        let widget = mounted(
+            image()
+                .with::<image::source>((ImageKey::from("image"), pixels(2, 1, 1)))
+                .with::<image::fit>(ImageFit::Contain)
+                .with::<image::sampling>(Sampling::Nearest),
+        );
         let style = ComputedStyle::initial(&xui_interface::Theme::default());
         let images = rendered_images(
             &widget,
@@ -270,7 +300,11 @@ mod tests {
 
     #[test]
     fn cover_fit_is_carried_in_retained_image_style() {
-        let widget = mounted(image().with::<image::source>((ImageKey::from("image"), pixels(2, 1, 1))).with::<image::fit>(ImageFit::Cover));
+        let widget = mounted(
+            image()
+                .with::<image::source>((ImageKey::from("image"), pixels(2, 1, 1)))
+                .with::<image::fit>(ImageFit::Cover),
+        );
         let style = ComputedStyle::initial(&xui_interface::Theme::default());
         let rect = Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0));
         let images = rendered_images(&widget, rect, &style);
@@ -281,7 +315,13 @@ mod tests {
 
     #[test]
     fn repeat_x_is_carried_in_retained_image_style() {
-        let widget = mounted(image().with::<image::source>((ImageKey::from("image"), pixels(10, 10, 1))).with::<image::fit>(ImageFit::None).with::<image::alignment>(Alignment::START).with::<image::repeat>(ImageRepeat::RepeatX));
+        let widget = mounted(
+            image()
+                .with::<image::source>((ImageKey::from("image"), pixels(10, 10, 1)))
+                .with::<image::fit>(ImageFit::None)
+                .with::<image::alignment>(Alignment::START)
+                .with::<image::repeat>(ImageRepeat::RepeatX),
+        );
         let style = ComputedStyle::initial(&xui_interface::Theme::default());
         let images = rendered_images(
             &widget,
@@ -301,7 +341,11 @@ mod tests {
     #[test]
     fn scale_down_is_carried_in_retained_image_style() {
         let style = ComputedStyle::initial(&xui_interface::Theme::default());
-        let widget = mounted(image().with::<image::source>((ImageKey::from("image"), pixels(20, 10, 1))).with::<image::fit>(ImageFit::ScaleDown));
+        let widget = mounted(
+            image()
+                .with::<image::source>((ImageKey::from("image"), pixels(20, 10, 1)))
+                .with::<image::fit>(ImageFit::ScaleDown),
+        );
 
         let images = rendered_images(
             &widget,

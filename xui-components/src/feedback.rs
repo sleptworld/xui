@@ -14,7 +14,6 @@
 
 use std::time::Duration;
 
-use crate::layout::MergeClone;
 use xui_core::prelude::*;
 use xui_macros::{component, view};
 
@@ -30,7 +29,7 @@ use xui_macros::{component, view};
 /// | --- | --- | --- |
 /// | `width` | `Sizing` | `Sizing::Fill` |
 /// | `height` | `Sizing` | `Sizing::fix(16.0)` |
-/// | `style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -45,14 +44,14 @@ use xui_macros::{component, view};
 #[defaults(
     width = Sizing::Fill,
     height = Sizing::fix(16.0),
-    style = Style::new(),
+    style = StyleOf::new(),
 )]
-pub fn skeleton(width: &Sizing, height: &Sizing, style: &Style) {
-    let mut root_style = Style::new()
-        .width(*width)
-        .height(*height)
-        .background(ColorToken::MutedSurface)
-        .border_radius(RadiusToken::Sm);
+pub fn skeleton(width: &Sizing, height: &Sizing, style: &StyleOf<Container>) {
+    let mut root_style = StyleOf::new()
+        .with::<container::width>(*width)
+        .with::<container::height>(*height)
+        .with::<container::background>(ColorToken::MutedSurface)
+        .with::<container::border_radius>(RadiusToken::Sm);
     root_style.merge(style);
     view! {
         container(
@@ -78,7 +77,7 @@ const SPINNER_PERIOD: Duration = Duration::from_millis(800);
 /// | --- | --- | --- |
 /// | `label` | `String` | `"Loading".to_string()` |
 /// | `size` | `f32` | `24.0` |
-/// | `style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
 /// | `period` | `Duration` | `SPINNER_PERIOD` |
 /// | `paused` | `bool` | `false` |
 ///
@@ -95,43 +94,44 @@ const SPINNER_PERIOD: Duration = Duration::from_millis(800);
 #[defaults(
     label = "Loading".to_string(),
     size = 24.0,
-    style = Style::new(),
+    style = StyleOf::new(),
     period = SPINNER_PERIOD,
     paused = false,
 )]
-pub fn spinner(label: &String, size: &f32, style: &Style, period: &Duration, paused: &bool) {
+pub fn spinner(
+    label: &String,
+    size: &f32,
+    style: &StyleOf<Container>,
+    period: &Duration,
+    paused: &bool,
+) {
     let size = &if size.is_finite() {
         size.max(0.0)
     } else {
         24.0
     };
-    let mut root_style = Style::new()
-        .size(Size::fix(*size, *size))
-        .align(AlignStyle::Center)
-        .justify(JustifyStyle::Center);
+    let mut root_style = StyleOf::new()
+        .with::<container::size>(Size::fix(*size, *size))
+        .with::<container::align>(AlignStyle::Center)
+        .with::<container::justify>(JustifyStyle::Center);
     root_style.merge(style);
-    let icon_style = if *paused {
-        Style::new()
-    } else {
-        Style::new().animation(
-            Animation::new(
-                StylePatch::new().rotate(0.0),
-                StylePatch::new().rotate(std::f32::consts::TAU),
-                (*period).max(Duration::from_millis(1)),
-            )
-            .infinite(),
-        )
-    };
+    let mut indicator = icon()
+        .with::<icon::data>(loader_circle_icon())
+        .with::<icon::size>(Size::fix(*size, *size));
+    if !*paused {
+        indicator = indicator.animate(
+            Animation::new((*period).max(Duration::from_millis(1))).infinite(),
+            |from| from.set::<icon::rotate>(0.0),
+            |to| to.set::<icon::rotate>(std::f32::consts::TAU),
+        );
+    }
+    let indicator = indicator.into_element_desc(Vec::new());
     view! {
         container(
             style: root_style,
             accessibility_label: label.clone(),
         ) {
-            icon(
-                from_icon_data: loader_circle_icon(),
-                size: *size,
-                style: icon_style,
-            )
+            ..indicator
         }
     }
 }
@@ -171,8 +171,8 @@ pub enum CalloutTone {
 /// | `content` | `ElementDesc` | **Required** |
 /// | `title` | `Option<String>` | `None` |
 /// | `tone` | `CalloutTone` | `CalloutTone::Info` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `title_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `title_style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -187,15 +187,15 @@ pub enum CalloutTone {
 #[defaults(
     title = None,
     tone = CalloutTone::Info,
-    style = Style::new(),
-    title_style = Style::new(),
+    style = StyleOf::new(),
+    title_style = StyleOf::new(),
 )]
 pub fn callout(
     content: &ElementDesc,
     title: &Option<String>,
     tone: &CalloutTone,
-    style: &Style,
-    title_style: &Style,
+    style: &StyleOf<Container>,
+    title_style: &StyleOf<Text>,
 ) {
     let color = match tone {
         CalloutTone::Info => Color::hex("#1d4ed8"),
@@ -206,21 +206,21 @@ pub fn callout(
     let mut children = Vec::with_capacity(2);
     if let Some(title) = title {
         children.push(view! {
-            xui_core::widgets::text(
+            xui_core::prelude::text(
                 title.clone(),
-                style: Style::new().font_weight(FontWeight::Bold).merge_clone(title_style),
+                style: StyleOf::new().with::<container::font_weight>(FontWeight::Bold).merged(title_style),
             )
         });
     }
     children.push(content.clone());
-    let mut root_style = Style::new()
-        .background(ColorToken::Background)
-        .color(ColorToken::Foreground)
-        .gap(6.0)
-        .padding(EdgeInsets::all(12.0))
-        .border_width(1.0)
-        .border_color(color)
-        .border_radius(RadiusToken::Md);
+    let mut root_style = StyleOf::new()
+        .with::<container::background>(ColorToken::Background)
+        .with::<container::color>(ColorToken::Foreground)
+        .with::<container::gap>(6.0)
+        .with::<container::padding>(EdgeInsets::all(12.0))
+        .with::<container::border_width>(1.0)
+        .with::<container::border_color>(color)
+        .with::<container::border_radius>(RadiusToken::Md);
     root_style.merge(style);
     view! {
         container(

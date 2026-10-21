@@ -68,7 +68,16 @@ small value that owns nothing -- a hook handle (`State`, `Memo`, `HookRef`), an
 id, a number -- is always copied, since it is already no bigger than the
 projection would be; `Callback` and `Handler` hold an `Rc` and are projected.
 
-Every component accepts a `style` override. Named visual slots are merged after
+Every component accepts a typed `StyleOf<N>` override for the host of that
+visual slot. Container roots use `StyleOf<Container>`, text labels use
+`StyleOf<Text>`, inputs use `StyleOf<TextInput>`, and grid rows use
+`StyleOf<Grid>`. Construct them with `style!(container { padding: 8.0 })`
+or `StyleOf::<Container>::new().with::<container::padding>(8.0)`.
+Properties outside the host's selected capabilities fail at compile time.
+Transitions belong to the node's motion capability; keyframes use typed
+layers through `Draft::animate`.
+
+Named visual slots are merged after
 their defaults, so callers can change decoration without replacing behavior.
 Virtual row position and height remain owned by the virtualization algorithm.
 The image component also accepts `style`, separate from pixel fitting via

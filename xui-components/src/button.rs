@@ -48,27 +48,27 @@ pub enum ButtonSize {
     Icon,
 }
 
-fn size_style(size: ButtonSize) -> Style {
+fn size_style(size: ButtonSize) -> StyleOf<Container> {
     match size {
-        ButtonSize::Small => Style::new()
-            .min_height(32.0)
-            .padding(EdgeInsets::symmetric(12.0, 6.0))
-            .gap(6.0)
-            .border_radius(RadiusToken::Md),
-        ButtonSize::Medium => Style::new()
-            .min_height(36.0)
-            .padding(EdgeInsets::symmetric(16.0, 8.0))
-            .gap(8.0)
-            .border_radius(RadiusToken::Md),
-        ButtonSize::Large => Style::new()
-            .min_height(40.0)
-            .padding(EdgeInsets::symmetric(24.0, 8.0))
-            .gap(8.0)
-            .border_radius(RadiusToken::Md),
-        ButtonSize::Icon => Style::new()
-            .size(Size::fix(36.0, 36.0))
-            .min_width(36.0)
-            .border_radius(RadiusToken::Md),
+        ButtonSize::Small => StyleOf::new()
+            .with::<container::min_height>(32.0)
+            .with::<container::padding>(EdgeInsets::symmetric(12.0, 6.0))
+            .with::<container::gap>(6.0)
+            .with::<container::border_radius>(RadiusToken::Md),
+        ButtonSize::Medium => StyleOf::new()
+            .with::<container::min_height>(36.0)
+            .with::<container::padding>(EdgeInsets::symmetric(16.0, 8.0))
+            .with::<container::gap>(8.0)
+            .with::<container::border_radius>(RadiusToken::Md),
+        ButtonSize::Large => StyleOf::new()
+            .with::<container::min_height>(40.0)
+            .with::<container::padding>(EdgeInsets::symmetric(24.0, 8.0))
+            .with::<container::gap>(8.0)
+            .with::<container::border_radius>(RadiusToken::Md),
+        ButtonSize::Icon => StyleOf::new()
+            .with::<container::size>(Size::fix(36.0, 36.0))
+            .with::<container::min_width>(36.0)
+            .with::<container::border_radius>(RadiusToken::Md),
     }
 }
 
@@ -88,7 +88,7 @@ fn focus_ring() -> ShadowStyle {
         .spread(3.0)
 }
 
-fn variant_style(variant: ButtonVariant, interactive: bool) -> Style {
+fn variant_style(variant: ButtonVariant, interactive: bool) -> StyleOf<Container> {
     let (background, foreground, border): (ColorValue, ColorValue, ColorValue) = match variant {
         ButtonVariant::Primary => (
             ColorToken::Primary.into(),
@@ -121,15 +121,15 @@ fn variant_style(variant: ButtonVariant, interactive: bool) -> Style {
             Color::TRANSPARENT.into(),
         ),
     };
-    let mut style = Style::new()
-        .background(background)
-        .color(foreground)
-        .border_color(border);
+    let mut style = StyleOf::new()
+        .with::<container::background>(background)
+        .with::<container::color>(foreground)
+        .with::<container::border_color>(border);
     if matches!(
         variant,
         ButtonVariant::Primary | ButtonVariant::Danger | ButtonVariant::Outline
     ) {
-        style = style.shadow(shadow_xs());
+        style = style.with::<container::shadow>(shadow_xs());
     }
 
     if !interactive {
@@ -140,54 +140,74 @@ fn variant_style(variant: ButtonVariant, interactive: bool) -> Style {
             ColorValue::TokenAlpha(token, alpha) => token.alpha(alpha * 0.5),
             ColorValue::Color(color) => color.alpha(color.a * 0.5).into(),
         };
-        return Style::new()
-            .background(dim(background))
-            .color(dim(foreground))
-            .border_color(dim(border));
+        return StyleOf::new()
+            .with::<container::background>(dim(background))
+            .with::<container::color>(dim(foreground))
+            .with::<container::border_color>(dim(border));
     }
 
     style = match variant {
         ButtonVariant::Primary => style
-            .when(WidgetState::HOVERED, |s| {
-                s.background(ColorToken::Primary.alpha(0.9))
-            })
-            .when(WidgetState::PRESSED, |s| {
-                s.background(ColorToken::Primary.alpha(0.8))
-            }),
+            .when_style(
+                WidgetStateMatcher::all(WidgetState::HOVERED),
+                StyleOf::<Container>::new()
+                    .with::<container::background>(ColorToken::Primary.alpha(0.9)),
+            )
+            .when_style(
+                WidgetStateMatcher::all(WidgetState::PRESSED),
+                StyleOf::<Container>::new()
+                    .with::<container::background>(ColorToken::Primary.alpha(0.8)),
+            ),
         ButtonVariant::Secondary => style
-            .when(WidgetState::HOVERED, |s| {
-                s.background(ColorToken::Secondary.alpha(0.8))
-            })
-            .when(WidgetState::PRESSED, |s| {
-                s.background(ColorToken::Secondary.alpha(0.65))
-            }),
+            .when_style(
+                WidgetStateMatcher::all(WidgetState::HOVERED),
+                StyleOf::<Container>::new()
+                    .with::<container::background>(ColorToken::Secondary.alpha(0.8)),
+            )
+            .when_style(
+                WidgetStateMatcher::all(WidgetState::PRESSED),
+                StyleOf::<Container>::new()
+                    .with::<container::background>(ColorToken::Secondary.alpha(0.65)),
+            ),
         ButtonVariant::Outline | ButtonVariant::Ghost => style
-            .when(WidgetState::HOVERED, |s| {
-                s.background(ColorToken::Accent)
-                    .color(ColorToken::AccentForeground)
-            })
-            .when(WidgetState::PRESSED, |s| {
-                s.background(ColorToken::Accent.alpha(0.8))
-                    .color(ColorToken::AccentForeground)
-            }),
+            .when_style(
+                WidgetStateMatcher::all(WidgetState::HOVERED),
+                StyleOf::<Container>::new()
+                    .with::<container::background>(ColorToken::Accent)
+                    .with::<container::color>(ColorToken::AccentForeground),
+            )
+            .when_style(
+                WidgetStateMatcher::all(WidgetState::PRESSED),
+                StyleOf::<Container>::new()
+                    .with::<container::background>(ColorToken::Accent.alpha(0.8))
+                    .with::<container::color>(ColorToken::AccentForeground),
+            ),
         ButtonVariant::Danger => style
-            .when(WidgetState::HOVERED, |s| {
-                s.background(ColorToken::Destructive.alpha(0.9))
-            })
-            .when(WidgetState::PRESSED, |s| {
-                s.background(ColorToken::Destructive.alpha(0.8))
-            }),
-        ButtonVariant::Link => style.when(WidgetState::HOVERED, |s| {
-            s.decoration(TextDecoration {
+            .when_style(
+                WidgetStateMatcher::all(WidgetState::HOVERED),
+                StyleOf::<Container>::new()
+                    .with::<container::background>(ColorToken::Destructive.alpha(0.9)),
+            )
+            .when_style(
+                WidgetStateMatcher::all(WidgetState::PRESSED),
+                StyleOf::<Container>::new()
+                    .with::<container::background>(ColorToken::Destructive.alpha(0.8)),
+            ),
+        ButtonVariant::Link => style.when_style(
+            WidgetStateMatcher::all(WidgetState::HOVERED),
+            StyleOf::<Container>::new().with::<container::decoration>(TextDecoration {
                 underline: true,
                 line_through: false,
-            })
-        }),
+            }),
+        ),
     };
 
-    style.when(WidgetState::FOCUS_VISIBLE, |s| {
-        s.border_color(ColorToken::Ring).shadow(focus_ring())
-    })
+    style.when_style(
+        WidgetStateMatcher::all(WidgetState::FOCUS_VISIBLE),
+        StyleOf::<Container>::new()
+            .with::<container::border_color>(ColorToken::Ring)
+            .with::<container::shadow>(focus_ring()),
+    )
 }
 
 fn resolved_style(
@@ -195,20 +215,20 @@ fn resolved_style(
     size: ButtonSize,
     interactive: bool,
     full_width: bool,
-    custom: &Style,
-) -> Style {
-    let mut style = Style::new()
-        .min_width(44.0)
-        .align(AlignStyle::Center)
-        .justify(JustifyStyle::Center)
-        .border_width(1.0)
-        .font_size(FontSizeToken::Md)
-        .font_weight(FontWeight::Medium)
-        .line_height(LineHeight::Normal);
+    custom: &StyleOf<Container>,
+) -> StyleOf<Container> {
+    let mut style = StyleOf::new()
+        .with::<container::min_width>(44.0)
+        .with::<container::align>(AlignStyle::Center)
+        .with::<container::justify>(JustifyStyle::Center)
+        .with::<container::border_width>(1.0)
+        .with::<container::font_size>(FontSizeToken::Md)
+        .with::<container::font_weight>(FontWeight::Medium)
+        .with::<container::line_height>(LineHeight::Normal);
     style.merge(&size_style(size));
     style.merge(&variant_style(variant, interactive));
     if full_width {
-        style = style.width(Sizing::fill());
+        style = style.with::<container::width>(Sizing::fill());
     }
     // User styles deliberately come last so design-system wrappers can replace
     // any visual or layout decision without reimplementing button behavior.
@@ -245,8 +265,8 @@ fn invoke(callback: &Option<ButtonClickCallback>) {
 /// | `loading_indicator` | `Option<ElementDesc>` | `None` |
 /// | `on_click` | `Option<ButtonClickCallback>` | `None` |
 /// | `accessibility_label` | `Option<String>` | `None` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `label_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `label_style` | `StyleOf<Container>` | `StyleOf::new()` |
 /// | `transition_duration` | `Duration` | `Duration::from_millis(150)` |
 ///
 /// # Example
@@ -270,8 +290,8 @@ fn invoke(callback: &Option<ButtonClickCallback>) {
     loading_indicator = None,
     on_click = None,
     accessibility_label = None,
-    style = Style::new(),
-    label_style = Style::new(),
+    style = StyleOf::new(),
+    label_style = StyleOf::new(),
     transition_duration = Duration::from_millis(150),
 )]
 pub fn button(
@@ -286,13 +306,12 @@ pub fn button(
     loading_indicator: &Option<ElementDesc>,
     on_click: &Option<ButtonClickCallback>,
     accessibility_label: &Option<String>,
-    style: &Style,
-    label_style: &Style,
+    style: &StyleOf<Container>,
+    label_style: &StyleOf<Text>,
     transition_duration: &Duration,
 ) {
     let interactive = !*disabled && !*loading;
-    let mut root_style = resolved_style(*variant, *size, interactive, *full_width, &Style::new())
-        .transition(Transition::new(*transition_duration));
+    let mut root_style = resolved_style(*variant, *size, interactive, *full_width, &StyleOf::new());
     root_style.merge(style);
     let label = accessibility_label.clone().unwrap_or_else(|| text.clone());
 
@@ -307,7 +326,7 @@ pub fn button(
         children.push(leading.clone());
     }
     children.push(view! {
-        xui_core::widgets::text(
+        xui_core::prelude::text(
             text.clone(),
             style: label_style.clone(),
         )
@@ -322,6 +341,7 @@ pub fn button(
     view! {
         container(
             style: root_style,
+            transition: Transition::new(*transition_duration),
             flex_direction: FlexDirectionStyle::Row,
             focusable: interactive,
             tab_index: if interactive { 0 } else { -1 },
@@ -329,7 +349,7 @@ pub fn button(
             accessibility_label: label,
             accessibility_disabled: !interactive,
             accessibility_description: if *loading { "Loading" } else { "" },
-            shortcuts: [(Shortcut::named(NamedKey::Enter), ACTIVATE_BUTTON),(Shortcut::named(NamedKey::Space), ACTIVATE_BUTTON)],
+            shortcuts: [(Shortcut::named(NamedKey::Enter), ACTIVATE_BUTTON),(Shortcut::named(NamedKey::Space), ACTIVATE_BUTTON)].map(|(shortcut, command)| ShortcutBinding { shortcut, command }).to_vec(),
             on_click: move |event, event_cx| { if !interactive { return EventResult::Ignored; }
                 if event
                     .button
@@ -378,12 +398,14 @@ mod tests {
     #[test]
     fn disabled_style_has_no_interaction_state_dependencies() {
         let disabled = variant_style(ButtonVariant::Primary, false);
-        assert!(disabled.state_deps().is_empty());
+        assert!(disabled.rules.is_empty());
     }
 
     #[test]
     fn custom_style_is_applied_last() {
-        let custom = Style::new().min_height(72.0).border_radius(18.0);
+        let custom = StyleOf::new()
+            .with::<container::min_height>(72.0)
+            .with::<container::border_radius>(18.0);
         let resolved = resolved_style(
             ButtonVariant::Primary,
             ButtonSize::Small,
@@ -397,7 +419,7 @@ mod tests {
                 ButtonSize::Small,
                 true,
                 false,
-                &Style::new(),
+                &StyleOf::new(),
             );
             expected.merge(&custom);
             expected

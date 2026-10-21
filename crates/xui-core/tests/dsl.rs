@@ -10,18 +10,64 @@ use xui_core::prelude::*;
 use xui_core::widgets::WidgetType;
 use xui_macros::{component, style, xui};
 
-/// The host element `element` is, a template expanded into the plain tree it
-/// stands for (and leaked: these are tests).
-fn host(element: &ElementDesc) -> &WidgetDesc {
-    match element {
-        ElementDesc::Host(desc) => desc,
-        ElementDesc::Template(template) => host(Box::leak(Box::new(template.clone().expand()))),
-        other => panic!("expected a host element, got {other:?}"),
+mod custom {
+    use super::*;
+
+    #[component]
+    pub fn text(value: &String) {
+        xui! { <container accessibility_label={value.clone()} /> }
     }
 }
 
-fn draft<N: xui_core::node::NodeDef>(element: &ElementDesc) -> &Draft<N> {
-    host(element).draft::<N>().expect("a draft of another widget")
+#[test]
+fn qualified_component_can_share_a_builtin_host_name() {
+    let element = xui! { <custom::text value={"label"} /> };
+    assert!(matches!(element, ElementDesc::Component(_)));
+}
+
+#[test]
+fn event_attribute_block_preserves_closure_inference_and_setup() {
+    let setup = std::rc::Rc::new(std::cell::Cell::new(0));
+    let element = xui! {
+        <container on_command={{
+            setup.set(setup.get() + 1);
+            move |event, _| {
+                if event.command == CommandId("test.command") {
+                    EventResult::Consumed
+                } else {
+                    EventResult::Ignored
+                }
+            }
+        }} />
+    };
+    assert_eq!(setup.get(), 1);
+    assert!(
+        draft::<Container>(&element)
+            .storage
+            .behavior
+            .events
+            .listens_for(EventMask::Command)
+    );
+    assert_eq!(setup.get(), 1);
+}
+
+/// Expands a template for inspection without retaining runtime state.
+fn host(element: &ElementDesc) -> ExpandedHost {
+    match element.clone().expand_one() {
+        Expanded::Host(desc) => desc,
+        other => panic!("expected a host, got {other:?}"),
+    }
+}
+
+fn draft<N: xui_core::node::NodeDef>(element: &ElementDesc) -> Draft<N>
+where
+    N::Props: Clone,
+    N::Behavior: Clone,
+{
+    host(element)
+        .draft::<N>()
+        .expect("a draft of another widget")
+        .clone()
 }
 
 #[test]
@@ -69,11 +115,19 @@ fn visibility_and_display_are_style_attributes() {
     let undisplayed = xui! { <container display={DisplayStyle::None} /> };
 
     assert_eq!(
-        draft::<Container>(&hidden).storage.style.visibility.visibility,
+        draft::<Container>(&hidden)
+            .storage
+            .style
+            .visibility
+            .visibility,
         StyleValue::Value(VisibilityStyle::Hidden)
     );
     assert_eq!(
-        draft::<Container>(&undisplayed).storage.style.display.display,
+        draft::<Container>(&undisplayed)
+            .storage
+            .style
+            .display
+            .display,
         StyleValue::Value(DisplayStyle::None)
     );
 }
@@ -83,7 +137,11 @@ fn interaction_attributes_are_not_silently_dropped() {
     let labelled = xui! { <container accessibility_role={AccessibilityRole::Tab} /> };
 
     assert_eq!(
-        draft::<Container>(&labelled).storage.behavior.accessibility.role,
+        draft::<Container>(&labelled)
+            .storage
+            .behavior
+            .accessibility
+            .role,
         Some(AccessibilityRole::Tab)
     );
 }
@@ -94,14 +152,20 @@ fn a_widget_specific_attribute_wins_over_the_capability_property_of_the_same_nam
     // an icon does not select.
     let tinted = xui! { <icon color={Color::BLUE_500} /> };
 
-    assert_eq!(draft::<Icon>(&tinted).storage.props.color, Some(Color::BLUE_500));
+    assert_eq!(
+        draft::<Icon>(&tinted).storage.props.color,
+        Some(Color::BLUE_500)
+    );
 }
 
 #[test]
 fn a_lone_braced_child_means_whatever_the_widget_says_it_means() {
     // `text` reads it as content...
     let label = xui! { <text>{"hello"}</text> };
-    assert_eq!(draft::<Text>(&label).storage.props.content.as_str(), "hello");
+    assert_eq!(
+        draft::<Text>(&label).storage.props.content.as_str(),
+        "hello"
+    );
     assert!(host(&label).children.is_empty());
 
     // ...while a container reads it as children.
@@ -201,7 +265,10 @@ fn style_macro_lowers_state_conditions_to_rules() {
 
 #[test]
 fn style_macro_without_conditions_has_no_rules() {
-    let style = style!(container { background: Color::BLACK, font_size: 12.0 });
+    let style = style!(container {
+        background: Color::BLACK,
+        font_size: 12.0
+    });
     assert!(style.rules.is_empty());
 }
 

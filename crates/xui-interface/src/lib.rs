@@ -1,8 +1,8 @@
 //! Shared type vocabulary for the `xui` framework.
 //!
 //! Zero-runtime contracts every other crate agrees on: geometry (`Color`,
-//! `Point`, `Rect`, `Size`, `Sizing`, `EdgeInsets`), the style system (`Style`,
-//! `StylePatch`, `ComputedStyle`, tokens, themes, state matchers), input and
+//! `Point`, `Rect`, `Size`, `Sizing`, `EdgeInsets`), style values
+//! (`ComputedStyle`, units, tokens, themes, state matchers), input and
 //! semantic events, widget contracts (`Component`, `NodeId`, `Key`), platform
 //! integration (`TextInputSession`), animation timing (`Easing`, `Transition`),
 //! text traits and layout data, and dirty-tracking flags. Has no dependency on

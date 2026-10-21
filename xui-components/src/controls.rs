@@ -21,7 +21,6 @@
 
 use std::time::Duration;
 
-use crate::layout::MergeClone;
 use xui_core::prelude::*;
 
 use xui_macros::{component, style, view};
@@ -92,8 +91,8 @@ fn commit_bool(
 /// | `label` | `Option<ElementDesc>` | `None` |
 /// | `on_change` | `Option<BoolChangeCallback>` | `None` |
 /// | `accessibility_label` | `Option<String>` | `None` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `indicator_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `indicator_style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -113,8 +112,8 @@ fn commit_bool(
     label = None,
     on_change = None,
     accessibility_label = None,
-    style = Style::new(),
-    indicator_style = Style::new(),
+    style = StyleOf::new(),
+    indicator_style = StyleOf::new(),
 )]
 pub fn checkbox(
     checked: &Option<bool>,
@@ -124,8 +123,8 @@ pub fn checkbox(
     label: &Option<ElementDesc>,
     on_change: &Option<BoolChangeCallback>,
     accessibility_label: &Option<String>,
-    style: &Style,
-    indicator_style: &Style,
+    style: &StyleOf<Container>,
+    indicator_style: &StyleOf<Container>,
 ) {
     let state = cx.use_state(|| *default_checked);
     let controlled = checked.is_some();
@@ -146,7 +145,7 @@ pub fn checkbox(
         AccessibilityChecked::False
     };
 
-    let box_style = style! {
+    let box_style = style!(container {
         size: Size::fix(20.0, 20.0),
         border_width: 1.0,
         border_color: if value || *indeterminate {
@@ -160,15 +159,15 @@ pub fn checkbox(
             ColorStyle::from(Color::TRANSPARENT)
         },
         border_radius: RadiusToken::Sm,
-    }
-    .merge_clone(indicator_style);
+    })
+    .merged(indicator_style);
 
     let disabled = *disabled;
     let root_style = crate::layout::control_style(disabled)
-        .align(AlignStyle::Center)
-        .gap(8.0)
-        .min_height(32.0)
-        .merge_clone(style);
+        .with::<container::align>(AlignStyle::Center)
+        .with::<container::gap>(8.0)
+        .with::<container::min_height>(32.0)
+        .merged(style);
     view! {
         row(style: root_style, focusable: !disabled,
             tab_index: if disabled { -1 } else { 0 },
@@ -183,8 +182,8 @@ pub fn checkbox(
                 commit_bool(!value, controlled, state, &callback);
                 EventResult::Consumed
         }) {
-            center(style: box_style.color(ColorToken::PrimaryForeground)) {
-                xui_core::widgets::text(mark)
+            center(style: box_style.with::<container::color>(ColorToken::PrimaryForeground)) {
+                xui_core::prelude::text(mark)
             }
             if let Some(label) = label { ..label.clone() }
         }
@@ -216,9 +215,9 @@ const SWITCH_TRAVEL: f32 = SWITCH_TRACK_WIDTH - SWITCH_THUMB_SIZE - SWITCH_TRACK
 /// | `label` | `Option<ElementDesc>` | `None` |
 /// | `on_change` | `Option<BoolChangeCallback>` | `None` |
 /// | `accessibility_label` | `Option<String>` | `None` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `track_style` | `Style` | `Style::new()` |
-/// | `thumb_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `track_style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `thumb_style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -237,9 +236,9 @@ const SWITCH_TRAVEL: f32 = SWITCH_TRACK_WIDTH - SWITCH_THUMB_SIZE - SWITCH_TRACK
     label = None,
     on_change = None,
     accessibility_label = None,
-    style = Style::new(),
-    track_style = Style::new(),
-    thumb_style = Style::new(),
+    style = StyleOf::new(),
+    track_style = StyleOf::new(),
+    thumb_style = StyleOf::new(),
 )]
 pub fn switch(
     checked: &Option<bool>,
@@ -248,9 +247,9 @@ pub fn switch(
     label: &Option<ElementDesc>,
     on_change: &Option<BoolChangeCallback>,
     accessibility_label: &Option<String>,
-    style: &Style,
-    track_style: &Style,
-    thumb_style: &Style,
+    style: &StyleOf<Container>,
+    track_style: &StyleOf<Container>,
+    thumb_style: &StyleOf<Container>,
 ) {
     let state = cx.use_state(|| *default_checked);
     let controlled = checked.is_some();
@@ -260,7 +259,7 @@ pub fn switch(
 
     let motion = Transition::new(Duration::from_millis(180)).ease(Easing::CubicOut);
 
-    let resolved_track = style! {
+    let resolved_track = style!(container {
         size: Size::fix(SWITCH_TRACK_WIDTH, SWITCH_TRACK_HEIGHT),
         padding: EdgeInsets::all(SWITCH_TRACK_PADDING),
         border_radius: SWITCH_TRACK_HEIGHT / 2.0,
@@ -271,21 +270,19 @@ pub fn switch(
         } else {
             ColorStyle::from(ColorToken::MutedSurface)
         },
-    }
-    .transition(motion)
-    .merge_clone(track_style);
+    })
+    .merged(track_style);
 
-    let resolved_thumb = style! {
+    let resolved_thumb = style!(container {
         size: Size::fix(SWITCH_THUMB_SIZE, SWITCH_THUMB_SIZE),
         border_radius: SWITCH_THUMB_SIZE / 2.0,
         background: ColorToken::Background,
         translate_x: if value { SWITCH_TRAVEL } else { 0.0 },
-    }
-    .transition(motion)
-    .merge_clone(thumb_style);
+    })
+    .merged(thumb_style);
 
     let track = view! {
-        container(style: resolved_track) { container(style: resolved_thumb) }
+        container(style: resolved_track, transition: motion) { container(style: resolved_thumb, transition: motion) }
     };
 
     let mut children = vec![track];
@@ -296,11 +293,11 @@ pub fn switch(
     // `center` fills its parent by default; a switch is sized by its track and
     // label.
     let root_style = crate::layout::control_style(disabled)
-        .size(Size::new(Sizing::Hug, Sizing::Hug))
-        .align(AlignStyle::Center)
-        .gap(8.0)
-        .min_height(32.0)
-        .merge_clone(style);
+        .with::<container::size>(Size::new(Sizing::Hug, Sizing::Hug))
+        .with::<container::align>(AlignStyle::Center)
+        .with::<container::gap>(8.0)
+        .with::<container::min_height>(32.0)
+        .merged(style);
 
     view! {
         center(style: root_style, flex_direction: FlexDirectionStyle::Row, focusable: !disabled, tab_index: if disabled { -1 } else { 0 }, accessibility_role: AccessibilityRole::Switch, accessibility_checked: if value {
@@ -374,9 +371,9 @@ impl RadioItem {
 /// | `orientation` | `SelectionOrientation` | `SelectionOrientation::Vertical` |
 /// | `on_change` | `Option<IndexChangeCallback>` | `None` |
 /// | `accessibility_label` | `Option<String>` | `None` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `item_style` | `Style` | `Style::new()` |
-/// | `indicator_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `item_style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `indicator_style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -395,9 +392,9 @@ impl RadioItem {
     orientation = SelectionOrientation::Vertical,
     on_change = None,
     accessibility_label = None,
-    style = Style::new(),
-    item_style = Style::new(),
-    indicator_style = Style::new(),
+    style = StyleOf::new(),
+    item_style = StyleOf::new(),
+    indicator_style = StyleOf::new(),
 )]
 pub fn radio_group(
     items: &Vec<RadioItem>,
@@ -407,9 +404,9 @@ pub fn radio_group(
     orientation: &SelectionOrientation,
     on_change: &Option<IndexChangeCallback>,
     accessibility_label: &Option<String>,
-    style: &Style,
-    item_style: &Style,
-    indicator_style: &Style,
+    style: &StyleOf<Container>,
+    item_style: &StyleOf<Container>,
+    indicator_style: &StyleOf<Container>,
 ) {
     let orientation = *orientation;
     let model = std::rc::Rc::new(SelectionModel::new(items.iter().map(|item| {
@@ -445,23 +442,23 @@ pub fn radio_group(
 
         let dot = view! {
             container(
-                style: Style::new()
-                    .size(Size::fix(18.0, 18.0))
-                    .border_width(if selected_now { 5.0 } else { 1.0 })
-                    .border_color(if selected_now {
+                style: StyleOf::new()
+                    .with::<container::size>(Size::fix(18.0, 18.0))
+                    .with::<container::border_width>(if selected_now { 5.0 } else { 1.0 })
+                    .with::<container::border_color>(if selected_now {
                         ColorToken::Primary
                     } else {
                         ColorToken::Border
                 })
-                    .border_radius(9.0).merge_clone(indicator_style),
+                    .with::<container::border_radius>(9.0).merged(indicator_style),
             )
         };
         children.push(view! {
             container(
                 style: crate::layout::control_style(item_disabled)
-                    .align(AlignStyle::Center)
-                    .gap(8.0)
-                    .min_height(32.0).merge_clone(item_style),
+                    .with::<container::align>(AlignStyle::Center)
+                    .with::<container::gap>(8.0)
+                    .with::<container::min_height>(32.0).merged(item_style),
                 flex_direction: FlexDirectionStyle::Row,
                 focusable: !item_disabled,
                 tab_index: if selected_now { 0 } else { -1 },
@@ -488,7 +485,7 @@ pub fn radio_group(
                     (Shortcut::named(if orientation == SelectionOrientation::Horizontal { NamedKey::ArrowLeft } else { NamedKey::ArrowUp }).allow_repeat(true), PREVIOUS),
                     (Shortcut::named(if orientation == SelectionOrientation::Horizontal { NamedKey::ArrowRight } else { NamedKey::ArrowDown }).allow_repeat(true), NEXT),
                     (Shortcut::named(NamedKey::Home), FIRST), (Shortcut::named(NamedKey::End), LAST),
-                ],
+                ].map(|(shortcut, command)| ShortcutBinding { shortcut, command }).to_vec(),
                 on_command: move |event, event_cx| { if !interactive { return EventResult::Ignored; }
                     let next = match event.command {
                         FIRST => model.first(), LAST => model.last(),
@@ -513,7 +510,7 @@ pub fn radio_group(
 
     view! {
         container(
-            style: Style::new().gap(4.0).merge_clone(style),
+            style: StyleOf::new().with::<container::gap>(4.0).merged(style),
             flex_direction: match orientation {
                 SelectionOrientation::Horizontal => FlexDirectionStyle::Row,
                 SelectionOrientation::Vertical => FlexDirectionStyle::Column,
@@ -572,10 +569,10 @@ fn clamp_step(value: f32, min: f32, max: f32, step: f32) -> f32 {
 /// | `disabled` | `bool` | `false` |
 /// | `on_change` | `Option<ValueChangeCallback>` | `None` |
 /// | `accessibility_label` | `Option<String>` | `None` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `track_style` | `Style` | `Style::new()` |
-/// | `fill_style` | `Style` | `Style::new()` |
-/// | `thumb_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `track_style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `fill_style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `thumb_style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -596,10 +593,10 @@ fn clamp_step(value: f32, min: f32, max: f32, step: f32) -> f32 {
     disabled = false,
     on_change = None,
     accessibility_label = None,
-    style = Style::new(),
-    track_style = Style::new(),
-    fill_style = Style::new(),
-    thumb_style = Style::new(),
+    style = StyleOf::new(),
+    track_style = StyleOf::new(),
+    fill_style = StyleOf::new(),
+    thumb_style = StyleOf::new(),
 )]
 pub fn slider(
     value: &Option<f32>,
@@ -610,10 +607,10 @@ pub fn slider(
     disabled: &bool,
     on_change: &Option<ValueChangeCallback>,
     accessibility_label: &Option<String>,
-    style: &Style,
-    track_style: &Style,
-    fill_style: &Style,
-    thumb_style: &Style,
+    style: &StyleOf<Container>,
+    track_style: &StyleOf<Container>,
+    fill_style: &StyleOf<Container>,
+    thumb_style: &StyleOf<Container>,
 ) {
     let (min, max, step) = slider_bounds(*min, *max, *step);
     let state = cx.use_state(|| clamp_step(*default_value, min, max, step));
@@ -633,35 +630,35 @@ pub fn slider(
 
     let rail = view! {
         container(
-            style: Style::new()
-                .relative()
-                .width(Sizing::Fill)
-                .height(6.0)
-                .background(ColorToken::MutedSurface)
-                .border_radius(3.0).merge_clone(track_style),
+            style: StyleOf::new()
+                .with::<container::position>(PositionStyle::Relative)
+                .with::<container::width>(Sizing::Fill)
+                .with::<container::height>(6.0)
+                .with::<container::background>(ColorToken::MutedSurface)
+                .with::<container::border_radius>(3.0).merged(track_style),
         ) {
             container(
-                style: Style::new()
-                    .width(Sizing::percent(ratio))
-                    .height(6.0)
-                    .background(ColorToken::Primary)
-                    .border_radius(3.0).merge_clone(fill_style),
+                style: StyleOf::new()
+                    .with::<container::width>(Sizing::percent(ratio))
+                    .with::<container::height>(6.0)
+                    .with::<container::background>(ColorToken::Primary)
+                    .with::<container::border_radius>(3.0).merged(fill_style),
             )
         }
     };
     view! {
         container(
             style: crate::layout::control_style(*disabled)
-                .relative()
-                .height(32.0)
-                .justify(JustifyStyle::Center)
-                .merge_clone(style),
-            observe_size: size,
+                .with::<container::position>(PositionStyle::Relative)
+                .with::<container::height>(32.0)
+                .with::<container::justify>(JustifyStyle::Center)
+                .merged(style),
+            size_observer: size,
             focusable: !*disabled,
             tab_index: if *disabled { -1 } else { 0 },
             accessibility_role: AccessibilityRole::Slider,
             accessibility_numeric_value: current as f64,
-            accessibility_value_range: (min as f64, max as f64, Some(step as f64)),
+            accessibility_min_value: min as f64, accessibility_max_value: max as f64, accessibility_step_value: step as f64,
             accessibility_disabled: *disabled,
             accessibility_label: accessibility_label.clone().unwrap_or_default(),
             on_click: move |event, event_cx| { if !navigation_enabled { return EventResult::Ignored; }
@@ -686,7 +683,7 @@ pub fn slider(
                 event_cx.request_focus();
                 EventResult::Consumed
             },
-            shortcuts: navigation_shortcuts(),
+            shortcuts: navigation_shortcuts().map(|(shortcut, command)| ShortcutBinding { shortcut, command }).to_vec(),
             on_command: {
                 let callback = on_change.clone();
                 move |event, _| {
@@ -711,10 +708,10 @@ pub fn slider(
         ) {
             ..rail
             container(
-                style: Style::new().absolute().inset(EdgeInsets::new(0.0, 0.0, 8.0, 0.0))
-                    .size(Size::fix(16.0, 16.0)).translate_x(ratio * (width - 16.0).max(0.0))
-                    .background(ColorToken::Background).border_color(ColorToken::Primary)
-                    .border_width(2.0).border_radius(8.0).merge_clone(thumb_style),
+                style: StyleOf::new().with::<container::position>(PositionStyle::Absolute).with::<container::inset>(EdgeInsets::new(0.0, 0.0, 8.0, 0.0))
+                    .with::<container::size>(Size::fix(16.0, 16.0)).with::<container::translate_x>(ratio * (width - 16.0).max(0.0))
+                    .with::<container::background>(ColorToken::Background).with::<container::border_color>(ColorToken::Primary)
+                    .with::<container::border_width>(2.0).with::<container::border_radius>(8.0).merged(thumb_style),
             )
         }
     }
@@ -733,8 +730,8 @@ pub fn slider(
 /// | `value` | `f32` | `0.0` |
 /// | `max` | `f32` | `100.0` |
 /// | `accessibility_label` | `Option<String>` | `None` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `indicator_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `indicator_style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -750,15 +747,15 @@ pub fn slider(
     value = 0.0,
     max = 100.0,
     accessibility_label = None,
-    style = Style::new(),
-    indicator_style = Style::new(),
+    style = StyleOf::new(),
+    indicator_style = StyleOf::new(),
 )]
 pub fn progress(
     value: &f32,
     max: &f32,
     accessibility_label: &Option<String>,
-    style: &Style,
-    indicator_style: &Style,
+    style: &StyleOf<Container>,
+    indicator_style: &StyleOf<Container>,
 ) {
     let max = if max.is_finite() && *max > 0.0 {
         *max
@@ -773,23 +770,23 @@ pub fn progress(
 
     view! {
         container(
-            style: Style::new()
-                .width(Sizing::Fill)
-                .height(8.0)
-                .background(ColorToken::MutedSurface)
-                .border_radius(4.0)
-                .merge_clone(style),
+            style: StyleOf::new()
+                .with::<container::width>(Sizing::Fill)
+                .with::<container::height>(8.0)
+                .with::<container::background>(ColorToken::MutedSurface)
+                .with::<container::border_radius>(4.0)
+                .merged(style),
             accessibility_role: AccessibilityRole::ProgressIndicator,
             accessibility_numeric_value: value as f64,
-            accessibility_value_range: (0.0, max as f64, None),
+            accessibility_min_value: 0.0, accessibility_max_value: max as f64,
             accessibility_label: accessibility_label.clone().unwrap_or_default(),
         ) {
             container(
-                style: Style::new()
-                    .width(Sizing::percent(value / max))
-                    .height(Sizing::Fill)
-                    .background(ColorToken::Primary)
-                    .border_radius(4.0).merge_clone(indicator_style),
+                style: StyleOf::new()
+                    .with::<container::width>(Sizing::percent(value / max))
+                    .with::<container::height>(Sizing::Fill)
+                    .with::<container::background>(ColorToken::Primary)
+                    .with::<container::border_radius>(4.0).merged(indicator_style),
             )
         }
     }
@@ -813,7 +810,7 @@ pub enum SeparatorOrientation {
 /// | Prop | Type | Default |
 /// | --- | --- | --- |
 /// | `orientation` | `SeparatorOrientation` | `SeparatorOrientation::Horizontal` |
-/// | `style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -827,16 +824,20 @@ pub enum SeparatorOrientation {
 #[component]
 #[defaults(
     orientation = SeparatorOrientation::Horizontal,
-    style = Style::new(),
+    style = StyleOf::new(),
 )]
-pub fn separator(orientation: &SeparatorOrientation, style: &Style) {
+pub fn separator(orientation: &SeparatorOrientation, style: &StyleOf<Container>) {
     let base = match orientation {
-        SeparatorOrientation::Horizontal => Style::new().width(Sizing::Fill).height(1.0),
-        SeparatorOrientation::Vertical => Style::new().width(1.0).height(Sizing::Fill),
+        SeparatorOrientation::Horizontal => StyleOf::new()
+            .with::<container::width>(Sizing::Fill)
+            .with::<container::height>(1.0),
+        SeparatorOrientation::Vertical => StyleOf::new()
+            .with::<container::width>(1.0)
+            .with::<container::height>(Sizing::Fill),
     };
     view! {
         container(
-            style: base.background(ColorToken::Border).merge_clone(style),
+            style: base.with::<container::background>(ColorToken::Border).merged(style),
             accessibility_hidden: true,
         )
     }
@@ -862,7 +863,7 @@ pub enum BadgeVariant {
 /// | Prop | Type | Default |
 /// | --- | --- | --- |
 /// | `text` | `String` | **Required** |
-/// | `style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
 /// | `variant` | `BadgeVariant` | `BadgeVariant::Secondary` |
 ///
 /// # Example
@@ -876,35 +877,35 @@ pub enum BadgeVariant {
 /// ```
 #[component]
 #[defaults(
-    style = Style::new(),
+    style = StyleOf::new(),
     variant = BadgeVariant::Secondary,
 )]
-pub fn badge(text: &String, style: &Style, variant: &BadgeVariant) {
+pub fn badge(text: &String, style: &StyleOf<Container>, variant: &BadgeVariant) {
     let variant_style = match variant {
-        BadgeVariant::Primary => Style::new()
-            .background(ColorToken::Primary)
-            .color(ColorToken::PrimaryForeground),
-        BadgeVariant::Secondary => Style::new()
-            .background(ColorToken::Secondary)
-            .color(ColorToken::SecondaryForeground),
-        BadgeVariant::Outline => Style::new()
-            .background(ColorToken::Background)
-            .color(ColorToken::Foreground)
-            .border_width(1.0)
-            .border_color(ColorToken::Border),
-        BadgeVariant::Danger => Style::new()
-            .background(ColorToken::Destructive)
-            .color(ColorToken::DestructiveForeground),
+        BadgeVariant::Primary => StyleOf::new()
+            .with::<container::background>(ColorToken::Primary)
+            .with::<container::color>(ColorToken::PrimaryForeground),
+        BadgeVariant::Secondary => StyleOf::new()
+            .with::<container::background>(ColorToken::Secondary)
+            .with::<container::color>(ColorToken::SecondaryForeground),
+        BadgeVariant::Outline => StyleOf::new()
+            .with::<container::background>(ColorToken::Background)
+            .with::<container::color>(ColorToken::Foreground)
+            .with::<container::border_width>(1.0)
+            .with::<container::border_color>(ColorToken::Border),
+        BadgeVariant::Danger => StyleOf::new()
+            .with::<container::background>(ColorToken::Destructive)
+            .with::<container::color>(ColorToken::DestructiveForeground),
     };
     view! {
         container(
             style: variant_style
-                .padding(EdgeInsets::symmetric(8.0, 3.0))
-                .border_radius(999.0)
-                .font_size(FontSizeToken::Sm)
-                .merge_clone(style),
+                .with::<container::padding>(EdgeInsets::symmetric(8.0, 3.0))
+                .with::<container::border_radius>(999.0)
+                .with::<container::font_size>(FontSizeToken::Sm)
+                .merged(style),
         ) {
-            xui_core::widgets::text(
+            xui_core::prelude::text(
                 text.clone(),
             )
         }
@@ -925,8 +926,8 @@ pub fn badge(text: &String, style: &Style, variant: &BadgeVariant) {
 /// | `size` | `f32` | `40.0` |
 /// | `image` | `Option<ElementDesc>` | `None` |
 /// | `fallback` | `String` | `"?".to_string()` |
-/// | `style` | `Style` | `Style::new()` |
-/// | `fallback_style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `fallback_style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -942,16 +943,16 @@ pub fn badge(text: &String, style: &Style, variant: &BadgeVariant) {
     size = 40.0,
     image = None,
     fallback = "?".to_string(),
-    style = Style::new(),
-    fallback_style = Style::new(),
+    style = StyleOf::new(),
+    fallback_style = StyleOf::new(),
 )]
 pub fn avatar(
     accessibility_label: &String,
     size: &f32,
     image: &Option<ElementDesc>,
     fallback: &String,
-    style: &Style,
-    fallback_style: &Style,
+    style: &StyleOf<Container>,
+    fallback_style: &StyleOf<Text>,
 ) {
     let size = &if size.is_finite() {
         size.max(0.0)
@@ -960,21 +961,21 @@ pub fn avatar(
     };
     view! {
         container(
-            style: Style::new()
-                .size(Size::fix(*size, *size))
-                .align(AlignStyle::Center)
-                .justify(JustifyStyle::Center)
-                .clip(true)
-                .background(ColorToken::MutedSurface)
-                .border_radius(*size / 2.0)
-                .merge_clone(style),
+            style: StyleOf::new()
+                .with::<container::size>(Size::fix(*size, *size))
+                .with::<container::align>(AlignStyle::Center)
+                .with::<container::justify>(JustifyStyle::Center)
+                .with::<container::clip>(true)
+                .with::<container::background>(ColorToken::MutedSurface)
+                .with::<container::border_radius>(*size / 2.0)
+                .merged(style),
             accessibility_role: AccessibilityRole::Image,
             accessibility_label: accessibility_label.clone(),
         ) {
             ..image
                 .clone()
                 .unwrap_or_else(|| view! {
-                    xui_core::widgets::text(
+                    xui_core::prelude::text(
                         fallback.clone(),
                         style: fallback_style.clone(),
                     )
@@ -993,7 +994,7 @@ pub fn avatar(
 /// | Prop | Type | Default |
 /// | --- | --- | --- |
 /// | `content` | `ElementDesc` | **Required** |
-/// | `style` | `Style` | `Style::new()` |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
 ///
 /// # Example
 ///
@@ -1006,18 +1007,18 @@ pub fn avatar(
 /// ```
 #[component]
 #[defaults(
-    style = Style::new(),
+    style = StyleOf::new(),
 )]
-pub fn card(content: &ElementDesc, style: &Style) {
+pub fn card(content: &ElementDesc, style: &StyleOf<Container>) {
     view! {
         container(
-            style: Style::new()
-                .padding(EdgeInsets::all(16.0))
-                .background(ColorToken::Surface)
-                .border_width(1.0)
-                .border_color(ColorToken::Border)
-                .border_radius(RadiusToken::Lg)
-                .merge_clone(style),
+            style: StyleOf::new()
+                .with::<container::padding>(EdgeInsets::all(16.0))
+                .with::<container::background>(ColorToken::Surface)
+                .with::<container::border_width>(1.0)
+                .with::<container::border_color>(ColorToken::Border)
+                .with::<container::border_radius>(RadiusToken::Lg)
+                .merged(style),
         ) {
             ..content.clone()
         }

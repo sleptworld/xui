@@ -31,14 +31,10 @@ fn braced_children_expand_single_and_collection_values_in_order() {
         </container>
     };
 
-    let ElementDesc::Host(host) = element.expanded() else {
+    let Expanded::Host(host) = element.expand_one() else {
         panic!("container must expand to a host element");
     };
-    let keys = host
-        .children
-        .iter()
-        .map(ElementDesc::key)
-        .collect::<Vec<_>>();
+    let keys = host.children.iter().map(Expanded::key).collect::<Vec<_>>();
     assert_eq!(
         keys,
         vec![

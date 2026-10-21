@@ -1,7 +1,7 @@
 use xui_macros::widget;
 
-use crate::node::{Draft, WidgetT};
 use crate::diagnostics::invariant;
+use crate::node::{Draft, WidgetT};
 use std::fmt;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -501,7 +501,6 @@ impl RootOverlayerState {
             .expect("scope existed while sorting")
             .children = children;
     }
-
 }
 
 #[cfg(test)]

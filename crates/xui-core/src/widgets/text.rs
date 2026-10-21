@@ -23,7 +23,15 @@ use crate::text::TextLayoutSlot;
         box_size, margin, padding, position, display, typography, visibility, transform, effects,
         cursor
     ),
-    behavior(focus, accessibility, shortcuts, motion, focus_binding, size_observation, events)
+    behavior(
+        focus,
+        accessibility,
+        shortcuts,
+        motion,
+        focus_binding,
+        size_observation,
+        events
+    )
 )]
 #[props(derive(Debug, Clone, PartialEq))]
 pub struct Text {
@@ -68,7 +76,9 @@ where
     T: Into<TextContent>,
 {
     fn from(value: T) -> Self {
-        text().with::<text::content>(value).into_element_desc(Vec::new())
+        text()
+            .with::<text::content>(value)
+            .into_element_desc(Vec::new())
     }
 }
 

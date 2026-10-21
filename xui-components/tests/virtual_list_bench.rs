@@ -11,9 +11,9 @@ use std::time::{Duration, Instant};
 #[allow(unused_imports)]
 use xui_components::*;
 use xui_core::prelude::*;
-use xui_macros::xui;
 use xui_core::text::TextHost;
 use xui_cosmic::CosmicEngine;
+use xui_macros::xui;
 
 const ITEM_HEIGHT: f32 = 20.0;
 const VIEWPORT: Size<f32> = Size {
@@ -31,23 +31,28 @@ fn exclusive() -> MutexGuard<'static, ()> {
 }
 
 fn row(index: usize) -> ElementDesc {
-    ContainerWidget::new()
-        .style(
-            Style::new()
-                .width(Sizing::Fill)
-                .height(ITEM_HEIGHT)
-                .background(Color::hex("#141414")),
+    container()
+        .with::<container::style>(
+            StyleOf::new()
+                .with::<container::width>(Sizing::Fill)
+                .with::<container::height>(ITEM_HEIGHT)
+                .with::<container::background>(Color::hex("#141414")),
         )
         .into_element_desc(vec![
-            TextWidget::new(format!("row {index}"))
-                .style(Style::new().width(120.0).height(16.0))
-                .into_element_desc(),
-            ContainerWidget::new()
-                .style(
-                    Style::new()
-                        .width(16.0)
-                        .height(16.0)
-                        .background(Color::hex("#3b82f6")),
+            text()
+                .with::<text::content>(format!("row {index}"))
+                .with::<text::style>(
+                    StyleOf::new()
+                        .with::<container::width>(120.0)
+                        .with::<container::height>(16.0),
+                )
+                .into_element_desc(Vec::new()),
+            container()
+                .with::<container::style>(
+                    StyleOf::new()
+                        .with::<container::width>(16.0)
+                        .with::<container::height>(16.0)
+                        .with::<container::background>(Color::hex("#3b82f6")),
                 )
                 .into_element_desc(Vec::new()),
         ])
@@ -56,12 +61,12 @@ fn row(index: usize) -> ElementDesc {
 /// Every row mounted, which is what the framework did before virtualization.
 fn plain_list(_cx: &mut HookContext<'_>) -> ElementDesc {
     let rows: Vec<ElementDesc> = (0..ROWS.load(Ordering::Relaxed)).map(row).collect();
-    ContainerWidget::new()
-        .style(
-            Style::new()
-                .width(Sizing::Fill)
-                .height(VIEWPORT.height)
-                .scroll_vertical(),
+    container()
+        .with::<container::style>(
+            StyleOf::new()
+                .with::<container::width>(Sizing::Fill)
+                .with::<container::height>(VIEWPORT.height)
+                .with::<container::scroll_direction>(ScrollDirectionStyle::Vertical),
         )
         .into_element_desc(rows)
 }
@@ -69,7 +74,9 @@ fn plain_list(_cx: &mut HookContext<'_>) -> ElementDesc {
 fn virtual_list_root(cx: &mut HookContext<'_>) -> ElementDesc {
     let render_item: Callback<usize, ElementDesc> = cx.use_callback((), row);
     let count = ROWS.load(Ordering::Relaxed);
-    let style = Style::new().width(Sizing::Fill).height(VIEWPORT.height);
+    let style = StyleOf::new()
+        .with::<container::width>(Sizing::Fill)
+        .with::<container::height>(VIEWPORT.height);
     xui! {
         <virtual_list
             item_count={count}
