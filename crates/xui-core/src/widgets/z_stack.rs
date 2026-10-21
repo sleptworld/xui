@@ -1,14 +1,8 @@
 use crate::element::ElementDesc;
-use crate::event_system::EventContext;
 use crate::event_system::callbacks::EventHandlers;
 use crate::event_system::interaction::InteractionProperties;
-use crate::render::RenderTreeWriter;
-use xui_interface::{
-    Alignment, Bounds, ComputedStyle, EventRef, EventResult, Key, Style, TextContent, TextProps,
-    WidgetType, WidgetUpdateFlags,
-};
+use xui_interface::{Alignment, Key, Style, WidgetType, WidgetUpdateFlags};
 
-use super::utils::render_box;
 use super::{props_hash, widget_element_desc};
 
 /// A SwiftUI-style overlay container. Children share one Taffy grid cell and
@@ -101,32 +95,6 @@ impl ZStackWidget {
 
     pub(super) fn current_style(&self) -> &Style {
         &self.style
-    }
-
-    pub(super) fn render(
-        &self,
-        _node_id: xui_interface::NodeId,
-        rect: Bounds,
-        style: &ComputedStyle,
-        writer: &mut RenderTreeWriter<'_>,
-    ) {
-        render_box(rect, style, writer);
-    }
-
-    pub(super) fn handle_event(
-        &mut self,
-        _event: EventRef<'_>,
-        _cx: &mut EventContext<'_>,
-    ) -> EventResult {
-        EventResult::Ignored
-    }
-
-    pub(super) fn text_content(&self) -> Option<TextContent> {
-        None
-    }
-
-    pub(super) fn text_layout_props(&self, _style: &ComputedStyle) -> Option<TextProps> {
-        None
     }
 }
 

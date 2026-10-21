@@ -1,0 +1,23 @@
+error[E0277]: `common::Text` does not select the `BoxSize` capability
+  --> tests/ui/node_text_rejects_foreign_capability.rs:12:11
+   |
+12 |     label.set::<width>(10.0);
+   |           ^^^ this node has no `BoxSize` storage
+   |
+help: the trait `Selects<BoxSize>` is not implemented for `common::Text`
+      but trait `Selects<Typography>` is implemented for it
+  --> tests/ui/../node_fixture/mod.rs
+   |
+   | #[widget(style(typography))]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for that trait implementation, expected `Typography`, found `BoxSize`
+   = note: required for `Draft<common::Text>` to implement `Access<CapScope<BoxSize>>`
+note: required by a bound in `xui_core::node::Node::set`
+  --> src/node.rs
+   |
+   |     fn set<P: Property>(&mut self, value: impl IntoProp<P>)
+   |        --- required by a bound in this associated function
+   |     where
+   |         Self: Access<P::Scope>,
+   |               ^^^^^^^^^^^^^^^^ required by this bound in `Node::set`
+   = note: this error originates in the attribute macro `widget` (in Nightly builds, run with -Z macro-backtrace for more info)

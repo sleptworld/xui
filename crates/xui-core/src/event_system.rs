@@ -76,7 +76,7 @@ pub mod interaction;
 pub mod translator;
 
 pub use flow::Flow;
-pub use handler::Handler;
+pub use handler::{Handler, HandlerValue};
 
 use crate::event_system::dispatcher::DispatchReport;
 use crate::event_system::translator::EventTranslator;

@@ -1,0 +1,23 @@
+error[E0277]: `common::Text` does not select the `Events` capability
+  --> tests/ui/node_text_has_no_events.rs:11:11
+   |
+11 |     label.on::<on_click, _>(|_, _| {});
+   |           ^^ this node has no `Events` storage
+   |
+help: the trait `Selects<Events>` is not implemented for `common::Text`
+      but trait `Selects<Typography>` is implemented for it
+  --> tests/ui/../node_fixture/mod.rs
+   |
+   | #[widget(style(typography))]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for that trait implementation, expected `Typography`, found `Events`
+   = note: required for `Draft<common::Text>` to implement `Access<CapScope<Events>>`
+note: required by a bound in `on`
+  --> src/node.rs
+   |
+   |     fn on<P: Property, R: Into<Flow>>(
+   |        -- required by a bound in this associated function
+...
+   |         Self: Access<P::Scope>,
+   |               ^^^^^^^^^^^^^^^^ required by this bound in `Node::on`
+   = note: this error originates in the attribute macro `widget` (in Nightly builds, run with -Z macro-backtrace for more info)

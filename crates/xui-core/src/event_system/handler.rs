@@ -116,3 +116,18 @@ where
         Handler::new(handler)
     }
 }
+
+/// A property value that is a handler, and the event it takes: how
+/// `Node::on` finds the `Fn` bound to spell out for a closure.
+pub trait HandlerValue: 'static {
+    type Event: 'static;
+    fn from_handler(handler: Handler<Self::Event>) -> Self;
+}
+
+impl<E: 'static> HandlerValue for Handler<E> {
+    type Event = E;
+
+    fn from_handler(handler: Handler<E>) -> Self {
+        handler
+    }
+}

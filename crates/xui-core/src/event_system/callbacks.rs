@@ -51,6 +51,31 @@ impl ListenPhase {
     }
 }
 
+/// One handler slot — an event kind on one propagation phase — as a
+/// property of the `events` capability.
+macro_rules! handler_property {
+    ($(#[$meta:meta])* $name:ident : $event:ty => $kind:ident, $phase:ident) => {
+        $(#[$meta])*
+        pub enum $name {}
+
+        #[allow(deprecated)]
+        impl crate::property::Property for $name {
+            type Scope = crate::property::CapScope<crate::caps::behavior::Events>;
+            type Value = Handler<$event>;
+
+            fn set(handlers: &mut EventHandlers, handler: Handler<$event>) {
+                handlers.set(ListenPhase::$phase, AnyHandler::$kind(handler));
+            }
+        }
+
+        #[allow(deprecated)]
+        impl crate::property::Accepts<Handler<$event>> for $name {
+            fn accept(handler: Handler<$event>) -> Handler<$event> {
+                handler
+            }
+        }
+    };
+}
 macro_rules! events {
     (
         $(
@@ -119,10 +144,21 @@ macro_rules! events {
         ///
         /// One variant per slot rather than per payload type, so the dispatch
         /// match below is a straight 1:1 generation from the table.
-        #[derive(Debug)]
+        #[derive(Debug, Clone)]
         pub enum AnyHandler {
             Any(Handler<SemanticEvent>),
             $( $kind(Handler<$event>), )*
+        }
+
+        /// The same handler, not an equal one: closures do not compare.
+        impl PartialEq for AnyHandler {
+            fn eq(&self, other: &Self) -> bool {
+                match (self, other) {
+                    (AnyHandler::Any(a), AnyHandler::Any(b)) => a == b,
+                    $( (AnyHandler::$kind(a), AnyHandler::$kind(b)) => a == b, )*
+                    _ => false,
+                }
+            }
         }
 
         impl AnyHandler {
@@ -202,6 +238,29 @@ macro_rules! events {
         }
 
         impl<T: Listen> EventProps for T {}
+
+        /// One property per handler slot: the `events` capability's
+        /// properties. Write-only — a handler cannot be read back out of the
+        /// node's list — and each takes a ready-made [`Handler`]; a closure
+        /// goes through `Node::on` (`node.on::<on_click, _>(..)`).
+        #[allow(non_camel_case_types)]
+        pub mod handler_props {
+            use super::*;
+
+            handler_property!(
+                /// Every semantic event, before the kind-specific handler.
+                on_event: SemanticEvent => Any, Bubble
+            );
+            handler_property!(on_event_capture: SemanticEvent => Any, Capture);
+
+            $(
+                handler_property!(
+                    $(#[deprecated(note = $deprecated)])?
+                    $method: $event => $kind, Bubble
+                );
+                $(handler_property!($capture_method: $event => $kind, Capture);)?
+            )*
+        }
     };
 }
 
@@ -262,7 +321,7 @@ pub trait Listen: Sized {
     fn handlers_mut(&mut self) -> &mut EventHandlers;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 struct Entry {
     phase: ListenPhase,
     handler: AnyHandler,
@@ -274,7 +333,10 @@ struct Entry {
 /// carry 33 empty fields plus, in the runtime, a 272-byte handle set. Nodes
 /// almost always have zero or one handler, so a `SmallVec` inline capacity of
 /// four covers the realistic cases without allocating.
-#[derive(Default, Debug)]
+/// Compares handlers by identity, so a node whose closures are recreated on
+/// every render has a new row on every render, while a reused handler (a
+/// `Callback` prop, a memoized closure) does not.
+#[derive(Default, Debug, Clone, PartialEq)]
 pub struct EventHandlers {
     mask: EventMask,
     entries: SmallVec<[Entry; 4]>,

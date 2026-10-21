@@ -36,6 +36,8 @@ pub mod anchor;
 pub mod animation;
 pub mod app;
 pub mod assets;
+pub mod capability;
+pub mod caps;
 pub mod clock;
 pub mod component;
 pub mod context;
@@ -53,9 +55,11 @@ pub mod focus;
 mod frame_bench;
 pub mod lanes;
 pub mod layout;
+pub mod node;
 pub mod platform;
 pub mod prelude;
 pub mod prop;
+pub mod property;
 pub mod runtime;
 pub mod scroll;
 pub mod shortcut;
@@ -65,6 +69,18 @@ pub mod style;
 pub mod ticker;
 pub mod widgets;
 pub use crate::prelude::*;
+
+/// The `xui-interface` items the capability macros expand to, and nothing
+/// else: re-exporting the whole crate would make every one of its names
+/// visible under a second path, which changes how rustc prints types in
+/// diagnostics everywhere.
+#[doc(hidden)]
+pub mod __interface {
+    pub use xui_interface::{NodeId, Transition, WidgetUpdateFlags};
+    pub use xui_interface::style::{ComputedStyle, Theme};
+    pub use xui_interface::styles::compute::{leaves_to_parent, resolve_field};
+    pub use xui_interface::styles::units::{IntoStyleValue, StyleValue, merge_value};
+}
 pub mod text;
 pub(crate) mod ui_runtime;
 

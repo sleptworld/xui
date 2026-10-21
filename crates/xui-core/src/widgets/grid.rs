@@ -1,9 +1,6 @@
 use std::hash::{Hash, Hasher};
 
-use xui_interface::{
-    Bounds, ComputedStyle, EventRef, EventResult, Key, Style, TextContent, TextProps, WidgetType,
-    WidgetUpdateFlags,
-};
+use xui_interface::{Key, Style, WidgetType, WidgetUpdateFlags};
 
 use taffy::{
     Display, Style as TaffyStyle,
@@ -16,8 +13,7 @@ use taffy::{
 
 use crate::{
     ElementDesc,
-    event_system::{EventContext, interaction::InteractionProperties},
-    render::RenderTreeWriter,
+    event_system::interaction::InteractionProperties,
     widgets::{EventHandlers, props_hash, widget_element_desc},
 };
 
@@ -265,31 +261,6 @@ impl GridWidget {
 
     pub(super) fn current_style(&self) -> &Style {
         &self.style
-    }
-
-    pub(super) fn render(
-        &self,
-        _node_id: xui_interface::NodeId,
-        _rect: Bounds,
-        _style: &ComputedStyle,
-        _writer: &mut RenderTreeWriter<'_>,
-    ) {
-    }
-
-    pub(super) fn handle_event(
-        &mut self,
-        _event: EventRef<'_>,
-        _cx: &mut EventContext<'_>,
-    ) -> EventResult {
-        EventResult::Ignored
-    }
-
-    pub(super) fn text_content(&self) -> Option<TextContent> {
-        None
-    }
-
-    pub(super) fn text_layout_props(&self, _style: &ComputedStyle) -> Option<TextProps> {
-        None
     }
 }
 

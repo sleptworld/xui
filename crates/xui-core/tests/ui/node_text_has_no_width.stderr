@@ -1,0 +1,17 @@
+error[E0425]: cannot find type `width` in module `common::text`
+  --> tests/ui/node_text_has_no_width.rs:11:31
+   |
+11 |     label.set::<common::text::width>(10.0);
+   |                               ^^^^^ not found in `common::text`
+   |
+help: consider importing one of these enums
+   |
+ 6 + use crate::common::everything::width;
+   |
+ 6 + use xui_core::caps::style::box_size::props::width;
+   |
+help: if you import `width`, refer to it directly
+   |
+11 -     label.set::<common::text::width>(10.0);
+11 +     label.set::<width>(10.0);
+   |

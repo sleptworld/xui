@@ -2,7 +2,7 @@ use crate::animation::{has_animatable_difference, interpolate_style};
 use slotmap::{SecondaryMap, SparseSecondaryMap};
 use std::time::Duration;
 use xui_animation::{Timeline, Transition};
-use xui_interface::{Animation, ComputedStyle, NodeId, StylePatch};
+use xui_interface::{Animation, ComputedStyle, NodeId};
 
 pub(crate) struct StyleNode {
     computed: ComputedStyle,
@@ -214,23 +214,27 @@ impl StyleSystem {
     /// fields alone, before anything is cloned. When the base did move, returns
     /// what the node showed before: the caller re-resolves a keyframe
     /// animation on top of the new base before diffing against it.
+    ///
+    /// `inherits_differently` and `inherit_unset` are the node's answers for
+    /// its current state (see [`crate::widgets::HostStyle`]).
     pub(crate) fn sync_inherited(
         &mut self,
         id: NodeId,
         parent: &ComputedStyle,
-        patch: &StylePatch,
+        inherits_differently: impl FnOnce(&ComputedStyle, &ComputedStyle) -> bool,
+        inherit_unset: impl FnOnce(&mut ComputedStyle, &ComputedStyle),
     ) -> Option<ComputedStyle> {
-        if !self.base(id).inherits_differently_from(parent, patch) {
+        if !inherits_differently(self.base(id), parent) {
             return None;
         }
         let before = self.effective(id).clone();
         if let Some(animation) = self.animations.get_mut(id) {
-            animation.sampled.inherit_unset_from(parent, patch);
+            inherit_unset(&mut animation.sampled, parent);
             self.inherited_samples.remove(id);
         } else {
             let computed = &self.nodes[id].computed;
             let mut sampled = computed.clone();
-            sampled.inherit_unset_from(parent, patch);
+            inherit_unset(&mut sampled, parent);
             if sampled.inherited_eq(computed) {
                 self.inherited_samples.remove(id);
             } else {

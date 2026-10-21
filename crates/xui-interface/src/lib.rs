@@ -13,6 +13,9 @@
 //! root for convenience.
 
 pub mod core;
+
+/// Ordered `f64`, as accessibility values carry it.
+pub use ordered_float::OrderedFloat;
 pub mod dirty;
 pub mod events;
 pub mod platform;
@@ -20,6 +23,7 @@ pub mod render;
 pub mod runtime;
 pub mod state;
 pub mod style;
+pub mod styles;
 pub mod text;
 pub mod transition;
 pub mod widget;
@@ -30,11 +34,12 @@ pub use dirty::{StyleDiffFlags, WidgetUpdateFlags};
 pub use events::{
     CommandEvent, CommandId, ContextMenuTrigger, Event, EventPhase, EventRef, EventRequest,
     EventRequests, EventResult, FocusReason, GestureKind, GesturePhase, KeyState, KeyText,
-    Modifiers, NamedKey, PhysicalKey, PlatformReplyEvent, PointerBoundaryEvent, PointerButton, PointerButtons,
-    PointerCoords, PointerKind, PointerMoveEvent, PointerSnapshot, RawContextMenu, RawGesture,
-    RawIme, RawKeyInput, RawKeyboard, RawPointerButton, RawPointerCancel, RawPointerLeave,
-    RawPointerMove, RawWheel, RawWindowEvent, ScrollDelta, Shortcut, ShortcutBinding, ShortcutKey,
-    ShortcutModifiers, SwipeDirection, TextPayload, WakeEvent, XuiDeviceId, XuiPointerId,
+    Modifiers, NamedKey, PhysicalKey, PlatformReplyEvent, PointerBoundaryEvent, PointerButton,
+    PointerButtons, PointerCoords, PointerKind, PointerMoveEvent, PointerSnapshot, RawContextMenu,
+    RawGesture, RawIme, RawKeyInput, RawKeyboard, RawPointerButton, RawPointerCancel,
+    RawPointerLeave, RawPointerMove, RawWheel, RawWindowEvent, ScrollDelta, Shortcut,
+    ShortcutBinding, ShortcutKey, ShortcutModifiers, SwipeDirection, TextPayload, WakeEvent,
+    XuiDeviceId, XuiPointerId,
 };
 pub use platform::{
     Appearance, ClipboardContent, ClipboardTarget, ColorScheme, DragEvent, DragPayload,
@@ -53,13 +58,13 @@ pub use style::{
     ComputedLinearGradientStyle, ComputedMaskShape, ComputedPaintStyle,
     ComputedRadialGradientStyle, ComputedScrollStyle, ComputedScrollbarStyle, ComputedShadowStyle,
     ComputedStrokeStyle, ComputedStyle, ComputedTextStyle, CursorIcon, DisplayStyle, Effect,
-    EffectStylePatch,
-    FilterQuality, FlexDirectionStyle, FontSizeToken, JustifyStyle, LayoutStylePatch, LengthValue,
-    LinearGradientStyle, MaskShape, PaintStylePatch, PositionStyle, RadialGradientStyle,
-    RadiusToken, ScrollDirectionStyle, ScrollStylePatch, ScrollbarStyle, ScrollbarStylePatch,
-    ScrollbarVisibilityStyle, ShadowStyle, SpacingToken, StateStyleRule, Stroke, StrokeLineStyle,
-    StrokeStyle, Style, StyleMerge, StylePatch, StyleValue, TextStylePatch, Theme, TransformStyle,
-    TransformStylePatch, VisibilityStyle, WidgetStateMatcher,
+    EffectStylePatch, FilterQuality, FlexDirectionStyle, FontSizeToken, JustifyStyle,
+    LayoutStylePatch, LengthValue, LinearGradientStyle, MaskShape, PaintStylePatch, PositionStyle,
+    RadialGradientStyle, RadiusToken, ScrollDirectionStyle, ScrollStylePatch, ScrollbarStyle,
+    ScrollbarStylePatch, ScrollbarVisibilityStyle, ShadowStyle, SpacingToken, StateStyleRule,
+    Stroke, StrokeLineStyle, StrokeStyle, Style, StyleMerge, StylePatch, StyleValue,
+    TextStylePatch, Theme, TransformStyle, TransformStylePatch, VisibilityStyle,
+    WidgetStateMatcher,
 };
 pub use text::*;
 pub use transition::{

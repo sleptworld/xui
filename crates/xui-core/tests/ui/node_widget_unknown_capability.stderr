@@ -1,0 +1,5 @@
+error[E0433]: failed to resolve: could not find `no_such_capability` in `style`
+ --> tests/ui/node_widget_unknown_capability.rs:5:26
+  |
+5 | #[widget(style(box_size, no_such_capability))]
+  |                          ^^^^^^^^^^^^^^^^^^ could not find `no_such_capability` in `style`

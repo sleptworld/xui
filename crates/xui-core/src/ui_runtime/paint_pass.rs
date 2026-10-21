@@ -103,7 +103,9 @@ impl UiRuntime {
         )?;
         // On the root, so the whole subtree goes with it and the frame
         // builder skips it without visiting a single descendant.
-        self.render_system.scene.set_visible(binding.root, visible)?;
+        self.render_system
+            .scene
+            .set_visible(binding.root, visible)?;
 
         self.update_wrappers(id, &mut binding, clip_shape, layer_descriptor)?;
 
@@ -341,6 +343,9 @@ impl UiRuntime {
         let widget = self.hosts[id].widget.clone();
         let paint = self.render_system.binding(id).paint;
         let mut writer = RenderTreeWriter::new(&mut self.render_system.scene, paint);
+        if widget.decorates() {
+            paint_decoration(rect, &style, &mut writer);
+        }
         widget.render(id, rect, &style, &mut writer);
         writer
             .finish()
@@ -468,7 +473,8 @@ impl UiRuntime {
 
 /// Whether a node is drawn at all: neither hidden nor out of layout.
 pub(super) fn is_drawn(style: &ComputedStyle) -> bool {
-    style.paint.visibility == VisibilityStyle::Visible && style.layout.display == DisplayStyle::Visible
+    style.paint.visibility == VisibilityStyle::Visible
+        && style.layout.display == DisplayStyle::Visible
 }
 
 fn layer_descriptor_from_style(style: &ComputedStyle, bounds: Bounds) -> Option<LayerDescriptor> {
@@ -534,4 +540,28 @@ fn render_scrollbar_part(
             shadow: None,
         }))
         .expect("scrollbar render tree must remain valid");
+}
+
+/// The border box every decorated node shows under its content: its
+/// background, rounded by its corner radius, with its stroke and shadow.
+///
+/// Drawn by the runtime, not by widgets: all of it is computed style, the
+/// output of the decoration capabilities (see `CapMask::DECORATION`), so a
+/// widget only paints what is its own.
+fn paint_decoration(rect: Bounds, style: &ComputedStyle, writer: &mut RenderTreeWriter<'_>) {
+    let paint = style.paint;
+    let shape = if paint.border_radius > 0.0 {
+        Shape::RoundedRect(paint.border_radius)
+    } else {
+        Shape::Rect
+    };
+    writer
+        .primitive(Primitive::Shape(ShapePrimitive {
+            bounds: rect,
+            shape,
+            fill: Some(paint.background),
+            stroke: paint.stroke,
+            shadow: paint.shadow,
+        }))
+        .expect("decoration must leave the render tree valid");
 }

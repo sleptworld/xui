@@ -36,6 +36,18 @@ pub enum Focusability {
     NotFocusable,
 }
 
+/// `true` is `Focusable`, `false` is `NotFocusable`, as
+/// [`FocusProperties::focusable`] maps them.
+impl From<bool> for Focusability {
+    fn from(focusable: bool) -> Self {
+        if focusable {
+            Self::Focusable
+        } else {
+            Self::NotFocusable
+        }
+    }
+}
+
 /// Focus metadata shared by every host widget.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct FocusProperties {

@@ -9,6 +9,15 @@ use syn::{Error, Result};
 
 fn resolve(name: &str) -> Result<TokenStream2> {
     match crate_name(name) {
+        // `proc-macro-crate` answers "itself" for every target of the package,
+        // but only its library is `crate`; its integration tests and examples
+        // name it like any dependent does.
+        Ok(FoundCrate::Itself)
+            if std::env::var("CARGO_CRATE_NAME").as_deref() != Ok(&name.replace('-', "_")) =>
+        {
+            let ident = Ident::new(&name.replace('-', "_"), Span::call_site());
+            Ok(quote!(::#ident))
+        }
         Ok(FoundCrate::Itself) => Ok(quote!(crate)),
         Ok(FoundCrate::Name(found)) => {
             let ident = Ident::new(&found, Span::call_site());

@@ -2,6 +2,7 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::marker::PhantomData;
 use std::rc::Rc;
 
 pub use crate::event_system::callbacks::EventHandlers;
@@ -11,7 +12,10 @@ use xui_interface::style::FlexDirectionStyle;
 use xui_interface::{EventRef, EventResult, TextContent, TextProps, WidgetUpdateFlags};
 pub use xui_interface::{Style, WidgetType};
 
-mod utils;
+pub(crate) mod host_style;
+pub(crate) mod roles;
+
+pub(crate) use host_style::HostStyle;
 
 use crate::core::Size;
 use crate::element::{ComponentDesc, ElementDesc, WidgetDesc};
@@ -19,6 +23,24 @@ use crate::fiber::{ComponentRender, Key};
 use crate::render::RenderTreeWriter;
 use crate::state::HookContext;
 use crate::style::ComputedStyle;
+
+pub struct WidgetInstance<W: WidgetT> {
+    props: W::Props,
+    state: W::State,
+}
+
+pub trait WidgetT {
+    type Props: 'static;
+    type State: 'static;
+
+    fn create_state(props: &Self::Props) -> Self::State;
+    fn update(old_props: &Self::Props, new_props: &Self::Props, state: &mut Self::State) {}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WidgetBox<W: WidgetT> {
+    _marker: PhantomData<W>,
+}
 
 macro_rules! no_event_handler_methods {
     () => {
@@ -312,7 +334,48 @@ impl_listen!(
 pub type RootComponentRender = fn(&mut HookContext) -> ElementDesc;
 
 macro_rules! define_widgets {
-    ($($name:ident => $widget:ty $([$raw:ident])?),+ $(,)?) => {
+    (@role paint) => {
+        fn as_paint(&self) -> Option<&dyn roles::PaintContent> {
+            Some(self)
+        }
+    };
+    (@role text) => {
+        fn as_text(&self) -> Option<&dyn roles::TextSource> {
+            Some(self)
+        }
+    };
+    (@role events) => {
+        fn as_handle_event(&self) -> Option<&dyn roles::HandleEvent> {
+            Some(self)
+        }
+
+        fn as_handle_event_mut(&mut self) -> Option<&mut dyn roles::HandleEvent> {
+            Some(self)
+        }
+    };
+    (@role text_input) => {
+        fn as_text_input(&self) -> Option<&dyn roles::PlatformTextInput> {
+            Some(self)
+        }
+    };
+    (@role intrinsic_size) => {
+        fn as_intrinsic_size(&self) -> Option<&dyn roles::IntrinsicSize> {
+            Some(self)
+        }
+    };
+    (@role arrange) => {
+        fn as_arrange(&self) -> Option<&dyn roles::ArrangeChildren> {
+            Some(self)
+        }
+    };
+
+    ($($name:ident => $widget:ty [$($role:ident),* $(,)?]),+ $(,)?) => {
+        $(
+            impl roles::WidgetRoles for $widget {
+                $(define_widgets!(@role $role);)*
+            }
+        )+
+
         #[derive(Debug)]
         pub enum Widgets {
             $(
@@ -383,13 +446,22 @@ macro_rules! define_widgets {
             ///
             /// Raw dispatch walks the whole ancestor path on every pointer
             /// move; knowing that nobody on it is listening turns that walk
-            /// into an integer comparison. Declared in the widget table rather
-            /// than in a hand-kept `match`, so it cannot drift from reality.
+            /// into an integer comparison. Answered by the widget's own
+            /// [`roles::HandleEvent`], so it cannot drift from reality.
             pub(crate) fn reads_raw_events(&self) -> bool {
+                self.roles().as_handle_event().is_some_and(|it| it.raw_events())
+            }
+
+            /// The widget's declared roles.
+            pub(crate) fn roles(&self) -> &dyn roles::WidgetRoles {
                 match self {
-                    $(
-                        Self::$name(_) => false $( || stringify!($raw) == "raw" )? ,
-                    )+
+                    $(Self::$name(widget) => widget,)+
+                }
+            }
+
+            pub(crate) fn roles_mut(&mut self) -> &mut dyn roles::WidgetRoles {
+                match self {
+                    $(Self::$name(widget) => widget,)+
                 }
             }
 
@@ -438,6 +510,14 @@ macro_rules! define_widgets {
                 None
             }
 
+            /// Every widget still answers from its `Style`; a widget moved
+            /// onto a node definition answers through
+            /// [`host_style::NodeStyle`] instead.
+            pub(crate) fn with_host_style<R>(&self, f: impl FnOnce(&dyn HostStyle) -> R) -> R {
+                f(&host_style::LegacyStyle::new(self))
+            }
+
+            /// Paints the widget's own content, if it has any.
             pub(crate) fn render(
                 &self,
                 node_id: xui_interface::NodeId,
@@ -445,10 +525,8 @@ macro_rules! define_widgets {
                 style: &ComputedStyle,
                 writer: &mut RenderTreeWriter<'_>,
             ) {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.render(node_id, rect, style, writer),
-                    )+
+                if let Some(content) = self.roles().as_paint() {
+                    content.paint(node_id, rect, style, writer);
                 }
             }
 
@@ -457,29 +535,19 @@ macro_rules! define_widgets {
                 event: EventRef<'_>,
                 cx: &mut crate::event_system::EventContext<'_>,
             ) -> EventResult {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.handle_event(event, cx),
-                    )+
-                }
+                self.roles_mut()
+                    .as_handle_event_mut()
+                    .map_or(EventResult::Ignored, |it| it.handle_event(event, cx))
             }
 
             pub fn on_click(&mut self) {}
 
             pub fn text(&self) -> Option<TextContent> {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.text_content(),
-                    )+
-                }
+                self.roles().as_text().map(|it| it.text())
             }
 
             pub fn text_layout_props(&self, style: &ComputedStyle) -> Option<TextProps> {
-                match self {
-                    $(
-                        Self::$name(widget) => widget.text_layout_props(style),
-                    )+
-                }
+                self.roles().as_text().map(|it| it.text_layout(style))
             }
 
             pub(crate) fn platform_text_input_session(
@@ -487,31 +555,42 @@ macro_rules! define_widgets {
                 content_rect: Bounds,
                 text_layout: &dyn crate::text::TextLayoutQuery,
             ) -> Option<xui_interface::TextInputSession> {
-                match self {
-                    Self::TextInput(widget) => {
-                        Some(widget.platform_text_input_session(content_rect, text_layout))
-                    }
-                    _ => None,
-                }
+                self.roles()
+                    .as_text_input()
+                    .map(|it| it.text_input_session(content_rect, text_layout))
             }
         }
     };
 }
 
-// `[raw]` marks a widget that reads `EventRef::Raw` in its `handle_event`.
-// Raw events are widget-private — see the module docs on `event_system` — so
-// this list is the complete set of nodes raw dispatch has to visit.
+// Each widget's roles (see `roles`): the behaviour its own code implements.
+// A role listed here that the widget does not implement fails to compile.
 define_widgets! {
-    Container => ContainerWidget,
-    ZStack => ZStackWidget,
-    Text => TextWidget,
-    TextInput => TextInputWidget [raw],
-    Canvas => CanvasWidget,
-    Image => ImageWidget,
-    Icon => IconWidget,
-    Grid => GridWidget,
-    RootOverlayer => RootOverlayerWidget,
-    Root => RootWidget,
+    Container => ContainerWidget [arrange],
+    ZStack => ZStackWidget [arrange],
+    Text => TextWidget [paint, text],
+    TextInput => TextInputWidget [paint, text, events, text_input],
+    Canvas => CanvasWidget [paint],
+    Image => ImageWidget [paint, intrinsic_size],
+    Icon => IconWidget [paint],
+    Grid => GridWidget [arrange],
+    RootOverlayer => RootOverlayerWidget [],
+    Root => RootWidget [arrange],
+}
+
+impl Widgets {
+    /// Whether the runtime paints this widget's decoration — background,
+    /// border, corner radius, shadow — under its content.
+    ///
+    /// A node on a node definition decorates when it selects a decoration
+    /// capability (`CapMask::DECORATION`); until every widget has one, this
+    /// lists the widgets that used to draw it themselves.
+    pub(crate) fn decorates(&self) -> bool {
+        matches!(
+            self,
+            Widgets::Container(_) | Widgets::ZStack(_) | Widgets::Image(_) | Widgets::Root(_)
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -567,18 +646,30 @@ impl WidgetI {
     }
 
     pub fn intrinsic_size(&self) -> Option<Size<f32>> {
-        self.with_widgets(|widget| match widget {
-            Widgets::Image(image) => image.intrinsic_size(),
-            _ => None,
+        self.with_widgets(|widget| {
+            widget
+                .roles()
+                .as_intrinsic_size()
+                .and_then(|it| it.intrinsic_size())
         })
     }
 
+    /// Whether the runtime paints this widget's decoration under its content.
+    pub(crate) fn decorates(&self) -> bool {
+        self.with_widgets(Widgets::decorates)
+    }
+
+    /// Runs `f` on what this widget answers the runtime about its style.
+    pub(crate) fn with_host_style<R>(&self, f: impl FnOnce(&dyn HostStyle) -> R) -> R {
+        self.with_widgets(|widget| widget.with_host_style(f))
+    }
+
     pub(crate) fn transition(&self) -> Option<xui_interface::Transition> {
-        self.with_widgets(|widget| widget.style().transition_config())
+        self.with_host_style(|style| style.transition())
     }
 
     pub(crate) fn animation(&self) -> Option<xui_interface::Animation> {
-        self.with_widgets(|widget| widget.style().animation_config().cloned())
+        self.with_host_style(|style| style.animation())
     }
 
     #[inline]

@@ -25,6 +25,9 @@ taffy = "0.13.0"
 xui-animation = { path = "../xui-animation" }
 xui-assets = { path = "../xui-assets" }
 xui-interface = { path = "../xui-interface" }
+# `#[widget]`, for the built-in widgets' node definitions. The macros are
+# still re-exported by the `xui` facade, not by `xui-core`.
+xui-macros = { path = "../xui-macros" }
 slot = { path = "../slot" }
 bitflags = "2.13.0"
 ropey = "1.6.1"
@@ -40,5 +43,4 @@ wgpu = {workspace=true, optional=true}
 [dev-dependencies]
 pollster = {workspace=true}
 trybuild = "1.0.120"
-xui-macros = { path = "../xui-macros" }
 xui-cosmic = { path = "../xui-cosmic" }

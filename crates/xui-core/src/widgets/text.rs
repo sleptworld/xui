@@ -1,10 +1,10 @@
+use super::roles::{PaintContent, TextSource};
+use crate::element::ElementDesc;
 use crate::event_system::callbacks::EventHandlers;
 use crate::event_system::interaction::InteractionProperties;
-use crate::{element::ElementDesc, event_system::EventContext};
 use xui_interface::{
-    Bounds, ComputedStyle, EventRef, EventResult, Key, OverflowWrap, ParagraphStyle, Style,
-    TextBoxStyle, TextContent, TextOverflow, TextPaintProps, TextPaintStyle, TextProps, WidgetType,
-    WidgetUpdateFlags,
+    Bounds, ComputedStyle, Key, OverflowWrap, ParagraphStyle, Style, TextBoxStyle, TextContent,
+    TextOverflow, TextPaintProps, TextPaintStyle, TextProps, WidgetType, WidgetUpdateFlags,
 };
 
 use super::{props_hash, widget_element_desc};
@@ -137,8 +137,31 @@ impl TextWidget {
     pub(super) fn current_style(&self) -> &Style {
         &self.style
     }
+}
 
-    pub(super) fn render(
+pub(super) fn apply_text_style(text_props: &mut TextProps, style: &ComputedStyle) {
+    text_props.style.color = style.text.color;
+    text_props.style.font_family = style.text.font_family.clone();
+    text_props.style.font_size = style.text.font_size;
+    text_props.style.font_weight = style.text.font_weight;
+    text_props.style.font_style = style.text.font_style;
+    text_props.style.line_height = style.text.line_height;
+    text_props.style.letter_spacing = style.text.letter_spacing;
+    text_props.style.decoration = style.text.decoration;
+}
+
+/// Some Utils
+impl<T> From<T> for ElementDesc
+where
+    T: Into<TextContent>,
+{
+    fn from(value: T) -> Self {
+        TextWidget::new(value).into_element_desc()
+    }
+}
+
+impl PaintContent for TextWidget {
+    fn paint(
         &self,
         node_id: xui_interface::NodeId,
         rect: Bounds,
@@ -166,43 +189,16 @@ impl TextWidget {
             }))
             .expect("widget render tree must remain valid");
     }
+}
 
-    pub(super) fn handle_event(
-        &mut self,
-        _event: EventRef,
-        _cx: &mut EventContext<'_>,
-    ) -> EventResult {
-        EventResult::Ignored
+impl TextSource for TextWidget {
+    fn text(&self) -> TextContent {
+        self.props.text.clone()
     }
 
-    pub(super) fn text_content(&self) -> Option<TextContent> {
-        Some(self.props.text.clone())
-    }
-
-    pub(super) fn text_layout_props(&self, style: &ComputedStyle) -> Option<TextProps> {
+    fn text_layout(&self, style: &ComputedStyle) -> TextProps {
         let mut props = self.props.clone();
         apply_text_style(&mut props, style);
-        Some(props)
-    }
-}
-
-pub(super) fn apply_text_style(text_props: &mut TextProps, style: &ComputedStyle) {
-    text_props.style.color = style.text.color;
-    text_props.style.font_family = style.text.font_family.clone();
-    text_props.style.font_size = style.text.font_size;
-    text_props.style.font_weight = style.text.font_weight;
-    text_props.style.font_style = style.text.font_style;
-    text_props.style.line_height = style.text.line_height;
-    text_props.style.letter_spacing = style.text.letter_spacing;
-    text_props.style.decoration = style.text.decoration;
-}
-
-/// Some Utils
-impl<T> From<T> for ElementDesc
-where
-    T: Into<TextContent>,
-{
-    fn from(value: T) -> Self {
-        TextWidget::new(value).into_element_desc()
+        props
     }
 }

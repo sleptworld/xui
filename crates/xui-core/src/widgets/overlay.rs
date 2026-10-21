@@ -4,12 +4,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use rustc_hash::FxHashMap;
-use xui_interface::{
-    Bounds, ComputedStyle, EdgeInsets, EventRef, EventResult, Key, NodeId, Size, Style,
-    TextContent, TextProps, WidgetType, WidgetUpdateFlags,
-};
-
-use crate::{event_system::EventContext, render::RenderTreeWriter};
+use xui_interface::{EdgeInsets, Key, NodeId, Size, Style, WidgetType, WidgetUpdateFlags};
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct OverlayScopeId(u32);
@@ -512,31 +507,6 @@ impl RootOverlayerWidget {
 
     pub(super) fn current_style(&self) -> &Style {
         &self.style
-    }
-
-    pub(super) fn render(
-        &self,
-        _node_id: NodeId,
-        _rect: Bounds,
-        _style: &ComputedStyle,
-        _writer: &mut RenderTreeWriter<'_>,
-    ) {
-    }
-
-    pub(super) fn handle_event(
-        &mut self,
-        _event: EventRef<'_>,
-        _cx: &mut EventContext<'_>,
-    ) -> EventResult {
-        EventResult::Ignored
-    }
-
-    pub(super) fn text_content(&self) -> Option<TextContent> {
-        None
-    }
-
-    pub(super) fn text_layout_props(&self, _style: &ComputedStyle) -> Option<TextProps> {
-        None
     }
 }
 

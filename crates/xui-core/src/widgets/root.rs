@@ -1,11 +1,6 @@
-use crate::event_system::EventContext;
-use xui_interface::{
-    Bounds, Color, ComputedStyle, EventRef, EventResult, Key, Size, Style, TextContent, TextProps,
-    WidgetType, WidgetUpdateFlags, core::Sizing,
-};
+use xui_interface::{Color, Key, Size, Style, WidgetType, WidgetUpdateFlags, core::Sizing};
 
 use super::props_hash;
-use crate::render::{Primitive, RenderTreeWriter, Shape, ShapePrimitive};
 
 #[derive(Debug)]
 pub struct RootWidget {
@@ -46,10 +41,12 @@ impl RootWidget {
     }
 
     pub(super) fn default_style(&self) -> Style {
-        Style::new().size(Size::<Sizing>::new(
-            Sizing::Percent(1.0.try_into().unwrap()),
-            Sizing::Percent(1.0.try_into().unwrap()),
-        ))
+        Style::new()
+            .size(Size::<Sizing>::new(
+                Sizing::Percent(1.0.try_into().unwrap()),
+                Sizing::Percent(1.0.try_into().unwrap()),
+            ))
+            .background(Color::WHITE)
     }
 
     pub(super) fn get_key(&self) -> Option<&Key> {
@@ -58,40 +55,6 @@ impl RootWidget {
 
     pub(super) fn current_style(&self) -> &Style {
         &self.style
-    }
-
-    pub(super) fn render(
-        &self,
-        _node_id: xui_interface::NodeId,
-        rect: Bounds,
-        _style: &ComputedStyle,
-        writer: &mut RenderTreeWriter<'_>,
-    ) {
-        writer
-            .primitive(Primitive::Shape(ShapePrimitive {
-                bounds: rect,
-                shape: Shape::Rect,
-                fill: Some(xui_interface::ComputedColorStyle::Solid(Color::WHITE)),
-                stroke: None,
-                shadow: None,
-            }))
-            .expect("widget render tree must remain valid");
-    }
-
-    pub(super) fn handle_event(
-        &mut self,
-        _event: EventRef<'_>,
-        _cx: &mut EventContext<'_>,
-    ) -> EventResult {
-        EventResult::Ignored
-    }
-
-    pub(super) fn text_content(&self) -> Option<TextContent> {
-        None
-    }
-
-    pub(super) fn text_layout_props(&self, _style: &ComputedStyle) -> Option<TextProps> {
-        None
     }
 
     no_event_handler_methods!();

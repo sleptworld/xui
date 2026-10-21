@@ -1,0 +1,18 @@
+error[E0599]: the method `update` exists for struct `Slot<count>`, but its trait bounds were not satisfied
+  --> tests/ui/node_component_has_no_host_dirt.rs:10:43
+   |
+10 |     Slot::<common::counter::count>::new().update(&mut node, 1);
+   |                                           ^^^^^^ method cannot be called on `Slot<count>` due to unsatisfied trait bounds
+   |
+  ::: tests/ui/../node_fixture/mod.rs
+   |
+   |     pub enum count {}
+   |     -------------- doesn't satisfy `count: HostProperty`
+   |
+   = note: the following trait bounds were not satisfied:
+           `count: HostProperty`
+note: the trait `HostProperty` must be implemented
+  --> src/property.rs
+   |
+   | pub trait HostProperty: FieldProperty {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

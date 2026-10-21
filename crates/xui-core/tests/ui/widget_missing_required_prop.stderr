@@ -1,0 +1,23 @@
+error[E0277]: required prop `label` of widget `Badge` was never set
+  --> tests/ui/widget_missing_required_prop.rs:13:35
+   |
+13 |     BadgeProps::builder().tone(2).build()
+   |                                   ^^^^^ `label` is missing here
+   |
+help: the trait `LabelIsSet` is not implemented for `LabelMissing`
+  --> tests/ui/widget_missing_required_prop.rs:5:1
+   |
+ 5 | #[widget]
+   | ^^^^^^^^^
+   = note: set it with `.label(..)` before `.build()`, or give it a default with `#[default(..)]` on the field
+help: the trait `LabelIsSet` is implemented for `LabelSet`
+  --> tests/ui/widget_missing_required_prop.rs:5:1
+   |
+ 5 | #[widget]
+   | ^^^^^^^^^
+note: required by a bound in `BadgePropsBuilder::<__XuiLabelState>::build`
+  --> tests/ui/widget_missing_required_prop.rs:5:1
+   |
+ 5 | #[widget]
+   | ^^^^^^^^^ required by this bound in `BadgePropsBuilder::<__XuiLabelState>::build`
+   = note: this error originates in the attribute macro `widget` (in Nightly builds, run with -Z macro-backtrace for more info)

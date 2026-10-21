@@ -1151,7 +1151,7 @@ fn component_prop_state_name(props_name: &TokenIdent, field: &Ident, suffix: &st
     TokenIdent::new(&format!("{props_name}{field}{suffix}"), Span::call_site())
 }
 
-fn ident_pascal_case(ident: &Ident) -> String {
+pub(crate) fn ident_pascal_case(ident: &Ident) -> String {
     let source = ident.to_string();
     let source = source.strip_prefix("r#").unwrap_or(&source);
     let mut output = String::new();

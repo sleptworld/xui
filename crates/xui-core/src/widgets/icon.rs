@@ -1,17 +1,16 @@
+use super::roles::PaintContent;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::Arc;
 
 use crate::assets::{SharedAsset, load_icon_asset};
 use crate::element::ElementDesc;
-use crate::event_system::EventContext;
 use crate::event_system::callbacks::EventHandlers;
 use crate::event_system::interaction::InteractionProperties;
 use xui_assets::AssetId;
 use xui_interface::{
-    Affine, Bounds, Color, ComputedStyle, EventRef, EventResult, FillRule, Key, PathData, PathFill,
-    PathStroke, Rect, Size, Sizing, Style, TextContent, TextProps, VectorSceneBuilder, WidgetType,
-    WidgetUpdateFlags,
+    Affine, Bounds, Color, ComputedStyle, FillRule, Key, PathData, PathFill, PathStroke, Rect,
+    Size, Sizing, Style, VectorSceneBuilder, WidgetType, WidgetUpdateFlags,
 };
 
 use super::{props_hash, widget_element_desc};
@@ -364,72 +363,6 @@ impl IconWidget {
     pub(super) fn current_style(&self) -> &Style {
         &self.style
     }
-
-    pub(super) fn render(
-        &self,
-        _node_id: xui_interface::NodeId,
-        rect: Bounds,
-        style: &ComputedStyle,
-        writer: &mut RenderTreeWriter<'_>,
-    ) {
-        if self.data.is_none() {
-            return;
-        }
-
-        let data = self.data.as_ref().unwrap();
-
-        let view = data.view_box;
-        if rect.width() <= 0.0 || rect.height() <= 0.0 || view.width <= 0.0 || view.height <= 0.0 {
-            return;
-        }
-        let scale = (rect.width() / view.width).min(rect.height() / view.height);
-        let x = rect.x() + (rect.width() - view.width * scale) * 0.5;
-        let y = rect.y() + (rect.height() - view.height * scale) * 0.5;
-        let transform = Affine::translate(-view.x, -view.y)
-            .then(Affine::scale(scale, scale))
-            .then(Affine::translate(x, y));
-        let color = self.color.unwrap_or(style.text.color);
-
-        let mut scene = VectorSceneBuilder::new();
-        for layer in data.layers.iter() {
-            if let Some(rule) = layer.fill {
-                scene.fill_path(
-                    layer.path.clone(),
-                    layer.transform,
-                    PathFill::new(color).rule(rule),
-                );
-            }
-            if let Some(stroke) = layer.stroke {
-                scene.stroke_path(
-                    layer.path.clone(),
-                    layer.transform,
-                    PathStroke::new(color, stroke.width)
-                        .cap(stroke.cap)
-                        .join(stroke.join),
-                );
-            }
-        }
-        writer
-            .primitive(Primitive::Vector(VectorPrimitive {
-                scene: scene.build(),
-                transform,
-            }))
-            .expect("widget render tree must remain valid");
-    }
-
-    pub(super) fn handle_event(
-        &mut self,
-        _event: EventRef<'_>,
-        _cx: &mut EventContext<'_>,
-    ) -> EventResult {
-        EventResult::Ignored
-    }
-    pub(super) fn text_content(&self) -> Option<TextContent> {
-        None
-    }
-    pub(super) fn text_layout_props(&self, _style: &ComputedStyle) -> Option<TextProps> {
-        None
-    }
 }
 
 fn collect_svg_layers(group: &usvg::Group, layers: &mut Vec<IconLayer>) {
@@ -536,6 +469,60 @@ fn svg_transform(transform: usvg::Transform) -> Affine {
     )
 }
 
+impl PaintContent for IconWidget {
+    fn paint(
+        &self,
+        _node_id: xui_interface::NodeId,
+        rect: Bounds,
+        style: &ComputedStyle,
+        writer: &mut RenderTreeWriter<'_>,
+    ) {
+        if self.data.is_none() {
+            return;
+        }
+
+        let data = self.data.as_ref().unwrap();
+
+        let view = data.view_box;
+        if rect.width() <= 0.0 || rect.height() <= 0.0 || view.width <= 0.0 || view.height <= 0.0 {
+            return;
+        }
+        let scale = (rect.width() / view.width).min(rect.height() / view.height);
+        let x = rect.x() + (rect.width() - view.width * scale) * 0.5;
+        let y = rect.y() + (rect.height() - view.height * scale) * 0.5;
+        let transform = Affine::translate(-view.x, -view.y)
+            .then(Affine::scale(scale, scale))
+            .then(Affine::translate(x, y));
+        let color = self.color.unwrap_or(style.text.color);
+
+        let mut scene = VectorSceneBuilder::new();
+        for layer in data.layers.iter() {
+            if let Some(rule) = layer.fill {
+                scene.fill_path(
+                    layer.path.clone(),
+                    layer.transform,
+                    PathFill::new(color).rule(rule),
+                );
+            }
+            if let Some(stroke) = layer.stroke {
+                scene.stroke_path(
+                    layer.path.clone(),
+                    layer.transform,
+                    PathStroke::new(color, stroke.width)
+                        .cap(stroke.cap)
+                        .join(stroke.join),
+                );
+            }
+        }
+        writer
+            .primitive(Primitive::Vector(VectorPrimitive {
+                scene: scene.build(),
+                transform,
+            }))
+            .expect("widget render tree must remain valid");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -596,7 +583,7 @@ mod tests {
         let mut scene = crate::render::RenderScene::new();
         let parent = scene.insert_group();
         let mut writer = RenderTreeWriter::new(&mut scene, parent);
-        widget.render(
+        widget.paint(
             xui_interface::NodeId::default(),
             Bounds::from_origin_size((0.0, 0.0), (40.0, 40.0)),
             &style,

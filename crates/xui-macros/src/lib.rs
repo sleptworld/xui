@@ -11,6 +11,8 @@
 //! - `#[component]` / `component_fn!` — props struct, typed builder, render
 //!   handle, and the tag constructor that makes a component usable in `xui!`
 //!   exactly like a host widget.
+//! - `#[widget]` — empty marker type, props struct, state struct and typed
+//!   props builder, from one struct declaration.
 //! - `#[main]` — installs the asset bootstrap before the user's `main` runs.
 //! - `#[derive(Animatable)]` — field-wise `Animatable` impl.
 //!
@@ -35,6 +37,7 @@ mod krate;
 mod main_fn;
 mod style;
 mod view;
+mod widget;
 
 use proc_macro::TokenStream;
 use syn::{parse_macro_input, DeriveInput};
@@ -109,6 +112,37 @@ pub fn component_fn(input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn defaults(_attrs: TokenStream, item: TokenStream) -> TokenStream {
     item
+}
+
+/// Declares a widget from one struct: plain fields are props, `#[state]`
+/// fields are state.
+///
+/// ```ignore
+/// #[widget(style(box_size, background))]
+/// #[props(derive(Clone, PartialEq))]
+/// pub struct Slider {
+///     pub value: f32,               // required
+///     #[default(1.0)]
+///     #[dirty(PAINT_OUTPUT)]
+///     pub max: f32,                 // optional, defaults to 1.0
+///     #[state]
+///     shown: f32,
+/// }
+/// ```
+///
+/// generates the `Slider` marker, `SliderProps`, `SliderState`,
+/// `SliderProps::builder()`, the node definition (`SliderStyle`,
+/// `SliderBehavior`, `NodeDef`, `Selects`) and the `slider` property module;
+/// `impl WidgetT for Slider` is written by hand. The `widget` module of this
+/// crate documents every option.
+#[proc_macro_attribute]
+pub fn widget(attrs: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(attrs as widget::WidgetArgs);
+    let item = parse_macro_input!(item as syn::ItemStruct);
+    match widget::expand_widget(args, item) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
 }
 
 #[proc_macro_attribute]

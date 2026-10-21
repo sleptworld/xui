@@ -1,17 +1,13 @@
 use crate::element::ElementDesc;
-use crate::event_system::EventContext;
 use crate::event_system::callbacks::EventHandlers;
 use crate::event_system::interaction::InteractionProperties;
-use crate::widgets::utils::render_box;
-use xui_interface::Bounds;
 use xui_interface::style::FlexDirectionStyle;
 use xui_interface::{
-    ColorStyle, ComputedStyle, EventRef, EventResult, Key, LengthValue, ScrollDirectionStyle,
-    Style, TextContent, TextProps, WidgetType, WidgetUpdateFlags, style::ScrollbarStylePatch,
+    ColorStyle, Key, LengthValue, ScrollDirectionStyle, Style, WidgetType, WidgetUpdateFlags,
+    style::ScrollbarStylePatch,
 };
 
 use super::{props_hash, widget_element_desc};
-use crate::render::RenderTreeWriter;
 
 pub struct ContainerWidget {
     pub key: Option<Key>,
@@ -162,31 +158,5 @@ impl ContainerWidget {
 
     pub(super) fn current_style(&self) -> &Style {
         &self.style
-    }
-
-    pub(super) fn render(
-        &self,
-        _node_id: xui_interface::NodeId,
-        rect: Bounds,
-        style: &ComputedStyle,
-        writer: &mut RenderTreeWriter<'_>,
-    ) {
-        render_box(rect, style, writer);
-    }
-
-    pub(super) fn handle_event(
-        &mut self,
-        _event: EventRef<'_>,
-        _cx: &mut EventContext<'_>,
-    ) -> EventResult {
-        EventResult::Ignored
-    }
-
-    pub(super) fn text_content(&self) -> Option<TextContent> {
-        None
-    }
-
-    pub(super) fn text_layout_props(&self, _style: &ComputedStyle) -> Option<TextProps> {
-        None
     }
 }

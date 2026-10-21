@@ -25,7 +25,7 @@ impl UiRuntime {
         let widget = self.hosts[id].widget.clone();
 
         // Recompute style if the widget's style affects the state change.
-        if widget.with_widgets(|w| w.style().affects_state_change(before, state)) {
+        if widget.with_host_style(|style| style.affects_state_change(before, state)) {
             self.mark_work(id, HostWorkFlags::RECALC_STYLE);
         }
     }
@@ -91,10 +91,13 @@ impl UiRuntime {
         self.stats.inheritance_visits += 1;
         let state = self.hosts[id].state;
         let style_system = &mut self.style_system;
-        let before = self.hosts[id].widget.with_widgets(|widget| {
-            widget.style().with_patch_for_state(state, |patch| {
-                style_system.sync_inherited(id, parent, patch)
-            })
+        let before = self.hosts[id].widget.with_host_style(|style| {
+            style_system.sync_inherited(
+                id,
+                parent,
+                |current, parent| style.inherits_differently(state, current, parent),
+                |target, parent| style.inherit_unset(state, target, parent),
+            )
         });
         let Some(before) = before else {
             return false;

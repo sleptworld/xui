@@ -25,12 +25,13 @@
 //! so a repaint reuses the scenes it built, and with them every compiled path
 //! the backend has cached.
 
+use super::roles::PaintContent;
 use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc, sync::Arc};
 
 use crate::clock::FrameTime;
 use crate::element::ElementDesc;
+use crate::event_system::callbacks::EventHandlers;
 use crate::event_system::interaction::InteractionProperties;
-use crate::event_system::{EventContext, callbacks::EventHandlers};
 use crate::render::{
     BatchContent, BatchItem, BatchPrimitive, ClipShape, Primitive, RenderTreeWriter,
     ShapePrimitive, TextPrimitive, VectorPrimitive,
@@ -40,10 +41,9 @@ use crate::text::TextLayoutSlot;
 use xui_interface::ExternalTextureHandle;
 use xui_interface::{
     Affine, Bounds, CanvasTextId, Color, ComputedColorStyle, ComputedStrokeStyle, ComputedStyle,
-    EventRef, EventResult, ExternalTextureId, Key, NodeId, PathData, PathFill, PathStroke, Point,
-    Sampling, Shape, Size, StrokeLineStyle, Style, TextContent, TextLayoutConstraints,
-    TextPaintProps, TextPaintStyle, TextProps, Theme, VectorCommand, VectorScene, WidgetType,
-    WidgetUpdateFlags,
+    ExternalTextureId, Key, NodeId, PathData, PathFill, PathStroke, Point, Sampling, Shape, Size,
+    StrokeLineStyle, Style, TextLayoutConstraints, TextPaintProps, TextPaintStyle, TextProps,
+    Theme, VectorCommand, VectorScene, WidgetType, WidgetUpdateFlags,
 };
 
 use super::{props_hash, widget_element_desc};
@@ -948,9 +948,10 @@ fn compile_commands(
             VectorCommand::TextBox { id, bounds, props } => {
                 flush_shapes(&mut batches, &mut shapes);
                 flush_vectors(&mut batches, &mut vectors);
-                let constraints = text_constraints.get(id).copied().unwrap_or_else(|| {
-                    TextLayoutConstraints::max_width(bounds.width().max(0.0))
-                });
+                let constraints = text_constraints
+                    .get(id)
+                    .copied()
+                    .unwrap_or_else(|| TextLayoutConstraints::max_width(bounds.width().max(0.0)));
                 batches.push(CanvasBatch::Text {
                     id: *id,
                     bounds: *bounds,
@@ -1587,8 +1588,14 @@ impl CanvasWidget {
             .map(|(id, bounds, props, constraints)| (id, bounds, props.clone(), constraints))
             .collect()
     }
+}
 
-    pub(super) fn render(
+pub(crate) fn canvas_text_slot(id: CanvasTextId) -> TextLayoutSlot {
+    TextLayoutSlot::new(id.get())
+}
+
+impl PaintContent for CanvasWidget {
+    fn paint(
         &self,
         node_id: xui_interface::NodeId,
         rect: Bounds,
@@ -1610,26 +1617,6 @@ impl CanvasWidget {
             })
             .expect("widget render tree must remain valid");
     }
-
-    pub(super) fn handle_event(
-        &mut self,
-        _event: EventRef<'_>,
-        _cx: &mut EventContext<'_>,
-    ) -> EventResult {
-        EventResult::Ignored
-    }
-
-    pub(super) fn text_content(&self) -> Option<TextContent> {
-        None
-    }
-
-    pub(super) fn text_layout_props(&self, _style: &ComputedStyle) -> Option<TextProps> {
-        None
-    }
-}
-
-pub(crate) fn canvas_text_slot(id: CanvasTextId) -> TextLayoutSlot {
-    TextLayoutSlot::new(id.get())
 }
 
 #[cfg(test)]
@@ -1769,7 +1756,7 @@ mod tests {
         let rect = Bounds::from_origin_size((5.0, 7.0), (100.0, 100.0));
         for _ in 0..3 {
             let mut writer = RenderTreeWriter::new(&mut render_scene, parent);
-            widget.render(xui_interface::NodeId::null(), rect, &style, &mut writer);
+            widget.paint(xui_interface::NodeId::null(), rect, &style, &mut writer);
             writer.finish().unwrap();
         }
 
@@ -2106,7 +2093,7 @@ mod tests {
         let theme = StyleTheme::default();
         let style = ComputedStyle::initial(&theme);
         let mut writer = RenderTreeWriter::new(&mut render_scene, parent);
-        widget.render(xui_interface::NodeId::null(), rect, &style, &mut writer);
+        widget.paint(xui_interface::NodeId::null(), rect, &style, &mut writer);
         writer.finish().unwrap();
 
         let outer_clip = render_scene.children(parent).unwrap()[0];
@@ -2115,7 +2102,10 @@ mod tests {
         };
         let children = render_scene.children(outer.child.unwrap()).unwrap();
         let [leaf] = children else {
-            panic!("a canvas draws from one leaf, got {} children", children.len());
+            panic!(
+                "a canvas draws from one leaf, got {} children",
+                children.len()
+            );
         };
         let RenderNodeKind::Primitive(node) = &render_scene.node(*leaf).unwrap().kind else {
             panic!("expected a primitive");
@@ -2227,8 +2217,10 @@ mod tests {
         let controller = CanvasController::with_painter(|p| {
             let free = p.layout_text(TextProps::new("free"), TextLayoutConstraints::Unbound);
             p.draw_text(Point::new(0.0, 0.0), free);
-            let wrapped =
-                p.layout_text(TextProps::new("wrapped"), TextLayoutConstraints::max_width(40.0));
+            let wrapped = p.layout_text(
+                TextProps::new("wrapped"),
+                TextLayoutConstraints::max_width(40.0),
+            );
             p.draw_text(Point::new(0.0, 20.0), wrapped);
         });
         let mut widget = CanvasWidget::new(controller);
@@ -2303,7 +2295,10 @@ mod tests {
         let source = width.clone();
         let controller = CanvasController::with_painter(move |p| {
             p.stroke_path(line_path(), PathStroke::new(Color::BLACK, 1.0));
-            p.rect(Bounds::from_origin_size((0.0, 0.0), (1.0, 1.0)), Color::BLACK);
+            p.rect(
+                Bounds::from_origin_size((0.0, 0.0), (1.0, 1.0)),
+                Color::BLACK,
+            );
             p.stroke_path(line_path(), PathStroke::new(Color::BLACK, *source.borrow()));
         });
         let mut widget = CanvasWidget::new(controller.clone());

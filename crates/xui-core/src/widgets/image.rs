@@ -1,9 +1,8 @@
+use super::roles::{IntrinsicSize, PaintContent};
 use crate::assets::{AssetId, load_image_asset, load_image_asset_path};
 use crate::element::ElementDesc;
-use crate::event_system::EventContext;
 use crate::event_system::callbacks::EventHandlers;
 use crate::event_system::interaction::InteractionProperties;
-use crate::widgets::utils::render_box;
 use xui_interface::{style::ScrollbarStylePatch, *};
 
 use super::{props_hash, widget_element_desc};
@@ -269,16 +268,22 @@ impl ImageWidget {
     pub(super) fn current_style(&self) -> &Style {
         &self.style
     }
+}
 
-    pub(super) fn render(
+impl IntrinsicSize for ImageWidget {
+    fn intrinsic_size(&self) -> Option<Size<f32>> {
+        ImageWidget::intrinsic_size(self)
+    }
+}
+
+impl PaintContent for ImageWidget {
+    fn paint(
         &self,
         _node_id: NodeId,
         rect: Bounds,
-        style: &ComputedStyle,
+        _style: &ComputedStyle,
         writer: &mut RenderTreeWriter<'_>,
     ) {
-        render_box(rect, style, writer);
-
         if let Some(image_data) = self.image_data.as_ref() {
             writer
                 .primitive(Primitive::Image(ImagePrimitive {
@@ -294,22 +299,6 @@ impl ImageWidget {
                 }))
                 .expect("widget render tree must remain valid");
         }
-    }
-
-    pub(super) fn handle_event(
-        &mut self,
-        _event: EventRef<'_>,
-        _cx: &mut EventContext<'_>,
-    ) -> EventResult {
-        EventResult::Ignored
-    }
-
-    pub(super) fn text_content(&self) -> Option<TextContent> {
-        None
-    }
-
-    pub(super) fn text_layout_props(&self, _style: &ComputedStyle) -> Option<TextProps> {
-        None
     }
 }
 
@@ -332,7 +321,7 @@ mod tests {
         let mut scene = crate::render::RenderScene::new();
         let parent = scene.insert_group();
         let mut writer = RenderTreeWriter::new(&mut scene, parent);
-        widget.render(NodeId::default(), rect, style, &mut writer);
+        widget.paint(NodeId::default(), rect, style, &mut writer);
         writer.finish().unwrap();
         scene
             .children(parent)

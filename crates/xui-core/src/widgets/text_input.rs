@@ -1,3 +1,4 @@
+use super::roles::{HandleEvent, PaintContent, PlatformTextInput, TextSource};
 use std::time::{Duration, Instant};
 
 use xui_interface::CursorIcon;
@@ -205,29 +206,6 @@ impl TextInputWidget {
     }
 
     event_handler_methods!();
-
-    /// `content_rect` is the node's rect inside its padding
-    /// ([`text_input_content_box`]).
-    pub(crate) fn platform_text_input_session(
-        &self,
-        content_rect: Bounds,
-        text_layout: &dyn crate::text::TextLayoutQuery,
-    ) -> TextInputSession {
-        let mut cursor_area = text_layout
-            .caret_rect(self.controller.selection().extent)
-            .unwrap_or_else(|| Rect::new(0.0, 0.0, 1.0, content_rect.height().max(1.0)));
-        cursor_area.x += content_rect.x() - self.scroll_x;
-        cursor_area.y +=
-            content_rect.y() + text_y_offset(content_rect.height(), text_layout.size().height);
-        cursor_area.width = cursor_area.width.max(1.0);
-        cursor_area.height = cursor_area.height.max(1.0);
-
-        TextInputSession {
-            cursor_area,
-            purpose: TextInputPurpose::Normal,
-            multiline: false,
-        }
-    }
 
     fn apply_text_edit(&mut self, cx: &mut EventContext<'_>) -> EventResult {
         let previous_len = self.last_text.chars().count();
@@ -785,78 +763,6 @@ impl TextInputWidget {
         &self.style
     }
 
-    pub(super) fn render(
-        &self,
-        node_id: xui_interface::NodeId,
-        rect: Bounds,
-        style: &ComputedStyle,
-        writer: &mut RenderTreeWriter<'_>,
-    ) {
-        let rect = text_input_content_box(rect, style.layout.padding);
-        let mut paint = TextPaintProps::new(TextPaintStyle::from_computed(&style.text));
-        paint.caret = (self.focused && self.caret_on).then_some(TextCaret {
-            char_index: self.controller.selection().extent,
-            color: style.text.color,
-            width: 1.0,
-        });
-        let selection = self.controller.selection().range();
-        if self.focused && !selection.is_empty() {
-            paint.selection = Some(TextSelectionPaint {
-                range: xui_interface::TextRange::new(
-                    TextOffset::char_offset(selection.start),
-                    TextOffset::char_offset(selection.end),
-                ),
-                color: Color::rgba(0.18, 0.42, 0.88, 0.28),
-            });
-        }
-        writer
-            .clip(ClipShape::Rect(rect), |writer| {
-                writer.transform(Affine::translate(-self.scroll_x, 0.0), |writer| {
-                    writer.primitive(Primitive::Text(TextPrimitive {
-                        node_id,
-                        bounds: Bounds::from_origin_size(
-                            rect.origin(),
-                            (rect.width() + self.scroll_x, rect.height()),
-                        ),
-                        slot: crate::text::TextLayoutSlot::PRIMARY,
-                        layout_revision: self.controller.revision(),
-                        // Centered, so a box taller than one line keeps
-                        // its text, caret, and selection on the midline.
-                        vertical_align: xui_interface::TextVerticalAlign::Middle,
-                        paint,
-                    }))?;
-                    Ok(())
-                })?;
-                Ok(())
-            })
-            .expect("widget render tree must remain valid");
-    }
-
-    pub(super) fn handle_event(
-        &mut self,
-        event: EventRef<'_>,
-        cx: &mut EventContext<'_>,
-    ) -> EventResult {
-        if let EventRef::Semantic(SemanticEvent::Wake(wake)) = event {
-            return self.blink(wake, cx);
-        }
-        let was_focused = self.focused;
-        let result = self.handle_input(event, cx);
-        if self.focused {
-            // Gaining focus, or anything the field acted on.
-            if !was_focused || result.is_consumed() {
-                let at = match event {
-                    EventRef::Raw(raw) => raw.timestamp(),
-                    EventRef::Semantic(semantic) => semantic.meta().timestamp,
-                };
-                self.restart_blink(cx, at);
-            }
-        } else if was_focused {
-            self.stop_blink(cx);
-        }
-        result
-    }
-
     fn handle_input(&mut self, event: EventRef<'_>, cx: &mut EventContext<'_>) -> EventResult {
         if self.disabled
             && !matches!(
@@ -1013,13 +919,117 @@ impl TextInputWidget {
             _ => EventResult::Ignored,
         }
     }
+}
 
-    pub(super) fn text_content(&self) -> Option<TextContent> {
-        Some(TextContent::from(self.controller.text()))
+impl PaintContent for TextInputWidget {
+    fn paint(
+        &self,
+        node_id: xui_interface::NodeId,
+        rect: Bounds,
+        style: &ComputedStyle,
+        writer: &mut RenderTreeWriter<'_>,
+    ) {
+        let rect = text_input_content_box(rect, style.layout.padding);
+        let mut paint = TextPaintProps::new(TextPaintStyle::from_computed(&style.text));
+        paint.caret = (self.focused && self.caret_on).then_some(TextCaret {
+            char_index: self.controller.selection().extent,
+            color: style.text.color,
+            width: 1.0,
+        });
+        let selection = self.controller.selection().range();
+        if self.focused && !selection.is_empty() {
+            paint.selection = Some(TextSelectionPaint {
+                range: xui_interface::TextRange::new(
+                    TextOffset::char_offset(selection.start),
+                    TextOffset::char_offset(selection.end),
+                ),
+                color: Color::rgba(0.18, 0.42, 0.88, 0.28),
+            });
+        }
+        writer
+            .clip(ClipShape::Rect(rect), |writer| {
+                writer.transform(Affine::translate(-self.scroll_x, 0.0), |writer| {
+                    writer.primitive(Primitive::Text(TextPrimitive {
+                        node_id,
+                        bounds: Bounds::from_origin_size(
+                            rect.origin(),
+                            (rect.width() + self.scroll_x, rect.height()),
+                        ),
+                        slot: crate::text::TextLayoutSlot::PRIMARY,
+                        layout_revision: self.controller.revision(),
+                        // Centered, so a box taller than one line keeps
+                        // its text, caret, and selection on the midline.
+                        vertical_align: xui_interface::TextVerticalAlign::Middle,
+                        paint,
+                    }))?;
+                    Ok(())
+                })?;
+                Ok(())
+            })
+            .expect("widget render tree must remain valid");
+    }
+}
+
+impl TextSource for TextInputWidget {
+    fn text(&self) -> TextContent {
+        TextContent::from(self.controller.text())
     }
 
-    pub(super) fn text_layout_props(&self, style: &ComputedStyle) -> Option<TextProps> {
-        Some(self.text_props(style))
+    fn text_layout(&self, style: &ComputedStyle) -> TextProps {
+        self.text_props(style)
+    }
+}
+
+impl HandleEvent for TextInputWidget {
+    fn handle_event(&mut self, event: EventRef<'_>, cx: &mut EventContext<'_>) -> EventResult {
+        if let EventRef::Semantic(SemanticEvent::Wake(wake)) = event {
+            return self.blink(wake, cx);
+        }
+        let was_focused = self.focused;
+        let result = self.handle_input(event, cx);
+        if self.focused {
+            // Gaining focus, or anything the field acted on.
+            if !was_focused || result.is_consumed() {
+                let at = match event {
+                    EventRef::Raw(raw) => raw.timestamp(),
+                    EventRef::Semantic(semantic) => semantic.meta().timestamp,
+                };
+                self.restart_blink(cx, at);
+            }
+        } else if was_focused {
+            self.stop_blink(cx);
+        }
+        result
+    }
+
+    /// Reads key and pointer input raw, for editing and selection.
+    fn raw_events(&self) -> bool {
+        true
+    }
+}
+
+impl PlatformTextInput for TextInputWidget {
+    /// `content_rect` is the node's rect inside its padding
+    /// ([`text_input_content_box`]).
+    fn text_input_session(
+        &self,
+        content_rect: Bounds,
+        text_layout: &dyn crate::text::TextLayoutQuery,
+    ) -> TextInputSession {
+        let mut cursor_area = text_layout
+            .caret_rect(self.controller.selection().extent)
+            .unwrap_or_else(|| Rect::new(0.0, 0.0, 1.0, content_rect.height().max(1.0)));
+        cursor_area.x += content_rect.x() - self.scroll_x;
+        cursor_area.y +=
+            content_rect.y() + text_y_offset(content_rect.height(), text_layout.size().height);
+        cursor_area.width = cursor_area.width.max(1.0);
+        cursor_area.height = cursor_area.height.max(1.0);
+
+        TextInputSession {
+            cursor_area,
+            purpose: TextInputPurpose::Normal,
+            multiline: false,
+        }
     }
 }
 

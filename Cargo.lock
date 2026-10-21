@@ -5521,6 +5521,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "xui-property"
+version = "0.1.0"
+
+[[package]]
 name = "xui-render-graph"
 version = "0.1.0"
 dependencies = [

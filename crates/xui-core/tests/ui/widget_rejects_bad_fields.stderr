@@ -1,0 +1,23 @@
+error: `count` is state, not a prop: it is initialized by `WidgetT::create_state`, not by `#[defaults]`
+ --> tests/ui/widget_rejects_bad_fields.rs:6:12
+  |
+6 | #[defaults(count = 1)]
+  |            ^^^^^
+
+error: `#[widget]` generates a props and a state struct, so say which one a derive is for: `#[props(derive(..))]` or `#[state(derive(..))]`
+  --> tests/ui/widget_rejects_bad_fields.rs:13:1
+   |
+13 | #[derive(Clone)]
+   | ^
+
+error: `#[state]` takes no initial value: build `count` in your `WidgetT::create_state`
+  --> tests/ui/widget_rejects_bad_fields.rs:20:5
+   |
+20 |     #[state(1)]
+   |     ^
+
+error: expected `style(..)` or `behavior(..)`, listing the capabilities the widget selects
+  --> tests/ui/widget_rejects_bad_fields.rs:24:10
+   |
+24 | #[widget(update = sync)]
+   |          ^^^^^^
