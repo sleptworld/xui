@@ -2,9 +2,7 @@
 //! inheritance.
 
 use crate::animation::has_animatable_difference;
-use crate::layout::{
-    ParentLayout, computed_style_for_widget, container_layout, taffy_style_for_widget,
-};
+use crate::layout::{ParentLayout, container_layout, taffy_style_for_widget};
 use crate::text::{TextHost, TextLayoutSlot};
 use crate::ui_runtime::UiRuntime;
 use crate::ui_runtime::commit::taffy_context;
@@ -12,9 +10,7 @@ use crate::ui_runtime::state::{HostWorkFlags, InheritanceSync};
 use crate::ui_runtime::style::style_change_requires_layout;
 use crate::widgets::WidgetType;
 use taffy::prelude as tf;
-use xui_interface::{
-    Animation, ComputedStyle, NodeId, TextBackend, TextLayoutConstraints, TextLayoutInput, Theme,
-};
+use xui_interface::{ComputedStyle, NodeId, TextBackend, TextLayoutConstraints, TextLayoutInput};
 
 impl UiRuntime {
     pub(super) fn recompute_node_state(&mut self, id: NodeId) {
@@ -22,10 +18,10 @@ impl UiRuntime {
 
         let state = self.hosts[id].state;
         let before = self.hosts[id].state_before_change.take().unwrap_or(state);
-        let widget = self.hosts[id].widget.clone();
+        let caps = self.hosts[id].caps;
 
-        // Recompute style if the widget's style affects the state change.
-        if widget.with_host_style(|style| style.affects_state_change(before, state)) {
+        // Recompute style if one of its state layers starts or stops.
+        if self.columns.affects_state_change(id, caps, before, state) {
             self.mark_work(id, HostWorkFlags::RECALC_STYLE);
         }
     }
@@ -90,15 +86,14 @@ impl UiRuntime {
     fn sync_inheritance_against(&mut self, id: NodeId, parent: &ComputedStyle) -> bool {
         self.stats.inheritance_visits += 1;
         let state = self.hosts[id].state;
-        let style_system = &mut self.style_system;
-        let before = self.hosts[id].widget.with_host_style(|style| {
-            style_system.sync_inherited(
-                id,
-                parent,
-                |current, parent| style.inherits_differently(state, current, parent),
-                |target, parent| style.inherit_unset(state, target, parent),
-            )
-        });
+        let caps = self.hosts[id].caps;
+        let columns = &self.columns;
+        let before = self.style_system.sync_inherited(
+            id,
+            parent,
+            |current, parent| columns.inherits_differently(id, caps, state, current, parent),
+            |target, parent| columns.inherit_unset(id, caps, state, target, parent),
+        );
         let Some(before) = before else {
             return false;
         };
@@ -135,13 +130,17 @@ impl UiRuntime {
     pub(super) fn recompute_node_style(&mut self, id: NodeId) {
         self.stats.update_visits += 1;
 
-        let widget = self.hosts[id].widget.clone();
         let state = self.hosts[id].state;
+        let caps = self.hosts[id].caps;
+        let initial = self.style_system.default_style();
         let parent_style = match self.hosts.parent(id) {
             Some(parent) => self.style_system.computed(parent),
-            None => self.style_system.default_style(),
+            None => initial,
         };
-        let computed_style = computed_style_for_widget(&widget, parent_style, &self.theme, state);
+        let computed_style =
+            self.columns
+                .compute_style(id, caps, state, parent_style, initial, &self.theme);
+        let animation = self.columns.animation(id);
         let current_style = self.style_system.computed(id);
 
         //  Initialize
@@ -149,7 +148,7 @@ impl UiRuntime {
             self.style_system.set_computed(id, computed_style);
             // Mounted with it: plays from its first frame, and the first frame
             // already shows it.
-            if let Some(animation) = widget.animation() {
+            if let Some(animation) = animation {
                 self.style_system.start_animation(id, animation);
                 self.rebase_keyframes(id, true);
             }
@@ -182,7 +181,7 @@ impl UiRuntime {
 
         // The same animation keeps playing across re-renders; a different one
         // starts over.
-        let animation_started = match widget.animation() {
+        let animation_started = match animation {
             Some(animation) if self.style_system.animation_config(id) == Some(&animation) => false,
             Some(animation) => {
                 self.style_system.start_animation(id, animation);
@@ -192,7 +191,7 @@ impl UiRuntime {
         };
 
         let mut cancelled_transition = false;
-        let transition = widget.transition();
+        let transition = self.columns.transition(id);
         let _started_transition = match (transition, animatable_target_changed) {
             (Some(transition), true) => {
                 self.style_system
@@ -327,35 +326,30 @@ impl UiRuntime {
     /// the parent. Returns whether the keyframes changed. Does nothing for a
     /// node with no keyframe animation.
     pub(super) fn rebase_keyframes(&mut self, id: NodeId, force: bool) -> bool {
-        let Some(animation) = self.style_system.animation_config(id) else {
+        if self.style_system.animation_config(id).is_none() {
             return false;
-        };
+        }
         if !force && !self.style_system.keyframe_base_moved(id) {
             return false;
         }
-        let animation = animation.clone();
+        let initial = self.style_system.default_style();
         let parent = match self.hosts.parent(id) {
-            Some(parent) => self.style_system.effective(parent).clone(),
-            None => self.style_system.default_style().clone(),
+            Some(parent) => self.style_system.effective(parent),
+            None => initial,
         };
-        let base = self.style_system.base(id).clone();
-        let (from, to) = keyframe_styles(&animation, &base, &parent, &self.theme);
+        let base = self.style_system.base(id);
+        // `base` with each keyframe resolved on top: equal to it on every
+        // property neither keyframe names, which keeps the layers below
+        // showing there.
+        let (from, to) = self.columns.keyframe_styles(
+            id,
+            self.hosts[id].caps,
+            base,
+            parent,
+            initial,
+            &self.theme,
+        );
+        let base = base.clone();
         self.style_system.rebase_animation(id, base, from, to)
     }
-}
-
-/// `base` with each of `animation`'s keyframes applied on top: the two styles
-/// it plays between. Equal to `base` on every property neither keyframe
-/// names, which is what keeps the layers below showing there.
-fn keyframe_styles(
-    animation: &Animation,
-    base: &ComputedStyle,
-    parent: &ComputedStyle,
-    theme: &Theme,
-) -> (ComputedStyle, ComputedStyle) {
-    let mut from = base.clone();
-    from.apply(parent, &animation.from, theme);
-    let mut to = base.clone();
-    to.apply(parent, &animation.to, theme);
-    (from, to)
 }

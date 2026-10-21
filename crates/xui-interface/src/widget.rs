@@ -4,25 +4,6 @@ new_key_type! {
     pub struct NodeId;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum WidgetType {
-    Text,
-    TextInput,
-    Canvas,
-    Label,
-    Button,
-    Column,
-    Row,
-    Container,
-    ZStack,
-    StyleScope,
-    ScrollScope,
-    RootOverlayer,
-    Image,
-    Icon,
-    Grid,
-}
-
 /// Controls whether a widget can receive focus.
 ///
 /// `Auto` preserves the widget's built-in behavior. An explicit tab index also

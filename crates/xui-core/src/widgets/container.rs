@@ -1,162 +1,67 @@
-use crate::element::ElementDesc;
-use crate::event_system::callbacks::EventHandlers;
-use crate::event_system::interaction::InteractionProperties;
-use xui_interface::style::FlexDirectionStyle;
-use xui_interface::{
-    ColorStyle, Key, LengthValue, ScrollDirectionStyle, Style, WidgetType, WidgetUpdateFlags,
-    style::ScrollbarStylePatch,
-};
+//! The box most layouts are made of: `container`, `row`, `column`, `center`.
 
-use super::{props_hash, widget_element_desc};
+use xui_interface::FlexDirectionStyle;
+use xui_interface::core::Sizing;
+use xui_interface::style::{AlignStyle, JustifyStyle};
+use xui_macros::widget;
 
-pub struct ContainerWidget {
-    pub key: Option<Key>,
-    pub style: Style,
+use crate::node::{Draft, WidgetT};
+
+/// A box that lays its children out as a block, or along a flex line.
+///
+/// It selects every capability: whatever a box can be — sized, padded,
+/// decorated, scrolled, focused, listened to — a container can be, and the
+/// text style it declares flows to its children.
+#[widget(
+    style(
+        box_size, margin, padding, flex_layout, position, display, typography, background,
+        corner_radius, border, box_shadow, clip, visibility, transform, effects, scroll, cursor
+    ),
+    behavior(
+        focus, accessibility, shortcuts, motion, focus_binding, scroll_binding, size_observation,
+        events
+    )
+)]
+#[props(derive(Debug, Clone, PartialEq))]
+pub struct Container {
+    /// `None` lays the children out as a block; a direction, as a flex line.
+    #[default]
+    #[dirty(LAYOUT_INPUT)]
     pub flex_direction: Option<FlexDirectionStyle>,
-    /// Whether a `row`/`column` wraps children onto new lines when they
-    /// overflow, like CSS `flex-wrap: wrap`. Ignored without a flex direction.
+    /// Wraps overflowing children onto new lines, like CSS
+    /// `flex-wrap: wrap`; `gap` then spaces the lines too. Ignored without a
+    /// flex direction.
+    #[default]
+    #[dirty(LAYOUT_INPUT)]
     pub flex_wrap: bool,
-    pub event_handlers: EventHandlers,
-    pub interaction: InteractionProperties,
 }
 
-impl std::fmt::Debug for ContainerWidget {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ContainerWidget")
-            .field("key", &self.key)
-            .field("flex_direction", &self.flex_direction)
-            .field("flex_wrap", &self.flex_wrap)
-            .finish()
-    }
+impl WidgetT for Container {
+    type State = ();
+
+    fn create_state(_: &ContainerProps) {}
 }
 
-impl ContainerWidget {
-    pub fn new() -> Self {
-        Self {
-            key: None,
-            style: Style::default(),
-            flex_direction: None,
-            flex_wrap: false,
-            event_handlers: EventHandlers::default(),
-            interaction: InteractionProperties::default(),
-        }
-    }
-
-    /// Merges a style in, rather than replacing what is already there.
-    ///
-    /// On a fresh builder — how nearly every call site uses it — merging into an
-    /// all-unset style is indistinguishable from assignment. The difference
-    /// shows in the `xui!` macro, where `style={..}` is one attribute among
-    /// many: assignment made `<column padding={..} style={..} />` silently
-    /// discard the padding, and whether an attribute survived depended on
-    /// whether it was written before or after `style`.
-    pub fn style(mut self, style: impl xui_interface::StyleMerge) -> Self {
-        self.style.merge(&style);
-        self
-    }
-
-    pub fn flex_direction(mut self, direction: FlexDirectionStyle) -> Self {
-        self.flex_direction = Some(direction);
-        self
-    }
-
-    /// Wraps overflowing children onto new lines; `gap` then spaces the lines
-    /// as well as the items within a line.
-    pub fn flex_wrap(mut self, wrap: bool) -> Self {
-        self.flex_wrap = wrap;
-        self
-    }
-
-    pub fn scrollable(mut self) -> Self {
-        let style = self.style.scroll_vertical();
-        self.style = style;
-        self
-    }
-
-    pub fn scroll_direction(mut self, direction: ScrollDirectionStyle) -> Self {
-        let style = self.style.scroll_direction(direction);
-        self.style = style;
-        self
-    }
-
-    pub fn scrollbar(mut self, scrollbar: ScrollbarStylePatch) -> Self {
-        let style = self.style.scrollbar(scrollbar);
-        self.style = style;
-        self
-    }
-
-    pub fn scrollbar_width(mut self, width: impl Into<LengthValue>) -> Self {
-        let style = self.style.scrollbar_width(width);
-        self.style = style;
-        self
-    }
-
-    pub fn scrollbar_track_color(mut self, color: impl Into<ColorStyle>) -> Self {
-        let style = self.style.scrollbar_track_color(color);
-        self.style = style;
-        self
-    }
-
-    pub fn scrollbar_thumb_color(mut self, color: impl Into<ColorStyle>) -> Self {
-        let style = self.style.scrollbar_thumb_color(color);
-        self.style = style;
-        self
-    }
-
-    pub fn key(mut self, key: impl Into<Key>) -> Self {
-        self.key = Some(key.into());
-        self
-    }
-
-    pub fn into_element_desc(self, children: Vec<ElementDesc>) -> ElementDesc {
-        widget_element_desc(self, children)
-    }
-
-    event_handler_methods!();
+/// A block container.
+pub fn container() -> Draft<Container> {
+    Draft::new(ContainerProps::builder().build())
 }
 
-impl Default for ContainerWidget {
-    fn default() -> Self {
-        Self::new()
-    }
+/// Children side by side.
+pub fn row() -> Draft<Container> {
+    container().with::<container::flex_direction>(FlexDirectionStyle::Row)
 }
 
-impl ContainerWidget {
-    pub(super) fn node_type(&self) -> WidgetType {
-        WidgetType::Container
-    }
+/// Children one under the other.
+pub fn column() -> Draft<Container> {
+    container().with::<container::flex_direction>(FlexDirectionStyle::Column)
+}
 
-    pub(super) fn get_key(&self) -> Option<&Key> {
-        self.key.as_ref()
-    }
-
-    pub(super) fn props_hash(&self) -> u64 {
-        props_hash(&(&self.style, self.flex_direction, self.flex_wrap))
-    }
-
-    pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
-        let mut flags = WidgetUpdateFlags::empty();
-        if self.style != next.style {
-            self.style = next.style.clone();
-            flags |= WidgetUpdateFlags::STYLE_TARGET;
-        }
-        if self.flex_direction != next.flex_direction || self.flex_wrap != next.flex_wrap {
-            self.flex_direction = next.flex_direction;
-            self.flex_wrap = next.flex_wrap;
-            flags |= WidgetUpdateFlags::LAYOUT_INPUT;
-        }
-        if flags.is_empty() {
-            WidgetUpdateFlags::empty()
-        } else {
-            flags
-        }
-    }
-
-    pub(super) fn default_style(&self) -> Style {
-        Style::new()
-    }
-
-    pub(super) fn current_style(&self) -> &Style {
-        &self.style
-    }
+/// Fills its parent and centres its children in it.
+pub fn center() -> Draft<Container> {
+    column()
+        .with::<container::width>(Sizing::Fill)
+        .with::<container::height>(Sizing::Fill)
+        .with::<container::justify>(JustifyStyle::Center)
+        .with::<container::align>(AlignStyle::Center)
 }

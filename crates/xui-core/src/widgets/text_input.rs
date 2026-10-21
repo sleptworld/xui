@@ -1,24 +1,21 @@
-use super::roles::{HandleEvent, PaintContent, PlatformTextInput, TextSource};
+use super::roles::{DefaultFocus, HandleEvent, PaintContent, PlatformTextInput, TextSource};
+use crate::node::{Draft, WidgetT};
+use xui_macros::widget;
 use std::time::{Duration, Instant};
 
-use xui_interface::CursorIcon;
 use xui_interface::events::{PointerButton, RawEvent, SemanticEvent, XuiPointerId};
 use xui_interface::{
     Affine, Bounds, ClipboardContent, ClipboardTarget, Color, CommandId, ComputedStyle, EventRef,
-    EventResult, Key, PlatformCommand, PlatformReply, PlatformRequest, Point, RawIme, Rect,
-    RequestId, Style, TextCaret, TextContent, TextInputPurpose, TextInputSession, TextOffset,
+    EventResult, PlatformCommand, PlatformReply, PlatformRequest, Point, RawIme, Rect,
+    RequestId, TextCaret, TextContent, TextInputPurpose, TextInputSession, TextOffset,
     TextOffsetUnit, TextPaintProps, TextPaintStyle, TextProps, TextSelectionPaint, WhiteSpace,
-    WidgetType, WidgetUpdateFlags, commands,
+    WidgetUpdateFlags, commands,
 };
 
-use crate::element::ElementDesc;
 use crate::event_system::EventContext;
-use crate::event_system::callbacks::EventHandlers;
-use crate::event_system::interaction::InteractionProperties;
 use crate::widgets::text_input::controller::ImeSession;
 
 use super::text::apply_text_style;
-use super::{props_hash, widget_element_desc};
 use crate::render::{ClipShape, Primitive, RenderTreeWriter, TextPrimitive};
 pub mod controller;
 pub mod keymap;
@@ -31,12 +28,68 @@ pub struct TextInputChange {
     pub controller: TextController,
 }
 
-pub struct TextInputWidget {
-    pub key: Option<Key>,
-    pub controller: TextController,
-    pub style: Style,
-    pub event_handlers: EventHandlers,
-    pub interaction: InteractionProperties,
+/// A single-line text field. It paints its own text, caret and selection, so
+/// it selects no decoration; a field's box is usually a container around it.
+#[widget(
+    style(
+        box_size, margin, padding, position, display, typography, visibility, transform, effects,
+        cursor
+    ),
+    behavior(focus, accessibility, shortcuts, motion, focus_binding, size_observation, events)
+)]
+#[props(derive(Debug, Clone, PartialEq))]
+pub struct TextInput {
+    /// Blocks editing and takes the field out of focus navigation.
+    #[default]
+    #[dirty(PAINT_OUTPUT)]
+    pub disabled: bool,
+    /// Allows selecting and copying, blocks editing, paste and IME.
+    #[default]
+    #[dirty(PAINT_OUTPUT)]
+    pub read_only: bool,
+    /// A controller the caller owns and reads; `None` edits one of the
+    /// field's own.
+    #[default]
+    #[dirty(LAYOUT_INPUT | PAINT_OUTPUT)]
+    pub controller: Option<TextController>,
+    /// What the field's own controller starts with.
+    #[default]
+    #[dirty(LAYOUT_INPUT | PAINT_OUTPUT)]
+    pub initial_text: String,
+}
+
+impl WidgetT for TextInput {
+    type State = TextInputState;
+
+    fn create_state(props: &TextInputProps) -> TextInputState {
+        TextInputState::mounted(props)
+    }
+
+    fn update(_: &TextInputProps, new: &TextInputProps, state: &mut TextInputState) -> WidgetUpdateFlags {
+        state.follow(new)
+    }
+}
+
+/// A text field, at least 40 × 20 and showing the text cursor; both go
+/// through the ordinary style, so a tag can override them.
+pub fn text_input() -> Draft<TextInput> {
+    Draft::new(TextInputProps::builder().build())
+        .with::<text_input::min_width>(40.0)
+        .with::<text_input::min_height>(20.0)
+        .with::<text_input::cursor>(xui_interface::CursorIcon::Text)
+}
+
+/// Focusable unless disabled.
+impl DefaultFocus for TextInputState {
+    fn focusable(&self) -> bool {
+        !self.disabled
+    }
+}
+
+/// A text input's state while mounted: the controller it edits, its caret,
+/// scroll and IME session. Its roles are implemented here, on the state.
+pub struct TextInputState {
+    controller: TextController,
     uses_external_controller: bool,
     last_text: String,
     focused: bool,
@@ -49,7 +102,7 @@ pub struct TextInputWidget {
     /// not this widget's to act on.
     pending_paste: Option<RequestId>,
     /// Whether the caret is in the shown half of its blink. Only meaningful
-    /// while focused; see [`TextInputWidget::restart_blink`].
+    /// while focused; see [`TextInputState::restart_blink`].
     caret_on: bool,
 }
 
@@ -65,13 +118,10 @@ struct TextInputDrag {
     base: usize,
 }
 
-impl std::fmt::Debug for TextInputWidget {
+impl std::fmt::Debug for TextInputState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TextInputWidget")
-            .field("key", &self.key)
+        f.debug_struct("TextInputState")
             .field("controller", &self.controller)
-            .field("style", &self.style)
-            .field("event_handlers", &self.event_handlers)
             .field("uses_external_controller", &self.uses_external_controller)
             .field("last_text", &self.last_text)
             .field("focused", &self.focused)
@@ -132,14 +182,10 @@ fn single_line(text: &str) -> String {
     out
 }
 
-impl TextInputWidget {
-    pub fn new() -> Self {
+impl TextInputState {
+    pub(crate) fn new() -> Self {
         Self {
-            key: None,
             controller: TextController::new(),
-            style: Style::default(),
-            event_handlers: EventHandlers::default(),
-            interaction: InteractionProperties::default(),
             uses_external_controller: false,
             last_text: String::new(),
             focused: false,
@@ -153,59 +199,65 @@ impl TextInputWidget {
         }
     }
 
-    pub fn with_text(initial_text: impl AsRef<str>) -> Self {
-        let initial_text = initial_text.as_ref();
-        Self {
-            controller: TextController::with_text(initial_text),
-            last_text: initial_text.to_owned(),
-            ..Self::new()
+    /// The state for `props` on mount: their controller, or one holding their
+    /// initial text.
+    fn mounted(props: &TextInputProps) -> Self {
+        let mut state = Self::new();
+        match &props.controller {
+            Some(controller) => {
+                state.last_text = controller.text();
+                state.controller = controller.clone();
+                state.uses_external_controller = true;
+            }
+            None if !props.initial_text.is_empty() => {
+                state.controller = TextController::with_text(&props.initial_text);
+                state.last_text = props.initial_text.clone();
+            }
+            None => {}
         }
+        state.disabled = props.disabled;
+        state.read_only = props.read_only;
+        state
     }
 
-    /// Blocks user editing and removes this field from focus navigation.
-    pub fn disabled(mut self, disabled: bool) -> Self {
-        self.disabled = disabled;
-        self.interaction.focus = self.interaction.focus.focusable(!disabled);
-        self.interaction.accessibility.disabled = Some(disabled);
-        self
-    }
-    /// Allows selection and copying while blocking editing, paste and IME.
-    pub fn read_only(mut self, read_only: bool) -> Self {
-        self.read_only = read_only;
-        self.interaction.accessibility.read_only = Some(read_only);
-        self
-    }
+    /// Follows a commit's new props; returns what that dirties beyond the
+    /// props themselves — an external controller whose text moved under it.
+    fn follow(&mut self, next: &TextInputProps) -> WidgetUpdateFlags {
+        let mut flags = WidgetUpdateFlags::empty();
+        if self.disabled != next.disabled || self.read_only != next.read_only {
+            self.disabled = next.disabled;
+            self.read_only = next.read_only;
+            self.pending_paste = None;
+        }
 
-    pub fn controller(mut self, controller: TextController) -> Self {
-        self.last_text = controller.text();
-        self.controller = controller;
-        self.uses_external_controller = true;
-        self
+        match &next.controller {
+            Some(controller) => {
+                let next_text = controller.text();
+                let mut controller_changed = false;
+                if !self.controller.same_handle(controller) {
+                    self.controller = controller.clone();
+                    controller_changed = true;
+                } else if next_text != self.last_text {
+                    controller_changed = true;
+                    flags |= WidgetUpdateFlags::LAYOUT_INPUT | WidgetUpdateFlags::PAINT_OUTPUT;
+                }
+                self.last_text = next_text;
+                self.uses_external_controller = true;
+                if controller_changed {
+                    self.scroll_x = 0.0;
+                }
+            }
+            None if self.uses_external_controller => {
+                self.controller = TextController::with_text(&next.initial_text);
+                self.last_text = self.controller.text();
+                self.uses_external_controller = false;
+                self.scroll_x = 0.0;
+                flags |= WidgetUpdateFlags::LAYOUT_INPUT | WidgetUpdateFlags::PAINT_OUTPUT;
+            }
+            None => self.last_text = self.controller.text(),
+        }
+        flags
     }
-
-    /// Merges a style in, rather than replacing what is already there.
-    ///
-    /// On a fresh builder — how nearly every call site uses it — merging into an
-    /// all-unset style is indistinguishable from assignment. The difference
-    /// shows in the `xui!` macro, where `style={..}` is one attribute among
-    /// many: assignment made `<column padding={..} style={..} />` silently
-    /// discard the padding, and whether an attribute survived depended on
-    /// whether it was written before or after `style`.
-    pub fn style(mut self, style: impl xui_interface::StyleMerge) -> Self {
-        self.style.merge(&style);
-        self
-    }
-
-    pub fn key(mut self, key: impl Into<Key>) -> Self {
-        self.key = Some(key.into());
-        self
-    }
-
-    pub fn into_element_desc(self) -> ElementDesc {
-        widget_element_desc(self, Vec::new())
-    }
-
-    event_handler_methods!();
 
     fn apply_text_edit(&mut self, cx: &mut EventContext<'_>) -> EventResult {
         let previous_len = self.last_text.chars().count();
@@ -678,90 +730,13 @@ impl TextInputWidget {
     }
 }
 
-impl Default for TextInputWidget {
+impl Default for TextInputState {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl TextInputWidget {
-    pub(super) fn node_type(&self) -> WidgetType {
-        WidgetType::TextInput
-    }
-
-    pub(super) fn get_key(&self) -> Option<&Key> {
-        self.key.as_ref()
-    }
-
-    pub(super) fn props_hash(&self) -> u64 {
-        props_hash(&(
-            &self.controller.text(),
-            &self.style,
-            self.uses_external_controller,
-            self.focused,
-            self.disabled,
-            self.read_only,
-            self.controller.selection().base,
-            self.controller.selection().extent,
-            self.scroll_x.to_bits(),
-        ))
-    }
-
-    pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
-        let mut flags = WidgetUpdateFlags::empty();
-        let next_text = next.controller.text();
-        if self.disabled != next.disabled || self.read_only != next.read_only {
-            self.disabled = next.disabled;
-            self.read_only = next.read_only;
-            self.pending_paste = None;
-            flags |= WidgetUpdateFlags::PAINT_OUTPUT;
-        }
-
-        if next.uses_external_controller {
-            let mut controller_changed = false;
-            if !self.controller.same_handle(&next.controller) {
-                self.controller = next.controller.clone();
-                controller_changed = true;
-                flags |= WidgetUpdateFlags::LAYOUT_INPUT | WidgetUpdateFlags::PAINT_OUTPUT;
-            } else if next_text != self.last_text {
-                controller_changed = true;
-                flags |= WidgetUpdateFlags::LAYOUT_INPUT | WidgetUpdateFlags::PAINT_OUTPUT;
-            }
-            self.last_text = next_text;
-            self.uses_external_controller = true;
-            if controller_changed {
-                self.scroll_x = 0.0;
-            }
-        } else if self.uses_external_controller {
-            self.controller = next.controller.clone();
-            self.last_text = self.controller.text();
-            self.uses_external_controller = false;
-            self.scroll_x = 0.0;
-            flags |= WidgetUpdateFlags::LAYOUT_INPUT | WidgetUpdateFlags::PAINT_OUTPUT;
-        } else {
-            self.last_text = self.controller.text();
-        }
-
-        if self.style != next.style {
-            self.style = next.style.clone();
-            flags |= WidgetUpdateFlags::STYLE_TARGET;
-        }
-
-        flags
-    }
-
-    pub(super) fn default_style(&self) -> Style {
-        // Through the normal cascade, so an application can still override it
-        // with `cursor={..}` on the tag.
-        Style::new()
-            .min_width(40.0)
-            .min_height(20.0)
-            .cursor(CursorIcon::Text)
-    }
-
-    pub(super) fn current_style(&self) -> &Style {
-        &self.style
-    }
+impl TextInputState {
 
     fn handle_input(&mut self, event: EventRef<'_>, cx: &mut EventContext<'_>) -> EventResult {
         if self.disabled
@@ -921,7 +896,7 @@ impl TextInputWidget {
     }
 }
 
-impl PaintContent for TextInputWidget {
+impl PaintContent for TextInputState {
     fn paint(
         &self,
         node_id: xui_interface::NodeId,
@@ -970,7 +945,7 @@ impl PaintContent for TextInputWidget {
     }
 }
 
-impl TextSource for TextInputWidget {
+impl TextSource for TextInputState {
     fn text(&self) -> TextContent {
         TextContent::from(self.controller.text())
     }
@@ -980,7 +955,7 @@ impl TextSource for TextInputWidget {
     }
 }
 
-impl HandleEvent for TextInputWidget {
+impl HandleEvent for TextInputState {
     fn handle_event(&mut self, event: EventRef<'_>, cx: &mut EventContext<'_>) -> EventResult {
         if let EventRef::Semantic(SemanticEvent::Wake(wake)) = event {
             return self.blink(wake, cx);
@@ -1008,7 +983,7 @@ impl HandleEvent for TextInputWidget {
     }
 }
 
-impl PlatformTextInput for TextInputWidget {
+impl PlatformTextInput for TextInputState {
     /// `content_rect` is the node's rect inside its padding
     /// ([`text_input_content_box`]).
     fn text_input_session(

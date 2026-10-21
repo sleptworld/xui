@@ -3,15 +3,13 @@ use std::any::{Any, TypeId};
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::rc::Rc;
-use taffy::prelude as tf;
 pub use xui_interface::Key;
-use xui_interface::widget::WidgetType;
-use xui_interface::{Bounds, ComputedStyle, NodeId};
+use xui_interface::NodeId;
 
 use crate::HookContext;
 use crate::element::{ComponentDesc, ElementDesc};
 use crate::lanes::{Lanes, NO_LANES};
-use crate::widgets::WidgetI;
+use crate::widgets::WidgetType;
 use crate::element::PortalBehavior;
 use crate::widgets::{OverlayEntryId, OverlayEntryOptions, OverlayScopeId};
 
@@ -133,12 +131,6 @@ bitflags::bitflags! {
 
 pub struct HostState {
     pub node_id: Option<NodeId>,
-    pub widget: Option<WidgetI>,
-    pub style: tf::Style,
-    pub computed_style: ComputedStyle,
-    pub layout: Bounds,
-    pub previous_layout: Bounds,
-    pub props_hash: u64,
 }
 
 pub struct ComponentState {
@@ -153,16 +145,6 @@ pub struct PortalState {
     pub behavior: PortalBehavior,
     pub entry: Option<OverlayEntryId>,
     pub visual_root: Option<NodeId>,
-}
-
-pub enum PendingProps {
-    Host(HostUpdate),
-    Component(ComponentProps),
-}
-
-pub struct HostUpdate {
-    pub widget: WidgetI,
-    pub props_hash: u64,
 }
 
 pub struct ComponentProps {

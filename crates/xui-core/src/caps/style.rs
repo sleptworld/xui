@@ -8,14 +8,14 @@
 use std::sync::Arc;
 
 use crate::capability::{StyleProperty, style_capability};
-use xui_interface::core::{EdgeInsets, Sizing};
+use xui_interface::core::{EdgeInsets, Point, Size, Sizing};
 use xui_interface::style::{ComputedStyle, CursorIcon, Theme};
 use xui_interface::styles::compute::resolve_field;
 use xui_interface::styles::computed::ComputedStrokeStyle;
 use xui_interface::styles::units::{
     AlignStyle, BackdropStyle, ColorStyle, ColorValue, DisplayStyle, Effect, JustifyStyle,
     LengthValue, PositionStyle, ScrollDirectionStyle, ScrollbarVisibilityStyle, ShadowStyle,
-    StrokeLineStyle, StrokeStyle, StyleValue, VisibilityStyle,
+    ScrollbarStyle, StrokeLineStyle, StrokeStyle, StyleValue, TransformStyle, VisibilityStyle,
 };
 use xui_interface::{FontFamily, FontStyle, FontWeight, LineHeight, TextDecoration};
 
@@ -29,6 +29,7 @@ style_capability! {
         min_height: Sizing => layout.min_height,
         max_height: Sizing => layout.max_height,
     }
+    extra(box_size_shorthands { size, min_size, max_size })
 }
 
 style_capability! {
@@ -106,6 +107,7 @@ style_capability! {
         /// drawn as a solid stroke.
         stroke: StrokeStyle => paint.stroke [resolve = resolve_stroke],
     }
+    extra(border_shorthands { stroke_style })
 }
 
 style_capability! {
@@ -113,6 +115,7 @@ style_capability! {
     pub mod box_shadow: BoxShadow {
         shadow: ShadowStyle => paint.shadow,
     }
+    extra(box_shadow_shorthands { box_shadow })
 }
 
 style_capability! {
@@ -142,6 +145,7 @@ style_capability! {
         origin_x: f32 => transform.origin.x,
         origin_y: f32 => transform.origin.y,
     }
+    extra(transform_shorthands { transform, translate, scale, scale_xy, transform_origin })
 }
 
 style_capability! {
@@ -150,6 +154,7 @@ style_capability! {
         backdrop: BackdropStyle => effect.backdrop,
         effects: Arc<[Effect]> => effect.effects,
     }
+    extra(effects_shorthands { backdrop_blur })
 }
 
 style_capability! {
@@ -162,12 +167,197 @@ style_capability! {
         scrollbar_radius: LengthValue => scroll.scrollbar.radius,
         scrollbar_visibility: ScrollbarVisibilityStyle => scroll.scrollbar.visibility,
     }
+    extra(scroll_shorthands { scrollbar_style })
 }
 
 style_capability! {
     /// The pointer shown over the node. Changing it dirties nothing.
     pub mod cursor: Cursor {
         cursor: CursorIcon => cursor,
+    }
+}
+
+/// A write-only property setting several of one capability's fields at once.
+macro_rules! cap_shorthand {
+    ($(#[$meta:meta])* $name:ident : $cap:ty, $value:ty, |$storage:ident, $v:ident| $body:expr) => {
+        $(#[$meta])*
+        pub enum $name {}
+
+        impl crate::property::Property for $name {
+            type Scope = crate::property::CapScope<$cap>;
+            type Value = $value;
+
+            fn set($storage: &mut <$cap as crate::property::Capability>::Storage, $v: $value) {
+                $body;
+            }
+        }
+    };
+}
+
+/// [`cap_shorthand!`], accepting anything `Into` its value.
+macro_rules! into_shorthand {
+    ($(#[$meta:meta])* $name:ident : $cap:ty, $value:ty, |$storage:ident, $v:ident| $body:expr) => {
+        cap_shorthand!($(#[$meta])* $name: $cap, $value, |$storage, $v| $body);
+
+        impl<T: Into<$value>> crate::property::Accepts<T> for $name {
+            fn accept(value: T) -> $value {
+                value.into()
+            }
+        }
+    };
+}
+
+#[allow(non_camel_case_types)]
+mod box_size_shorthands {
+    use super::*;
+
+    into_shorthand! {
+        /// Width and height at once.
+        size: BoxSize, Size<Sizing>, |s, size| {
+            s.width = StyleValue::Value(size.width);
+            s.height = StyleValue::Value(size.height);
+        }
+    }
+    into_shorthand! {
+        /// Minimum width and height at once.
+        min_size: BoxSize, Size<Sizing>, |s, size| {
+            s.min_width = StyleValue::Value(size.width);
+            s.min_height = StyleValue::Value(size.height);
+        }
+    }
+    into_shorthand! {
+        /// Maximum width and height at once.
+        max_size: BoxSize, Size<Sizing>, |s, size| {
+            s.max_width = StyleValue::Value(size.width);
+            s.max_height = StyleValue::Value(size.height);
+        }
+    }
+}
+
+#[allow(non_camel_case_types)]
+mod transform_shorthands {
+    use super::*;
+
+    into_shorthand! {
+        /// Every transform field at once.
+        transform: Transform, TransformStyle, |s, t| {
+            s.translate_x = StyleValue::Value(t.translate.x);
+            s.translate_y = StyleValue::Value(t.translate.y);
+            s.scale_x = StyleValue::Value(t.scale.x);
+            s.scale_y = StyleValue::Value(t.scale.y);
+            s.rotate = StyleValue::Value(t.rotate);
+            s.origin_x = StyleValue::Value(t.origin.x);
+            s.origin_y = StyleValue::Value(t.origin.y);
+        }
+    }
+    into_shorthand! {
+        translate: Transform, Point, |s, p| {
+            s.translate_x = StyleValue::Value(p.x);
+            s.translate_y = StyleValue::Value(p.y);
+        }
+    }
+    cap_shorthand! {
+        /// The same scale on both axes.
+        scale: Transform, f32, |s, k| {
+            s.scale_x = StyleValue::Value(k);
+            s.scale_y = StyleValue::Value(k);
+        }
+    }
+    impl crate::property::Accepts<f32> for scale {
+        fn accept(value: f32) -> f32 {
+            value
+        }
+    }
+    into_shorthand! {
+        scale_xy: Transform, Point, |s, p| {
+            s.scale_x = StyleValue::Value(p.x);
+            s.scale_y = StyleValue::Value(p.y);
+        }
+    }
+    into_shorthand! {
+        /// Normalized within the laid-out bounds; `(0.5, 0.5)` is the centre.
+        transform_origin: Transform, Point, |s, p| {
+            s.origin_x = StyleValue::Value(p.x);
+            s.origin_y = StyleValue::Value(p.y);
+        }
+    }
+}
+
+#[allow(non_camel_case_types)]
+mod border_shorthands {
+    use super::*;
+
+    cap_shorthand! {
+        /// A stroke from its colour, width and line style.
+        stroke_style: Border, (ColorStyle, LengthValue, StrokeLineStyle), |s, v| {
+            s.stroke = StyleValue::Value(StrokeStyle {
+                color: v.0,
+                width: v.1,
+                line_style: v.2,
+            });
+        }
+    }
+    impl<C: Into<ColorStyle>, W: Into<LengthValue>> crate::property::Accepts<(C, W, StrokeLineStyle)>
+        for stroke_style
+    {
+        fn accept(v: (C, W, StrokeLineStyle)) -> (ColorStyle, LengthValue, StrokeLineStyle) {
+            (v.0.into(), v.1.into(), v.2)
+        }
+    }
+}
+
+#[allow(non_camel_case_types)]
+mod box_shadow_shorthands {
+    use super::*;
+
+    cap_shorthand! {
+        /// A shadow from its colour, offset, blur and spread.
+        box_shadow: BoxShadow, (ColorValue, Point, LengthValue, LengthValue), |s, v| {
+            s.shadow = StyleValue::Value(ShadowStyle {
+                color: v.0,
+                offset: v.1,
+                blur: v.2,
+                spread: v.3,
+            });
+        }
+    }
+    impl<C, B, S> crate::property::Accepts<(C, Point, B, S)> for box_shadow
+    where
+        C: Into<ColorValue>,
+        B: Into<LengthValue>,
+        S: Into<LengthValue>,
+    {
+        fn accept(v: (C, Point, B, S)) -> (ColorValue, Point, LengthValue, LengthValue) {
+            (v.0.into(), v.1, v.2.into(), v.3.into())
+        }
+    }
+}
+
+#[allow(non_camel_case_types)]
+mod effects_shorthands {
+    use super::*;
+
+    into_shorthand! {
+        /// A backdrop blurred by `sigma`.
+        backdrop_blur: Effects, LengthValue, |s, sigma| {
+            s.backdrop = StyleValue::Value(BackdropStyle::blur(sigma));
+        }
+    }
+}
+
+#[allow(non_camel_case_types)]
+mod scroll_shorthands {
+    use super::*;
+
+    into_shorthand! {
+        /// Every scrollbar field at once.
+        scrollbar_style: Scroll, ScrollbarStyle, |s, bar| {
+            s.scrollbar_width = StyleValue::Value(bar.width);
+            s.scrollbar_track_color = StyleValue::Value(bar.track_color);
+            s.scrollbar_thumb_color = StyleValue::Value(bar.thumb_color);
+            s.scrollbar_radius = StyleValue::Value(bar.radius);
+            s.scrollbar_visibility = StyleValue::Value(bar.visibility);
+        }
     }
 }
 

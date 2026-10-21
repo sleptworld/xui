@@ -28,7 +28,8 @@
 //! coordinates, platform IME phases) that should not leak into application code.
 //! Widgets consume them to implement behaviour — text selection, IME, key
 //! editing — and publish the *result* as semantic events, which are the stable
-//! contract. `EventProps` therefore covers the semantic vocabulary only.
+//! contract. The `events` capability's handler properties therefore cover the
+//! semantic vocabulary only.
 //!
 //! The practical consequence is that raw dispatch has no listeners at all on
 //! most trees, so it starts by asking the runtime whether any live widget reads
@@ -72,7 +73,6 @@ pub mod callbacks;
 pub mod dispatcher;
 pub mod flow;
 pub mod handler;
-pub mod interaction;
 pub mod translator;
 
 pub use flow::Flow;

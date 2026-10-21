@@ -1,145 +1,57 @@
+//! A run of text.
+
+// The text backend's layout input; `TextProps` is this widget's own props.
+use xui_interface::TextProps as LayoutProps;
+use xui_interface::{
+    Bounds, ComputedStyle, ParagraphStyle, TextBoxStyle, TextContent, TextPaintProps,
+    TextPaintStyle,
+};
+use xui_macros::widget;
+
+use super::props_hash;
 use super::roles::{PaintContent, TextSource};
 use crate::element::ElementDesc;
-use crate::event_system::callbacks::EventHandlers;
-use crate::event_system::interaction::InteractionProperties;
-use xui_interface::{
-    Bounds, ComputedStyle, Key, OverflowWrap, ParagraphStyle, Style, TextBoxStyle, TextContent,
-    TextOverflow, TextPaintProps, TextPaintStyle, TextProps, WidgetType, WidgetUpdateFlags,
-};
-
-use super::{props_hash, widget_element_desc};
+use crate::node::{Draft, WidgetInstance, WidgetT};
 use crate::render::{Primitive, RenderTreeWriter, TextPrimitive};
 use crate::text::TextLayoutSlot;
 
-#[derive(Debug)]
-pub struct TextWidget {
-    pub key: Option<Key>,
-    pub props: TextProps,
-    pub style: Style,
-    pub event_handlers: EventHandlers,
-    pub interaction: InteractionProperties,
+/// Text, laid out and painted by the runtime's text backend in the style it
+/// computes — so it selects typography, and no decoration: a text paints its
+/// glyphs, not a box.
+#[widget(
+    style(
+        box_size, margin, padding, position, display, typography, visibility, transform, effects,
+        cursor
+    ),
+    behavior(focus, accessibility, shortcuts, motion, focus_binding, size_observation, events)
+)]
+#[props(derive(Debug, Clone, PartialEq))]
+pub struct Text {
+    /// What it says.
+    #[default]
+    #[dirty(LAYOUT_INPUT | PAINT_OUTPUT)]
+    pub content: TextContent,
+    /// How lines break and align.
+    #[default]
+    #[dirty(LAYOUT_INPUT | PAINT_OUTPUT)]
+    pub paragraph: ParagraphStyle,
+    /// How the text fits its box: overflow, line limit.
+    #[default]
+    #[dirty(LAYOUT_INPUT | PAINT_OUTPUT)]
+    pub text_box: TextBoxStyle,
 }
 
-impl TextWidget {
-    pub fn new(text: impl Into<TextContent>) -> Self {
-        Self {
-            key: None,
-            props: TextProps::new(text),
-            style: Style::default(),
-            event_handlers: EventHandlers::default(),
-            interaction: InteractionProperties::default(),
-        }
-    }
+impl WidgetT for Text {
+    type State = ();
 
-    pub fn props(mut self, props: TextProps) -> Self {
-        self.props = props;
-        self
-    }
-
-    pub fn key(mut self, key: impl Into<Key>) -> Self {
-        self.key = Some(key.into());
-        self
-    }
-
-    pub fn text(mut self, text: impl Into<TextContent>) -> Self {
-        self.props.text = text.into();
-        self
-    }
-
-    /// Merges a style in, rather than replacing what is already there.
-    ///
-    /// On a fresh builder — how nearly every call site uses it — merging into an
-    /// all-unset style is indistinguishable from assignment. The difference
-    /// shows in the `xui!` macro, where `style={..}` is one attribute among
-    /// many: assignment made `<column padding={..} style={..} />` silently
-    /// discard the padding, and whether an attribute survived depended on
-    /// whether it was written before or after `style`.
-    pub fn style(mut self, style: impl xui_interface::StyleMerge) -> Self {
-        self.style.merge(&style);
-        self
-    }
-
-    pub fn paragraph(mut self, paragraph: ParagraphStyle) -> Self {
-        self.props.paragraph = paragraph;
-        self
-    }
-
-    pub fn text_box(mut self, text_box: TextBoxStyle) -> Self {
-        self.props.text_box = text_box;
-        self
-    }
-
-    pub fn overflow_wrap(mut self, overflow_wrap: OverflowWrap) -> Self {
-        self.props.paragraph.overflow_wrap = overflow_wrap;
-        self
-    }
-
-    pub fn overflow(mut self, overflow: TextOverflow) -> Self {
-        self.props.text_box.overflow = overflow;
-        self
-    }
-
-    pub fn max_lines(mut self, max_lines: impl Into<Option<usize>>) -> Self {
-        self.props.text_box.max_lines = max_lines.into();
-        self
-    }
-
-    pub fn set_key(mut self, key: impl Into<Key>) -> Self {
-        self.key = Some(key.into());
-        self
-    }
-
-    pub fn into_element_desc(self) -> ElementDesc {
-        widget_element_desc(self, Vec::new())
-    }
-
-    event_handler_methods!();
+    fn create_state(_: &TextProps) {}
 }
 
-impl TextWidget {
-    pub(super) fn node_type(&self) -> WidgetType {
-        WidgetType::Text
-    }
-
-    pub(super) fn get_key(&self) -> Option<&Key> {
-        self.key.as_ref()
-    }
-
-    pub(super) fn props_hash(&self) -> u64 {
-        props_hash(&(
-            &self.props.text,
-            &self.props.paragraph,
-            &self.props.text_box,
-            &self.style,
-        ))
-    }
-
-    pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
-        let mut flags = WidgetUpdateFlags::empty();
-        if self.props.text != next.props.text
-            || self.props.paragraph != next.props.paragraph
-            || self.props.text_box != next.props.text_box
-        {
-            flags |= WidgetUpdateFlags::LAYOUT_INPUT | WidgetUpdateFlags::PAINT_OUTPUT;
-        }
-        if self.style != next.style {
-            flags |= WidgetUpdateFlags::STYLE_TARGET;
-        }
-        self.props = next.props.clone();
-        self.style = next.style.clone();
-        flags
-    }
-
-    pub(super) fn default_style(&self) -> Style {
-        Style::new()
-    }
-
-    pub(super) fn current_style(&self) -> &Style {
-        &self.style
-    }
+pub fn text() -> Draft<Text> {
+    Draft::new(TextProps::builder().build())
 }
 
-pub(super) fn apply_text_style(text_props: &mut TextProps, style: &ComputedStyle) {
+pub(super) fn apply_text_style(text_props: &mut LayoutProps, style: &ComputedStyle) {
     text_props.style.color = style.text.color;
     text_props.style.font_family = style.text.font_family.clone();
     text_props.style.font_size = style.text.font_size;
@@ -150,17 +62,17 @@ pub(super) fn apply_text_style(text_props: &mut TextProps, style: &ComputedStyle
     text_props.style.decoration = style.text.decoration;
 }
 
-/// Some Utils
+/// A string where an element goes is a text node showing it.
 impl<T> From<T> for ElementDesc
 where
     T: Into<TextContent>,
 {
     fn from(value: T) -> Self {
-        TextWidget::new(value).into_element_desc()
+        text().with::<text::content>(value).into_element_desc(Vec::new())
     }
 }
 
-impl PaintContent for TextWidget {
+impl PaintContent for WidgetInstance<Text> {
     fn paint(
         &self,
         node_id: xui_interface::NodeId,
@@ -183,7 +95,7 @@ impl PaintContent for TextWidget {
                 node_id,
                 bounds: content,
                 slot: TextLayoutSlot::PRIMARY,
-                layout_revision: self.props_hash(),
+                layout_revision: props_hash(&self.text_layout(style)),
                 vertical_align: self.props.paragraph.vertical_align,
                 paint: TextPaintProps::new(TextPaintStyle::from_computed(&style.text)),
             }))
@@ -191,13 +103,15 @@ impl PaintContent for TextWidget {
     }
 }
 
-impl TextSource for TextWidget {
+impl TextSource for WidgetInstance<Text> {
     fn text(&self) -> TextContent {
-        self.props.text.clone()
+        self.props.content.clone()
     }
 
-    fn text_layout(&self, style: &ComputedStyle) -> TextProps {
-        let mut props = self.props.clone();
+    fn text_layout(&self, style: &ComputedStyle) -> LayoutProps {
+        let mut props = LayoutProps::new(self.props.content.clone());
+        props.paragraph = self.props.paragraph.clone();
+        props.text_box = self.props.text_box.clone();
         apply_text_style(&mut props, style);
         props
     }

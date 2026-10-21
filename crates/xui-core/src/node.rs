@@ -21,12 +21,14 @@
 use std::marker::PhantomData;
 
 use crate::capability::{CommitCx, StyleSet};
+use crate::caps::behavior::{Motion, motion};
 use crate::caps::{CapMask, Columns, Registered};
+use crate::fiber::Key;
 use crate::event_system::{EventContext, Flow, Handler, HandlerValue};
 use crate::property::{Access, CapScope, Capability, IntoProp, Property, Scope};
 use crate::property::HostProperty;
 use xui_interface::style::{ComputedStyle, Theme, WidgetStateMatcher};
-use xui_interface::{NodeId, WidgetState, WidgetUpdateFlags};
+use xui_interface::{Animation, NodeId, WidgetState, WidgetUpdateFlags};
 
 mod sealed {
     pub trait Sealed {}
@@ -180,6 +182,96 @@ pub struct StyleRule<S> {
     pub style: Layer<S>,
 }
 
+/// The two keyframes of a node's animation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Keyframes<S> {
+    pub from: Layer<S>,
+    pub to: Layer<S>,
+}
+
+/// A reusable style for nodes of definition `N`: declarations, and state
+/// rules over them. Typed by the node, so a style for a container cannot be
+/// given to a text, and a property `N` lacks cannot be written into it.
+pub struct StyleOf<N: NodeDef> {
+    pub base: Layer<N::Style>,
+    pub rules: Vec<StyleRule<N::Style>>,
+}
+
+impl<N: NodeDef> StyleOf<N> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets style property `P`, chained.
+    pub fn with<P: Property>(mut self, value: impl IntoProp<P>) -> Self
+    where
+        Layer<N::Style>: Access<P::Scope>,
+    {
+        self.base.set::<P>(value);
+        self
+    }
+
+    /// Adds a layer that applies while `matcher` matches the node's state.
+    pub fn when(
+        mut self,
+        matcher: WidgetStateMatcher,
+        build: impl FnOnce(&mut Layer<N::Style>),
+    ) -> Self {
+        let mut style = Layer::default();
+        build(&mut style);
+        self.rules.push(StyleRule { matcher, style });
+        self
+    }
+
+    /// Layers `other` over `self`.
+    pub fn merge(&mut self, other: &Self) {
+        self.base.0.merge(&other.base.0);
+        self.rules.extend(other.rules.iter().cloned());
+    }
+
+    /// [`merge`](Self::merge), by value.
+    pub fn merged(mut self, other: &Self) -> Self {
+        self.merge(other);
+        self
+    }
+}
+
+impl<N: NodeDef> Default for StyleOf<N> {
+    fn default() -> Self {
+        Self {
+            base: Layer::default(),
+            rules: Vec::new(),
+        }
+    }
+}
+
+impl<N: NodeDef> Clone for StyleOf<N> {
+    fn clone(&self) -> Self {
+        Self {
+            base: self.base.clone(),
+            rules: self.rules.clone(),
+        }
+    }
+}
+
+impl<N: NodeDef> PartialEq for StyleOf<N> {
+    fn eq(&self, other: &Self) -> bool {
+        self.base == other.base && self.rules == other.rules
+    }
+}
+
+impl<N: NodeDef> std::fmt::Debug for StyleOf<N>
+where
+    N::Style: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StyleOf")
+            .field("base", &self.base.0)
+            .field("rules", &self.rules)
+            .finish()
+    }
+}
+
 /// A style layer: what a state rule declares. It can hold only the style
 /// capabilities the node selected, through the style's own `Has` impls.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -207,16 +299,73 @@ impl<S: crate::property::Has<C>, C: Capability> Access<CapScope<C>> for Layer<S>
 
 /// A node as written: its storage and its state rules, before it mounts.
 pub struct Draft<N: NodeDef> {
+    pub key: Option<Key>,
     pub storage: NodeStorage<N>,
     pub rules: Vec<StyleRule<N::Style>>,
+    /// The keyframes of the node's animation, whose timing is the `motion`
+    /// capability's.
+    pub keyframes: Option<Keyframes<N::Style>>,
+}
+
+impl<N: NodeDef> Clone for Draft<N>
+where
+    N::Props: Clone,
+    N::Behavior: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            storage: self.storage.clone(),
+            rules: self.rules.clone(),
+            keyframes: self.keyframes.clone(),
+        }
+    }
 }
 
 impl<N: NodeDef> Draft<N> {
     pub fn new(props: N::Props) -> Self {
         Self {
+            key: None,
             storage: NodeStorage::new(props),
             rules: Vec::new(),
+            keyframes: None,
         }
+    }
+
+    /// The node's identity among its siblings, across renders.
+    pub fn key(mut self, key: impl Into<Key>) -> Self {
+        self.key = Some(key.into());
+        self
+    }
+
+    /// Layers `style` over the node's: its declarations over the node's own,
+    /// its state rules after the node's.
+    pub fn style(mut self, style: StyleOf<N>) -> Self {
+        self.storage.style.merge(&style.base.0);
+        self.rules.extend(style.rules);
+        self
+    }
+
+    /// Plays `animation` between two keyframes, each a layer of the node's
+    /// style. The node must select `motion`, which holds the timing.
+    pub fn animate(
+        mut self,
+        animation: Animation,
+        from: impl FnOnce(&mut Layer<N::Style>),
+        to: impl FnOnce(&mut Layer<N::Style>),
+    ) -> Self
+    where
+        Self: Access<CapScope<Motion>>,
+    {
+        let mut keyframes = Keyframes {
+            from: Layer::default(),
+            to: Layer::default(),
+        };
+        from(&mut keyframes.from);
+        to(&mut keyframes.to);
+        self.set::<motion::props::animation>(animation);
+        self.keyframes = Some(keyframes);
+        self
     }
 
     /// [`Node::set`], chained.
@@ -298,6 +447,38 @@ pub trait HostNode: NodeDef<Kind = HostKind> {
 
     /// What replacing props `old` with `new` dirties, prop by prop.
     fn props_dirty(old: &Self::Props, new: &Self::Props) -> WidgetUpdateFlags;
+}
+
+/// A host widget: a host node with state of its own, created from its props
+/// when it mounts. Implemented by the widget's author; `#[widget]` generates
+/// the node half (`HostNode`) and the state struct, not this.
+pub trait WidgetT: HostNode {
+    type State: 'static;
+
+    fn create_state(props: &Self::Props) -> Self::State;
+
+    /// Called after a commit replaced the props `old` with `new`, so the state
+    /// can follow them. Returns what the state's own change dirties, beyond
+    /// what the props' [`HostNode::props_dirty`] already says.
+    fn update(_old: &Self::Props, _new: &Self::Props, _state: &mut Self::State) -> WidgetUpdateFlags {
+        WidgetUpdateFlags::empty()
+    }
+}
+
+/// A mounted widget's own data: its props and its state. Its capabilities'
+/// rows live in the runtime's columns. The widget's roles are implemented on
+/// this type.
+pub struct WidgetInstance<W: WidgetT> {
+    pub props: W::Props,
+    pub state: W::State,
+}
+
+impl<W: WidgetT> std::fmt::Debug for WidgetInstance<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WidgetInstance")
+            .field("widget", &std::any::type_name::<W>())
+            .finish_non_exhaustive()
+    }
 }
 
 /// A mounted host node, restored to its type: its own props, and its rows in

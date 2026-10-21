@@ -16,6 +16,14 @@ pub struct TextController {
     inner: Rc<RefCell<TextControllerState>>,
 }
 
+/// Two controllers are equal when they are the same handle: a prop holding a
+/// controller changes when it is swapped for another, not when it is edited.
+impl PartialEq for TextController {
+    fn eq(&self, other: &Self) -> bool {
+        self.same_handle(other)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct TextControllerState {
     value: TextEditingValue,

@@ -1,7 +1,6 @@
 use crate::context::{Ancestors, ContextRegistry, ContextScope, NoAncestors};
 use crate::element::PortalBehavior;
 use crate::element::PortalDesc;
-use crate::event_system::interaction::HostInteraction;
 use crate::fiber::{
     ComponentRender, ComponentState, EffectTag, ErasedProps, FiberArena, FiberId, FiberTag,
     HostState, Key, Node, PortalState,
@@ -14,7 +13,7 @@ use crate::state::{AsyncDispatcher, HookContext, HookStorage, Scheduler};
 use crate::ticker::TickerRegistry;
 use crate::ui_runtime::UiRuntime;
 use crate::widgets::{OverlayEntryId, OverlayEntryOptions, OverlayScopeId};
-use crate::widgets::{RootComponentRender, WidgetI};
+use crate::widgets::{ErasedDraft, RootComponentRender};
 use crate::{ComponentDesc, ElementDesc, ErasedPropsRef};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
@@ -56,9 +55,8 @@ struct WorkBinding {
 }
 
 struct HostWork {
-    widget: Option<WidgetI>,
-    interaction: Option<HostInteraction>,
-    props_hash: u64,
+    /// Taken by the commit that mounts or updates the host.
+    draft: Option<Box<dyn ErasedDraft>>,
     pending_children: Vec<ElementDesc>,
 }
 
@@ -88,13 +86,6 @@ impl From<ComponentWork> for ComponentState {
 }
 
 impl WorkNode {
-    fn host_work(&self) -> Option<&HostWork> {
-        match self.work.as_ref() {
-            Some(Work::HostWork(work)) => Some(work),
-            _ => None,
-        }
-    }
-
     fn host_work_mut(&mut self) -> Option<&mut HostWork> {
         match self.work.as_mut() {
             Some(Work::HostWork(work)) => Some(work),
@@ -174,15 +165,8 @@ impl WorkNode {
         child_lanes: Lanes,
     ) -> Self {
         let work = match prepared.pending {
-            PreparedPending::Host {
-                widget,
-                interaction,
-                props_hash,
-                children,
-            } => Work::HostWork(HostWork {
-                widget: Some(widget),
-                interaction,
-                props_hash,
+            PreparedPending::Host { draft, children } => Work::HostWork(HostWork {
+                draft: Some(draft),
                 pending_children: children,
             }),
             PreparedPending::Component { key, render, props } => {
@@ -312,9 +296,7 @@ struct PreparedElement {
 
 enum PreparedPending {
     Host {
-        widget: WidgetI,
-        interaction: Option<HostInteraction>,
-        props_hash: u64,
+        draft: Box<dyn ErasedDraft>,
         children: Vec<ElementDesc>,
     },
     Component {
@@ -856,23 +838,14 @@ impl ComponentRuntime {
         let key = element.key();
         match element {
             ElementDesc::Component(component) => self.prepare_component_element(component, key),
-            ElementDesc::Host(host) => {
-                let widget = host.widget;
-                let props_hash = widget.props_hash();
-                let tag = FiberTag::Host(widget.node_type());
-
-                let interaction = widget.take_host_interaction();
-                PreparedElement {
-                    key,
-                    tag,
-                    pending: PreparedPending::Host {
-                        widget,
-                        interaction,
-                        props_hash,
-                        children: host.children,
-                    },
-                }
-            }
+            ElementDesc::Host(host) => PreparedElement {
+                key,
+                tag: FiberTag::Host(host.draft.node_type()),
+                pending: PreparedPending::Host {
+                    draft: host.draft,
+                    children: host.children,
+                },
+            },
             ElementDesc::Portal(portal) => self.prepare_portal_element(portal, key),
         }
     }
@@ -1024,16 +997,8 @@ impl ComponentRuntime {
             return Some(*id);
         }
 
-        let (key, props_hash, widget, interaction) = {
-            let wip = self.wip_nodes.get_mut(wip_id)?;
-            let key = wip.key;
-            let host_work = wip.host_work_mut()?;
-            let widget = host_work.widget.take()?;
-            let interaction = host_work.interaction.take();
-            (key, host_work.props_hash, widget, interaction)
-        };
-
-        let node_id = arena.create_node(key, props_hash, widget, interaction);
+        let draft = self.wip_nodes.get_mut(wip_id)?.host_work_mut()?.draft.take()?;
+        let node_id = arena.create_node(draft);
         self.wip_nodes.get_mut(wip_id)?.binding.current_host = Some(node_id);
         Some(node_id)
     }
@@ -1130,12 +1095,10 @@ impl ComponentRuntime {
             .wip_nodes
             .get_mut(wip_id)
             .expect("update host fiber missing work node");
-        let key = wip.key;
         let host_work = wip.host_work_mut().expect("host update missing host work");
-        let widget = host_work.widget.take().expect("host update missing widget");
-        let interaction = host_work.interaction.take();
+        let draft = host_work.draft.take().expect("host update missing its draft");
 
-        arena.update_node(node_id, key, host_work.props_hash, widget, interaction);
+        arena.update_node(node_id, draft);
         wip.binding.current_host = Some(node_id);
     }
 
@@ -1331,26 +1294,10 @@ impl ComponentRuntime {
             .current_host
             .or_else(|| current_host.as_ref().and_then(|host| host.node_id))
             .expect("host fiber missing committed host node");
-        let arena_node = arena
-            .node(node_id)
-            .expect("committed host node missing from arena");
-        let props_hash = wip
-            .host_work()
-            .map(|host| host.props_hash)
-            .or_else(|| current_host.as_ref().map(|host| host.props_hash))
-            .unwrap_or(arena_node.new_props_hash);
+        debug_assert!(arena.contains(node_id), "committed host node missing from arena");
 
         Some(HostState {
             node_id: Some(node_id),
-            widget: Some(arena_node.widget.clone()),
-            style: current_host
-                .as_ref()
-                .map(|host| host.style.clone())
-                .unwrap_or_default(),
-            computed_style: arena_node.target_style.clone(),
-            layout: arena_node.layout,
-            previous_layout: arena_node.previous_layout,
-            props_hash,
         })
     }
 
@@ -1634,9 +1581,9 @@ fn prepared_needs_update(current: &Node, prepared: &PreparedElement) -> bool {
     }
 
     match (&current.host, &current.component, &prepared.pending) {
-        (Some(host_state), _, PreparedPending::Host { props_hash, .. }) => {
-            host_state.props_hash != *props_hash
-        }
+        // A host is always updated: its draft is spread over its rows, and
+        // what changed is what the capabilities' and props' `dirty` say.
+        (Some(_), _, PreparedPending::Host { .. }) => true,
         (_, Some(_), PreparedPending::Component { .. }) => false,
         (
             _,

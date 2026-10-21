@@ -1,10 +1,13 @@
+use xui_macros::widget;
+
+use crate::node::{Draft, WidgetT};
 use crate::diagnostics::invariant;
 use std::fmt;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use rustc_hash::FxHashMap;
-use xui_interface::{EdgeInsets, Key, NodeId, Size, Style, WidgetType, WidgetUpdateFlags};
+use xui_interface::{EdgeInsets, NodeId, PositionStyle, Size};
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct OverlayScopeId(u32);
@@ -173,10 +176,31 @@ pub enum OverlayModelError {
 ///
 /// Where an entry sits on screen is not recorded here. A Portal with an anchor
 /// hands its visual root to `ui_runtime::anchor::AnchorSystem` instead.
+/// The layer every portal mounts under: it covers the root, and its state is
+/// the overlay model — scopes, entries, their paint order.
+#[widget(style(box_size, position))]
+#[props(derive(Debug, Clone, PartialEq))]
+pub struct RootOverlayer {}
+
+impl WidgetT for RootOverlayer {
+    type State = RootOverlayerState;
+
+    fn create_state(_: &RootOverlayerProps) -> RootOverlayerState {
+        RootOverlayerState::new()
+    }
+}
+
+/// The root overlayer, absolutely placed over the whole root.
+pub(crate) fn root_overlayer() -> Draft<RootOverlayer> {
+    Draft::new(RootOverlayerProps::builder().build())
+        .key("__xui_root_overlayer")
+        .with::<root_overlayer::position>(PositionStyle::Absolute)
+        .with::<root_overlayer::inset>(EdgeInsets::zero())
+        .with::<root_overlayer::size>(Size::fill())
+}
+
 #[derive(Debug)]
-pub struct RootOverlayerWidget {
-    key: Key,
-    style: Style,
+pub struct RootOverlayerState {
     root_scope: OverlayScopeId,
     scopes: FxHashMap<OverlayScopeId, OverlayScope>,
     entries: FxHashMap<OverlayEntryId, OverlayEntry>,
@@ -184,7 +208,7 @@ pub struct RootOverlayerWidget {
     next_insertion_order: u64,
 }
 
-impl RootOverlayerWidget {
+impl RootOverlayerState {
     pub(crate) fn new() -> Self {
         let root_scope = OverlayScopeId::next();
         let mut scopes = FxHashMap::default();
@@ -200,11 +224,6 @@ impl RootOverlayerWidget {
         );
 
         Self {
-            key: "__xui_root_overlayer".into(),
-            style: Style::new()
-                .absolute()
-                .inset(EdgeInsets::zero())
-                .size(Size::fill()),
             root_scope,
             scopes,
             entries: FxHashMap::default(),
@@ -483,31 +502,6 @@ impl RootOverlayerWidget {
             .children = children;
     }
 
-    no_event_handler_methods!();
-
-    pub(super) fn node_type(&self) -> WidgetType {
-        WidgetType::RootOverlayer
-    }
-
-    pub(super) fn get_key(&self) -> Option<&Key> {
-        Some(&self.key)
-    }
-
-    pub(super) fn props_hash(&self) -> u64 {
-        0
-    }
-
-    pub(super) fn update_from(&mut self, _next: &Self) -> WidgetUpdateFlags {
-        WidgetUpdateFlags::empty()
-    }
-
-    pub(super) fn default_style(&self) -> Style {
-        Style::new()
-    }
-
-    pub(super) fn current_style(&self) -> &Style {
-        &self.style
-    }
 }
 
 #[cfg(test)]
@@ -517,7 +511,7 @@ mod tests {
 
     #[test]
     fn scopes_and_entries_are_kept_in_stacking_order() {
-        let mut overlay = RootOverlayerWidget::new();
+        let mut overlay = RootOverlayerState::new();
         let mut nodes = SlotMap::<NodeId, ()>::with_key();
         let root = overlay.root_scope();
         let front_scope = overlay.create_scope(root, 10).unwrap();
@@ -547,7 +541,7 @@ mod tests {
 
     #[test]
     fn removing_a_scope_cleans_up_all_nested_entries() {
-        let mut overlay = RootOverlayerWidget::new();
+        let mut overlay = RootOverlayerState::new();
         let mut nodes = SlotMap::<NodeId, ()>::with_key();
         let root = overlay.root_scope();
         let scope = overlay.create_scope(root, 0).unwrap();

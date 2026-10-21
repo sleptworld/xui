@@ -1,61 +1,27 @@
-use xui_interface::{Color, Key, Size, Style, WidgetType, WidgetUpdateFlags, core::Sizing};
+//! The node every tree hangs from.
 
-use super::props_hash;
+use xui_interface::Color;
+use xui_interface::core::Sizing;
+use xui_macros::widget;
 
-#[derive(Debug)]
-pub struct RootWidget {
-    pub style: Style,
+use crate::node::{Draft, WidgetT};
+
+/// The root: it fills the window, white under everything else, and lays its
+/// children out in a column.
+#[widget(style(box_size, background))]
+#[props(derive(Debug, Clone, PartialEq))]
+pub struct Root {}
+
+impl WidgetT for Root {
+    type State = ();
+
+    fn create_state(_: &RootProps) {}
 }
 
-impl Default for RootWidget {
-    fn default() -> Self {
-        Self {
-            style: Style::new(),
-        }
-    }
-}
-
-impl RootWidget {
-    pub fn set_style(mut self, style: Style) -> Self {
-        self.style = style;
-        self
-    }
-}
-
-impl RootWidget {
-    pub(super) fn node_type(&self) -> WidgetType {
-        WidgetType::Container
-    }
-
-    pub(super) fn props_hash(&self) -> u64 {
-        props_hash(&self.style)
-    }
-
-    pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
-        if self.style != next.style {
-            self.style = next.style.clone();
-            WidgetUpdateFlags::STYLE_TARGET
-        } else {
-            WidgetUpdateFlags::empty()
-        }
-    }
-
-    pub(super) fn default_style(&self) -> Style {
-        Style::new()
-            .size(Size::<Sizing>::new(
-                Sizing::Percent(1.0.try_into().unwrap()),
-                Sizing::Percent(1.0.try_into().unwrap()),
-            ))
-            .background(Color::WHITE)
-    }
-
-    pub(super) fn get_key(&self) -> Option<&Key> {
-        None
-    }
-
-    pub(super) fn current_style(&self) -> &Style {
-        &self.style
-    }
-
-    no_event_handler_methods!();
+pub(crate) fn root() -> Draft<Root> {
+    let full = Sizing::Percent(1.0.try_into().expect("1.0 is a number"));
+    Draft::new(RootProps::builder().build())
+        .with::<root::width>(full)
+        .with::<root::height>(full)
+        .with::<root::background>(Color::WHITE)
 }

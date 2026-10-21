@@ -1,282 +1,123 @@
+//! A decoded image, drawn over the decoration of its box.
+
+use xui_interface::{
+    Alignment, Bounds, ComputedStyle, ImageData, ImageFit, ImageKey, ImageRepeat, ImageStyle,
+    ImageVariant, NodeId, Sampling, Size,
+};
+use xui_macros::widget;
+
 use super::roles::{IntrinsicSize, PaintContent};
 use crate::assets::{AssetId, load_image_asset, load_image_asset_path};
-use crate::element::ElementDesc;
-use crate::event_system::callbacks::EventHandlers;
-use crate::event_system::interaction::InteractionProperties;
-use xui_interface::{style::ScrollbarStylePatch, *};
-
-use super::{props_hash, widget_element_desc};
+use crate::node::{Draft, WidgetInstance, WidgetT};
 use crate::render::{ImagePrimitive, Primitive, RenderTreeWriter};
 
-pub struct ImageWidget {
-    pub key: Option<Key>,
-    pub image_data: Option<ImageData>,
+/// An image. Its pixels and their renderer cache key are its props; its box
+/// is any box's, decoration and children included.
+#[widget(
+    style(
+        box_size, margin, padding, position, display, typography, background, corner_radius,
+        border, box_shadow, clip, visibility, transform, effects, scroll, cursor
+    ),
+    behavior(
+        focus, accessibility, shortcuts, motion, focus_binding, scroll_binding, size_observation,
+        events
+    ),
+    shorthands(sources)
+)]
+#[props(derive(Debug, Clone, PartialEq))]
+pub struct Image {
+    /// The renderer's cache key for the pixels.
+    #[default(ImageKey::from(""))]
+    #[dirty(PAINT_OUTPUT)]
     pub image_key: ImageKey,
+    /// The decoded pixels. Compared by identity, not content.
+    #[default]
+    #[dirty(PAINT_OUTPUT | LAYOUT_INPUT)]
+    pub image_data: Option<ImageData>,
+    /// Fit, alignment, repetition and sampling.
+    #[default]
+    #[dirty(PAINT_OUTPUT)]
     pub image_style: ImageStyle,
+    /// Clamped to `0.0..=1.0` when painted.
+    #[default(1.0)]
+    #[dirty(PAINT_OUTPUT)]
     pub opacity: f32,
-    pub style: Style,
-    pub event_handlers: EventHandlers,
-    pub interaction: InteractionProperties,
 }
 
-impl std::fmt::Debug for ImageWidget {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ImageWidget")
-            .field("key", &self.key)
-            .field("image_key", &self.image_key)
-            .field("image_style", &self.image_style)
-            .field("opacity", &self.opacity)
-            .field("style", &self.style)
-            .finish()
-    }
+impl WidgetT for Image {
+    type State = ();
+
+    fn create_state(_: &ImageProps) {}
 }
 
-impl ImageWidget {
-    pub fn new() -> Self {
-        Self {
-            key: None,
-            image_key: "".into(),
-            image_style: ImageStyle::default(),
-            opacity: 1.0,
-            style: Style::new(),
-            event_handlers: EventHandlers::default(),
-            interaction: InteractionProperties::default(),
-            image_data: None,
-        }
-    }
+pub fn image() -> Draft<Image> {
+    Draft::new(ImageProps::builder().build())
+}
 
-    pub fn with_image_key(image_key: impl Into<ImageKey>) -> Self {
-        Self::new().image_key(image_key)
-    }
-
-    /// Loads an image from the asset manager installed for the current UI thread.
-    ///
-    /// This looks the asset up every time the builder runs, which is every
-    /// rebuild of the component using it. A component that rebuilds often can
-    /// load once with [`HookContext::use_asset`](crate::state::HookContext::use_asset)
-    /// and pass the result to [`Self::asset_data`] instead.
-    pub fn asset(self, asset: AssetId) -> Self {
-        let data = load_image_asset(asset);
-        self.asset_data(asset, data)
-    }
-
-    /// Shows an image asset that was already loaded, under the same renderer
-    /// key [`Self::asset`] would give it.
-    pub fn asset_data(mut self, asset: AssetId, data: Option<ImageData>) -> Self {
-        self.image_key = ImageKey::AssetId(*asset.as_bytes());
-        self.image_data = data;
-        self
-    }
-
-    /// Loads an image by its normalized path in the configured asset bundle.
-    pub fn asset_path(mut self, path: impl AsRef<str>) -> Self {
-        let path = path.as_ref();
-        self.image_key = ImageKey::AssetPath(path.into());
-        self.image_data = load_image_asset_path(path);
-        self
-    }
-
-    /// Supplies already-decoded pixels and their stable renderer cache key.
-    /// Image pixels and identity supplied as a single DSL argument.
-    pub fn source(self, source: (ImageKey, ImageData)) -> Self {
-        self.image_data(source.0, source.1)
-    }
-
-    pub fn image_data(
-        mut self,
-        image_key: impl Into<ImageKey>,
-        image_data: impl Into<ImageData>,
-    ) -> Self {
-        self.image_key = image_key.into();
-        self.image_data = Some(image_data.into());
-        self
-    }
-
-    /// Returns the decoded image's natural size in logical pixels.
+impl ImageProps {
+    /// The decoded image's natural size in logical pixels.
     pub fn intrinsic_size(&self) -> Option<Size<f32>> {
         self.image_data
             .as_ref()
             .map(|data| Size::new(data.size.width as f32, data.size.height as f32))
     }
-
-    /// Merges a style in, rather than replacing what is already there.
-    ///
-    /// On a fresh builder — how nearly every call site uses it — merging into an
-    /// all-unset style is indistinguishable from assignment. The difference
-    /// shows in the `xui!` macro, where `style={..}` is one attribute among
-    /// many: assignment made `<column padding={..} style={..} />` silently
-    /// discard the padding, and whether an attribute survived depended on
-    /// whether it was written before or after `style`.
-    pub fn style(mut self, style: impl xui_interface::StyleMerge) -> Self {
-        self.style.merge(&style);
-        self
-    }
-
-    pub fn scrollable(mut self) -> Self {
-        self.style = self.style.clone().scroll_vertical();
-        self
-    }
-
-    pub fn scroll_direction(mut self, direction: ScrollDirectionStyle) -> Self {
-        self.style = self.style.clone().scroll_direction(direction);
-        self
-    }
-
-    pub fn scrollbar(mut self, scrollbar: ScrollbarStylePatch) -> Self {
-        self.style = self.style.clone().scrollbar(scrollbar);
-        self
-    }
-
-    pub fn scrollbar_width(mut self, width: impl Into<LengthValue>) -> Self {
-        self.style = self.style.clone().scrollbar_width(width);
-        self
-    }
-
-    pub fn scrollbar_track_color(mut self, color: impl Into<ColorStyle>) -> Self {
-        self.style = self.style.clone().scrollbar_track_color(color);
-        self
-    }
-
-    pub fn scrollbar_thumb_color(mut self, color: impl Into<ColorStyle>) -> Self {
-        self.style = self.style.clone().scrollbar_thumb_color(color);
-        self
-    }
-
-    pub fn scrollbar_radius(mut self, radius: impl Into<LengthValue>) -> Self {
-        self.style = self.style.clone().scrollbar_radius(radius);
-        self
-    }
-
-    pub fn scrollbar_visibility(mut self, visibility: ScrollbarVisibilityStyle) -> Self {
-        self.style = self.style.clone().scrollbar_visibility(visibility);
-        self
-    }
-
-    pub fn key(mut self, key: impl Into<Key>) -> Self {
-        self.key = Some(key.into());
-        self
-    }
-
-    pub fn image_key(mut self, image_key: impl Into<ImageKey>) -> Self {
-        self.image_key = image_key.into();
-        self
-    }
-
-    pub fn image_style(mut self, image_style: ImageStyle) -> Self {
-        self.image_style = image_style;
-        self
-    }
-
-    pub fn fit(mut self, fit: ImageFit) -> Self {
-        self.image_style.fit = fit;
-        self
-    }
-
-    pub fn alignment(mut self, alignment: Alignment) -> Self {
-        self.image_style.alignment = alignment;
-        self
-    }
-
-    pub fn repeat(mut self, repeat: ImageRepeat) -> Self {
-        self.image_style.repeat = repeat;
-        self
-    }
-
-    pub fn sampling(mut self, sampling: Sampling) -> Self {
-        self.image_style.sampling = sampling;
-        self
-    }
-
-    pub fn opacity(mut self, opacity: f32) -> Self {
-        self.opacity = opacity.clamp(0.0, 1.0);
-        self
-    }
-
-    pub fn into_element_desc(self, children: Vec<ElementDesc>) -> ElementDesc {
-        widget_element_desc(self, children)
-    }
-
-    event_handler_methods!();
 }
 
-impl Default for ImageWidget {
-    fn default() -> Self {
-        Self::new()
+/// Ways of setting an image's pixels, or one part of its image style, at
+/// once.
+#[allow(non_camel_case_types)]
+mod sources {
+    use super::*;
+
+    shorthand! {
+        /// Loads an image asset from the asset manager installed for the
+        /// current UI thread, every time the node is built; a component that
+        /// builds often can load once with `HookContext::use_asset` and set
+        /// `asset_data` instead.
+        asset: Image, AssetId, |props, asset| {
+            let data = load_image_asset(asset);
+            props.image_key = ImageKey::AssetId(*asset.as_bytes());
+            props.image_data = data;
+        }
     }
+
+    shorthand! {
+        /// An image asset already loaded, under the key `asset` would give it.
+        asset_data: Image, (AssetId, Option<ImageData>), |props, value| {
+            props.image_key = ImageKey::AssetId(*value.0.as_bytes());
+            props.image_data = value.1;
+        }
+    }
+
+    shorthand! {
+        /// Loads an image by its normalized path in the configured bundle.
+        asset_path: Image, String, |props, path| {
+            props.image_data = load_image_asset_path(&path);
+            props.image_key = ImageKey::AssetPath(path.into());
+        }
+    }
+
+    shorthand! {
+        /// Decoded pixels and their renderer cache key.
+        source: Image, (ImageKey, ImageData), |props, source| {
+            props.image_key = source.0;
+            props.image_data = Some(source.1);
+        }
+    }
+
+    shorthand! { fit: Image, ImageFit, |props, fit| props.image_style.fit = fit }
+    shorthand! { alignment: Image, Alignment, |props, alignment| props.image_style.alignment = alignment }
+    shorthand! { repeat: Image, ImageRepeat, |props, repeat| props.image_style.repeat = repeat }
+    shorthand! { sampling: Image, Sampling, |props, sampling| props.image_style.sampling = sampling }
 }
 
-impl ImageWidget {
-    pub(super) fn node_type(&self) -> WidgetType {
-        WidgetType::Image
-    }
-
-    pub(super) fn get_key(&self) -> Option<&Key> {
-        self.key.as_ref()
-    }
-
-    pub(super) fn props_hash(&self) -> u64 {
-        props_hash(&(
-            &self.image_key,
-            self.image_data.as_ref().map(|data| data.id().raw()),
-            &self.image_style,
-            self.opacity.to_bits(),
-            &self.style,
-        ))
-    }
-
-    pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
-        let mut flags = WidgetUpdateFlags::empty();
-        if self.image_key != next.image_key {
-            self.image_key = next.image_key.clone();
-            flags |= WidgetUpdateFlags::PAINT_OUTPUT;
-        }
-        let current_data_id = self.image_data.as_ref().map(|data| data.id());
-        let next_data_id = next.image_data.as_ref().map(|data| data.id());
-        if current_data_id != next_data_id {
-            let current_size = self.intrinsic_size();
-            let next_size = next.intrinsic_size();
-            self.image_data = next.image_data.clone();
-            flags |= WidgetUpdateFlags::PAINT_OUTPUT;
-            if current_size != next_size {
-                flags |= WidgetUpdateFlags::LAYOUT_INPUT;
-            }
-        }
-        if self.opacity.to_bits() != next.opacity.to_bits() {
-            self.opacity = next.opacity;
-            flags |= WidgetUpdateFlags::PAINT_OUTPUT;
-        }
-        if self.image_style != next.image_style {
-            self.image_style = next.image_style;
-            flags |= WidgetUpdateFlags::PAINT_OUTPUT;
-        }
-        if self.style != next.style {
-            self.style = next.style.clone();
-            flags |= WidgetUpdateFlags::STYLE_TARGET;
-        }
-
-        if flags.is_empty() {
-            WidgetUpdateFlags::empty()
-        } else {
-            flags
-        }
-    }
-
-    pub(super) fn default_style(&self) -> Style {
-        Style::new()
-    }
-
-    pub(super) fn current_style(&self) -> &Style {
-        &self.style
-    }
-}
-
-impl IntrinsicSize for ImageWidget {
+impl IntrinsicSize for WidgetInstance<Image> {
     fn intrinsic_size(&self) -> Option<Size<f32>> {
-        ImageWidget::intrinsic_size(self)
+        self.props.intrinsic_size()
     }
 }
 
-impl PaintContent for ImageWidget {
+impl PaintContent for WidgetInstance<Image> {
     fn paint(
         &self,
         _node_id: NodeId,
@@ -284,18 +125,19 @@ impl PaintContent for ImageWidget {
         _style: &ComputedStyle,
         writer: &mut RenderTreeWriter<'_>,
     ) {
-        if let Some(image_data) = self.image_data.as_ref() {
+        let props = &self.props;
+        if let Some(image_data) = props.image_data.as_ref() {
             writer
                 .primitive(Primitive::Image(ImagePrimitive {
                     variant: ImageVariant {
-                        sampling: self.image_style.sampling,
+                        sampling: props.image_style.sampling,
                         ..ImageVariant::default()
                     },
-                    style: self.image_style,
+                    style: props.image_style,
                     data: image_data.clone(),
-                    image: self.image_key.clone(),
+                    image: props.image_key.clone(),
                     bounds: rect,
-                    opacity: self.opacity,
+                    opacity: props.opacity.clamp(0.0, 1.0),
                 }))
                 .expect("widget render tree must remain valid");
         }

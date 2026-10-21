@@ -589,17 +589,16 @@ impl<'a> HookContext<'a> {
     /// Loads an asset once and keeps it for as long as this component stays
     /// mounted.
     ///
-    /// Builders such as [`ImageWidget::asset`](crate::widgets::ImageWidget::asset)
-    /// look their asset up on every rebuild. This looks it up only when `id`
-    /// changes or a different asset manager is installed, and otherwise hands
-    /// back the value it already has -- pass it on with a widget's
-    /// `asset_data`:
+    /// A property such as `image::asset` looks its asset up on every rebuild.
+    /// This looks it up only when `id` changes or a different asset manager is
+    /// installed, and otherwise hands back the value it already has -- pass it
+    /// on with a widget's `asset_data`:
     ///
     /// ```ignore
     /// use xui_core::assets::ImageAsset;
     ///
     /// let logo = cx.use_asset::<ImageAsset>(refs::images::LOGO_PNG);
-    /// image().asset_data(refs::images::LOGO_PNG, logo)
+    /// image().with::<image::asset_data>((refs::images::LOGO_PNG, logo))
     /// ```
     ///
     /// Holding the value here is also what keeps it resident. Every holder of

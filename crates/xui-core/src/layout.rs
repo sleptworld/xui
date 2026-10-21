@@ -3,21 +3,17 @@ use taffy::{LengthPercentage, prelude as tf};
 use taffy::{Overflow, Point as TaffyPoint};
 use xui_interface::core::Sizing;
 use xui_interface::style::{AlignStyle, JustifyStyle};
-use xui_interface::{DisplayStyle, PositionStyle, WidgetState};
+use xui_interface::{DisplayStyle, PositionStyle};
 
 use crate::core::EdgeInsets;
-use crate::style::{ComputedStyle, FlexDirectionStyle, ScrollDirectionStyle, Theme};
+use crate::style::{ComputedStyle, FlexDirectionStyle, ScrollDirectionStyle};
 use crate::widgets::roles::ArrangeChildren;
-use crate::widgets::{ContainerWidget, GridWidget, RootWidget, WidgetI, ZStackWidget};
-
-pub(crate) fn computed_style_for_widget(
-    widget: &WidgetI,
-    parent: &ComputedStyle,
-    theme: &Theme,
-    state: WidgetState,
-) -> ComputedStyle {
-    widget.with_host_style(|style| style.compute(parent, theme, state))
-}
+use crate::node::WidgetInstance;
+use crate::widgets::WidgetI;
+use crate::widgets::container::Container;
+use crate::widgets::grid::Grid;
+use crate::widgets::root::Root;
+use crate::widgets::z_stack::ZStack;
 
 /// How a container arranges its children.
 ///
@@ -185,17 +181,17 @@ fn computed_layout_style_for_parent(
 // How each arranging widget lays out its children. Here rather than with
 // the widgets, beside the taffy helpers they share.
 
-impl ArrangeChildren for ContainerWidget {
+impl ArrangeChildren for WidgetInstance<Container> {
     fn arrangement(&self) -> ParentLayout {
-        match self.flex_direction {
+        match self.props.flex_direction {
             Some(direction) => ParentLayout::Flex(direction),
             None => ParentLayout::Block,
         }
     }
 
     fn container_style(&self, computed: &ComputedStyle) -> tf::Style {
-        match self.flex_direction {
-            Some(direction) => flex_style(direction, self.flex_wrap, computed.layout),
+        match self.props.flex_direction {
+            Some(direction) => flex_style(direction, self.props.flex_wrap, computed.layout),
             None => tf::Style {
                 display: tf::Display::Block,
                 ..Default::default()
@@ -204,7 +200,7 @@ impl ArrangeChildren for ContainerWidget {
     }
 }
 
-impl ArrangeChildren for RootWidget {
+impl ArrangeChildren for WidgetInstance<Root> {
     fn arrangement(&self) -> ParentLayout {
         ParentLayout::Flex(FlexDirectionStyle::Column)
     }
@@ -222,7 +218,7 @@ impl ArrangeChildren for RootWidget {
     }
 }
 
-impl ArrangeChildren for ZStackWidget {
+impl ArrangeChildren for WidgetInstance<ZStack> {
     fn arrangement(&self) -> ParentLayout {
         ParentLayout::ZStack
     }
@@ -230,21 +226,21 @@ impl ArrangeChildren for ZStackWidget {
     fn container_style(&self, _: &ComputedStyle) -> tf::Style {
         tf::Style {
             display: tf::Display::Grid,
-            justify_items: Some(stack_alignment(self.alignment.x)),
-            align_items: Some(stack_alignment(self.alignment.y)),
+            justify_items: Some(stack_alignment(self.props.alignment.x)),
+            align_items: Some(stack_alignment(self.props.alignment.y)),
             ..Default::default()
         }
     }
 }
 
-impl ArrangeChildren for GridWidget {
+impl ArrangeChildren for WidgetInstance<Grid> {
     fn arrangement(&self) -> ParentLayout {
         ParentLayout::Grid
     }
 
     fn container_style(&self, computed: &ComputedStyle) -> tf::Style {
         let mut style = tf::Style::default();
-        crate::widgets::grid_widget_to_taffy(&mut style, self);
+        crate::widgets::grid_widget_to_taffy(&mut style, &self.props);
         style.gap = tf::Size {
             width: length_percentage(computed.layout.gap),
             height: length_percentage(computed.layout.gap),

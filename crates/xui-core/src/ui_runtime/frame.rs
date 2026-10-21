@@ -1,5 +1,7 @@
 //! The per-frame driver `App` calls, and what it asks before scheduling a frame.
 
+use crate::caps::Registered;
+use crate::caps::behavior::SizeObservation;
 use crate::core::Size;
 use crate::text::TextHost;
 use crate::ui_runtime::state::HostWorkFlags;
@@ -134,8 +136,10 @@ impl UiRuntime {
         // Also handles a newly attached observer when geometry stayed cached.
         // These notifications schedule subsequent renders, never run them here.
         self.interaction_system.notify_detached_size_observers();
-        for (id, observer) in self.interaction_system.size_observers() {
-            observer.offer(id, self.layout_tree.node(id).layout.size());
+        for (id, row) in SizeObservation::iter(&self.columns) {
+            if let Some(observer) = row.size_observer.as_ref() {
+                observer.offer(id, self.layout_tree.node(id).layout.size());
+            }
         }
         // Every frame, not only after layout: a scroll moves an anchor without
         // laying anything out.

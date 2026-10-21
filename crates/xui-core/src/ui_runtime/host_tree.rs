@@ -3,6 +3,7 @@ use std::ops::{Index, IndexMut};
 use slotmap::{SecondaryMap, SlotMap};
 use xui_interface::{NodeId, WidgetState};
 
+use crate::caps::CapMask;
 use crate::fiber::Key;
 use crate::ui_runtime::state::HostWorkFlags;
 use crate::widgets::{WidgetI, WidgetType};
@@ -14,27 +15,26 @@ pub(crate) struct HostData {
     /// never looks at `EventRef::Raw`.
     pub reads_raw_events: bool,
     pub key: Option<Key>,
+    /// The capabilities the widget selects: which columns hold its rows.
+    pub caps: CapMask,
     pub work: HostWorkFlags,
     pub subtree_work: HostWorkFlags,
-    pub old_props_hash: u64,
-    pub new_props_hash: u64,
     pub state: WidgetState,
     pub state_before_change: Option<WidgetState>,
     pub widget: WidgetI,
 }
 
 impl HostData {
-    pub(crate) fn new(key: Option<Key>, props_hash: u64, widget: WidgetI) -> Self {
+    pub(crate) fn new(key: Option<Key>, widget: WidgetI) -> Self {
         let node_type = widget.node_type();
         let reads_raw_events = widget.reads_raw_events();
         Self {
             node_type,
             reads_raw_events,
             key,
+            caps: widget.caps(),
             work: HostWorkFlags::empty(),
             subtree_work: HostWorkFlags::empty(),
-            old_props_hash: 0,
-            new_props_hash: props_hash,
             state: WidgetState::default(),
             state_before_change: None,
             widget,

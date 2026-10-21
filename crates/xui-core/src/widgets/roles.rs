@@ -78,6 +78,12 @@ pub(crate) trait ArrangeChildren {
     fn container_style(&self, computed: &ComputedStyle) -> tf::Style;
 }
 
+/// Whether the widget takes focus when its `focus` capability leaves it to
+/// the widget (`Focusability::Auto`): a text field does, unless disabled.
+pub(crate) trait DefaultFocus {
+    fn focusable(&self) -> bool;
+}
+
 /// A widget's declared roles, as trait objects. Implemented by
 /// `define_widgets!` from each widget's role list; every role it does not
 /// declare answers `None`.
@@ -107,6 +113,10 @@ pub(crate) trait WidgetRoles {
     }
 
     fn as_arrange(&self) -> Option<&dyn ArrangeChildren> {
+        None
+    }
+
+    fn as_default_focus(&self) -> Option<&dyn DefaultFocus> {
         None
     }
 }

@@ -16,7 +16,7 @@ use crate::size::SizeObserver;
 use xui_interface::{
     AccessibilityChecked, AccessibilityLiveRegion, AccessibilityOrientation, AccessibilityPopup,
     AccessibilityProperties, AccessibilityRole, FocusProperties, Focusability, NodeId,
-    OrderedFloat, ShortcutBinding, Transition,
+    OrderedFloat, ShortcutBinding, Transition, Animation,
 };
 
 behavior_capability! {
@@ -76,10 +76,13 @@ behavior_capability! {
 behavior_capability! {
     /// How the node's computed style moves between values.
     ///
-    /// Keyframe animations are not here: their frames are layers of the
-    /// node's own style type, so they live with its state rules.
+    /// A keyframe animation's timing is here; its frames are layers of the
+    /// node's own style type, kept beside its state rules.
     pub mod motion: Motion dirty(STYLE_TARGET) {
         transition: Transition [optional],
+        /// The timing of the node's keyframe animation; the keyframes are
+        /// the node's (`Draft::animate`).
+        animation: Animation [optional],
     }
 }
 

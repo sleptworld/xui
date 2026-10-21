@@ -29,9 +29,7 @@ use super::roles::PaintContent;
 use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc, sync::Arc};
 
 use crate::clock::FrameTime;
-use crate::element::ElementDesc;
-use crate::event_system::callbacks::EventHandlers;
-use crate::event_system::interaction::InteractionProperties;
+use crate::node::{Draft, WidgetInstance, WidgetT};
 use crate::render::{
     BatchContent, BatchItem, BatchPrimitive, ClipShape, Primitive, RenderTreeWriter,
     ShapePrimitive, TextPrimitive, VectorPrimitive,
@@ -41,12 +39,13 @@ use crate::text::TextLayoutSlot;
 use xui_interface::ExternalTextureHandle;
 use xui_interface::{
     Affine, Bounds, CanvasTextId, Color, ComputedColorStyle, ComputedStrokeStyle, ComputedStyle,
-    ExternalTextureId, Key, NodeId, PathData, PathFill, PathStroke, Point, Sampling, Shape, Size,
-    StrokeLineStyle, Style, TextLayoutConstraints, TextPaintProps, TextPaintStyle, TextProps,
-    Theme, VectorCommand, VectorScene, WidgetType, WidgetUpdateFlags,
+    ExternalTextureId, NodeId, PathData, PathFill, PathStroke, Point, Sampling, Shape, Size,
+    StrokeLineStyle, TextLayoutConstraints, TextPaintProps, TextPaintStyle, TextProps,
+    Theme, VectorCommand, VectorScene, WidgetUpdateFlags,
 };
 
-use super::{props_hash, widget_element_desc};
+use super::props_hash;
+use xui_macros::widget;
 
 /// Caller-chosen identity for a pickable region. See [`CanvasController::pick`].
 pub type CanvasPickTag = u32;
@@ -1014,13 +1013,20 @@ struct CanvasControllerState {
     size: Size<f32>,
 }
 
-/// Shared retained content for a [`CanvasWidget`].
+/// Shared retained content for a [`Canvas`].
 ///
 /// Mutating a controller repaints every canvas bound to it on the next frame,
 /// with no component rebuild involved.
 #[derive(Clone)]
 pub struct CanvasController {
     inner: Rc<RefCell<CanvasControllerState>>,
+}
+
+/// The same controller, not an equal one, as `same_handle`.
+impl PartialEq for CanvasController {
+    fn eq(&self, other: &Self) -> bool {
+        self.same_handle(other)
+    }
 }
 
 impl fmt::Debug for CanvasController {
@@ -1239,10 +1245,6 @@ impl CanvasController {
             state.picks = picks;
         }
     }
-
-    fn identity(&self) -> usize {
-        Rc::as_ptr(&self.inner) as usize
-    }
 }
 
 impl Default for CanvasController {
@@ -1251,12 +1253,44 @@ impl Default for CanvasController {
     }
 }
 
-pub struct CanvasWidget {
-    pub key: Option<Key>,
+/// A surface its controller paints: retained vector scenes, immediate
+/// painters, text, a GPU painter's texture. It paints its picture only, so it
+/// selects no decoration.
+#[widget(
+    style(box_size, margin, position, display, visibility, transform, effects, cursor),
+    behavior(focus, accessibility, shortcuts, motion, focus_binding, size_observation, events)
+)]
+#[props(derive(Debug, Clone, PartialEq))]
+pub struct Canvas {
+    /// What paints it. Swapping in a different controller repaints and
+    /// reshapes its text.
+    #[default(CanvasController::new())]
+    #[dirty(PAINT_OUTPUT | TEXT_SHAPE)]
     pub controller: CanvasController,
-    pub style: Style,
-    pub event_handlers: EventHandlers,
-    pub interaction: InteractionProperties,
+}
+
+impl WidgetT for Canvas {
+    type State = CanvasState;
+
+    fn create_state(props: &CanvasProps) -> CanvasState {
+        CanvasState::new(props.controller.clone())
+    }
+
+    fn update(_: &CanvasProps, new: &CanvasProps, state: &mut CanvasState) -> WidgetUpdateFlags {
+        state.follow_controller(&new.controller);
+        WidgetUpdateFlags::empty()
+    }
+}
+
+pub fn canvas() -> Draft<Canvas> {
+    Draft::new(CanvasProps::builder().build())
+}
+
+/// A canvas's state while mounted: its compiled picture, its GPU target, and
+/// the binding its controller invalidates through. The controller is the
+/// canvas's prop; the state holds the one it is bound to.
+pub struct CanvasState {
+    controller: CanvasController,
     compiled: CompiledCanvas,
     /// The target a GPU painter draws into, kept across compiles and
     /// reallocated when the node's physical size changes.
@@ -1286,25 +1320,19 @@ struct GpuTarget {
     size: Size<u32>,
 }
 
-impl fmt::Debug for CanvasWidget {
+impl fmt::Debug for CanvasState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CanvasWidget")
-            .field("key", &self.key)
+        f.debug_struct("CanvasState")
             .field("controller", &self.controller)
-            .field("style", &self.style)
             .field("batches", &self.compiled.batches.len())
             .finish()
     }
 }
 
-impl CanvasWidget {
-    pub fn new(controller: CanvasController) -> Self {
+impl CanvasState {
+    pub(crate) fn new(controller: CanvasController) -> Self {
         Self {
-            key: None,
             controller,
-            style: Style::new(),
-            event_handlers: EventHandlers::default(),
-            interaction: InteractionProperties::default(),
             compiled: CompiledCanvas::default(),
             #[cfg(feature = "wgpu")]
             gpu_target: None,
@@ -1314,93 +1342,26 @@ impl CanvasWidget {
             binding: None,
         }
     }
-
-    pub fn controller(mut self, controller: CanvasController) -> Self {
-        self.controller = controller;
-        self
-    }
-
-    /// Merges a style in, rather than replacing what is already there.
-    ///
-    /// On a fresh builder — how nearly every call site uses it — merging into an
-    /// all-unset style is indistinguishable from assignment. The difference
-    /// shows in the `xui!` macro, where `style={..}` is one attribute among
-    /// many: assignment made `<column padding={..} style={..} />` silently
-    /// discard the padding, and whether an attribute survived depended on
-    /// whether it was written before or after `style`.
-    pub fn style(mut self, style: impl xui_interface::StyleMerge) -> Self {
-        self.style.merge(&style);
-        self
-    }
-
-    pub fn key(mut self, key: impl Into<Key>) -> Self {
-        self.key = Some(key.into());
-        self
-    }
-
-    pub fn into_element_desc(self) -> ElementDesc {
-        widget_element_desc(self, Vec::new())
-    }
-
-    event_handler_methods!();
 }
 
-impl CanvasWidget {
-    pub(super) fn node_type(&self) -> WidgetType {
-        WidgetType::Canvas
-    }
-
-    pub(super) fn get_key(&self) -> Option<&Key> {
-        self.key.as_ref()
-    }
-
-    /// Deliberately free of the content revision.
-    ///
-    /// Content changes reach the host through the invalidation channel, not
-    /// through the props diff, so folding the revision in here would only make
-    /// component rebuilds churn the hash for a repaint that was already
-    /// scheduled.
-    pub(super) fn props_hash(&self) -> u64 {
-        props_hash(&(self.controller.identity(), &self.style))
-    }
-
-    pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
-        let mut flags = WidgetUpdateFlags::empty();
-
-        if !self.controller.same_handle(&next.controller) {
-            let binding = self.binding.clone();
-            if let Some((id, _)) = &binding {
-                self.controller.unbind(*id);
-            }
-            self.controller = next.controller.clone();
-            if let Some((id, invalidator)) = binding {
-                self.controller.bind(id, invalidator);
-            }
-            self.compiled = CompiledCanvas::default();
-            flags |= WidgetUpdateFlags::PAINT_OUTPUT | WidgetUpdateFlags::TEXT_SHAPE;
+impl CanvasState {
+    /// Moves the binding over to `next`, when it is a different controller,
+    /// and drops the picture compiled from the old one.
+    fn follow_controller(&mut self, next: &CanvasController) {
+        if self.controller.same_handle(next) {
+            return;
         }
-
-        if self.style != next.style {
-            self.style = next.style.clone();
-            flags |= WidgetUpdateFlags::STYLE_TARGET;
+        let binding = self.binding.clone();
+        if let Some((id, _)) = &binding {
+            self.controller.unbind(*id);
         }
-
-        flags
+        self.controller = next.clone();
+        if let Some((id, invalidator)) = binding {
+            self.controller.bind(id, invalidator);
+        }
+        self.compiled = CompiledCanvas::default();
     }
 
-    pub(super) fn default_style(&self) -> Style {
-        Style::new()
-    }
-
-    pub(super) fn current_style(&self) -> &Style {
-        &self.style
-    }
-
-    /// Re-runs the content against the node's final geometry.
-    ///
-    /// Called from the post-layout pass, next to the one that re-shapes text
-    /// widgets at their committed width, because a painter needs exactly the
-    /// same thing: a size Taffy has finished deciding.
     pub(crate) fn compile(
         &mut self,
         frame: CanvasFrame<'_>,
@@ -1594,7 +1555,7 @@ pub(crate) fn canvas_text_slot(id: CanvasTextId) -> TextLayoutSlot {
     TextLayoutSlot::new(id.get())
 }
 
-impl PaintContent for CanvasWidget {
+impl PaintContent for WidgetInstance<Canvas> {
     fn paint(
         &self,
         node_id: xui_interface::NodeId,
@@ -1604,7 +1565,7 @@ impl PaintContent for CanvasWidget {
     ) {
         // One clip and one leaf, however much is drawn: the items hang off
         // the leaf rather than each taking a node of its own.
-        let content = self.compiled.content(node_id);
+        let content = self.state.compiled.content(node_id);
         writer
             .clip(ClipShape::Rect(rect), |writer| {
                 if !content.items().is_empty() {
@@ -1620,7 +1581,7 @@ impl PaintContent for CanvasWidget {
 }
 
 #[cfg(test)]
-impl CanvasWidget {
+impl CanvasState {
     pub(crate) fn compiled_generation(&self) -> u64 {
         self.compiled.generation
     }
@@ -1668,12 +1629,12 @@ mod tests {
         path.build()
     }
 
-    fn compile(widget: &mut CanvasWidget, size: Size<f32>) {
+    fn compile(widget: &mut CanvasState, size: Size<f32>) {
         compile_at(widget, size, FrameTime::ZERO);
     }
 
     /// `compile`, with the frame's time chosen by the caller.
-    fn compile_at(widget: &mut CanvasWidget, size: Size<f32>, time: FrameTime) {
+    fn compile_at(widget: &mut CanvasState, size: Size<f32>, time: FrameTime) {
         let theme = StyleTheme::default();
         let style = ComputedStyle::initial(&theme);
         let mut measure_text = |_, _: &TextProps, _| CanvasTextMetrics {
@@ -1718,7 +1679,7 @@ mod tests {
                 TextProps::new("label"),
             );
         });
-        let mut widget = CanvasWidget::new(controller);
+        let mut widget = CanvasState::new(controller);
         compile(&mut widget, Size::new(100.0, 100.0));
 
         assert_eq!(
@@ -1735,7 +1696,7 @@ mod tests {
             p.circle(Point::new(1.0, 1.0), 1.0, Color::WHITE);
             p.stroke_path(line_path(), PathStroke::new(Color::WHITE, 1.0));
         });
-        let mut widget = CanvasWidget::new(controller);
+        let mut widget = CanvasState::new(controller);
         compile(&mut widget, Size::new(100.0, 100.0));
         assert_eq!(widget.batch_kinds(), vec!["vector", "shapes", "vector"]);
     }
@@ -1745,7 +1706,7 @@ mod tests {
         let controller = CanvasController::with_painter(|p| {
             p.stroke_path(line_path(), PathStroke::new(Color::BLACK, 1.0));
         });
-        let mut widget = CanvasWidget::new(controller);
+        let mut widget = CanvasState::new(controller);
         compile(&mut widget, Size::new(100.0, 100.0));
         let scenes = widget.vector_scene_ids();
 
@@ -1776,10 +1737,10 @@ mod tests {
                 Color::BLACK,
             );
         });
-        let mut widget = CanvasWidget::new(controller);
+        let mut widget = CanvasState::new(controller);
 
         compile(&mut widget, Size::new(300.0, 50.0));
-        let full_width = |widget: &CanvasWidget| match &widget.compiled.batches[0] {
+        let full_width = |widget: &CanvasState| match &widget.compiled.batches[0] {
             CanvasBatch::Shapes(shapes) => shapes[0].bounds.width(),
             other => panic!("expected a shape batch, got {other:?}"),
         };
@@ -1797,7 +1758,7 @@ mod tests {
         let controller = CanvasController::with_painter(move |p| {
             *sink.borrow_mut() = (p.hairline(), p.snap(10.3));
         });
-        let mut widget = CanvasWidget::new(controller);
+        let mut widget = CanvasState::new(controller);
         compile(&mut widget, Size::new(100.0, 100.0));
         assert_eq!(*recorded.borrow(), (0.5, 10.5));
     }
@@ -1810,7 +1771,7 @@ mod tests {
             p.text(bounds, TextProps::new("second"));
             p.text_keyed(1, bounds, TextProps::new("keyed"));
         });
-        let mut widget = CanvasWidget::new(controller);
+        let mut widget = CanvasState::new(controller);
 
         compile(&mut widget, Size::new(100.0, 100.0));
         let first: Vec<_> = widget
@@ -1842,7 +1803,7 @@ mod tests {
             *sink.borrow_mut() = Some(layout.metrics());
             p.draw_text(Point::new(12.0, 20.0), layout);
         });
-        let mut widget = CanvasWidget::new(controller);
+        let mut widget = CanvasState::new(controller);
         let theme = StyleTheme::default();
         let style = ComputedStyle::initial(&theme);
         let mut measure_text =
@@ -1895,7 +1856,7 @@ mod tests {
             p.pick(7, Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)));
             p.pick(9, Bounds::from_origin_size((10.0, 10.0), (20.0, 20.0)));
         });
-        let mut widget = CanvasWidget::new(controller.clone());
+        let mut widget = CanvasState::new(controller.clone());
         compile(&mut widget, Size::new(100.0, 100.0));
 
         assert_eq!(controller.pick(Point::new(15.0, 15.0)), Some(9));
@@ -1938,7 +1899,7 @@ mod tests {
         let controller = CanvasController::with_painter(move |_| {
             *counter.borrow_mut() += 1;
         });
-        let mut widget = CanvasWidget::new(controller.clone());
+        let mut widget = CanvasState::new(controller.clone());
         compile(&mut widget, Size::new(10.0, 10.0));
         assert_eq!(*runs.borrow(), 1);
 
@@ -1959,7 +1920,7 @@ mod tests {
         let controller = CanvasController::with_painter(move |painter| {
             recorder.borrow_mut().push(painter.time());
         });
-        let mut widget = CanvasWidget::new(controller.clone());
+        let mut widget = CanvasState::new(controller.clone());
 
         let start = std::time::Instant::now();
         let mut clock = crate::clock::FrameClock::new();
@@ -1991,7 +1952,7 @@ mod tests {
                 painter.request_repaint();
             }
         });
-        let mut widget = CanvasWidget::new(controller.clone());
+        let mut widget = CanvasState::new(controller.clone());
 
         for expected in [true, true, true] {
             controller.invalidate();
@@ -2010,7 +1971,7 @@ mod tests {
     #[test]
     fn the_props_hash_ignores_content_so_edits_do_not_churn_the_component_diff() {
         let controller = CanvasController::with_scene(VectorScene::default());
-        let widget = CanvasWidget::new(controller.clone());
+        let widget = CanvasState::new(controller.clone());
         let before = widget.props_hash();
 
         controller.set_scene({
@@ -2024,7 +1985,7 @@ mod tests {
             "content reaches the host through the invalidation channel, not the props diff"
         );
 
-        let replacement = CanvasWidget::new(CanvasController::new());
+        let replacement = CanvasState::new(CanvasController::new());
         assert_ne!(replacement.props_hash(), before);
     }
 
@@ -2035,10 +1996,10 @@ mod tests {
 
         let first = CanvasController::new();
         let second = CanvasController::new();
-        let mut widget = CanvasWidget::new(first.clone());
+        let mut widget = CanvasState::new(first.clone());
         widget.bind(node, invalidator.clone());
 
-        let flags = widget.update_from(&CanvasWidget::new(second.clone()));
+        let flags = widget.update_from(&CanvasState::new(second.clone()));
         assert!(flags.contains(WidgetUpdateFlags::PAINT_OUTPUT));
 
         first.invalidate();
@@ -2060,7 +2021,7 @@ mod tests {
             PathStroke::new(Color::BLACK, 1.0),
         );
         let controller = CanvasController::with_scene(scene.build());
-        let mut widget = CanvasWidget::new(controller.clone());
+        let mut widget = CanvasState::new(controller.clone());
 
         compile(&mut widget, Size::new(100.0, 50.0));
         let generation = widget.compiled_generation();
@@ -2087,7 +2048,7 @@ mod tests {
     }
 
     /// Renders `widget` at `rect` and returns the batch under its clip.
-    fn render_batch(widget: &CanvasWidget, rect: Bounds) -> (ClipShape, BatchPrimitive) {
+    fn render_batch(widget: &CanvasState, rect: Bounds) -> (ClipShape, BatchPrimitive) {
         let mut render_scene = RenderScene::new();
         let parent = render_scene.insert_group();
         let theme = StyleTheme::default();
@@ -2126,7 +2087,7 @@ mod tests {
                 1.0,
             );
         });
-        let mut widget = CanvasWidget::new(controller);
+        let mut widget = CanvasState::new(controller);
         compile(&mut widget, Size::new(100.0, 50.0));
 
         let rect = Bounds::from_origin_size((20.0, 30.0), (100.0, 50.0));
@@ -2159,7 +2120,7 @@ mod tests {
                 TextProps::new("canvas"),
             );
         });
-        let mut widget = CanvasWidget::new(controller);
+        let mut widget = CanvasState::new(controller);
         compile(&mut widget, Size::new(100.0, 50.0));
 
         let rect = Bounds::from_origin_size((2.0, 3.0), (100.0, 50.0));
@@ -2206,7 +2167,7 @@ mod tests {
                 );
             }
         });
-        let mut widget = CanvasWidget::new(controller);
+        let mut widget = CanvasState::new(controller);
         compile(&mut widget, Size::new(600.0, 20.0));
         let (_, batch) = render_batch(&widget, Bounds::from_zero_size(Size::new(600.0, 20.0)));
         assert_eq!(batch.content.items().len(), 1000);
@@ -2223,7 +2184,7 @@ mod tests {
             );
             p.draw_text(Point::new(0.0, 20.0), wrapped);
         });
-        let mut widget = CanvasWidget::new(controller);
+        let mut widget = CanvasState::new(controller);
         compile(&mut widget, Size::new(100.0, 50.0));
         let (_, batch) = render_batch(&widget, Bounds::from_zero_size(Size::new(100.0, 50.0)));
         let clips: Vec<_> = batch
@@ -2250,7 +2211,7 @@ mod tests {
                 TextProps::new(*source.borrow()),
             );
         });
-        let mut widget = CanvasWidget::new(controller.clone());
+        let mut widget = CanvasState::new(controller.clone());
         let rect = Bounds::from_zero_size(Size::new(100.0, 50.0));
         compile(&mut widget, rect.size());
         let (_, before) = render_batch(&widget, rect);
@@ -2301,7 +2262,7 @@ mod tests {
             );
             p.stroke_path(line_path(), PathStroke::new(Color::BLACK, *source.borrow()));
         });
-        let mut widget = CanvasWidget::new(controller.clone());
+        let mut widget = CanvasState::new(controller.clone());
         compile(&mut widget, Size::new(10.0, 10.0));
         let first = widget.vector_scene_ids();
 
@@ -2346,13 +2307,13 @@ mod tests {
             Some(CanvasGpuContext::new(device, queue))
         }
 
-        fn compile_gpu(widget: &mut CanvasWidget, size: Size<f32>, gpu: &CanvasGpuContext) {
+        fn compile_gpu(widget: &mut CanvasState, size: Size<f32>, gpu: &CanvasGpuContext) {
             compile_gpu_at(widget, size, gpu, FrameTime::ZERO);
         }
 
         /// `compile_gpu`, with the frame's time chosen by the caller.
         fn compile_gpu_at(
-            widget: &mut CanvasWidget,
+            widget: &mut CanvasState,
             size: Size<f32>,
             gpu: &CanvasGpuContext,
             time: FrameTime,
@@ -2378,7 +2339,7 @@ mod tests {
         }
 
         /// The single texture command a GPU painter lowers to.
-        fn texture_command(widget: &CanvasWidget) -> VectorCommand {
+        fn texture_command(widget: &CanvasState) -> VectorCommand {
             let batch = widget
                 .compiled
                 .batches
@@ -2402,7 +2363,7 @@ mod tests {
             };
             let seen = Rc::new(Cell::new(None));
             let recorded = Rc::clone(&seen);
-            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
+            let mut widget = CanvasState::new(CanvasController::with_gpu_painter(
                 move |_state: &mut Option<()>, painter: &mut CanvasGpuPainter<'_>| {
                     recorded.set(Some(painter.size()));
                     // A real pipeline would render here; clearing is enough to
@@ -2454,7 +2415,7 @@ mod tests {
                 eprintln!("no wgpu adapter available, skipping");
                 return;
             };
-            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
+            let mut widget = CanvasState::new(CanvasController::with_gpu_painter(
                 |_state: &mut Option<()>, _painter: &mut CanvasGpuPainter<'_>| {},
             ));
 
@@ -2523,7 +2484,7 @@ mod tests {
             let draws = Rc::new(Cell::new(0u32));
             let counted = Rc::clone(&inits);
             let drawn = Rc::clone(&draws);
-            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
+            let mut widget = CanvasState::new(CanvasController::with_gpu_painter(
                 move |state: &mut Option<u32>, _painter: &mut CanvasGpuPainter<'_>| {
                     // Stands in for a pipeline: built once, reached every draw.
                     let built = state.get_or_insert_with(|| {
@@ -2557,7 +2518,7 @@ mod tests {
             let counted = Rc::clone(&inits);
             let clear_next = Rc::new(Cell::new(false));
             let clear = Rc::clone(&clear_next);
-            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
+            let mut widget = CanvasState::new(CanvasController::with_gpu_painter(
                 move |state: &mut Option<u32>, _painter: &mut CanvasGpuPainter<'_>| {
                     if clear.replace(false) {
                         *state = None;
@@ -2586,7 +2547,7 @@ mod tests {
             };
             let elapsed = Rc::new(RefCell::new(Vec::new()));
             let recorded = Rc::clone(&elapsed);
-            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
+            let mut widget = CanvasState::new(CanvasController::with_gpu_painter(
                 move |state: &mut Option<std::time::Duration>,
                       painter: &mut CanvasGpuPainter<'_>| {
                     let started = *state.get_or_insert(painter.time().timestamp());
@@ -2627,7 +2588,7 @@ mod tests {
             // Asks for three more frames, then stops -- a finite animation.
             let draws = Rc::new(Cell::new(0u32));
             let drawn = Rc::clone(&draws);
-            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
+            let mut widget = CanvasState::new(CanvasController::with_gpu_painter(
                 move |_state: &mut Option<()>, painter: &mut CanvasGpuPainter<'_>| {
                     let n = drawn.get() + 1;
                     drawn.set(n);
@@ -2658,7 +2619,7 @@ mod tests {
                 return;
             };
             let mut runtime = crate::ui_runtime::UiRuntime::default();
-            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
+            let mut widget = CanvasState::new(CanvasController::with_gpu_painter(
                 |_state: &mut Option<()>, painter: &mut CanvasGpuPainter<'_>| {
                     painter.request_repaint();
                 },
@@ -2698,7 +2659,7 @@ mod tests {
             };
             let ask = Rc::new(Cell::new(true));
             let asking = Rc::clone(&ask);
-            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
+            let mut widget = CanvasState::new(CanvasController::with_gpu_painter(
                 move |_state: &mut Option<()>, painter: &mut CanvasGpuPainter<'_>| {
                     if asking.get() {
                         painter.request_repaint();
@@ -2717,7 +2678,7 @@ mod tests {
         fn without_a_device_a_gpu_painter_draws_nothing() {
             let ran = Rc::new(Cell::new(false));
             let recorded = Rc::clone(&ran);
-            let mut widget = CanvasWidget::new(CanvasController::with_gpu_painter(
+            let mut widget = CanvasState::new(CanvasController::with_gpu_painter(
                 move |_state: &mut Option<()>, _painter: &mut CanvasGpuPainter<'_>| {
                     recorded.set(true);
                 },

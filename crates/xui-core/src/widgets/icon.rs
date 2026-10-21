@@ -4,16 +4,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::assets::{SharedAsset, load_icon_asset};
-use crate::element::ElementDesc;
-use crate::event_system::callbacks::EventHandlers;
-use crate::event_system::interaction::InteractionProperties;
+use crate::node::{Draft, WidgetInstance, WidgetT};
 use xui_assets::AssetId;
 use xui_interface::{
-    Affine, Bounds, Color, ComputedStyle, FillRule, Key, PathData, PathFill, PathStroke, Rect,
-    Size, Sizing, Style, VectorSceneBuilder, WidgetType, WidgetUpdateFlags,
+    Affine, Bounds, Color, ComputedStyle, FillRule, PathData, PathFill, PathStroke, Rect,
+    Sizing, VectorSceneBuilder,
 };
-
-use super::{props_hash, widget_element_desc};
+use xui_macros::widget;
 use crate::render::{Primitive, RenderTreeWriter, VectorPrimitive};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -205,163 +202,62 @@ impl Hash for IconData {
     }
 }
 
-pub struct IconWidget {
-    pub key: Option<Key>,
+/// A vector icon, tinted with its `color` or, without one, the text colour it
+/// inherits. It paints its glyph only, so it selects no decoration — and no
+/// typography: its own `color` is the tint, not a text colour.
+#[widget(
+    style(box_size, margin, padding, position, display, visibility, transform, effects, cursor),
+    behavior(focus, accessibility, shortcuts, motion, focus_binding, size_observation, events),
+    shorthands(sources)
+)]
+#[props(derive(Debug, Clone, PartialEq))]
+pub struct Icon {
+    /// The asset it was loaded from, if any.
+    #[default]
+    #[dirty(PAINT_OUTPUT)]
     pub icon_key: Option<AssetId>,
+    /// The vector data it draws.
+    #[default]
+    #[dirty(PAINT_OUTPUT)]
     pub data: Option<IconData>,
+    /// The tint; `None` takes the inherited text colour.
+    #[default]
+    #[dirty(PAINT_OUTPUT)]
     pub color: Option<Color>,
-    pub style: Style,
-    pub event_handlers: EventHandlers,
-    pub interaction: InteractionProperties,
 }
 
-impl std::fmt::Debug for IconWidget {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("IconWidget")
-            .field("key", &self.key)
-            .field("data", &self.data)
-            .field("color", &self.color)
-            .field("style", &self.style)
-            .finish()
-    }
+impl WidgetT for Icon {
+    type State = ();
+
+    fn create_state(_: &IconProps) {}
 }
 
-impl Default for IconWidget {
-    fn default() -> Self {
-        Self::new()
-    }
+/// An icon, 24 × 24 unless sized otherwise.
+pub fn icon() -> Draft<Icon> {
+    Draft::new(IconProps::builder().build())
+        .with::<icon::width>(Sizing::from(24.0))
+        .with::<icon::height>(Sizing::from(24.0))
 }
 
-impl IconWidget {
-    pub fn new() -> Self {
-        Self {
-            key: None,
-            data: None,
-            color: None,
-            icon_key: None,
-            style: Style::new(),
-            event_handlers: EventHandlers::default(),
-            interaction: InteractionProperties::default(),
+/// Ways of setting an icon's data at once.
+#[allow(non_camel_case_types)]
+mod sources {
+    use super::*;
+
+    shorthand! {
+        /// Loads an icon asset, every time the node is built.
+        asset: Icon, AssetId, |props, asset| {
+            props.data = load_icon_asset(asset);
+            props.icon_key = Some(asset);
         }
     }
 
-    /// Loads the icon from the installed asset manager.
-    ///
-    /// This looks the asset up every time the builder runs, which is every
-    /// rebuild of the component using it. A component that rebuilds often can
-    /// load once with [`HookContext::use_asset`](crate::state::HookContext::use_asset)
-    /// and pass the result to [`Self::asset_data`] instead.
-    pub fn asset(self, asset: AssetId) -> Self {
-        let data = load_icon_asset(asset);
-        self.asset_data(asset, data)
-    }
-
-    /// Shows an icon asset that was already loaded, under the same identity
-    /// [`Self::asset`] would give it.
-    pub fn asset_data(mut self, asset: AssetId, data: Option<IconData>) -> Self {
-        self.icon_key = Some(asset);
-        self.data = data;
-        self
-    }
-
-    pub fn from_svg(mut self, svg: &str) -> Result<Self, SvgIconError> {
-        self.data = Some(IconData::from_svg(svg)?);
-        Ok(self)
-    }
-
-    pub fn from_icon_data(mut self, svg: IconData) -> Self {
-        self.data = Some(svg);
-        self
-    }
-
-    // pub fn from_svg_bytes(svg: &[u8]) -> Result<Self, SvgIconError> {
-    //     IconData::from_svg_bytes(svg).map(Self::new)
-    // }
-
-    // pub fn from_svg_file(path: impl AsRef<Path>) -> Result<Self, SvgIconError> {
-    //     IconData::from_svg_file(path).map(Self::new)
-    // }
-
-    pub fn color(mut self, color: Color) -> Self {
-        self.color = Some(color);
-        self
-    }
-
-    /// Sets both dimensions of the icon to the same value.
-    pub fn size(mut self, size: impl Into<Sizing>) -> Self {
-        let size = size.into();
-        self.style = self.style.size(Size::new(size, size));
-        self
-    }
-
-    pub fn width(mut self, width: impl Into<Sizing>) -> Self {
-        self.style = self.style.width(width);
-        self
-    }
-
-    pub fn height(mut self, height: impl Into<Sizing>) -> Self {
-        self.style = self.style.height(height);
-        self
-    }
-
-    /// Merges a style in, rather than replacing what is already there.
-    ///
-    /// On a fresh builder — how nearly every call site uses it — merging into an
-    /// all-unset style is indistinguishable from assignment. The difference
-    /// shows in the `xui!` macro, where `style={..}` is one attribute among
-    /// many: assignment made `<column padding={..} style={..} />` silently
-    /// discard the padding, and whether an attribute survived depended on
-    /// whether it was written before or after `style`.
-    pub fn style(mut self, style: impl xui_interface::StyleMerge) -> Self {
-        self.style.merge(&style);
-        self
-    }
-    pub fn key(mut self, key: impl Into<Key>) -> Self {
-        self.key = Some(key.into());
-        self
-    }
-    pub fn into_element_desc(self) -> ElementDesc {
-        widget_element_desc(self, Vec::new())
-    }
-
-    event_handler_methods!();
-}
-
-impl IconWidget {
-    pub(super) fn node_type(&self) -> WidgetType {
-        WidgetType::Icon
-    }
-    pub(super) fn get_key(&self) -> Option<&Key> {
-        self.key.as_ref()
-    }
-    pub(super) fn props_hash(&self) -> u64 {
-        props_hash(&(
-            &self.data,
-            self.color
-                .map(|c| (c.r.to_bits(), c.g.to_bits(), c.b.to_bits(), c.a.to_bits())),
-            &self.style,
-        ))
-    }
-
-    pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
-        let mut flags = WidgetUpdateFlags::empty();
-        if self.data != next.data || self.color != next.color {
-            flags |= WidgetUpdateFlags::PAINT_OUTPUT;
+    shorthand! {
+        /// An icon asset already loaded.
+        asset_data: Icon, (AssetId, Option<IconData>), |props, value| {
+            props.icon_key = Some(value.0);
+            props.data = value.1;
         }
-        if self.style != next.style {
-            flags |= WidgetUpdateFlags::STYLE_TARGET;
-        }
-        self.data = next.data.clone();
-        self.color = next.color;
-        self.style = next.style.clone();
-        flags
-    }
-
-    pub(super) fn default_style(&self) -> Style {
-        Style::new().size(Size::<Sizing>::fix(24.0, 24.0))
-    }
-    pub(super) fn current_style(&self) -> &Style {
-        &self.style
     }
 }
 
@@ -469,7 +365,7 @@ fn svg_transform(transform: usvg::Transform) -> Affine {
     )
 }
 
-impl PaintContent for IconWidget {
+impl PaintContent for WidgetInstance<Icon> {
     fn paint(
         &self,
         _node_id: xui_interface::NodeId,
@@ -477,11 +373,11 @@ impl PaintContent for IconWidget {
         style: &ComputedStyle,
         writer: &mut RenderTreeWriter<'_>,
     ) {
-        if self.data.is_none() {
+        if self.props.data.is_none() {
             return;
         }
 
-        let data = self.data.as_ref().unwrap();
+        let data = self.props.data.as_ref().unwrap();
 
         let view = data.view_box;
         if rect.width() <= 0.0 || rect.height() <= 0.0 || view.width <= 0.0 || view.height <= 0.0 {
@@ -493,7 +389,7 @@ impl PaintContent for IconWidget {
         let transform = Affine::translate(-view.x, -view.y)
             .then(Affine::scale(scale, scale))
             .then(Affine::translate(x, y));
-        let color = self.color.unwrap_or(style.text.color);
+        let color = self.props.color.unwrap_or(style.text.color);
 
         let mut scene = VectorSceneBuilder::new();
         for layer in data.layers.iter() {

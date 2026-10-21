@@ -1,105 +1,36 @@
-use crate::element::ElementDesc;
-use crate::event_system::callbacks::EventHandlers;
-use crate::event_system::interaction::InteractionProperties;
-use xui_interface::{Alignment, Key, Style, WidgetType, WidgetUpdateFlags};
+//! Children stacked on one another in a single cell.
 
-use super::{props_hash, widget_element_desc};
+use xui_interface::Alignment;
+use xui_macros::widget;
 
-/// A SwiftUI-style overlay container. Children share one Taffy grid cell and
-/// are painted in declaration order, with later children appearing on top.
-pub struct ZStackWidget {
-    pub key: Option<Key>,
-    pub style: Style,
+use crate::node::{Draft, WidgetT};
+
+/// A SwiftUI-style overlay container. Children share one grid cell and are
+/// painted in declaration order, later children on top.
+#[widget(
+    style(
+        box_size, margin, padding, flex_layout, position, display, typography, background,
+        corner_radius, border, box_shadow, clip, visibility, transform, effects, scroll, cursor
+    ),
+    behavior(
+        focus, accessibility, shortcuts, motion, focus_binding, scroll_binding, size_observation,
+        events
+    )
+)]
+#[props(derive(Debug, Clone, PartialEq))]
+pub struct ZStack {
+    /// Where each child sits in the shared cell.
+    #[default(Alignment::CENTER)]
+    #[dirty(LAYOUT_INPUT)]
     pub alignment: Alignment,
-    pub event_handlers: EventHandlers,
-    pub interaction: InteractionProperties,
 }
 
-impl std::fmt::Debug for ZStackWidget {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ZStackWidget")
-            .field("key", &self.key)
-            .field("alignment", &self.alignment)
-            .finish()
-    }
+impl WidgetT for ZStack {
+    type State = ();
+
+    fn create_state(_: &ZStackProps) {}
 }
 
-impl ZStackWidget {
-    pub fn new() -> Self {
-        Self {
-            key: None,
-            style: Style::default(),
-            alignment: Alignment::CENTER,
-            event_handlers: EventHandlers::default(),
-            interaction: InteractionProperties::default(),
-        }
-    }
-
-    /// Merges a style in, rather than replacing what is already there.
-    ///
-    /// On a fresh builder — how nearly every call site uses it — merging into an
-    /// all-unset style is indistinguishable from assignment. The difference
-    /// shows in the `xui!` macro, where `style={..}` is one attribute among
-    /// many: assignment made `<column padding={..} style={..} />` silently
-    /// discard the padding, and whether an attribute survived depended on
-    /// whether it was written before or after `style`.
-    pub fn style(mut self, style: impl xui_interface::StyleMerge) -> Self {
-        self.style.merge(&style);
-        self
-    }
-
-    pub fn alignment(mut self, alignment: Alignment) -> Self {
-        self.alignment = alignment;
-        self
-    }
-
-    pub fn key(mut self, key: impl Into<Key>) -> Self {
-        self.key = Some(key.into());
-        self
-    }
-
-    pub fn into_element_desc(self, children: Vec<ElementDesc>) -> ElementDesc {
-        widget_element_desc(self, children)
-    }
-
-    event_handler_methods!();
-
-    pub(super) fn node_type(&self) -> WidgetType {
-        WidgetType::ZStack
-    }
-
-    pub(super) fn get_key(&self) -> Option<&Key> {
-        self.key.as_ref()
-    }
-
-    pub(super) fn props_hash(&self) -> u64 {
-        props_hash(&(&self.style, self.alignment))
-    }
-
-    pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
-        let mut flags = WidgetUpdateFlags::empty();
-        if self.style != next.style {
-            self.style = next.style.clone();
-            flags |= WidgetUpdateFlags::STYLE_TARGET;
-        }
-        if self.alignment != next.alignment {
-            self.alignment = next.alignment;
-            flags |= WidgetUpdateFlags::LAYOUT_INPUT;
-        }
-        flags
-    }
-
-    pub(super) fn default_style(&self) -> Style {
-        Style::new()
-    }
-
-    pub(super) fn current_style(&self) -> &Style {
-        &self.style
-    }
-}
-
-impl Default for ZStackWidget {
-    fn default() -> Self {
-        Self::new()
-    }
+pub fn z_stack() -> Draft<ZStack> {
+    Draft::new(ZStackProps::builder().build())
 }

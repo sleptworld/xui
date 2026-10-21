@@ -1,5 +1,7 @@
 //! Scroll containers: offsets, controller requests, and scrollbar geometry.
 
+use crate::caps::Registered;
+use crate::caps::behavior::ScrollBinding;
 use crate::core::{Point, Size};
 use crate::scroll::{
     AppliedScroll, ScrollMetrics, ScrollRequestQueue, ScrollbarAxis, ScrollbarHit, ScrollbarPart,
@@ -74,7 +76,9 @@ impl UiRuntime {
     }
 
     fn publish_scroll_metrics(&self, id: NodeId) {
-        if let Some(controller) = self.interaction_system.scroll_controller(id) {
+        if let Some(controller) = ScrollBinding::get(&self.columns, id)
+            .and_then(|row| row.scroll_controller.as_ref())
+        {
             // A controller on a widget that does not scroll reads as empty
             // rather than keeping whatever it last saw.
             controller.publish(id, self.scroll_metrics(id).unwrap_or_default());
@@ -82,8 +86,10 @@ impl UiRuntime {
     }
 
     pub(super) fn publish_all_scroll_metrics(&self) {
-        for id in self.interaction_system.scroll_controller_nodes() {
-            self.publish_scroll_metrics(id);
+        for (id, row) in ScrollBinding::iter(&self.columns) {
+            if let Some(controller) = row.scroll_controller.as_ref() {
+                controller.publish(id, self.scroll_metrics(id).unwrap_or_default());
+            }
         }
     }
 

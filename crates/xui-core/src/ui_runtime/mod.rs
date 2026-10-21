@@ -65,6 +65,8 @@ pub struct UiRuntime {
     pub(super) root_overlayer: NodeId,
     pub(super) node_lifecycle_events: Vec<NodeLifecycleEvent>,
     pub(super) interaction_system: InteractionSystem,
+    /// Every node's capability rows, one column per capability.
+    pub(super) columns: crate::caps::Columns,
     /// Index of live `WidgetType::Text` hosts. `HostData::node_type` is fixed at
     /// creation, so membership only changes when a node is created or removed.
     pub(super) text_nodes: SparseSecondaryMap<NodeId, ()>,
@@ -149,8 +151,6 @@ pub struct NodeView<'a> {
     pub world_origin: Point,
     pub content_size: Size<f32>,
     pub scroll_offset: Point,
-    pub old_props_hash: u64,
-    pub new_props_hash: u64,
     pub target_style: &'a ComputedStyle,
     pub effective_style: &'a ComputedStyle,
     pub state: WidgetState,
@@ -174,8 +174,6 @@ impl<'a> NodeView<'a> {
             world_origin: layout.world_origin,
             content_size: layout.content_size,
             scroll_offset: layout.scroll_offset,
-            old_props_hash: host.old_props_hash,
-            new_props_hash: host.new_props_hash,
             target_style,
             effective_style,
             state: host.state,
@@ -217,5 +215,18 @@ impl From<SceneCompileError> for RenderFrameError {
 impl From<FrameBuildError> for RenderFrameError {
     fn from(value: FrameBuildError) -> Self {
         Self::Build(value)
+    }
+}
+
+impl Drop for UiRuntime {
+    /// An observer outlives the runtime it observed through: it must not keep
+    /// reporting nodes that are gone.
+    fn drop(&mut self) {
+        use crate::caps::Registered;
+        for (id, row) in crate::caps::behavior::SizeObservation::iter(&self.columns) {
+            if let Some(observer) = row.size_observer.as_ref() {
+                observer.unbind(id);
+            }
+        }
     }
 }

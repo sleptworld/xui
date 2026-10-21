@@ -341,9 +341,10 @@ impl UiRuntime {
         let rect = Bounds::from_zero_size(layout.size());
         let style = self.style_system.effective(id).clone();
         let widget = self.hosts[id].widget.clone();
+        let decorates = self.hosts[id].caps.intersects(crate::caps::CapMask::DECORATION);
         let paint = self.render_system.binding(id).paint;
         let mut writer = RenderTreeWriter::new(&mut self.render_system.scene, paint);
-        if widget.decorates() {
+        if decorates {
             paint_decoration(rect, &style, &mut writer);
         }
         widget.render(id, rect, &style, &mut writer);
@@ -427,7 +428,7 @@ impl UiRuntime {
                         line_count: metrics.line_count,
                     }
                 };
-                canvas.compile(
+                canvas.state.compile(
                     crate::widgets::CanvasFrame {
                         size,
                         style: &style,
@@ -438,8 +439,8 @@ impl UiRuntime {
                     },
                     &mut measure_text,
                 );
-                wants_repaint = canvas.wants_repaint();
-                canvas.text_boxes()
+                wants_repaint = canvas.state.wants_repaint();
+                canvas.state.text_boxes()
             }
             _ => Vec::new(),
         });

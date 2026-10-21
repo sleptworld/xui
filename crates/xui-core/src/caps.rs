@@ -20,7 +20,7 @@ pub mod style;
 use slotmap::{SecondaryMap, SparseSecondaryMap};
 use smallvec::SmallVec;
 use xui_interface::style::{ComputedStyle, Theme, WidgetStateMatcher};
-use xui_interface::{NodeId, Transition, WidgetState, WidgetUpdateFlags};
+use xui_interface::{Animation, NodeId, Transition, WidgetState, WidgetUpdateFlags};
 
 use crate::capability::{CommitCapability, CommitCx, HostCapability, StyleCapability};
 
@@ -57,6 +57,26 @@ pub trait RegisteredStyle: Registered + StyleCapability {
     /// Replaces `id`'s layers; returns whether they changed.
     #[doc(hidden)]
     fn write_layers(columns: &mut Columns, id: NodeId, layers: Layers<Self::Storage>) -> bool;
+
+    /// `id`'s two keyframes for this capability, when its animation names
+    /// any of the capability's properties.
+    #[doc(hidden)]
+    fn keyframes(columns: &Columns, id: NodeId) -> Option<&(Self::Storage, Self::Storage)>;
+
+    /// Replaces `id`'s keyframes; returns whether they changed.
+    #[doc(hidden)]
+    fn write_keyframes(
+        columns: &mut Columns,
+        id: NodeId,
+        keyframes: Option<(Self::Storage, Self::Storage)>,
+    ) -> bool;
+}
+
+/// Which keyframe of an animation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Keyframe {
+    From,
+    To,
 }
 
 /// A set of capabilities: what a node definition selects.
@@ -80,6 +100,11 @@ impl CapMask {
 
     pub const fn contains<C: Registered>(self) -> bool {
         self.0 & Self::of::<C>().0 != 0
+    }
+
+    /// Whether the two sets share a capability.
+    pub const fn intersects(self, other: Self) -> bool {
+        self.0 & other.0 != 0
     }
 
     pub const fn is_empty(self) -> bool {
@@ -131,11 +156,17 @@ macro_rules! capabilities {
             $($sfield: capabilities!(@map $skind style::$sfield::Storage),)*
             $($bfield: capabilities!(@map $bkind behavior::$bfield::Storage),)*
             layers: StyleLayers,
+            keyframes: StyleKeyframes,
         }
 
         #[derive(Default)]
         struct StyleLayers {
             $($sfield: SparseSecondaryMap<NodeId, Layers<style::$sfield::Storage>>,)*
+        }
+
+        #[derive(Default)]
+        struct StyleKeyframes {
+            $($sfield: SparseSecondaryMap<NodeId, (style::$sfield::Storage, style::$sfield::Storage)>,)*
         }
 
         $(
@@ -188,6 +219,28 @@ macro_rules! capabilities {
                     }
                     true
                 }
+
+                fn keyframes(
+                    columns: &Columns,
+                    id: NodeId,
+                ) -> Option<&(style::$sfield::Storage, style::$sfield::Storage)> {
+                    columns.keyframes.$sfield.get(id)
+                }
+
+                fn write_keyframes(
+                    columns: &mut Columns,
+                    id: NodeId,
+                    keyframes: Option<(style::$sfield::Storage, style::$sfield::Storage)>,
+                ) -> bool {
+                    if columns.keyframes.$sfield.get(id) == keyframes.as_ref() {
+                        return false;
+                    }
+                    match keyframes {
+                        Some(keyframes) => columns.keyframes.$sfield.insert(id, keyframes),
+                        None => columns.keyframes.$sfield.remove(id),
+                    };
+                    true
+                }
             }
         )*
 
@@ -230,6 +283,7 @@ macro_rules! capabilities {
                     if caps.contains::<style::$scap>() {
                         self.$sfield.remove(id);
                         self.layers.$sfield.remove(id);
+                        self.keyframes.$sfield.remove(id);
                     }
                 )*
                 $(
@@ -278,6 +332,32 @@ macro_rules! capabilities {
                         with_effective::<style::$scap, _>(self, id, state, |style| {
                             style::$scap::apply(style, target, parent, initial, theme)
                         });
+                    }
+                )*
+            }
+
+            /// `base` with one of `id`'s keyframes resolved over it, for
+            /// every style capability its animation names; equal to `base`
+            /// everywhere else, which keeps the layers below showing there.
+            pub(crate) fn apply_keyframe(
+                &self,
+                id: NodeId,
+                caps: CapMask,
+                keyframe: Keyframe,
+                base: &mut ComputedStyle,
+                parent: &ComputedStyle,
+                initial: &ComputedStyle,
+                theme: &Theme,
+            ) {
+                $(
+                    if caps.contains::<style::$scap>()
+                        && let Some((from, to)) = <style::$scap as RegisteredStyle>::keyframes(self, id)
+                    {
+                        let frame = match keyframe {
+                            Keyframe::From => from,
+                            Keyframe::To => to,
+                        };
+                        style::$scap::apply(frame, base, parent, initial, theme);
                     }
                 )*
             }
@@ -395,9 +475,49 @@ fn with_effective<C: RegisteredStyle, R>(
 }
 
 impl Columns {
+    /// `id`'s computed style in `state`, under `parent`: what it inherits,
+    /// with every style capability it selected resolved over that.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn compute_style(
+        &self,
+        id: NodeId,
+        caps: CapMask,
+        state: WidgetState,
+        parent: &ComputedStyle,
+        initial: &ComputedStyle,
+        theme: &Theme,
+    ) -> ComputedStyle {
+        let mut computed = parent.inherited_from(theme);
+        self.apply_style(id, caps, state, &mut computed, parent, initial, theme);
+        computed
+    }
+
+    /// The two styles `id`'s keyframe animation plays between, over `base`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn keyframe_styles(
+        &self,
+        id: NodeId,
+        caps: CapMask,
+        base: &ComputedStyle,
+        parent: &ComputedStyle,
+        initial: &ComputedStyle,
+        theme: &Theme,
+    ) -> (ComputedStyle, ComputedStyle) {
+        let mut from = base.clone();
+        self.apply_keyframe(id, caps, Keyframe::From, &mut from, parent, initial, theme);
+        let mut to = base.clone();
+        self.apply_keyframe(id, caps, Keyframe::To, &mut to, parent, initial, theme);
+        (from, to)
+    }
+
     /// `id`'s transition, when it selected `motion`.
     pub(crate) fn transition(&self, id: NodeId) -> Option<Transition> {
         behavior::Motion::get(self, id).and_then(|motion| motion.transition)
+    }
+
+    /// `id`'s keyframe animation timing, when it selected `motion`.
+    pub(crate) fn animation(&self, id: NodeId) -> Option<Animation> {
+        behavior::Motion::get(self, id).and_then(|motion| motion.animation)
     }
 }
 

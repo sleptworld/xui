@@ -26,20 +26,18 @@
 //! Adding a style property, a widget, or a component therefore never requires a
 //! change to `xui-macros`.
 
-use std::sync::Arc;
+use xui_interface::TextContent;
 
-use crate::core::{EdgeInsets, Point, Size};
 use crate::element::{ElementDesc, IntoChildren};
-use crate::style::{
-    AlignStyle, BackdropStyle, ColorStyle, ColorValue, CursorIcon, DisplayStyle, Effect,
-    JustifyStyle, LengthValue, PositionStyle, ScrollDirectionStyle, ScrollbarStyle,
-    ScrollbarStylePatch, ScrollbarVisibilityStyle, ShadowStyle, StrokeLineStyle, StrokeStyle,
-    Style, StyleMerge, TransformStyle, VisibilityStyle,
-};
-use xui_animation::Transition;
-use xui_interface::{
-    FontFamily, FontStyle, FontWeight, LineHeight, Sizing, TextContent, TextDecoration,
-};
+use crate::node::Draft;
+use crate::widgets::canvas::Canvas;
+use crate::widgets::container::Container;
+use crate::widgets::grid::Grid;
+use crate::widgets::icon::Icon;
+use crate::widgets::image::Image;
+use crate::widgets::text::{Text, text};
+use crate::widgets::text_input::TextInput;
+use crate::widgets::z_stack::ZStack;
 
 // ---------------------------------------------------------------------------
 // Children
@@ -107,232 +105,56 @@ impl<T: IntoChildren> Content<T> {
 }
 
 // ---------------------------------------------------------------------------
-// Style properties
-// ---------------------------------------------------------------------------
-
-/// A builder that owns a [`Style`], which [`StyleProps`] then decorates with the
-/// whole style vocabulary.
-pub trait Styled: Sized {
-    fn map_style(self, f: impl FnOnce(Style) -> Style) -> Self;
-}
-
-macro_rules! style_props {
-    (
-        $(
-            $name:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) => $target:ident ;
-        )*
-        @manual { $($manual:tt)* }
-    ) => {
-        /// Every [`Style`] property, as a builder method on every styled widget.
-        ///
-        /// Blanket-implemented for all [`Styled`] types, so a widget gets the
-        /// full vocabulary from a three-line `Styled` impl. Inherent methods win
-        /// over these, which is how `IconWidget::color` can mean "tint" while
-        /// `StyleProps::color` means "text color" everywhere else.
-        pub trait StyleProps: Styled {
-            $(
-                fn $name(self, $( $arg: $ty ),*) -> Self {
-                    self.map_style(move |__style| __style.$target( $( $arg ),* ))
-                }
-            )*
-            $($manual)*
-        }
-
-        impl<T: Styled> StyleProps for T {}
-    };
-}
-
-style_props! {
-    // text
-    color(color: impl Into<ColorValue>) => color;
-    font_family(family: impl Into<FontFamily>) => font_family;
-    font_size(size: impl Into<LengthValue>) => font_size;
-    font_weight(weight: FontWeight) => font_weight;
-    font_style(style: FontStyle) => font_style;
-    line_height(height: LineHeight) => line_height;
-    letter_spacing(spacing: impl Into<LengthValue>) => letter_spacing;
-    decoration(decoration: TextDecoration) => decoration;
-
-    // layout
-    gap(gap: impl Into<LengthValue>) => gap;
-    size(size: impl Into<Size<Sizing>>) => size;
-    width(width: impl Into<Sizing>) => width;
-    height(height: impl Into<Sizing>) => height;
-    min_size(size: impl Into<Size<Sizing>>) => min_size;
-    min_width(width: impl Into<Sizing>) => min_width;
-    min_height(height: impl Into<Sizing>) => min_height;
-    max_size(size: Size<Sizing>) => max_size;
-    max_width(width: impl Into<Sizing>) => max_width;
-    max_height(height: impl Into<Sizing>) => max_height;
-    margin(margin: EdgeInsets) => margin;
-    padding(padding: EdgeInsets) => padding;
-    align(align: AlignStyle) => align;
-    justify(justify: JustifyStyle) => justify;
-    inset(inset: EdgeInsets) => inset;
-    // `position_type` reads badly as an attribute; the rename lives here rather
-    // than in the macro so that the macro keeps zero exceptions.
-    position(position: PositionStyle) => position_type;
-    display(display: DisplayStyle) => display;
-
-    // transform
-    transform(transform: TransformStyle) => transform;
-    translate(translate: Point) => translate;
-    translate_x(x: f32) => translate_x;
-    translate_y(y: f32) => translate_y;
-    scale(scale: f32) => scale;
-    scale_xy(scale: Point) => scale_xy;
-    rotate(radians: f32) => rotate;
-    transform_origin(origin: Point) => transform_origin;
-
-    // paint
-    background(color: impl Into<ColorStyle>) => background;
-    border_color(color: impl Into<ColorStyle>) => border_color;
-    border_width(width: impl Into<LengthValue>) => border_width;
-    border_radius(radius: impl Into<LengthValue>) => border_radius;
-    stroke(stroke: StrokeStyle) => stroke;
-    shadow(shadow: ShadowStyle) => shadow;
-    clip(clip: bool) => clip;
-    visibility(visibility: VisibilityStyle) => visibility;
-    cursor(cursor: CursorIcon) => cursor;
-    backdrop_blur(sigma: impl Into<LengthValue>) => backdrop_blur;
-    backdrop_style(backdrop: BackdropStyle) => backdrop_style;
-    effects(effects: impl Into<Arc<[Effect]>>) => effects;
-
-    // scroll
-    scroll_direction(direction: ScrollDirectionStyle) => scroll_direction;
-    scrollbar_style(scrollbar: ScrollbarStyle) => scrollbar_style;
-    scrollbar(scrollbar: ScrollbarStylePatch) => scrollbar;
-    scrollbar_width(width: impl Into<LengthValue>) => scrollbar_width;
-    scrollbar_track_color(color: impl Into<ColorStyle>) => scrollbar_track_color;
-    scrollbar_thumb_color(color: impl Into<ColorStyle>) => scrollbar_thumb_color;
-    scrollbar_radius(radius: impl Into<LengthValue>) => scrollbar_radius;
-    scrollbar_visibility(visibility: ScrollbarVisibilityStyle) => scrollbar_visibility;
-
-    // animation
-    transition(transition: Transition) => transition;
-
-    @manual {
-        /// Multi-argument style setters take a tuple, so that every attribute
-        /// stays a single `name={value}` pair.
-        fn stroke_style(
-            self,
-            stroke: (
-                impl Into<ColorStyle>,
-                impl Into<LengthValue>,
-                StrokeLineStyle,
-            ),
-        ) -> Self {
-            let (color, width, line_style) = stroke;
-            self.map_style(move |style| style.stroke_style(color, width, line_style))
-        }
-
-        fn box_shadow(
-            self,
-            shadow: (
-                impl Into<ColorValue>,
-                Point,
-                impl Into<LengthValue>,
-                impl Into<LengthValue>,
-            ),
-        ) -> Self {
-            let (color, offset, blur, spread) = shadow;
-            self.map_style(move |style| style.box_shadow(color, offset, blur, spread))
-        }
-
-        fn no_stroke(self, no_stroke: bool) -> Self {
-            self.map_style(move |style| if no_stroke { style.no_stroke() } else { style })
-        }
-
-        fn no_shadow(self, no_shadow: bool) -> Self {
-            self.map_style(move |style| if no_shadow { style.no_shadow() } else { style })
-        }
-
-        fn no_backdrop(self, no_backdrop: bool) -> Self {
-            self.map_style(move |style| if no_backdrop { style.no_backdrop() } else { style })
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Host widget wiring
 // ---------------------------------------------------------------------------
 
-macro_rules! impl_styled {
-    ($($widget:ty),* $(,)?) => {
-        $(
-            impl Styled for $widget {
-                fn map_style(mut self, f: impl FnOnce(Style) -> Style) -> Self {
-                    self.style = f(::std::mem::take(&mut self.style));
-                    self
-                }
-            }
-        )*
-    };
-}
-
-/// Declares which child shapes a host widget accepts.
+/// Declares which child shapes a host widget's draft accepts.
 macro_rules! impl_host_element {
     (parent $widget:ty) => {
-        impl IntoElement<NoChildren> for $widget {
+        impl IntoElement<NoChildren> for Draft<$widget> {
             fn into_element(self, _: NoChildren) -> ElementDesc {
                 self.into_element_desc(Vec::new())
             }
         }
 
-        impl IntoElement<Children> for $widget {
+        impl IntoElement<Children> for Draft<$widget> {
             fn into_element(self, children: Children) -> ElementDesc {
                 self.into_element_desc(children.collect())
             }
         }
 
-        impl<T: IntoChildren> IntoElement<Content<T>> for $widget {
+        impl<T: IntoChildren> IntoElement<Content<T>> for Draft<$widget> {
             fn into_element(self, content: Content<T>) -> ElementDesc {
                 self.into_element_desc(content.collect())
             }
         }
     };
     (leaf $widget:ty) => {
-        impl IntoElement<NoChildren> for $widget {
+        impl IntoElement<NoChildren> for Draft<$widget> {
             fn into_element(self, _: NoChildren) -> ElementDesc {
-                self.into_element_desc()
+                self.into_element_desc(Vec::new())
             }
         }
     };
 }
 
-use crate::widgets::{
-    CanvasWidget, ContainerWidget, GridWidget, IconWidget, ImageWidget, TextWidget, ZStackWidget,
-};
+impl_host_element!(parent Container);
+impl_host_element!(parent Grid);
+impl_host_element!(parent ZStack);
+impl_host_element!(parent Image);
+impl_host_element!(leaf Canvas);
+impl_host_element!(leaf Icon);
+impl_host_element!(leaf TextInput);
 
-impl_styled!(
-    ContainerWidget,
-    GridWidget,
-    ZStackWidget,
-    ImageWidget,
-    CanvasWidget,
-    IconWidget,
-    TextWidget,
-);
-
-impl_host_element!(parent ContainerWidget);
-impl_host_element!(parent GridWidget);
-impl_host_element!(parent ZStackWidget);
-impl_host_element!(parent ImageWidget);
-impl_host_element!(leaf CanvasWidget);
-impl_host_element!(leaf IconWidget);
-
-impl IntoElement<NoChildren> for TextWidget {
+impl IntoElement<NoChildren> for Draft<Text> {
     fn into_element(self, _: NoChildren) -> ElementDesc {
-        self.into_element_desc()
+        self.into_element_desc(Vec::new())
     }
 }
 
 /// `<text>{expr}</text>` sets the text content rather than adding children.
-impl<T: Into<TextContent>> IntoElement<Content<T>> for TextWidget {
+impl<T: Into<TextContent>> IntoElement<Content<T>> for Draft<Text> {
     fn into_element(self, content: Content<T>) -> ElementDesc {
-        self.text(content.0).into_element_desc()
+        self.with::<text::content>(content.0).into_element_desc(Vec::new())
     }
 }
-
-impl_host_element!(leaf crate::widgets::TextInputWidget);
-impl_styled!(crate::widgets::TextInputWidget);

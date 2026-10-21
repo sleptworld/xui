@@ -6,8 +6,10 @@ use crate::event_system::callbacks::{EventHandlers, EventMask};
 use crate::focus::FocusManager;
 use crate::ui_runtime::paint_pass::is_drawn;
 use crate::ui_runtime::{EventPath, NodeView, UiRuntime};
-use crate::widgets::{WidgetType, Widgets};
-use xui_interface::{Bounds, CursorIcon, Focusability, NodeId};
+use crate::caps::Registered;
+use crate::caps::behavior::{Accessibility, Events, Focus, Shortcuts};
+use crate::widgets::Widgets;
+use xui_interface::{Bounds, CursorIcon, FocusProperties, Focusability, NodeId};
 
 impl UiRuntime {
     pub fn contains(&self, id: NodeId) -> bool {
@@ -81,10 +83,9 @@ impl UiRuntime {
             .or_else(|| self.children(self.root).next())
             .or(Some(self.root));
         while let Some(id) = current {
-            let interaction = self.interaction_system.get(id);
-            if let Some(binding) = interaction
+            if let Some(binding) = Shortcuts::get(&self.columns, id)
                 .into_iter()
-                .flat_map(|node| node.properties.shortcuts.iter())
+                .flat_map(|row| row.shortcuts.iter())
                 .rev()
                 .find(|binding| binding.shortcut.matches(event))
             {
@@ -106,7 +107,12 @@ impl UiRuntime {
     /// The handlers `id` registered, empty when it registered none.
     #[inline]
     pub(crate) fn handlers(&self, id: NodeId) -> &EventHandlers {
-        self.interaction_system.handlers(id)
+        Events::get(&self.columns, id).unwrap_or(&self.interaction_system.no_handlers)
+    }
+
+    /// `id`'s focus row, the default for a node that does not select focus.
+    fn focus_properties(&self, id: NodeId) -> FocusProperties {
+        Focus::get(&self.columns, id).copied().unwrap_or_default()
     }
 
     /// Whether any live host reads raw device events at all.
@@ -151,9 +157,7 @@ impl UiRuntime {
     }
 
     pub(crate) fn listens_for(&self, id: NodeId, mask: EventMask) -> bool {
-        self.interaction_system
-            .get(id)
-            .is_some_and(|node| node.handlers.listens_for(mask))
+        self.handlers(id).listens_for(mask)
     }
 
     pub(crate) fn has_drag_callbacks(&self, id: NodeId) -> bool {
@@ -161,24 +165,19 @@ impl UiRuntime {
     }
 
     pub(crate) fn is_focusable(&self, id: NodeId) -> bool {
-        let node = &self.hosts[id];
-        let interaction = self.interaction_system.get(id);
-        if interaction.is_some_and(|node| {
-            node.properties.accessibility.disabled == Some(true)
-                || node.properties.accessibility.hidden == Some(true)
+        if Accessibility::get(&self.columns, id).is_some_and(|a11y| {
+            a11y.disabled == Some(true) || a11y.hidden == Some(true)
         }) {
             return false;
         }
-        let focus = interaction
-            .map(|node| node.properties.focus)
-            .unwrap_or_default();
+        let focus = self.focus_properties(id);
         let focusable = match focus.focusability {
             Focusability::Focusable => true,
             Focusability::NotFocusable => false,
             Focusability::Auto => {
                 focus.tab_index.is_some()
-                    || matches!(node.node_type, WidgetType::Button | WidgetType::TextInput)
-                    || interaction.is_some_and(|node| node.handlers.listens_for(EventMask::FOCUS))
+                    || self.hosts[id].widget.focusable_by_default()
+                    || self.listens_for(id, EventMask::FOCUS)
             }
         };
         // Last: it walks the ancestors, and most nodes are not focusable.
@@ -205,16 +204,13 @@ impl UiRuntime {
     pub(crate) fn is_sequentially_focusable(&self, id: NodeId) -> bool {
         self.is_focusable(id)
             && self
-                .interaction_system
-                .get(id)
-                .and_then(|node| node.properties.focus.tab_index)
+                .focus_properties(id)
+                .tab_index
                 .is_none_or(|index| index >= 0)
     }
 
     pub(crate) fn tab_index(&self, id: NodeId) -> Option<i32> {
-        self.interaction_system
-            .get(id)
-            .and_then(|node| node.properties.focus.tab_index)
+        self.focus_properties(id).tab_index
     }
 
     #[cfg(test)]
@@ -222,9 +218,7 @@ impl UiRuntime {
         &self,
         id: NodeId,
     ) -> Option<&xui_interface::AccessibilityProperties> {
-        self.interaction_system
-            .get(id)
-            .map(|node| &node.properties.accessibility)
+        Accessibility::get(&self.columns, id)
     }
 
     /// `viewport_pos` in `id`'s local coordinates: relative to its border box,
@@ -370,8 +364,9 @@ impl UiRuntime {
             // Children are kept in paint order, so the last is on top.
             for root in self.hosts.children(self.root_overlayer).rev() {
                 let Some(entry) = overlayer
+                    .state
                     .entry_for_visual_root(root)
-                    .and_then(|entry| overlayer.entry(entry))
+                    .and_then(|entry| overlayer.state.entry(entry))
                 else {
                     continue;
                 };
@@ -411,8 +406,8 @@ impl UiRuntime {
             let Widgets::RootOverlayer(overlayer) = widgets else {
                 unreachable!("runtime root overlayer has the wrong widget type")
             };
-            let entry = overlayer.entry_for_visual_root(visual_root)?;
-            let entry = overlayer.entry(entry)?;
+            let entry = overlayer.state.entry_for_visual_root(visual_root)?;
+            let entry = overlayer.state.entry(entry)?;
             Some((entry.hit_test(), entry.modal()))
         })
     }

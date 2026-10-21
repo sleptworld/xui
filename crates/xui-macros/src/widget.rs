@@ -25,7 +25,6 @@
 //! }
 //!
 //! impl WidgetT for Slider {
-//!     type Props = SliderProps;
 //!     type State = SliderState;
 //!
 //!     fn create_state(props: &SliderProps) -> SliderState {
@@ -38,10 +37,11 @@
 //!
 //! - `pub struct Slider;` — the marker, carrying the struct's docs;
 //! - `pub struct SliderProps { pub value, pub min, pub max, pub label }`;
-//! - `pub struct SliderState { dragging, shown }`;
+//! - `pub struct SliderState { dragging, shown }`, only when there are
+//!   `#[state]` fields (or `#[state(..)]` attributes);
 //! - `SliderProps::builder()`, whose `build()` exists only once every required
 //!   prop is set, exactly as for `#[component]` props;
-//! - `pub struct SliderStyle` / `pub struct SliderBehavior`, one field per
+//! - `pub struct SliderStyleSet` / `pub struct SliderBehavior`, one field per
 //!   selected style / behaviour capability, holding its storage;
 //! - `NodeDef for Slider` (a host node) and `Selects<C> for Slider` for each
 //!   selected capability `C`;
@@ -309,6 +309,18 @@ pub fn expand_widget(args: WidgetArgs, item: ItemStruct) -> Result<TokenStream2>
 
     let props_doc = format!("Props of the [`{widget_name}`] widget.");
     let state_doc = format!("State of the [`{widget_name}`] widget.");
+    // Without `#[state]` fields there is no state struct to generate: the
+    // widget's `WidgetT::State` is `()` or a type of its own, which may well
+    // be called `FooState`.
+    let state = (!states.is_empty() || !state_attrs.is_empty()).then(|| {
+        quote! {
+            #[doc = #state_doc]
+            #(#state_attrs)*
+            #vis struct #state_name {
+                #(#state_fields,)*
+            }
+        }
+    });
     Ok(quote! {
         #(#marker_attrs)*
         #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -320,11 +332,7 @@ pub fn expand_widget(args: WidgetArgs, item: ItemStruct) -> Result<TokenStream2>
             #(#prop_fields,)*
         }
 
-        #[doc = #state_doc]
-        #(#state_attrs)*
-        #vis struct #state_name {
-            #(#state_fields,)*
-        }
+        #state
 
         #builder
 
@@ -588,22 +596,28 @@ fn optional_expr(attr: &Attribute) -> Result<Option<Expr>> {
 pub struct WidgetArgs {
     style: Vec<Path>,
     behavior: Vec<Path>,
+    /// Modules of hand-written properties (write-only shorthands) to
+    /// re-export into the node module.
+    shorthands: Vec<Path>,
 }
 
 impl Parse for WidgetArgs {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
         let mut args = Self::default();
-        let mut seen = (false, false);
+        let mut seen = (false, false, false);
         for meta in Punctuated::<Meta, Token![,]>::parse_terminated(input)? {
             let (list, slot) = if meta.path().is_ident("style") {
                 (&mut args.style, &mut seen.0)
             } else if meta.path().is_ident("behavior") {
                 (&mut args.behavior, &mut seen.1)
+            } else if meta.path().is_ident("shorthands") {
+                (&mut args.shorthands, &mut seen.2)
             } else {
                 return Err(Error::new(
                     meta.span(),
                     "expected `style(..)` or `behavior(..)`, listing the capabilities the \
-                     widget selects",
+                     widget selects, or `shorthands(..)`, listing modules of its own \
+                     hand-written properties",
                 ));
             };
             if std::mem::replace(slot, true) {
@@ -647,17 +661,7 @@ fn cap_ref(path: &Path, style: bool, xui: &TokenStream2) -> Result<CapRef> {
         };
         (module.clone(), module)
     } else {
-        let first = &path.segments[0].ident;
-        let absolute = path.leading_colon.is_some() || first == "crate";
-        let inner = if absolute {
-            quote!(#path)
-        } else if first == "self" {
-            let rest = path.segments.iter().skip(1);
-            quote!(super #(:: #rest)*)
-        } else {
-            quote!(super::#path)
-        };
-        (quote!(#path), inner)
+        (quote!(#path), inner_path(path))
     };
     let marker = quote_spanned!(last.span()=> #module::#marker);
     Ok(CapRef {
@@ -667,6 +671,21 @@ fn cap_ref(path: &Path, style: bool, xui: &TokenStream2) -> Result<CapRef> {
         field,
         style,
     })
+}
+
+/// `path`, as named from inside the generated node module: a relative path
+/// is one level further out.
+fn inner_path(path: &Path) -> TokenStream2 {
+    let first = &path.segments[0].ident;
+    let absolute = path.leading_colon.is_some() || first == "crate";
+    if absolute {
+        quote!(#path)
+    } else if first == "self" {
+        let rest = path.segments.iter().skip(1);
+        quote!(super #(:: #rest)*)
+    } else {
+        quote!(super::#path)
+    }
 }
 
 /// The node half of the expansion: capability storage, `NodeDef`, `Selects`,
@@ -701,7 +720,7 @@ fn generate_node(
     let behavior_caps = caps.iter().filter(|cap| !cap.style).collect::<Vec<_>>();
 
     let module_name = TokenIdent::new(&ident_snake_case(widget_name), widget_name.span());
-    let style_name = format_ident!("{}Style", widget_name);
+    let style_name = format_ident!("{}StyleSet", widget_name);
     let behavior_name = format_ident!("{}Behavior", widget_name);
     let style_capability = quote!(#xui::capability::StyleCapability);
     let computed = quote!(#xui::__interface::ComputedStyle);
@@ -816,6 +835,15 @@ fn generate_node(
             if <#marker as #xui::caps::RegisteredStyle>::write_layers(columns, id, #var) {
                 dirty |= #flags::STYLE_TARGET;
             }
+            let frames = keyframes.as_mut().and_then(|keyframes| {
+                let from = ::core::mem::take(&mut keyframes.from.0.#field);
+                let to = ::core::mem::take(&mut keyframes.to.0.#field);
+                let unset = <<#marker as #xui::property::Capability>::Storage as ::core::default::Default>::default();
+                (from != unset || to != unset).then_some((from, to))
+            });
+            if <#marker as #xui::caps::RegisteredStyle>::write_keyframes(columns, id, frames) {
+                dirty |= #flags::STYLE_TARGET;
+            }
         }
     });
     let behavior_writes = behavior_caps.iter().map(|cap| {
@@ -844,7 +872,7 @@ fn generate_node(
                 columns: &mut #xui::caps::Columns,
                 cx: &mut #xui::capability::CommitCx<'_>,
             ) -> (#props_name, #flags) {
-                let #xui::node::Draft { storage, rules } = draft;
+                let #xui::node::Draft { storage, rules, mut keyframes, .. } = draft;
                 let #xui::node::NodeStorage { props, style, behavior } = storage;
                 let mut dirty = <#flags>::empty();
                 #(#layer_inits)*
@@ -873,7 +901,9 @@ fn generate_node(
     // private marker, which a `pub` enum would leak.
     let inner_vis = match vis {
         Visibility::Inherited => quote!(pub(super)),
-        _ => quote!(pub),
+        Visibility::Public(_) => quote!(pub),
+        // `pub(crate)`, `pub(in ..)`: as visible as the widget, from anywhere.
+        restricted => quote!(#restricted),
     };
     let prop_enums = props.iter().map(|prop| {
         let name = &prop.name;
@@ -947,6 +977,10 @@ fn generate_node(
         let inner = &cap.inner_module;
         quote!(#inner_vis use #inner::props::*;)
     });
+    let shorthand_reexports = args.shorthands.iter().map(|path| {
+        let inner = inner_path(path);
+        quote!(#inner_vis use #inner::*;)
+    });
     let module_doc = format!(
         "The properties of [`{widget_name}`](super::{widget_name}): its own props and those \
          of every capability it selects."
@@ -960,7 +994,7 @@ fn generate_node(
         }
 
         #[doc = #behavior_doc]
-        #[derive(Default)]
+        #[derive(Clone, Default)]
         #vis struct #behavior_name {
             #(#behavior_fields,)*
         }
@@ -1012,6 +1046,7 @@ fn generate_node(
         #[allow(non_camel_case_types, unused_imports)]
         #vis mod #module_name {
             #(#reexports)*
+            #(#shorthand_reexports)*
             #(#prop_enums)*
         }
 

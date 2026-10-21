@@ -2,9 +2,9 @@ use crate::{
     ComponentRender,
     anchor::AnchorPlacement,
     fiber::{ErasedProps, Key},
-    widgets::{DismissHandler, DismissReason, OverlayEntryOptions, OverlayScopeId, WidgetI},
+    widgets::{DismissHandler, DismissReason, ErasedDraft, OverlayEntryOptions, OverlayScopeId},
 };
-use xui_interface::WidgetType;
+use crate::widgets::WidgetType;
 
 pub type Component = ElementDesc;
 
@@ -15,10 +15,20 @@ pub enum ElementDesc {
     Portal(PortalDesc),
 }
 
-#[derive(Clone, Debug)]
+/// A host element: a widget's draft, and its children.
+#[derive(Debug)]
 pub struct WidgetDesc {
-    pub widget: WidgetI,
+    pub(crate) draft: Box<dyn ErasedDraft>,
     pub children: Vec<ElementDesc>,
+}
+
+impl Clone for WidgetDesc {
+    fn clone(&self) -> Self {
+        Self {
+            draft: self.draft.clone_box(),
+            children: self.children.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -112,12 +122,8 @@ impl PortalDesc {
 }
 
 impl WidgetDesc {
-    pub fn new(widget: WidgetI, children: Vec<ElementDesc>) -> Self {
-        Self { widget, children }
-    }
-
-    pub fn leaf(widget: WidgetI) -> Self {
-        Self::new(widget, Vec::new())
+    pub(crate) fn new(draft: Box<dyn ErasedDraft>, children: Vec<ElementDesc>) -> Self {
+        Self { draft, children }
     }
 
     pub fn child(mut self, child: impl Into<ElementDesc>) -> Self {
@@ -144,7 +150,7 @@ impl ComponentDesc {
 impl ElementDesc {
     pub fn key(&self) -> Option<Key> {
         match self {
-            Self::Host(widget) => widget.widget.key(),
+            Self::Host(widget) => widget.draft.key().cloned(),
             Self::Component(component) => component.key,
             Self::Portal(portal) => portal.key,
         }
@@ -152,7 +158,7 @@ impl ElementDesc {
 
     pub fn node_type(&self) -> Option<WidgetType> {
         match self {
-            Self::Host(widget) => Some(widget.widget.node_type()),
+            Self::Host(widget) => Some(widget.draft.node_type()),
             Self::Component(_) | Self::Portal(_) => None,
         }
     }

@@ -93,7 +93,6 @@ impl UiRuntime {
         }
 
         let node = &mut self.hosts[id];
-        node.old_props_hash = node.new_props_hash;
         node.work.remove(flags);
         node.subtree_work = subtree_work;
         node.work | node.subtree_work

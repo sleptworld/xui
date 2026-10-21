@@ -1,6 +1,5 @@
 use std::hash::{Hash, Hasher};
 
-use xui_interface::{Key, Style, WidgetType, WidgetUpdateFlags};
 
 use taffy::{
     Display, Style as TaffyStyle,
@@ -11,11 +10,9 @@ use taffy::{
     style_helpers::{auto, fr, length, max_content, min_content, minmax, repeat},
 };
 
-use crate::{
-    ElementDesc,
-    event_system::interaction::InteractionProperties,
-    widgets::{EventHandlers, props_hash, widget_element_desc},
-};
+use xui_macros::widget;
+
+use crate::node::{Draft, WidgetT};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GridTrackSize {
@@ -136,138 +133,41 @@ impl GridTracks {
     }
 }
 
-pub struct GridWidget {
-    pub key: Option<Key>,
-    pub style: Style,
-    pub event_handlers: EventHandlers,
+/// Children placed on a grid of tracks.
+#[widget(
+    style(
+        box_size, margin, padding, flex_layout, position, display, typography, background,
+        corner_radius, border, box_shadow, clip, visibility, transform, effects, scroll, cursor
+    ),
+    behavior(
+        focus, accessibility, shortcuts, motion, focus_binding, scroll_binding, size_observation,
+        events
+    )
+)]
+#[props(derive(Debug, Clone, PartialEq))]
+pub struct Grid {
+    /// The column tracks.
+    #[default(GridTracks::Explicit(Vec::new()))]
+    #[dirty(LAYOUT_INPUT)]
     pub columns: GridTracks,
+    /// The row tracks; `None` sizes rows to their content.
+    #[default]
+    #[dirty(LAYOUT_INPUT)]
     pub rows: Option<GridTracks>,
+    /// How children fill the tracks.
+    #[default]
+    #[dirty(LAYOUT_INPUT)]
     pub flow: GridFlow,
-    pub interaction: InteractionProperties,
 }
 
-impl std::fmt::Debug for GridWidget {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GridWidget")
-            .field("key", &self.key)
-            .field("columns", &self.columns)
-            .field("rows", &self.rows)
-            .field("flow", &self.flow)
-            .finish()
-    }
+impl WidgetT for Grid {
+    type State = ();
+
+    fn create_state(_: &GridProps) {}
 }
 
-impl GridWidget {
-    pub fn new() -> Self {
-        Self {
-            key: None,
-            style: Style::default(),
-            columns: GridTracks::Explicit(vec![]),
-            rows: None,
-            flow: GridFlow::default(),
-            event_handlers: EventHandlers::default(),
-            interaction: InteractionProperties::default(),
-        }
-    }
-
-    pub fn columns(mut self, columns: GridTracks) -> Self {
-        self.columns = columns;
-        self
-    }
-
-    pub fn rows(mut self, rows: GridTracks) -> Self {
-        self.rows = Some(rows);
-        self
-    }
-
-    pub fn flow(mut self, flow: GridFlow) -> Self {
-        self.flow = flow;
-        self
-    }
-
-    pub fn columns_count(self, count: usize) -> Self {
-        self.columns(GridTracks::repeat(count, GridTrackSize::flexible()))
-    }
-
-    pub fn adaptive_columns(self, min: f32) -> Self {
-        self.columns(GridTracks::adaptive(min))
-    }
-
-    /// Merges a style in, rather than replacing what is already there.
-    ///
-    /// On a fresh builder — how nearly every call site uses it — merging into an
-    /// all-unset style is indistinguishable from assignment. The difference
-    /// shows in the `xui!` macro, where `style={..}` is one attribute among
-    /// many: assignment made `<column padding={..} style={..} />` silently
-    /// discard the padding, and whether an attribute survived depended on
-    /// whether it was written before or after `style`.
-    pub fn style(mut self, style: impl xui_interface::StyleMerge) -> Self {
-        self.style.merge(&style);
-        self
-    }
-
-    pub fn key(mut self, key: impl Into<Key>) -> Self {
-        self.key = Some(key.into());
-        self
-    }
-
-    pub fn into_element_desc(self, children: Vec<ElementDesc>) -> ElementDesc {
-        widget_element_desc(self, children)
-    }
-
-    event_handler_methods!();
-
-    pub(super) fn node_type(&self) -> WidgetType {
-        WidgetType::Grid
-    }
-
-    pub(super) fn get_key(&self) -> Option<&Key> {
-        self.key.as_ref()
-    }
-
-    pub(super) fn props_hash(&self) -> u64 {
-        props_hash(&(&self.style, &self.columns, &self.rows, self.flow))
-    }
-
-    pub(super) fn update_from(&mut self, next: &Self) -> WidgetUpdateFlags {
-        let mut flags = WidgetUpdateFlags::empty();
-
-        if self.style != next.style {
-            self.style = next.style.clone();
-            flags |= WidgetUpdateFlags::STYLE_TARGET;
-        }
-
-        if self.columns != next.columns {
-            self.columns = next.columns.clone();
-            flags |= WidgetUpdateFlags::LAYOUT_INPUT;
-        }
-
-        if self.rows != next.rows {
-            self.rows = next.rows.clone();
-            flags |= WidgetUpdateFlags::LAYOUT_INPUT;
-        }
-
-        if self.flow != next.flow {
-            self.flow = next.flow;
-            flags |= WidgetUpdateFlags::LAYOUT_INPUT;
-        }
-
-        flags
-    }
-
-    pub(super) fn default_style(&self) -> Style {
-        Style::new()
-    }
-
-    pub(super) fn current_style(&self) -> &Style {
-        &self.style
-    }
-}
-
-impl Default for GridWidget {
-    fn default() -> Self {
-        Self::new()
-    }
+pub fn grid() -> Draft<Grid> {
+    Draft::new(GridProps::builder().build())
 }
 
 fn grid_track_to_taffy(track: GridTrackSize) -> TrackSizingFunction {
@@ -330,7 +230,7 @@ impl From<GridFlow> for TaffyGridAutoFlow {
     }
 }
 
-pub fn grid_widget_to_taffy(style: &mut TaffyStyle, widget: &GridWidget) {
+pub(crate) fn grid_widget_to_taffy(style: &mut TaffyStyle, widget: &GridProps) {
     style.display = Display::Grid;
     style.grid_template_columns = grid_tracks_to_taffy(&widget.columns);
 

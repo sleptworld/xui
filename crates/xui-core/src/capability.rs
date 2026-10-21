@@ -188,6 +188,7 @@ macro_rules! style_capability {
                 $field:ident : $declared:ty => $($path:ident).+ $([$($opt:tt)*])?
             ),* $(,)?
         }
+        $(extra($extra:ident { $($short:ident),* $(,)? }))?
     ) => {
         $(#[$cap_meta])*
         $vis mod $module {
@@ -267,6 +268,11 @@ macro_rules! style_capability {
             pub mod props {
                 #[allow(unused_imports)]
                 use super::*;
+
+                // Write-only shorthands over this capability's fields, named
+                // one by one: a glob would lose to the glob above wherever a
+                // shorthand is named like a module (`box_shadow`).
+                $(pub use super::super::$extra::{$($short),*};)?
 
                 $(
                     $(#[$field_meta])*

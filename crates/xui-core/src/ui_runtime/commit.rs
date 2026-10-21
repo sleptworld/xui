@@ -1,9 +1,8 @@
 //! Fiber commit: the one door through which the host tree changes shape.
 
 use crate::anchor::AnchorPlacement;
-use crate::event_system::interaction::HostInteraction;
-use crate::fiber::Key;
-use crate::layout::{ParentLayout, computed_style_for_widget, taffy_style_for_widget};
+use crate::caps::Columns;
+use crate::layout::{ParentLayout, taffy_style_for_widget};
 use crate::render::{HostRenderBinding, SceneError};
 use crate::ui_runtime::interaction::InteractionSystem;
 use crate::ui_runtime::layout::{LayoutTree, WidgetContext};
@@ -13,12 +12,12 @@ use crate::ui_runtime::style::StyleSystem;
 use crate::ui_runtime::tree::{HostData, HostTree};
 use crate::ui_runtime::{FrameStats, UiRuntime};
 use crate::widgets::{
-    OverlayEntryId, OverlayEntryOptions, OverlayModelError, OverlayScopeId, WidgetI, WidgetType,
-    Widgets,
+    ErasedDraft, OverlayEntryId, OverlayEntryOptions, OverlayModelError, OverlayScopeId, WidgetI,
+    WidgetType, Widgets,
 };
 use taffy::prelude as tf;
 use xui_interface::{
-    Affine, ComputedStyle, NodeId, NodeLifecycleEvent, Theme, WidgetState, WidgetUpdateFlags,
+    Affine, ComputedStyle, NodeId, NodeLifecycleEvent, Theme, WidgetState,
 };
 
 impl UiRuntime {
@@ -27,26 +26,29 @@ impl UiRuntime {
 
         // Default Theme
         let theme = Theme::default();
-        let root_widget = crate::widgets::root_widget();
-        let root_parent_style = ComputedStyle::initial(&theme);
-        let root_computed_style = computed_style_for_widget(
-            &root_widget,
-            &root_parent_style,
-            &theme,
+        let default_style = ComputedStyle::initial(&theme);
+        let mut columns = Columns::default();
+        let mut interaction_system = InteractionSystem::new();
+        let mut hosts = HostTree::new();
+        let root = hosts.insert_with_key(|id| {
+            let draft = Box::new(crate::widgets::root_widget());
+            let (widget, _) = draft.mount(id, &mut columns, &mut interaction_system.commit_cx());
+            HostData::new(None, WidgetI::new(widget))
+        });
+        let root_computed_style = columns.compute_style(
+            root,
+            hosts[root].caps,
             WidgetState::empty(),
+            &default_style,
+            &default_style,
+            &theme,
         );
         // The root has no parent; block flow is the neutral choice and the
         // root sizes itself to the viewport regardless.
         let root_taffy_style =
-            taffy_style_for_widget(&root_widget, ParentLayout::Block, &root_computed_style);
-        // Initialize Host Tree
-        let mut hosts = HostTree::new();
-        let root = hosts.insert_with_key(|_| HostData::new(None, 0, root_widget));
-        // Layout Binding
+            taffy_style_for_widget(&hosts[root].widget, ParentLayout::Block, &root_computed_style);
         layout_tree.create(root, root_taffy_style, None);
 
-        // Default Root Style
-        let default_style = ComputedStyle::initial(&theme);
         let mut style_system = StyleSystem::new(default_style);
         style_system.create(root, root_computed_style, true);
 
@@ -57,7 +59,8 @@ impl UiRuntime {
             root,
             root_overlayer: root,
             node_lifecycle_events: Vec::new(),
-            interaction_system: InteractionSystem::new(),
+            interaction_system,
+            columns,
             text_nodes: slotmap::SparseSecondaryMap::new(),
             text_font_context: None,
             canvas_nodes: slotmap::SparseSecondaryMap::new(),
@@ -85,10 +88,7 @@ impl UiRuntime {
 
         // The runtime owns exactly one overlayer. Application hosts are always
         // inserted before it so this remains the final paint branch.
-        let root_overlayer_widget = WidgetI::new(crate::widgets::root_overlayer_widget());
-        let key = root_overlayer_widget.key();
-        let props_hash = root_overlayer_widget.props_hash();
-        let root_overlayer = arena.create_node(key, props_hash, root_overlayer_widget, None);
+        let root_overlayer = arena.create_node(Box::new(crate::widgets::root_overlayer_widget()));
         arena.root_overlayer = root_overlayer;
         arena.attach(root, root_overlayer, None);
         arena.node_lifecycle_events.clear();
@@ -117,9 +117,9 @@ impl UiRuntime {
             let Widgets::RootOverlayer(overlayer) = widgets else {
                 unreachable!("runtime root overlayer has the wrong widget type")
             };
-            let scope = scope.unwrap_or_else(|| overlayer.root_scope());
-            let entry = overlayer.insert_entry(scope, visual_root, options)?;
-            Ok((entry, overlayer.visual_roots_in_paint_order()))
+            let scope = scope.unwrap_or_else(|| overlayer.state.root_scope());
+            let entry = overlayer.state.insert_entry(scope, visual_root, options)?;
+            Ok((entry, overlayer.state.visual_roots_in_paint_order()))
         })?;
         self.sync_overlayer_children(order);
         Ok(entry)
@@ -136,10 +136,10 @@ impl UiRuntime {
             let Widgets::RootOverlayer(overlayer) = widgets else {
                 unreachable!("runtime root overlayer has the wrong widget type")
             };
-            let next_scope = scope.unwrap_or_else(|| overlayer.root_scope());
-            overlayer.move_entry(entry, next_scope)?;
-            overlayer.update_entry_options(entry, options)?;
-            Ok(overlayer.visual_roots_in_paint_order())
+            let next_scope = scope.unwrap_or_else(|| overlayer.state.root_scope());
+            overlayer.state.move_entry(entry, next_scope)?;
+            overlayer.state.update_entry_options(entry, options)?;
+            Ok(overlayer.state.visual_roots_in_paint_order())
         })?;
         self.sync_overlayer_children(order);
         Ok(())
@@ -154,8 +154,8 @@ impl UiRuntime {
             let Widgets::RootOverlayer(overlayer) = widgets else {
                 unreachable!("runtime root overlayer has the wrong widget type")
             };
-            let visual_root = overlayer.remove_entry(entry)?;
-            Ok((visual_root, overlayer.visual_roots_in_paint_order()))
+            let visual_root = overlayer.state.remove_entry(entry)?;
+            Ok((visual_root, overlayer.state.visual_roots_in_paint_order()))
         })?;
         self.sync_overlayer_children(order);
         Ok(visual_root)
@@ -174,7 +174,7 @@ impl UiRuntime {
             let Widgets::RootOverlayer(overlayer) = widgets else {
                 unreachable!("runtime root overlayer has the wrong widget type")
             };
-            overlayer.set_entry_dismiss(entry, on_dismiss)
+            overlayer.state.set_entry_dismiss(entry, on_dismiss)
         })
     }
 
@@ -224,16 +224,16 @@ impl UiRuntime {
         Ok(())
     }
 
-    pub(crate) fn create_node(
-        &mut self,
-        key: Option<Key>,
-        props_hash: u64,
-        widget: WidgetI,
-        interaction: Option<HostInteraction>,
-    ) -> NodeId {
-        let id = self
-            .hosts
-            .insert_with_key(|_| HostData::new(key, props_hash, widget));
+    /// Mounts `draft` as a new, unattached host: its rows go into the
+    /// columns, its own data into the host tree.
+    pub(crate) fn create_node(&mut self, draft: Box<dyn ErasedDraft>) -> NodeId {
+        let key = draft.key().cloned();
+        let columns = &mut self.columns;
+        let mut cx = self.interaction_system.commit_cx();
+        let id = self.hosts.insert_with_key(|id| {
+            let (widget, _) = draft.mount(id, columns, &mut cx);
+            HostData::new(key, WidgetI::new(widget))
+        });
         let host = &self.hosts[id];
         if host.reads_raw_events {
             self.raw_event_listeners += 1;
@@ -242,7 +242,6 @@ impl UiRuntime {
         let context = taffy_context(id, host);
         self.style_system
             .create(id, self.style_system.default_style().clone(), false);
-        self.interaction_system.update(id, interaction);
         self.layout_tree.create(id, tf::Style::default(), context);
         self.create_host_render_binding(id)
             .expect("failed to create host render binding");
@@ -338,6 +337,9 @@ impl UiRuntime {
         self.wakes.remove(id);
         self.text_nodes.remove(id);
         self.interaction_system.remove(id);
+        let caps = self.hosts[id].caps;
+        self.columns
+            .remove(id, caps, &mut self.interaction_system.commit_cx());
         self.style_system.remove(id);
         self.anchor_system.remove(id);
         // Its parent is gone too, or it was detached above.
@@ -358,28 +360,15 @@ impl UiRuntime {
         std::mem::take(&mut self.node_lifecycle_events)
     }
 
-    pub(crate) fn update_node(
-        &mut self,
-        id: NodeId,
-        key: Option<Key>,
-        props_hash: u64,
-        widget: WidgetI,
-        interaction: Option<HostInteraction>,
-    ) -> WidgetI {
-        let mut flags = WidgetUpdateFlags::empty();
-        let current_widget;
-        {
-            let node = &mut self.hosts[id];
-
-            node.key = key;
-            node.new_props_hash = props_hash;
-
-            let widget_flags = node.widget.update_from(&widget);
-
-            flags |= widget_flags;
-            current_widget = node.widget.clone();
-        }
-        self.interaction_system.update(id, interaction);
+    /// Spreads `draft` over `id`'s rows and props, and queues what changed.
+    pub(crate) fn update_node(&mut self, id: NodeId, draft: Box<dyn ErasedDraft>) {
+        let node = &mut self.hosts[id];
+        node.key = draft.key().cloned();
+        let columns = &mut self.columns;
+        let mut cx = self.interaction_system.commit_cx();
+        let flags = node
+            .widget
+            .with_widgets_mut(|widget| draft.update(widget, id, columns, &mut cx));
         if self.focused_node() == Some(id) && !self.is_focusable(id) {
             self.interaction_system
                 .focus
@@ -388,7 +377,6 @@ impl UiRuntime {
 
         self.refresh_taffy_context(id);
         self.request_update(id, flags);
-        current_widget
     }
 
     /// Makes the overlayer's children exactly `order`, the overlay model's
@@ -429,7 +417,7 @@ impl UiRuntime {
         let invalidator = self.canvas_invalidator();
         self.hosts[id].widget.with_widgets_mut(|widget| {
             if let Widgets::Canvas(canvas) = widget {
-                canvas.bind(id, invalidator);
+                canvas.state.bind(id, invalidator);
             }
         });
     }
@@ -437,7 +425,7 @@ impl UiRuntime {
     fn unbind_canvas_controller(&mut self, id: NodeId) {
         self.hosts[id].widget.with_widgets_mut(|widget| {
             if let Widgets::Canvas(canvas) = widget {
-                canvas.unbind();
+                canvas.state.unbind();
             }
         });
     }
