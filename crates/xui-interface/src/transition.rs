@@ -1,8 +1,6 @@
 use easer::functions::{Cubic, Easing as EaserFunction, Linear, Quad, Quart, Quint, Sine};
 use std::time::Duration;
 
-use crate::style::StylePatch;
-
 #[derive(Debug, Clone, Copy, PartialEq, Hash, Default)]
 pub enum Easing {
     #[default]
@@ -136,8 +134,13 @@ pub enum AnimationDirection {
 /// that finishes leaves the node at its style, not at the last keyframe --
 /// give the style the end values to keep them.
 ///
+/// This is the animation's timing only. Its two keyframes are layers of the
+/// node's own style, declared with the node — so a keyframe can name only
+/// properties the node has — and kept per style capability, like state
+/// rules.
+///
 /// It is a layer on top of the node's style, per property: each keyframe is
-/// what the node would otherwise show with the keyframe's patch applied. A
+/// what the node would otherwise show with the keyframe layered on. A
 /// property neither keyframe names shows through unchanged, transition
 /// included, so a spinner can turn while its color transitions. On a property
 /// both name, the animation wins while it plays, and a transition started
@@ -147,10 +150,8 @@ pub enum AnimationDirection {
 /// Only a transform is cheap to animate every frame -- the renderer moves the
 /// node's picture without repainting it. Anything else repaints the node each
 /// frame, and anything that changes its size lays it out again.
-#[derive(Debug, Clone, PartialEq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash)]
 pub struct Animation {
-    pub from: StylePatch,
-    pub to: StylePatch,
     /// One iteration.
     pub duration: Duration,
     /// Before the first iteration, during which the node shows `from` (or `to`,
@@ -164,10 +165,8 @@ pub struct Animation {
 
 impl Animation {
     /// Plays once, forwards, linearly, with no delay.
-    pub fn new(from: StylePatch, to: StylePatch, duration: Duration) -> Self {
+    pub fn new(duration: Duration) -> Self {
         Self {
-            from,
-            to,
             duration,
             delay: Duration::ZERO,
             easing: Easing::Linear,
@@ -264,11 +263,7 @@ mod tests {
     use super::*;
 
     fn spin() -> Animation {
-        Animation::new(
-            StylePatch::new(),
-            StylePatch::new(),
-            Duration::from_millis(100),
-        )
+        Animation::new(Duration::from_millis(100))
     }
 
     fn at(animation: &Animation, millis: u64) -> AnimationProgress {
@@ -332,7 +327,7 @@ mod tests {
     #[test]
     fn an_animation_with_nothing_to_play_is_complete_at_once() {
         assert!(at(&spin().iterations(Iterations::Count(0)), 0).completed);
-        let still = Animation::new(StylePatch::new(), StylePatch::new(), Duration::ZERO).infinite();
+        let still = Animation::new(Duration::ZERO).infinite();
         assert!(at(&still, 0).completed);
     }
 
