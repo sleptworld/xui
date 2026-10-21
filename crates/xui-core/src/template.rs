@@ -775,4 +775,81 @@ mod tests {
         );
         assert_eq!(texts(&harness, harness.top()), ["swapped", "swapped"]);
     }
+
+    const ROWS: usize = 200;
+
+    fn template_page(cx: &mut HookContext<'_>) -> ElementDesc {
+        let count = cx.use_state(|| 1u32);
+        COUNT.with(|slot| *slot.borrow_mut() = Some(count));
+        let width = *count.get() as f32;
+        let rows = (0..ROWS)
+            .map(|_| {
+                xui! {
+                    <row height={20.0} gap={4.0} background={Color::BLACK}>
+                        <text>{"label"}</text>
+                        <container width={16.0} height={16.0} background={Color::WHITE} />
+                    </row>
+                }
+            })
+            .collect::<Vec<_>>();
+        xui! {
+            <column>
+                <container width={width} height={4.0} />
+                <column>{rows}</column>
+            </column>
+        }
+    }
+
+    fn draft_page(cx: &mut HookContext<'_>) -> ElementDesc {
+        let count = cx.use_state(|| 1u32);
+        COUNT.with(|slot| *slot.borrow_mut() = Some(count));
+        let width = *count.get() as f32;
+        let rows = (0..ROWS)
+            .map(|_| {
+                row()
+                    .with::<container::height>(20.0)
+                    .with::<container::gap>(4.0)
+                    .with::<container::background>(Color::BLACK)
+                    .into_element_desc(vec![
+                        text().with::<text::content>("label").into_element_desc(Vec::new()),
+                        container()
+                            .with::<container::width>(16.0)
+                            .with::<container::height>(16.0)
+                            .with::<container::background>(Color::WHITE)
+                            .into_element_desc(Vec::new()),
+                    ])
+            })
+            .collect::<Vec<_>>();
+        column().into_element_desc(vec![
+            container()
+                .with::<container::width>(width)
+                .with::<container::height>(4.0)
+                .into_element_desc(Vec::new()),
+            column().into_element_desc(rows),
+        ])
+    }
+
+    /// Benchmark, not a gate: run with `--ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn template_updates_against_drafts() {
+        for (name, root) in [
+            ("template", template_page as crate::app::ComponentFn),
+            ("drafts", draft_page),
+        ] {
+            let mut harness = Harness::new(root);
+            let updates = harness.host_updates();
+            let started = std::time::Instant::now();
+            const FRAMES: u32 = 50;
+            for frame in 0..FRAMES {
+                set(&COUNT, frame + 2);
+                harness.render();
+            }
+            let elapsed = started.elapsed() / FRAMES;
+            eprintln!(
+                "{name}: {elapsed:?} per update, {} host updates per update",
+                (harness.host_updates() - updates) / FRAMES as usize
+            );
+        }
+    }
 }
