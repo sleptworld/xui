@@ -53,7 +53,6 @@ pub struct App {
     tokio_runtime: TokioRuntime,
     async_dispatcher: AsyncDispatcher,
     async_receiver: mpsc::Receiver<AsyncMessage>,
-    first_build_pending: bool,
     platform: PlatformHandle,
 }
 
@@ -207,7 +206,6 @@ impl App {
             tokio_runtime,
             async_dispatcher,
             async_receiver,
-            first_build_pending: true,
             platform,
         }
     }
@@ -256,10 +254,6 @@ impl App {
     /// The application-wide context of type `T`, if one is set.
     pub fn context<T: Clone + 'static>(&self) -> Option<T> {
         self.components.context()
-    }
-
-    pub fn set_rebuild_budget(&mut self, budget: Duration) {
-        self.components.set_budget(budget);
     }
 
     pub fn tokio_handle(&self) -> TokioHandle {
@@ -417,23 +411,15 @@ impl App {
         self.drain_async_messages();
         self.flush_scroll_requests(text);
 
-        // The initial mount is the one build with nothing to fall back on. A
-        // sliced build that runs out of budget commits nothing, so the frame
-        // that follows it paints an empty window — the blank first screen the
-        // user actually sees, for as many frames as the mount takes. Every
-        // later build has a previous frame on screen while it is sliced, so
-        // only this first one is forced to run to completion.
-        let committed = if self.first_build_pending {
-            self.first_build_pending = false;
-            self.rebuild_sync_if_needed();
-            self.flush_node_lifecycle(backend, text);
-            true
-        } else if self.rebuild_slice_if_needed() {
-            self.flush_node_lifecycle(backend, text);
-            true
-        } else {
-            false
-        };
+        // Every build runs to completion within its frame: a frame never
+        // paints a tree some of whose updates are still pending. Rendering a
+        // component costs about a microsecond, so the component phase only
+        // outgrows a frame for builds in the thousands of components -- and
+        // an input event already finishes any pending build before it is
+        // handled (`dispatch_event`), so slicing bought no responsiveness.
+        self.rebuild_sync_if_needed();
+        self.flush_node_lifecycle(backend, text);
+        let committed = true;
 
         let drawn = self.draw(backend, text);
         // By now a widget the commit unmounted and the frame that last drew it
@@ -588,11 +574,13 @@ impl App {
         self.components.rebuild_sync_if_needed(&mut self.ui_runtime);
     }
 
-    #[inline]
-    fn rebuild_slice_if_needed(&mut self) -> bool {
-        self.components
-            .rebuild_slice_if_needed(&mut self.ui_runtime)
+    /// Renders and commits every pending component, and nothing after: what
+    /// `component_bench` times on its own.
+    #[cfg(test)]
+    pub(crate) fn flush_components(&mut self) {
+        self.rebuild_sync_if_needed();
     }
+
 
     fn flush_node_lifecycle<B: RenderBackend<TextHost<T>>, T: TextBackend>(
         &mut self,

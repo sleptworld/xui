@@ -1,3 +1,6 @@
+mod cache;
+
+use cache::LayoutCache;
 use slotmap::{Key, KeyData, SecondaryMap};
 use taffy as tf;
 use taffy::{
@@ -6,6 +9,7 @@ use taffy::{
 };
 use xui_interface::{NodeId, Point, Size, core::Bounds};
 
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum WidgetContext {
     Text(NodeId),
     Image(Size<f32>),
@@ -62,7 +66,7 @@ struct PartialNode<C> {
     context: Option<C>,
     parent: Option<NodeId>,
     children: Vec<tf::NodeId>,
-    cache: tf::Cache,
+    cache: LayoutCache,
     unrounded_layout: tf::Layout,
     final_layout: tf::Layout,
 }
@@ -114,7 +118,7 @@ impl<C> LayoutTree<C> {
                 context,
                 parent: None,
                 children: Vec::new(),
-                cache: tf::Cache::new(),
+                cache: LayoutCache::new(),
                 unrounded_layout: tf::Layout::with_order(0),
                 final_layout: tf::Layout::with_order(0),
             },
@@ -158,8 +162,18 @@ impl<C> LayoutTree<C> {
         true
     }
 
-    pub fn set_context(&mut self, id: NodeId, context: Option<C>) {
-        self.partials[id].context = context;
+    /// Replaces `id`'s measure context. Only a different one throws the
+    /// cached layout away: what a leaf measures to otherwise changes through
+    /// its own work flags, which invalidate it themselves.
+    pub fn set_context(&mut self, id: NodeId, context: Option<C>)
+    where
+        C: PartialEq,
+    {
+        let partial = &mut self.partials[id];
+        if partial.context == context {
+            return;
+        }
+        partial.context = context;
         self.invalidate(id);
     }
 
@@ -189,11 +203,33 @@ impl<C> LayoutTree<C> {
         self.invalidate(parent);
     }
 
-    /// Throws away the cached layout of `id` and every ancestor.
+    /// Throws away the cached layout of `id` and of every ancestor whose
+    /// layout it can change.
+    ///
+    /// The walk stops at the first ancestor with nothing cached. Every way an
+    /// ancestor's cache empties keeps the ones above it from holding a layout
+    /// `id` could change:
+    ///
+    /// - an earlier invalidation since the last layout cleared it, and its
+    ///   ancestors with it, up to where that walk stopped in turn;
+    /// - it was never laid out: it came with an insert, which invalidated
+    ///   the node it went under;
+    /// - it is inside a `display: none` subtree, which layout leaves empty,
+    ///   and nothing in there changes the layout around it. Whether the
+    ///   subtree is hidden is the root's own style, whose change starts the
+    ///   walk at the root itself.
+    ///
+    /// `id` itself is always cleared, whatever it held: that is where the
+    /// change is.
     pub fn invalidate(&mut self, id: NodeId) {
-        let mut current = Some(id);
+        let partial = &mut self.partials[id];
+        partial.cache.clear();
+        let mut current = partial.parent;
         while let Some(id) = current {
             let partial = &mut self.partials[id];
+            if partial.cache.is_empty() {
+                return;
+            }
             partial.cache.clear();
             current = partial.parent;
         }

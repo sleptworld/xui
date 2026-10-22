@@ -233,6 +233,84 @@ mod tests {
     }
 
     #[test]
+    fn new_content_drops_the_variants_of_the_old_but_not_the_active_one() {
+        let mut owners = SlotMap::<NodeId, ()>::with_key();
+        let owner = owners.insert(());
+        let mut host = TextHost::new(CountingTextBackend::new());
+        let slot = TextLayoutSlot::PRIMARY;
+        let other = |constraints| {
+            TextLayoutInput::new(
+                "other".into(),
+                constraints,
+                TextStyle::default().into(),
+                ParagraphStyle::default(),
+                TextBoxStyle::default(),
+                0,
+            )
+        };
+
+        let active = host.activate_slot(owner, slot, input(TextLayoutConstraints::max_width(120.0)));
+        host.measure_slot(owner, slot, input(TextLayoutConstraints::UNBOUNDED));
+        host.measure_slot(owner, slot, input(TextLayoutConstraints::UNBOUNDED));
+        assert_eq!(host.backend().layout_calls, 2, "a measured variant is kept");
+
+        host.measure_slot(owner, slot, other(TextLayoutConstraints::UNBOUNDED));
+        assert_eq!(host.backend().layout_calls, 3);
+        assert_eq!(
+            host.active_slot(owner, slot),
+            Some(active),
+            "the variant on screen went with the old content"
+        );
+
+        host.measure_slot(owner, slot, input(TextLayoutConstraints::UNBOUNDED));
+        assert_eq!(
+            host.backend().layout_calls,
+            4,
+            "a variant of the old content outlived the new content"
+        );
+    }
+
+    #[test]
+    fn removing_an_owner_removes_its_units_and_no_others() {
+        let mut owners = SlotMap::<NodeId, ()>::with_key();
+        let (gone, kept) = (owners.insert(()), owners.insert(()));
+        let mut host = TextHost::new(CountingTextBackend::new());
+
+        let measure = |host: &mut TextHost<CountingTextBackend>, owner, slot| {
+            host.measure_slot(owner, slot, input(TextLayoutConstraints::UNBOUNDED));
+            host.direct_unit(owner, slot).unwrap()
+        };
+        let gone_slots = [
+            measure(&mut host, gone, TextLayoutSlot::PRIMARY),
+            measure(&mut host, gone, TextLayoutSlot::new(1)),
+        ];
+        let kept_slot = measure(&mut host, kept, TextLayoutSlot::PRIMARY);
+        let range = xui_interface::TextRange::new(
+            xui_interface::TextOffset::char_offset(0),
+            xui_interface::TextOffset::char_offset(4),
+        );
+        let gone_document = host.create_document(gone);
+        let gone_paragraph = host
+            .insert_paragraph(gone, gone_document, 0, range, 0, 0, 10.0)
+            .unwrap()
+            .unit;
+        let kept_document = host.create_document(kept);
+        let kept_paragraph = host
+            .insert_paragraph(kept, kept_document, 0, range, 0, 0, 10.0)
+            .unwrap()
+            .unit;
+
+        host.handle_node_lifecycle(&NodeLifecycleEvent::Removed(gone));
+
+        for unit in gone_slots.into_iter().chain([gone_paragraph]) {
+            assert!(host.unit_location(unit).is_none(), "a unit of the removed owner is left");
+        }
+        for unit in [kept_slot, kept_paragraph] {
+            assert!(host.unit_location(unit).is_some(), "another owner's unit was removed");
+        }
+    }
+
+    #[test]
     fn shaper_state_lives_for_the_text_unit() {
         let mut owners = SlotMap::<NodeId, ()>::with_key();
         let owner = owners.insert(());

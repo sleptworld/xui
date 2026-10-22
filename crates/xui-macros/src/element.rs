@@ -263,6 +263,15 @@ pub(crate) fn map_handler(
     call(value)
 }
 
+/// What an eagerly built element is for.
+#[derive(Clone, Copy)]
+pub(crate) enum Build {
+    /// An `ElementDesc`.
+    Element,
+    /// A template slot's input, which keeps a component's props typed.
+    Slot,
+}
+
 impl Element {
     pub fn expand(&self, xui: &TokenStream2) -> Result<TokenStream2> {
         let mut errors = Errors::default();
@@ -277,6 +286,7 @@ impl Element {
     pub(crate) fn expand_eager(
         &self,
         xui_core: &TokenStream2,
+        build: Build,
         errors: &mut Errors,
     ) -> TokenStream2 {
         self.check_duplicate_attrs(errors);
@@ -317,8 +327,12 @@ impl Element {
         // The body's span, so that "does not accept this kind of body"
         // underlines the body rather than the whole invocation.
         let span = self.body_span().unwrap_or_else(|| tag.span());
+        let method = match build {
+            Build::Element => quote_spanned!(span=> build),
+            Build::Slot => quote_spanned!(span=> build_slot),
+        };
         let build = quote_spanned! {span=>
-            #xui_core::dsl::ElementBody::build(#children, __xui_node)
+            #xui_core::dsl::ElementBody::#method(#children, __xui_node)
         };
         quote! {
             {

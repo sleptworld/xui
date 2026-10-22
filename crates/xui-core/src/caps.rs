@@ -17,6 +17,7 @@
 pub mod behavior;
 pub mod style;
 
+use rustc_hash::FxBuildHasher;
 use slotmap::{SecondaryMap, SparseSecondaryMap};
 use smallvec::SmallVec;
 use xui_interface::style::{ComputedStyle, Theme, WidgetStateMatcher};
@@ -112,6 +113,10 @@ impl CapMask {
     }
 }
 
+/// A column holding only the nodes that have a row. Node ids are slotmap
+/// keys, already well spread, so they need no keyed hash.
+type Sparse<V> = SparseSecondaryMap<NodeId, V, FxBuildHasher>;
+
 /// The state layers one style capability declares on one node, in rule
 /// order. A layer that leaves the capability entirely unset is not stored.
 pub type Layers<S> = SmallVec<[(WidgetStateMatcher, S); 1]>;
@@ -170,12 +175,12 @@ macro_rules! capabilities {
 
         #[derive(Default)]
         struct StyleLayers {
-            $($sfield: SparseSecondaryMap<NodeId, Layers<style::$sfield::Storage>>,)*
+            $($sfield: Sparse<Layers<style::$sfield::Storage>>,)*
         }
 
         #[derive(Default)]
         struct StyleKeyframes {
-            $($sfield: SparseSecondaryMap<NodeId, (style::$sfield::Storage, style::$sfield::Storage)>,)*
+            $($sfield: Sparse<(style::$sfield::Storage, style::$sfield::Storage)>,)*
         }
 
         $(
@@ -428,7 +433,7 @@ macro_rules! capabilities {
     };
 
     (@map dense $storage:ty) => { SecondaryMap<NodeId, $storage> };
-    (@map sparse $storage:ty) => { SparseSecondaryMap<NodeId, $storage> };
+    (@map sparse $storage:ty) => { Sparse<$storage> };
 
     (@commit [] $cap:ty, $id:expr, $old:expr, $new:expr, $cx:expr) => {};
     (@commit [commit] $cap:ty, $id:expr, $old:expr, $new:expr, $cx:expr) => {

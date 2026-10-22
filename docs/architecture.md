@@ -142,17 +142,27 @@ reconciliation path.
 
 A draft is temporary input. Commit consumes it: generated `scatter` writes
 capability values to `UiRuntime`'s `Columns`, and the widget instance retains its
-own props and state under a `NodeId`. Reusing a template preserves these IDs;
-only hosts with dynamic inputs produce replacement drafts. Their values are
-compared at commit to derive dirty flags. Static hosts skip this update. Dynamic
-child slots still reconcile keys and element identity; this is node-level
-updating, not property-slot patching.
+own props and state under a `NodeId`. Reusing a template preserves these IDs.
+Which hosts an update touches is decided when the macro expands: a host with
+only constant attributes is built on mount and never again; a host with dynamic
+ones is patched in place, one property at a time through its capability row or
+own props, and dirtied by what actually changed. A host with a `style` attribute
+or a key of its own is rebuilt from a whole draft instead. Slots still reconcile
+keys and element identity.
 
-The retained fiber uses `FiberKind` to hold exactly one kind of state. The WIP
-tree carries one `Pending` payload, consumed at commit. The root is an ordinary
-component. Fragments represent dynamic child lists; portals own a separate
-physical subtree and release it even when their logical host ancestor is removed.
-`Expanded` is only an inspection tree and cannot be submitted for reconciliation.
+The retained fiber uses `FiberKind` to hold exactly one kind of state. There is
+one fiber tree, changed in place: a pass renders the components that need it --
+dirty ones, and those a parent's render handed new props -- shallowest first, so
+each renders once and after its ancestors, and reconciles what each returns
+straight into its fiber's children. Templates, fragments and portals have no
+render of their own and are reconciled as that reaches them; a template keeps
+its build for the commit (`TemplatePending`). The commit that ends the pass
+removes detached subtrees, then walks down to every fiber with an effect,
+placing, moving and updating hosts in sibling order. A pass always runs to the
+end within its frame; nothing is sliced. The root is an ordinary component.
+Fragments represent dynamic child lists; portals own a separate physical subtree
+and release it even when their logical host ancestor is removed. `Expanded` is
+only an inspection tree and cannot be submitted for reconciliation.
 
 ### Macros — `xui-macros`
 
@@ -173,6 +183,23 @@ Compile-time DSLs that produce `ElementDesc` / `Style` / components:
   projection into an ancestor's props allocation. `binding.share()` forwards a
   prop to a child without copying it (small values without drop glue, such as
   hook handles, are copied instead); the body still sees plain `&T` bindings.
+  A parent's render re-renders its child components (props are rebuilt, so
+  only the same allocation bails out); `#[component(memo)]` compares props by
+  value instead and skips the render when they are equal, which needs every
+  prop to be `PartialEq`.
+- In a template, an attribute built only from literals, paths, variants and
+  pure constructors (`EdgeInsets::all(4.0)`, `String::from("a")`) is a
+  constant, evaluated once at mount; any other call (`Instant::now()`) is
+  evaluated every render. On an update a dynamic host is patched in place,
+  one attribute at a time, unless it has a `style` attribute or a key of its
+  own, which rebuild it whole.
+- A template's slots: a component written in it is a slot whose input keeps
+  the props typed (`ComponentElement<P>`, `P: ComponentProps` carrying the
+  render handle as a constant), so the template's identity — call site plus
+  input types — names the component in every slot, constant ones included.
+  Each `if`, `for`, `match` or `{expr}` among a host's children is a list
+  slot of its own; the elements around it stay in the template. A `let`
+  among children is scoped to its siblings.
 - `#[main]` — includes the asset bootstrap module and installs the
   `AssetManager` before the user's `main` body runs.
 - `#[derive(Animatable)]` — field-wise `Animatable` impl.

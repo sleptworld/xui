@@ -1,0 +1,5 @@
+error: unknown component option `memoize`; the one option is `memo`
+ --> tests/ui/component_rejects_unknown_option.rs:5:13
+  |
+5 | #[component(memoize)]
+  |             ^^^^^^^

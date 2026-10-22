@@ -57,11 +57,19 @@ impl ComponentType {
     }
 }
 
+/// Whether two props of one component are equal: given the same props
+/// type twice, as a [`ComponentType`] guarantees.
+pub type SameProps = fn(&dyn Any, &dyn Any) -> bool;
+
 #[derive(Clone, Copy, Debug)]
 pub struct ComponentRender {
     pub component_type: ComponentType,
     pub name: &'static str,
     pub call: ComponentCall,
+    /// For a component declared `#[component(memo)]`: compares its props, so
+    /// that a parent's render handing it equal ones spares it a render of its
+    /// own. Without it only the same props allocation does.
+    pub same_props: Option<SameProps>,
 }
 
 impl ComponentRender {
@@ -70,7 +78,15 @@ impl ComponentRender {
             component_type,
             name: component_type.name(),
             call,
+            same_props: None,
         }
+    }
+
+    /// The same component, skipping a render whenever `same` finds its new
+    /// props equal to the ones it rendered last.
+    pub const fn memo(mut self, same: SameProps) -> Self {
+        self.same_props = Some(same);
+        self
     }
 }
 
@@ -109,7 +125,12 @@ bitflags::bitflags! {
         const PLACEMENT = 1 << 0;
         const UPDATE    = 1 << 1;
         const MOVE      = 1 << 2;
+        /// Detached by a reconcile: it and everything under it unmount at
+        /// commit, and nothing in it renders.
         const DELETION  = 1 << 3;
+        /// A descendant has an effect of its own: the commit walks down to
+        /// it.
+        const SUBTREE   = 1 << 4;
     }
 }
 
@@ -136,6 +157,11 @@ pub struct Node {
     pub position: usize,
     pub effect: EffectTag,
     pub kind: FiberKind,
+    /// How far below the root: what orders a pass's renders, ancestors
+    /// first. A fiber never changes parent, so never depth.
+    pub depth: u32,
+    /// The pass that last rendered it, so that a pass renders it once.
+    pub rendered_in: u32,
 }
 
 /// A fiber's kind, with what it keeps between renders.
@@ -157,18 +183,24 @@ impl FiberKind {
     }
 }
 
-/// A mounted template: which call site it is, and its hosts.
+/// A template: which call site it is, its hosts, and what the pass that
+/// reconciled it leaves for the commit.
 pub struct TemplateState {
     pub(crate) meta: &'static crate::template::TemplateMeta,
     pub(crate) identity: crate::template::TemplateIdentity,
-    /// The host each node is, by node index; `None` for a slot.
+    /// The host each node is, by node index; `None` for a slot. Empty until
+    /// the template mounts.
     pub(crate) nodes: Vec<Option<NodeId>>,
+    /// This pass's build: the drafts to mount, or on an update those of the
+    /// hosts rebuilt whole and the inputs the commit writes. Taken by the
+    /// commit.
+    pub(crate) pending: Option<crate::template::TemplatePending>,
 }
 
 impl TemplateState {
-    /// The template's root host.
-    pub(crate) fn root(&self) -> NodeId {
-        self.nodes[0].expect("a template's root is a host")
+    /// The template's root host, once mounted.
+    pub(crate) fn root(&self) -> Option<NodeId> {
+        self.nodes.first().copied().flatten()
     }
 }
 
@@ -184,6 +216,8 @@ impl Node {
             effect: EffectTag::empty(),
             // Made the root component by the runtime that owns the arena.
             kind: FiberKind::Fragment,
+            depth: 0,
+            rendered_in: 0,
         }
     }
 
@@ -191,17 +225,10 @@ impl Node {
         self.kind.tag()
     }
 
-    /// The host this fiber is, when it is a template: its root.
+    /// The host this fiber is, when it is a mounted template: its root.
     pub(crate) fn host(&self) -> Option<NodeId> {
         match &self.kind {
-            FiberKind::Template(template) => Some(template.root()),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn component(&self) -> Option<&ComponentState> {
-        match &self.kind {
-            FiberKind::Component(component) => Some(component),
+            FiberKind::Template(template) => template.root(),
             _ => None,
         }
     }

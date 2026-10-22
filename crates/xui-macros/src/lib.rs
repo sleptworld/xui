@@ -90,9 +90,14 @@ pub fn style(input: TokenStream) -> TokenStream {
     }
 }
 
+/// `#[component]`, or `#[component(memo)]` for a component that renders
+/// again only when its props change by value, not on every render of its
+/// parent. A memo component's props must all be `PartialEq`.
 #[proc_macro_attribute]
-pub fn component(_attrs: TokenStream, item: TokenStream) -> TokenStream {
+pub fn component(attrs: TokenStream, item: TokenStream) -> TokenStream {
+    let options = parse_macro_input!(attrs as component::ComponentOptions);
     let mut function = parse_macro_input!(item as ComponentFunction);
+    function.set_options(options);
     if let Err(error) = component::reject_signature_defaults(&function) {
         return error.to_compile_error().into();
     }

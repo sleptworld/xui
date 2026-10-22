@@ -3479,6 +3479,60 @@ fn a_node_out_of_layout_takes_no_space_and_stays_mounted() {
     assert_eq!(arena.hit_test(Point::new(10.0, 10.0)), Some(gone));
 }
 
+/// Nodes that resolve to the same style hold one copy of it; one that
+/// changes gets its own, and a style no node holds any more is let go.
+#[test]
+fn equal_styles_are_held_once() {
+    let mut arena = UiRuntime::new();
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    let cell = || container().with::<container::size>(Size::fix(20.0, 20.0));
+    arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+    let before = arena.style_system.distinct_styles();
+
+    let cells: Vec<_> = (0..50).map(|_| create_host(&mut arena, cell())).collect();
+    arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+    assert_eq!(arena.style_system.distinct_styles(), before + 1, "fifty equal cells, one style");
+
+    update_host(&mut arena, cells[0], container().with::<container::size>(Size::fix(30.0, 20.0)));
+    arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+    assert_eq!(arena.style_system.distinct_styles(), before + 2);
+    assert_eq!(arena.node(cells[0]).unwrap().layout.width(), 30.0);
+    assert_eq!(arena.node(cells[1]).unwrap().layout.width(), 20.0, "the others kept theirs");
+
+    arena.remove_subtree(cells[0]);
+    arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+    assert_eq!(arena.style_system.distinct_styles(), before + 1, "the changed style went with its node");
+    for cell in &cells[1..] {
+        arena.remove_subtree(*cell);
+    }
+    arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+    assert_eq!(arena.style_system.distinct_styles(), before);
+}
+
+/// A change inside an undisplayed subtree invalidates no further than the
+/// subtree, which layout leaves empty; showing it again lays out what changed
+/// meanwhile, out to the nodes around it.
+#[test]
+fn what_changes_while_undisplayed_is_laid_out_once_shown() {
+    let mut arena = UiRuntime::new();
+    let hidden = || container().with::<container::display>(xui_interface::DisplayStyle::None);
+    let parent = create_host(&mut arena, hidden());
+    let inner = child_of(&mut arena, parent, container().with::<container::size>(Size::fix(10.0, 10.0)));
+    let after = create_host(&mut arena, square(StyleOf::<Container>::new()));
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+
+    update_host(&mut arena, inner, container().with::<container::size>(Size::fix(30.0, 30.0)));
+    arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+    assert_eq!(arena.node(after).unwrap().layout.min.y, 0.0, "a hidden subtree takes no space");
+
+    update_host(&mut arena, parent, container());
+    arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
+    assert_eq!(arena.node(inner).unwrap().layout.width(), 30.0);
+    assert_eq!(arena.node(parent).unwrap().layout.height(), 30.0, "sized by what grew while hidden");
+    assert_eq!(arena.node(after).unwrap().layout.min.y, 30.0, "the sibling moved past it");
+}
+
 /// A focused node that is hidden gives its focus up, and a hidden node -- or
 /// one under a hidden ancestor -- cannot take it.
 #[test]

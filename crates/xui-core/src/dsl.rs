@@ -32,6 +32,7 @@
 use xui_interface::TextContent;
 
 use crate::element::{ElementDesc, IntoChildren};
+use crate::template::SlotContent;
 use crate::node::{Draft, NodeDef};
 use crate::property::Complete;
 use crate::widgets::canvas::Canvas;
@@ -72,7 +73,12 @@ pub struct Content<T>(pub T);
     note = "a leaf element such as `canvas` or `icon` accepts no body at all"
 )]
 pub trait IntoElement<C> {
-    fn into_element(self, children: C) -> ElementDesc;
+    /// The element built: an [`ElementDesc`], or for a component a
+    /// [`ComponentElement`](crate::element::ComponentElement), whose props a
+    /// template's slot keeps typed.
+    type Output: SlotContent;
+
+    fn into_element(self, children: C) -> Self::Output;
 }
 
 /// The three body shapes `xui!` can produce, and the entry point it actually
@@ -86,7 +92,14 @@ pub trait IntoElement<C> {
 /// is a genuine unsatisfied bound.
 pub trait ElementBody: Sized {
     fn build<W: IntoElement<Self>>(self, widget: W) -> ElementDesc {
-        widget.into_element(self)
+        widget.into_element(self).into()
+    }
+
+    /// [`build`](Self::build) for a template's slot, which keeps a
+    /// component's props typed.
+    #[doc(hidden)]
+    fn build_slot<W: IntoElement<Self>>(self, widget: W) -> <W::Output as SlotContent>::Input {
+        widget.into_element(self).into_input()
     }
 }
 
@@ -122,11 +135,16 @@ impl<T: IntoChildren> Content<T> {
     note = "a leaf element such as `canvas` or `icon` accepts no body at all"
 )]
 pub trait NodeElement<R, C>: NodeDef {
-    fn into_element(draft: Draft<Self, R>, body: C) -> ElementDesc;
+    /// See [`IntoElement::Output`].
+    type Output: SlotContent;
+
+    fn into_element(draft: Draft<Self, R>, body: C) -> Self::Output;
 }
 
 impl<N: NodeElement<R, C>, R, C> IntoElement<C> for Draft<N, R> {
-    fn into_element(self, body: C) -> ElementDesc {
+    type Output = N::Output;
+
+    fn into_element(self, body: C) -> N::Output {
         N::into_element(self, body)
     }
 }
@@ -139,18 +157,24 @@ impl<N: NodeElement<R, C>, R, C> IntoElement<C> for Draft<N, R> {
 macro_rules! impl_host_element {
     (parent $widget:ty) => {
         impl NodeElement<Complete, NoChildren> for $widget {
+            type Output = ElementDesc;
+
             fn into_element(draft: Draft<$widget>, _: NoChildren) -> ElementDesc {
                 draft.into_element_desc(Vec::new())
             }
         }
 
         impl NodeElement<Complete, Children> for $widget {
+            type Output = ElementDesc;
+
             fn into_element(draft: Draft<$widget>, children: Children) -> ElementDesc {
                 draft.into_element_desc(children.collect())
             }
         }
 
         impl<T: IntoChildren> NodeElement<Complete, Content<T>> for $widget {
+            type Output = ElementDesc;
+
             fn into_element(draft: Draft<$widget>, content: Content<T>) -> ElementDesc {
                 draft.into_element_desc(content.collect())
             }
@@ -158,6 +182,8 @@ macro_rules! impl_host_element {
     };
     (leaf $widget:ty) => {
         impl NodeElement<Complete, NoChildren> for $widget {
+            type Output = ElementDesc;
+
             fn into_element(draft: Draft<$widget>, _: NoChildren) -> ElementDesc {
                 draft.into_element_desc(Vec::new())
             }
@@ -174,6 +200,8 @@ impl_host_element!(leaf Icon);
 impl_host_element!(leaf TextInput);
 
 impl NodeElement<Complete, NoChildren> for Text {
+    type Output = ElementDesc;
+
     fn into_element(draft: Draft<Text>, _: NoChildren) -> ElementDesc {
         draft.into_element_desc(Vec::new())
     }
@@ -181,6 +209,8 @@ impl NodeElement<Complete, NoChildren> for Text {
 
 /// `<text>{expr}</text>` sets the text content rather than adding children.
 impl<T: Into<TextContent>> NodeElement<Complete, Content<T>> for Text {
+    type Output = ElementDesc;
+
     fn into_element(draft: Draft<Text>, content: Content<T>) -> ElementDesc {
         draft.with::<text::content>(content.0).into_element_desc(Vec::new())
     }

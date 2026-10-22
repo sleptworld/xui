@@ -43,7 +43,7 @@
 use proc_macro2::{
     Delimiter, Group, Ident as TokenIdent, Span, TokenStream as TokenStream2, TokenTree,
 };
-use quote::quote;
+use quote::{quote, quote_spanned};
 use syn::parse::{Parse, ParseStream, Parser};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
@@ -82,6 +82,37 @@ pub struct ComponentFunction {
     sig: Signature,
     input_defaults: Vec<Option<Expr>>,
     body: TokenStream2,
+    options: ComponentOptions,
+}
+
+/// What `#[component(..)]` is given.
+#[derive(Default)]
+pub struct ComponentOptions {
+    /// Render again only when the props change by value.
+    memo: bool,
+}
+
+impl Parse for ComponentOptions {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        let mut options = Self::default();
+        for option in Punctuated::<Ident, Token![,]>::parse_terminated(input)? {
+            if option == "memo" {
+                options.memo = true;
+            } else {
+                return Err(Error::new(
+                    option.span(),
+                    format!("unknown component option `{option}`; the one option is `memo`"),
+                ));
+            }
+        }
+        Ok(options)
+    }
+}
+
+impl ComponentFunction {
+    pub fn set_options(&mut self, options: ComponentOptions) {
+        self.options = options;
+    }
 }
 
 pub struct ExpandedComponentFunction {
@@ -148,6 +179,7 @@ impl Parse for ComponentFunction {
             sig,
             input_defaults,
             body,
+            options: ComponentOptions::default(),
         })
     }
 }
@@ -367,7 +399,6 @@ pub fn expand_component_function(
             &generics,
             &props_name,
             &xui_core,
-            &component_handle_name,
             &original_name,
         )?;
         let cx_arg = function
@@ -382,13 +413,7 @@ pub fn expand_component_function(
         function.sig.inputs = inputs;
         generated
     } else {
-        generate_propless_node(
-            &xui_core,
-            &inner_vis,
-            &component_handle_name,
-            &original_name,
-            function,
-        )
+        generate_propless_node(&xui_core, &inner_vis, &original_name, function)
     };
 
     let fn_params = generics.params(&[]);
@@ -439,6 +464,20 @@ pub fn expand_component_function(
     let body = &function.body;
     let node_tokens = &node.tokens;
     let prop_bindings = &node.bindings;
+    // Without props there is nothing to compare: a component without any
+    // renders again only on its own updates already.
+    let memo = (function.options.memo && node.has_props)
+        .then(|| quote!(.memo(__xui_same_props #turbofish)))
+        .unwrap_or_default();
+    // Without props there is nothing for the fiber to hold.
+    let erase = if node.has_props {
+        quote! {
+            let props: #xui_core::fiber::ErasedProps = ::std::rc::Rc::new(self);
+            ::core::option::Option::Some(props)
+        }
+    } else {
+        quote!(::core::option::Option::None)
+    };
     // A component with no props has no props struct to surface.
     let props_reexport = node
         .has_props
@@ -467,7 +506,7 @@ pub fn expand_component_function(
                 }
 
                 #[doc(hidden)]
-                #inner_vis fn #component_type_name #fn_params () -> #xui_core::ComponentType #fn_where {
+                #inner_vis const fn #component_type_name #fn_params () -> #xui_core::ComponentType #fn_where {
                     #xui_core::ComponentType::of::<#identity_type>(
                         concat!(module_path!(), "::", stringify!(#original_name)),
                     )
@@ -476,11 +515,20 @@ pub fn expand_component_function(
                 #component_call
 
                 #[doc(hidden)]
-                #inner_vis fn #component_handle_name #fn_params () -> #xui_core::ComponentRender #fn_where {
+                #inner_vis const fn #component_handle_name #fn_params () -> #xui_core::ComponentRender #fn_where {
                     #xui_core::ComponentRender::new(
                         #component_type_name #turbofish (),
                         #component_call_name #turbofish,
                     )
+                    #memo
+                }
+
+                impl #fn_params #xui_core::element::ComponentProps for #identity_type #fn_where {
+                    const RENDER: #xui_core::ComponentRender = #component_handle_name #turbofish ();
+
+                    fn erase(self) -> ::core::option::Option<#xui_core::fiber::ErasedProps> {
+                        #erase
+                    }
                 }
             }
 
@@ -524,7 +572,6 @@ struct GeneratedComponentNode {
 fn generate_propless_node(
     xui_core: &TokenStream2,
     vis: &TokenStream2,
-    handle_name: &TokenIdent,
     tag_name: &Ident,
     function: &ComponentFunction,
 ) -> GeneratedComponentNode {
@@ -552,16 +599,13 @@ fn generate_propless_node(
             impl #xui_core::dsl::NodeElement<#xui_core::property::Complete, #xui_core::dsl::NoChildren>
                 for #marker
             {
+                type Output = #xui_core::element::ComponentElement<#marker>;
+
                 fn into_element(
                     draft: #xui_core::node::Draft<#marker>,
                     _: #xui_core::dsl::NoChildren,
-                ) -> #xui_core::ElementDesc {
-                    let element = #xui_core::component(#handle_name());
-                    let element = match draft.key {
-                        ::std::option::Option::Some(key) => element.key(key),
-                        ::std::option::Option::None => element,
-                    };
-                    ::std::convert::Into::into(element)
+                ) -> Self::Output {
+                    #xui_core::element::ComponentElement { props: #marker, key: draft.key }
                 }
             }
 
@@ -581,7 +625,6 @@ fn generate_component_node(
     generics: &ComponentGenerics,
     props_name: &TokenIdent,
     xui_core: &TokenStream2,
-    handle_name: &TokenIdent,
     tag_name: &Ident,
 ) -> Result<GeneratedComponentNode> {
     let tag_docs = component_documentation(function, tag_name);
@@ -745,6 +788,31 @@ fn generate_component_node(
         }
     });
     let field_names = props.iter().map(|prop| &prop.field).collect::<Vec<_>>();
+    // `#[component(memo)]`: props compare field by field, by value. A prop
+    // type without `PartialEq` fails to compile at its own parameter.
+    let same_props = function.options.memo.then(|| {
+        let comparisons = props.iter().map(|prop| {
+            let field = &prop.field;
+            let field_type = &prop.field_type;
+            quote_spanned! {field_type.span()=>
+                && ::core::cmp::PartialEq::eq(&*a.#field, &*b.#field)
+            }
+        });
+        quote! {
+            #[doc(hidden)]
+            fn __xui_same_props #params (
+                a: &dyn ::core::any::Any,
+                b: &dyn ::core::any::Any,
+            ) -> bool #user_where {
+                match (a.downcast_ref::<#props_ty>(), b.downcast_ref::<#props_ty>()) {
+                    (::core::option::Option::Some(a), ::core::option::Option::Some(b)) => {
+                        true #(#comparisons)*
+                    }
+                    _ => false,
+                }
+            }
+        }
+    });
     let prop_fields_impl = quote! {
         impl #params #xui_core::prop::PropFields for #props_ty #user_where {
             const FIELDS: &'static [#xui_core::prop::PropGetter] = &[
@@ -956,10 +1024,12 @@ fn generate_component_node(
                 for #marker_ty
             #complete_where
             {
+                type Output = #xui_core::element::ComponentElement<#props_ty>;
+
                 fn into_element(
                     draft: #xui_core::node::Draft<Self, #state_ty>,
                     children: #xui_core::dsl::Children,
-                ) -> #xui_core::ElementDesc {
+                ) -> Self::Output {
                     __xui_into_element(draft, ::core::option::Option::Some(children.collect()))
                 }
             }
@@ -969,17 +1039,18 @@ fn generate_component_node(
                 for #marker_ty
             #content_where
             {
+                type Output = #xui_core::element::ComponentElement<#props_ty>;
+
                 fn into_element(
                     draft: #xui_core::node::Draft<Self, #state_ty>,
                     content: #xui_core::dsl::Content<__XuiChildren>,
-                ) -> #xui_core::ElementDesc {
+                ) -> Self::Output {
                     __xui_into_element(draft, ::core::option::Option::Some(content.collect()))
                 }
             }
         }
     });
     let into_params = generics.params(&[TokenIdent::new("__XuiState", Span::call_site())]);
-    let handle_turbofish = generics.turbofish();
     let marker_doc = format!("The `{tag_name}` component, as a node.");
     let props_doc = format!(
         "Owned props for [`{tag_name}()`]. See the component documentation for behavior, \
@@ -995,6 +1066,8 @@ fn generate_component_node(
             }
 
             #prop_fields_impl
+
+            #same_props
 
             #[doc = #marker_doc]
             #vis struct #marker #params (#phantom) #user_where;
@@ -1049,7 +1122,7 @@ fn generate_component_node(
             fn __xui_into_element #into_params (
                 draft: #xui_core::node::Draft<#marker_ty, __XuiState>,
                 children: ::core::option::Option<::std::vec::Vec<#xui_core::ElementDesc>>,
-            ) -> #xui_core::ElementDesc #user_where {
+            ) -> #xui_core::element::ComponentElement<#props_ty> #user_where {
                 let #xui_core::node::Draft { key, storage, .. } = draft;
                 let mut draft = storage.props;
                 #take_children
@@ -1057,22 +1130,19 @@ fn generate_component_node(
                     #(#build_values,)*
                     #props_phantom_value
                 };
-                let element = #xui_core::component(#handle_name #handle_turbofish ()).props(props);
-                let element = match key {
-                    ::core::option::Option::Some(key) => element.key(key),
-                    ::core::option::Option::None => element,
-                };
-                ::core::convert::Into::into(element)
+                #xui_core::element::ComponentElement { props, key }
             }
 
             impl #impl_params #xui_core::dsl::NodeElement<#state_ty, #xui_core::dsl::NoChildren>
                 for #marker_ty
             #complete_where
             {
+                type Output = #xui_core::element::ComponentElement<#props_ty>;
+
                 fn into_element(
                     draft: #xui_core::node::Draft<Self, #state_ty>,
                     _: #xui_core::dsl::NoChildren,
-                ) -> #xui_core::ElementDesc {
+                ) -> Self::Output {
                     __xui_into_element(draft, ::core::option::Option::None)
                 }
             }

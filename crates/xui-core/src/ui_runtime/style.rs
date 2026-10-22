@@ -1,12 +1,88 @@
 use crate::animation::{has_animatable_difference, interpolate_style};
+use rustc_hash::FxHashMap;
 use slotmap::{SecondaryMap, SparseSecondaryMap};
+use smallvec::SmallVec;
+use std::rc::Rc;
 use std::time::Duration;
 use xui_animation::{Timeline, Transition};
-use xui_interface::{Animation, ComputedStyle, NodeId};
+use xui_interface::{Animation, ComputedStyle, NodeId, Sizing};
 
 pub(crate) struct StyleNode {
-    computed: ComputedStyle,
+    /// Shared with every node that resolved to the same style: see
+    /// [`SharedStyles`].
+    computed: Rc<ComputedStyle>,
+    fingerprint: u64,
     initialized: bool,
+}
+
+/// Every distinct computed style in use, once. Nodes that resolve to equal
+/// styles -- the rows of a list, the cells of a grid -- hold the same one, so
+/// a style costs its size once rather than once per node.
+///
+/// Found by [`fingerprint`] and confirmed by equality: the fingerprint only
+/// narrows the candidates, so it may leave fields out.
+#[derive(Default)]
+struct SharedStyles {
+    by_fingerprint: FxHashMap<u64, SmallVec<[Rc<ComputedStyle>; 1]>>,
+}
+
+impl SharedStyles {
+    /// The shared copy of `style`, and its fingerprint.
+    fn share(&mut self, style: ComputedStyle) -> (Rc<ComputedStyle>, u64) {
+        let fingerprint = fingerprint(&style);
+        let candidates = self.by_fingerprint.entry(fingerprint).or_default();
+        if let Some(shared) = candidates.iter().find(|shared| ***shared == style) {
+            return (shared.clone(), fingerprint);
+        }
+        let shared = Rc::new(style);
+        candidates.push(shared.clone());
+        (shared, fingerprint)
+    }
+
+    /// Lets go of a node's hold on `style`; a style no node holds any more
+    /// is forgotten.
+    fn release(&mut self, style: Rc<ComputedStyle>, fingerprint: u64) {
+        // The node's and this table's.
+        if Rc::strong_count(&style) > 2 {
+            return;
+        }
+        if let Some(candidates) = self.by_fingerprint.get_mut(&fingerprint) {
+            candidates.retain(|shared| !Rc::ptr_eq(shared, &style));
+            if candidates.is_empty() {
+                self.by_fingerprint.remove(&fingerprint);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.by_fingerprint.values().map(SmallVec::len).sum()
+    }
+}
+
+/// A few of `style`'s fields, the ones that most often tell styles apart,
+/// mixed into one number.
+fn fingerprint(style: &ComputedStyle) -> u64 {
+    fn sizing(value: Sizing) -> u64 {
+        match value {
+            Sizing::Fix(value) => u64::from(value.into_inner().to_bits()),
+            Sizing::Percent(value) => (1 << 32) | u64::from(value.into_inner().to_bits()),
+            Sizing::Hug => 2 << 32,
+            Sizing::Fill => 3 << 32,
+        }
+    }
+    let fields = [
+        sizing(style.layout.width),
+        sizing(style.layout.height),
+        u64::from(style.layout.gap.to_bits()),
+        u64::from(style.text.font_size.to_bits()),
+        u64::from(style.paint.border_width.to_bits()),
+        u64::from(style.paint.border_radius.to_bits()),
+    ];
+    // FxHash's mixing step, one field at a time.
+    fields.iter().fold(0u64, |hash, field| {
+        (hash.rotate_left(5) ^ field).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95)
+    })
 }
 
 struct ActiveStyleTransition {
@@ -102,6 +178,7 @@ impl ActiveKeyframeAnimation {
 /// comes from `HostTree`; this system never stores parent or child links.
 pub(crate) struct StyleSystem {
     nodes: SecondaryMap<NodeId, StyleNode>,
+    shared: SharedStyles,
     animations: SparseSecondaryMap<NodeId, ActiveStyleTransition>,
     /// Keyframe animations. Over a node's transition when it has both: see
     /// [`Self::styles`].
@@ -116,6 +193,7 @@ impl StyleSystem {
     pub(crate) fn new(default_style: ComputedStyle) -> Self {
         Self {
             nodes: SecondaryMap::new(),
+            shared: SharedStyles::default(),
             animations: SparseSecondaryMap::new(),
             keyframes: SparseSecondaryMap::new(),
             inherited_samples: SparseSecondaryMap::new(),
@@ -126,17 +204,23 @@ impl StyleSystem {
     }
 
     pub(crate) fn create(&mut self, id: NodeId, computed: ComputedStyle, initialized: bool) {
-        self.nodes.insert(
+        let (computed, fingerprint) = self.shared.share(computed);
+        if let Some(replaced) = self.nodes.insert(
             id,
             StyleNode {
                 computed,
+                fingerprint,
                 initialized,
             },
-        );
+        ) {
+            self.shared.release(replaced.computed, replaced.fingerprint);
+        }
     }
 
     pub(crate) fn remove(&mut self, id: NodeId) {
-        self.nodes.remove(id);
+        if let Some(node) = self.nodes.remove(id) {
+            self.shared.release(node.computed, node.fingerprint);
+        }
         self.animations.remove(id);
         self.keyframes.remove(id);
         self.inherited_samples.remove(id);
@@ -159,6 +243,12 @@ impl StyleSystem {
     #[inline]
     pub(crate) fn computed(&self, id: NodeId) -> &ComputedStyle {
         &self.nodes[id].computed
+    }
+
+    /// How many distinct styles the nodes hold.
+    #[cfg(test)]
+    pub(crate) fn distinct_styles(&self) -> usize {
+        self.shared.len()
     }
 
     /// The style `id` shows this frame: its keyframe animation's sample, else
@@ -202,8 +292,16 @@ impl StyleSystem {
     }
 
     pub(crate) fn set_computed(&mut self, id: NodeId, computed: ComputedStyle) {
-        self.nodes[id].computed = computed;
         self.inherited_samples.remove(id);
+        let node = &mut self.nodes[id];
+        if *node.computed == computed {
+            return;
+        }
+        let (computed, fingerprint) = self.shared.share(computed);
+        let node = &mut self.nodes[id];
+        let replaced = std::mem::replace(&mut node.computed, computed);
+        let replaced_fingerprint = std::mem::replace(&mut node.fingerprint, fingerprint);
+        self.shared.release(replaced, replaced_fingerprint);
     }
 
     /// Re-resolves the inherited properties of `id`'s [`Self::base`] against
@@ -232,7 +330,7 @@ impl StyleSystem {
             inherit_unset(&mut animation.sampled, parent);
             self.inherited_samples.remove(id);
         } else {
-            let computed = &self.nodes[id].computed;
+            let computed: &ComputedStyle = &self.nodes[id].computed;
             let mut sampled = computed.clone();
             inherit_unset(&mut sampled, parent);
             if sampled.inherited_eq(computed) {

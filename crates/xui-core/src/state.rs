@@ -1,6 +1,7 @@
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, VecDeque};
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
 use std::hash::{Hash, Hasher};
@@ -1032,10 +1033,13 @@ pub struct Scheduler {
 
 struct SchedulerState {
     lane_root: LaneRoot,
-    dirty_components: HashMap<FiberId, Lanes>,
-    hook_updates: HashMap<HookKey, VecDeque<HookUpdate>>,
-    async_scopes: HashMap<HookKey, u64>,
-    mounted_components: HashSet<FiberId>,
+    dirty_components: FxHashMap<FiberId, Lanes>,
+    hook_updates: FxHashMap<HookKey, VecDeque<HookUpdate>>,
+    async_scopes: FxHashMap<HookKey, u64>,
+    mounted_components: FxHashSet<FiberId>,
+    /// Every component marked dirty since the component runtime last looked,
+    /// possibly repeated: what it brings its subtree lanes up to date from.
+    marked: Vec<FiberId>,
     root: Option<FiberId>,
     /// What lane expiration deadlines are measured from.
     ///
@@ -1053,14 +1057,22 @@ struct SchedulerState {
     origin: Instant,
 }
 
+impl SchedulerState {
+    fn mark_dirty(&mut self, id: FiberId, lanes: Lanes) {
+        *self.dirty_components.entry(id).or_insert(NO_LANES) |= lanes;
+        self.marked.push(id);
+    }
+}
+
 impl Default for SchedulerState {
     fn default() -> Self {
         Self {
             lane_root: LaneRoot::default(),
-            dirty_components: HashMap::new(),
-            hook_updates: HashMap::new(),
-            async_scopes: HashMap::new(),
-            mounted_components: HashSet::new(),
+            dirty_components: FxHashMap::default(),
+            hook_updates: FxHashMap::default(),
+            async_scopes: FxHashMap::default(),
+            mounted_components: FxHashSet::default(),
+            marked: Vec::new(),
             root: None,
             origin: Instant::now(),
         }
@@ -1110,7 +1122,7 @@ impl Scheduler {
         if !inner.mounted_components.contains(&id) && inner.root != Some(id) {
             return;
         }
-        *inner.dirty_components.entry(id).or_insert(NO_LANES) |= lane;
+        inner.mark_dirty(id, lane);
         inner.lane_root.mark_root_updated(lane);
     }
 
@@ -1118,6 +1130,25 @@ impl Scheduler {
         let root = self.inner.borrow().root;
         if let Some(root) = root {
             self.mark_component_dirty(root, lane);
+        }
+    }
+
+    /// Calls `f` with every dirty component and its lanes, and forgets the
+    /// marks logged so far: they are all among them.
+    pub(crate) fn for_each_dirty(&self, mut f: impl FnMut(FiberId, Lanes)) {
+        let mut inner = self.inner.borrow_mut();
+        inner.marked.clear();
+        for (&id, &lanes) in &inner.dirty_components {
+            f(id, lanes);
+        }
+    }
+
+    /// Moves the components marked dirty since the last call (or the last
+    /// [`for_each_dirty`](Self::for_each_dirty)) into `into`.
+    pub(crate) fn take_marked(&self, into: &mut Vec<FiberId>) {
+        let mut inner = self.inner.borrow_mut();
+        if !inner.marked.is_empty() {
+            into.append(&mut inner.marked);
         }
     }
 
@@ -1155,7 +1186,7 @@ impl Scheduler {
                     write_slot(*state, |state| update(&mut state.value));
                 }),
             });
-        *inner.dirty_components.entry(owner).or_insert(NO_LANES) |= lane;
+        inner.mark_dirty(owner, lane);
         inner.lane_root.mark_root_updated(lane);
     }
 
@@ -1182,10 +1213,7 @@ impl Scheduler {
                 lane: message.lane,
                 apply: Box::new(move |value| (message.apply)(value)),
             });
-        *inner
-            .dirty_components
-            .entry(message.owner)
-            .or_insert(NO_LANES) |= message.lane;
+        inner.mark_dirty(message.owner, message.lane);
         inner.lane_root.mark_root_updated(message.lane);
         true
     }

@@ -16,9 +16,7 @@ use crate::widgets::{
     WidgetType, Widgets,
 };
 use taffy::prelude as tf;
-use xui_interface::{
-    Affine, ComputedStyle, NodeId, NodeLifecycleEvent, Theme, WidgetState,
-};
+use xui_interface::{Affine, ComputedStyle, NodeId, NodeLifecycleEvent, Theme, WidgetState};
 
 impl UiRuntime {
     pub(crate) fn new() -> Self {
@@ -45,8 +43,11 @@ impl UiRuntime {
         );
         // The root has no parent; block flow is the neutral choice and the
         // root sizes itself to the viewport regardless.
-        let root_taffy_style =
-            taffy_style_for_widget(&hosts[root].widget, ParentLayout::Block, &root_computed_style);
+        let root_taffy_style = taffy_style_for_widget(
+            &hosts[root].widget,
+            ParentLayout::Block,
+            &root_computed_style,
+        );
         layout_tree.create(root, root_taffy_style, None);
 
         let mut style_system = StyleSystem::new(default_style);
@@ -370,6 +371,36 @@ impl UiRuntime {
         let flags = node
             .widget
             .with_widgets_mut(|widget| draft.update(widget, id, columns, &mut cx));
+        if self.focused_node() == Some(id) && !self.is_focusable(id) {
+            self.interaction_system
+                .focus
+                .request_focus(None, xui_interface::FocusReason::Disabled);
+        }
+
+        self.refresh_taffy_context(id);
+        self.request_update(id, flags);
+    }
+
+    /// [`update_node`](Self::update_node) for a template host whose dynamic
+    /// values alone are written into it; its key and every other row stay
+    /// as they are. `patch` returns what it dirtied.
+    pub(crate) fn patch_node(
+        &mut self,
+        id: NodeId,
+        patch: impl FnOnce(
+            &mut crate::widgets::Widgets,
+            NodeId,
+            &mut crate::caps::Columns,
+            &mut crate::capability::CommitCx<'_>,
+        ) -> xui_interface::WidgetUpdateFlags,
+    ) {
+        self.stats.host_updates += 1;
+        let node = &mut self.hosts[id];
+        let columns = &mut self.columns;
+        let mut cx = self.interaction_system.commit_cx();
+        let flags = node
+            .widget
+            .with_widgets_mut(|widgets| patch(widgets, id, columns, &mut cx));
         if self.focused_node() == Some(id) && !self.is_focusable(id) {
             self.interaction_system
                 .focus

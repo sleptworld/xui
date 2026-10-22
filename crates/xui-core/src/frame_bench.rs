@@ -551,8 +551,6 @@ fn structural_frame_cost() {
     }
 }
 
-/// A root-component state change: the whole element tree is re-rendered and
-/// reconciled. Compare against `ComponentRuntime`'s rebuild budget.
 /// What the pointer-equality bailout is worth: the same root state change,
 /// once with the child's element rebuilt each render and once with it held in
 /// a memo. Only the second can bail out.
@@ -587,17 +585,20 @@ fn memoized_subtree_bailout() {
     }
 }
 
+/// A root-component state change: the whole element tree is re-rendered and
+/// reconciled, within one frame.
 #[test]
 #[ignore = "benchmark; run with --release --ignored"]
 fn component_rebuild_cost() {
     let _exclusive = exclusive();
-    println!("rows,hosts,first_frame_ms,frames_to_settle");
+    println!("rows,hosts,first_frame_ms,frames_to_settle,settled_ms");
     for rows in ROW_COUNTS {
         let mut harness = Harness::new(rows);
         let hosts = harness.host_count();
 
         let mut samples = Vec::new();
         let mut settle = Vec::new();
+        let mut settled = Vec::new();
         for iteration in 0..20 {
             TOGGLE.with(|slot| {
                 slot.borrow()
@@ -619,13 +620,15 @@ fn component_rebuild_cost() {
                 );
             }
             settle.push(frames);
+            settled.push(started.elapsed());
         }
 
         settle.sort_unstable();
         println!(
-            "{rows},{hosts},{:.4},{}",
+            "{rows},{hosts},{:.4},{},{:.4}",
             ms(median(&mut samples)),
-            settle[settle.len() / 2]
+            settle[settle.len() / 2],
+            ms(median(&mut settled))
         );
     }
 }

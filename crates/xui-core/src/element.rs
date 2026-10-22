@@ -71,6 +71,34 @@ impl Clone for ExpandedHost {
     }
 }
 
+/// A component element as its tag builds it, its props still typed: what
+/// `xui!` and `view!` produce for a component. It becomes a
+/// [`ComponentDesc`] as an [`ElementDesc`]; a template's slot keeps its type,
+/// which is what tells the template which component the slot holds.
+pub struct ComponentElement<P> {
+    pub props: P,
+    pub key: Option<Key>,
+}
+
+/// What `#[component]` generates for a component's props (for one without
+/// props, for its node marker): the render handle, as a constant.
+pub trait ComponentProps: 'static {
+    const RENDER: ComponentRender;
+
+    /// The props as a component fiber holds them; `None` without props.
+    fn erase(self) -> Option<ErasedProps>;
+}
+
+impl<P: ComponentProps> From<ComponentElement<P>> for ElementDesc {
+    fn from(element: ComponentElement<P>) -> Self {
+        ElementDesc::Component(ComponentDesc {
+            key: element.key,
+            render: P::RENDER,
+            props: element.props.erase(),
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ComponentDesc {
     pub key: Option<Key>,
@@ -338,17 +366,23 @@ pub fn portal_view() -> PortalDesc {
     PortalDesc::new(Vec::new())
 }
 impl crate::dsl::IntoElement<crate::dsl::NoChildren> for PortalDesc {
+    type Output = ElementDesc;
+
     fn into_element(self, _: crate::dsl::NoChildren) -> ElementDesc {
         self.into()
     }
 }
 impl<T: IntoChildren> crate::dsl::IntoElement<crate::dsl::Content<T>> for PortalDesc {
+    type Output = ElementDesc;
+
     fn into_element(mut self, children: crate::dsl::Content<T>) -> ElementDesc {
         self.children = children.collect();
         self.into()
     }
 }
 impl crate::dsl::IntoElement<crate::dsl::Children> for PortalDesc {
+    type Output = ElementDesc;
+
     fn into_element(mut self, children: crate::dsl::Children) -> ElementDesc {
         self.children = children.collect();
         self.into()

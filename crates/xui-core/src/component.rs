@@ -1,384 +1,50 @@
+//! The component runtime: renders components and reconciles what they
+//! return into the fiber tree, then commits that to the host tree.
+//!
+//! There is one fiber tree, changed in place. A pass renders every component
+//! that needs it -- the dirty ones, and those a parent's render handed new
+//! props -- shallowest first, so a component renders after every ancestor
+//! that renders in the same pass, and at most once. What a component returns
+//! is reconciled into its fiber's children there and then: templates,
+//! fragments and portals have no render of their own, so they are matched,
+//! created or updated as the reconcile reaches them, and only components
+//! are left for the pass to render.
+//!
+//! A reconcile records what the host tree needs on the fibers themselves --
+//! [`EffectTag`]s, and a template's [`TemplatePending`] -- and the commit
+//! that ends the pass applies it: first the removed subtrees, then a preorder
+//! walk down to every fiber with an effect, placing, moving and updating
+//! hosts in sibling order.
+
 use crate::context::{Ancestors, ContextRegistry, ContextScope};
-use crate::element::PortalBehavior;
+use crate::element::{ComponentDesc, PortalBehavior};
 use crate::fiber::{
-    ComponentRender, ComponentState, ComponentType, EffectTag, ErasedProps, FiberArena, FiberId,
-    FiberKind, FiberTag, Key, Node, PortalState, TemplateState,
+    ComponentRender, ComponentState, ComponentType, EffectTag, FiberArena, FiberId, FiberKind,
+    FiberTag, Key, Node, PortalState, TemplateState,
 };
-use crate::lanes::{
-    Lanes, NO_LANES, current_update_lane, get_highest_priority_lane, includes_some_lane,
-    should_interrupt,
-};
+use crate::lanes::{Lanes, NO_LANES, current_update_lane, get_highest_priority_lane, includes_some_lane};
 use crate::state::{AsyncDispatcher, HookContext, HookStorage, Scheduler};
 use crate::template::{
-    BuildMode, TemplateDesc, TemplateIdentity, TemplateMeta, TemplateNodeKind, TemplateSlot,
+    BuildMode, TemplateHosts, TemplateMeta, TemplateNodeKind, TemplatePending, TemplateSlot,
 };
 use crate::ticker::TickerRegistry;
 use crate::ui_runtime::UiRuntime;
-use crate::widgets::{ErasedDraft, RootComponentRender};
-use crate::widgets::{OverlayEntryId, OverlayEntryOptions, OverlayScopeId};
+use crate::widgets::{OverlayEntryId, RootComponentRender};
 use crate::{ElementDesc, ErasedPropsRef};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
-use std::ops::RangeBounds;
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 use tokio::runtime::Handle as TokioHandle;
 use xui_interface::NodeId;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct WipId(usize);
-pub struct WorkNode {
-    fiber_id: FiberId,
-    parent: Option<WipId>,
-    key: Option<Key>,
-    tag: FiberTag,
-    position: usize,
-    effect: EffectTag,
-    children_resolved: bool,
-    children: SmallVec<[WipId; 8]>,
-    lanes: Lanes,
-    child_lanes: Lanes,
-    /// What this render brought the fiber; `None` for one cloned as it was.
-    work: Option<Pending>,
-    binding: WorkBinding,
-}
-
-/// What a render brings a fiber, by kind.
-enum Pending {
-    Component(ComponentWork),
-    Template(TemplateWork),
-    Fragment(Vec<ElementDesc>),
-    Portal(PortalWork),
-}
-
-struct ComponentWork {
-    render: ComponentRender,
-    key: Option<Key>,
-    props: Option<ErasedProps>,
-}
-
-struct TemplateWork {
-    meta: &'static TemplateMeta,
-    identity: TemplateIdentity,
-    /// The render's inputs, until `begin_work` builds them.
-    desc: Option<TemplateDesc>,
-    /// What the build is for: mounting every host, or updating the dynamic
-    /// ones of a mounted template.
-    mode: BuildMode,
-    /// The drafts the commit mounts or updates, by node index.
-    hosts: Vec<Option<Box<dyn ErasedDraft>>>,
-    /// The hosts once mounted, by node index.
-    nodes: Vec<Option<NodeId>>,
-}
-
-struct PortalWork {
-    scope: Option<OverlayScopeId>,
-    options: OverlayEntryOptions,
-    behavior: PortalBehavior,
-    pending_children: Vec<ElementDesc>,
-    entry: Option<crate::widgets::OverlayEntryId>,
-    visual_root: Option<NodeId>,
-}
-
-#[derive(Default)]
-struct WorkBinding {
-    /// The committed fiber this one is the next version of.
-    current: Option<FiberId>,
-    /// The host this fiber is, once known: a template's root.
-    current_host: Option<NodeId>,
-}
-
-impl From<ComponentWork> for ComponentState {
-    fn from(val: ComponentWork) -> Self {
-        ComponentState {
-            key: val.key,
-            render: val.render,
-            props: val.props,
-        }
-    }
-}
-
-impl WorkNode {
-    fn template_work(&self) -> Option<&TemplateWork> {
-        match self.work.as_ref() {
-            Some(Pending::Template(work)) => Some(work),
-            _ => None,
-        }
-    }
-
-    fn template_work_mut(&mut self) -> Option<&mut TemplateWork> {
-        match self.work.as_mut() {
-            Some(Pending::Template(work)) => Some(work),
-            _ => None,
-        }
-    }
-
-    fn portal_work(&self) -> Option<&PortalWork> {
-        match self.work.as_ref() {
-            Some(Pending::Portal(work)) => Some(work),
-            _ => None,
-        }
-    }
-
-    fn portal_work_mut(&mut self) -> Option<&mut PortalWork> {
-        match self.work.as_mut() {
-            Some(Pending::Portal(work)) => Some(work),
-            _ => None,
-        }
-    }
-
-    fn from_current(
-        current: &Node,
-        parent: Option<WipId>,
-        position: usize,
-        lanes: Lanes,
-        child_lanes: Lanes,
-    ) -> Self {
-        Self {
-            fiber_id: current.id,
-            parent,
-            key: current.key,
-            position,
-            tag: current.tag(),
-            children: SmallVec::new(),
-            children_resolved: false,
-            effect: EffectTag::empty(),
-            lanes,
-            child_lanes,
-            work: None,
-            binding: WorkBinding {
-                current: Some(current.id),
-                current_host: current.host(),
-            },
-        }
-    }
-
-    fn from_prepared(
-        nodes: &FiberArena,
-        fiber_id: FiberId,
-        parent: WipId,
-        position: usize,
-        prepared: PreparedElement,
-        current: Option<FiberId>,
-        effect: EffectTag,
-        lanes: Lanes,
-        child_lanes: Lanes,
-    ) -> Self {
-        let current_node = current.and_then(|id| nodes.node(id));
-        let mut work = prepared.pending;
-        match &mut work {
-            Pending::Template(template) => {
-                // A template matched to a committed one updates it.
-                if let Some(state) = current_node.and_then(Node::template) {
-                    template.mode = BuildMode::Update;
-                    template.nodes = state.nodes.clone();
-                }
-            }
-            Pending::Portal(portal) => {
-                if let Some(state) = current_node.and_then(Node::portal) {
-                    portal.entry = state.entry;
-                    portal.visual_root = state.visual_root;
-                }
-            }
-            Pending::Component(_) | Pending::Fragment(_) => {}
-        }
-
-        Self {
-            fiber_id,
-            parent: Some(parent),
-            key: prepared.key,
-            position,
-            tag: prepared.tag,
-            effect,
-            children: SmallVec::new(),
-            children_resolved: false,
-            lanes,
-            child_lanes,
-            work: Some(work),
-            binding: WorkBinding {
-                current,
-                current_host: current_node.and_then(Node::host),
-            },
-        }
-    }
-
-    fn needs_begin_work(&self, render_lanes: Lanes) -> bool {
-        self.is_uncommited()
-            || self.work.is_some()
-            || includes_some_lane(self.lanes | self.child_lanes, render_lanes)
-    }
-
-    /// Whether this component's function has to run again, as opposed to
-    /// cloning the committed subtree.
-    ///
-    /// A parent re-render always hands its children a freshly built
-    /// `ComponentDesc`, so the presence of `ComponentWork` alone says nothing
-    /// about whether anything changed. When the incoming props are the *same
-    /// allocation* the child is already holding, re-running the function
-    /// cannot produce a different tree, so the subtree is reused.
-    ///
-    /// Only pointer equality is checked, never contents: it is the cheap,
-    /// always-correct half. It pays off exactly where a caller deliberately
-    /// preserved an element -- forwarded `children`, or an element cached in a
-    /// `use_memo` -- which mirrors React's `oldProps === newProps` bailout.
-    fn should_render_component(&self, render_lanes: Lanes, fiber_tree: &FiberArena) -> bool {
-        if self.is_uncommited() || includes_some_lane(self.lanes, render_lanes) {
-            return true;
-        }
-        let Some(Pending::Component(work)) = &self.work else {
-            return false;
-        };
-        let Some(committed) = self
-            .binding
-            .current
-            .and_then(|id| fiber_tree.node(id))
-            .and_then(Node::component)
-        else {
-            return true;
-        };
-        if committed.render != work.render || committed.key != work.key {
-            return true;
-        }
-        match (&committed.props, &work.props) {
-            (Some(committed), Some(next)) => !Rc::ptr_eq(committed, next),
-            (None, None) => false,
-            _ => true,
-        }
-    }
-
-    /// A fragment's or a portal's new children.
-    fn take_pending_children(&mut self) -> Option<Vec<ElementDesc>> {
-        match &mut self.work {
-            Some(Pending::Fragment(children)) => Some(std::mem::take(children)),
-            Some(Pending::Portal(portal)) => Some(std::mem::take(&mut portal.pending_children)),
-            _ => None,
-        }
-    }
-
-    #[inline(always)]
-    fn is_uncommited(&self) -> bool {
-        self.binding.current.is_none()
-    }
-
-    fn component_render_props<'a, 'b: 'a>(
-        &'a self,
-        fiber_tree: &'b FiberArena,
-    ) -> Option<(ComponentRender, Option<ErasedPropsRef<'a>>)> {
-        match &self.work {
-            Some(Pending::Component(c)) => Some((c.render, c.props.as_ref())),
-            _ => self
-                .binding
-                .current
-                .and_then(|id| fiber_tree.node(id))
-                .and_then(Node::component)
-                .map(|component| (component.render, component.props.as_ref())),
-        }
-    }
-}
-
-/// An element, ready to be matched against the fiber in its place.
-struct PreparedElement {
-    key: Option<Key>,
-    tag: FiberTag,
-    pending: Pending,
-}
-
-pub struct WorkInProgress {
-    root: WipId,
-    next_work: Option<WipId>,
-    render_lanes: Lanes,
-    deletions: Vec<FiberId>,
-}
-
-impl WorkInProgress {
-    fn live<'a>(&'a self, nodes: &'a mut WipArena) -> WorkInProgressLive<'a> {
-        WorkInProgressLive { nodes }
-    }
-}
-
-struct WorkInProgressLive<'a> {
-    nodes: &'a mut WipArena,
-}
-
-impl<'a> WorkInProgressLive<'a> {
-    fn alloc_node(&mut self, node: WorkNode) -> WipId {
-        let id = WipId(self.nodes.len());
-        self.nodes.push(Some(node));
-        id
-    }
-
-    fn take_node(&mut self, id: WipId) -> Option<WorkNode> {
-        self.nodes.take_node(id)
-    }
-}
-
-struct WipArena {
-    wip_nodes: Vec<Option<WorkNode>>,
-}
-
-/// The strict ancestors of a node in the tree being worked on. Every node a
-/// render reaches has its whole ancestry in that tree, rendered or cloned.
-struct WipAncestors<'a> {
-    nodes: &'a WipArena,
-    of: WipId,
-}
-
-impl Ancestors for WipAncestors<'_> {
-    fn find(&self, visit: &mut dyn FnMut(FiberId) -> bool) {
-        let mut cursor = self.nodes.get(self.of).and_then(|node| node.parent);
-        while let Some(id) = cursor {
-            let node = self.nodes.get(id).expect("work node ancestor missing");
-            if visit(node.fiber_id) {
-                return;
-            }
-            cursor = node.parent;
-        }
-    }
-}
-
-impl WipArena {
-    fn new() -> Self {
-        Self {
-            wip_nodes: Vec::with_capacity(200),
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.wip_nodes.len()
-    }
-
-    fn push(&mut self, node: Option<WorkNode>) {
-        self.wip_nodes.push(node);
-    }
-
-    fn get(&self, id: WipId) -> Option<&WorkNode> {
-        self.wip_nodes.get(id.0).and_then(|n| n.as_ref())
-    }
-
-    fn get_mut(&mut self, id: WipId) -> Option<&mut WorkNode> {
-        self.wip_nodes.get_mut(id.0).and_then(|n| n.as_mut())
-    }
-
-    fn take_node(&mut self, id: WipId) -> Option<WorkNode> {
-        self.wip_nodes.get_mut(id.0).and_then(Option::take)
-    }
-
-    fn clear(&mut self) {
-        self.wip_nodes.clear();
-    }
-
-    fn drain<R>(&mut self, range: R) -> std::vec::Drain<'_, Option<WorkNode>>
-    where
-        R: RangeBounds<usize>,
-    {
-        self.wip_nodes.drain(range)
-    }
-}
+/// A fiber's children, as a reconcile reads them.
+type Children = SmallVec<[FiberId; 8]>;
 
 pub struct ComponentRuntime {
     nodes: FiberArena,
     current: FiberId,
-    work_in_progress: Option<WorkInProgress>,
     scheduler: Scheduler,
     async_dispatcher: AsyncDispatcher,
     tokio_handle: Option<TokioHandle>,
@@ -388,8 +54,45 @@ pub struct ComponentRuntime {
     hooks: FxHashMap<FiberId, HookStorage>,
     contexts: ContextRegistry,
     root_widget: NodeId,
-    budget: Duration,
-    wip_nodes: WipArena,
+    /// The current pass, which a fiber's `rendered_in` is compared with.
+    pass: u32,
+    /// The components this pass still renders, shallowest first.
+    queue: BinaryHeap<Reverse<(u32, FiberId)>>,
+    /// The subtrees this pass detached, unmounted at commit.
+    deletions: Vec<FiberId>,
+    /// The fibers this pass created, mounted at commit.
+    created: Vec<FiberId>,
+    /// Scratch for the scheduler's log of newly dirty components.
+    marked: Vec<FiberId>,
+    /// Scratch for [`Self::reconcile_list`], one per list being reconciled.
+    lists: Vec<ListScratch>,
+}
+
+/// What reconciling one list needs besides the fibers.
+#[derive(Default)]
+struct ListScratch {
+    old: Vec<FiberId>,
+    used: Vec<bool>,
+    keyed: FxHashMap<Key, usize>,
+    next: Vec<FiberId>,
+}
+
+/// The strict ancestors of a fiber.
+struct FiberAncestors<'a> {
+    nodes: &'a FiberArena,
+    of: FiberId,
+}
+
+impl Ancestors for FiberAncestors<'_> {
+    fn find(&self, visit: &mut dyn FnMut(FiberId) -> bool) {
+        let mut cursor = self.nodes.node(self.of).and_then(|node| node.parent);
+        while let Some(id) = cursor {
+            if visit(id) {
+                return;
+            }
+            cursor = self.nodes.node(id).and_then(|node| node.parent);
+        }
+    }
 }
 
 impl ComponentRuntime {
@@ -432,15 +135,18 @@ impl ComponentRuntime {
             nodes: arena,
             current,
             root_widget,
-            work_in_progress: None,
             scheduler,
             async_dispatcher,
             tokio_handle,
             tickers,
             hooks: FxHashMap::default(),
             contexts: ContextRegistry::default(),
-            budget: Duration::from_millis(4),
-            wip_nodes: WipArena::new(),
+            pass: 0,
+            queue: BinaryHeap::new(),
+            deletions: Vec::new(),
+            created: Vec::new(),
+            marked: Vec::new(),
+            lists: Vec::new(),
         }
     }
 
@@ -456,20 +162,8 @@ impl ComponentRuntime {
         self.nodes.node(self.root()).unwrap()
     }
 
-    fn alloc_wip_node(&mut self, node: WorkNode) -> WipId {
-        self.work_in_progress
-            .as_ref()
-            .expect("work missing")
-            .live(&mut self.wip_nodes)
-            .alloc_node(node)
-    }
-
-    pub fn set_budget(&mut self, budget: Duration) {
-        self.budget = budget;
-    }
-
     pub fn is_dirty(&self) -> bool {
-        self.work_in_progress.is_some() || self.scheduler.is_dirty()
+        self.scheduler.is_dirty()
     }
 
     pub fn mark_root_dirty(&self) {
@@ -504,408 +198,449 @@ impl ComponentRuntime {
         }
     }
 
-    pub fn rebuild_slice_if_needed(&mut self, arena: &mut UiRuntime) -> bool {
-        if !self.is_dirty() {
-            return true;
-        }
-
-        self.work_loop(arena, Some(Instant::now() + self.budget))
-    }
-
+    /// Renders every pending update, then commits it.
     pub fn flush_sync(&mut self, arena: &mut UiRuntime) {
-        self.work_loop(arena, None);
+        let render_lanes = self.scheduler.pending_lanes();
+        if render_lanes == NO_LANES {
+            return;
+        }
+        self.pass = self.pass.wrapping_add(1);
+
+        let mut dirty = std::mem::take(&mut self.marked);
+        dirty.clear();
+        self.scheduler.for_each_dirty(|id, lanes| {
+            if includes_some_lane(lanes, render_lanes) {
+                dirty.push(id);
+            }
+        });
+        for &id in &dirty {
+            self.enqueue(id);
+        }
+        dirty.clear();
+        self.marked = dirty;
+
+        while let Some(Reverse((_, id))) = self.queue.pop() {
+            self.render(id, render_lanes);
+        }
+
+        self.commit(arena);
+        self.scheduler.mark_render_finished(render_lanes);
     }
 
-    fn work_loop(&mut self, arena: &mut UiRuntime, deadline: Option<Instant>) -> bool {
-        self.scheduler.mark_starved_lanes_as_expired();
-        loop {
-            if self.scheduler.pending_lanes() == NO_LANES && self.work_in_progress.is_none() {
-                return true;
-            }
+    // -----------------------------------------------------------------------
+    // Render
+    // -----------------------------------------------------------------------
 
-            self.ensure_work();
-            if self.work_in_progress.is_none() {
-                return false;
-            }
-            while self
-                .work_in_progress
-                .as_ref()
-                .is_some_and(|work| work.next_work.is_some())
-            {
-                self.perform_unit_of_work();
-                let more_work = self.need_more_work();
-                if more_work && deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                    return false;
-                }
-            }
-            self.commit_finished_work(arena);
-            if deadline.is_some() {
-                return true;
-            }
+    /// Queues component `id` to render in this pass.
+    ///
+    /// Only a component renders, and every fiber that is marked dirty is one
+    /// -- a mark comes from a hook, whose owner is the component rendering
+    /// it -- but the scheduler is public, so any id can be marked: anything
+    /// else is not queued, which is what [`Self::render`] relies on.
+    fn enqueue(&mut self, id: FiberId) {
+        if let Some(node) = self.nodes.node(id)
+            && matches!(node.kind, FiberKind::Component(_))
+            && !node.effect.contains(EffectTag::DELETION)
+            && node.rendered_in != self.pass
+        {
+            self.queue.push(Reverse((node.depth, id)));
         }
     }
 
-    #[inline]
-    fn need_more_work(&self) -> bool {
-        self.work_in_progress
-            .as_ref()
-            .is_some_and(|wip| wip.next_work.is_some())
+    /// Queues the components marked dirty since the last call: the readers
+    /// of a context a render just changed.
+    fn enqueue_marked(&mut self) {
+        self.scheduler.take_marked(&mut self.marked);
+        if self.marked.is_empty() {
+            return;
+        }
+        let mut marked = std::mem::take(&mut self.marked);
+        for &id in &marked {
+            self.enqueue(id);
+        }
+        marked.clear();
+        self.marked = marked;
     }
 
-    fn perform_unit_of_work(&mut self) {
-        let Some(id) = self
-            .work_in_progress
-            .as_ref()
-            .and_then(|work| work.next_work)
-        else {
+    /// Renders component `id` and reconciles what it returns into its
+    /// children. Skips one removed in this pass, or rendered already.
+    fn render(&mut self, id: FiberId, render_lanes: Lanes) {
+        let Some(node) = self.nodes.node_mut(id) else {
             return;
         };
-
-        if let Some(child) = self.begin_work(id) {
-            self.work_in_progress.as_mut().unwrap().next_work = Some(child);
+        if node.effect.contains(EffectTag::DELETION) || node.rendered_in == self.pass {
             return;
         }
+        node.rendered_in = self.pass;
+        // One mounting in this pass has no readers yet.
+        let committed = !node.effect.contains(EffectTag::PLACEMENT);
+        let (render, props) = match &node.kind {
+            FiberKind::Component(component) => (component.render, component.props.clone()),
+            _ => unreachable!("`enqueue` queues only components"),
+        };
 
-        let mut current = id;
-        loop {
-            self.complete_work(current);
-            if let Some(sibling) = self.next_sibling_needing_work(current) {
-                if let Some(work) = self.work_in_progress.as_mut() {
-                    work.next_work = Some(sibling);
-                }
-                return;
-            }
-            let parent = self.wip_nodes.get(current).and_then(|n| n.parent);
-
-            match parent {
-                Some(parent) => current = parent,
-                None => {
-                    if let Some(work) = self.work_in_progress.as_mut() {
-                        work.next_work = None;
-                    }
-                    return;
-                }
-            }
-        }
-    }
-
-    fn begin_work(&mut self, id: WipId) -> Option<WipId> {
-        let (fiber_id, tag, should_render, render_lanes, committed) = {
-            let work = self.work_in_progress.as_ref().expect("work missing");
-            let node = self.wip_nodes.get(id).expect("work node missing");
-
-            (
-                node.fiber_id,
-                node.tag,
-                node.should_render_component(work.render_lanes, &self.nodes),
-                work.render_lanes,
-                !node.is_uncommited(),
+        let element = {
+            let Self {
+                nodes,
+                hooks,
+                contexts,
+                scheduler,
+                async_dispatcher,
+                tokio_handle,
+                tickers,
+                ..
+            } = self;
+            let nodes: &FiberArena = nodes;
+            let ancestors = FiberAncestors { nodes, of: id };
+            contexts.begin_render(id);
+            let mut cx = HookContext::new_with_async(
+                hooks.entry(id).or_default(),
+                id,
+                scheduler.clone(),
+                render_lanes,
+                async_dispatcher.clone(),
+                tokio_handle.clone(),
+                tickers.clone(),
             )
+            .with_contexts(ContextScope {
+                registry: &mut *contexts,
+                ancestors: &ancestors,
+            });
+            let element = (render.call)(&mut cx, props.as_ref());
+            drop(cx);
+            // Before the children are reconciled, so that a reader of a
+            // context this render changed is queued with them.
+            contexts.finish_render(
+                id,
+                committed,
+                &ancestors,
+                nodes,
+                scheduler,
+                get_highest_priority_lane(render_lanes),
+            );
+            element
         };
-
-        macro_rules! cx {
-            ($id: ident, $ancestors: expr) => {{
-                self.contexts.begin_render($id);
-                let storage = self.hooks.entry($id).or_default();
-                let cx = HookContext::new_with_async(
-                    storage,
-                    $id,
-                    self.scheduler.clone(),
-                    render_lanes,
-                    self.async_dispatcher.clone(),
-                    self.tokio_handle.clone(),
-                    self.tickers.clone(),
-                )
-                .with_contexts(ContextScope {
-                    registry: &mut self.contexts,
-                    ancestors: $ancestors,
-                });
-                cx
-            }};
-        }
-
-        // Runs after a component rendered and before its children are
-        // reconciled, so that readers of a context it changed are marked
-        // before the children's pending work is collected.
-        macro_rules! finish_render {
-            ($ancestors: expr) => {
-                self.contexts.finish_render(
-                    fiber_id,
-                    committed,
-                    $ancestors,
-                    &self.nodes,
-                    &self.scheduler,
-                    get_highest_priority_lane(render_lanes),
-                )
-            };
-        }
-
-        match tag {
-            FiberTag::Component => {
-                if should_render {
-                    let ancestors = WipAncestors {
-                        nodes: &self.wip_nodes,
-                        of: id,
-                    };
-                    let wip_node = self.wip_nodes.get(id).unwrap();
-                    if let Some((render, props)) = wip_node.component_render_props(&self.nodes) {
-                        let mut cx = cx!(fiber_id, &ancestors);
-                        let element = (render.call)(&mut cx, props);
-                        finish_render!(&ancestors);
-                        self.reconcile_children(id, [element]);
-                    }
-                } else {
-                    self.clone_current_children(id);
-                }
-            }
-            FiberTag::Fragment | FiberTag::Portal => {
-                let pending_children = self
-                    .wip_nodes
-                    .get_mut(id)
-                    .and_then(WorkNode::take_pending_children);
-                if let Some(children) = pending_children {
-                    self.reconcile_children(id, children);
-                } else {
-                    self.clone_current_children(id);
-                }
-            }
-            FiberTag::Template => {
-                let build = self
-                    .wip_nodes
-                    .get_mut(id)
-                    .and_then(WorkNode::template_work_mut)
-                    .and_then(|work| work.desc.take().map(|desc| (desc, work.mode)))
-                    .map(|(desc, mode)| desc.build(mode));
-                if let Some(mut build) = build {
-                    let slots = std::mem::take(&mut build.slots);
-                    let work = self
-                        .wip_nodes
-                        .get_mut(id)
-                        .and_then(WorkNode::template_work_mut)
-                        .expect("template work missing");
-                    work.hosts = std::mem::take(&mut build.hosts);
-                    // Slots match by position: the same template has the
-                    // same slots. A kept one stays as it is.
-                    let prepared = slots
-                        .into_iter()
-                        .map(|slot| match slot {
-                            TemplateSlot::Element(element) => Some(self.prepare_element(element)),
-                            TemplateSlot::Keep => None,
-                        })
-                        .collect::<Vec<_>>();
-                    self.reconcile_prepared(id, prepared);
-                } else {
-                    self.clone_current_children(id);
-                }
-            }
-        }
-
-        self.first_child_needing_work(id)
+        self.enqueue_marked();
+        self.reconcile_list(id, std::iter::once(element));
     }
 
-    fn reconcile_children<I>(&mut self, parent: WipId, new_children: I)
+    // -----------------------------------------------------------------------
+    // Reconcile
+    // -----------------------------------------------------------------------
+
+    fn children(&self, parent: FiberId) -> Children {
+        let mut children = Children::new();
+        let mut cursor = self.nodes.node(parent).and_then(|node| node.child);
+        while let Some(id) = cursor {
+            children.push(id);
+            cursor = self.nodes.node(id).and_then(|node| node.sibling);
+        }
+        children
+    }
+
+    /// Matches `elements`, a list, against `parent`'s children: by key, or
+    /// by position for an unkeyed one. A match is updated in place, moved
+    /// when it falls behind one matched before it; the rest are created, and
+    /// the children left unmatched removed.
+    fn reconcile_list<I>(&mut self, parent: FiberId, elements: I)
     where
         I: IntoIterator<Item = ElementDesc>,
+        I::IntoIter: ExactSizeIterator,
     {
-        let prepared = new_children
-            .into_iter()
-            .map(|element| Some(self.prepare_element(element)))
-            .collect::<Vec<_>>();
-        self.reconcile_prepared(parent, prepared);
-    }
+        let elements = elements.into_iter();
+        // Reused from list to list; a nested list takes another.
+        let mut scratch = self.lists.pop().unwrap_or_default();
+        let ListScratch {
+            old,
+            used,
+            keyed,
+            next,
+        } = &mut scratch;
+        let mut cursor = self.nodes.node(parent).and_then(|node| node.child);
+        while let Some(id) = cursor {
+            let node = self.nodes.node(id).expect("a child");
+            if let Some(key) = node.key {
+                keyed.insert(key, old.len());
+            }
+            old.push(id);
+            cursor = node.sibling;
+        }
+        used.resize(old.len(), false);
+        next.reserve(elements.len());
+        let mut last_placed = 0;
 
-    /// Matches `new_children` against the committed children of `parent`.
-    /// A `None` keeps the committed child in that position as it is.
-    fn reconcile_prepared(&mut self, parent: WipId, new_children: Vec<Option<PreparedElement>>) {
-        let work_node = self.wip_nodes.get(parent).unwrap();
-        let work_node_current = work_node.binding.current;
-
-        let old_children = work_node_current
-            .and_then(|id| self.nodes.node(id))
-            .map(|node| node.children(&self.nodes).map(|n| n.id).collect::<Vec<_>>())
-            .unwrap_or_default();
-        let new_children = new_children.into_iter();
-        let render_lanes = self
-            .work_in_progress
-            .as_ref()
-            .map(|work| work.render_lanes)
-            .unwrap_or(NO_LANES);
-
-        let mut used = vec![false; old_children.len()];
-        let mut next_children = SmallVec::with_capacity(20);
-        let mut last_placed_index = 0;
-
-        let old_key_map = old_children
-            .iter()
-            .enumerate()
-            .map(|(pos, o)| {
-                let node = self.nodes.node(*o).unwrap();
-                (node.key, pos)
-            })
-            .filter(|(a, _)| a.is_some())
-            .map(|(k, pos)| (k.unwrap(), pos))
-            .collect();
-
-        for (position, prepared) in new_children.into_iter().enumerate() {
-            let Some(prepared) = prepared else {
-                let old_id = old_children[position];
-                used[position] = true;
-                let old = self.nodes.node(old_id).expect("a kept fiber is committed");
-                let lanes = self.scheduler.component_lanes(old_id) & render_lanes;
-                let child_lanes = child_tree_lanes(&self.nodes, old, &self.scheduler, render_lanes);
-                let child = self.alloc_wip_node(WorkNode::from_current(
-                    old,
-                    Some(parent),
-                    position,
-                    lanes,
-                    child_lanes,
-                ));
-                next_children.push(child);
-                last_placed_index = last_placed_index.max(position);
-                continue;
-            };
-
-            let wip_node = if let Some(matched) = find_reusable_child_fast(
-                &self.nodes,
-                &old_children,
-                &used,
-                &old_key_map,
-                &prepared,
-                position,
-            ) {
-                let old_index = matched.old_index;
-                let old_id = matched.old_id;
-                let reused_child_node_id = old_children[old_index];
-                let reused_child_node = self.nodes.node(reused_child_node_id).unwrap();
-                used[old_index] = true;
-
-                let current_lane = self.scheduler.component_lanes(old_id) & render_lanes;
-                let children_lanes = child_tree_lanes(
-                    &self.nodes,
-                    reused_child_node,
-                    &self.scheduler,
-                    render_lanes,
-                );
-
-                let mut effect = if prepared_needs_update(reused_child_node, &prepared) {
-                    EffectTag::UPDATE
-                } else {
-                    EffectTag::empty()
-                };
-
-                if old_index < last_placed_index {
-                    effect |= EffectTag::MOVE;
-                } else {
-                    last_placed_index = old_index;
+        for (position, element) in elements.enumerate() {
+            let matched = match element.key() {
+                Some(key) => keyed.get(&key).copied(),
+                None => Some(position).filter(|&index| {
+                    old.get(index)
+                        .and_then(|id| self.nodes.node(*id))
+                        .is_some_and(|node| node.key.is_none() && node.position == position)
+                }),
+            }
+            .filter(|&index| {
+                !used[index] && can_reuse(self.nodes.node(old[index]).expect("a child"), &element)
+            });
+            let id = match matched {
+                Some(index) => {
+                    used[index] = true;
+                    let effect = if index < last_placed {
+                        EffectTag::MOVE
+                    } else {
+                        last_placed = index;
+                        EffectTag::empty()
+                    };
+                    let id = old[index];
+                    self.update(id, element, effect);
+                    id
                 }
-
-                WorkNode::from_prepared(
-                    &self.nodes,
-                    old_id,
-                    parent,
-                    position,
-                    prepared,
-                    Some(old_id),
-                    effect,
-                    current_lane,
-                    children_lanes,
-                )
-            } else {
-                let id = self.nodes.new_id();
-                WorkNode::from_prepared(
-                    &self.nodes,
-                    id,
-                    parent,
-                    position,
-                    prepared,
-                    None,
-                    EffectTag::PLACEMENT,
-                    NO_LANES,
-                    NO_LANES,
-                )
+                None => self.create(parent, element),
             };
-
-            let child = self.alloc_wip_node(wip_node);
-            next_children.push(child);
+            next.push(id);
         }
 
-        for (index, old_child) in old_children.into_iter().enumerate() {
+        for (index, &id) in old.iter().enumerate() {
             if !used[index] {
-                self.work_in_progress
-                    .as_mut()
-                    .expect("work missing")
-                    .deletions
-                    .push(old_child);
+                self.delete(id);
             }
         }
-        let node = self.wip_nodes.get_mut(parent).unwrap();
-        node.children = next_children;
-        node.children_resolved = true;
+        self.nodes.set_children(parent, next);
+        old.clear();
+        used.clear();
+        keyed.clear();
+        next.clear();
+        self.lists.push(scratch);
     }
 
-    fn prepare_element(&self, element: ElementDesc) -> PreparedElement {
-        let key = element.key();
-        let (tag, pending) = match element {
-            ElementDesc::Component(component) => (
-                FiberTag::Component,
-                Pending::Component(ComponentWork {
-                    render: component.render,
-                    key,
-                    props: component.props,
-                }),
-            ),
-            ElementDesc::Template(desc) => (
-                FiberTag::Template,
-                Pending::Template(TemplateWork {
-                    meta: desc.meta,
-                    identity: desc.identity,
-                    desc: Some(desc),
-                    // Made an update in `from_prepared` when it matches a
-                    // committed template.
-                    mode: BuildMode::Mount,
-                    hosts: Vec::new(),
-                    nodes: Vec::new(),
-                }),
-            ),
-            ElementDesc::Fragment(fragment) => {
-                (FiberTag::Fragment, Pending::Fragment(fragment.children))
+    /// A template's slots against its committed ones. The same template has
+    /// the same slots in the same places, so slot `i` can only be what slot
+    /// `i` was: kept, updated in place, or replaced, never moved, and found
+    /// without the search [`Self::reconcile_list`] does.
+    fn reconcile_slots(&mut self, template: FiberId, slots: Vec<TemplateSlot>) {
+        let old = self.children(template);
+        debug_assert!(
+            old.is_empty() || old.len() == slots.len(),
+            "a template is matched only to one with the same slots"
+        );
+        let mut next = Children::with_capacity(slots.len());
+        for (position, slot) in slots.into_iter().enumerate() {
+            let element = match slot {
+                TemplateSlot::Keep => {
+                    next.push(old[position]);
+                    continue;
+                }
+                TemplateSlot::Element(element) => element,
+                TemplateSlot::Component { render, props, key } => {
+                    ElementDesc::Component(ComponentDesc { key, render, props })
+                }
+            };
+            let reusable = old.get(position).copied().filter(|id| {
+                let node = self.nodes.node(*id).expect("a slot's fiber");
+                node.key == element.key() && can_reuse(node, &element)
+            });
+            let id = match reusable {
+                Some(id) => {
+                    self.update(id, element, EffectTag::empty());
+                    id
+                }
+                None => {
+                    if let Some(&old) = old.get(position) {
+                        self.delete(old);
+                    }
+                    self.create(template, element)
+                }
+            };
+            next.push(id);
+        }
+        self.nodes.set_children(template, &next);
+    }
+
+    /// Gives fiber `id`, matched to `element`, this render's version of it.
+    fn update(&mut self, id: FiberId, element: ElementDesc, mut effect: EffectTag) {
+        let node = self.nodes.node_mut(id).expect("a matched fiber");
+        node.key = element.key();
+        match element {
+            ElementDesc::Component(desc) => {
+                let FiberKind::Component(component) = &mut node.kind else {
+                    unreachable!("matched by kind");
+                };
+                // The same allocation cannot render anything new, and a
+                // `memo` component's equal props neither.
+                let unchanged = match (&component.props, &desc.props) {
+                    (Some(old), Some(new)) => {
+                        Rc::ptr_eq(old, new)
+                            || desc.render.same_props.is_some_and(|same| same(&**old, &**new))
+                    }
+                    (None, None) => true,
+                    _ => false,
+                };
+                component.props = desc.props;
+                if !unchanged {
+                    self.enqueue(id);
+                }
             }
+            ElementDesc::Template(mut desc) => {
+                let FiberKind::Template(template) = &mut node.kind else {
+                    unreachable!("matched by kind");
+                };
+                let mut build = desc.build(BuildMode::Update);
+                template.pending = Some(TemplatePending {
+                    mode: BuildMode::Update,
+                    desc,
+                    hosts: std::mem::take(&mut build.hosts),
+                });
+                effect |= EffectTag::UPDATE;
+                self.mark(id, effect);
+                self.reconcile_slots(id, std::mem::take(&mut build.slots));
+                return;
+            }
+            ElementDesc::Fragment(fragment) => {
+                self.mark(id, effect);
+                self.reconcile_list(id, fragment.children);
+                return;
+            }
+            ElementDesc::Portal(portal) => {
+                let FiberKind::Portal(state) = &mut node.kind else {
+                    unreachable!("matched by kind");
+                };
+                if state.scope != portal.scope
+                    || state.options != portal.options
+                    || state.behavior != portal.behavior
+                {
+                    state.scope = portal.scope;
+                    state.options = portal.options;
+                    state.behavior = portal.behavior;
+                    effect |= EffectTag::UPDATE;
+                }
+                self.mark(id, effect);
+                self.reconcile_list(id, portal.children);
+                return;
+            }
+        }
+        self.mark(id, effect);
+    }
+
+    /// Creates a fiber under `parent` for `element`, and everything under it
+    /// short of rendering the components, which are queued.
+    fn create(&mut self, parent: FiberId, element: ElementDesc) -> FiberId {
+        let id = self.nodes.new_id();
+        let depth = self.nodes.node(parent).expect("a parent").depth + 1;
+        let key = element.key();
+        let (kind, rest) = match element {
+            ElementDesc::Component(desc) => (
+                FiberKind::Component(ComponentState {
+                    render: desc.render,
+                    key,
+                    props: desc.props,
+                }),
+                Created::Component,
+            ),
+            ElementDesc::Template(mut desc) => {
+                let mut build = desc.build(BuildMode::Mount);
+                let slots = std::mem::take(&mut build.slots);
+                (
+                    FiberKind::Template(TemplateState {
+                        meta: desc.meta,
+                        identity: desc.identity,
+                        nodes: Vec::new(),
+                        pending: Some(TemplatePending {
+                            mode: BuildMode::Mount,
+                            desc,
+                            hosts: std::mem::take(&mut build.hosts),
+                        }),
+                    }),
+                    Created::Slots(slots),
+                )
+            }
+            ElementDesc::Fragment(fragment) => (FiberKind::Fragment, Created::List(fragment.children)),
             ElementDesc::Portal(portal) => (
-                FiberTag::Portal,
-                Pending::Portal(PortalWork {
+                FiberKind::Portal(PortalState {
                     scope: portal.scope,
                     options: portal.options,
                     behavior: portal.behavior,
-                    pending_children: portal.children,
                     entry: None,
                     visual_root: None,
                 }),
+                Created::List(portal.children),
             ),
         };
-        PreparedElement { key, tag, pending }
+        self.nodes.insert_node(
+            id,
+            Node {
+                id,
+                parent: Some(parent),
+                child: None,
+                sibling: None,
+                key,
+                position: 0,
+                effect: EffectTag::empty(),
+                kind,
+                depth,
+                rendered_in: 0,
+            },
+        );
+        self.created.push(id);
+        self.mark(id, EffectTag::PLACEMENT);
+        match rest {
+            Created::Component => self.enqueue(id),
+            Created::Slots(slots) => self.reconcile_slots(id, slots),
+            Created::List(children) => self.reconcile_list(id, children),
+        }
+        id
     }
 
-    fn commit_finished_work(&mut self, arena: &mut UiRuntime) {
-        let Some(mut work) = self.work_in_progress.take() else {
+    /// Detaches fiber `id`: it and everything under it are removed at
+    /// commit, and none of it renders before then.
+    fn delete(&mut self, id: FiberId) {
+        let mut stack: SmallVec<[FiberId; 16]> = SmallVec::from_elem(id, 1);
+        while let Some(fiber) = stack.pop() {
+            if let Some(node) = self.nodes.node_mut(fiber) {
+                node.effect |= EffectTag::DELETION;
+                let mut cursor = node.child;
+                while let Some(child) = cursor {
+                    stack.push(child);
+                    cursor = self.nodes.node(child).and_then(|node| node.sibling);
+                }
+            }
+        }
+        self.deletions.push(id);
+    }
+
+    /// Gives fiber `id` effect `effect`, and every ancestor the knowledge
+    /// that one is below it.
+    fn mark(&mut self, id: FiberId, effect: EffectTag) {
+        if effect.is_empty() {
+            return;
+        }
+        let Some(node) = self.nodes.node_mut(id) else {
             return;
         };
-
-        if work.next_work.is_some() {
-            self.work_in_progress = Some(work);
-            return;
+        node.effect |= effect;
+        let mut cursor = node.parent;
+        while let Some(ancestor) = cursor {
+            let node = self.nodes.node_mut(ancestor).expect("an ancestor");
+            if node.effect.contains(EffectTag::SUBTREE) {
+                return;
+            }
+            node.effect |= EffectTag::SUBTREE;
+            cursor = node.parent;
         }
+    }
 
-        let render_lanes = work.render_lanes;
-        let deletions = std::mem::take(&mut work.deletions);
-        for deletion in deletions {
+    // -----------------------------------------------------------------------
+    // Commit
+    // -----------------------------------------------------------------------
+
+    fn commit(&mut self, arena: &mut UiRuntime) {
+        for deletion in std::mem::take(&mut self.deletions) {
             self.commit_deletion(deletion, arena, true);
         }
-
-        self.commit_mutation_effects(work.root, self.root_widget, arena);
-
-        let next_current = self.freeze_work_tree(work.root, None, &mut work, arena);
-        self.current = next_current;
-        self.scheduler.mark_render_finished(render_lanes);
+        self.commit_mutation_effects(self.current, self.root_widget, arena);
+        for id in std::mem::take(&mut self.created) {
+            if self.nodes.contains(id) {
+                self.scheduler.mark_mounted(id);
+            }
+        }
     }
 
     fn commit_deletion(&mut self, id: FiberId, arena: &mut UiRuntime, remove_host: bool) {
@@ -942,104 +677,99 @@ impl ComponentRuntime {
         self.nodes.remove_node(id);
     }
 
-    fn commit_mutation_effects(
-        &mut self,
-        wip_id: WipId,
-        parent_host: NodeId,
-        arena: &mut UiRuntime,
-    ) {
-        let Some((effect, tag, children)) = self
-            .wip_nodes
-            .get(wip_id)
-            .map(|node| (node.effect, node.tag, node.children.clone()))
-        else {
+    /// Applies the effects of `id` and of everything below it that has one,
+    /// in preorder, so siblings are placed in their order. `parent_host` is
+    /// the host `id`'s hosts go under.
+    fn commit_mutation_effects(&mut self, id: FiberId, parent_host: NodeId, arena: &mut UiRuntime) {
+        let Some(node) = self.nodes.node(id) else {
             return;
         };
+        let (effect, tag) = (node.effect, node.tag());
+        if effect.is_empty() {
+            return;
+        }
 
-        if effect.intersects(EffectTag::PLACEMENT.union(EffectTag::MOVE)) {
-            let before = self.find_host_sibling_for_wip(wip_id);
-            self.commit_placement_subtree(wip_id, parent_host, before, arena);
+        if effect.intersects(EffectTag::PLACEMENT | EffectTag::MOVE) {
+            let before = self.find_host_sibling(id);
+            self.commit_placement_subtree(id, parent_host, before, arena);
         }
 
         if effect.contains(EffectTag::UPDATE) {
-            self.commit_update_if_portal(wip_id, parent_host, arena);
-            self.commit_update_if_template(wip_id, arena);
+            self.commit_update_if_portal(id, parent_host, arena);
+        }
+        if tag == FiberTag::Template {
+            // Mounted as it was placed; on an update, its dynamic hosts.
+            self.commit_update_if_template(id, arena);
         }
 
-        if matches!(tag, FiberTag::Template) {
+        if tag == FiberTag::Template {
             // Each slot sits under the host the template wrote it in.
-            let (meta, nodes) = self.template_nodes(wip_id);
-            for (child, (_, slot)) in children.into_iter().zip(meta.slots()) {
-                let parent = slot.parent.expect("a template's root is a host") as usize;
-                let parent_host = nodes[parent].expect("a template's hosts are mounted");
+            let parent_hosts: SmallVec<[NodeId; 4]> = {
+                let template = self.nodes.node(id).and_then(Node::template).expect("a template");
+                template
+                    .meta
+                    .slots()
+                    .map(|(_, slot)| {
+                        let parent = slot.parent.expect("a template's root is a host");
+                        template.nodes[usize::from(parent)].expect("a template's hosts are mounted")
+                    })
+                    .collect()
+            };
+            let mut cursor = self.nodes.node(id).and_then(|node| node.child);
+            for parent_host in parent_hosts {
+                let Some(child) = cursor else { break };
+                cursor = self.nodes.node(child).and_then(|node| node.sibling);
                 self.commit_mutation_effects(child, parent_host, arena);
             }
-            return;
+        } else {
+            let child_parent_host = match tag {
+                FiberTag::Portal => arena.root_overlayer(),
+                _ => parent_host,
+            };
+            let mut cursor = self.nodes.node(id).and_then(|node| node.child);
+            while let Some(child) = cursor {
+                cursor = self.nodes.node(child).and_then(|node| node.sibling);
+                self.commit_mutation_effects(child, child_parent_host, arena);
+            }
+            if tag == FiberTag::Portal {
+                self.sync_portal_visual_root(id, parent_host, arena);
+            }
         }
 
-        let child_parent_host = match tag {
-            FiberTag::Portal => arena.root_overlayer(),
-            _ => parent_host,
-        };
-
-        for child in children {
-            self.commit_mutation_effects(child, child_parent_host, arena);
+        if let Some(node) = self.nodes.node_mut(id) {
+            node.effect = EffectTag::empty();
         }
-
-        if matches!(tag, FiberTag::Portal) {
-            self.sync_portal_visual_root(wip_id, parent_host, arena);
-        }
-    }
-
-    /// The host a fiber is: a template's root, once mounted.
-    fn host_node_for_wip(&self, wip_id: WipId) -> Option<NodeId> {
-        self.wip_nodes.get(wip_id)?.binding.current_host
     }
 
     fn commit_placement_subtree(
         &mut self,
-        wip_id: WipId,
+        id: FiberId,
         parent_host: NodeId,
         before: Option<NodeId>,
         arena: &mut UiRuntime,
     ) {
-        let Some((tag, children)) = self
-            .wip_nodes
-            .get(wip_id)
-            .map(|node| (node.tag, node.children.clone()))
-        else {
+        let Some(tag) = self.nodes.node(id).map(Node::tag) else {
             return;
         };
 
-        if matches!(tag, FiberTag::Template) {
+        if tag == FiberTag::Template {
             // Its slots are placed under its own hosts as the mutation pass
             // reaches them.
-            let root = self.ensure_template_mounted(wip_id, arena);
+            let root = self.ensure_template_mounted(id, arena);
             arena.place(parent_host, root, before);
-            if let Some(node) = self.wip_nodes.get_mut(wip_id) {
-                node.effect.remove(EffectTag::PLACEMENT | EffectTag::MOVE);
-            }
+            self.clear_placement(id);
             return;
         }
 
-        if matches!(tag, FiberTag::Portal) {
-            for child in children {
+        if tag == FiberTag::Portal {
+            for child in self.children(id) {
                 self.commit_placement_subtree(child, arena.root_overlayer(), None, arena);
             }
-            let visual_root = self.first_host_in_wip_subtree(wip_id);
-            let (scope, options, behavior, existing_entry) = self
-                .wip_nodes
-                .get_mut(wip_id)
-                .and_then(WorkNode::portal_work_mut)
-                .map(|portal| {
-                    (
-                        portal.scope,
-                        portal.options,
-                        portal.behavior.clone(),
-                        portal.entry,
-                    )
-                })
-                .expect("Portal placement is missing its model");
+            let visual_root = self.first_host_in_subtree(id);
+            let (scope, options, behavior, existing_entry) = {
+                let portal = self.nodes.node(id).and_then(Node::portal).expect("a portal");
+                (portal.scope, portal.options, portal.behavior.clone(), portal.entry)
+            };
             let entry = if let Some(entry) = existing_entry {
                 arena
                     .update_overlay_entry(entry, scope, options)
@@ -1055,138 +785,100 @@ impl ComponentRuntime {
             if let (Some(entry), Some(visual_root)) = (entry, visual_root) {
                 apply_portal_behavior(arena, entry, visual_root, parent_host, &behavior);
             }
-            let portal = self
-                .wip_nodes
-                .get_mut(wip_id)
-                .and_then(WorkNode::portal_work_mut)
-                .expect("Portal placement model disappeared");
+            let portal = self.portal_mut(id);
             portal.entry = entry;
             portal.visual_root = visual_root;
-            if let Some(node) = self.wip_nodes.get_mut(wip_id) {
-                node.effect.remove(EffectTag::PLACEMENT | EffectTag::MOVE);
-            }
+            self.clear_placement(id);
             return;
         }
 
-        for child in children {
+        for child in self.children(id) {
             self.commit_placement_subtree(child, parent_host, before, arena);
+        }
+    }
+
+    fn clear_placement(&mut self, id: FiberId) {
+        if let Some(node) = self.nodes.node_mut(id) {
+            node.effect.remove(EffectTag::PLACEMENT | EffectTag::MOVE);
+        }
+    }
+
+    fn portal_mut(&mut self, id: FiberId) -> &mut PortalState {
+        match self.nodes.node_mut(id).map(|node| &mut node.kind) {
+            Some(FiberKind::Portal(portal)) => portal,
+            _ => unreachable!("a portal"),
+        }
+    }
+
+    fn template_mut(&mut self, id: FiberId) -> &mut TemplateState {
+        match self.nodes.node_mut(id).map(|node| &mut node.kind) {
+            Some(FiberKind::Template(template)) => template,
+            _ => unreachable!("a template"),
         }
     }
 
     /// Mounts a new template's hosts, each under its parent, and returns its
     /// root, unplaced. A mounted template's root as it is.
-    fn ensure_template_mounted(&mut self, wip_id: WipId, arena: &mut UiRuntime) -> NodeId {
-        if let Some(root) = self
-            .wip_nodes
-            .get(wip_id)
-            .and_then(|n| n.binding.current_host)
-        {
+    fn ensure_template_mounted(&mut self, id: FiberId, arena: &mut UiRuntime) -> NodeId {
+        let template = self.template_mut(id);
+        if let Some(root) = template.root() {
             return root;
         }
-        let work = self
-            .wip_nodes
-            .get_mut(wip_id)
-            .and_then(WorkNode::template_work_mut)
-            .expect("a new template has its work");
-        debug_assert_eq!(work.mode, BuildMode::Mount);
-        let meta = work.meta;
+        let mut pending = template.pending.take().expect("a new template has its build");
+        debug_assert_eq!(pending.mode, BuildMode::Mount);
+        let meta = template.meta;
         let mut nodes = vec![None; meta.nodes.len()];
+        // Built in node order, so they arrive in the order they mount.
+        let mut drafts = std::mem::take(&mut pending.hosts).into_iter();
         for (index, node) in meta.nodes.iter().enumerate() {
             if !matches!(node.kind, TemplateNodeKind::Host { .. }) {
                 continue;
             }
-            let draft = work.hosts[index]
-                .take()
+            let draft = drafts
+                .next()
+                .filter(|(at, _)| usize::from(*at) == index)
+                .map(|(_, draft)| draft)
                 .unwrap_or_else(|| panic!("template {} built no draft for a host", meta.location));
-            let id = arena.create_node(draft);
+            let host = arena.create_node(draft);
             if let Some(parent) = node.parent {
                 // In preorder, so each lands after its earlier siblings.
                 arena.place(
-                    nodes[parent as usize].expect("parents come first"),
-                    id,
+                    nodes[usize::from(parent)].expect("parents come first"),
+                    host,
                     None,
                 );
             }
-            nodes[index] = Some(id);
+            nodes[index] = Some(host);
         }
+        pending.desc.recycle();
         let root = nodes[0].expect("a template's root is a host");
-        work.nodes = nodes;
-        self.wip_nodes.get_mut(wip_id).unwrap().binding.current_host = Some(root);
+        self.template_mut(id).nodes = nodes;
         root
     }
 
-    /// Rebuilds a mounted template's dynamic hosts from this render's drafts.
-    fn commit_update_if_template(&mut self, wip_id: WipId, arena: &mut UiRuntime) {
-        let Some(work) = self
-            .wip_nodes
-            .get_mut(wip_id)
-            .and_then(WorkNode::template_work_mut)
-        else {
+    /// Updates a mounted template's dynamic hosts: those built whole from
+    /// their drafts, the others with their dynamic values, which the
+    /// template's generated `commit` writes in place.
+    fn commit_update_if_template(&mut self, id: FiberId, arena: &mut UiRuntime) {
+        let template = self.template_mut(id);
+        let Some(mut pending) = template.pending.take() else {
             return;
         };
-        if work.mode != BuildMode::Update {
+        if pending.mode != BuildMode::Update {
             return;
         }
-        for (index, draft) in work.hosts.iter_mut().enumerate() {
-            if let Some(draft) = draft.take() {
-                let id = work.nodes[index].expect("a mounted template keeps its hosts");
-                arena.update_node(id, draft);
-            }
+        for (index, draft) in std::mem::take(&mut pending.hosts) {
+            let host = template.nodes[usize::from(index)].expect("a mounted template keeps its hosts");
+            arena.update_node(host, draft);
         }
+        pending
+            .desc
+            .commit(&mut TemplateHosts::new(arena, &template.nodes));
+        pending.desc.recycle();
     }
 
-    /// A template's structure and hosts: from its work this render, or as it
-    /// was committed.
-    fn template_nodes(&self, wip_id: WipId) -> (&'static TemplateMeta, Vec<Option<NodeId>>) {
-        let wip = self.wip_nodes.get(wip_id).expect("template work node");
-        if let Some(work) = wip.template_work() {
-            return (work.meta, work.nodes.clone());
-        }
-        let state = wip
-            .binding
-            .current
-            .and_then(|id| self.nodes.node(id))
-            .and_then(Node::template)
-            .expect("a template fiber without work is committed");
-        (state.meta, state.nodes.clone())
-    }
-
-    /// The host a slot of `template` is placed before: the first sibling after
-    /// it in the template that has one.
-    fn template_anchor(&self, template: WipId, slot_child: WipId) -> Option<NodeId> {
-        let (meta, nodes) = self.template_nodes(template);
-        let children = &self.wip_nodes.get(template)?.children;
-        let position = children.iter().position(|child| *child == slot_child)?;
-        let (slot_index, _) = meta.slots().nth(position)?;
-        for sibling in meta.following_siblings(slot_index) {
-            match meta.nodes[sibling].kind {
-                TemplateNodeKind::Host { .. } => return nodes[sibling],
-                _ => {
-                    let slot_position = meta.slots().position(|(index, _)| index == sibling)?;
-                    if let Some(host) = children
-                        .get(slot_position)
-                        .and_then(|child| self.find_stable_host_in_wip_subtree(*child))
-                    {
-                        return Some(host);
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    fn commit_update_if_portal(
-        &mut self,
-        wip_id: WipId,
-        parent_host: NodeId,
-        arena: &mut UiRuntime,
-    ) {
-        let Some(portal) = self
-            .wip_nodes
-            .get_mut(wip_id)
-            .filter(|node| matches!(node.tag, FiberTag::Portal))
-            .and_then(WorkNode::portal_work_mut)
-        else {
+    fn commit_update_if_portal(&mut self, id: FiberId, parent_host: NodeId, arena: &mut UiRuntime) {
+        let Some(portal) = self.nodes.node(id).and_then(Node::portal) else {
             return;
         };
         if let (Some(entry), Some(visual_root)) = (portal.entry, portal.visual_root) {
@@ -1197,32 +889,16 @@ impl ComponentRuntime {
         }
     }
 
-    fn sync_portal_visual_root(
-        &mut self,
-        wip_id: WipId,
-        parent_host: NodeId,
-        arena: &mut UiRuntime,
-    ) {
-        let next_visual_root = self.first_host_in_wip_subtree(wip_id);
-        let Some((scope, options, behavior, current_entry, current_visual_root)) = self
-            .wip_nodes
-            .get(wip_id)
-            .and_then(WorkNode::portal_work)
-            .map(|portal| {
-                (
-                    portal.scope,
-                    portal.options,
-                    portal.behavior.clone(),
-                    portal.entry,
-                    portal.visual_root,
-                )
-            })
-        else {
+    fn sync_portal_visual_root(&mut self, id: FiberId, parent_host: NodeId, arena: &mut UiRuntime) {
+        let next_visual_root = self.first_host_in_subtree(id);
+        let Some(portal) = self.nodes.node(id).and_then(Node::portal) else {
             return;
         };
-        if current_visual_root == next_visual_root {
+        if portal.visual_root == next_visual_root {
             return;
         }
+        let (scope, options, behavior, current_entry) =
+            (portal.scope, portal.options, portal.behavior.clone(), portal.entry);
 
         if let Some(entry) = current_entry {
             detach_portal(arena, entry).expect("Portal's previous entry could not be unmounted");
@@ -1234,42 +910,37 @@ impl ComponentRuntime {
             apply_portal_behavior(arena, entry, visual_root, parent_host, &behavior);
             entry
         });
-        let portal = self
-            .wip_nodes
-            .get_mut(wip_id)
-            .and_then(WorkNode::portal_work_mut)
-            .expect("Portal model disappeared while synchronizing its visual root");
+        let portal = self.portal_mut(id);
         portal.entry = next_entry;
         portal.visual_root = next_visual_root;
     }
 
-    fn first_host_in_wip_subtree(&self, wip_id: WipId) -> Option<NodeId> {
-        let node = self.wip_nodes.get(wip_id)?;
-        if let Some(host) = self.host_node_for_wip(wip_id) {
+    fn first_host_in_subtree(&self, id: FiberId) -> Option<NodeId> {
+        let node = self.nodes.node(id)?;
+        if let Some(host) = node.host() {
             return Some(host);
         }
-        node.children
-            .iter()
-            .find_map(|child| self.first_host_in_wip_subtree(*child))
+        node.children(&self.nodes)
+            .find_map(|child| self.first_host_in_subtree(child.id))
     }
 
-    /// The host a newly placed fiber goes before: the first host after it
+    /// The host a fiber being placed goes before: the first host after it
     /// among its siblings, looking up through fibers that own no host.
-    fn find_host_sibling_for_wip(&self, wip_id: WipId) -> Option<NodeId> {
-        let mut node = wip_id;
+    fn find_host_sibling(&self, id: FiberId) -> Option<NodeId> {
+        let mut node = id;
         loop {
-            let parent = self.wip_nodes.get(node)?.parent?;
-            let parent_tag = self.wip_nodes.get(parent)?.tag;
+            let parent = self.nodes.node(node)?.parent?;
+            let parent_tag = self.nodes.node(parent)?.tag();
             if parent_tag == FiberTag::Template {
                 // A slot's siblings are the template's, not its fiber's.
                 return self.template_anchor(parent, node);
             }
-            let siblings = &self.wip_nodes.get(parent)?.children;
-            let index = siblings.iter().position(|id| *id == node)?;
-            for sibling in siblings.iter().copied().skip(index + 1) {
-                if let Some(host) = self.find_stable_host_in_wip_subtree(sibling) {
+            let mut cursor = self.nodes.node(node)?.sibling;
+            while let Some(sibling) = cursor {
+                if let Some(host) = self.find_stable_host_in_subtree(sibling) {
                     return Some(host);
                 }
+                cursor = self.nodes.node(sibling)?.sibling;
             }
             if parent_tag == FiberTag::Portal {
                 // Its children are the overlay entry's; nothing follows them.
@@ -1279,349 +950,66 @@ impl ComponentRuntime {
         }
     }
 
-    fn find_stable_host_in_wip_subtree(&self, wip_id: WipId) -> Option<NodeId> {
-        let node = self.wip_nodes.get(wip_id)?;
-
-        if node
-            .effect
-            .intersects(EffectTag::PLACEMENT | EffectTag::MOVE)
-        {
-            return None;
-        }
-
-        if let Some(host_id) = self.host_node_for_wip(wip_id) {
-            return Some(host_id);
-        }
-
-        // A portal's hosts live under the overlayer, not beside this one.
-        if matches!(node.tag, FiberTag::Portal) {
-            return None;
-        }
-
-        if !node.children_resolved {
-            // Not visited this render: its committed subtree is what is
-            // mounted.
-            return node
-                .binding
-                .current
-                .and_then(|current| self.first_committed_host(current));
-        }
-
-        for child in &node.children {
-            if let Some(host) = self.find_stable_host_in_wip_subtree(*child) {
-                return Some(host);
+    /// The host a slot of `template` is placed before: the first sibling after
+    /// it in the template that has one.
+    fn template_anchor(&self, template: FiberId, slot_child: FiberId) -> Option<NodeId> {
+        let state = self.nodes.node(template).and_then(Node::template)?;
+        let (meta, nodes): (&TemplateMeta, &[Option<NodeId>]) = (state.meta, &state.nodes);
+        let position = self.nodes.node(slot_child)?.position;
+        let (slot_index, _) = meta.slots().nth(position)?;
+        let children = self.children(template);
+        for sibling in meta.following_siblings(slot_index) {
+            match meta.nodes[sibling].kind {
+                TemplateNodeKind::Host { .. } => return nodes[sibling],
+                _ => {
+                    let slot_position = meta.slots().position(|(index, _)| index == sibling)?;
+                    if let Some(host) = children
+                        .get(slot_position)
+                        .and_then(|child| self.find_stable_host_in_subtree(*child))
+                    {
+                        return Some(host);
+                    }
+                }
             }
         }
-
         None
     }
 
-    /// The first host in a committed fiber subtree, not looking into portals.
-    fn first_committed_host(&self, fiber: FiberId) -> Option<NodeId> {
-        let node = self.nodes.node(fiber)?;
+    /// The first host in a subtree that is in place already: not one being
+    /// placed or moved in this commit, and not under a portal.
+    fn find_stable_host_in_subtree(&self, id: FiberId) -> Option<NodeId> {
+        let node = self.nodes.node(id)?;
+        if node.effect.intersects(EffectTag::PLACEMENT | EffectTag::MOVE) {
+            return None;
+        }
         if let Some(host) = node.host() {
             return Some(host);
         }
+        // A portal's hosts live under the overlayer, not beside this one.
         if node.tag() == FiberTag::Portal {
             return None;
         }
         node.children(&self.nodes)
-            .find_map(|child| self.first_committed_host(child.id))
-    }
-
-    fn freeze_work_tree(
-        &mut self,
-        wip_id: WipId,
-        parent_fiber: Option<FiberId>,
-        work: &mut WorkInProgress,
-        arena: &UiRuntime,
-    ) -> FiberId {
-        let mut wip = work
-            .live(&mut self.wip_nodes)
-            .take_node(wip_id)
-            .expect("commit missing work node");
-
-        let fiber_id = wip.fiber_id;
-        let fiber_children = if wip.children_resolved {
-            std::mem::take(&mut wip.children)
-                .into_iter()
-                .map(|child| self.freeze_work_tree(child, Some(fiber_id), work, arena))
-                .collect::<Vec<_>>()
-        } else {
-            self.collect_current_child_ids(wip.binding.current)
-        };
-
-        let kind = self.freeze_kind(&mut wip, arena);
-        let frozen = crate::fiber::Node {
-            id: fiber_id,
-            parent: parent_fiber,
-            child: None,
-            sibling: None,
-            key: wip.key,
-            effect: EffectTag::empty(),
-            kind,
-            position: wip.position,
-        };
-
-        self.nodes.insert_node(fiber_id, frozen);
-        self.nodes.set_children(fiber_id, &fiber_children);
-        self.scheduler.mark_mounted(fiber_id);
-
-        fiber_id
-    }
-
-    fn collect_current_child_ids(&self, current: Option<FiberId>) -> Vec<FiberId> {
-        current
-            .and_then(|id| self.nodes.node(id))
-            .map(|node| node.children(&self.nodes).map(|child| child.id).collect())
-            .unwrap_or_default()
-    }
-
-    /// What the fiber keeps: this render's work, or what it kept before.
-    fn freeze_kind(&mut self, wip: &mut WorkNode, arena: &UiRuntime) -> FiberKind {
-        let kind = match wip.work.take() {
-            Some(Pending::Component(work)) => FiberKind::Component(work.into()),
-            Some(Pending::Template(work)) => FiberKind::Template(TemplateState {
-                meta: work.meta,
-                identity: work.identity,
-                nodes: work.nodes,
-            }),
-            Some(Pending::Fragment(_)) => FiberKind::Fragment,
-            Some(Pending::Portal(portal)) => FiberKind::Portal(PortalState {
-                scope: portal.scope,
-                options: portal.options,
-                behavior: portal.behavior,
-                entry: portal.entry,
-                visual_root: portal.visual_root,
-            }),
-            None => {
-                let current = wip
-                    .binding
-                    .current
-                    .and_then(|id| self.nodes.node_mut(id))
-                    .expect("a fiber without work is committed");
-                std::mem::replace(&mut current.kind, FiberKind::Fragment)
-            }
-        };
-        if let FiberKind::Template(template) = &kind {
-            debug_assert!(
-                arena.contains(template.root()),
-                "committed template root missing from arena"
-            );
-        }
-        kind
-    }
-
-    fn clone_current_children(&mut self, parent: WipId) {
-        let Some(current_children) = self
-            .wip_nodes
-            .get(parent)
-            .and_then(|node| node.binding.current)
-            .and_then(|id| self.nodes.node(id))
-            .map(|node| {
-                node.children(&self.nodes)
-                    .map(|child| child.id)
-                    .collect::<Vec<_>>()
-            })
-        else {
-            return;
-        };
-
-        let render_lanes = self
-            .work_in_progress
-            .as_ref()
-            .map(|work| work.render_lanes)
-            .unwrap_or(NO_LANES);
-        let mut children = SmallVec::with_capacity(current_children.len());
-
-        for (position, current) in current_children.into_iter().enumerate() {
-            let current_node = self.nodes.node(current).expect("current child missing");
-            let lanes = self.scheduler.component_lanes(current) & render_lanes;
-            let child_lanes =
-                child_tree_lanes(&self.nodes, current_node, &self.scheduler, render_lanes);
-            let child = self.alloc_wip_node(WorkNode::from_current(
-                current_node,
-                Some(parent),
-                position,
-                lanes,
-                child_lanes,
-            ));
-            children.push(child);
-        }
-
-        if let Some(node) = self.wip_nodes.get_mut(parent) {
-            node.children = children;
-            node.children_resolved = true;
-        }
-    }
-
-    fn first_child_needing_work(&self, parent: WipId) -> Option<WipId> {
-        let work = self.work_in_progress.as_ref()?;
-        self.wip_nodes
-            .get(parent)?
-            .children
-            .iter()
-            .copied()
-            .find(|child| {
-                self.wip_nodes
-                    .get(*child)
-                    .is_some_and(|node| node.needs_begin_work(work.render_lanes))
-            })
-    }
-
-    fn complete_work(&mut self, _id: WipId) {}
-
-    fn ensure_work(&mut self) {
-        let wip_lanes = self
-            .work_in_progress
-            .as_ref()
-            .map(|work| work.render_lanes)
-            .unwrap_or(NO_LANES);
-        let next_lanes = self.scheduler.get_next_lanes(wip_lanes);
-        if next_lanes == NO_LANES {
-            return;
-        }
-
-        if self.work_in_progress.is_none() || should_interrupt(wip_lanes, next_lanes) {
-            if self.work_in_progress.is_some() {
-                self.discard_uncommitted_work();
-            }
-            self.work_in_progress = Some(self.create_work_in_progress(next_lanes));
-        }
-    }
-
-    fn create_work_in_progress(&mut self, render_lanes: Lanes) -> WorkInProgress {
-        let (lanes, child_lanes) = self.collect_lane_marks(self.root_node(), render_lanes);
-        self.wip_nodes.clear();
-        let root_node = {
-            let current_node = self.nodes.node(self.current).unwrap();
-            WorkNode::from_current(current_node, None, 0, lanes, child_lanes)
-        };
-
-        let mut work = WorkInProgress {
-            root: WipId(0),
-            next_work: None,
-            render_lanes,
-            deletions: Vec::new(),
-        };
-        let root = work.live(&mut self.wip_nodes).alloc_node(root_node);
-        work.root = root;
-        work.next_work = Some(root);
-        work
-    }
-
-    fn discard_uncommitted_work(&mut self) {
-        let Some(_work) = self.work_in_progress.take() else {
-            return;
-        };
-
-        for node in self.wip_nodes.drain(..).flatten() {
-            if node.binding.current.is_none() {
-                self.hooks.remove(&node.fiber_id);
-                self.contexts.remove(node.fiber_id);
-                self.nodes.remove_id(node.fiber_id);
-                self.scheduler.mark_unmounted(node.fiber_id);
-            }
-        }
-    }
-
-    fn collect_lane_marks(&self, node: &Node, render_lanes: Lanes) -> (Lanes, Lanes) {
-        let own = self.scheduler.component_lanes(node.id) & render_lanes;
-        let mut child_lanes = NO_LANES;
-
-        for child in node.children(&self.nodes) {
-            let (child_own, child_subtree) = self.collect_lane_marks(child, render_lanes);
-            child_lanes |= child_own | child_subtree;
-        }
-        (own, child_lanes)
-    }
-
-    fn next_sibling_needing_work(&self, id: WipId) -> Option<WipId> {
-        let work = self.work_in_progress.as_ref()?;
-        let node = self.wip_nodes.get(id)?;
-        let parent = node.parent?;
-        let siblings = &self.wip_nodes.get(parent)?.children;
-        let index = siblings.iter().position(|child| *child == id)?;
-        siblings.iter().copied().skip(index + 1).find(|sibling| {
-            self.wip_nodes
-                .get(*sibling)
-                .is_some_and(|node| node.needs_begin_work(work.render_lanes))
-        })
+            .find_map(|child| self.find_stable_host_in_subtree(child.id))
     }
 }
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub enum Diff {
-    ReuseClean,
-    Update,
-    Replace,
+/// What a created fiber still needs once it is in the tree.
+enum Created {
+    Component,
+    Slots(Vec<TemplateSlot>),
+    List(Vec<ElementDesc>),
 }
 
-struct ChildMatch {
-    old_index: usize,
-    old_id: FiberId,
-}
-
-fn find_reusable_child_fast(
-    nodes: &FiberArena,
-    old_children: &[FiberId],
-    used: &[bool],
-    keyed_old: &FxHashMap<Key, usize>,
-    prepared: &PreparedElement,
-    position: usize,
-) -> Option<ChildMatch> {
-    let old_index = if let Some(key) = prepared.key.as_ref() {
-        *keyed_old.get(key)?
-    } else {
-        position
-    };
-
-    if used.get(old_index).copied().unwrap_or(false) {
-        return None;
-    }
-
-    let old = *old_children.get(old_index)?;
-    let old_node = nodes.node(old)?;
-
-    if prepared.key.is_none() && (old_node.key.is_some() || old_node.position != position) {
-        return None;
-    }
-
-    if !can_reuse_prepared(old_node, prepared) {
-        return None;
-    }
-
-    Some(ChildMatch {
-        old_index,
-        old_id: old,
-    })
-}
-
-/// Whether the committed `old` can take `prepared`: the same kind, and for
-/// a component the same render function, for a template the same template.
-fn can_reuse_prepared(old: &Node, prepared: &PreparedElement) -> bool {
-    match (&old.kind, &prepared.pending) {
-        (FiberKind::Component(old), Pending::Component(new)) => old.render == new.render,
-        (FiberKind::Template(old), Pending::Template(new)) => old.identity == new.identity,
-        (FiberKind::Fragment, Pending::Fragment(_)) => true,
-        (FiberKind::Portal(_), Pending::Portal(_)) => true,
+/// Whether the fiber `old` can take `element`: the same kind, and for a
+/// component the same render function, for a template the same template.
+fn can_reuse(old: &Node, element: &ElementDesc) -> bool {
+    match (&old.kind, element) {
+        (FiberKind::Component(old), ElementDesc::Component(new)) => old.render == new.render,
+        (FiberKind::Template(old), ElementDesc::Template(new)) => old.identity == new.identity,
+        (FiberKind::Fragment, ElementDesc::Fragment(_)) => true,
+        (FiberKind::Portal(_), ElementDesc::Portal(_)) => true,
         _ => false,
-    }
-}
-
-/// Whether a reused fiber has anything to update. A component decides in
-/// `should_render_component`; a template and a fragment always carry this
-/// render's inputs and children.
-fn prepared_needs_update(current: &Node, prepared: &PreparedElement) -> bool {
-    if current.key != prepared.key {
-        return true;
-    }
-    match (&current.kind, &prepared.pending) {
-        (FiberKind::Component(_), Pending::Component(_)) => false,
-        (FiberKind::Portal(old), Pending::Portal(new)) => {
-            old.scope != new.scope || old.options != new.options || old.behavior != new.behavior
-        }
-        _ => true,
     }
 }
 
@@ -1669,19 +1057,6 @@ fn detach_portal(
     Ok(visual_root)
 }
 
-fn child_tree_lanes(
-    nodes: &FiberArena,
-    node: &Node,
-    scheduler: &Scheduler,
-    render_lanes: Lanes,
-) -> Lanes {
-    let mut lanes = NO_LANES;
-    for child in node.children(nodes) {
-        lanes |= scheduler.component_lanes(child.id) & render_lanes;
-        lanes |= child_tree_lanes(nodes, child, scheduler, render_lanes);
-    }
-    lanes
-}
 
 #[cfg(test)]
 mod portal_tests {
@@ -1802,6 +1177,28 @@ mod portal_tests {
         } else {
             container().key("content").into_element_desc(Vec::new())
         }
+    }
+
+    /// The scheduler is public, so a fiber that is not a component can be
+    /// marked dirty: it is passed over rather than rendered.
+    #[test]
+    fn marking_a_fiber_that_is_not_a_component_renders_nothing() {
+        let _exclusive = exclusive();
+        reset_counters();
+        let mut arena = UiRuntime::new();
+        let mut runtime =
+            ComponentRuntime::new(arena.root(), Scheduler::default(), component_parent);
+        runtime.flush_sync(&mut arena);
+        let child = runtime.nodes.children(runtime.root())[0];
+        let template = runtime.nodes.children(child)[0];
+        assert_eq!(runtime.nodes.node(template).unwrap().tag(), FiberTag::Template);
+        let renders = CHILD_RENDER_COUNT.load(Ordering::SeqCst);
+
+        runtime.scheduler().mark_component_dirty(template, current_update_lane());
+        runtime.flush_sync(&mut arena);
+
+        assert_eq!(CHILD_RENDER_COUNT.load(Ordering::SeqCst), renders);
+        assert!(!runtime.is_dirty(), "the mark was cleared with the pass");
     }
 
     #[test]

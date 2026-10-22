@@ -28,13 +28,25 @@
 //! [`TemplateDesc::expand`] produces an inspection-only [`Expanded`] tree.
 //! Rendering always uses the template; expanded hosts are not render inputs.
 
-use std::any::TypeId;
+use std::any::{Any, TypeId};
+use std::cell::RefCell;
 
-use crate::element::{ElementDesc, Expanded, ExpandedHost, FragmentDesc};
+use rustc_hash::FxHashMap;
+use std::marker::PhantomData;
+
+use xui_interface::{NodeId, WidgetUpdateFlags};
+
+use crate::capability::CommitCx;
+use crate::caps::{Columns, Registered};
+use crate::element::{
+    ComponentDesc, ComponentElement, ComponentProps, ElementDesc, Expanded, ExpandedHost,
+    FragmentDesc,
+};
 use crate::event_system::{EventContext, Flow, Handler, HandlerValue};
-use crate::fiber::Key;
-use crate::node::{Draft, NodeDef};
-use crate::property::{IntoProp, Property, PropertyMarker};
+use crate::fiber::{ComponentRender, ErasedProps, Key};
+use crate::node::{Draft, NodeDef, OwnProps, WholeNode, WidgetInstance, WidgetT};
+use crate::property::{CapScope, IntoProp, Property, PropertyMarker, Scope};
+use crate::ui_runtime::UiRuntime;
 use crate::widgets::{ErasedDraft, WidgetType, WidgetVariant};
 
 /// The static structure of one `xui!` / `view!` call site.
@@ -45,6 +57,19 @@ pub struct TemplateMeta {
     /// Every node, in preorder: a parent comes before its children, and
     /// siblings appear in the order written.
     pub nodes: &'static [TemplateNode],
+    /// Every attribute of a host that is not a constant: where each of the
+    /// template's dynamic values goes, in the order the template writes
+    /// them. An update writes these and nothing else of its hosts.
+    pub values: &'static [ValueSlot],
+}
+
+/// A dynamic attribute of one of a template's hosts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValueSlot {
+    /// The host's index among the template's nodes.
+    pub node: u16,
+    /// The attribute, as written.
+    pub attribute: &'static str,
 }
 
 /// One node of a [`TemplateMeta`].
@@ -57,9 +82,10 @@ pub struct TemplateNode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TemplateNodeKind {
-    /// A host node the template owns. `dynamic`: it has an attribute that is
-    /// not a constant, so a later render rebuilds it.
-    Host { tag: &'static str, dynamic: bool },
+    /// A host node the template owns. Whether an update builds it again --
+    /// whether it has an attribute that is not a constant -- is decided in
+    /// the build function the macro generates, not looked up here.
+    Host { tag: &'static str },
     /// A component element, whose place the reconciler keeps.
     Component,
     /// The whole child list of its parent, reconciled as a list.
@@ -121,40 +147,102 @@ impl Clone for TemplateDesc {
     }
 }
 
-trait ErasedTemplate {
-    fn build(self: Box<Self>, out: &mut TemplateBuild);
+trait ErasedTemplate: Any {
+    fn build(&mut self, out: &mut TemplateBuild);
+    fn commit(&mut self, hosts: &mut TemplateHosts<'_>);
     fn clone_box(&self) -> Box<dyn ErasedTemplate>;
+    fn into_any(self: Box<Self>) -> Box<dyn Any>;
 }
 
+/// How many committed instances of one type are kept for reuse.
+const RECYCLED_PER_TYPE: usize = 4096;
+
+thread_local! {
+    /// Instances whose render was committed, by type. The next render of
+    /// the same template -- the next frame's, nearly always -- takes one
+    /// instead of allocating. A committed instance's inputs were taken by
+    /// `build` and `commit`, so what is kept here holds nothing of the
+    /// application's but, at most, the root key.
+    static RECYCLED: RefCell<FxHashMap<TypeId, Vec<Box<dyn ErasedTemplate>>>> =
+        RefCell::new(FxHashMap::default());
+}
+
+/// One render's inputs, and the two functions the macro generated for its
+/// call site. Every input is an `Option`, taken by whichever of the two
+/// uses it: `build` takes them all when the template mounts; on an update
+/// it takes the slots' and those of hosts rebuilt whole, and `commit`, at
+/// commit, the values it writes into the mounted hosts.
 struct Instance<I> {
     inputs: I,
-    build: fn(I, &mut TemplateBuild),
+    build: fn(&mut I, &mut TemplateBuild),
+    commit: fn(&mut I, &mut TemplateHosts<'_>),
+}
+
+impl<I: Clone + 'static> Instance<I> {
+    /// A boxed instance: a recycled one of the same type when there is one.
+    fn boxed(
+        inputs: I,
+        build: fn(&mut I, &mut TemplateBuild),
+        commit: fn(&mut I, &mut TemplateHosts<'_>),
+    ) -> Box<dyn ErasedTemplate> {
+        let recycled = RECYCLED.with(|recycled| {
+            recycled
+                .borrow_mut()
+                .get_mut(&TypeId::of::<Self>())
+                .and_then(Vec::pop)
+        });
+        match recycled.map(|instance| instance.into_any().downcast::<Self>()) {
+            Some(Ok(mut instance)) => {
+                *instance = Instance {
+                    inputs,
+                    build,
+                    commit,
+                };
+                instance
+            }
+            _ => Box::new(Instance {
+                inputs,
+                build,
+                commit,
+            }),
+        }
+    }
 }
 
 impl<I: Clone + 'static> ErasedTemplate for Instance<I> {
-    fn build(self: Box<Self>, out: &mut TemplateBuild) {
-        (self.build)(self.inputs, out);
+    fn build(&mut self, out: &mut TemplateBuild) {
+        (self.build)(&mut self.inputs, out);
+    }
+
+    fn commit(&mut self, hosts: &mut TemplateHosts<'_>) {
+        (self.commit)(&mut self.inputs, hosts);
     }
 
     fn clone_box(&self) -> Box<dyn ErasedTemplate> {
         Box::new(Instance {
             inputs: self.inputs.clone(),
             build: self.build,
+            commit: self.commit,
         })
+    }
+
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
     }
 }
 
 impl TemplateDesc {
     /// A render of the template at `meta` with `inputs`, which `build`
-    /// turns into the template's drafts and slots. Generated by the element
-    /// macros.
+    /// turns into the template's drafts and slots, and `commit` writes into
+    /// its mounted hosts. Generated by the element macros.
     #[doc(hidden)]
     pub fn new<I: Clone + 'static>(
         meta: &'static TemplateMeta,
         key: Option<Key>,
         root_type: WidgetType,
         inputs: I,
-        build: fn(I, &mut TemplateBuild),
+        build: fn(&mut I, &mut TemplateBuild),
+        commit: fn(&mut I, &mut TemplateHosts<'_>),
     ) -> Self {
         Self {
             meta,
@@ -164,8 +252,22 @@ impl TemplateDesc {
             },
             key,
             root_type,
-            instance: Box::new(Instance { inputs, build }),
+            instance: Instance::boxed(inputs, build, commit),
         }
+    }
+
+    /// Hands the instance back for the next render of this template, once
+    /// the commit is done with it.
+    pub(crate) fn recycle(self) {
+        let instance = self.instance;
+        let ty = Any::type_id(&*instance);
+        RECYCLED.with(|recycled| {
+            let mut recycled = recycled.borrow_mut();
+            let instances = recycled.entry(ty).or_default();
+            if instances.len() < RECYCLED_PER_TYPE {
+                instances.push(instance);
+            }
+        });
     }
 
     /// Where the template was written.
@@ -179,31 +281,45 @@ impl TemplateDesc {
     }
 
     /// Runs the template: every host's draft when `mode` mounts or
-    /// expands, only the dynamic ones' when it updates, and every slot.
-    pub(crate) fn build(self, mode: BuildMode) -> TemplateBuild {
+    /// expands, on an update only those of the hosts rebuilt whole; and
+    /// every slot. On an update the dynamic values of the other hosts stay,
+    /// for [`commit`](Self::commit).
+    pub(crate) fn build(&mut self, mode: BuildMode) -> TemplateBuild {
         let mut out = TemplateBuild {
-            meta: self.meta,
             mode,
-            hosts: (0..self.meta.nodes.len()).map(|_| None).collect(),
+            hosts: Vec::new(),
             slots: Vec::new(),
         };
         self.instance.build(&mut out);
         out
     }
 
+    /// Writes an update's dynamic values into the mounted hosts, after
+    /// [`build`](Self::build) ran in [`BuildMode::Update`].
+    pub(crate) fn commit(&mut self, hosts: &mut TemplateHosts<'_>) {
+        self.instance.commit(hosts);
+    }
+
     /// The hosts this template holds, each with its draft and what is
     /// under it: each slot in its place, expanded too.
-    pub fn expand(self) -> Expanded {
+    pub fn expand(mut self) -> Expanded {
         let meta = self.meta;
         let mut built = self.build(BuildMode::Mount);
+        let mut drafts = std::mem::take(&mut built.hosts).into_iter();
         let mut slots = std::mem::take(&mut built.slots).into_iter();
         // Each node's expansion: a host's, or a slot's (a fragment's spliced).
         let mut expanded: Vec<Vec<Expanded>> = (0..meta.nodes.len()).map(|_| Vec::new()).collect();
         // Slots arrive in node order.
         for (index, node) in meta.nodes.iter().enumerate() {
             if !matches!(node.kind, TemplateNodeKind::Host { .. }) {
-                let Some(TemplateSlot::Element(element)) = slots.next() else {
-                    panic!("template {} lost a slot", meta.location);
+                let element = match slots.next() {
+                    Some(TemplateSlot::Element(element)) => element,
+                    Some(TemplateSlot::Component { render, props, key }) => {
+                        ElementDesc::Component(ComponentDesc { key, render, props })
+                    }
+                    Some(TemplateSlot::Keep) | None => {
+                        panic!("template {} lost a slot", meta.location)
+                    }
                 };
                 element.expand_into(&mut expanded[index]);
             }
@@ -218,8 +334,11 @@ impl TemplateDesc {
                 .filter(|&child| meta.nodes[child].parent == Some(index as u16))
                 .flat_map(|child| std::mem::take(&mut expanded[child]))
                 .collect();
-            let draft = built.hosts[index]
-                .take()
+            // Drafts arrive in node order, so back to front is in reverse.
+            let draft = drafts
+                .next_back()
+                .filter(|(at, _)| usize::from(*at) == index)
+                .map(|(_, draft)| draft)
                 .unwrap_or_else(|| panic!("template {} built no draft for a host", meta.location));
             expanded[index] = vec![Expanded::Host(ExpandedHost { draft, children })];
         }
@@ -238,10 +357,7 @@ impl TemplateDesc {
             location: "a draft",
             nodes: &[
                 TemplateNode {
-                    kind: TemplateNodeKind::Host {
-                        tag: "draft",
-                        dynamic: true,
-                    },
+                    kind: TemplateNodeKind::Host { tag: "draft" },
                     parent: None,
                 },
                 TemplateNode {
@@ -249,18 +365,28 @@ impl TemplateDesc {
                     parent: Some(0),
                 },
             ],
+            values: &[],
         };
-        fn build<N>((draft, children): (Draft<N>, Vec<ElementDesc>), out: &mut TemplateBuild)
+        type Inputs<N> = (Option<Draft<N>>, Option<Vec<ElementDesc>>);
+        fn build<N>((draft, children): &mut Inputs<N>, out: &mut TemplateBuild)
         where
             N: WidgetVariant,
             N::Props: Clone,
             N::Behavior: Clone,
         {
-            out.host(0, draft);
-            out.fragment(children);
+            out.host(0, take(draft));
+            out.fragment(take(children));
         }
+        fn commit<N: NodeDef>(_: &mut Inputs<N>, _: &mut TemplateHosts<'_>) {}
         let key = draft.key.clone();
-        Self::new(&DRAFT, key, N::NODE_TYPE, (draft, children), build::<N>)
+        Self::new(
+            &DRAFT,
+            key,
+            N::NODE_TYPE,
+            (Some(draft), Some(children)),
+            build::<N>,
+            commit::<N>,
+        )
     }
 }
 
@@ -273,9 +399,26 @@ pub(crate) enum BuildMode {
     Update,
 }
 
+/// What a pass's reconcile of a template leaves for the commit.
+pub(crate) struct TemplatePending {
+    pub(crate) mode: BuildMode,
+    /// The render, kept for its inputs: on an update, the commit writes the
+    /// dynamic values left in them.
+    pub(crate) desc: TemplateDesc,
+    /// The hosts built whole, by node index, in node order.
+    pub(crate) hosts: Vec<(u16, Box<dyn ErasedDraft>)>,
+}
+
 /// A slot's content, one render's worth.
 pub(crate) enum TemplateSlot {
-    /// A component, or a child list as a fragment.
+    /// A component, its render function known from its props' type.
+    Component {
+        render: ComponentRender,
+        props: Option<ErasedProps>,
+        key: Option<Key>,
+    },
+    /// Anything else written where a template holds no host: a child list
+    /// as a fragment, a portal, an element built by hand.
     Element(ElementDesc),
     /// A component whose attributes are all constants, on an update: it is
     /// what it was, so its fiber is kept as it is.
@@ -286,22 +429,14 @@ pub(crate) enum TemplateSlot {
 /// code names it.
 #[doc(hidden)]
 pub struct TemplateBuild {
-    meta: &'static TemplateMeta,
     mode: BuildMode,
-    pub(crate) hosts: Vec<Option<Box<dyn ErasedDraft>>>,
+    /// The hosts built whole, by node index, in node order: every host on
+    /// mount, on an update only those a patch cannot follow.
+    pub(crate) hosts: Vec<(u16, Box<dyn ErasedDraft>)>,
     pub(crate) slots: Vec<TemplateSlot>,
 }
 
 impl TemplateBuild {
-    /// Whether host `index` is built this time: always on mount, and on an
-    /// update only when it has a dynamic attribute.
-    pub fn wants(&self, index: u16) -> bool {
-        match self.meta.nodes[index as usize].kind {
-            TemplateNodeKind::Host { dynamic, .. } => self.mode == BuildMode::Mount || dynamic,
-            _ => false,
-        }
-    }
-
     /// Host `index`'s draft.
     pub fn host<N>(&mut self, index: u16, draft: Draft<N>)
     where
@@ -309,12 +444,12 @@ impl TemplateBuild {
         N::Props: Clone,
         N::Behavior: Clone,
     {
-        self.hosts[index as usize] = Some(Box::new(draft));
+        self.hosts.push((index, Box::new(draft)));
     }
 
-    /// The next slot: a component element.
-    pub fn component(&mut self, element: ElementDesc) {
-        self.slots.push(TemplateSlot::Element(element));
+    /// The next slot: what a tag the template holds no host for built.
+    pub fn slot<S: SlotInput>(&mut self, input: S) {
+        input.fill(self);
     }
 
     /// The next slot: a child list.
@@ -337,8 +472,261 @@ impl TemplateBuild {
 }
 
 // ---------------------------------------------------------------------------
+// Slots
+// ---------------------------------------------------------------------------
+
+/// What a tag written where a template holds no host builds, as the
+/// template's slot takes it. Public only because generated code names it.
+#[doc(hidden)]
+pub trait SlotContent: Into<ElementDesc> {
+    /// What the template keeps of it as an input: an input is cloneable,
+    /// and component props need not be.
+    type Input: SlotInput;
+
+    fn into_input(self) -> Self::Input;
+}
+
+/// A slot's input, which fills the slot when the template builds.
+#[doc(hidden)]
+pub trait SlotInput: Clone + 'static {
+    fn fill(self, out: &mut TemplateBuild);
+}
+
+impl SlotContent for ElementDesc {
+    type Input = ElementDesc;
+
+    fn into_input(self) -> ElementDesc {
+        self
+    }
+}
+
+impl SlotInput for ElementDesc {
+    fn fill(self, out: &mut TemplateBuild) {
+        out.slots.push(TemplateSlot::Element(self));
+    }
+}
+
+/// A component slot's input: the props, already handed over to the fiber's
+/// allocation, and their type, which names the component. Being part of the
+/// template's input type, that type is part of the template's identity, so a
+/// template matched to the one it committed holds the same component in the
+/// same slot.
+#[doc(hidden)]
+pub struct ComponentSlot<P> {
+    props: Option<ErasedProps>,
+    key: Option<Key>,
+    component: PhantomData<fn() -> P>,
+}
+
+impl<P> Clone for ComponentSlot<P> {
+    fn clone(&self) -> Self {
+        Self {
+            props: self.props.clone(),
+            key: self.key,
+            component: PhantomData,
+        }
+    }
+}
+
+impl<P: ComponentProps> SlotContent for ComponentElement<P> {
+    type Input = ComponentSlot<P>;
+
+    fn into_input(self) -> ComponentSlot<P> {
+        ComponentSlot {
+            props: self.props.erase(),
+            key: self.key,
+            component: PhantomData,
+        }
+    }
+}
+
+impl<P: ComponentProps> SlotInput for ComponentSlot<P> {
+    fn fill(self, out: &mut TemplateBuild) {
+        out.slots.push(TemplateSlot::Component {
+            render: P::RENDER,
+            props: self.props,
+            key: self.key,
+        });
+    }
+}
+
+/// Takes a template input out of the inputs: each is used once, by `build`
+/// or by `commit`.
+#[doc(hidden)]
+#[inline(always)]
+pub fn take<T>(input: &mut Option<T>) -> T {
+    input.take().expect("a template input is used once")
+}
+
+/// A template input, still in the inputs.
+#[doc(hidden)]
+#[inline(always)]
+pub fn input<T>(input: &Option<T>) -> &T {
+    input.as_ref().expect("a template input is used once")
+}
+
+/// The type of a constant slot's input, as a template input of its own:
+/// `build` is never called. A constant slot is built only when the template
+/// mounts, so nothing else puts its type among the inputs, and without it a
+/// generic function's template, instantiated for another component, would
+/// keep the first one in the slot.
+#[doc(hidden)]
+#[inline(always)]
+pub fn slot_kind<S: SlotInput>(_build: impl FnOnce() -> S) -> PhantomData<fn() -> S> {
+    PhantomData
+}
+
+// ---------------------------------------------------------------------------
+// Patching a mounted host
+// ---------------------------------------------------------------------------
+
+/// A mounted template's hosts, as its generated `commit` writes an update's
+/// dynamic values into them. Public only because generated code names it.
+#[doc(hidden)]
+pub struct TemplateHosts<'a> {
+    arena: &'a mut UiRuntime,
+    /// The mounted hosts, by node index.
+    nodes: &'a [Option<NodeId>],
+}
+
+impl<'a> TemplateHosts<'a> {
+    pub(crate) fn new(arena: &'a mut UiRuntime, nodes: &'a [Option<NodeId>]) -> Self {
+        Self { arena, nodes }
+    }
+
+    /// Writes host `index`'s dynamic values: `patch` sets them on the host,
+    /// of `tag`'s type, through a [`HostPatcher`] and returns what that
+    /// dirtied.
+    pub fn patch<N, F>(&mut self, index: u16, _tag: fn() -> Draft<N>, patch: F)
+    where
+        N: WidgetVariant,
+        F: FnOnce(&mut HostPatcher<'_, '_, N>) -> WidgetUpdateFlags,
+    {
+        let id = self.nodes[usize::from(index)].expect("a mounted template keeps its hosts");
+        self.arena.patch_node(id, |widgets, _, columns, cx| {
+            let instance = N::unwrap_mut(widgets).expect("a template patches its own host");
+            patch(&mut HostPatcher {
+                instance,
+                id,
+                columns,
+                cx,
+            })
+        });
+    }
+}
+
+/// A mounted host of type `N`, as a template's update writes its dynamic
+/// attributes into it: its own props and state, and its capabilities' rows.
+/// Public only because generated code names it.
+#[doc(hidden)]
+pub struct HostPatcher<'a, 'cx, N: WidgetT> {
+    instance: &'a mut WidgetInstance<N>,
+    id: NodeId,
+    columns: &'a mut Columns,
+    cx: &'a mut CommitCx<'cx>,
+}
+
+impl<N: WidgetT> HostPatcher<'_, '_, N> {
+    /// The host's property table, as the element macros look attributes up.
+    #[inline(always)]
+    pub fn __properties(&self) -> N::Properties {
+        N::Properties::default()
+    }
+
+    /// Writes `value` as property `P`; returns what that dirtied.
+    #[inline]
+    pub fn __patch<P: Property>(&mut self, _: PropertyMarker<P>, value: P::Value) -> WidgetUpdateFlags
+    where
+        P::Scope: PatchScope<N>,
+    {
+        <P::Scope as PatchScope<N>>::patch::<P>(self, value)
+    }
+}
+
+/// How a property of scope `Self` is written into a mounted host of type
+/// `N`, if it can be. Every scope a host property can have implements it, so
+/// that the element macros can ask any attribute whether it patches.
+#[doc(hidden)]
+pub trait PatchScope<N: WidgetT>: Scope + Sized {
+    /// Whether a property of this scope can be written into a mounted host
+    /// alone. When one of a host's dynamic attributes cannot, the host is
+    /// rebuilt whole.
+    const PATCHABLE: bool;
+
+    fn patch<P: Property<Scope = Self>>(
+        target: &mut HostPatcher<'_, '_, N>,
+        value: P::Value,
+    ) -> WidgetUpdateFlags;
+}
+
+/// A capability field: the row with the field replaced, written back the way
+/// a scatter writes it, which compares, commits and reports.
+impl<N: WidgetT, C: Registered> PatchScope<N> for CapScope<C>
+where
+    C::Storage: Clone,
+{
+    const PATCHABLE: bool = true;
+
+    fn patch<P: Property<Scope = Self>>(
+        target: &mut HostPatcher<'_, '_, N>,
+        value: P::Value,
+    ) -> WidgetUpdateFlags {
+        let mut row = C::get(target.columns, target.id)
+            .cloned()
+            .unwrap_or_default();
+        P::set(&mut row, value);
+        C::write(target.columns, target.id, row, target.cx)
+    }
+}
+
+/// One of the host's own props: replaced in place, then compared and handed
+/// to the widget's state as a whole update would.
+impl<N: WidgetT> PatchScope<N> for OwnProps<N>
+where
+    N::Props: Clone,
+{
+    const PATCHABLE: bool = true;
+
+    fn patch<P: Property<Scope = Self>>(
+        target: &mut HostPatcher<'_, '_, N>,
+        value: P::Value,
+    ) -> WidgetUpdateFlags {
+        let instance = &mut *target.instance;
+        let old = instance.props.clone();
+        P::set(&mut instance.props, value);
+        N::props_dirty(&old, &instance.props) | N::update(&old, &instance.props, &mut instance.state)
+    }
+}
+
+/// `style`, which layers declarations and rules over the whole node: only a
+/// rebuild knows what it replaced.
+impl<N: WidgetT> PatchScope<N> for WholeNode<N> {
+    const PATCHABLE: bool = false;
+
+    fn patch<P: Property<Scope = Self>>(
+        _: &mut HostPatcher<'_, '_, N>,
+        _: P::Value,
+    ) -> WidgetUpdateFlags {
+        unreachable!("a host with a `style` attribute is rebuilt, never patched")
+    }
+}
+
+// ---------------------------------------------------------------------------
 // What the generated code calls where the macro is written
 // ---------------------------------------------------------------------------
+
+/// Whether attribute `property` of a host of `tag`'s type can be patched.
+#[doc(hidden)]
+#[inline(always)]
+pub fn patchable<N: WidgetT, P: Property>(
+    _tag: fn() -> Draft<N>,
+    _property: impl FnOnce(&N::Properties) -> PropertyMarker<P>,
+) -> bool
+where
+    P::Scope: PatchScope<N>,
+{
+    <P::Scope as PatchScope<N>>::PATCHABLE
+}
 
 /// Asserts that `tag` constructs a host widget, as the element macros
 /// assumed from its name.
@@ -410,8 +798,8 @@ where
 mod tests {
     use std::cell::{Cell, RefCell};
 
-    use xui_interface::{Color, NodeId, Size};
-    use xui_macros::{component, xui};
+    use xui_interface::{Color, EdgeInsets, NodeId, Size};
+    use xui_macros::{component, view, xui};
 
     use crate::app::App;
     use crate::render::backend::MockRenderBackend;
@@ -428,6 +816,7 @@ mod tests {
         static ORDER: RefCell<Option<State<Vec<&'static str>>>> = const { RefCell::new(None) };
         static CHILD_RENDERS: Cell<usize> = const { Cell::new(0) };
         static UNMOUNTED: Cell<usize> = const { Cell::new(0) };
+        static TICKS: Cell<u32> = const { Cell::new(0) };
     }
 
     fn set<T: 'static>(slot: &'static std::thread::LocalKey<RefCell<Option<State<T>>>>, value: T) {
@@ -535,6 +924,184 @@ mod tests {
             harness.host_updates() - updates,
             1,
             "only the host with a dynamic attribute is rebuilt"
+        );
+    }
+
+    fn conditional_middle(cx: &mut HookContext<'_>) -> ElementDesc {
+        let flag = cx.use_state(|| false);
+        FLAG.with(|slot| *slot.borrow_mut() = Some(flag));
+        let on = *flag.get();
+        view! {
+            column {
+                text("header")
+                if on {
+                    text("on")
+                }
+                text("footer")
+            }
+        }
+    }
+
+    #[test]
+    fn the_elements_around_a_condition_stay_in_the_template() {
+        let mut harness = Harness::new(conditional_middle);
+        let before = harness.children(harness.top());
+        assert_eq!(texts(&harness, harness.top()), ["header", "footer"]);
+
+        set(&FLAG, true);
+        harness.render();
+        let after = harness.children(harness.top());
+        assert_eq!(texts(&harness, harness.top()), ["header", "on", "footer"]);
+        assert_eq!(
+            (after[0], after[2]),
+            (before[0], before[1]),
+            "the static siblings were mounted again"
+        );
+
+        set(&FLAG, false);
+        harness.render();
+        assert_eq!(harness.children(harness.top()), before);
+    }
+
+    fn scoped_let(_: &mut HookContext<'_>) -> ElementDesc {
+        let label = "outer";
+        view! {
+            column {
+                row {
+                    let label = "inner";
+                    text(label)
+                }
+                text(label)
+            }
+        }
+    }
+
+    #[test]
+    fn a_let_among_children_is_in_scope_for_its_siblings_only() {
+        let harness = Harness::new(scoped_let);
+        let top = harness.top();
+        let children = harness.children(top);
+        assert_eq!(texts(&harness, children[0]), ["inner"]);
+        let outer = harness.ui().node(children[1]).unwrap().widget.text();
+        assert_eq!(outer.map(|text| text.as_str().to_owned()).as_deref(), Some("outer"));
+    }
+
+    #[component]
+    fn typed_slot<T: 'static>(label: &String) {
+        cx.use_ref(|| Unmount);
+        xui! { <text>{format!("{label} {}", std::any::type_name::<T>())}</text> }
+    }
+
+    /// The same call site, instantiated for another type: the template is the
+    /// same, its slot's component is not.
+    fn typed_holder<T: 'static>() -> ElementDesc {
+        xui! {
+            <column>
+                <typed_slot::<T> label={String::from("slot")} />
+            </column>
+        }
+    }
+
+    fn typed_switch(cx: &mut HookContext<'_>) -> ElementDesc {
+        let flag = cx.use_state(|| false);
+        FLAG.with(|slot| *slot.borrow_mut() = Some(flag));
+        if *flag.get() {
+            typed_holder::<u16>()
+        } else {
+            typed_holder::<u8>()
+        }
+    }
+
+    #[test]
+    fn a_slot_of_another_instantiation_remounts_its_component() {
+        let mut harness = Harness::new(typed_switch);
+        let unmounted = UNMOUNTED.with(Cell::get);
+
+        set(&FLAG, true);
+        harness.render();
+
+        assert_eq!(
+            UNMOUNTED.with(Cell::get) - unmounted,
+            1,
+            "`typed_slot::<u16>` took over the fiber of `typed_slot::<u8>`"
+        );
+        assert_eq!(texts(&harness, harness.top()), ["slot u16"]);
+    }
+
+    #[component(memo)]
+    fn memo_label(label: &String, size: &f32) {
+        CHILD_RENDERS.with(|renders| renders.set(renders.get() + 1));
+        xui! { <text font_size={*size}>{label.clone()}</text> }
+    }
+
+    fn memo_parent(cx: &mut HookContext<'_>) -> ElementDesc {
+        let count = cx.use_state(|| 1u32);
+        COUNT.with(|slot| *slot.borrow_mut() = Some(count));
+        let label = if *count.get() < 3 { "low" } else { "high" };
+        xui! {
+            <column>
+                <memo_label label={label.to_string()} size={12.0 + 0.0 * *count.get() as f32} />
+            </column>
+        }
+    }
+
+    #[test]
+    fn a_memo_component_renders_again_only_when_its_props_change() {
+        let mut harness = Harness::new(memo_parent);
+        let renders = CHILD_RENDERS.with(Cell::get);
+
+        set(&COUNT, 2);
+        harness.render();
+        assert_eq!(
+            CHILD_RENDERS.with(Cell::get),
+            renders,
+            "equal props, built anew by the parent, rendered the memo component again"
+        );
+
+        set(&COUNT, 3);
+        harness.render();
+        assert_eq!(CHILD_RENDERS.with(Cell::get), renders + 1);
+        assert_eq!(texts(&harness, harness.top()), ["high"]);
+    }
+
+    /// A clock-like source: every call answers something new, as
+    /// `Instant::now()` would.
+    struct Ticks;
+
+    impl Ticks {
+        fn next() -> f32 {
+            TICKS.with(|ticks| {
+                ticks.set(ticks.get() + 1);
+                ticks.get() as f32
+            })
+        }
+    }
+
+    fn impure_call(cx: &mut HookContext<'_>) -> ElementDesc {
+        let count = cx.use_state(|| 1u32);
+        COUNT.with(|slot| *slot.borrow_mut() = Some(count));
+        let _ = count.get();
+        xui! {
+            <column>
+                <container width={Ticks::next()} height={10.0} />
+                <container width={EdgeInsets::all(3.0).left} height={10.0} />
+            </column>
+        }
+    }
+
+    #[test]
+    fn a_call_that_may_be_impure_is_evaluated_every_render() {
+        let mut harness = Harness::new(impure_call);
+        let children = harness.children(harness.top());
+        let first = harness.width(children[0]);
+
+        set(&COUNT, 2);
+        harness.render();
+
+        assert_ne!(
+            harness.width(children[0]),
+            first,
+            "`Ticks::next()` was taken for a constant and kept from mount"
         );
     }
 

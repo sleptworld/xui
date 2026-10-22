@@ -1,14 +1,14 @@
 use std::{
     cell::Cell,
-    collections::{HashSet, hash_map::DefaultHasher},
-    hash::{Hash, Hasher},
+    collections::HashSet,
+    hash::{BuildHasher, Hash, Hasher},
     mem::{size_of, size_of_val},
     ops::Range,
     sync::Arc,
 };
 
-use quick_cache::{DefaultHashBuilder, Lifecycle, Weighter, unsync::Cache as QuickCache};
-use rustc_hash::FxHashMap;
+use quick_cache::{Lifecycle, Weighter, unsync::Cache as QuickCache};
+use rustc_hash::{FxBuildHasher, FxHashMap};
 use slotmap::{SlotMap, new_key_type};
 use smallvec::SmallVec;
 use xui_interface::{
@@ -130,7 +130,7 @@ impl<B: TextBackend> TextHost<B> {
                 estimated_layouts.max(1),
                 max_layout_bytes.max(1),
                 LayoutWeighter,
-                DefaultHashBuilder::default(),
+                FxBuildHasher,
                 LayoutLifecycle,
             ),
             owners: FxHashMap::default(),
@@ -147,7 +147,7 @@ impl<B: TextBackend> TextHost<B> {
         self.max_variants_per_unit = max_variants_per_unit.max(1);
         let units: SmallVec<[TextUnitId; 16]> = self.units.keys().collect();
         for unit in units {
-            self.enforce_unit_variant_limit(unit);
+            self.enforce_unit_variant_limit(unit, None);
         }
     }
 
@@ -285,7 +285,7 @@ impl<B: TextBackend> TextHost<B> {
             .insert_entry(unit, key, layout, Some(input), memory_cost, false)
             .is_some()
         {
-            self.enforce_unit_variant_limit(unit);
+            self.enforce_unit_variant_limit(unit, Some(key));
         }
         Some(metrics)
     }
@@ -323,7 +323,7 @@ impl<B: TextBackend> TextHost<B> {
         let memory_cost = Self::estimated_memory_cost(&layout, &self.units.get(unit)?.state);
         let handle = self.insert_entry(unit, key, layout, Some(input), memory_cost, true)?;
         self.replace_active_unit(unit, key, handle, true);
-        self.enforce_unit_variant_limit(unit);
+        self.enforce_unit_variant_limit(unit, Some(key));
         Some(handle)
     }
 
@@ -397,7 +397,7 @@ impl<B: TextBackend> TextHost<B> {
         }
         self.units.get_mut(unit)?.state = state;
         let handle = self.insert_entry(unit, key, layout, None, memory_cost, false)?;
-        self.enforce_unit_variant_limit(unit);
+        self.enforce_unit_variant_limit(unit, Some(key));
         self.entries.contains_key(handle).then_some(handle)
     }
 
@@ -434,7 +434,7 @@ impl<B: TextBackend> TextHost<B> {
             .insert_entry(unit, key, layout, None, memory_cost, true)
             .expect("a pinned text layout must be admitted to the cache");
         self.replace_active_unit(unit, key, handle, true);
-        self.enforce_unit_variant_limit(unit);
+        self.enforce_unit_variant_limit(unit, Some(key));
         handle
     }
 
@@ -448,7 +448,7 @@ impl<B: TextBackend> TextHost<B> {
             return false;
         }
         self.replace_active_unit(unit, key, handle, true);
-        self.enforce_unit_variant_limit(unit);
+        self.enforce_unit_variant_limit(unit, Some(key));
         true
     }
 
@@ -488,7 +488,7 @@ impl<B: TextBackend> TextHost<B> {
             }
             residency.pin_count -= 1;
         }
-        self.enforce_unit_variant_limit(cache_key.unit);
+        self.enforce_unit_variant_limit(cache_key.unit, None);
         true
     }
 
@@ -605,12 +605,16 @@ impl<B: TextBackend> TextHost<B> {
     }
 
     pub fn remove_owner(&mut self, owner: NodeId) -> usize {
-        self.owners.remove(&owner);
-        let units: Vec<_> = self
-            .units
-            .iter()
-            .filter_map(|(unit, cache)| (cache.owner == owner).then_some(unit))
-            .collect();
+        // Every unit an owner has is one of its slots or one of its
+        // documents' paragraphs, so its record names them all: unmounting a
+        // node never has to look through every other node's text.
+        let Some(cache) = self.owners.remove(&owner) else {
+            return 0;
+        };
+        let mut units: SmallVec<[TextUnitId; 4]> = cache.direct_slots.into_values().collect();
+        for (_, document) in cache.documents {
+            units.extend(document.paragraphs.into_iter().map(|(_, paragraph)| paragraph.unit));
+        }
         units.into_iter().map(|unit| self.remove_unit(unit)).sum()
     }
 
@@ -1047,7 +1051,34 @@ impl<B: TextBackend> TextHost<B> {
         }
     }
 
-    fn enforce_unit_variant_limit(&mut self, unit: TextUnitId) {
+    /// Keeps a unit's variants within bounds: first drops those shaped from
+    /// other content than `current`'s (another text, style or font
+    /// generation), which no layout of the current content asks for again,
+    /// then the least recently used beyond the per-unit limit. The active
+    /// variant and pinned ones always stay.
+    fn enforce_unit_variant_limit(&mut self, unit: TextUnitId, current: Option<TextLayoutKey>) {
+        if let Some(current) = current
+            && let Some(unit_cache) = self.units.get(unit)
+            && unit_cache.resident_layouts.len() > 1
+        {
+            let active = unit_cache.active.map(|(_, handle)| handle);
+            let stale: SmallVec<[TextLayoutHandle; DEFAULT_MAX_VARIANTS_PER_UNIT]> = unit_cache
+                .resident_layouts
+                .iter()
+                .copied()
+                .filter(|handle| {
+                    Some(*handle) != active
+                        && self
+                            .entries
+                            .get(*handle)
+                            .is_some_and(|entry| !same_content(&entry.cache_key.layout, &current))
+                        && !self.handle_is_pinned(*handle)
+                })
+                .collect();
+            for handle in stale {
+                self.remove(handle);
+            }
+        }
         loop {
             let Some(unit_cache) = self.units.get(unit) else {
                 return;
@@ -1251,7 +1282,7 @@ type GlobalLayoutCache = QuickCache<
     LayoutCacheKey,
     LayoutResidency,
     LayoutWeighter,
-    DefaultHashBuilder,
+    FxBuildHasher,
     LayoutLifecycle,
 >;
 
@@ -1321,10 +1352,14 @@ fn sanitize_height(height: f32) -> f32 {
     }
 }
 
+/// What a layout key's content hashes come from. A key is matched on its
+/// hashes alone, so two texts that collide would share a layout: the hash
+/// has to spread like SipHash does, which Fx's does not, without SipHash's
+/// cost on every measure.
+const KEY_HASHER: foldhash::quality::FixedState = foldhash::quality::FixedState::with_seed(0);
+
 fn hash_value(value: &impl Hash) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    value.hash(&mut hasher);
-    hasher.finish()
+    KEY_HASHER.hash_one(value)
 }
 
 fn layout_key_for_input(input: &TextLayoutInput) -> TextLayoutKey {
@@ -1344,8 +1379,17 @@ fn layout_key_for_input(input: &TextLayoutInput) -> TextLayoutKey {
     }
 }
 
+/// Whether two keys lay out the same content, at possibly different sizes.
+fn same_content(a: &TextLayoutKey, b: &TextLayoutKey) -> bool {
+    a.text_revision == b.text_revision
+        && a.style_revision == b.style_revision
+        && a.layout_style_hash == b.layout_style_hash
+        && a.scale_factor_bits == b.scale_factor_bits
+        && a.font_context_revision == b.font_context_revision
+}
+
 fn shape_style_hash(style: &xui_interface::ComputedTextStyle) -> u64 {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = KEY_HASHER.build_hasher();
     style.font_family.hash(&mut hasher);
     style.font_size.to_bits().hash(&mut hasher);
     style.font_weight.hash(&mut hasher);
