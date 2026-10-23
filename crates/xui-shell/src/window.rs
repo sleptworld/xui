@@ -256,5 +256,9 @@ pub struct MacOsWindowOptions {
     pub titlebar_transparent: bool,
     /// Extends the content view under the titlebar.
     pub fullsize_content_view: bool,
+    /// Where the close, minimize and zoom buttons go: `(left, top)`, in
+    /// points, from the window's top-left corner to the close button's. The
+    /// title bar grows to keep the buttons inside it. `None`, or a negative
+    /// value, leaves them where AppKit puts them.
     pub btn_margin: Option<(i32, i32)>,
 }

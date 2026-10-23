@@ -113,16 +113,19 @@ impl MacWindow {
         window.makeFirstResponder(Some(view.as_super().as_super()));
 
         let resizing = Arc::new(AtomicBool::new(false));
-        let delegate = WindowDelegate::new(mtm, Arc::clone(&resizing));
+        let button_margin = options
+            .macos
+            .btn_margin
+            .map(|(left, top)| (f64::from(left), f64::from(top)))
+            .filter(|&(left, top)| left >= 0.0 && top >= 0.0);
+        let delegate = WindowDelegate::new(mtm, Arc::clone(&resizing), button_margin);
         window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         window.center();
         if options.maximized {
             window.zoom(None);
         }
 
-        if let Some((x, y)) = options.macos.btn_margin {
-            set_window_button_margin(&window, (x as f32, y as f32));
-        }
+        delegate.place_window_buttons(&window);
 
         let this = Self {
             ns_view: Retained::as_ptr(&view) as usize,
@@ -175,12 +178,13 @@ impl MacWindow {
     }
 }
 
-fn set_window_button_margin(window: &NSWindow, margin: (f32, f32)) {
-    let (left, top) = (margin.0 as f64, margin.1 as f64);
-    if !left.is_finite() || !top.is_finite() || left < 0.0 || top < 0.0 {
-        return;
-    }
-
+/// Puts the close button `left` points from the window's left edge and `top`
+/// from its top, with the other two buttons after it as AppKit spaces them.
+///
+/// AppKit lays the title bar out again -- the buttons back where it keeps them
+/// -- whenever the window is shown, resized, retitled or changes key state, so
+/// this is done again after each; see [`WindowDelegate::place_window_buttons`].
+fn set_window_button_margin(window: &NSWindow, (left, top): (f64, f64)) {
     let buttons = [
         NSWindowButton::CloseButton,
         NSWindowButton::MiniaturizeButton,
@@ -277,6 +281,7 @@ impl PlatformWindow for MacWindow {
         let window = self.window.get(mtm);
         if visible {
             window.makeKeyAndOrderFront(None);
+            self.delegate.get(mtm).place_window_buttons(window);
         } else {
             window.orderOut(None);
         }
@@ -290,7 +295,9 @@ impl PlatformWindow for MacWindow {
         // own. `activate` is the replacement, but needs macOS 14.
         #[allow(deprecated)]
         NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
-        self.window.get(mtm).makeKeyAndOrderFront(None);
+        let window = self.window.get(mtm);
+        window.makeKeyAndOrderFront(None);
+        self.delegate.get(mtm).place_window_buttons(window);
     }
 
     fn is_minimized(&self) -> Option<bool> {
@@ -330,7 +337,9 @@ impl PlatformWindow for MacWindow {
 
     fn set_title(&self, title: &str) {
         if let Some(mtm) = MainThreadMarker::new() {
-            self.window.get(mtm).setTitle(&NSString::from_str(title));
+            let window = self.window.get(mtm);
+            window.setTitle(&NSString::from_str(title));
+            self.delegate.get(mtm).place_window_buttons(window);
         }
     }
 
@@ -392,6 +401,8 @@ struct WindowDelegateIvars {
     resizing: Arc<AtomicBool>,
     /// The last window state the shell was told about.
     state: Cell<WindowState>,
+    /// `MacOsWindowOptions::btn_margin`, in points.
+    button_margin: Option<(f64, f64)>,
 }
 
 define_class!(
@@ -435,6 +446,7 @@ define_class!(
             }
             self.ivars().resizing.store(false, Ordering::Relaxed);
             self.report_window_state(&window);
+            self.place_window_buttons(&window);
         }
 
         #[unsafe(method(windowWillStartLiveResize:))]
@@ -458,17 +470,24 @@ define_class!(
         fn window_did_exit_full_screen(&self, notification: &NSNotification) {
             if let Some(window) = notification_window(notification) {
                 self.report_window_state(&window);
+                self.place_window_buttons(&window);
             }
         }
 
         #[unsafe(method(windowDidBecomeKey:))]
-        fn window_did_become_key(&self, _notification: &NSNotification) {
+        fn window_did_become_key(&self, notification: &NSNotification) {
             self.send(ShellEvent::Focused(true));
+            if let Some(window) = notification_window(notification) {
+                self.place_window_buttons(&window);
+            }
         }
 
         #[unsafe(method(windowDidResignKey:))]
-        fn window_did_resign_key(&self, _notification: &NSNotification) {
+        fn window_did_resign_key(&self, notification: &NSNotification) {
             self.send(ShellEvent::Focused(false));
+            if let Some(window) = notification_window(notification) {
+                self.place_window_buttons(&window);
+            }
         }
 
         #[unsafe(method(windowDidChangeOcclusionState:))]
@@ -492,17 +511,33 @@ define_class!(
 );
 
 impl WindowDelegate {
-    fn new(mtm: MainThreadMarker, resizing: Arc<AtomicBool>) -> Retained<Self> {
+    fn new(
+        mtm: MainThreadMarker,
+        resizing: Arc<AtomicBool>,
+        button_margin: Option<(f64, f64)>,
+    ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(WindowDelegateIvars {
             sink: OnceCell::new(),
             resizing,
             state: Cell::new(WindowState::default()),
+            button_margin,
         });
         unsafe { msg_send![super(this), init] }
     }
 
     fn set_sink(&self, sink: Weak<dyn EventSink>) {
         let _ = self.ivars().sink.set(sink);
+    }
+
+    /// Moves the window buttons to the margin the application asked for, if
+    /// it asked. Not in fullscreen, where they are in a title bar of their own
+    /// that AppKit slides in.
+    fn place_window_buttons(&self, window: &NSWindow) {
+        if let Some(margin) = self.ivars().button_margin
+            && !window.styleMask().contains(NSWindowStyleMask::FullScreen)
+        {
+            set_window_button_margin(window, margin);
+        }
     }
 
     fn send(&self, event: ShellEvent) {
