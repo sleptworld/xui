@@ -1,13 +1,14 @@
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
 
-use harfrust::{Direction, FontRef, UnicodeBuffer};
+use harfrust::Direction;
+use smallvec::SmallVec;
 use unicode_script::{Script, UnicodeScript as _};
 use unicode_segmentation::UnicodeSegmentation;
 use xui_interface::{ComputedTextStyle, FontQuery, FontStretch, GlyphFlags, Point};
 
 use crate::{
     FFontId, bidi,
-    font::{FaceMetrics, FontStore},
+    font::{FaceMetrics, FontStore, ShapeResources, shape_plan},
 };
 
 #[derive(Debug, Clone)]
@@ -54,21 +55,54 @@ struct FontSpan {
     script: Script,
 }
 
+/// The font query a text style asks for and the faces it found, looked up
+/// once for every line of a paragraph.
+pub(crate) struct LineFonts {
+    query: FontQuery,
+    candidates: Arc<[FFontId]>,
+}
+
+impl LineFonts {
+    pub fn new(fonts: &mut FontStore, style: &ComputedTextStyle) -> Self {
+        let query = FontQuery {
+            families: vec![style.font_family.clone()],
+            weight: style.font_weight,
+            style: style.font_style,
+            stretch: FontStretch::Normal,
+        };
+        let candidates = fonts.candidates_for(&query);
+        Self { query, candidates }
+    }
+
+    pub fn candidates(&self) -> &[FFontId] {
+        &self.candidates
+    }
+}
+
+impl ShapedLine {
+    /// How many runs, glyphs and clusters the line holds.
+    pub fn counts(&self) -> (usize, usize, usize) {
+        self.runs
+            .iter()
+            .fold((0, 0, 0), |(runs, glyphs, clusters), run| {
+                (
+                    runs + 1,
+                    glyphs + run.glyphs.len(),
+                    clusters + run.clusters.len(),
+                )
+            })
+    }
+}
+
 pub(crate) fn shape_line(
     fonts: &mut FontStore,
+    line_fonts: &LineFonts,
     text: &str,
     range: Range<usize>,
     style: &ComputedTextStyle,
     resolver: &bidi::Resolver,
 ) -> ShapedLine {
     let order = resolver.resolve(range);
-    let query = FontQuery {
-        families: vec![style.font_family.clone()],
-        weight: style.font_weight,
-        style: style.font_style,
-        stretch: FontStretch::Normal,
-    };
-    let candidates = fonts.candidates_for(&query);
     let mut output = ShapedLine {
         runs: Vec::new(),
         width: 0.0,
@@ -76,10 +110,17 @@ pub(crate) fn shape_line(
     };
 
     for bidi_run in order.runs {
-        let mut spans = font_spans(fonts, text, bidi_run.range, &query, &candidates);
+        let mut spans = font_spans(
+            fonts,
+            text,
+            bidi_run.range,
+            &line_fonts.query,
+            &line_fonts.candidates,
+        );
         if bidi_run.level % 2 == 1 {
             spans.reverse();
         }
+        output.runs.reserve(spans.len());
         for span in spans {
             if let Some(run) = shape_span(fonts, text, span, bidi_run.level, style) {
                 output.width += run.advance;
@@ -96,18 +137,15 @@ fn font_spans(
     range: Range<usize>,
     query: &FontQuery,
     candidates: &[FFontId],
-) -> Vec<FontSpan> {
-    let mut spans: Vec<FontSpan> = Vec::new();
+) -> SmallVec<[FontSpan; 2]> {
+    let mut spans = SmallVec::new();
     let Some(slice) = text.get(range.clone()) else {
         return spans;
     };
-    let graphemes: Vec<_> = slice.grapheme_indices(true).collect();
-    let first_script = graphemes
-        .iter()
-        .find_map(|(_, grapheme)| strong_script(grapheme))
-        .unwrap_or(Script::Common);
-    let mut current_script = first_script;
-    for (offset, grapheme) in graphemes {
+    // The first grapheme with a strong script is the one holding the first
+    // character with one.
+    let mut current_script = strong_script(slice).unwrap_or(Script::Common);
+    for (offset, grapheme) in slice.grapheme_indices(true) {
         if let Some(script) = strong_script(grapheme) {
             current_script = script;
         }
@@ -145,11 +183,8 @@ fn shape_span(
     style: &ComputedTextStyle,
 ) -> Option<ShapedRun> {
     let metrics = fonts.face(span.font_id)?.metrics;
-    let (bytes, face_index, data) = fonts.shape_resources(span.font_id)?;
-    let font = FontRef::from_index(bytes, face_index).ok()?;
-    let shaper = data.shaper(&font).build();
     let slice = text.get(span.range.clone())?;
-    let mut buffer = UnicodeBuffer::new();
+    let mut buffer = fonts.take_buffer();
     buffer.push_str(slice);
     buffer.set_direction(if bidi_level.is_multiple_of(2) {
         Direction::LeftToRight
@@ -161,20 +196,37 @@ fn shape_span(
         buffer.set_script(script);
     }
     buffer.guess_segment_properties();
-    let shaped = shaper.shape(buffer, &[]);
+    let (shaped, units_per_em) = {
+        let ShapeResources { font, data, plans } = fonts.shape_resources(span.font_id)?;
+        let shaper = data.shaper(&font).build();
+        let plan = shape_plan(
+            plans,
+            &shaper,
+            buffer.direction(),
+            buffer.script(),
+            buffer.language(),
+        );
+        (
+            shaper.shape_with_plan(plan, buffer, &[]),
+            shaper.units_per_em(),
+        )
+    };
     let infos = shaped.glyph_infos();
     let positions = shaped.glyph_positions();
-    let scale = style.font_size.max(0.0) / shaper.units_per_em().max(1) as f32;
-    let mut boundaries: Vec<_> = infos
-        .iter()
-        .map(|info| info.cluster as usize)
-        .chain(std::iter::once(slice.len()))
-        .collect();
+    let scale = style.font_size.max(0.0) / units_per_em.max(1) as f32;
+    let mut boundaries = fonts.take_boundaries();
+    boundaries.extend(
+        infos
+            .iter()
+            .map(|info| info.cluster as usize)
+            .chain(std::iter::once(slice.len())),
+    );
     boundaries.sort_unstable();
     boundaries.dedup();
 
     let mut glyphs = Vec::with_capacity(infos.len());
-    let mut clusters = Vec::new();
+    // One cluster per glyph unless glyphs share one, so this rarely grows.
+    let mut clusters = Vec::with_capacity(infos.len());
     let mut cursor = 0;
     let mut advance = 0.0;
     while cursor < infos.len() {
@@ -185,9 +237,8 @@ fn shape_span(
         }
         let group_end = cursor;
         let cluster_end = boundaries
-            .iter()
+            .get(boundaries.partition_point(|boundary| *boundary <= cluster_start))
             .copied()
-            .find(|boundary| *boundary > cluster_start)
             .unwrap_or(slice.len());
         let cluster_text = slice.get(cluster_start..cluster_end).unwrap_or("");
         let whitespace = cluster_text.chars().all(char::is_whitespace);
@@ -248,6 +299,8 @@ fn shape_span(
         });
     }
 
+    fonts.return_buffer(shaped.clear());
+    fonts.return_boundaries(boundaries);
     Some(ShapedRun {
         text_range: span.range,
         font_id: span.font_id,
@@ -260,9 +313,8 @@ fn shape_span(
     })
 }
 
-fn strong_script(grapheme: &str) -> Option<Script> {
-    grapheme
-        .chars()
+fn strong_script(text: &str) -> Option<Script> {
+    text.chars()
         .map(|character| character.script())
         .find(|script| !matches!(script, Script::Common | Script::Inherited | Script::Unknown))
 }

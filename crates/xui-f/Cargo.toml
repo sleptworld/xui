@@ -4,10 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+foldhash = "0.2.0"
 fontique = "0.10.0"
 harfrust = "0.5.2"
 self_cell = "1.2.2"
 skrifa = "0.42.1"
+smallvec = "1.15.1"
 unicode-bidi = "0.3.18"
 unicode-linebreak = "0.1.5"
 unicode-script = "0.5.8"

@@ -1,18 +1,20 @@
-use std::{collections::HashSet, ops::Range};
+use std::{borrow::Cow, cell::OnceCell, ops::Range};
 
 use unicode_linebreak::{BreakOpportunity, linebreaks};
 use unicode_segmentation::UnicodeSegmentation;
 use xui_interface::{
-    ComputedTextStyle, FontFamily, FontQuery, FontStretch, FontStyle, FontWeight, GlyphFlags,
-    GlyphInstance, GlyphRun, LineHeight, LineLayout, OverflowWrap, ParagraphLayout, Point, Rect,
+    ComputedTextStyle, FontFamily, FontStyle, FontWeight, GlyphFlags, GlyphInstance, GlyphRun,
+    LineHeight, LineLayout, OverflowWrap, ParagraphLayout, ParagraphMetrics, Point, Rect,
     TextAlign, TextCluster, TextContent, TextLayoutConstraints, TextLayoutInput, TextOffset,
     TextOverflow, TextRange, WhiteSpace,
 };
 
+use smallvec::SmallVec;
+
 use crate::{
     FFontId, bidi,
     font::{FaceMetrics, FontStore},
-    shape::{self, ShapedLine},
+    shape::{self, LineFonts, ShapedLine},
 };
 
 #[derive(Debug, Clone)]
@@ -71,8 +73,18 @@ struct ShapeStyleKey {
 struct PreparedHardParagraph {
     source: HardParagraph,
     measured: ShapedLine,
+    /// Worked out the first time the paragraph is wider than its constraint:
+    /// most paragraphs never wrap.
+    breaks: OnceCell<LineBreaks>,
+}
+
+/// What wrapping a paragraph needs.
+#[derive(Debug)]
+struct LineBreaks {
+    /// The paragraph's graphemes, each with its share of the shaped advance.
     units: Vec<MeasureUnit>,
-    allowed_breaks: HashSet<usize>,
+    /// Byte offsets a line may end at, ascending.
+    allowed: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -97,57 +109,94 @@ pub(crate) fn layout(
     input: TextLayoutInput,
 ) -> ParagraphLayout<FFontId> {
     let mut output = empty_layout();
+    lay_out(fonts, state, &input, Some(&mut output));
+    output
+}
+
+/// What [`layout`] would measure, without placing a glyph.
+pub(crate) fn measure(
+    fonts: &mut FontStore,
+    state: &mut FParagraphState,
+    input: TextLayoutInput,
+) -> ParagraphMetrics {
+    lay_out(fonts, state, &input, None)
+}
+
+/// Breaks, shapes and sizes the paragraph's lines, and places their glyphs in
+/// `output` when there is one. The metrics are the same either way.
+fn lay_out(
+    fonts: &mut FontStore,
+    state: &mut FParagraphState,
+    input: &TextLayoutInput,
+    mut output: Option<&mut ParagraphLayout<FFontId>>,
+) -> ParagraphMetrics {
+    let mut metrics = ParagraphMetrics::default();
     if input.text_box_style.max_lines == Some(0) {
-        return output;
+        return metrics;
     }
-    prepare_if_needed(fonts, state, &input);
+    prepare_if_needed(fonts, state, input);
     let FParagraphState::HardLayout(hard_layout) = state else {
         unreachable!("paragraph state must be prepared before layout")
     };
     let text = input.text.as_str();
     let bidi = &hard_layout.bidi;
 
-    let mut specs = Vec::new();
+    let mut specs = SmallVec::<[LineSpec; 1]>::new();
     for (paragraph_index, paragraph) in hard_layout.paragraphs.iter().enumerate() {
-        let ranges = break_paragraph(
+        let first = specs.len();
+        break_paragraph(
+            text,
             paragraph,
             input.constraints,
             input.paragraph_style.white_space,
             input.paragraph_style.overflow_wrap,
+            |range| {
+                specs.push(LineSpec {
+                    paragraph_index,
+                    range,
+                    paragraph_start: paragraph.source.content.start,
+                    source_line: paragraph.source.source_line,
+                    hard_break: false,
+                    last_in_paragraph: false,
+                })
+            },
         );
-        let range_count = ranges.len();
-        for (index, range) in ranges.into_iter().enumerate() {
-            specs.push(LineSpec {
-                paragraph_index,
-                range,
-                paragraph_start: paragraph.source.content.start,
-                source_line: paragraph.source.source_line,
-                hard_break: paragraph.source.hard_break && index + 1 == range_count,
-                last_in_paragraph: index + 1 == range_count,
-            });
+        if specs.len() > first
+            && let Some(last) = specs.last_mut()
+        {
+            last.hard_break = paragraph.source.hard_break;
+            last.last_in_paragraph = true;
         }
     }
 
     let max_lines = input.text_box_style.max_lines.unwrap_or(usize::MAX);
     let hidden_lines = specs.len() > max_lines;
     specs.truncate(max_lines);
+    if let Some(output) = output.as_deref_mut() {
+        reserve_output(output, &hard_layout.paragraphs, &specs);
+    }
     let strut = hard_layout.strut;
     let mut pen_y = 0.0;
+    // Only lines that are not whole paragraphs are shaped here.
+    let mut line_fonts = None;
 
     for (line_index, spec) in specs.iter().enumerate() {
         let is_last_output = line_index + 1 == specs.len();
         let mut visible_range = spec.range.clone();
         let prepared = &hard_layout.paragraphs[spec.paragraph_index];
         let mut shaped = if visible_range == prepared.source.content {
-            prepared.measured.clone()
+            Cow::Borrowed(&prepared.measured)
         } else {
-            shape::shape_line(
+            let line_fonts =
+                line_fonts.get_or_insert_with(|| LineFonts::new(fonts, &input.default_style));
+            Cow::Owned(shape::shape_line(
                 fonts,
+                line_fonts,
                 text,
                 visible_range.clone(),
                 &input.default_style,
                 bidi,
-            )
+            ))
         };
         let width_limit = constraint_width(input.constraints);
         let nowrap_overflow = is_last_output
@@ -160,8 +209,11 @@ pub(crate) fn layout(
             let anchor = visible_range.end;
             let ellipsis_text = "…";
             let ellipsis_bidi = bidi::Resolver::new(ellipsis_text);
+            let line_fonts =
+                line_fonts.get_or_insert_with(|| LineFonts::new(fonts, &input.default_style));
             let mut ellipsis = shape::shape_line(
                 fonts,
+                line_fonts,
                 ellipsis_text,
                 0..ellipsis_text.len(),
                 &input.default_style,
@@ -176,13 +228,16 @@ pub(crate) fn layout(
         {
             while visible_range.start < visible_range.end && shaped.width + ellipsis.width > limit {
                 visible_range.end = previous_grapheme_boundary(text, visible_range.clone());
-                shaped = shape::shape_line(
+                let line_fonts =
+                    line_fonts.get_or_insert_with(|| LineFonts::new(fonts, &input.default_style));
+                shaped = Cow::Owned(shape::shape_line(
                     fonts,
+                    line_fonts,
                     text,
                     visible_range.clone(),
                     &input.default_style,
                     bidi,
-                );
+                ));
             }
         }
         if let Some(ellipsis) = &mut ellipsis {
@@ -191,26 +246,65 @@ pub(crate) fn layout(
 
         let box_metrics = line_box(
             pen_y,
-            [Some(&shaped), ellipsis.as_ref()],
+            [Some(&*shaped), ellipsis.as_ref()],
             strut,
             &input.default_style,
         );
         pen_y += box_metrics.height;
 
-        emit_line(
-            &mut output,
+        let geometry = LineGeometry::new(
             &shaped,
             ellipsis.as_ref(),
-            visible_range,
-            spec,
-            box_metrics,
+            visible_range.start,
             width_limit,
             input.paragraph_style.align,
-            input.default_style.font_weight,
-            ellipsized,
+            spec.last_in_paragraph || ellipsized,
         );
+        // Accumulated as `ParagraphLayout::metrics` reads them back.
+        metrics.size.width = metrics.size.width.max(geometry.width);
+        metrics.size.height = metrics.size.height.max(box_metrics.y + box_metrics.height);
+        metrics.first_baseline.get_or_insert(box_metrics.baseline);
+        metrics.line_count += 1;
+
+        if let Some(output) = output.as_deref_mut() {
+            emit_line(
+                output,
+                &shaped,
+                ellipsis.as_ref(),
+                visible_range,
+                spec,
+                box_metrics,
+                &geometry,
+                input.default_style.font_weight,
+                ellipsized,
+            );
+        }
     }
-    output
+    metrics
+}
+
+/// Sizes `output` for the lines in `specs`, from what their paragraphs shaped
+/// to: a line is usually a whole paragraph, and a wrapped paragraph's lines
+/// hold about as many glyphs between them.
+fn reserve_output(
+    output: &mut ParagraphLayout<FFontId>,
+    paragraphs: &[PreparedHardParagraph],
+    specs: &[LineSpec],
+) {
+    let Some(last) = specs.last() else {
+        return;
+    };
+    let (runs, glyphs, clusters) = paragraphs[..=last.paragraph_index].iter().fold(
+        (0, 0, 0),
+        |(runs, glyphs, clusters), paragraph| {
+            let (r, g, c) = paragraph.measured.counts();
+            (runs + r, glyphs + g, clusters + c)
+        },
+    );
+    output.lines.reserve_exact(specs.len());
+    output.runs.reserve_exact(runs.max(specs.len()));
+    output.glyphs.reserve_exact(glyphs);
+    output.clusters.reserve_exact(clusters);
 }
 
 /// Vertical placement of a single line box.
@@ -266,23 +360,20 @@ fn prepare_if_needed(fonts: &mut FontStore, state: &mut FParagraphState, input: 
 
     let text = input.text.as_str();
     let bidi = bidi::Resolver::from_content(input.text.clone());
-    let strut = fonts.strut_metrics(&FontQuery {
-        families: vec![input.default_style.font_family.clone()],
-        weight: input.default_style.font_weight,
-        style: input.default_style.font_style,
-        stretch: FontStretch::Normal,
-    });
+    let line_fonts = LineFonts::new(fonts, &input.default_style);
+    let strut = fonts.strut_metrics(line_fonts.candidates());
     let paragraphs = hard_paragraphs(text)
         .into_iter()
         .map(|source| {
             let measured = shape::shape_line(
                 fonts,
+                &line_fonts,
                 text,
                 source.content.clone(),
                 &input.default_style,
                 &bidi,
             );
-            PreparedHardParagraph::new(text, source, measured)
+            PreparedHardParagraph::new(source, measured)
         })
         .collect();
     *state = FParagraphState::HardLayout(FHardLayout {
@@ -317,16 +408,35 @@ impl From<&ComputedTextStyle> for ShapeStyleKey {
 }
 
 impl PreparedHardParagraph {
-    fn new(text: &str, source: HardParagraph, measured: ShapedLine) -> Self {
-        let mut shaped_clusters: Vec<_> = measured
-            .runs
-            .iter()
-            .flat_map(|run| run.clusters.iter())
-            .map(|cluster| MeasureUnit {
-                range: cluster.text_range.clone(),
-                advance: cluster.advance,
-            })
-            .collect();
+    fn new(source: HardParagraph, measured: ShapedLine) -> Self {
+        Self {
+            source,
+            measured,
+            breaks: OnceCell::new(),
+        }
+    }
+
+    /// `text` is the whole text the paragraph is a part of.
+    fn breaks(&self, text: &str) -> &LineBreaks {
+        self.breaks
+            .get_or_init(|| LineBreaks::new(text, &self.source, &self.measured))
+    }
+}
+
+impl LineBreaks {
+    fn new(text: &str, source: &HardParagraph, measured: &ShapedLine) -> Self {
+        let (_, _, cluster_count) = measured.counts();
+        let mut shaped_clusters = Vec::with_capacity(cluster_count);
+        shaped_clusters.extend(
+            measured
+                .runs
+                .iter()
+                .flat_map(|run| run.clusters.iter())
+                .map(|cluster| MeasureUnit {
+                    range: cluster.text_range.clone(),
+                    advance: cluster.advance,
+                }),
+        );
         shaped_clusters.sort_by_key(|unit| unit.range.start);
         shaped_clusters.dedup_by(|right, left| {
             if right.range == left.range {
@@ -337,30 +447,28 @@ impl PreparedHardParagraph {
             }
         });
 
-        let mut units: Vec<_> = text[source.content.clone()]
-            .grapheme_indices(true)
-            .map(|(offset, grapheme)| MeasureUnit {
+        // Graphemes and clusters mostly pair up one to one.
+        let mut units = Vec::with_capacity(shaped_clusters.len());
+        units.extend(text[source.content.clone()].grapheme_indices(true).map(
+            |(offset, grapheme)| MeasureUnit {
                 range: (source.content.start + offset)
                     ..(source.content.start + offset + grapheme.len()),
                 advance: 0.0,
-            })
-            .collect();
+            },
+        ));
         for cluster in shaped_clusters {
-            let covered: Vec<_> = units
-                .iter()
-                .enumerate()
-                .filter(|(_, unit)| {
-                    unit.range.start < cluster.range.end && cluster.range.start < unit.range.end
-                })
-                .map(|(index, _)| index)
-                .collect();
-            let share = cluster.advance / covered.len().max(1) as f32;
-            for index in covered {
-                units[index].advance += share;
+            // Units tile the paragraph in order, so the ones a cluster overlaps
+            // are contiguous.
+            let first = units.partition_point(|unit| unit.range.end <= cluster.range.start);
+            let covered =
+                units[first..].partition_point(|unit| unit.range.start < cluster.range.end);
+            let share = cluster.advance / covered.max(1) as f32;
+            for unit in &mut units[first..first + covered] {
+                unit.advance += share;
             }
         }
 
-        let allowed_breaks = linebreaks(&text[source.content.clone()])
+        let allowed = linebreaks(&text[source.content.clone()])
             .filter_map(|(offset, opportunity)| {
                 matches!(
                     opportunity,
@@ -370,39 +478,41 @@ impl PreparedHardParagraph {
             })
             .collect();
 
-        Self {
-            source,
-            measured,
-            units,
-            allowed_breaks,
-        }
+        Self { units, allowed }
     }
 }
 
+/// Hands `line` each line `paragraph` wraps to, in order; there is always at
+/// least one.
 fn break_paragraph(
+    text: &str,
     paragraph: &PreparedHardParagraph,
     constraints: TextLayoutConstraints,
     white_space: WhiteSpace,
     overflow_wrap: OverflowWrap,
-) -> Vec<Range<usize>> {
+    mut line: impl FnMut(Range<usize>),
+) {
     let range = paragraph.source.content.clone();
     if range.is_empty() {
-        return vec![range];
+        return line(range);
     }
     let Some(max_width) = constraint_width(constraints) else {
-        return vec![range];
+        return line(range);
     };
-    if !wraps(white_space) {
-        return vec![range];
+    // A paragraph that fits stays whole. Summing the graphemes' shares could
+    // come out a rounding error wider than the shaped line, and wrap a
+    // paragraph at exactly the width it was measured to have.
+    if !wraps(white_space) || paragraph.measured.width <= max_width {
+        return line(range);
     }
 
-    let units = &paragraph.units;
+    let breaks = paragraph.breaks(text);
+    let units = &breaks.units;
     if units.is_empty() {
-        return vec![range];
+        return line(range);
     }
 
-    let allowed = &paragraph.allowed_breaks;
-    let mut lines = Vec::new();
+    let allowed = |offset: &usize| breaks.allowed.binary_search(offset).is_ok();
     let mut start = 0;
     while start < units.len() {
         let mut width = 0.0;
@@ -417,7 +527,7 @@ fn break_paragraph(
                     OverflowWrap::BreakWord => last_allowed.or(Some(cursor)),
                     OverflowWrap::Normal => last_allowed.or_else(|| {
                         (cursor..units.len())
-                            .find(|index| allowed.contains(&units[*index].range.end))
+                            .find(|index| allowed(&units[*index].range.end))
                             .map(|index| index + 1)
                     }),
                 };
@@ -427,7 +537,7 @@ fn break_paragraph(
             }
             width = next_width;
             cursor += 1;
-            if allowed.contains(&units[cursor - 1].range.end) {
+            if allowed(&units[cursor - 1].range.end) {
                 last_allowed = Some(cursor);
             }
             if cursor == units.len() {
@@ -439,10 +549,82 @@ fn break_paragraph(
         let end = committed
             .unwrap_or_else(|| (start + 1).min(units.len()))
             .max(start + 1);
-        lines.push(units[start].range.start..units[end - 1].range.end);
+        line(units[start].range.start..units[end - 1].range.end);
         start = end;
     }
-    lines
+}
+
+/// The pieces of a line in visual order: the text, and the ellipsis on its
+/// end side.
+fn line_pieces<'a>(
+    shaped: &'a ShapedLine,
+    ellipsis: Option<&'a ShapedLine>,
+) -> impl Iterator<Item = &'a ShapedLine> + Clone {
+    let pieces = if shaped.base_rtl {
+        [ellipsis, Some(shaped)]
+    } else {
+        [Some(shaped), ellipsis]
+    };
+    pieces.into_iter().flatten()
+}
+
+/// Where a line sits horizontally, and how justification widens it.
+struct LineGeometry {
+    x: f32,
+    width: f32,
+    /// Whitespace clusters starting before this offset take
+    /// `extra_per_space` each.
+    justify_until: usize,
+    extra_per_space: f32,
+}
+
+impl LineGeometry {
+    fn new(
+        shaped: &ShapedLine,
+        ellipsis: Option<&ShapedLine>,
+        text_start: usize,
+        width_limit: Option<f32>,
+        align: TextAlign,
+        unjustified: bool,
+    ) -> Self {
+        let pieces = line_pieces(shaped, ellipsis);
+        let natural_width: f32 = pieces.clone().map(|piece| piece.width).sum();
+        let available = width_limit.unwrap_or(natural_width);
+        let base_rtl = shaped.base_rtl;
+        let x = match align {
+            TextAlign::Center => (available - natural_width).max(0.0) * 0.5,
+            TextAlign::Start if base_rtl => (available - natural_width).max(0.0),
+            TextAlign::End if !base_rtl => (available - natural_width).max(0.0),
+            _ => 0.0,
+        };
+        let mut geometry = Self {
+            x,
+            width: natural_width,
+            justify_until: text_start,
+            extra_per_space: 0.0,
+        };
+        if align != TextAlign::Justify || unjustified || available <= natural_width {
+            return geometry;
+        }
+        let clusters = pieces
+            .flat_map(|piece| &piece.runs)
+            .flat_map(|run| &run.clusters);
+        let justify_until = clusters
+            .clone()
+            .filter(|cluster| !cluster.whitespace)
+            .map(|cluster| cluster.text_range.end)
+            .max()
+            .unwrap_or(text_start);
+        let spaces = clusters
+            .filter(|cluster| cluster.whitespace && cluster.text_range.start < justify_until)
+            .count();
+        if spaces > 0 {
+            geometry.justify_until = justify_until;
+            geometry.extra_per_space = (available - natural_width) / spaces as f32;
+            geometry.width = natural_width + geometry.extra_per_space * spaces as f32;
+        }
+        geometry
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -453,8 +635,7 @@ fn emit_line(
     text_range: Range<usize>,
     spec: &LineSpec,
     line_box: LineBox,
-    width_limit: Option<f32>,
-    align: TextAlign,
+    geometry: &LineGeometry,
     font_weight: xui_interface::FontWeight,
     ellipsized: bool,
 ) {
@@ -463,48 +644,13 @@ fn emit_line(
         height: line_height,
         baseline,
     } = line_box;
-    let mut pieces = Vec::new();
-    if shaped.base_rtl {
-        if let Some(ellipsis) = ellipsis {
-            pieces.push(ellipsis);
-        }
-        pieces.push(shaped);
-    } else {
-        pieces.push(shaped);
-        if let Some(ellipsis) = ellipsis {
-            pieces.push(ellipsis);
-        }
-    }
-    let natural_width: f32 = pieces.iter().map(|piece| piece.width).sum();
-    let available = width_limit.unwrap_or(natural_width);
-    let base_rtl = shaped.base_rtl;
-    let x = match align {
-        TextAlign::Center => (available - natural_width).max(0.0) * 0.5,
-        TextAlign::Start if base_rtl => (available - natural_width).max(0.0),
-        TextAlign::End if !base_rtl => (available - natural_width).max(0.0),
-        _ => 0.0,
-    };
-    let justify = align == TextAlign::Justify && !spec.last_in_paragraph && !ellipsized;
-    let justify_until = pieces
-        .iter()
-        .flat_map(|piece| &piece.runs)
-        .flat_map(|run| &run.clusters)
-        .filter(|cluster| !cluster.whitespace)
-        .map(|cluster| cluster.text_range.end)
-        .max()
-        .unwrap_or(text_range.start);
-    let spaces = pieces
-        .iter()
-        .flat_map(|piece| &piece.runs)
-        .flat_map(|run| &run.clusters)
-        .filter(|cluster| cluster.whitespace && cluster.text_range.start < justify_until)
-        .count();
-    let extra_per_space = if justify && spaces > 0 && available > natural_width {
-        (available - natural_width) / spaces as f32
-    } else {
-        0.0
-    };
-    let width = natural_width + extra_per_space * spaces as f32;
+    let &LineGeometry {
+        x,
+        width,
+        justify_until,
+        extra_per_space,
+    } = geometry;
+    let pieces = line_pieces(shaped, ellipsis);
     let line_run_start = output.runs.len();
     let line_glyph_start = output.glyphs.len();
     let line_cluster_start = output.clusters.len();
@@ -702,9 +848,27 @@ mod tests {
         }
     }
 
+    fn wrap(
+        text: &str,
+        paragraph: &PreparedHardParagraph,
+        constraints: TextLayoutConstraints,
+        white_space: WhiteSpace,
+        overflow_wrap: OverflowWrap,
+    ) -> Vec<Range<usize>> {
+        let mut lines = Vec::new();
+        break_paragraph(
+            text,
+            paragraph,
+            constraints,
+            white_space,
+            overflow_wrap,
+            |line| lines.push(line),
+        );
+        lines
+    }
+
     fn prepared(text: &str, shaped: ShapedLine) -> PreparedHardParagraph {
         PreparedHardParagraph::new(
-            text,
             HardParagraph {
                 content: 0..text.len(),
                 hard_break: false,
@@ -718,7 +882,8 @@ mod tests {
     fn zero_width_still_consumes_one_cluster_per_line() {
         let shaped = shaped_units(&[10.0, 10.0, 10.0]);
         let paragraph = prepared("abc", shaped);
-        let lines = break_paragraph(
+        let lines = wrap(
+            "abc",
             &paragraph,
             TextLayoutConstraints::max_width(0.0),
             WhiteSpace::Normal,
@@ -733,7 +898,8 @@ mod tests {
         shaped.runs[0].clusters[0].text_range = 0..3;
         shaped.runs[0].text_range = 0..3;
         let paragraph = prepared("ffi", shaped);
-        let lines = break_paragraph(
+        let lines = wrap(
+            "ffi",
             &paragraph,
             TextLayoutConstraints::max_width(5.0),
             WhiteSpace::Normal,
@@ -746,13 +912,15 @@ mod tests {
     fn normal_wrap_preserves_long_words_but_break_word_makes_progress() {
         let shaped = shaped_units(&[10.0, 10.0, 10.0]);
         let paragraph = prepared("abc", shaped);
-        let normal = break_paragraph(
+        let normal = wrap(
+            "abc",
             &paragraph,
             TextLayoutConstraints::max_width(5.0),
             WhiteSpace::Normal,
             OverflowWrap::Normal,
         );
-        let emergency = break_paragraph(
+        let emergency = wrap(
+            "abc",
             &paragraph,
             TextLayoutConstraints::max_width(5.0),
             WhiteSpace::Normal,
@@ -761,6 +929,32 @@ mod tests {
         assert_eq!(normal.len(), 1);
         assert_eq!(normal[0], 0..3);
         assert_eq!(emergency, [0..1, 1..2, 2..3]);
+    }
+
+    #[test]
+    fn a_paragraph_that_fits_never_works_out_its_breaks() {
+        let shaped = shaped_units(&[10.0, 10.0, 10.0]);
+        let paragraph = prepared("abc", shaped);
+        for width in [30.0, 100.0] {
+            let lines = wrap(
+                "abc",
+                &paragraph,
+                TextLayoutConstraints::max_width(width),
+                WhiteSpace::Normal,
+                OverflowWrap::Anywhere,
+            );
+            assert_eq!(lines, vec![0..3]);
+        }
+        assert!(paragraph.breaks.get().is_none());
+
+        wrap(
+            "abc",
+            &paragraph,
+            TextLayoutConstraints::max_width(29.0),
+            WhiteSpace::Normal,
+            OverflowWrap::Anywhere,
+        );
+        assert!(paragraph.breaks.get().is_some());
     }
 
     #[test]

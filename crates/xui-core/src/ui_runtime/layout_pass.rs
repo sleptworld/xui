@@ -345,8 +345,15 @@ fn measure_layout_context<T: TextBackend>(
                     props.text_box,
                     font_context,
                 );
-                let metrics =
-                    measurer.measure_slot_metrics(*node_id, TextLayoutSlot::PRIMARY, input);
+                // Text is painted wrapped at its final width (a text input,
+                // unbounded), so min- and max-content probes are only sized.
+                let metrics = if node.node_type != WidgetType::TextInput
+                    && !matches!(constraints, TextLayoutConstraints::Definate(_))
+                {
+                    measurer.probe_slot_metrics(*node_id, TextLayoutSlot::PRIMARY, input)
+                } else {
+                    measurer.measure_slot_metrics(*node_id, TextLayoutSlot::PRIMARY, input)
+                };
                 return MeasuredLeaf {
                     size: tf::Size {
                         width: known_dimensions.width.unwrap_or(metrics.size.width),

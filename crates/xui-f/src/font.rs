@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    hash::{BuildHasher, Hash, Hasher},
     sync::{
         Arc, PoisonError, RwLock,
         atomic::{AtomicU64, Ordering},
@@ -11,7 +12,7 @@ use fontique::{
     FontStyle as FqFontStyle, FontWeight as FqFontWeight, FontWidth as FqFontWidth, GenericFamily,
     QueryFamily, QueryFont, QueryStatus, Script as FqScript, SourceCache, SourceCacheOptions,
 };
-use harfrust::{FontRef, ShaperData};
+use harfrust::{Direction, FontRef, Language, ShapePlan, Shaper, ShaperData, UnicodeBuffer};
 use skrifa::{
     MetadataProvider,
     instance::{LocationRef, Size as SkrifaSize},
@@ -31,6 +32,10 @@ pub(crate) struct FaceRecord {
     pub metrics: FaceMetrics,
     charmap_index: CharmapIndex,
     shaper_data: Option<ShaperData>,
+    /// The face's shaping plans, one per direction, script and language
+    /// shaped with: building one compiles the face's feature lookups, which
+    /// costs more than shaping a short run with it.
+    shape_plans: Vec<ShapePlan>,
 }
 
 /// Vertical face metrics normalized to the em square.
@@ -174,6 +179,36 @@ impl From<&FontQuery> for QueryKey {
     }
 }
 
+impl QueryKey {
+    fn matches(&self, query: &FontQuery) -> bool {
+        self.families == query.families
+            && self.weight == query.weight
+            && self.style == query.style
+            && self.stretch == query.stretch
+    }
+}
+
+/// The candidates one query found in one scope.
+///
+/// Looked up by `hash` first, so finding an entry neither clones the query's
+/// families nor allocates.
+struct CandidateEntry {
+    hash: u64,
+    key: QueryKey,
+    scope: CandidateScope,
+    ids: Arc<[FFontId]>,
+}
+
+fn candidate_hash(query: &FontQuery, scope: CandidateScope) -> u64 {
+    let mut hasher = foldhash::fast::FixedState::default().build_hasher();
+    query.families.hash(&mut hasher);
+    query.weight.hash(&mut hasher);
+    query.style.hash(&mut hasher);
+    query.stretch.hash(&mut hasher);
+    scope.hash(&mut hasher);
+    hasher.finish()
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum CandidateScope {
     Primary,
@@ -188,7 +223,11 @@ pub(crate) struct FontStore {
     faces: Vec<FaceRecord>,
     shared: Arc<FFonts>,
     face_ids: HashMap<(u64, u32), FFontId>,
-    candidates: HashMap<(QueryKey, CandidateScope), Vec<FFontId>>,
+    candidates: Vec<CandidateEntry>,
+    /// A shaping buffer, kept between runs for its allocation.
+    spare_buffer: Option<UnicodeBuffer>,
+    /// Cluster boundaries of the run being shaped, kept for the same reason.
+    spare_boundaries: Vec<usize>,
 }
 
 impl FontStore {
@@ -209,7 +248,9 @@ impl FontStore {
             faces: Vec::new(),
             shared: Arc::new(FFonts::new()),
             face_ids: HashMap::new(),
-            candidates: HashMap::new(),
+            candidates: Vec::new(),
+            spare_buffer: None,
+            spare_boundaries: Vec::new(),
         }
     }
 
@@ -257,8 +298,8 @@ impl FontStore {
     /// Lines that contain no runs (empty paragraphs) and the minimum height of
     /// every other line are derived from this, so a block of text keeps a
     /// stable line rhythm regardless of which fallbacks its content pulls in.
-    pub fn strut_metrics(&mut self, query: &FontQuery) -> FaceMetrics {
-        self.candidates_for(query)
+    pub fn strut_metrics(&self, candidates: &[FFontId]) -> FaceMetrics {
+        candidates
             .first()
             .and_then(|id| self.face(*id))
             .map_or(FaceMetrics::FALLBACK, |face| face.metrics)
@@ -301,10 +342,10 @@ impl FontStore {
     }
 
     pub fn query(&mut self, query: &FontQuery) -> Option<FFontId> {
-        self.candidates_for(query).into_iter().next()
+        self.candidates_for(query).first().copied()
     }
 
-    pub fn candidates_for(&mut self, query: &FontQuery) -> Vec<FFontId> {
+    pub fn candidates_for(&mut self, query: &FontQuery) -> Arc<[FFontId]> {
         self.candidates_for_scope(query, CandidateScope::Primary)
     }
 
@@ -362,11 +403,15 @@ impl FontStore {
             .all(|character| !requires_glyph(character) || charmap.map(character).is_some())
     }
 
-    fn candidates_for_scope(&mut self, query: &FontQuery, scope: CandidateScope) -> Vec<FFontId> {
+    fn candidates_for_scope(&mut self, query: &FontQuery, scope: CandidateScope) -> Arc<[FFontId]> {
         const MAX_CANDIDATE_QUERIES: usize = 256;
-        let cache_key = (QueryKey::from(query), scope);
-        if let Some(cached) = self.candidates.get(&cache_key) {
-            return cached.clone();
+        let hash = candidate_hash(query, scope);
+        if let Some(cached) = self
+            .candidates
+            .iter()
+            .find(|entry| entry.hash == hash && entry.scope == scope && entry.key.matches(query))
+        {
+            return cached.ids.clone();
         }
 
         let attributes = attributes(query);
@@ -411,7 +456,13 @@ impl FontStore {
         if self.candidates.len() >= MAX_CANDIDATE_QUERIES {
             self.candidates.clear();
         }
-        self.candidates.insert(cache_key, ids.clone());
+        let ids: Arc<[FFontId]> = ids.into();
+        self.candidates.push(CandidateEntry {
+            hash,
+            key: QueryKey::from(query),
+            scope,
+            ids: ids.clone(),
+        });
         ids
     }
 
@@ -468,23 +519,87 @@ impl FontStore {
             },
             charmap_index: font.charmap_index,
             shaper_data: None,
+            shape_plans: Vec::new(),
         });
         self.face_ids.insert(key, id);
         Some(id)
     }
 
-    pub fn shape_resources(&mut self, id: FFontId) -> Option<(&[u8], u32, &ShaperData)> {
+    pub fn shape_resources(&mut self, id: FFontId) -> Option<ShapeResources<'_>> {
         let face = self.faces.get_mut(id.0 as usize)?;
         if face.shaper_data.is_none() {
             let font = FontRef::from_index(face.blob.as_ref(), face.index).ok()?;
             face.shaper_data = Some(ShaperData::new(&font));
         }
-        Some((face.blob.as_ref(), face.index, face.shaper_data.as_ref()?))
+        Some(ShapeResources {
+            font: FontRef::from_index(face.blob.as_ref(), face.index).ok()?,
+            data: face.shaper_data.as_ref()?,
+            plans: &mut face.shape_plans,
+        })
+    }
+
+    /// An empty shaping buffer: the last one handed back, when there is one.
+    pub fn take_buffer(&mut self) -> UnicodeBuffer {
+        self.spare_buffer.take().unwrap_or_default()
+    }
+
+    /// Keeps `buffer`'s allocation for the next run.
+    pub fn return_buffer(&mut self, buffer: UnicodeBuffer) {
+        self.spare_buffer = Some(buffer);
+    }
+
+    /// An empty list for a run's cluster boundaries, reusing the last one's
+    /// allocation.
+    pub fn take_boundaries(&mut self) -> Vec<usize> {
+        let mut boundaries = std::mem::take(&mut self.spare_boundaries);
+        boundaries.clear();
+        boundaries
+    }
+
+    /// Keeps `boundaries`' allocation for the next run.
+    pub fn return_boundaries(&mut self, boundaries: Vec<usize>) {
+        self.spare_boundaries = boundaries;
     }
 
     pub fn prune_sources(&mut self, max_age: u64) {
         self.source_cache.prune(max_age, true);
     }
+}
+
+/// What shaping a run in one face needs.
+pub(crate) struct ShapeResources<'a> {
+    pub font: FontRef<'a>,
+    pub data: &'a ShaperData,
+    pub plans: &'a mut Vec<ShapePlan>,
+}
+
+/// The face's plan for runs in `direction`, `script` and `language`, out of
+/// `plans`, built the first time one is asked for.
+pub(crate) fn shape_plan<'p>(
+    plans: &'p mut Vec<ShapePlan>,
+    shaper: &Shaper<'_>,
+    direction: Direction,
+    script: harfrust::Script,
+    language: Option<Language>,
+) -> &'p ShapePlan {
+    let index = match plans.iter().position(|plan| {
+        plan.direction() == direction
+            && plan.script() == Some(script)
+            && plan.language() == language.as_ref()
+    }) {
+        Some(index) => index,
+        None => {
+            plans.push(ShapePlan::new(
+                shaper,
+                direction,
+                Some(script),
+                language.as_ref(),
+                &[],
+            ));
+            plans.len() - 1
+        }
+    };
+    &plans[index]
 }
 
 struct MaterializedFont {

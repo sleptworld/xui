@@ -6,13 +6,6 @@ pub use cache::{
 };
 use xui_interface::{Point, Rect, Size, TextPosition, TextRange};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct TextLayoutMetrics {
-    pub size: Size<f32>,
-    pub first_baseline: Option<f32>,
-    pub line_count: usize,
-}
-
 /// Geometry queries supported by a resident shaped-text layout.
 pub trait TextLayoutQuery {
     fn size(&self) -> Size<f32>;
@@ -230,6 +223,50 @@ mod tests {
             host.active_slot(owner, TextLayoutSlot::PRIMARY),
             Some(active)
         );
+    }
+
+    /// Layout probes a paragraph under several constraints and then paints
+    /// it at the last one: the paint reuses that layout, the paragraph keeps
+    /// one layout in all, and probing again shapes nothing.
+    #[test]
+    fn probes_are_remembered_and_only_the_painted_layout_is_kept() {
+        let mut owners = SlotMap::<NodeId, ()>::with_key();
+        let owner = owners.insert(());
+        let mut host = TextHost::new(CountingTextBackend::new());
+        let slot = TextLayoutSlot::PRIMARY;
+        let probes = [
+            TextLayoutConstraints::MIN_SIZE,
+            TextLayoutConstraints::UNBOUNDED,
+            TextLayoutConstraints::max_width(80.0),
+        ];
+
+        for constraints in probes {
+            host.measure_slot(owner, slot, input(constraints));
+        }
+        assert_eq!(host.backend().layout_calls, 3);
+
+        host.activate_slot(owner, slot, input(TextLayoutConstraints::max_width(80.0)));
+        assert_eq!(host.backend().layout_calls, 3, "painting shaped the final width again");
+        assert_eq!(host.stats().layouts, 1, "only the painted layout stays");
+
+        for constraints in probes {
+            host.measure_slot(owner, slot, input(constraints));
+        }
+        assert_eq!(host.backend().layout_calls, 3, "a probe was shaped again");
+    }
+
+    /// A text input is measured and painted unbounded: one shaping.
+    #[test]
+    fn a_paragraph_painted_as_measured_is_shaped_once() {
+        let mut owners = SlotMap::<NodeId, ()>::with_key();
+        let owner = owners.insert(());
+        let mut host = TextHost::new(CountingTextBackend::new());
+        let slot = TextLayoutSlot::PRIMARY;
+
+        host.measure_slot(owner, slot, input(TextLayoutConstraints::UNBOUNDED));
+        host.activate_slot(owner, slot, input(TextLayoutConstraints::UNBOUNDED));
+        assert_eq!(host.backend().layout_calls, 1);
+        assert_eq!(host.stats().layouts, 1);
     }
 
     #[test]

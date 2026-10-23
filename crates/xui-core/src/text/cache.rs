@@ -12,12 +12,13 @@ use rustc_hash::{FxBuildHasher, FxHashMap};
 use slotmap::{SlotMap, new_key_type};
 use smallvec::SmallVec;
 use xui_interface::{
-    Affinity, FontCollection, NodeId, NodeLifecycleEvent, ParagraphLayout, Point, Rect, Shaper,
+    Affinity, FontCollection, NodeId, NodeLifecycleEvent, ParagraphLayout, ParagraphMetrics, Point,
+    Rect, Shaper,
     Size, TextBackend, TextLayoutConstraints, TextLayoutInput, TextLayoutKey, TextOffset,
     TextOffsetUnit, TextPosition, TextRange,
 };
 
-use super::{TextLayoutMetrics, TextLayoutQuery};
+use super::TextLayoutQuery;
 
 new_key_type! {
     /// Stable identity of one logical text unit.
@@ -39,6 +40,8 @@ pub type ShaperState<B> = <<B as TextBackend>::Shaper as Shaper>::State;
 const DEFAULT_ESTIMATED_LAYOUTS: usize = 128;
 const DEFAULT_MAX_LAYOUT_BYTES: u64 = 32 * 1024 * 1024;
 const DEFAULT_MAX_VARIANTS_PER_UNIT: usize = 4;
+/// How many measurements a unit remembers without a layout.
+const MEASURED_PER_UNIT: usize = 4;
 
 /// A direct, owner-local text slot. Documents use `ParagraphId` instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -147,7 +150,7 @@ impl<B: TextBackend> TextHost<B> {
         self.max_variants_per_unit = max_variants_per_unit.max(1);
         let units: SmallVec<[TextUnitId; 16]> = self.units.keys().collect();
         for unit in units {
-            self.enforce_unit_variant_limit(unit, None);
+            self.enforce_unit_variant_limit(unit, None, usize::MAX);
         }
     }
 
@@ -173,11 +176,11 @@ impl<B: TextBackend> TextHost<B> {
 
         let state = self.backend.shaper().create_state();
         let unit = self.units.insert(TextUnitCache {
-            owner,
             location: TextUnitLocation::Direct { owner, slot },
             state,
             active: None,
             resident_layouts: SmallVec::new(),
+            measured: SmallVec::new(),
         });
         self.owners
             .entry(owner)
@@ -241,10 +244,25 @@ impl<B: TextBackend> TextHost<B> {
         owner: NodeId,
         slot: TextLayoutSlot,
         input: TextLayoutInput,
-    ) -> TextLayoutMetrics {
+    ) -> ParagraphMetrics {
         let unit = self.ensure_direct_unit(owner, slot);
         let key = layout_key_for_input(&input);
-        self.measure_unit_metrics(unit, key, input)
+        self.measure_unit_metrics(unit, key, input, true)
+            .expect("a newly ensured text unit must exist")
+    }
+
+    /// Measures an owner-local slot under a constraint it will not be painted
+    /// with, such as a min- or max-content probe: the backend only sizes the
+    /// paragraph, and no layout is kept.
+    pub(crate) fn probe_slot_metrics(
+        &mut self,
+        owner: NodeId,
+        slot: TextLayoutSlot,
+        input: TextLayoutInput,
+    ) -> ParagraphMetrics {
+        let unit = self.ensure_direct_unit(owner, slot);
+        let key = layout_key_for_input(&input);
+        self.measure_unit_metrics(unit, key, input, false)
             .expect("a newly ensured text unit must exist")
     }
 
@@ -258,36 +276,71 @@ impl<B: TextBackend> TextHost<B> {
         key: TextLayoutKey,
         input: TextLayoutInput,
     ) -> Option<Size<f32>> {
-        self.measure_unit_metrics(unit, key, input)
+        self.measure_unit_metrics(unit, key, input, true)
             .map(|metrics| metrics.size)
     }
 
+    /// Measures `unit` under `key`, from what it measured or laid out before
+    /// when it can. Otherwise `keep_layout` lays the paragraph out and keeps
+    /// the layout for painting, and without it the backend only sizes it.
     fn measure_unit_metrics(
         &mut self,
         unit: TextUnitId,
         key: TextLayoutKey,
         input: TextLayoutInput,
-    ) -> Option<TextLayoutMetrics> {
-        self.units.get(unit)?;
+        keep_layout: bool,
+    ) -> Option<ParagraphMetrics> {
+        if let Some(&(_, metrics)) = self
+            .units
+            .get(unit)?
+            .measured
+            .iter()
+            .find(|(measured, _)| *measured == key)
+        {
+            return Some(metrics);
+        }
         if let Some(handle) = self.find_unit(unit, &key) {
-            return self
-                .layout(handle)
-                .map(|layout| text_layout_metrics(&layout));
+            let metrics = self.layout(handle).map(|layout| layout.metrics())?;
+            self.remember_measurement(unit, key, metrics);
+            return Some(metrics);
+        }
+        if !keep_layout {
+            let state = &mut self.units.get_mut(unit)?.state;
+            let metrics = self.backend.shaper().measure_paragraph(state, input);
+            self.remember_measurement(unit, key, metrics);
+            return Some(metrics);
         }
 
         let layout = {
             let state = &mut self.units.get_mut(unit)?.state;
             Arc::new(self.backend.shaper().layout_paragraph(state, input.clone()))
         };
-        let metrics = text_layout_metrics(&layout);
+        let metrics = layout.metrics();
+        self.remember_measurement(unit, key, metrics);
+        // Kept as a layout too, the latest only: the last measurement of a
+        // pass is the paragraph at its final width, which painting activates
+        // next.
         let memory_cost = Self::estimated_memory_cost(&layout, &self.units.get(unit)?.state);
         if self
             .insert_entry(unit, key, layout, Some(input), memory_cost, false)
             .is_some()
         {
-            self.enforce_unit_variant_limit(unit, Some(key));
+            self.enforce_unit_variant_limit(unit, Some(key), 1);
         }
         Some(metrics)
+    }
+
+    /// Records what measuring `unit` under `key` gave, forgetting what the
+    /// unit's other content measured.
+    fn remember_measurement(&mut self, unit: TextUnitId, key: TextLayoutKey, metrics: ParagraphMetrics) {
+        let Some(unit) = self.units.get_mut(unit) else {
+            return;
+        };
+        unit.measured.retain(|(measured, _)| same_content(measured, &key));
+        if unit.measured.len() == MEASURED_PER_UNIT {
+            unit.measured.remove(0);
+        }
+        unit.measured.push((key, metrics));
     }
 
     /// Returns a cached layout for an owner-local slot, or shapes and activates it.
@@ -323,7 +376,7 @@ impl<B: TextBackend> TextHost<B> {
         let memory_cost = Self::estimated_memory_cost(&layout, &self.units.get(unit)?.state);
         let handle = self.insert_entry(unit, key, layout, Some(input), memory_cost, true)?;
         self.replace_active_unit(unit, key, handle, true);
-        self.enforce_unit_variant_limit(unit, Some(key));
+        self.enforce_unit_variant_limit(unit, Some(key), 0);
         Some(handle)
     }
 
@@ -397,7 +450,7 @@ impl<B: TextBackend> TextHost<B> {
         }
         self.units.get_mut(unit)?.state = state;
         let handle = self.insert_entry(unit, key, layout, None, memory_cost, false)?;
-        self.enforce_unit_variant_limit(unit, Some(key));
+        self.enforce_unit_variant_limit(unit, Some(key), 1);
         self.entries.contains_key(handle).then_some(handle)
     }
 
@@ -434,7 +487,7 @@ impl<B: TextBackend> TextHost<B> {
             .insert_entry(unit, key, layout, None, memory_cost, true)
             .expect("a pinned text layout must be admitted to the cache");
         self.replace_active_unit(unit, key, handle, true);
-        self.enforce_unit_variant_limit(unit, Some(key));
+        self.enforce_unit_variant_limit(unit, Some(key), 0);
         handle
     }
 
@@ -448,7 +501,7 @@ impl<B: TextBackend> TextHost<B> {
             return false;
         }
         self.replace_active_unit(unit, key, handle, true);
-        self.enforce_unit_variant_limit(unit, Some(key));
+        self.enforce_unit_variant_limit(unit, Some(key), 0);
         true
     }
 
@@ -488,7 +541,7 @@ impl<B: TextBackend> TextHost<B> {
             }
             residency.pin_count -= 1;
         }
-        self.enforce_unit_variant_limit(cache_key.unit, None);
+        self.enforce_unit_variant_limit(cache_key.unit, None, usize::MAX);
         true
     }
 
@@ -502,11 +555,10 @@ impl<B: TextBackend> TextHost<B> {
 
     /// Drops all shaped variants while preserving the logical unit identity.
     pub fn invalidate_unit(&mut self, unit: TextUnitId) -> usize {
-        let Some(handles) = self
-            .units
-            .get(unit)
-            .map(|cache| cache.resident_layouts.clone())
-        else {
+        let Some(handles) = self.units.get_mut(unit).map(|cache| {
+            cache.measured.clear();
+            cache.resident_layouts.clone()
+        }) else {
             return 0;
         };
         let mut removed = 0;
@@ -658,7 +710,6 @@ impl<B: TextBackend> TextHost<B> {
 
         let state = self.backend.shaper().create_state();
         let unit = self.units.insert(TextUnitCache {
-            owner,
             // Replaced immediately after the paragraph id is allocated.
             location: TextUnitLocation::Direct {
                 owner,
@@ -667,6 +718,7 @@ impl<B: TextBackend> TextHost<B> {
             state,
             active: None,
             resident_layouts: SmallVec::new(),
+            measured: SmallVec::new(),
         });
         let document_cache = self.owners.get_mut(&owner)?.documents.get_mut(document)?;
         let paragraph = document_cache.paragraphs.insert(ParagraphRecord {
@@ -1053,10 +1105,18 @@ impl<B: TextBackend> TextHost<B> {
 
     /// Keeps a unit's variants within bounds: first drops those shaped from
     /// other content than `current`'s (another text, style or font
-    /// generation), which no layout of the current content asks for again,
-    /// then the least recently used beyond the per-unit limit. The active
-    /// variant and pinned ones always stay.
-    fn enforce_unit_variant_limit(&mut self, unit: TextUnitId, current: Option<TextLayoutKey>) {
+    /// generation), which no layout of the current content asks for again;
+    /// then all but the `spare` most recent of those neither active nor
+    /// pinned -- a measured one waits to be painted, and once one is, the
+    /// others' measurements are remembered without them; then the least
+    /// recently used beyond the per-unit limit. The active variant and pinned
+    /// ones always stay.
+    fn enforce_unit_variant_limit(
+        &mut self,
+        unit: TextUnitId,
+        current: Option<TextLayoutKey>,
+        spare: usize,
+    ) {
         if let Some(current) = current
             && let Some(unit_cache) = self.units.get(unit)
             && unit_cache.resident_layouts.len() > 1
@@ -1077,6 +1137,29 @@ impl<B: TextBackend> TextHost<B> {
                 .collect();
             for handle in stale {
                 self.remove(handle);
+            }
+        }
+        if let Some(unit_cache) = self.units.get(unit)
+            && unit_cache.resident_layouts.len() > spare
+        {
+            let active = unit_cache.active.map(|(_, handle)| handle);
+            let mut unpinned: SmallVec<[(u64, TextLayoutHandle); DEFAULT_MAX_VARIANTS_PER_UNIT]> =
+                unit_cache
+                    .resident_layouts
+                    .iter()
+                    .copied()
+                    .filter(|handle| Some(*handle) != active && !self.handle_is_pinned(*handle))
+                    .map(|handle| {
+                        let access = self.entries.get(handle).map_or(0, |entry| entry.last_access.get());
+                        (access, handle)
+                    })
+                    .collect();
+            if unpinned.len() > spare {
+                // Most recent first; the rest go.
+                unpinned.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+                for (_, handle) in unpinned.into_iter().skip(spare) {
+                    self.remove(handle);
+                }
             }
         }
         loop {
@@ -1124,11 +1207,15 @@ impl<B: TextBackend> TextHost<B> {
 }
 
 struct TextUnitCache<S> {
-    owner: NodeId,
     location: TextUnitLocation,
     state: S,
     active: Option<(TextLayoutKey, TextLayoutHandle)>,
     resident_layouts: SmallVec<[TextLayoutHandle; DEFAULT_MAX_VARIANTS_PER_UNIT]>,
+    /// What measuring under each recent key gave, kept without the layout:
+    /// layout probes the same text under several constraints every pass, and
+    /// only the variant that is painted needs its glyphs. Only the current
+    /// content's are kept.
+    measured: SmallVec<[(TextLayoutKey, ParagraphMetrics); MEASURED_PER_UNIT]>,
 }
 
 #[derive(Default)]
@@ -1285,14 +1372,6 @@ type GlobalLayoutCache = QuickCache<
     FxBuildHasher,
     LayoutLifecycle,
 >;
-
-fn text_layout_metrics<F>(layout: &ParagraphLayout<F>) -> TextLayoutMetrics {
-    TextLayoutMetrics {
-        size: layout.size(),
-        first_baseline: layout.lines.first().map(|line| line.baseline),
-        line_count: layout.lines.len(),
-    }
-}
 
 struct LayoutEntry<B: TextBackend> {
     cache_key: LayoutCacheKey,

@@ -63,6 +63,22 @@ pub trait Shaper {
         input: TextLayoutInput,
     ) -> ParagraphLayout<Self::FontId>;
 
+    /// Measures a paragraph without laying its glyphs out: the result equals
+    /// [`ParagraphLayout::metrics`] of what
+    /// [`layout_paragraph`](Self::layout_paragraph) would return for the same
+    /// state and input.
+    ///
+    /// Hosts measure under intrinsic constraints, and often several times per
+    /// pass, so a backend that can size lines without placing glyphs should
+    /// override this. The default lays the paragraph out.
+    fn measure_paragraph(
+        &mut self,
+        state: &mut Self::State,
+        input: TextLayoutInput,
+    ) -> ParagraphMetrics {
+        self.layout_paragraph(state, input).metrics()
+    }
+
     fn handle_node_lifecycle(&mut self, _event: &NodeLifecycleEvent) {}
 }
 
@@ -656,6 +672,15 @@ fn hash_color<H: Hasher>(color: Color, state: &mut H) {
     color.a.to_bits().hash(state);
 }
 
+/// A paragraph's measurements, without its glyphs.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ParagraphMetrics {
+    /// The widest line's width and the bottom of the last line.
+    pub size: Size<f32>,
+    pub first_baseline: Option<f32>,
+    pub line_count: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct ParagraphLayout<F> {
     pub lines: Vec<LineLayout>,
@@ -665,6 +690,14 @@ pub struct ParagraphLayout<F> {
 }
 
 impl<F> ParagraphLayout<F> {
+    pub fn metrics(&self) -> ParagraphMetrics {
+        ParagraphMetrics {
+            size: self.size(),
+            first_baseline: self.lines.first().map(|line| line.baseline),
+            line_count: self.lines.len(),
+        }
+    }
+
     pub fn size(&self) -> Size<f32> {
         let width = self
             .lines

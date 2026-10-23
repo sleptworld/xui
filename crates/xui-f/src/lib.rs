@@ -19,7 +19,9 @@ mod types;
 
 use std::sync::Arc;
 
-use xui_interface::{FontQuery, ParagraphLayout, Shaper, TextBackend, TextLayoutInput};
+use xui_interface::{
+    FontQuery, ParagraphLayout, ParagraphMetrics, Shaper, TextBackend, TextLayoutInput,
+};
 use xui_swash::SwashRasterizer;
 
 pub use font::{FFont, FFonts};
@@ -85,6 +87,14 @@ impl Shaper for FBackend {
     ) -> ParagraphLayout<FFontId> {
         layout::layout(&mut self.fonts, state, input)
     }
+
+    fn measure_paragraph(
+        &mut self,
+        state: &mut Self::State,
+        input: TextLayoutInput,
+    ) -> ParagraphMetrics {
+        layout::measure(&mut self.fonts, state, input)
+    }
 }
 
 impl TextBackend for FBackend {
@@ -124,7 +134,7 @@ mod tests {
     use super::*;
     use xui_interface::{
         ComputedTextStyle, FontFamily, FontStretch, FontStyle, FontWeight, LineHeight,
-        OverflowWrap, ParagraphStyle, TextBoxStyle, TextContent, TextLayoutConstraints,
+        OverflowWrap, ParagraphStyle, TextAlign, TextBoxStyle, TextContent, TextLayoutConstraints,
         TextOverflow, TextStyle, WhiteSpace,
     };
     use xui_interface::{
@@ -145,6 +155,80 @@ mod tests {
             TextBoxStyle::default(),
             0,
         )
+    }
+
+    #[test]
+    fn measuring_matches_the_layout() {
+        let mut backend = FBackend::new();
+        if backend.face_count() == 0 {
+            return;
+        }
+        let texts = [
+            "",
+            "row 7 / 10",
+            "The quick brown fox jumps over the lazy dog, twice over.",
+            "first line\nsecond, longer line\r\nthird",
+            "English العربية עברית 中文 😀",
+            "officeffi   trailing   ",
+        ];
+        let constraints = [
+            TextLayoutConstraints::UNBOUNDED,
+            TextLayoutConstraints::MIN_SIZE,
+            TextLayoutConstraints::max_width(0.0),
+            TextLayoutConstraints::max_width(60.0),
+            TextLayoutConstraints::max_width(400.0),
+        ];
+        for text in texts {
+            for constraint in constraints {
+                for align in [TextAlign::Start, TextAlign::Center, TextAlign::Justify] {
+                    for (max_lines, overflow, white_space) in [
+                        (None, TextOverflow::Clip, WhiteSpace::Normal),
+                        (Some(1), TextOverflow::Ellipsis, WhiteSpace::Normal),
+                        (None, TextOverflow::Ellipsis, WhiteSpace::NoWrap),
+                        (Some(0), TextOverflow::Clip, WhiteSpace::Normal),
+                    ] {
+                        let mut input = input(text, 0.0);
+                        input.constraints = constraint;
+                        input.paragraph_style.align = align;
+                        input.paragraph_style.white_space = white_space;
+                        input.text_box_style.max_lines = max_lines;
+                        input.text_box_style.overflow = overflow;
+                        // A fresh state and a reused one, as hosts probe.
+                        let mut state = backend.create_state();
+                        let expected = backend.layout_paragraph(&mut state, input.clone());
+                        let measured = backend.measure_paragraph(&mut state, input.clone());
+                        let mut fresh = backend.create_state();
+                        let first = backend.measure_paragraph(&mut fresh, input.clone());
+                        let case = format!(
+                            "{text:?} {constraint:?} {align:?} {max_lines:?} {white_space:?}"
+                        );
+                        assert_eq!(measured, expected.metrics(), "{case}");
+                        assert_eq!(first, expected.metrics(), "{case}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn text_laid_out_at_its_measured_width_stays_on_one_line() {
+        let mut backend = FBackend::new();
+        if backend.face_count() == 0 {
+            return;
+        }
+        for text in [
+            "row 7 / 10",
+            "The quick brown fox jumps over the lazy dog.",
+            "中文排版测试，标点符号。",
+            "English العربية עברית 中文",
+        ] {
+            let mut state = backend.create_state();
+            let mut unbounded = input(text, 0.0);
+            unbounded.constraints = TextLayoutConstraints::UNBOUNDED;
+            let width = backend.measure_paragraph(&mut state, unbounded).size.width;
+            let layout = backend.layout_paragraph(&mut state, input(text, width));
+            assert_eq!(layout.lines.len(), 1, "{text:?} at {width}");
+        }
     }
 
     #[test]

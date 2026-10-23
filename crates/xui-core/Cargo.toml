@@ -45,3 +45,4 @@ wgpu = {workspace=true, optional=true}
 pollster = {workspace=true}
 trybuild = "1.0.120"
 xui-cosmic = { path = "../xui-cosmic" }
+xui-f = { path = "../xui-f" }

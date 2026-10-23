@@ -9,8 +9,9 @@
 //!
 //! This test binary counts every allocation through its own global
 //! allocator, so the numbers are the runtime's live heap: hosts, columns,
-//! layout, style, scene, fibers, hooks and the text cache. Fonts are loaded
-//! once and reported apart.
+//! layout, style, scene, fibers, hooks and the text cache, with text on
+//! xui-f, the backend the native hosts use. Fonts are loaded once and
+//! reported apart.
 //!
 //! `heap_attribution` mounts the same rows with and without text, and with
 //! and without components, and breaks the heap down by allocation size;
@@ -24,7 +25,7 @@ use xui_core::prelude::*;
 use xui_core::render::backend::MockRenderBackend;
 use xui_core::state::State;
 use xui_core::text::TextHost;
-use xui_cosmic::{CosmicEngine, FontSet};
+use xui_f::FBackend;
 use xui_interface::{Color, Size};
 use xui_macros::{component, xui};
 
@@ -159,21 +160,10 @@ fn root(cx: &mut HookContext<'_>) -> ElementDesc {
     xui! { <column width={900.0}>{rows}</column> }
 }
 
-/// One real face when the machine has one, so that text is shaped and its
-/// layouts cached as an application's would be.
-fn fonts() -> FontSet {
-    const CANDIDATES: [&str; 3] = [
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "C:\\Windows\\Fonts\\arial.ttf",
-    ];
-    match CANDIDATES.iter().find(|path| std::path::Path::new(path).exists()) {
-        Some(path) => FontSet::only_files([*path]),
-        None => FontSet::Only {
-            sources: Vec::new(),
-            sans_serif_family: None,
-        },
-    }
+/// The text backend the native hosts run on, over the platform's fonts, so
+/// that text is shaped and its layouts cached as an application's would be.
+fn text_backend() -> FBackend {
+    FBackend::new()
 }
 
 fn kib(bytes: usize) -> f64 {
@@ -184,7 +174,7 @@ fn kib(bytes: usize) -> f64 {
 #[ignore = "benchmark; run with --release --ignored --nocapture"]
 fn heap_per_row() {
     let before_fonts = live();
-    let mut text = TextHost::new(CosmicEngine::with_fonts(1.0, fonts()));
+    let mut text = TextHost::new(text_backend());
     println!("fonts: {:.1} KiB", kib(live() - before_fonts));
 
     println!("rows,hosts,mounted_kib,bytes_per_row,bytes_per_host,after_updates_kib");
@@ -262,7 +252,7 @@ fn variant_root(_: &mut HookContext<'_>) -> ElementDesc {
 #[test]
 #[ignore = "benchmark; run with --release --ignored --nocapture"]
 fn heap_attribution() {
-    let mut text = TextHost::new(CosmicEngine::with_fonts(1.0, fonts()));
+    let mut text = TextHost::new(text_backend());
     let rows = 1600;
     ROWS.with(|cell| cell.set(rows));
     // `XUI_TRACE_ALLOC=<bytes>`: every allocation of at least that size is
@@ -318,7 +308,7 @@ fn heap_attribution() {
 #[test]
 #[ignore = "benchmark; run with --release --ignored --nocapture"]
 fn allocations_per_render() {
-    let mut text = TextHost::new(CosmicEngine::with_fonts(1.0, fonts()));
+    let mut text = TextHost::new(text_backend());
     let rows = 1600;
     ROWS.with(|cell| cell.set(rows));
     let mut app = App::new(root);
@@ -361,5 +351,33 @@ fn allocations_per_render() {
             println!("  {:>6.1}/row  {site}", *count as f64 / rows as f64);
         }
         TRACING.with(|t| t.set(false));
+    }
+}
+
+/// One frame of the same render, timed: every row's label changes, so every
+/// paragraph is shaped and laid out again on the real backend.
+#[test]
+#[ignore = "benchmark; run with --release --ignored --nocapture"]
+fn frame_time_with_real_text() {
+    let mut text = TextHost::new(text_backend());
+    println!("rows,frame_ms");
+    for rows in [100usize, 400, 1600] {
+        ROWS.with(|cell| cell.set(rows));
+        let mut app = App::new(root);
+        app.resize(Size::new(900.0, 700.0));
+        let mut backend = MockRenderBackend::default();
+        for _ in 0..3 {
+            app.render(&mut backend, &mut text).expect("mock backend");
+        }
+        let mut samples = Vec::new();
+        for generation in 1..=30 {
+            let state = ROOT.with(|slot| slot.borrow().expect("rendered"));
+            slot::Runtime::with_phase(slot::RenderPhase::Event, || state.set(generation));
+            let started = std::time::Instant::now();
+            app.render(&mut backend, &mut text).expect("mock backend");
+            samples.push(started.elapsed());
+        }
+        samples.sort_unstable();
+        println!("{rows},{:.3}", samples[samples.len() / 2].as_secs_f64() * 1000.0);
     }
 }
