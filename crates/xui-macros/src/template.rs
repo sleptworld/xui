@@ -17,7 +17,7 @@
 //! slots' contents.
 
 use proc_macro2::{Span, TokenStream as TokenStream2};
-use quote::{ToTokens, quote, quote_spanned};
+use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
 use syn::{Error, Expr, Ident, Path};
 
@@ -187,6 +187,10 @@ struct Ir<'a> {
     commit: Vec<TokenStream2>,
     /// One `ValueSlot` per dynamic host attribute, in preorder.
     values: Vec<TokenStream2>,
+    /// For each dynamic host attribute, `let __xui_oN = ..;`: its input in
+    /// the inputs the template committed last, which the build function
+    /// compares this render's with.
+    old: Vec<TokenStream2>,
     root_key: Option<Ident>,
 }
 
@@ -231,7 +235,15 @@ impl Ir<'_> {
         self.meta.push(TokenStream2::new());
 
         let mut dynamic = false;
+        // A dynamic `key` on a host below the root: the host is rebuilt on
+        // every update.
+        let mut rebuilt_always = false;
         let mut sets = Vec::new();
+        // Each dynamic value compared with the one the template last wrote,
+        // noted when it changed.
+        let mut compares = Vec::new();
+        // Whether the update changed each value, as the commit reads it.
+        let mut changed = Vec::new();
         // An update writes a host's dynamic attributes into it alone, unless
         // one of them cannot be (`patchable`), or the host has an attribute
         // a patch cannot follow: `style`, which layers over everything set
@@ -264,6 +276,7 @@ impl Ir<'_> {
                 } else {
                     dynamic = true;
                     patch_eligible = false;
+                    rebuilt_always = true;
                     let key = self.take(&key);
                     sets.push(quote!(let __xui_node = __xui_node.key(#key);));
                 }
@@ -298,17 +311,39 @@ impl Ir<'_> {
                 convert_value(value)
             };
             let input = self.input(name.span(), expression);
-            let input = self.take(&input);
+            let position = syn::Index::from(self.input_names.len() - 1);
+            let old = format_ident!("__xui_o{}", self.input_names.len() - 1);
+            self.old.push(quote! {
+                let #old = __xui_old.and_then(|__xui_o| __xui_o.#position.as_ref());
+            });
+            let value = u16::try_from(self.values.len()).unwrap_or_else(|_| {
+                errors.push(Error::new(
+                    name.span(),
+                    "a template holds at most 65535 dynamic values",
+                ));
+                0
+            });
             let attribute = name.to_string();
             self.values.push(quote! {
                 #xui::template::ValueSlot { node: #index, attribute: #attribute }
             });
+            compares.push(quote! {
+                __xui_out.note(#value, (&#xui::template::Compare(&*#input, #old)).changed())
+            });
             sets.push(quote_spanned! {name.span()=>
                 let __xui_property = __xui_node.__properties().#name();
-                let __xui_node = __xui_node.__set(__xui_property, #input);
+                let __xui_node = __xui_node.__set(
+                    __xui_property,
+                    #xui::template::arg(__xui_out.mounting(), #input),
+                );
             });
+            let flag = format_ident!("__xui_c{}", value);
+            changed.push((flag.clone(), value));
             patches.push(quote_spanned! {name.span()=>
-                __xui_target.__patch(__xui_target.__properties().#name(), #input)
+                #xui::template::patch_if(#flag, || __xui_target.__patch(
+                    __xui_target.__properties().#name(),
+                    #xui::template::cloned(#input),
+                ))
             });
             patchable.push(quote_spanned! {name.span()=>
                 #xui::template::patchable(#host_tag, |__xui_table| __xui_table.#name())
@@ -340,24 +375,41 @@ impl Ir<'_> {
                     #whole
                 }
             });
-        } else if patch_eligible && !patches.is_empty() {
-            // On an update its dynamic values are left in the inputs, and
-            // the commit function writes them into the mounted host.
-            let patchable = quote!(#(#patchable)&&*);
+        } else {
+            // On an update each dynamic value is compared with the one the
+            // template wrote last. A host the commit patches leaves its
+            // changed values in the inputs, for the commit function to write;
+            // any other host is built whole again when one of its changed.
+            let patched = patch_eligible && !patches.is_empty();
+            let patchable = if patched {
+                quote!(#(#patchable)&&*)
+            } else {
+                quote!(false)
+            };
             self.build.push(quote! {
-                if __xui_out.mounting() || !(#patchable) {
+                if __xui_out.mounting() || {
+                    let __xui_changed = false #(| #compares)*;
+                    #rebuilt_always || (!(#patchable) && __xui_changed)
+                } {
                     #whole
                 }
             });
-            self.commit.push(quote! {
-                if #patchable {
-                    __xui_hosts.patch(#index, #host_tag, |__xui_target| {
-                        #(#patches)|*
-                    });
-                }
-            });
-        } else {
-            self.build.push(quote!({ #whole }));
+            if patched {
+                let flags = changed.iter().map(|(flag, _)| flag);
+                let reads = changed
+                    .iter()
+                    .map(|(flag, value)| quote!(let #flag = __xui_hosts.changed(#value);));
+                self.commit.push(quote! {
+                    if #patchable {
+                        #(#reads)*
+                        if false #(|| #flags)* {
+                            __xui_hosts.patch(#index, #host_tag, |__xui_target| {
+                                #(#patches)|*
+                            });
+                        }
+                    }
+                });
+            }
         }
 
         match &element.body {
@@ -488,6 +540,7 @@ pub(crate) fn lower(element: &Element, xui: &TokenStream2, errors: &mut Errors) 
         build: Vec::new(),
         commit: Vec::new(),
         values: Vec::new(),
+        old: Vec::new(),
         root_key: None,
     };
     ir.host(element, None, errors);
@@ -499,6 +552,7 @@ pub(crate) fn lower(element: &Element, xui: &TokenStream2, errors: &mut Errors) 
         build,
         commit,
         values,
+        old,
         root_key,
         ..
     } = ir;
@@ -522,11 +576,15 @@ pub(crate) fn lower(element: &Element, xui: &TokenStream2, errors: &mut Errors) 
                 #key,
                 #xui::template::host_type(#tag),
                 (#(::core::option::Option::Some(#input_names),)*),
-                |__xui_in, __xui_out: &mut #xui::template::TemplateBuild| {
+                |__xui_in, __xui_old, __xui_out: &mut #xui::template::TemplateBuild| {
                     #[allow(unused_imports)]
                     use #xui::caps::tables::*;
+                    #[allow(unused_imports)]
+                    use #xui::template::{CompareAny as _, CompareEq as _};
                     #[allow(unused_variables)]
                     let (#(#input_names,)*) = __xui_in;
+                    let _ = __xui_old;
+                    #(#old)*
                     #(#build)*
                 },
                 |__xui_in, __xui_hosts: &mut #xui::template::TemplateHosts<'_>| {

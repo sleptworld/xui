@@ -21,6 +21,9 @@
 //!   the root flips it for all of them.
 //! - `root_state_change_memo`: the same re-render, with `#[component(memo)]`
 //!   sections handed props equal to the last ones, so none renders again.
+//! - `root_state_change_same_values`: the same sections without `memo`, so
+//!   every section and row renders again, into templates whose values are
+//!   all what they were.
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -160,6 +163,36 @@ fn bench_memo_root(cx: &mut HookContext<'_>) -> ElementDesc {
     }
 }
 
+/// [`bench_memo_section`] without `memo`: it renders again whenever its
+/// parent does, and so do its rows.
+#[component]
+fn bench_plain_section(start: &usize) {
+    let rows = (*start..*start + 10)
+        .map(|index| {
+            xui! { <bench_row key={index.to_string()} index={index} label={format!("row {index}")} /> }
+        })
+        .collect::<Vec<_>>();
+    xui! { <column gap={2.0}>{rows}</column> }
+}
+
+fn bench_same_values_root(cx: &mut HookContext<'_>) -> ElementDesc {
+    let generation = cx.use_state(|| 0u32);
+    ROOT.with(|slot| *slot.borrow_mut() = Some(generation));
+    let _ = *generation.get();
+    let sections = (0..ROWS.load(Ordering::Relaxed) / 10)
+        .map(|section| {
+            let start = section * 10;
+            xui! { <bench_plain_section key={section.to_string()} start={start} /> }
+        })
+        .collect::<Vec<_>>();
+    xui! {
+        <column width={900.0}>
+            <text>{"header"}</text>
+            <column>{sections}</column>
+        </column>
+    }
+}
+
 /// A row whose middle element comes and goes, between static siblings.
 #[component]
 fn bench_branch_row(index: &usize, open: &bool) {
@@ -290,6 +323,17 @@ fn root_state_change_memo() {
     run_with("root_state_change_memo", bench_memo_root, |iteration| {
         set(&ROOT, iteration as u32 + 1)
     });
+}
+
+#[test]
+#[ignore = "benchmark; run with --release --ignored"]
+fn root_state_change_same_values() {
+    let _exclusive = exclusive();
+    run_with(
+        "root_state_change_same_values",
+        bench_same_values_root,
+        |iteration| set(&ROOT, iteration as u32 + 1),
+    );
 }
 
 #[test]

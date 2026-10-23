@@ -11,8 +11,13 @@
 //!   component already an element, each dynamic child list already a list.
 //!
 //! The host nodes of a template are its own: the runtime mounts them once,
-//! all together, and on a later render with the same template rebuilds only
-//! the nodes that have a dynamic attribute. The static ones are not visited.
+//! all together, and on a later render with the same template writes only
+//! the dynamic attributes whose values changed. The static hosts are not
+//! visited, and a render that changed no value leaves the template out of
+//! the commit altogether. To tell, a mounted template keeps the inputs of the
+//! last render that wrote into it, and compares each value with the one it
+//! wrote: a value of a type without `PartialEq` -- a handler -- counts as
+//! changed every time.
 //! What can change shape lives in slots, which are ordinary elements the
 //! reconciler diffs:
 //!
@@ -32,6 +37,7 @@ use std::any::{Any, TypeId};
 use std::cell::RefCell;
 
 use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
 use std::marker::PhantomData;
 
 use xui_interface::{NodeId, WidgetUpdateFlags};
@@ -59,7 +65,8 @@ pub struct TemplateMeta {
     pub nodes: &'static [TemplateNode],
     /// Every attribute of a host that is not a constant: where each of the
     /// template's dynamic values goes, in the order the template writes
-    /// them. An update writes these and nothing else of its hosts.
+    /// them. An update writes these and nothing else of its hosts, and
+    /// names the ones it changed by their index here.
     pub values: &'static [ValueSlot],
 }
 
@@ -148,33 +155,42 @@ impl Clone for TemplateDesc {
 }
 
 trait ErasedTemplate: Any {
-    fn build(&mut self, out: &mut TemplateBuild);
+    /// `old` is the instance the template committed last, of the same type.
+    fn build(&mut self, old: Option<&dyn ErasedTemplate>, out: &mut TemplateBuild);
     fn commit(&mut self, hosts: &mut TemplateHosts<'_>);
     fn clone_box(&self) -> Box<dyn ErasedTemplate>;
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
+    fn as_any(&self) -> &dyn Any;
+    /// Drops the inputs, so that an instance waiting to be reused holds
+    /// nothing of the application's.
+    fn clear(&mut self);
 }
 
 /// How many committed instances of one type are kept for reuse.
 const RECYCLED_PER_TYPE: usize = 4096;
 
 thread_local! {
-    /// Instances whose render was committed, by type. The next render of
-    /// the same template -- the next frame's, nearly always -- takes one
-    /// instead of allocating. A committed instance's inputs were taken by
-    /// `build` and `commit`, so what is kept here holds nothing of the
-    /// application's but, at most, the root key.
+    /// Instances done with, by type, their inputs dropped. The next render
+    /// of the same template -- the next frame's, nearly always -- takes one
+    /// instead of allocating.
     static RECYCLED: RefCell<FxHashMap<TypeId, Vec<Box<dyn ErasedTemplate>>>> =
         RefCell::new(FxHashMap::default());
 }
 
+/// A template's generated build function: this render's inputs, the inputs
+/// of the render it committed last, if it kept them, and what to fill in.
+type BuildFn<I> = fn(&mut I, Option<&I>, &mut TemplateBuild);
+
 /// One render's inputs, and the two functions the macro generated for its
-/// call site. Every input is an `Option`, taken by whichever of the two
-/// uses it: `build` takes them all when the template mounts; on an update
-/// it takes the slots' and those of hosts rebuilt whole, and `commit`, at
-/// commit, the values it writes into the mounted hosts.
+/// call site. Every input is an `Option`. When the template mounts, `build`
+/// takes them all. On an update it takes the slots', and copies a host's
+/// dynamic values only where that host is rebuilt whole; `commit` copies
+/// those it writes into the mounted hosts. What an update leaves is what the
+/// template keeps, to compare the next render's values with.
 struct Instance<I> {
-    inputs: I,
-    build: fn(&mut I, &mut TemplateBuild),
+    /// `None` only while the instance waits to be reused.
+    inputs: Option<I>,
+    build: BuildFn<I>,
     commit: fn(&mut I, &mut TemplateHosts<'_>),
 }
 
@@ -182,9 +198,10 @@ impl<I: Clone + 'static> Instance<I> {
     /// A boxed instance: a recycled one of the same type when there is one.
     fn boxed(
         inputs: I,
-        build: fn(&mut I, &mut TemplateBuild),
+        build: BuildFn<I>,
         commit: fn(&mut I, &mut TemplateHosts<'_>),
     ) -> Box<dyn ErasedTemplate> {
+        let inputs = Some(inputs);
         let recycled = RECYCLED.with(|recycled| {
             recycled
                 .borrow_mut()
@@ -210,12 +227,23 @@ impl<I: Clone + 'static> Instance<I> {
 }
 
 impl<I: Clone + 'static> ErasedTemplate for Instance<I> {
-    fn build(&mut self, out: &mut TemplateBuild) {
-        (self.build)(&mut self.inputs, out);
+    fn build(&mut self, old: Option<&dyn ErasedTemplate>, out: &mut TemplateBuild) {
+        let old = old
+            .and_then(|old| old.as_any().downcast_ref::<Self>())
+            .and_then(|old| old.inputs.as_ref());
+        let inputs = self
+            .inputs
+            .as_mut()
+            .expect("a template renders its own inputs");
+        (self.build)(inputs, old, out);
     }
 
     fn commit(&mut self, hosts: &mut TemplateHosts<'_>) {
-        (self.commit)(&mut self.inputs, hosts);
+        let inputs = self
+            .inputs
+            .as_mut()
+            .expect("a template commits its own inputs");
+        (self.commit)(inputs, hosts);
     }
 
     fn clone_box(&self) -> Box<dyn ErasedTemplate> {
@@ -229,6 +257,39 @@ impl<I: Clone + 'static> ErasedTemplate for Instance<I> {
     fn into_any(self: Box<Self>) -> Box<dyn Any> {
         self
     }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn clear(&mut self) {
+        self.inputs = None;
+    }
+}
+
+/// Puts `instance` aside for the next render of its template, its inputs
+/// dropped.
+fn recycle(mut instance: Box<dyn ErasedTemplate>) {
+    instance.clear();
+    let ty = Any::type_id(&*instance);
+    RECYCLED.with(|recycled| {
+        let mut recycled = recycled.borrow_mut();
+        let instances = recycled.entry(ty).or_default();
+        if instances.len() < RECYCLED_PER_TYPE {
+            instances.push(instance);
+        }
+    });
+}
+
+/// The inputs of the render a mounted template last wrote into its hosts:
+/// what the next render's values are compared with.
+pub(crate) struct CommittedTemplate(Box<dyn ErasedTemplate>);
+
+impl CommittedTemplate {
+    /// Puts the instance aside for reuse, its inputs dropped.
+    pub(crate) fn recycle(self) {
+        recycle(self.0);
+    }
 }
 
 impl TemplateDesc {
@@ -241,7 +302,7 @@ impl TemplateDesc {
         key: Option<Key>,
         root_type: WidgetType,
         inputs: I,
-        build: fn(&mut I, &mut TemplateBuild),
+        build: fn(&mut I, Option<&I>, &mut TemplateBuild),
         commit: fn(&mut I, &mut TemplateHosts<'_>),
     ) -> Self {
         Self {
@@ -257,17 +318,15 @@ impl TemplateDesc {
     }
 
     /// Hands the instance back for the next render of this template, once
-    /// the commit is done with it.
+    /// nothing needs its inputs.
     pub(crate) fn recycle(self) {
-        let instance = self.instance;
-        let ty = Any::type_id(&*instance);
-        RECYCLED.with(|recycled| {
-            let mut recycled = recycled.borrow_mut();
-            let instances = recycled.entry(ty).or_default();
-            if instances.len() < RECYCLED_PER_TYPE {
-                instances.push(instance);
-            }
-        });
+        recycle(self.instance);
+    }
+
+    /// The inputs this render left, for the template to keep once it is
+    /// committed.
+    pub(crate) fn into_committed(self) -> CommittedTemplate {
+        CommittedTemplate(self.instance)
     }
 
     /// Where the template was written.
@@ -281,16 +340,23 @@ impl TemplateDesc {
     }
 
     /// Runs the template: every host's draft when `mode` mounts or
-    /// expands, on an update only those of the hosts rebuilt whole; and
-    /// every slot. On an update the dynamic values of the other hosts stay,
-    /// for [`commit`](Self::commit).
-    pub(crate) fn build(&mut self, mode: BuildMode) -> TemplateBuild {
+    /// expands; and every slot. On an update it compares each dynamic value
+    /// with `committed`'s, notes those that changed, and builds the drafts
+    /// only of hosts rebuilt whole that have one; the other hosts' changed
+    /// values stay, for [`commit`](Self::commit).
+    pub(crate) fn build(
+        &mut self,
+        mode: BuildMode,
+        committed: Option<&CommittedTemplate>,
+    ) -> TemplateBuild {
         let mut out = TemplateBuild {
             mode,
             hosts: Vec::new(),
             slots: Vec::new(),
+            changed: ChangedValues::default(),
         };
-        self.instance.build(&mut out);
+        self.instance
+            .build(committed.map(|committed| &*committed.0), &mut out);
         out
     }
 
@@ -304,7 +370,7 @@ impl TemplateDesc {
     /// under it: each slot in its place, expanded too.
     pub fn expand(mut self) -> Expanded {
         let meta = self.meta;
-        let mut built = self.build(BuildMode::Mount);
+        let mut built = self.build(BuildMode::Mount, None);
         let mut drafts = std::mem::take(&mut built.hosts).into_iter();
         let mut slots = std::mem::take(&mut built.slots).into_iter();
         // Each node's expansion: a host's, or a slot's (a fragment's spliced).
@@ -368,8 +434,11 @@ impl TemplateDesc {
             values: &[],
         };
         type Inputs<N> = (Option<Draft<N>>, Option<Vec<ElementDesc>>);
-        fn build<N>((draft, children): &mut Inputs<N>, out: &mut TemplateBuild)
-        where
+        fn build<N>(
+            (draft, children): &mut Inputs<N>,
+            _: Option<&Inputs<N>>,
+            out: &mut TemplateBuild,
+        ) where
             N: WidgetVariant,
             N::Props: Clone,
             N::Behavior: Clone,
@@ -407,6 +476,8 @@ pub(crate) struct TemplatePending {
     pub(crate) desc: TemplateDesc,
     /// The hosts built whole, by node index, in node order.
     pub(crate) hosts: Vec<(u16, Box<dyn ErasedDraft>)>,
+    /// On an update, the dynamic values that changed.
+    pub(crate) changed: ChangedValues,
 }
 
 /// A slot's content, one render's worth.
@@ -425,6 +496,44 @@ pub(crate) enum TemplateSlot {
     Keep,
 }
 
+impl TemplateSlot {
+    /// The element in the slot; `None` for [`Keep`](Self::Keep).
+    pub(crate) fn into_element(self) -> Option<ElementDesc> {
+        match self {
+            Self::Component { render, props, key } => {
+                Some(ElementDesc::Component(ComponentDesc { key, render, props }))
+            }
+            Self::Element(element) => Some(element),
+            Self::Keep => None,
+        }
+    }
+}
+
+/// Which of a template's dynamic values an update changed, by their index in
+/// [`TemplateMeta::values`].
+#[derive(Debug, Default)]
+pub(crate) struct ChangedValues(SmallVec<[u64; 1]>);
+
+impl ChangedValues {
+    fn insert(&mut self, value: u16) {
+        let (word, bit) = (usize::from(value / 64), value % 64);
+        if self.0.len() <= word {
+            self.0.resize(word + 1, 0);
+        }
+        self.0[word] |= 1 << bit;
+    }
+
+    pub(crate) fn contains(&self, value: u16) -> bool {
+        self.0
+            .get(usize::from(value / 64))
+            .is_some_and(|word| word & (1 << (value % 64)) != 0)
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.iter().all(|word| *word == 0)
+    }
+}
+
 /// What a template's build function fills in. Public only because generated
 /// code names it.
 #[doc(hidden)]
@@ -434,6 +543,8 @@ pub struct TemplateBuild {
     /// mount, on an update only those a patch cannot follow.
     pub(crate) hosts: Vec<(u16, Box<dyn ErasedDraft>)>,
     pub(crate) slots: Vec<TemplateSlot>,
+    /// On an update, the dynamic values that changed.
+    pub(crate) changed: ChangedValues,
 }
 
 impl TemplateBuild {
@@ -461,6 +572,21 @@ impl TemplateBuild {
     /// Whether this build mounts (or expands) the template.
     pub fn mounting(&self) -> bool {
         self.mode == BuildMode::Mount
+    }
+
+    /// Notes whether dynamic value `value`, its index in
+    /// [`TemplateMeta::values`], changed; returns `changed`.
+    pub fn note(&mut self, value: u16, changed: bool) -> bool {
+        if changed {
+            self.changed.insert(value);
+        }
+        changed
+    }
+
+    /// Whether an update built nothing to write: no host rebuilt and no
+    /// value changed. Its slots are reconciled all the same.
+    pub(crate) fn writes_nothing(&self) -> bool {
+        self.hosts.is_empty() && self.changed.is_empty()
     }
 
     /// The next slot: a constant component, unchanged since the template
@@ -550,12 +676,75 @@ impl<P: ComponentProps> SlotInput for ComponentSlot<P> {
     }
 }
 
-/// Takes a template input out of the inputs: each is used once, by `build`
-/// or by `commit`.
+/// Takes a template input out of the inputs: a slot's, or a value when the
+/// template mounts, used once.
 #[doc(hidden)]
 #[inline(always)]
 pub fn take<T>(input: &mut Option<T>) -> T {
     input.take().expect("a template input is used once")
+}
+
+/// A dynamic value for a host's draft: taken when the template mounts; on
+/// an update a copy, the input kept to compare the next render's with.
+#[doc(hidden)]
+#[inline(always)]
+pub fn arg<T: Clone>(mounting: bool, input: &mut Option<T>) -> T {
+    if mounting { take(input) } else { cloned(input) }
+}
+
+/// A copy of a dynamic value, for the commit to write into a mounted host.
+#[doc(hidden)]
+#[inline(always)]
+pub fn cloned<T: Clone>(input: &Option<T>) -> T {
+    input.clone().expect("an update keeps its values")
+}
+
+/// Whether a dynamic value differs from what the template last wrote:
+/// `Compare(new, old).changed()`, with [`CompareEq`] and [`CompareAny`] in
+/// scope, compares a value whose type has `PartialEq`, and calls any other
+/// changed. A value never written -- a template mounts with its values
+/// taken -- is changed too.
+#[doc(hidden)]
+pub struct Compare<'a, T>(pub &'a Option<T>, pub Option<&'a T>);
+
+#[doc(hidden)]
+pub trait CompareEq {
+    fn changed(&self) -> bool;
+}
+
+impl<T: PartialEq> CompareEq for Compare<'_, T> {
+    #[inline(always)]
+    fn changed(&self) -> bool {
+        match (self.0, self.1) {
+            (Some(new), Some(old)) => new != old,
+            _ => true,
+        }
+    }
+}
+
+/// [`CompareEq`]'s fallback, found by auto-ref for a type without
+/// `PartialEq`.
+#[doc(hidden)]
+pub trait CompareAny {
+    fn changed(&self) -> bool;
+}
+
+impl<T> CompareAny for &Compare<'_, T> {
+    #[inline(always)]
+    fn changed(&self) -> bool {
+        true
+    }
+}
+
+/// `patch()` when `changed`, nothing otherwise.
+#[doc(hidden)]
+#[inline(always)]
+pub fn patch_if(changed: bool, patch: impl FnOnce() -> WidgetUpdateFlags) -> WidgetUpdateFlags {
+    if changed {
+        patch()
+    } else {
+        WidgetUpdateFlags::empty()
+    }
 }
 
 /// A template input, still in the inputs.
@@ -587,11 +776,26 @@ pub struct TemplateHosts<'a> {
     arena: &'a mut UiRuntime,
     /// The mounted hosts, by node index.
     nodes: &'a [Option<NodeId>],
+    changed: &'a ChangedValues,
 }
 
 impl<'a> TemplateHosts<'a> {
-    pub(crate) fn new(arena: &'a mut UiRuntime, nodes: &'a [Option<NodeId>]) -> Self {
-        Self { arena, nodes }
+    pub(crate) fn new(
+        arena: &'a mut UiRuntime,
+        nodes: &'a [Option<NodeId>],
+        changed: &'a ChangedValues,
+    ) -> Self {
+        Self {
+            arena,
+            nodes,
+            changed,
+        }
+    }
+
+    /// Whether the update changed dynamic value `value`, its index in
+    /// [`TemplateMeta::values`].
+    pub fn changed(&self, value: u16) -> bool {
+        self.changed.contains(value)
     }
 
     /// Writes host `index`'s dynamic values: `patch` sets them on the host,
@@ -799,7 +1003,7 @@ mod tests {
     use std::cell::{Cell, RefCell};
 
     use xui_interface::{Color, EdgeInsets, NodeId, Size};
-    use xui_macros::{component, view, xui};
+    use xui_macros::{component, style, view, xui};
 
     use crate::app::App;
     use crate::render::backend::MockRenderBackend;
@@ -925,6 +1129,154 @@ mod tests {
             1,
             "only the host with a dynamic attribute is rebuilt"
         );
+    }
+
+    fn unchanged_values(cx: &mut HookContext<'_>) -> ElementDesc {
+        let count = cx.use_state(|| 1u32);
+        COUNT.with(|slot| *slot.borrow_mut() = Some(count));
+        // Renders again without changing anything the template shows.
+        let flag = cx.use_state(|| false);
+        FLAG.with(|slot| *slot.borrow_mut() = Some(flag));
+        let _ = *flag.get();
+        let count = *count.get();
+        let card = style!(container {
+            background: Color::BLACK
+        });
+        xui! {
+            <column width={200.0}>
+                <container width={10.0 * count as f32} height={10.0} />
+                <text>{format!("count {count}")}</text>
+                <container style={card} />
+            </column>
+        }
+    }
+
+    #[test]
+    fn an_update_writes_only_the_values_that_changed() {
+        let mut harness = Harness::new(unchanged_values);
+        let toggle = |harness: &mut Harness| {
+            let on = FLAG.with(|slot| *slot.borrow().expect("rendered").get());
+            set(&FLAG, !on);
+            harness.render();
+        };
+
+        // The first update has nothing to compare with: every dynamic host
+        // is written.
+        let updates = harness.host_updates();
+        toggle(&mut harness);
+        assert_eq!(harness.host_updates() - updates, 3);
+
+        let updates = harness.host_updates();
+        toggle(&mut harness);
+        assert_eq!(
+            harness.host_updates() - updates,
+            0,
+            "a render with the same values wrote into the hosts"
+        );
+
+        let updates = harness.host_updates();
+        set(&COUNT, 2);
+        harness.render();
+        assert_eq!(
+            harness.host_updates() - updates,
+            2,
+            "the width and the text changed, the style did not"
+        );
+        let children = harness.children(harness.top());
+        assert_eq!(harness.width(children[0]), 20.0);
+        let text = harness.ui().node(children[1]).unwrap().widget.text();
+        assert_eq!(
+            text.map(|text| text.as_str().to_owned()).as_deref(),
+            Some("count 2")
+        );
+
+        let updates = harness.host_updates();
+        toggle(&mut harness);
+        assert_eq!(harness.host_updates() - updates, 0);
+    }
+
+    #[test]
+    fn a_value_is_compared_when_its_type_can_be() {
+        use super::{Compare, CompareAny as _, CompareEq as _};
+
+        assert!(!(&Compare(&Some(1), Some(&1))).changed());
+        assert!((&Compare(&Some(1), Some(&2))).changed());
+        assert!(
+            (&Compare(&Some(1), None)).changed(),
+            "a value never written"
+        );
+
+        struct Opaque;
+        assert!(
+            (&Compare(&Some(Opaque), Some(&Opaque))).changed(),
+            "a type without `PartialEq` counts as changed"
+        );
+    }
+
+    thread_local! {
+        static CLICKS: Cell<u32> = const { Cell::new(0) };
+    }
+
+    fn click_counter(cx: &mut HookContext<'_>) -> ElementDesc {
+        let count = cx.use_state(|| 0u32);
+        let seen = *count.get();
+        CLICKS.with(|clicks| clicks.set(seen));
+        xui! {
+            <container
+                width={400.0}
+                height={300.0}
+                on_click={move |_, _| {
+                    count.set(seen + 1);
+                    EventResult::Consumed
+                }}
+            />
+        }
+    }
+
+    #[test]
+    fn a_handler_is_written_again_on_every_update() {
+        use std::time::{Duration, Instant};
+        use xui_interface::Point;
+        use xui_interface::events::{
+            Modifiers, PointerButton, PointerButtons, PointerKind, RawEvent, RawPointerButton,
+            XuiPointerId,
+        };
+
+        use crate::runtime::{GuiRuntime, RuntimeEvent};
+
+        // A handler is never equal to the last one, and each captures the
+        // count its render saw: clicking counts on only if every update
+        // writes the new one.
+        let mut runtime = GuiRuntime::new(
+            App::new(click_counter),
+            MockRenderBackend::default(),
+            ZeroTextBackend,
+        );
+        runtime.handle_event(RuntimeEvent::Resize(Size::new(400.0, 300.0)));
+        let start = Instant::now();
+        runtime.frame_at(start).expect("mock backend");
+        for clicks in 1..=3u32 {
+            let at = start + Duration::from_millis(u64::from(clicks) * 100);
+            for down in [true, false] {
+                let raw = RawPointerButton {
+                    position: Point::new(10.0, 10.0),
+                    pointer_id: XuiPointerId::new(0),
+                    device_id: None,
+                    kind: PointerKind::Mouse,
+                    button: PointerButton::Primary,
+                    buttons: PointerButtons::default(),
+                    modifiers: Modifiers::default(),
+                    timestamp: at,
+                };
+                runtime.handle_event(RuntimeEvent::Input(if down {
+                    RawEvent::PointerDown(raw)
+                } else {
+                    RawEvent::PointerUp(raw)
+                }));
+            }
+            runtime.frame_at(at).expect("mock backend");
+            assert_eq!(CLICKS.with(Cell::get), clicks);
+        }
     }
 
     fn conditional_middle(cx: &mut HookContext<'_>) -> ElementDesc {

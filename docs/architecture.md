@@ -147,16 +147,24 @@ Which hosts an update touches is decided when the macro expands: a host with
 only constant attributes is built on mount and never again; a host with dynamic
 ones is patched in place, one property at a time through its capability row or
 own props, and dirtied by what actually changed. A host with a `style` attribute
-or a key of its own is rebuilt from a whole draft instead. Slots still reconcile
-keys and element identity.
+or a key of its own is rebuilt from a whole draft instead. Before any of that,
+each dynamic value is compared with the one the template wrote last -- a
+mounted template keeps the inputs of its last committed update -- and only the
+values that differ are written: a host rebuilt whole is rebuilt only when one of
+its values changed, and a template whose values are all unchanged is left out of
+the commit. A value whose type has no `PartialEq` counts as changed every time;
+handlers compare by identity, so a closure written in the render is new each
+time. Slots still reconcile keys and element identity.
 
 The retained fiber uses `FiberKind` to hold exactly one kind of state. There is
 one fiber tree, changed in place: a pass renders the components that need it --
 dirty ones, and those a parent's render handed new props -- shallowest first, so
 each renders once and after its ancestors, and reconciles what each returns
 straight into its fiber's children. Templates, fragments and portals have no
-render of their own and are reconciled as that reaches them; a template keeps
-its build for the commit (`TemplatePending`). The commit that ends the pass
+render of their own and are reconciled as that reaches them; a template whose
+update writes something leaves its build for the commit (`TemplatePending`,
+held by the runtime for the pass rather than in the fiber), and keeps its slot
+fibers in an array, relinked only when one is replaced. The commit that ends the pass
 removes detached subtrees, then walks down to every fiber with an effect,
 placing, moving and updating hosts in sibling order. A pass always runs to the
 end within its frame; nothing is sliced. The root is an ordinary component.
@@ -191,8 +199,8 @@ Compile-time DSLs that produce `ElementDesc` / `Style` / components:
   pure constructors (`EdgeInsets::all(4.0)`, `String::from("a")`) is a
   constant, evaluated once at mount; any other call (`Instant::now()`) is
   evaluated every render. On an update a dynamic host is patched in place,
-  one attribute at a time, unless it has a `style` attribute or a key of its
-  own, which rebuild it whole.
+  one changed attribute at a time, unless it has a `style` attribute or a key
+  of its own, which rebuild it whole when a value of it changed.
 - A template's slots: a component written in it is a slot whose input keeps
   the props typed (`ComponentElement<P>`, `P: ComponentProps` carrying the
   render handle as a constant), so the template's identity — call site plus

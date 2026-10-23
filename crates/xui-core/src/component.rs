@@ -17,12 +17,14 @@
 //! hosts in sibling order.
 
 use crate::context::{Ancestors, ContextRegistry, ContextScope};
-use crate::element::{ComponentDesc, PortalBehavior};
+use crate::element::PortalBehavior;
 use crate::fiber::{
     ComponentRender, ComponentState, ComponentType, EffectTag, FiberArena, FiberId, FiberKind,
     FiberTag, Key, Node, PortalState, TemplateState,
 };
-use crate::lanes::{Lanes, NO_LANES, current_update_lane, get_highest_priority_lane, includes_some_lane};
+use crate::lanes::{
+    Lanes, NO_LANES, current_update_lane, get_highest_priority_lane, includes_some_lane,
+};
 use crate::state::{AsyncDispatcher, HookContext, HookStorage, Scheduler};
 use crate::template::{
     BuildMode, TemplateHosts, TemplateMeta, TemplateNodeKind, TemplatePending, TemplateSlot,
@@ -41,6 +43,9 @@ use xui_interface::NodeId;
 
 /// A fiber's children, as a reconcile reads them.
 type Children = SmallVec<[FiberId; 8]>;
+
+/// How many pending template builds' room a pass keeps for the next.
+const PENDING_KEPT: usize = 256;
 
 pub struct ComponentRuntime {
     nodes: FiberArena,
@@ -62,6 +67,9 @@ pub struct ComponentRuntime {
     deletions: Vec<FiberId>,
     /// The fibers this pass created, mounted at commit.
     created: Vec<FiberId>,
+    /// The templates' builds this pass leaves for the commit, each taken by
+    /// its template, at the index the template holds.
+    pending: Vec<Option<TemplatePending>>,
     /// Scratch for the scheduler's log of newly dirty components.
     marked: Vec<FiberId>,
     /// Scratch for [`Self::reconcile_list`], one per list being reconciled.
@@ -145,6 +153,7 @@ impl ComponentRuntime {
             queue: BinaryHeap::new(),
             deletions: Vec::new(),
             created: Vec::new(),
+            pending: Vec::new(),
             marked: Vec::new(),
             lists: Vec::new(),
         }
@@ -415,44 +424,51 @@ impl ComponentRuntime {
     /// A template's slots against its committed ones. The same template has
     /// the same slots in the same places, so slot `i` can only be what slot
     /// `i` was: kept, updated in place, or replaced, never moved, and found
-    /// without the search [`Self::reconcile_list`] does.
+    /// in the template's slot array without the search
+    /// [`Self::reconcile_list`] does. The children are relinked only when one
+    /// is replaced.
     fn reconcile_slots(&mut self, template: FiberId, slots: Vec<TemplateSlot>) {
-        let old = self.children(template);
-        debug_assert!(
-            old.is_empty() || old.len() == slots.len(),
+        if slots.is_empty() {
+            return;
+        }
+        let mut fibers = std::mem::take(&mut self.template_mut(template).slots);
+        if fibers.is_empty() {
+            // Mounting: every slot is new.
+            fibers = slots
+                .into_iter()
+                .map(|slot| {
+                    let element = slot.into_element().expect("a template mounts every slot");
+                    self.create(template, element)
+                })
+                .collect();
+            self.nodes.set_children(template, &fibers);
+            self.template_mut(template).slots = fibers;
+            return;
+        }
+        debug_assert_eq!(
+            fibers.len(),
+            slots.len(),
             "a template is matched only to one with the same slots"
         );
-        let mut next = Children::with_capacity(slots.len());
+        let mut replaced = false;
         for (position, slot) in slots.into_iter().enumerate() {
-            let element = match slot {
-                TemplateSlot::Keep => {
-                    next.push(old[position]);
-                    continue;
-                }
-                TemplateSlot::Element(element) => element,
-                TemplateSlot::Component { render, props, key } => {
-                    ElementDesc::Component(ComponentDesc { key, render, props })
-                }
+            let Some(element) = slot.into_element() else {
+                continue;
             };
-            let reusable = old.get(position).copied().filter(|id| {
-                let node = self.nodes.node(*id).expect("a slot's fiber");
-                node.key == element.key() && can_reuse(node, &element)
-            });
-            let id = match reusable {
-                Some(id) => {
-                    self.update(id, element, EffectTag::empty());
-                    id
-                }
-                None => {
-                    if let Some(&old) = old.get(position) {
-                        self.delete(old);
-                    }
-                    self.create(template, element)
-                }
-            };
-            next.push(id);
+            let old = fibers[position];
+            let node = self.nodes.node(old).expect("a slot's fiber");
+            if node.key == element.key() && can_reuse(node, &element) {
+                self.update(old, element, EffectTag::empty());
+            } else {
+                self.delete(old);
+                fibers[position] = self.create(template, element);
+                replaced = true;
+            }
         }
-        self.nodes.set_children(template, &next);
+        if replaced {
+            self.nodes.set_children(template, &fibers);
+        }
+        self.template_mut(template).slots = fibers;
     }
 
     /// Gives fiber `id`, matched to `element`, this render's version of it.
@@ -469,7 +485,10 @@ impl ComponentRuntime {
                 let unchanged = match (&component.props, &desc.props) {
                     (Some(old), Some(new)) => {
                         Rc::ptr_eq(old, new)
-                            || desc.render.same_props.is_some_and(|same| same(&**old, &**new))
+                            || desc
+                                .render
+                                .same_props
+                                .is_some_and(|same| same(&**old, &**new))
                     }
                     (None, None) => true,
                     _ => false,
@@ -483,15 +502,26 @@ impl ComponentRuntime {
                 let FiberKind::Template(template) = &mut node.kind else {
                     unreachable!("matched by kind");
                 };
-                let mut build = desc.build(BuildMode::Update);
-                template.pending = Some(TemplatePending {
-                    mode: BuildMode::Update,
-                    desc,
-                    hosts: std::mem::take(&mut build.hosts),
-                });
-                effect |= EffectTag::UPDATE;
+                let build = desc.build(BuildMode::Update, template.committed.as_ref());
+                if build.writes_nothing() {
+                    // Every value is what the template wrote last: the commit
+                    // has nothing to do here, and the inputs it keeps are as
+                    // good as these.
+                    desc.recycle();
+                } else {
+                    template.pending = Some(push_pending(
+                        &mut self.pending,
+                        TemplatePending {
+                            mode: BuildMode::Update,
+                            desc,
+                            hosts: build.hosts,
+                            changed: build.changed,
+                        },
+                    ));
+                    effect |= EffectTag::UPDATE;
+                }
                 self.mark(id, effect);
-                self.reconcile_slots(id, std::mem::take(&mut build.slots));
+                self.reconcile_slots(id, build.slots);
                 return;
             }
             ElementDesc::Fragment(fragment) => {
@@ -536,23 +566,30 @@ impl ComponentRuntime {
                 Created::Component,
             ),
             ElementDesc::Template(mut desc) => {
-                let mut build = desc.build(BuildMode::Mount);
-                let slots = std::mem::take(&mut build.slots);
+                let build = desc.build(BuildMode::Mount, None);
                 (
                     FiberKind::Template(TemplateState {
                         meta: desc.meta,
                         identity: desc.identity,
                         nodes: Vec::new(),
-                        pending: Some(TemplatePending {
-                            mode: BuildMode::Mount,
-                            desc,
-                            hosts: std::mem::take(&mut build.hosts),
-                        }),
+                        pending: Some(push_pending(
+                            &mut self.pending,
+                            TemplatePending {
+                                mode: BuildMode::Mount,
+                                desc,
+                                hosts: build.hosts,
+                                changed: build.changed,
+                            },
+                        )),
+                        committed: None,
+                        slots: Box::default(),
                     }),
-                    Created::Slots(slots),
+                    Created::Slots(build.slots),
                 )
             }
-            ElementDesc::Fragment(fragment) => (FiberKind::Fragment, Created::List(fragment.children)),
+            ElementDesc::Fragment(fragment) => {
+                (FiberKind::Fragment, Created::List(fragment.children))
+            }
             ElementDesc::Portal(portal) => (
                 FiberKind::Portal(PortalState {
                     scope: portal.scope,
@@ -636,6 +673,14 @@ impl ComponentRuntime {
             self.commit_deletion(deletion, arena, true);
         }
         self.commit_mutation_effects(self.current, self.root_widget, arena);
+        // Only the builds of templates removed in this pass are left. A pass
+        // that wrote into many templates -- a mount, nearly always -- does not
+        // keep room for as many: those that follow write into a few.
+        if self.pending.capacity() > PENDING_KEPT {
+            self.pending = Vec::new();
+        } else {
+            self.pending.clear();
+        }
         for id in std::mem::take(&mut self.created) {
             if self.nodes.contains(id) {
                 self.scheduler.mark_mounted(id);
@@ -705,7 +750,11 @@ impl ComponentRuntime {
         if tag == FiberTag::Template {
             // Each slot sits under the host the template wrote it in.
             let parent_hosts: SmallVec<[NodeId; 4]> = {
-                let template = self.nodes.node(id).and_then(Node::template).expect("a template");
+                let template = self
+                    .nodes
+                    .node(id)
+                    .and_then(Node::template)
+                    .expect("a template");
                 template
                     .meta
                     .slots()
@@ -767,8 +816,17 @@ impl ComponentRuntime {
             }
             let visual_root = self.first_host_in_subtree(id);
             let (scope, options, behavior, existing_entry) = {
-                let portal = self.nodes.node(id).and_then(Node::portal).expect("a portal");
-                (portal.scope, portal.options, portal.behavior.clone(), portal.entry)
+                let portal = self
+                    .nodes
+                    .node(id)
+                    .and_then(Node::portal)
+                    .expect("a portal");
+                (
+                    portal.scope,
+                    portal.options,
+                    portal.behavior.clone(),
+                    portal.entry,
+                )
             };
             let entry = if let Some(entry) = existing_entry {
                 arena
@@ -824,9 +882,15 @@ impl ComponentRuntime {
         if let Some(root) = template.root() {
             return root;
         }
-        let mut pending = template.pending.take().expect("a new template has its build");
-        debug_assert_eq!(pending.mode, BuildMode::Mount);
+        let index = template
+            .pending
+            .take()
+            .expect("a new template has its build");
         let meta = template.meta;
+        let mut pending = self.pending[index as usize]
+            .take()
+            .expect("a build is taken once");
+        debug_assert_eq!(pending.mode, BuildMode::Mount);
         let mut nodes = vec![None; meta.nodes.len()];
         // Built in node order, so they arrive in the order they mount.
         let mut drafts = std::mem::take(&mut pending.hosts).into_iter();
@@ -860,21 +924,33 @@ impl ComponentRuntime {
     /// their drafts, the others with their dynamic values, which the
     /// template's generated `commit` writes in place.
     fn commit_update_if_template(&mut self, id: FiberId, arena: &mut UiRuntime) {
-        let template = self.template_mut(id);
-        let Some(mut pending) = template.pending.take() else {
+        let Some(index) = self.template_mut(id).pending else {
             return;
         };
-        if pending.mode != BuildMode::Update {
+        // A new template's build is for mounting it, which placing it does.
+        if self.pending[index as usize]
+            .as_ref()
+            .is_none_or(|pending| pending.mode != BuildMode::Update)
+        {
             return;
         }
+        let mut pending = self.pending[index as usize].take().expect("checked above");
+        let template = self.template_mut(id);
+        template.pending = None;
         for (index, draft) in std::mem::take(&mut pending.hosts) {
-            let host = template.nodes[usize::from(index)].expect("a mounted template keeps its hosts");
+            let host =
+                template.nodes[usize::from(index)].expect("a mounted template keeps its hosts");
             arena.update_node(host, draft);
         }
-        pending
-            .desc
-            .commit(&mut TemplateHosts::new(arena, &template.nodes));
-        pending.desc.recycle();
+        pending.desc.commit(&mut TemplateHosts::new(
+            arena,
+            &template.nodes,
+            &pending.changed,
+        ));
+        // What this update wrote is what the next one compares with.
+        if let Some(old) = template.committed.replace(pending.desc.into_committed()) {
+            old.recycle();
+        }
     }
 
     fn commit_update_if_portal(&mut self, id: FiberId, parent_host: NodeId, arena: &mut UiRuntime) {
@@ -897,8 +973,12 @@ impl ComponentRuntime {
         if portal.visual_root == next_visual_root {
             return;
         }
-        let (scope, options, behavior, current_entry) =
-            (portal.scope, portal.options, portal.behavior.clone(), portal.entry);
+        let (scope, options, behavior, current_entry) = (
+            portal.scope,
+            portal.options,
+            portal.behavior.clone(),
+            portal.entry,
+        );
 
         if let Some(entry) = current_entry {
             detach_portal(arena, entry).expect("Portal's previous entry could not be unmounted");
@@ -957,7 +1037,7 @@ impl ComponentRuntime {
         let (meta, nodes): (&TemplateMeta, &[Option<NodeId>]) = (state.meta, &state.nodes);
         let position = self.nodes.node(slot_child)?.position;
         let (slot_index, _) = meta.slots().nth(position)?;
-        let children = self.children(template);
+        let children = &state.slots;
         for sibling in meta.following_siblings(slot_index) {
             match meta.nodes[sibling].kind {
                 TemplateNodeKind::Host { .. } => return nodes[sibling],
@@ -979,7 +1059,10 @@ impl ComponentRuntime {
     /// placed or moved in this commit, and not under a portal.
     fn find_stable_host_in_subtree(&self, id: FiberId) -> Option<NodeId> {
         let node = self.nodes.node(id)?;
-        if node.effect.intersects(EffectTag::PLACEMENT | EffectTag::MOVE) {
+        if node
+            .effect
+            .intersects(EffectTag::PLACEMENT | EffectTag::MOVE)
+        {
             return None;
         }
         if let Some(host) = node.host() {
@@ -999,6 +1082,13 @@ enum Created {
     Component,
     Slots(Vec<TemplateSlot>),
     List(Vec<ElementDesc>),
+}
+
+/// Leaves `build` for the commit; returns where the template finds it.
+fn push_pending(pending: &mut Vec<Option<TemplatePending>>, build: TemplatePending) -> u32 {
+    let index = u32::try_from(pending.len()).expect("fewer than 2^32 templates per pass");
+    pending.push(Some(build));
+    index
 }
 
 /// Whether the fiber `old` can take `element`: the same kind, and for a
@@ -1056,7 +1146,6 @@ fn detach_portal(
     arena.set_anchor(visual_root, None);
     Ok(visual_root)
 }
-
 
 #[cfg(test)]
 mod portal_tests {
@@ -1191,10 +1280,15 @@ mod portal_tests {
         runtime.flush_sync(&mut arena);
         let child = runtime.nodes.children(runtime.root())[0];
         let template = runtime.nodes.children(child)[0];
-        assert_eq!(runtime.nodes.node(template).unwrap().tag(), FiberTag::Template);
+        assert_eq!(
+            runtime.nodes.node(template).unwrap().tag(),
+            FiberTag::Template
+        );
         let renders = CHILD_RENDER_COUNT.load(Ordering::SeqCst);
 
-        runtime.scheduler().mark_component_dirty(template, current_update_lane());
+        runtime
+            .scheduler()
+            .mark_component_dirty(template, current_update_lane());
         runtime.flush_sync(&mut arena);
 
         assert_eq!(CHILD_RENDER_COUNT.load(Ordering::SeqCst), renders);

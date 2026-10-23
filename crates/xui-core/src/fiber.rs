@@ -191,10 +191,18 @@ pub struct TemplateState {
     /// The host each node is, by node index; `None` for a slot. Empty until
     /// the template mounts.
     pub(crate) nodes: Vec<Option<NodeId>>,
-    /// This pass's build: the drafts to mount, or on an update those of the
-    /// hosts rebuilt whole and the inputs the commit writes. Taken by the
-    /// commit.
-    pub(crate) pending: Option<crate::template::TemplatePending>,
+    /// Where this pass's build waits for the commit, in the runtime's
+    /// pending builds: the drafts to mount, or on an update those of the
+    /// hosts rebuilt whole and the values the commit writes. Kept outside
+    /// the fiber, which would otherwise be as large for every fiber as a
+    /// build is for the few a pass writes into.
+    pub(crate) pending: Option<u32>,
+    /// The inputs of the last update committed: what the next render's
+    /// values are compared with. `None` until one is, which makes every
+    /// value of the first update a change.
+    pub(crate) committed: Option<crate::template::CommittedTemplate>,
+    /// The fiber in each slot, in slot order: the template's children.
+    pub(crate) slots: Box<[FiberId]>,
 }
 
 impl TemplateState {
