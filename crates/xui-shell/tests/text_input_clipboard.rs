@@ -10,10 +10,10 @@ use std::time::Instant;
 use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
 };
-use xui_core::app::ComponentFn;
 use xui_core::prelude::*;
 use xui_core::render::MockRenderBackend;
-use xui_core::widgets::{TextController, text_input};
+use xui_core::widgets::TextController;
+use xui_macros::component;
 use xui_f::FBackend;
 use xui_interface::events::{KeyState, PhysicalKey};
 use xui_interface::{
@@ -109,12 +109,14 @@ thread_local! {
     static CONTROLLER: RefCell<Option<TextController>> = const { RefCell::new(None) };
 }
 
-fn root(_cx: &mut HookContext<'_>) -> ElementDesc {
-    let controller = CONTROLLER.with(|slot| slot.borrow().clone().expect("controller is set"));
-    text_input()
-        .controller(controller)
-        .style(Style::new().width(200.0).height(24.0))
-        .into_element_desc()
+#[component]
+fn field() {
+    let controller: TextController = CONTROLLER.with(|slot| slot.borrow().clone().expect("controller is set"));
+    view! { text_input(controller: controller.clone(), width: 200.0, height: 24.0) }
+}
+
+fn root(app: &mut App) {
+    app.mount::<Field>(FieldProps {});
 }
 
 type TestShell = Shell<FakeWindow, MockRenderBackend, FBackend>;
@@ -127,10 +129,9 @@ fn start(text: &str) -> (TestShell, Arc<FakeWindow>, TextController) {
         script: VecDeque::new(),
         performed: Vec::new(),
     })));
-    let component: ComponentFn = root;
     let (mut shell, _) = Shell::new(
         Arc::clone(&window),
-        App::new(component),
+        App::new(root),
         FBackend::new(),
         MockRenderBackend::default(),
         ShellOptions::default(),

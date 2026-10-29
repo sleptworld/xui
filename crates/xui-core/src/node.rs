@@ -23,7 +23,7 @@ use std::marker::PhantomData;
 use crate::capability::{CommitCx, StyleSet};
 use crate::caps::behavior::{Motion, motion};
 use crate::caps::{CapMask, Columns, Registered};
-use crate::fiber::Key;
+use xui_interface::Key;
 use crate::event_system::{EventContext, Flow, Handler, HandlerValue};
 use crate::property::{
     Access, CapScope, Capability, Complete, Fulfil, IntoProp, Property, PropertyMarker, Scope,
@@ -456,23 +456,6 @@ impl<N: NodeDef, R> Draft<N, R> {
         self.fulfilled()
     }
 
-    /// Sets component prop `P` to a prop forwarded with
-    /// [`Share::share`](crate::prop::Share::share), projected into the
-    /// props it came from instead of copied.
-    pub fn with_shared<P, T, Via>(
-        mut self,
-        value: impl crate::prop::IntoProp<T, Via>,
-    ) -> Draft<N, <R as Fulfil<P::Requirement>>::Output>
-    where
-        P: Property<Value = crate::prop::Prop<T>>,
-        T: 'static,
-        Self: Access<P::Scope>,
-        R: Fulfil<P::Requirement>,
-    {
-        P::set(self.access_mut(), crate::prop::IntoProp::into_prop(value));
-        self.fulfilled()
-    }
-
     /// Adds a style layer that applies while `matcher` matches the node's
     /// state. Later rules win over earlier ones.
     pub fn when(
@@ -569,22 +552,6 @@ impl<N: NodeDef, R> Draft<N, R> {
         R: Fulfil<P::Requirement>,
     {
         self.with_on::<P, F>(handler)
-    }
-
-    /// [`with_shared`](Self::with_shared), for the element macros.
-    #[doc(hidden)]
-    pub fn __with_shared<P, T, Via>(
-        self,
-        _: PropertyMarker<P>,
-        value: impl crate::prop::IntoProp<T, Via>,
-    ) -> Draft<N, <R as Fulfil<P::Requirement>>::Output>
-    where
-        P: Property<Value = crate::prop::Prop<T>>,
-        T: 'static,
-        Self: Access<P::Scope>,
-        R: Fulfil<P::Requirement>,
-    {
-        self.with_shared::<P, T, Via>(value)
     }
 
     /// The same draft in the requirement state its type now says.

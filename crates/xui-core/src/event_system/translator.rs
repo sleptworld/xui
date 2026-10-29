@@ -1868,7 +1868,7 @@ mod tests {
     #[allow(unused_imports)]
     use crate::test_prelude::*;
     use super::*;
-    use crate::test_prelude::*;
+    
     
 
     fn append(arena: &mut UiRuntime, widget: impl ErasedDraft + 'static) -> NodeId {
@@ -1912,9 +1912,8 @@ mod tests {
     // ---- nested scrolling -------------------------------------------------
 
     use crate::app::App;
-    use crate::element::ElementDesc;
     use crate::render::{BuiltFrame, RenderBackend};
-    use crate::state::HookContext;
+    use crate::test_prelude::{IntoTree, StaticTree};
     use crate::text::{TextHost, testing::ZeroTextBackend};
     use core::convert::Infallible;
     use xui_interface::{Color, Size};
@@ -1938,16 +1937,16 @@ mod tests {
     /// A 200x200 vertical scroller holding a 200x100 vertical scroller (whose
     /// content is 400 tall) followed by a 200x400 filler, so both levels have
     /// somewhere to scroll.
-    fn nested_scroll_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-        container().with::<container::width>(200.0).with::<container::height>(200.0).with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical).into_element_desc(vec![
-                container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(100.0).with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical)).into_element_desc(vec![
+    fn nested_scroll_root() -> StaticTree {
+        container().with::<container::width>(200.0).with::<container::height>(200.0).with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical).into_tree(vec![
+                container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(100.0).with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical)).into_tree(vec![
                         container()
                             .with::<container::style>(
                                 StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(400.0).with::<container::background>(Color::hex("#3b82f6")),
                             )
-                            .into_element_desc(Vec::new()),
+                            .into_tree(Vec::new()),
                     ]),
-                container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(400.0)).into_element_desc(Vec::new()),
+                container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(400.0)).into_tree(Vec::new()),
             ])
     }
 
@@ -1958,8 +1957,8 @@ mod tests {
             const { std::cell::RefCell::new(Vec::new()) };
     }
 
-    fn controlled_scroll_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-        use crate::event_system::callbacks::EventProps;
+    fn controlled_scroll_root() -> StaticTree {
+        
 
         container().with::<container::width>(200.0).with::<container::height>(100.0).with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical).with::<container::scroll_controller>(SCROLL_CONTROLLER.with(Clone::clone)).with_on::<container::on_scroll, _>(|event, _| {
                 if let Some(after) = event.offset_after {
@@ -1967,14 +1966,16 @@ mod tests {
                         sources.borrow_mut().push((event.source, after.y));
                     });
                 }
-            }).into_element_desc(vec![
-                container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(400.0)).into_element_desc(Vec::new()),
+            }).into_tree(vec![
+                container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(400.0)).into_tree(Vec::new()),
             ])
     }
 
     #[test]
     fn a_controller_request_applies_on_the_next_render_as_a_programmatic_scroll() {
-        let mut app = App::new(controlled_scroll_root);
+        let mut app = App::new(|app| {
+            app.mount_static(controlled_scroll_root());
+        });
         app.resize(Size::new(200.0, 200.0));
         let mut text = TextHost::new(ZeroTextBackend);
         let mut backend = NullBackend;
@@ -2005,8 +2006,8 @@ mod tests {
     }
 
     /// A scroller as tall as the window over 400px of content.
-    fn filling_scroll_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-        use crate::event_system::callbacks::EventProps;
+    fn filling_scroll_root() -> StaticTree {
+        
 
         container().with::<container::style>(
                 StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(xui_interface::core::Sizing::Fill).with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical),
@@ -2016,14 +2017,16 @@ mod tests {
                         scrolls.borrow_mut().push((event.source, after.y));
                     });
                 }
-            }).into_element_desc(vec![
-                container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(400.0)).into_element_desc(Vec::new()),
+            }).into_tree(vec![
+                container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(400.0)).into_tree(Vec::new()),
             ])
     }
 
     #[test]
     fn growing_the_viewport_under_a_scrolled_container_reports_a_layout_scroll() {
-        let mut app = App::new(filling_scroll_root);
+        let mut app = App::new(|app| {
+            app.mount_static(filling_scroll_root());
+        });
         app.resize(Size::new(200.0, 200.0));
         let mut text = TextHost::new(ZeroTextBackend);
         let mut backend = NullBackend;
@@ -2063,7 +2066,9 @@ mod tests {
 
     impl ScrollHarness {
         fn new() -> Self {
-            let mut app = App::new(nested_scroll_root);
+            let mut app = App::new(|app| {
+            app.mount_static(nested_scroll_root());
+        });
             app.resize(Size::new(200.0, 200.0));
             let mut text = TextHost::new(ZeroTextBackend);
             let mut backend = NullBackend;

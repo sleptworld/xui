@@ -28,13 +28,15 @@ use xui_core::platform::PlatformHandle;
 use xui_core::prelude::*;
 use xui_core::render::{BuiltFrame, MockRenderBackend, RenderBackend};
 use xui_core::ticker::{Tick, Ticker};
-use xui_core::widgets::{TextController, TextSelection, text_input};
+use xui_core::widgets::{TextController, TextSelection};
 use xui_f::FBackend;
 use xui_interface::events::{EventResult, PhysicalKey};
 use xui_interface::{
     ClipboardContent, ClipboardTarget, ContextMenuTrigger, PlatformCommand, PlatformReply,
     PlatformRequest, ShortcutModifiers, Size, WindowCommand, commands,
 };
+use xui_interface::events::ShortcutBinding;
+use xui_macros::component;
 use xui_macos::{MacRunner, MacRunnerOptions, MacWindow, WindowOptions, WindowSize};
 use xui_shell::{PlatformWindow, SurfaceTarget};
 
@@ -107,45 +109,48 @@ fn record(name: &'static str, ok: bool, detail: impl FnOnce() -> String) {
     with(|smoke| smoke.results.push((name, result)));
 }
 
-fn root(cx: &mut HookContext<'_>) -> ElementDesc {
+#[component]
+fn smoke_window() {
     // Keeps frames coming at the display's rate, and records how far apart the
     // host says they are.
-    let ticker = cx.use_ticker(|frame| {
+    let ticker: Ticker = ticker!(|_cx, frame| {
         TICKS.with(|ticks| ticks.borrow_mut().push(frame.delta()));
         Tick::Continue
     });
-    TICKER.with(|slot| *slot.borrow_mut() = Some(ticker));
-    container()
-        .style(Style::new().width(500.0).height(400.0))
-        .tab_index(0)
-        .shortcut(
-            Shortcut::physical(PhysicalKey::KeyK).modifiers(ShortcutModifiers {
-                primary: true,
-                ..ShortcutModifiers::default()
-            }),
-            CommandId("smoke.k"),
-        )
-        .on_command(|event, _| {
-            with(|smoke| {
-                smoke
-                    .seen
-                    .commands
-                    .push((event.command, event.shortcut.is_some()));
-            });
-            EventResult::Consumed
-        })
-        .on_context_menu(|event, _| with(|smoke| smoke.seen.context_triggers.push(event.trigger)))
-        .on_press_start(|event, _| {
-            with(|smoke| smoke.seen.press_buttons.push(event.pointer.button))
-        })
-        .on_pointer_move(|event, _| with(|smoke| smoke.seen.move_stamps.push(event.meta.timestamp)))
-        .on_pointer_leave(|_, _| with(|smoke| smoke.seen.leaves += 1))
-        .into_element_desc(vec![
-            text_input()
-                .controller(INPUT.with(Clone::clone))
-                .style(Style::new().width(200.0).height(24.0))
-                .into_element_desc(),
-        ])
+    effect!(|_cx| TICKER.with(|slot| *slot.borrow_mut() = Some(ticker.clone())));
+    view! {
+        container(
+            width: 500.0,
+            height: 400.0,
+            tab_index: 0,
+            shortcuts: vec![ShortcutBinding {
+                shortcut: Shortcut::physical(PhysicalKey::KeyK).modifiers(ShortcutModifiers {
+                    primary: true,
+                    ..ShortcutModifiers::default()
+                }),
+                command: CommandId("smoke.k"),
+            }],
+            on_command: |_cx, event| {
+                with(|smoke| {
+                    smoke
+                        .seen
+                        .commands
+                        .push((event.command, event.shortcut.is_some()));
+                });
+                EventResult::Consumed
+            },
+            on_context_menu: |_cx, event| with(|smoke| smoke.seen.context_triggers.push(event.trigger)),
+            on_press_start: |_cx, event| with(|smoke| smoke.seen.press_buttons.push(event.pointer.button)),
+            on_pointer_move: |_cx, event| with(|smoke| smoke.seen.move_stamps.push(event.meta.timestamp)),
+            on_pointer_leave: |_cx| with(|smoke| smoke.seen.leaves += 1),
+        ) {
+            text_input(controller: INPUT.with(Clone::clone), width: 200.0, height: 24.0)
+        }
+    }
+}
+
+fn root(app: &mut App) {
+    app.mount::<SmokeWindow>(SmokeWindowProps {});
 }
 
 fn main() -> ExitCode {

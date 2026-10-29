@@ -4,7 +4,7 @@ use slotmap::{SecondaryMap, SlotMap};
 use xui_interface::{NodeId, WidgetState};
 
 use crate::caps::CapMask;
-use crate::fiber::Key;
+use xui_interface::Key;
 use crate::ui_runtime::state::HostWorkFlags;
 use crate::widgets::{WidgetI, WidgetType};
 

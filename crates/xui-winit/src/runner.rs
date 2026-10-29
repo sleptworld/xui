@@ -15,7 +15,7 @@ use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
-use xui_core::app::{AppRenderError, ComponentFn};
+use xui_core::app::{AppRenderError, AppRoot};
 use xui_core::render::RenderBackend;
 use xui_core::runtime::GuiRuntime;
 use xui_core::text::TextHost;
@@ -271,7 +271,7 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackend> WinitRunner<B, T> {
 /// `runner`, on the standalone wgpu renderer.
 #[cfg(feature = "wgpu")]
 pub fn wgpu_runner(
-    app: ComponentFn,
+    app: AppRoot,
     options: Option<WinitRunnerOptions>,
 ) -> WinitRunner<WGPUBackend, CosmicEngine> {
     let app = App::new(app);
@@ -295,7 +295,7 @@ pub fn wgpu_runner(
 /// painter draws on the device the frame is composed from.
 #[cfg(feature = "vello")]
 pub fn runner(
-    app: ComponentFn,
+    app: AppRoot,
     options: Option<WinitRunnerOptions>,
 ) -> WinitRunner<xui_vello::VelloBackend<FBackend>, FBackend> {
     let app = App::new(app);
@@ -319,7 +319,7 @@ pub fn runner(
 /// `runner`, on the Skia backend.
 #[cfg(feature = "skia")]
 pub fn skia_runner(
-    app: ComponentFn,
+    app: AppRoot,
     options: Option<WinitRunnerOptions>,
 ) -> WinitRunner<xui_skia::SkiaBackend<FBackend>, FBackend> {
     let app = App::new(app);

@@ -194,6 +194,11 @@ fn parse_element(input: ParseStream<'_>) -> Result<Element> {
     })
 }
 
+/// A list of children, as a `view! { .. }` given to a `Children` prop.
+pub(crate) fn child_list(tokens: proc_macro2::TokenStream) -> Result<Vec<Child>> {
+    syn::parse::Parser::parse2(parse_children, tokens)
+}
+
 fn parse_children(input: ParseStream<'_>) -> Result<Vec<Child>> {
     let mut children = Vec::new();
     while !input.is_empty() {

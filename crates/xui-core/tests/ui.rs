@@ -1,4 +1,4 @@
-//! Golden-file tests for the diagnostics the element DSL produces.
+//! Golden-file tests for the diagnostics `#[component]` and the node DSL produce.
 //!
 //! The DSL deliberately outsources most of its error reporting to rustc: an
 //! unknown attribute is a missing method, an unknown tag is a missing function.

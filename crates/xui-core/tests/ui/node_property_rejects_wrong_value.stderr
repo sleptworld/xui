@@ -16,7 +16,7 @@ help: the trait `Accepts<&str>` is not implemented for `common::container::flex_
    | | )]
    | |__^
    = help: for that trait implementation, expected `bool`, found `&str`
-   = note: required for `&str` to implement `xui_core::IntoProp<common::container::flex_wrap>`
+   = note: required for `&str` to implement `IntoProp<common::container::flex_wrap>`
 note: required by a bound in `xui_core::Node::set`
   --> src/node.rs
    |
@@ -46,7 +46,7 @@ help: the following other types implement trait `From<T>`
    = note: required for `&str` to implement `Into<Sizing>`
    = note: required for `&str` to implement `IntoStyleValue<Sizing>`
    = note: required for `xui_core::canvas::width` to implement `xui_core::Accepts<&str>`
-   = note: required for `&str` to implement `xui_core::IntoProp<xui_core::canvas::width>`
+   = note: required for `&str` to implement `IntoProp<xui_core::canvas::width>`
 note: required by a bound in `xui_core::Node::set`
   --> src/node.rs
    |
@@ -83,7 +83,7 @@ note: required for `common::text::content` to implement `xui_core::Accepts<u8>`
    | |     #[dirty(TEXT_SHAPE | LAYOUT_INPUT)]
    | |     pub content: String,
    | |_______________^
-   = note: required for `u8` to implement `xui_core::IntoProp<common::text::content>`
+   = note: required for `u8` to implement `IntoProp<common::text::content>`
 note: required by a bound in `xui_core::Node::set`
   --> src/node.rs
    |

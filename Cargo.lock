@@ -5469,6 +5469,7 @@ dependencies = [
  "xui-core",
  "xui-f",
  "xui-interface",
+ "xui-macros",
  "xui-shell",
  "xui-skia",
  "xui-vello",
@@ -5546,6 +5547,7 @@ dependencies = [
  "xui-core",
  "xui-f",
  "xui-interface",
+ "xui-macros",
 ]
 
 [[package]]
@@ -5571,6 +5573,7 @@ dependencies = [
  "xui-core",
  "xui-cosmic",
  "xui-interface",
+ "xui-macros",
  "xui-render-graph",
  "xui-shell",
 ]
@@ -5602,6 +5605,7 @@ dependencies = [
  "xui-core",
  "xui-cosmic",
  "xui-interface",
+ "xui-macros",
  "xui-render-graph",
  "xui-shell",
  "xui-skia",

@@ -8,10 +8,15 @@ use xui_components::spinner;
 use xui_core::prelude::*;
 use xui_core::widgets::WidgetType;
 use xui_cosmic::CosmicEngine;
-use xui_macros::xui;
+use xui_macros::component;
 
-fn root(_cx: &mut HookContext<'_>) -> ElementDesc {
+#[component]
+fn spinning() {
     xui! { <spinner size={24.0} /> }
+}
+
+fn root(app: &mut App) {
+    app.mount::<Spinning>(SpinningProps {});
 }
 
 fn runtime() -> GuiRuntime<MockRenderBackend, CosmicEngine> {

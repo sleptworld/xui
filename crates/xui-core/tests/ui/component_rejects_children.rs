@@ -1,13 +1,14 @@
 use xui_core::prelude::*;
-use xui_macros::{component, xui};
+use xui_macros::component;
 
 fn main() {}
 
 #[component]
 fn leaf(label: &String) {
-    xui! { <text>{label.clone()}</text> }
+    view! { text(label.clone()) }
 }
 
-fn with_body() -> ElementDesc {
-    xui! { <leaf label={String::from("hi")}>{"unexpected"}</leaf> }
+#[component]
+fn with_body() {
+    view! { column { leaf(label: String::from("hi")) { text("unexpected") } } }
 }

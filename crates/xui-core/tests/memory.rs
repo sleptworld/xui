@@ -9,7 +9,7 @@
 //!
 //! This test binary counts every allocation through its own global
 //! allocator, so the numbers are the runtime's live heap: hosts, columns,
-//! layout, style, scene, fibers, hooks and the text cache, with text on
+//! layout, style, scene, sources, bindings and the text cache, with text on
 //! xui-f, the backend the native hosts use. Fonts are loaded once and
 //! reported apart.
 //!
@@ -23,11 +23,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use xui_core::prelude::*;
 use xui_core::render::backend::MockRenderBackend;
-use xui_core::state::State;
 use xui_core::text::TextHost;
 use xui_f::FBackend;
 use xui_interface::{Color, Size};
-use xui_macros::{component, xui};
+use xui_macros::component;
 
 struct Counting;
 
@@ -132,32 +131,44 @@ fn live() -> usize {
 
 thread_local! {
     static ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static ROOT: std::cell::RefCell<Option<State<u32>>> = const { std::cell::RefCell::new(None) };
+    static ROOT: std::cell::RefCell<Option<Signal<u32>>> = const { std::cell::RefCell::new(None) };
 }
 
-/// One list row: three hosts, one state hook.
+/// One list row: three hosts, one state, one memo.
 #[component]
-fn memory_row(index: &usize, generation: &u32) {
-    let wide = cx.use_state(|| false);
-    let width = if *wide.get() { 24.0 } else { 16.0 };
+fn memory_row(index: &usize, #[source] generation: &u32) {
+    let wide: bool = state!(false);
+    let width: f32 = memo!(if *wide { 24.0 } else { 16.0 });
     xui! {
         <row height={20.0} gap={4.0} background={Color::BLACK}>
             <text>{format!("row {index} / {generation}")}</text>
-            <container width={width} height={16.0} background={Color::WHITE} />
+            <container width={*width} height={16.0} background={Color::WHITE} />
         </row>
     }
 }
 
-fn root(cx: &mut HookContext<'_>) -> ElementDesc {
-    let generation = cx.use_state(|| 0u32);
-    ROOT.with(|slot| *slot.borrow_mut() = Some(generation));
-    let generation = *generation.get();
-    let rows = (0..ROWS.with(std::cell::Cell::get))
-        .map(|index| {
-            xui! { <memory_row key={index.to_string()} index={index} generation={generation} /> }
-        })
-        .collect::<Vec<_>>();
-    xui! { <column width={900.0}>{rows}</column> }
+#[component]
+fn memory_root() {
+    let generation: u32 = state!(0);
+    ROOT.with(|slot| *slot.borrow_mut() = Some(generation.clone()));
+    let rows: usize = ROWS.with(std::cell::Cell::get);
+    view! {
+        column(width: 900.0) {
+            for index in 0..*rows {
+                memory_row(index: *index, generation: generation).key(*index)
+            }
+        }
+    }
+}
+
+fn root(app: &mut App) {
+    app.mount::<MemoryRoot>(MemoryRootProps {});
+}
+
+/// Sets the root's generation, which every row shows.
+fn set_generation(app: &mut App, generation: u32) {
+    let state = ROOT.with(|slot| slot.borrow().clone().expect("mounted"));
+    app.update(|cx| state.set(cx, generation));
 }
 
 /// The text backend the native hosts run on, over the platform's fonts, so
@@ -196,11 +207,10 @@ fn heap_per_row() {
             kib(stats.resident_bytes as usize)
         );
 
-        // Every row renders again with a new label, fifty times over: what is
-        // held afterwards should be what was held before.
+        // Every row's label changes, fifty times over: what is held
+        // afterwards should be what was held before.
         for generation in 1..=50 {
-            let state = ROOT.with(|slot| slot.borrow().expect("rendered"));
-            slot::Runtime::with_phase(slot::RenderPhase::Event, || state.set(generation));
+            set_generation(&mut app, generation);
             app.render(&mut backend, &mut text).expect("mock backend");
         }
         let after = live() - baseline;
@@ -232,21 +242,29 @@ fn bare_row(index: &usize) {
     }
 }
 
-fn variant_root(_: &mut HookContext<'_>) -> ElementDesc {
-    let rows = (0..ROWS.with(std::cell::Cell::get))
-        .map(|index| match MODE.with(std::cell::Cell::get) {
-            // Components, no text.
-            0 => xui! { <bare_row key={index.to_string()} index={index} /> },
-            // Hosts alone, no component.
-            _ => xui! {
-                <row height={20.0} gap={4.0} background={Color::BLACK}>
-                    <container width={16.0} height={16.0} background={Color::WHITE} />
-                    <container width={16.0} height={16.0} background={Color::WHITE} />
-                </row>
-            },
-        })
-        .collect::<Vec<_>>();
-    xui! { <column width={900.0}>{rows}</column> }
+#[component]
+fn variant_rows() {
+    let rows: usize = ROWS.with(std::cell::Cell::get);
+    let mode: u8 = MODE.with(std::cell::Cell::get);
+    view! {
+        column(width: 900.0) {
+            for index in 0..*rows {
+                // Components, no text; or hosts alone, no component.
+                if *mode == 0 {
+                    bare_row(index: *index)
+                } else {
+                    row(height: 20.0, gap: 4.0, background: Color::BLACK) {
+                        container(width: 16.0, height: 16.0, background: Color::WHITE)
+                        container(width: 16.0, height: 16.0, background: Color::WHITE)
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn variant_root(app: &mut App) {
+    app.mount::<VariantRows>(VariantRowsProps {});
 }
 
 #[test]
@@ -260,7 +278,7 @@ fn heap_attribution() {
     let trace_above = std::env::var("XUI_TRACE_ALLOC")
         .ok()
         .and_then(|bytes| bytes.parse().ok());
-    let mut measure = |label: &str, root: fn(&mut HookContext<'_>) -> ElementDesc| {
+    let mut measure = |label: &str, root: AppRoot| {
         let baseline = live();
         let sizes_before = by_size();
         if let Some(bytes) = trace_above {
@@ -303,8 +321,8 @@ fn heap_attribution() {
     measure("host rows, no component", variant_root);
 }
 
-/// What one render of every row allocates: a root state change hands every
-/// row new props, so each row's component and template are built again.
+/// What one update of every row allocates: a root state change reaches every
+/// row's label through its `#[source]` prop, and nothing else.
 #[test]
 #[ignore = "benchmark; run with --release --ignored --nocapture"]
 fn allocations_per_render() {
@@ -319,8 +337,7 @@ fn allocations_per_render() {
     }
     let mut renders = Vec::new();
     for generation in 1..=10 {
-        let state = ROOT.with(|slot| slot.borrow().expect("rendered"));
-        slot::Runtime::with_phase(slot::RenderPhase::Event, || state.set(generation));
+        set_generation(&mut app, generation);
         let calls = CALLS.load(Ordering::Relaxed);
         app.render(&mut backend, &mut text).expect("mock backend");
         while app.is_dirty() {
@@ -334,8 +351,7 @@ fn allocations_per_render() {
 
     // `XUI_TRACE_ALLOC=1`: one more render, every allocation attributed.
     if std::env::var("XUI_TRACE_ALLOC").is_ok() {
-        let state = ROOT.with(|slot| slot.borrow().expect("rendered"));
-        slot::Runtime::with_phase(slot::RenderPhase::Event, || state.set(100));
+        set_generation(&mut app, 100);
         TRACE_ABOVE.store(1, Ordering::Relaxed);
         // Slower than a frame's budget while tracing: the render is sliced.
         app.render(&mut backend, &mut text).expect("mock backend");
@@ -371,8 +387,7 @@ fn frame_time_with_real_text() {
         }
         let mut samples = Vec::new();
         for generation in 1..=30 {
-            let state = ROOT.with(|slot| slot.borrow().expect("rendered"));
-            slot::Runtime::with_phase(slot::RenderPhase::Event, || state.set(generation));
+            set_generation(&mut app, generation);
             let started = std::time::Instant::now();
             app.render(&mut backend, &mut text).expect("mock backend");
             samples.push(started.elapsed());

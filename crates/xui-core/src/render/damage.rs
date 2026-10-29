@@ -4,7 +4,7 @@
 //! repaint just the damaged part of its persistent frame instead of all of it.
 
 use rustc_hash::FxHashMap;
-use xui_interface::{Bounds, Rect};
+use xui_interface::Bounds;
 use xui_render_graph::{ProgramFingerprint, SampleExpansion};
 
 use super::{BuiltFrame, BuiltItem, ContentVersion, PlacementVersion, RenderNodeId};
@@ -20,10 +20,6 @@ const MERGE_SLACK: f32 = 0.25;
 /// their cost grows faster than the input: the whole job goes to `band_merge`,
 /// which is O(n log n) regardless.
 const PAIRWISE_LIMIT: usize = 64;
-
-fn area(rect: Bounds) -> f32 {
-    rect.width().max(0.0) * rect.height().max(0.0)
-}
 
 fn contains(outer: Bounds, inner: Bounds) -> bool {
     outer.min.x <= inner.min.x
@@ -576,14 +572,6 @@ fn propagate_composite_prefix_damage(
             .or_default()
             .extend(propagated);
     }
-}
-
-fn intersect_rect(a: Rect, b: Rect) -> Option<Rect> {
-    let left = a.x.max(b.x);
-    let top = a.y.max(b.y);
-    let right = (a.x + a.width).min(b.x + b.width);
-    let bottom = (a.y + a.height).min(b.y + b.height);
-    (right > left && bottom > top).then(|| Rect::new(left, top, right - left, bottom - top))
 }
 
 #[cfg(test)]

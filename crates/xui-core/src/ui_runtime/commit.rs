@@ -126,6 +126,10 @@ impl UiRuntime {
         Ok(entry)
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "portals set their options once, at mount; this is for when they follow their sources")
+    )]
     pub(crate) fn update_overlay_entry(
         &mut self,
         entry: OverlayEntryId,

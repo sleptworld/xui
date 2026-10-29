@@ -1,16 +1,11 @@
 //! Procedural macros for the `xui` framework.
 //!
-//! - `xui! { <tag attr={expr}>{children}</tag> }` — the element DSL, compiled
-//!   to a static template of host nodes with the changing values as its
-//!   inputs; see [`template`], and [`element`] for the grammar.
-//! - `view! { column(gap: 8.0) { text("hi").color(c) } }` — the same DSL
-//!   spelled like SwiftUI, with `if`/`for`/`match`/`let` among children. A
-//!   second parser over the same tree; see [`view`].
+//! - `#[component]` — a component: run once at mount, its sources and
+//!   effects declared by statements, its view (`xui! { .. }` or `view! { .. }`)
+//!   as its tail. What each dynamic part of the view reads is worked out here;
+//!   see [`reactive`], [`analyze`], and [`element`] / [`view`] for the grammar.
 //! - `style!(padding: 16.0, background: if hovered { .. })` — a `Style` with
 //!   state-conditioned rules lowered to `WidgetStateMatcher` at compile time.
-//! - `#[component]` / `component_fn!` — props struct, typed builder, render
-//!   handle, and the tag constructor that makes a component usable in `xui!`
-//!   exactly like a host widget.
 //! - `#[widget]` — empty marker type, props struct, state struct and typed
 //!   props builder, from one struct declaration.
 //! - `#[main]` — installs the asset bootstrap before the user's `main` runs.
@@ -23,61 +18,47 @@
 //! # Design note
 //!
 //! The macros own the grammar; the runtime owns the vocabulary. No list of
-//! attribute names or style properties lives in this crate — adding any of
-//! those is a change to `xui-core` alone: an attribute is looked up in the
-//! node's property table.
-//!
-//! The one list that does live here is the host widgets' tag names
-//! (`template.rs`). The set of host widgets is closed, and knowing them by
-//! name is what lets `xui!` / `view!` compile a tree to a static template:
-//! which nodes are hosts the template owns, and which are component slots, is
-//! decided before any type is known. The generated code asserts that a tag
-//! treated as a host is one.
+//! attribute names or style properties lives in this crate — an attribute is
+//! looked up in the node's property table. The one list that does live here
+//! is the host widgets' tag names ([`hosts`]).
 
+mod analyze;
 mod animatable;
-mod component;
 mod element;
-mod errors;
 mod krate;
 mod main_fn;
+mod reactive;
 mod style;
-mod template;
+mod hosts;
 mod view;
 mod widget;
 
 use proc_macro::TokenStream;
 use syn::{parse_macro_input, DeriveInput};
 
-use crate::component::{ComponentFunction, ComponentFunctions};
-use crate::element::Element;
 use crate::main_fn::MainFunction;
 use crate::style::StyleInput;
-use crate::view::View;
 
-/// `xui! { <container padding={16.0}><text>{label}</text></container> }`
+/// `xui! { <column><text>{label}</text></column> }` — a `#[component]`'s
+/// view, written as its tail. Read by `#[component]`; anywhere else it is an
+/// error.
 #[proc_macro]
-pub fn xui(input: TokenStream) -> TokenStream {
-    let element = parse_macro_input!(input as Element);
-    let expanded = krate::xui().and_then(|xui| element.expand(&xui));
-    match expanded {
-        Ok(tokens) => tokens.into(),
-        Err(error) => error.to_compile_error().into(),
-    }
+pub fn xui(_input: TokenStream) -> TokenStream {
+    tail_only("xui")
 }
 
-/// `view! { column(gap: 8.0) { text("hi").color(Color::BLUE_500) } }`
-///
-/// The SwiftUI-style spelling of [`xui!`]: `tag(content, name: value) { children }`
-/// followed by `.name(value)` modifiers, with `if`, `for`, `match` and `let`
-/// allowed among children. Expands exactly like the equivalent `xui!`.
+/// `view! { column(gap: 8.0) { text("hi").color(Color::BLUE_500) } }` — the
+/// SwiftUI-style spelling of [`xui!`]: `tag(content, name: value) { children }`
+/// followed by `.name(value)` modifiers, with `if`, `for` and `match` among
+/// children. A `#[component]`'s view, written as its tail.
 #[proc_macro]
-pub fn view(input: TokenStream) -> TokenStream {
-    let View(element) = parse_macro_input!(input as View);
-    let expanded = krate::xui().and_then(|xui| element.expand(&xui));
-    match expanded {
-        Ok(tokens) => tokens.into(),
-        Err(error) => error.to_compile_error().into(),
-    }
+pub fn view(_input: TokenStream) -> TokenStream {
+    tail_only("view")
+}
+
+fn tail_only(name: &str) -> TokenStream {
+    let message = format!("`{name}!` is a `#[component]`'s view: the tail of its body");
+    quote::quote!(::core::compile_error!(#message)).into()
 }
 
 /// `style!(padding: 16.0, color: if hovered { A } else { B })`
@@ -90,36 +71,25 @@ pub fn style(input: TokenStream) -> TokenStream {
     }
 }
 
-/// `#[component]`, or `#[component(memo)]` for a component that renders
-/// again only when its props change by value, not on every render of its
-/// parent. A memo component's props must all be `PartialEq`.
+/// A component: a function run once, at mount, whose parameters are props,
+/// whose statements declare its sources (`state!`, `memo!`, `context!`,
+/// `size!`, `ticker!`), effects (`effect!`) and context (`provide!`), and
+/// whose tail is its view, `xui! { .. }` or `view! { .. }`. What each part
+/// of the view reads is worked out here, at expansion; see `docs/reactive.md`.
 #[proc_macro_attribute]
 pub fn component(attrs: TokenStream, item: TokenStream) -> TokenStream {
-    let options = parse_macro_input!(attrs as component::ComponentOptions);
-    let mut function = parse_macro_input!(item as ComponentFunction);
-    function.set_options(options);
-    if let Err(error) = component::reject_signature_defaults(&function) {
-        return error.to_compile_error().into();
+    if !attrs.is_empty() {
+        let attrs = proc_macro2::TokenStream::from(attrs);
+        return syn::Error::new_spanned(attrs, "`#[component]` takes no options; defaults go in `#[defaults(..)]`")
+            .into_compile_error()
+            .into();
     }
-    if let Err(error) = component::apply_defaults_attr(&mut function) {
-        return error.to_compile_error().into();
-    }
-    match component::expand_component_function(&mut function) {
-        Ok(expanded) => expanded.tokens.into(),
-        Err(error) => error.to_compile_error().into(),
-    }
+    let function = parse_macro_input!(item as syn::ItemFn);
+    reactive::expand(function).unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
-#[proc_macro]
-pub fn component_fn(input: TokenStream) -> TokenStream {
-    let mut functions = parse_macro_input!(input as ComponentFunctions);
-    match component::expand_component_functions(&mut functions) {
-        Ok(tokens) => tokens.into(),
-        Err(error) => error.to_compile_error().into(),
-    }
-}
-
-/// Consumed by `#[component]`; inert on its own.
+/// Consumed by `#[component]`: `#[defaults(prop = value, ..)]` makes those
+/// props optional. Inert on its own.
 #[proc_macro_attribute]
 pub fn defaults(_attrs: TokenStream, item: TokenStream) -> TokenStream {
     item

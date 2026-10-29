@@ -314,7 +314,7 @@ impl AppDelegate {
 /// `runner`, on the Skia backend.
 #[cfg(feature = "skia")]
 pub fn skia_runner(
-    app: xui_core::app::ComponentFn,
+    app: xui_core::app::AppRoot,
     options: Option<MacRunnerOptions>,
 ) -> MacRunner<xui_skia::SkiaBackend<xui_f::FBackend>, xui_f::FBackend> {
     let app = App::new(app);
@@ -345,7 +345,7 @@ pub fn skia_runner(
 /// painter draws on the device the frame is composed from.
 #[cfg(feature = "vello")]
 pub fn runner(
-    app: xui_core::app::ComponentFn,
+    app: xui_core::app::AppRoot,
     options: Option<MacRunnerOptions>,
 ) -> MacRunner<xui_vello::VelloBackend<xui_f::FBackend>, xui_f::FBackend> {
     let app = App::new(app);

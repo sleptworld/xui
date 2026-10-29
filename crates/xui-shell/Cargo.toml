@@ -11,3 +11,4 @@ xui-interface = { path = "../xui-interface" }
 
 [dev-dependencies]
 xui-f = { path = "../xui-f" }
+xui-macros = { path = "../xui-macros" }

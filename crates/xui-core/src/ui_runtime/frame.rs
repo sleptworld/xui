@@ -8,7 +8,7 @@ use crate::ui_runtime::state::HostWorkFlags;
 use crate::ui_runtime::style::style_change_requires_layout;
 use crate::ui_runtime::{RenderFrame, RenderFrameError, UiRuntime};
 use std::time::Duration;
-use xui_interface::{Bounds, NodeId, TextBackend};
+use xui_interface::{NodeId, TextBackend};
 
 impl UiRuntime {
     /// # Preconditions

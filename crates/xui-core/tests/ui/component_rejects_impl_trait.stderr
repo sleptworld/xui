@@ -1,5 +1,5 @@
-error: component prop `render` cannot use `impl Trait`: props are stored in a struct, so declare a named generic parameter instead, as in `fn row<F: Trait>(render: &F)`
- --> tests/ui/component_rejects_impl_trait.rs:6:17
+error: a prop is stored on the component, so its type cannot be `impl Trait`: name a parameter instead, as in `fn name<T: Trait>(prop: &T)`
+ --> tests/ui/component_rejects_impl_trait.rs:6:18
   |
-6 | fn row(render: &impl Fn(i32) -> String) {
-  |                 ^^^^
+6 | fn shown(value: &impl std::fmt::Display) {
+  |                  ^^^^

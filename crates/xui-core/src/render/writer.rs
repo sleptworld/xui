@@ -142,7 +142,7 @@ impl NodeKind {
 mod tests {
     use super::*;
     use crate::render::{Shape, ShapePrimitive};
-    use xui_interface::{Bounds, Color, ComputedColorStyle, Rect};
+    use xui_interface::{Bounds, Color, ComputedColorStyle};
 
     fn shape(bounds: Bounds, color: Color) -> Primitive {
         Primitive::Shape(ShapePrimitive {

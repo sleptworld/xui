@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use xui_core::prelude::*;
 
-use xui_macros::{component, view};
+use xui_macros::component;
 
 use crate::layout::{ComponentColor, ComponentInsets, ComponentLength, ComponentSizing};
 
@@ -55,18 +55,21 @@ use crate::layout::{ComponentColor, ComponentInsets, ComponentLength, ComponentS
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { xui_components::input(accessibility_label: Some("Email".to_owned()), required: true) };
+/// #[component]
+/// fn example() {
+///     view! { xui_components::input(accessibility_label: Some("Email".to_owned()), required: true) }
+/// }
 /// ```
 #[component]
 #[defaults(
-    controller = None,
+    controller = None::<TextController>,
     disabled = false,
     read_only = false,
     invalid = false,
     required = false,
-    accessibility_label = None,
+    accessibility_label = None::<String>,
     style = StyleOf::new(),
     input_style = StyleOf::new(),
     padding = ComponentInsets::Value(EdgeInsets::symmetric(12.0, 4.0)),
@@ -83,11 +86,11 @@ use crate::layout::{ComponentColor, ComponentInsets, ComponentLength, ComponentS
 )]
 pub fn input(
     controller: &Option<TextController>,
-    disabled: &bool,
-    read_only: &bool,
-    invalid: &bool,
-    required: &bool,
-    accessibility_label: &Option<String>,
+    #[source] disabled: &bool,
+    #[source] read_only: &bool,
+    #[source] invalid: &bool,
+    #[source] required: &bool,
+    #[source] accessibility_label: &Option<String>,
     style: &StyleOf<Container>,
     input_style: &StyleOf<TextInput>,
     padding: &ComponentInsets,
@@ -109,9 +112,9 @@ pub fn input(
     //
     // Focus lands on the inner text input, so the container follows it through
     // the bubbling FocusIn/FocusOut events to draw the ring (focus-within).
-    let internal_controller = cx.use_memo(TextController::new);
-    let controller = controller.as_ref().unwrap_or(internal_controller.get());
-    let focused = cx.use_state(|| false);
+    let text_controller: TextController = controller.clone().unwrap_or_else(TextController::new);
+    let focused: bool = state!(false);
+    let container_style: StyleOf<Container> = memo!({
     let mut container_style = StyleOf::new()
         .with::<container::min_width>(0.0)
         .with::<container::justify>(JustifyStyle::Center)
@@ -129,7 +132,7 @@ pub fn input(
                 .offset(Point::new(0.0, 1.0))
                 .blur(2.0),
         );
-    if *focused.get() {
+    if *focused {
         container_style = container_style
             .with::<container::border_color>(ColorToken::Ring)
             .with::<container::shadow>(
@@ -177,13 +180,15 @@ pub fn input(
         container_style = container_style.with::<container::color>(ColorToken::MutedForeground);
     }
     container_style.merge(style);
+    container_style
+    });
 
     // The text input fills everything inside the border and carries the
     // padding itself, so pressing the padding focuses it rather than landing on
     // the non-focusable container (which would clear focus). It centers its
     // line vertically. `input_style` can still override this for a
     // differently sized editing area.
-    let mut text_input_style = padding.apply(
+    let mut text_input_style: StyleOf<TextInput> = padding.apply(
         StyleOf::new().with::<container::size>(Size::fill()),
         |style, value| style.with::<container::padding>(value),
     );
@@ -191,21 +196,21 @@ pub fn input(
 
     view! {
         container(
-            style: container_style,
+            style: container_style.clone(),
             transition: Transition::new(Duration::from_millis(150)),
             focusable: false,
-            on_focus_in: move |_, _| {
-                focused.set(true);
+            on_focus_in: |cx| {
+                focused.set(cx, true);
                 EventResult::Ignored
             },
-            on_focus_out: move |_, _| {
-                focused.set(false);
+            on_focus_out: |cx| {
+                focused.set(cx, false);
                 EventResult::Ignored
             },
         ) {
             text_input(
-                controller: controller.clone(),
-                style: text_input_style,
+                controller: text_controller.clone(),
+                style: text_input_style.clone(),
                 disabled: *disabled,
                 read_only: *read_only,
                 tab_index: if *disabled { -1 } else { 0 },

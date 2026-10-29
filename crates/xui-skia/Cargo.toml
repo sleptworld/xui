@@ -54,3 +54,4 @@ skia-safe = { version = "0.99.0", features = ["gpu", "d3d", "textlayout"] }
 
 [dev-dependencies]
 xui-cosmic = { path = "../xui-cosmic" }
+xui-macros = { path = "../xui-macros" }

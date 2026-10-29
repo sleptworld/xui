@@ -27,6 +27,7 @@ objc2-quartz-core = { version = "0.3.2", features = ["CALayer", "CAMetalLayer"] 
 
 [dev-dependencies]
 xui-cosmic = { path = "../xui-cosmic" }
+xui-macros = { path = "../xui-macros" }
 png = "0.18.1"
 # The reference the pixel comparison is made against.
 xui-skia = { path = "../xui-skia" }

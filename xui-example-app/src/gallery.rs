@@ -4,7 +4,8 @@
 use xui_components::*;
 use xui_core::core::Bounds;
 use xui_core::prelude::*;
-use xui_macros::{component, xui};
+use xui_components::image::ImageSrc;
+use xui_macros::component;
 
 /// A gallery page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -78,345 +79,292 @@ pub struct InitialPage(pub Page);
 
 // ---- building blocks -------------------------------------------------------
 
-fn label_text(value: impl Into<String>, style: StyleOf<Text>) -> ElementDesc {
-    text()
-        .with::<text::content>(value.into())
-        .with::<text::style>(style)
-        .into_element_desc(Vec::new())
+fn heading_style() -> StyleOf<Text> {
+    StyleOf::new()
+        .with::<container::font_size>(FontSizeToken::Lg)
+        .with::<container::font_weight>(FontWeight::SemiBold)
 }
 
-fn muted(value: impl Into<String>) -> ElementDesc {
-    label_text(
-        value,
-        StyleOf::new()
-            .with::<container::color>(ColorToken::MutedForeground)
-            .with::<container::font_size>(FontSizeToken::Md),
-    )
+fn lucide(data: IconData, size: f32) -> Children {
+    Children::component::<LucideIcon>(LucideIconProps { data, size })
 }
 
-fn lucide(data: IconData, size: f32) -> ElementDesc {
-    icon()
-        .with::<icon::data>(data)
-        .with::<icon::size>(Size::fix(size, size))
-        .into_element_desc(Vec::new())
+/// An icon at a square size, as content for a button's `leading`/`trailing`.
+#[component]
+fn lucide_icon(data: &IconData, size: &f32) {
+    view! { icon(data: data.clone(), size: Size::fix(*size, *size)) }
 }
 
-fn hstack(gap: f32, children: Vec<ElementDesc>) -> ElementDesc {
-    container()
-        .with::<container::style>(
-            StyleOf::new()
-                .with::<container::gap>(gap)
-                .with::<container::align>(AlignStyle::Center),
+#[component]
+fn muted(#[source] text: &String) {
+    view! {
+        xui_core::prelude::text(
+            text.clone(),
+            style: StyleOf::new()
+                .with::<container::color>(ColorToken::MutedForeground)
+                .with::<container::font_size>(FontSizeToken::Md),
         )
-        .with::<container::flex_direction>(FlexDirectionStyle::Row)
-        .into_element_desc(children)
+    }
+}
+
+#[component]
+fn hstack(gap: &f32, children: &Children) {
+    view! {
+        container(
+            style: StyleOf::new().with::<container::gap>(*gap).with::<container::align>(AlignStyle::Center),
+            flex_direction: FlexDirectionStyle::Row,
+        ) {
+            slot(children)
+        }
+    }
 }
 
 /// A centered row that wraps onto new lines when the preview is too narrow,
 /// like shadcn's `flex flex-wrap items-center justify-center gap-2`.
-fn wrap_row(gap: f32, children: Vec<ElementDesc>) -> ElementDesc {
-    container()
-        .with::<container::style>(
-            StyleOf::new()
-                .with::<container::gap>(gap)
+#[component]
+fn wrap_row(gap: &f32, children: &Children) {
+    view! {
+        container(
+            style: StyleOf::new()
+                .with::<container::gap>(*gap)
                 .with::<container::align>(AlignStyle::Center)
                 .with::<container::justify>(JustifyStyle::Center),
-        )
-        .with::<container::flex_direction>(FlexDirectionStyle::Row)
-        .with::<container::flex_wrap>(true)
-        .into_element_desc(children)
+            flex_direction: FlexDirectionStyle::Row,
+            flex_wrap: true,
+        ) {
+            slot(children)
+        }
+    }
 }
 
-fn vstack(gap: f32, children: Vec<ElementDesc>) -> ElementDesc {
-    container()
-        .with::<container::style>(StyleOf::new().with::<container::gap>(gap))
-        .with::<container::flex_direction>(FlexDirectionStyle::Column)
-        .into_element_desc(children)
+#[component]
+fn vstack(gap: &f32, children: &Children) {
+    view! {
+        container(style: StyleOf::new().with::<container::gap>(*gap), flex_direction: FlexDirectionStyle::Column) {
+            slot(children)
+        }
+    }
 }
 
 /// A page body: examples stacked at full content width.
-fn page(children: Vec<ElementDesc>) -> ElementDesc {
-    container()
-        .with::<container::style>(
-            StyleOf::new()
-                .with::<container::gap>(40.0)
-                .with::<container::width>(Sizing::fill()),
-        )
-        .with::<container::flex_direction>(FlexDirectionStyle::Column)
-        .into_element_desc(children)
+#[component]
+fn page_body(children: &Children) {
+    view! {
+        container(
+            style: StyleOf::new().with::<container::gap>(40.0).with::<container::width>(Sizing::fill()),
+            flex_direction: FlexDirectionStyle::Column,
+        ) {
+            slot(children)
+        }
+    }
 }
 
 /// A titled example: a heading over a bordered preview area, like the demo
 /// blocks on ui.shadcn.com.
-fn example(title: &str, preview: ElementDesc) -> ElementDesc {
-    container()
-        .with::<container::style>(
-            StyleOf::new()
-                .with::<container::gap>(12.0)
-                .with::<container::width>(Sizing::fill()),
-        )
-        .with::<container::flex_direction>(FlexDirectionStyle::Column)
-        .into_element_desc(vec![
-            label_text(
-                title,
-                StyleOf::new()
-                    .with::<container::font_size>(FontSizeToken::Lg)
-                    .with::<container::font_weight>(FontWeight::SemiBold),
-            ),
-            container()
-                .with::<container::style>(
-                    StyleOf::new()
-                        .with::<container::width>(Sizing::fill())
-                        .with::<container::min_height>(140.0)
-                        .with::<container::padding>(EdgeInsets::all(32.0))
-                        .with::<container::align>(AlignStyle::Center)
-                        .with::<container::justify>(JustifyStyle::Center)
-                        .with::<container::background>(ColorToken::Background)
-                        .with::<container::border_color>(ColorToken::Border)
-                        .with::<container::border_width>(1.0)
-                        .with::<container::border_radius>(RadiusToken::Lg),
-                )
-                .with::<container::flex_direction>(FlexDirectionStyle::Column)
-                .into_element_desc(vec![preview]),
-        ])
+#[component]
+fn example(title: &String, children: &Children) {
+    view! {
+        container(
+            style: StyleOf::new().with::<container::gap>(12.0).with::<container::width>(Sizing::fill()),
+            flex_direction: FlexDirectionStyle::Column,
+        ) {
+            text(title.clone(), style: heading_style())
+            container(
+                style: StyleOf::new()
+                    .with::<container::width>(Sizing::fill())
+                    .with::<container::min_height>(140.0)
+                    .with::<container::padding>(EdgeInsets::all(32.0))
+                    .with::<container::align>(AlignStyle::Center)
+                    .with::<container::justify>(JustifyStyle::Center)
+                    .with::<container::background>(ColorToken::Background)
+                    .with::<container::border_color>(ColorToken::Border)
+                    .with::<container::border_width>(1.0)
+                    .with::<container::border_radius>(RadiusToken::Lg),
+                flex_direction: FlexDirectionStyle::Column,
+            ) {
+                slot(children)
+            }
+        }
+    }
 }
 
-fn field(label: &str, control: ElementDesc, hint: Option<&str>) -> ElementDesc {
-    let mut children = vec![
-        label_text(
-            label,
-            StyleOf::new()
-                .with::<container::font_size>(FontSizeToken::Md)
-                .with::<container::font_weight>(FontWeight::Medium),
-        ),
-        control,
-    ];
-    if let Some(hint) = hint {
-        children.push(label_text(
-            hint,
-            StyleOf::new()
-                .with::<container::color>(ColorToken::MutedForeground)
-                .with::<container::font_size>(FontSizeToken::Sm),
-        ));
+/// A labelled control, with an optional hint under it.
+#[component]
+#[defaults(hint = None::<String>)]
+fn field(label: &String, hint: &Option<String>, children: &Children) {
+    view! {
+        container(
+            style: StyleOf::new().with::<container::gap>(8.0).with::<container::width>(320.0),
+            flex_direction: FlexDirectionStyle::Column,
+        ) {
+            text(
+                label.clone(),
+                style: StyleOf::new()
+                    .with::<container::font_size>(FontSizeToken::Md)
+                    .with::<container::font_weight>(FontWeight::Medium),
+            )
+            slot(children)
+            if let Some(hint) = hint.clone() {
+                text(
+                    hint.clone(),
+                    style: StyleOf::new()
+                        .with::<container::color>(ColorToken::MutedForeground)
+                        .with::<container::font_size>(FontSizeToken::Sm),
+                )
+            }
+        }
     }
-    container()
-        .with::<container::style>(
-            StyleOf::new()
-                .with::<container::gap>(8.0)
-                .with::<container::width>(320.0),
-        )
-        .with::<container::flex_direction>(FlexDirectionStyle::Column)
-        .into_element_desc(children)
 }
 
 // ---- pages -----------------------------------------------------------------
 
 #[component]
 fn button_page() {
-    let clicks = cx.use_state(|| 0usize);
-    let on_click = cx.use_callback(clicks, move |()| clicks.update(|count| *count += 1));
-    let label = |value: &str| value.to_string();
-
-    let variants = xui! {
-        <row gap={8.0} flex_wrap={true} justify={JustifyStyle::Center}>
-            <button text={label("Primary")} variant={ButtonVariant::Primary} />
-            <button text={label("Secondary")} variant={ButtonVariant::Secondary} />
-            <button text={label("Outline")} variant={ButtonVariant::Outline} />
-            <button text={label("Ghost")} variant={ButtonVariant::Ghost} />
-            <button text={label("Destructive")} variant={ButtonVariant::Danger} />
-            <button text={label("Link")} variant={ButtonVariant::Link} />
-        </row>
-    };
-    let sizes = xui! {
-        <row gap={8.0} flex_wrap={true} justify={JustifyStyle::Center}>
-            <button text={label("Small")} variant={ButtonVariant::Outline} size={ButtonSize::Small} />
-            <button text={label("Default")} variant={ButtonVariant::Outline} />
-            <button text={label("Large")} variant={ButtonVariant::Outline} size={ButtonSize::Large} />
-            <button
-                text={String::new()}
-                variant={ButtonVariant::Outline}
-                size={ButtonSize::Icon}
-                leading={Some(lucide(lucide_rs::icons::plus(), 16.0))}
-                accessibility_label={Some(label("Add"))}
-            />
-        </row>
-    };
-    let with_icon = xui! {
-        <row gap={8.0} flex_wrap={true} justify={JustifyStyle::Center}>
-            <button
-                text={label("Login with Email")}
-                variant={ButtonVariant::Primary}
-                leading={Some(lucide(lucide_rs::icons::mail(), 16.0))}
-            />
-            <button
-                text={label("Delete")}
-                variant={ButtonVariant::Danger}
-                leading={Some(lucide(lucide_rs::icons::trash_2(), 16.0))}
-            />
-            <button
-                text={label("Continue")}
-                variant={ButtonVariant::Secondary}
-                trailing={Some(lucide(lucide_rs::icons::arrow_right(), 16.0))}
-            />
-        </row>
-    };
-    let states = xui! {
-        <row gap={8.0} flex_wrap={true} justify={JustifyStyle::Center}>
-            <button text={label("Disabled")} variant={ButtonVariant::Primary} disabled={true} />
-            <button text={label("Disabled")} variant={ButtonVariant::Outline} disabled={true} />
-            <button
-                text={label("Please wait")}
-                variant={ButtonVariant::Primary}
-                loading={true}
-                loading_indicator={Some(xui! { <spinner size={16.0} /> })}
-            />
-        </row>
-    };
-    let count = *clicks.get();
-    let interactive = hstack(
-        16.0,
-        vec![
-            xui! { <button text={label("Click me")} variant={ButtonVariant::Primary} on_click={Some(on_click)} /> },
-            muted(format!(
-                "Clicked {count} time{}",
-                if count == 1 { "" } else { "s" }
-            )),
-        ],
-    );
-
-    page(vec![
-        example("Variants", variants),
-        example("Sizes", sizes),
-        example("With icon", with_icon),
-        example("Disabled and loading", states),
-        example("Interactive", interactive),
-    ])
+    let clicks: usize = state!(0);
+    view! {
+        page_body {
+            example(title: "Variants") {
+                row(gap: 8.0, flex_wrap: true, justify: JustifyStyle::Center) {
+                    button(text: "Primary", variant: ButtonVariant::Primary)
+                    button(text: "Secondary", variant: ButtonVariant::Secondary)
+                    button(text: "Outline", variant: ButtonVariant::Outline)
+                    button(text: "Ghost", variant: ButtonVariant::Ghost)
+                    button(text: "Destructive", variant: ButtonVariant::Danger)
+                    button(text: "Link", variant: ButtonVariant::Link)
+                }
+            }
+            example(title: "Sizes") {
+                row(gap: 8.0, flex_wrap: true, justify: JustifyStyle::Center) {
+                    button(text: "Small", variant: ButtonVariant::Outline, size: ButtonSize::Small)
+                    button(text: "Default", variant: ButtonVariant::Outline)
+                    button(text: "Large", variant: ButtonVariant::Outline, size: ButtonSize::Large)
+                    button(
+                        text: String::new(),
+                        variant: ButtonVariant::Outline,
+                        size: ButtonSize::Icon,
+                        leading: lucide(lucide_rs::icons::plus(), 16.0),
+                        accessibility_label: Some("Add".to_string()),
+                    )
+                }
+            }
+            example(title: "With icon") {
+                row(gap: 8.0, flex_wrap: true, justify: JustifyStyle::Center) {
+                    button(
+                        text: "Login with Email",
+                        variant: ButtonVariant::Primary,
+                        leading: lucide(lucide_rs::icons::mail(), 16.0),
+                    )
+                    button(text: "Delete", variant: ButtonVariant::Danger, leading: lucide(lucide_rs::icons::trash_2(), 16.0))
+                    button(
+                        text: "Continue",
+                        variant: ButtonVariant::Secondary,
+                        trailing: lucide(lucide_rs::icons::arrow_right(), 16.0),
+                    )
+                }
+            }
+            example(title: "Disabled and loading") {
+                row(gap: 8.0, flex_wrap: true, justify: JustifyStyle::Center) {
+                    button(text: "Disabled", variant: ButtonVariant::Primary, disabled: true)
+                    button(text: "Disabled", variant: ButtonVariant::Outline, disabled: true)
+                    button(
+                        text: "Please wait",
+                        variant: ButtonVariant::Primary,
+                        loading: true,
+                        loading_indicator: view! { spinner(size: 16.0) },
+                    )
+                }
+            }
+            example(title: "Interactive") {
+                hstack(gap: 16.0) {
+                    button(text: "Click me", variant: ButtonVariant::Primary, on_click: |cx| clicks.update(cx, |count| *count += 1))
+                    muted(text: format!("Clicked {clicks} time{}", if *clicks == 1 { "" } else { "s" }))
+                }
+            }
+        }
+    }
 }
 
 #[component]
 fn spinner_page() {
-    let sizes = xui! {
-        <row gap={24.0} align={AlignStyle::Center} justify={JustifyStyle::Center}>
-            <spinner size={16.0} />
-            <spinner size={24.0} />
-            <spinner size={32.0} />
-            <spinner size={48.0} />
-        </row>
-    };
-    let colors = xui! {
-        <row gap={24.0} align={AlignStyle::Center} justify={JustifyStyle::Center}>
-            <spinner style={StyleOf::new().with::<container::color>(ColorToken::MutedForeground)} />
-            <spinner style={StyleOf::new().with::<container::color>(ColorToken::Primary)} />
-            <spinner style={StyleOf::new().with::<container::color>(ColorToken::Destructive)} />
-        </row>
-    };
-    let in_context = hstack(
-        8.0,
-        vec![
-            xui! { <spinner size={16.0} style={StyleOf::new().with::<container::color>(ColorToken::MutedForeground)} /> },
-            muted("Syncing your changes"),
-        ],
-    );
-
-    page(vec![
-        example("Sizes", sizes),
-        example("Color", colors),
-        example("Inline", in_context),
-    ])
+    view! {
+        page_body {
+            example(title: "Sizes") {
+                row(gap: 24.0, align: AlignStyle::Center, justify: JustifyStyle::Center) {
+                    spinner(size: 16.0)
+                    spinner(size: 24.0)
+                    spinner(size: 32.0)
+                    spinner(size: 48.0)
+                }
+            }
+            example(title: "Color") {
+                row(gap: 24.0, align: AlignStyle::Center, justify: JustifyStyle::Center) {
+                    spinner(style: StyleOf::new().with::<container::color>(ColorToken::MutedForeground))
+                    spinner(style: StyleOf::new().with::<container::color>(ColorToken::Primary))
+                    spinner(style: StyleOf::new().with::<container::color>(ColorToken::Destructive))
+                }
+            }
+            example(title: "Inline") {
+                hstack(gap: 8.0) {
+                    spinner(size: 16.0, style: StyleOf::new().with::<container::color>(ColorToken::MutedForeground))
+                    muted(text: "Syncing your changes")
+                }
+            }
+        }
+    }
 }
 
 #[component]
 fn input_page() {
-    let email = cx.use_ref(TextController::new);
-    let prefilled = cx.use_ref(|| TextController::with_text("Hello, xui 你好"));
-    page(vec![
-        example(
-            "Default",
-            container()
-                .with::<container::style>(StyleOf::new().with::<container::width>(320.0))
-                .into_element_desc(vec![xui! { <input controller={email.get().clone()} /> }]),
-        ),
-        example(
-            "With label",
-            field(
-                "Email",
-                xui! { <input controller={prefilled.get().clone()} /> },
-                Some("Click to focus; click the empty area around it to blur."),
-            ),
-        ),
-    ])
-}
-
-fn fruits() -> Vec<DropDownItem> {
-    vec![
-        DropDownItem::new("apple", "Apple"),
-        DropDownItem::new("banana", "Banana"),
-        DropDownItem::new("blueberry", "Blueberry").disabled(true),
-        DropDownItem::new("grapes", "Grapes"),
-        DropDownItem::new("pineapple", "Pineapple"),
-    ]
+    let email: TextController = TextController::new();
+    let prefilled: TextController = TextController::with_text("Hello, xui 你好");
+    view! {
+        page_body {
+            example(title: "Default") {
+                container(style: StyleOf::new().with::<container::width>(320.0)) {
+                    input(controller: Some(email.clone()))
+                }
+            }
+            example(title: "With label") {
+                field(label: "Email", hint: Some("Click to focus; click the empty area around it to blur.".to_string())) {
+                    input(controller: Some(prefilled.clone()))
+                }
+            }
+        }
+    }
 }
 
 #[component]
 fn select_page() {
-    let selected = cx.use_state(|| 3usize);
-    let on_change = cx.use_callback(selected, move |index| selected.set(index));
-    let current = fruits()[*selected.get()].label.clone();
-    let controlled = vstack(
-        12.0,
-        vec![
-            xui! {
-                <drop_down
-                    items={fruits()}
-                    selected={Some(*selected.get())}
-                    on_change={Some(on_change)}
-                    id_prefix={"gallery-select-controlled".to_string()}
-                />
-            },
-            muted(format!("Selected: {current}")),
-        ],
-    );
-    page(vec![
-        example(
-            "Default",
-            xui! { <drop_down items={fruits()} id_prefix={"gallery-select".to_string()} /> },
-        ),
-        example("Controlled", controlled),
-        example(
-            "Disabled",
-            xui! {
-                <drop_down
-                    items={fruits()}
-                    disabled={true}
-                    id_prefix={"gallery-select-disabled".to_string()}
-                />
-            },
-        ),
-    ])
+    let selected: usize = state!(3);
+    view! {
+        page_body {
+            example(title: "Default") {
+                drop_down(items: fruits(), id_prefix: "gallery-select")
+            }
+            example(title: "Controlled") {
+                vstack(gap: 12.0) {
+                    drop_down(
+                        items: fruits(),
+                        selected: Some(*selected),
+                        on_change: |cx, index| selected.set(cx, index),
+                        id_prefix: "gallery-select-controlled",
+                    )
+                    muted(text: format!("Selected: {}", fruits()[*selected].label))
+                }
+            }
+            example(title: "Disabled") {
+                drop_down(items: fruits(), disabled: true, id_prefix: "gallery-select-disabled")
+            }
+        }
+    }
 }
 
 /// A settings card like shadcn's tabs demo.
-fn tab_card(title: &str, description: &str, fields: Vec<ElementDesc>, action: &str) -> ElementDesc {
-    let mut children = vec![vstack(
-        6.0,
-        vec![
-            label_text(
-                title,
-                StyleOf::new()
-                    .with::<container::font_size>(FontSizeToken::Lg)
-                    .with::<container::font_weight>(FontWeight::SemiBold),
-            ),
-            muted(description),
-        ],
-    )];
-    children.extend(fields);
-    children.push(hstack(
-        0.0,
-        vec![xui! { <button text={action.to_string()} variant={ButtonVariant::Primary} /> }],
-    ));
-    container()
-        .with::<container::style>(
-            StyleOf::new()
+#[component]
+fn tab_card(title: &String, description: &String, action: &String, children: &Children) {
+    view! {
+        container(
+            style: StyleOf::new()
                 .with::<container::width>(Sizing::fill())
                 .with::<container::gap>(20.0)
                 .with::<container::padding>(EdgeInsets::all(24.0))
@@ -431,181 +379,197 @@ fn tab_card(title: &str, description: &str, fields: Vec<ElementDesc>, action: &s
                         .offset(Point::new(0.0, 1.0))
                         .blur(2.0),
                 ),
-        )
-        .with::<container::flex_direction>(FlexDirectionStyle::Column)
-        .into_element_desc(children)
+            flex_direction: FlexDirectionStyle::Column,
+        ) {
+            vstack(gap: 6.0) {
+                text(title.clone(), style: heading_style())
+                muted(text: description.clone())
+            }
+            slot(children)
+            hstack(gap: 0.0) {
+                button(text: action.clone(), variant: ButtonVariant::Primary)
+            }
+        }
+    }
+}
+
+/// The tab panel with two labelled inputs.
+#[component]
+fn form_tab(
+    title: &String,
+    description: &String,
+    action: &String,
+    first_label: &String,
+    first: &TextController,
+    second_label: &String,
+    second: &TextController,
+) {
+    view! {
+        tab_card(title: title.clone(), description: description.clone(), action: action.clone()) {
+            field(label: first_label.clone()) { input(controller: Some(first.clone())) }
+            field(label: second_label.clone()) { input(controller: Some(second.clone())) }
+        }
+    }
 }
 
 #[component]
 fn tabs_page() {
-    let selected = cx.use_state(|| 0usize);
-    let on_change = cx.use_callback(selected, move |index| selected.set(index));
-    let name = cx.use_ref(|| TextController::with_text("Pedro Duarte"));
-    let username = cx.use_ref(|| TextController::with_text("@peduarte"));
-    let current = cx.use_ref(TextController::new);
-    let next = cx.use_ref(TextController::new);
-
-    let items = vec![
+    let selected: usize = state!(0);
+    let items: Vec<TabItem> = vec![
         TabItem::new(
             "account",
             "Account",
-            tab_card(
-                "Account",
-                "Make changes to your account here. Click save when you're done.",
-                vec![
-                    field(
-                        "Name",
-                        xui! { <input controller={name.get().clone()} /> },
-                        None,
-                    ),
-                    field(
-                        "Username",
-                        xui! { <input controller={username.get().clone()} /> },
-                        None,
-                    ),
-                ],
-                "Save changes",
-            ),
+            Children::component::<FormTab>(FormTabProps {
+                title: "Account".into(),
+                description: "Make changes to your account here. Click save when you're done.".into(),
+                action: "Save changes".into(),
+                first_label: "Name".into(),
+                first: TextController::with_text("Pedro Duarte"),
+                second_label: "Username".into(),
+                second: TextController::with_text("@peduarte"),
+            }),
         ),
         TabItem::new(
             "password",
             "Password",
-            tab_card(
-                "Password",
-                "Change your password here. After saving, you'll be logged out.",
-                vec![
-                    field(
-                        "Current password",
-                        xui! { <input controller={current.get().clone()} /> },
-                        None,
-                    ),
-                    field(
-                        "New password",
-                        xui! { <input controller={next.get().clone()} /> },
-                        None,
-                    ),
-                ],
-                "Save password",
-            ),
+            Children::component::<FormTab>(FormTabProps {
+                title: "Password".into(),
+                description: "Change your password here. After saving, you'll be logged out.".into(),
+                action: "Save password".into(),
+                first_label: "Current password".into(),
+                first: TextController::new(),
+                second_label: "New password".into(),
+                second: TextController::new(),
+            }),
         ),
-        TabItem::new("billing", "Billing", muted("Unavailable")).disabled(true),
+        TabItem::new("billing", "Billing", "Unavailable").disabled(true),
     ];
-    let mut style = TabsStyle::default();
+    let mut style: TabsStyle = TabsStyle::default();
     style.root = style.root.with::<container::width>(420.0);
+    view! {
+        page_body {
+            example(title: "Default") {
+                tabs(
+                    items: items.clone(),
+                    selected: Some(*selected),
+                    on_change: |cx, index| selected.set(cx, index),
+                    style: style.clone(),
+                    id_prefix: "gallery-tabs",
+                )
+            }
+            muted(text: "Focus a tab and use ←/→, Home, and End. Disabled tabs are skipped.")
+        }
+    }
+}
 
-    page(vec![
-        example(
-            "Default",
-            xui! {
-                <tabs
-                    items={items}
-                    selected={Some(*selected.get())}
-                    on_change={Some(on_change)}
-                    style={style}
-                    id_prefix={"gallery-tabs".to_string()}
-                />
-            },
-        ),
-        muted("Focus a tab and use ←/→, Home, and End. Disabled tabs are skipped."),
-    ])
+/// One fit mode of the demo image, with its caption.
+#[component]
+fn framed(fit: &ImageFit, caption: &String) {
+    view! {
+        vstack(gap: 8.0) {
+            container(
+                style: StyleOf::new()
+                    .with::<container::size>(Size::fix(180.0, 120.0))
+                    .with::<container::background>(ColorToken::Muted)
+                    .with::<container::border_radius>(RadiusToken::Md)
+                    .with::<container::clip>(true),
+            ) {
+                xui_components::image::image(
+                    src: ImageSrc::AssetId(crate::xui_assets::refs::images::DEMO_PNG),
+                    width: 180.0f32,
+                    height: 120.0f32,
+                    fit: Some(*fit),
+                )
+            }
+            muted(text: caption.clone())
+        }
+    }
 }
 
 #[component]
 fn image_page() {
-    let framed = |fit: ImageFit, caption: &str| {
-        vstack(
-            8.0,
-            vec![
-                container()
-                    .with::<container::style>(
-                        StyleOf::new()
-                            .with::<container::size>(Size::fix(180.0, 120.0))
-                            .with::<container::background>(ColorToken::Muted)
-                            .with::<container::border_radius>(RadiusToken::Md)
-                            .with::<container::clip>(true),
-                    )
-                    .into_element_desc(vec![xui! {
-                        <xui_components::image::image
-                            src={ImageSrc::AssetId(crate::xui_assets::refs::images::DEMO_PNG)}
-                            width={180.0}
-                            height={120.0}
-                            fit={Some(fit)}
-                        />
-                    }]),
-                muted(caption),
-            ],
-        )
-    };
-    page(vec![example(
-        "Fit",
-        wrap_row(
-            16.0,
-            vec![
-                framed(ImageFit::Cover, "Cover"),
-                framed(ImageFit::Contain, "Contain"),
-                framed(ImageFit::Fill, "Fill"),
-            ],
-        ),
-    )])
+    view! {
+        page_body {
+            example(title: "Fit") {
+                wrap_row(gap: 16.0) {
+                    framed(fit: ImageFit::Cover, caption: "Cover")
+                    framed(fit: ImageFit::Contain, caption: "Contain")
+                    framed(fit: ImageFit::Fill, caption: "Fill")
+                }
+            }
+        }
+    }
 }
 
 const ROW_COUNT: usize = 10_000;
 const ROW_HEIGHT: f32 = 36.0;
 
+/// A row of the long list.
+#[component]
+fn list_item(index: &usize) {
+    view! {
+        container(
+            style: StyleOf::new()
+                .with::<container::width>(Sizing::fill())
+                .with::<container::height>(ROW_HEIGHT)
+                .with::<container::padding>(EdgeInsets::symmetric(16.0, 0.0))
+                .with::<container::align>(AlignStyle::Center)
+                .with::<container::justify>(JustifyStyle::SpaceBetween)
+                .with::<container::border_color>(ColorToken::Border)
+                .when_style(
+                    WidgetStateMatcher::all(WidgetState::HOVERED),
+                    StyleOf::<Container>::new().with::<container::background>(ColorToken::Muted),
+                ),
+            flex_direction: FlexDirectionStyle::Row,
+        ) {
+            text(format!("Item {}", *index + 1), style: StyleOf::new().with::<container::font_size>(FontSizeToken::Md))
+            text(
+                format!("#{index:05}"),
+                style: StyleOf::new()
+                    .with::<container::color>(ColorToken::MutedForeground)
+                    .with::<container::font_size>(FontSizeToken::Sm),
+            )
+        }
+    }
+}
+
 #[component]
 fn virtual_list_page() {
-    let render_item: VirtualItemRenderer = cx.use_callback((), |index: usize| {
-        container()
-            .with::<container::style>(
-                StyleOf::new()
-                    .with::<container::width>(Sizing::fill())
-                    .with::<container::height>(ROW_HEIGHT)
-                    .with::<container::padding>(EdgeInsets::symmetric(16.0, 0.0))
-                    .with::<container::align>(AlignStyle::Center)
-                    .with::<container::justify>(JustifyStyle::SpaceBetween)
-                    .with::<container::border_color>(ColorToken::Border)
-                    .when_style(
-                        WidgetStateMatcher::all(WidgetState::HOVERED),
-                        StyleOf::<Container>::new()
-                            .with::<container::background>(ColorToken::Muted),
-                    ),
-            )
-            .with::<container::flex_direction>(FlexDirectionStyle::Row)
-            .into_element_desc(vec![
-                label_text(
-                    format!("Item {}", index + 1),
-                    StyleOf::new().with::<container::font_size>(FontSizeToken::Md),
-                ),
-                label_text(
-                    format!("#{index:05}"),
-                    StyleOf::new()
-                        .with::<container::color>(ColorToken::MutedForeground)
-                        .with::<container::font_size>(FontSizeToken::Sm),
-                ),
-            ])
-    });
-    let list = container()
-        .with::<container::style>(
-            StyleOf::new()
-                .with::<container::width>(360.0)
-                .with::<container::border_color>(ColorToken::Border)
-                .with::<container::border_width>(1.0)
-                .with::<container::border_radius>(RadiusToken::Md)
-                .with::<container::clip>(true),
-        )
-        .into_element_desc(vec![xui! {
-            <virtual_list
-                item_count={ROW_COUNT}
-                item_height={ROW_HEIGHT}
-                viewport_height={320.0}
-                render_item={render_item}
-                style={StyleOf::new().with::<container::width>(Sizing::fill()).with::<container::height>(320.0)}
-            />
-        }]);
-    page(vec![
-        example("10,000 rows", list),
-        muted("Only the rows inside the viewport, plus a small overscan, are mounted."),
-    ])
+    let render_item: VirtualItemRenderer =
+        VirtualItemRenderer::new(|index: usize| Children::component::<ListItem>(ListItemProps { index }));
+    view! {
+        page_body {
+            example(title: "10,000 rows") {
+                container(
+                    style: StyleOf::new()
+                        .with::<container::width>(360.0)
+                        .with::<container::border_color>(ColorToken::Border)
+                        .with::<container::border_width>(1.0)
+                        .with::<container::border_radius>(RadiusToken::Md)
+                        .with::<container::clip>(true),
+                ) {
+                    virtual_list(
+                        item_count: ROW_COUNT,
+                        item_height: ROW_HEIGHT,
+                        viewport_height: 320.0,
+                        render_item: render_item.clone(),
+                        style: StyleOf::new().with::<container::width>(Sizing::fill()).with::<container::height>(320.0),
+                    )
+                }
+            }
+            muted(text: "Only the rows inside the viewport, plus a small overscan, are mounted.")
+        }
+    }
+}
+
+fn fruits() -> Vec<DropDownItem> {
+    vec![
+        DropDownItem::new("apple", "Apple"),
+        DropDownItem::new("banana", "Banana"),
+        DropDownItem::new("blueberry", "Blueberry").disabled(true),
+        DropDownItem::new("grapes", "Grapes"),
+        DropDownItem::new("pineapple", "Pineapple"),
+    ]
 }
 
 fn filled_icon() -> IconData {
@@ -771,252 +735,184 @@ fn demo_canvas_scene(highlighted: bool) -> VectorScene {
     scene.build()
 }
 
+/// An icon in a color.
+#[component]
+fn tinted_icon(data: &IconData, color: &ColorToken) {
+    view! {
+        container(style: StyleOf::new().with::<container::color>(*color)) {
+            icon(data: data.clone(), size: Size::fix(32.0, 32.0))
+        }
+    }
+}
+
 #[component]
 fn canvas_page() {
-    let highlighted = cx.use_state(|| false);
-    let controller = cx.use_ref(|| CanvasController::with_scene(demo_canvas_scene(false)));
-    let canvas_handle = controller.get().clone();
-    let click_handle = canvas_handle.clone();
-
-    let icons = wrap_row(
-        24.0,
-        vec![
-            container()
-                .with::<container::style>(
-                    StyleOf::new().with::<container::color>(ColorToken::Primary),
-                )
-                .into_element_desc(vec![
-                    icon()
-                        .with::<icon::data>(filled_icon())
-                        .with::<icon::size>(Size::fix(32.0, 32.0))
-                        .into_element_desc(Vec::new()),
-                ]),
-            container()
-                .with::<container::style>(
-                    StyleOf::new().with::<container::color>(ColorToken::Foreground),
-                )
-                .into_element_desc(vec![
-                    icon()
-                        .with::<icon::data>(stroked_icon())
-                        .with::<icon::size>(Size::fix(32.0, 32.0))
-                        .into_element_desc(Vec::new()),
-                ]),
-            container()
-                .with::<container::style>(
-                    StyleOf::new().with::<container::color>(ColorToken::MutedForeground),
-                )
-                .into_element_desc(vec![
-                    icon()
-                        .with::<icon::data>(svg_icon())
-                        .with::<icon::size>(Size::fix(32.0, 32.0))
-                        .into_element_desc(Vec::new()),
-                ]),
-            container()
-                .with::<container::style>(
-                    StyleOf::new().with::<container::color>(ColorToken::Destructive),
-                )
-                .into_element_desc(vec![
-                    icon()
-                        .with::<icon::data>(lucide_rs::icons::palette())
-                        .with::<icon::size>(Size::fix(32.0, 32.0))
-                        .into_element_desc(Vec::new()),
-                ]),
-        ],
-    );
-
-    let glass = xui! {
-        <z_stack style={StyleOf::new().with::<container::size>(Size::fix(440.0, 220.0))}>
-            <canvas controller={canvas_handle} width={440.0} height={220.0} />
-            <container
-                style={StyleOf::new()
-                    .with::<container::size>(Size::fix(310.0, 118.0))
-                    .with::<container::padding>(EdgeInsets::all(22.0))
-                    .with::<container::background>(Color::rgba(0.92, 0.96, 1.0, 0.16))
-                    .with::<container::border_color>(Color::rgba(1.0, 1.0, 1.0, 0.48))
-                    .with::<container::border_width>(1.0)
-                    .with::<container::border_radius>(20.0)
-                    .with::<container::clip>(true)}
-                backdrop_blur={18.0}
-                on_click={move |_, _| {
-                    let next = !*highlighted.get();
-                    click_handle.set_scene(demo_canvas_scene(next));
-                    highlighted.set(next);
-                    EventResult::Consumed
-                }}
-            >
-                <column gap={7.0}>
-                    <text color={Color::WHITE} font_size={20.0} font_weight={FontWeight::Medium}>
-                        {"GPU Backdrop Blur"}
-                    </text>
-                    <text color={Color::rgba(0.92, 0.96, 1.0, 0.82)} font_size={13.0}>
-                        {"Click the glass card to swap the canvas scene."}
-                    </text>
-                </column>
-            </container>
-        </z_stack>
-    };
-
-    page(vec![
-        example("Path, stroke, SVG, and Lucide icons", icons),
-        example("Canvas with backdrop blur", glass),
-    ])
+    let highlighted: bool = state!(false);
+    let controller: CanvasController = CanvasController::with_scene(demo_canvas_scene(false));
+    view! {
+        page_body {
+            example(title: "Path, stroke, SVG, and Lucide icons") {
+                wrap_row(gap: 24.0) {
+                    tinted_icon(data: filled_icon(), color: ColorToken::Primary)
+                    tinted_icon(data: stroked_icon(), color: ColorToken::Foreground)
+                    tinted_icon(data: svg_icon(), color: ColorToken::MutedForeground)
+                    tinted_icon(data: lucide_rs::icons::palette(), color: ColorToken::Destructive)
+                }
+            }
+            example(title: "Canvas with backdrop blur") {
+                z_stack(style: StyleOf::new().with::<container::size>(Size::fix(440.0, 220.0))) {
+                    canvas(controller: controller.clone(), width: 440.0, height: 220.0)
+                    container(
+                        style: StyleOf::new()
+                            .with::<container::size>(Size::fix(310.0, 118.0))
+                            .with::<container::padding>(EdgeInsets::all(22.0))
+                            .with::<container::background>(Color::rgba(0.92, 0.96, 1.0, 0.16))
+                            .with::<container::border_color>(Color::rgba(1.0, 1.0, 1.0, 0.48))
+                            .with::<container::border_width>(1.0)
+                            .with::<container::border_radius>(20.0)
+                            .with::<container::clip>(true),
+                        backdrop_blur: 18.0,
+                        on_click: |cx| {
+                            let next = !highlighted.get();
+                            controller.set_scene(demo_canvas_scene(next));
+                            highlighted.set(cx, next);
+                            EventResult::Consumed
+                        },
+                    ) {
+                        column(gap: 7.0) {
+                            text("GPU Backdrop Blur", color: Color::WHITE, font_size: 20.0, font_weight: FontWeight::Medium)
+                            text(
+                                "Click the glass card to swap the canvas scene.",
+                                color: Color::rgba(0.92, 0.96, 1.0, 0.82),
+                                font_size: 13.0,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ---- shell -----------------------------------------------------------------
 
-fn nav_item(page: Page, active: bool, on_select: Callback<()>) -> ElementDesc {
-    let mut style = StyleOf::new()
+#[component]
+pub fn gallery() {
+    let initial: Page = cx.try_context::<InitialPage>().map_or(Page::Button, |page| page.get().0);
+    let active: Page = state!(initial);
+    let nav_style: StyleOf<Container> = StyleOf::new()
         .with::<container::width>(Sizing::fill())
         .with::<container::justify>(JustifyStyle::Start)
         .with::<container::padding>(EdgeInsets::symmetric(8.0, 6.0))
         .with::<container::min_height>(32.0);
-    if active {
-        style = style
-            .with::<container::background>(ColorToken::Accent)
-            .with::<container::color>(ColorToken::AccentForeground);
-    } else {
-        style = style.with::<container::color>(ColorToken::MutedForeground);
-    }
-    xui! {
-        <button
-            text={page.title().to_string()}
-            variant={ButtonVariant::Ghost}
-            size={ButtonSize::Small}
-            leading={Some(lucide(page.icon(), 16.0))}
-            on_click={Some(on_select)}
-            style={style}
-        />
-    }
-}
-
-fn sidebar(active: Page, callbacks: Vec<Callback<()>>) -> ElementDesc {
-    let mut items = vec![
-        container()
-            .with::<container::style>(
-                StyleOf::new()
-                    .with::<container::gap>(8.0)
-                    .with::<container::padding>(EdgeInsets::new(8.0, 8.0, 4.0, 20.0))
-                    .with::<container::align>(AlignStyle::Center),
-            )
-            .with::<container::flex_direction>(FlexDirectionStyle::Row)
-            .into_element_desc(vec![
-                lucide(lucide_rs::icons::component(), 20.0),
-                label_text(
-                    "xui components",
-                    StyleOf::new()
-                        .with::<container::font_size>(FontSizeToken::Lg)
-                        .with::<container::font_weight>(FontWeight::SemiBold),
-                ),
-            ]),
-        label_text(
-            "Components",
-            StyleOf::new()
-                .with::<container::padding>(EdgeInsets::new(8.0, 8.0, 0.0, 4.0))
-                .with::<container::color>(ColorToken::MutedForeground)
-                .with::<container::font_size>(FontSizeToken::Sm)
-                .with::<container::font_weight>(FontWeight::Medium),
-        ),
-    ];
-    for (page, on_select) in Page::ALL.into_iter().zip(callbacks) {
-        items.push(nav_item(page, page == active, on_select));
-    }
-    container()
-        .with::<container::style>(
-            StyleOf::new()
-                .with::<container::width>(240.0)
-                .with::<container::height>(Sizing::fill())
-                .with::<container::gap>(2.0)
-                .with::<container::padding>(EdgeInsets::all(12.0))
-                .with::<container::background>(ColorToken::Card),
-        )
-        .with::<container::flex_direction>(FlexDirectionStyle::Column)
-        .into_element_desc(items)
-}
-
-#[component]
-pub fn gallery() {
-    let initial = cx
-        .use_context::<InitialPage>()
-        .map_or(Page::Button, |page| page.0);
-    let active = cx.use_state(|| initial);
-    let callbacks: Vec<Callback<()>> = Page::ALL
-        .into_iter()
-        .map(|page| cx.use_callback((), move |()| active.set(page)))
-        .collect();
-    let page = *active.get();
-
-    let content: ElementDesc = match page {
-        Page::Button => xui! { <button_page /> },
-        Page::Spinner => xui! { <spinner_page /> },
-        Page::Input => xui! { <input_page /> },
-        Page::Select => xui! { <select_page /> },
-        Page::Tabs => xui! { <tabs_page /> },
-        Page::Image => xui! { <image_page /> },
-        Page::VirtualList => xui! { <virtual_list_page /> },
-        Page::Canvas => xui! { <canvas_page /> },
-    };
-
-    let main = container()
-        .with::<container::style>(
-            StyleOf::new()
-                .with::<container::size>(Size::fill())
-                .with::<container::padding>(EdgeInsets::new(48.0, 48.0, 40.0, 64.0))
-                .with::<container::scroll_direction>(ScrollDirectionStyle::Vertical),
-        )
-        .with::<container::flex_direction>(FlexDirectionStyle::Column)
-        .into_element_desc(vec![
-            container()
-                .key(format!("page-{page:?}"))
-                .with::<container::style>(
-                    StyleOf::new()
-                        .with::<container::width>(Sizing::fill())
-                        .with::<container::max_width>(760.0)
-                        .with::<container::gap>(40.0),
-                )
-                .with::<container::flex_direction>(FlexDirectionStyle::Column)
-                .into_element_desc(vec![
-                    vstack(
-                        8.0,
-                        vec![
-                            label_text(
-                                page.title(),
-                                StyleOf::new()
-                                    .with::<container::font_size>(30.0)
-                                    .with::<container::font_weight>(FontWeight::Bold),
-                            ),
-                            label_text(
-                                page.description(),
-                                StyleOf::new()
-                                    .with::<container::color>(ColorToken::MutedForeground)
-                                    .with::<container::font_size>(FontSizeToken::Lg),
-                            ),
-                        ],
-                    ),
-                    content,
-                ]),
-        ]);
-
-    container()
-        .with::<container::style>(
-            StyleOf::new()
+    view! {
+        container(
+            style: StyleOf::new()
                 .with::<container::size>(Size::fill())
                 .with::<container::background>(ColorToken::Background)
                 .with::<container::padding>(EdgeInsets::zero().set_top(32.))
                 .with::<container::color>(ColorToken::Foreground),
-        )
-        .with::<container::flex_direction>(FlexDirectionStyle::Row)
-        .into_element_desc(vec![
-            sidebar(page, callbacks),
-            container()
-                .with::<container::style>(
-                    StyleOf::new()
-                        .with::<container::width>(1.0)
-                        .with::<container::height>(Sizing::fill())
-                        .with::<container::background>(ColorToken::Border),
+            flex_direction: FlexDirectionStyle::Row,
+        ) {
+            container(
+                style: StyleOf::new()
+                    .with::<container::width>(240.0)
+                    .with::<container::height>(Sizing::fill())
+                    .with::<container::gap>(2.0)
+                    .with::<container::padding>(EdgeInsets::all(12.0))
+                    .with::<container::background>(ColorToken::Card),
+                flex_direction: FlexDirectionStyle::Column,
+            ) {
+                container(
+                    style: StyleOf::new()
+                        .with::<container::gap>(8.0)
+                        .with::<container::padding>(EdgeInsets::new(8.0, 8.0, 4.0, 20.0))
+                        .with::<container::align>(AlignStyle::Center),
+                    flex_direction: FlexDirectionStyle::Row,
+                ) {
+                    icon(data: lucide_rs::icons::component(), size: Size::fix(20.0, 20.0))
+                    text("xui components", style: heading_style())
+                }
+                text(
+                    "Components",
+                    style: StyleOf::new()
+                        .with::<container::padding>(EdgeInsets::new(8.0, 8.0, 0.0, 4.0))
+                        .with::<container::color>(ColorToken::MutedForeground)
+                        .with::<container::font_size>(FontSizeToken::Sm)
+                        .with::<container::font_weight>(FontWeight::Medium),
                 )
-                .into_element_desc(Vec::new()),
-            main,
-        ])
+                for page in Page::ALL {
+                    button(
+                        text: page.title().to_string(),
+                        variant: ButtonVariant::Ghost,
+                        size: ButtonSize::Small,
+                        leading: lucide(page.icon(), 16.0),
+                        on_click: |cx| active.set(cx, *page),
+                        style: if *active == *page {
+                            nav_style
+                                .clone()
+                                .with::<container::background>(ColorToken::Accent)
+                                .with::<container::color>(ColorToken::AccentForeground)
+                        } else {
+                            nav_style.clone().with::<container::color>(ColorToken::MutedForeground)
+                        },
+                    )
+                    .key(*page)
+                }
+            }
+            container(
+                style: StyleOf::new()
+                    .with::<container::width>(1.0)
+                    .with::<container::height>(Sizing::fill())
+                    .with::<container::background>(ColorToken::Border),
+            )
+            container(
+                style: StyleOf::new()
+                    .with::<container::size>(Size::fill())
+                    .with::<container::padding>(EdgeInsets::new(48.0, 48.0, 40.0, 64.0))
+                    .with::<container::scroll_direction>(ScrollDirectionStyle::Vertical),
+                flex_direction: FlexDirectionStyle::Column,
+            ) {
+                container(
+                    style: StyleOf::new()
+                        .with::<container::width>(Sizing::fill())
+                        .with::<container::max_width>(760.0)
+                        .with::<container::gap>(40.0),
+                    flex_direction: FlexDirectionStyle::Column,
+                ) {
+                    vstack(gap: 8.0) {
+                        text(
+                            active.title(),
+                            style: StyleOf::new()
+                                .with::<container::font_size>(30.0)
+                                .with::<container::font_weight>(FontWeight::Bold),
+                        )
+                        text(
+                            active.description(),
+                            style: StyleOf::new()
+                                .with::<container::color>(ColorToken::MutedForeground)
+                                .with::<container::font_size>(FontSizeToken::Lg),
+                        )
+                    }
+                    match *active {
+                        Page::Button => button_page(),
+                        Page::Spinner => spinner_page(),
+                        Page::Input => input_page(),
+                        Page::Select => select_page(),
+                        Page::Tabs => tabs_page(),
+                        Page::Image => image_page(),
+                        Page::VirtualList => virtual_list_page(),
+                        Page::Canvas => canvas_page(),
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What the app starts with: the gallery, at the root.
+pub fn gallery_root(app: &mut App) {
+    app.mount::<Gallery>(GalleryProps {});
 }
 
 #[cfg(all(test, feature = "skia"))]
@@ -1056,8 +952,9 @@ mod tests {
         ));
         {
             for (name, theme, page, width) in runs {
-                let mut app = App::new(gallery_component);
+                let mut app = App::new(|_| {});
                 app.provide_context(InitialPage(page));
+                app.mount::<Gallery>(GalleryProps {});
                 app.set_theme(theme.clone());
                 app.resize(Size::new(width as f32, HEIGHT as f32));
                 let mut backend = SkiaBackend::<CosmicEngine>::headless(
@@ -1106,8 +1003,9 @@ mod tests {
     #[test]
     fn the_spinner_page_moves_from_frame_to_frame() {
         let theme = Theme::light();
-        let mut app = App::new(gallery_component);
+        let mut app = App::new(|_| {});
         app.provide_context(InitialPage(Page::Spinner));
+        app.mount::<Gallery>(GalleryProps {});
         app.set_theme(theme.clone());
         let backend = SkiaBackend::<CosmicEngine>::headless(
             1.0,
@@ -1154,8 +1052,9 @@ mod smoke_tests {
         xui_core::assets::install_asset_manager(crate::xui_assets::manager().unwrap());
         for theme in [Theme::light(), Theme::dark()] {
             for page in Page::ALL {
-                let mut app = App::new(gallery_component);
+                let mut app = App::new(|_| {});
                 app.provide_context(InitialPage(page));
+                app.mount::<Gallery>(GalleryProps {});
                 app.set_theme(theme.clone());
                 let mut backend = MockRenderBackend::default();
                 let mut text = TextHost::new(CosmicEngine::new(1.0));

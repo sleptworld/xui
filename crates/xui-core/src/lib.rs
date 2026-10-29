@@ -1,24 +1,22 @@
 //! Core of the `xui` GUI framework: a retained-mode, declarative UI runtime.
 //!
-//! `xui` ties together a JSX-style `xui!` element macro, a React-style hook
-//! and fiber reconciler, flexbox layout (`taffy`), a style pipeline with tokens
-//! and themes, a backend-independent render scene, built-in widgets, and
-//! integration points for assets and text. Applications reach it through the
-//! `prelude` module and the `xui-macros` crate.
+//! `xui` ties together fine-grained reactive components (`#[component]`,
+//! dependencies resolved at compile time; see [`reactive`]), flexbox layout
+//! (`taffy`), a style pipeline with tokens and themes, a backend-independent
+//! render scene, built-in widgets, and integration points for assets and
+//! text. Applications reach it through the `prelude` module and the
+//! `xui-macros` crate.
 //!
 //! # Modules
 //!
-//! - `app` — `App` owns the component root, async runtime, scheduler, theme,
-//!   and text host.
+//! - `app` — `App` owns the host runtime, the reactive runtime, the async
+//!   runtime, and the theme.
 //! - `runtime` — `GuiRuntime` drives the event/render loop.
 //! - `clock` — `FrameClock`/`FrameTime`, the one time source a frame is
 //!   animated against.
-//! - `ticker` — `use_ticker`'s per-frame callbacks, paced by the frame loop.
-//! - `fiber` — retained fiber tree that reconciles `ElementDesc` trees.
-//! - `state` — hooks: `HookContext`, `Memo`, `Resource`, `Callback`,
-//!   `AsyncValue`, `TaskContext`, with lanes for batched updates.
-//! - `context` — `provide_context`/`use_context`: values a component hands
-//!   down to its subtree, re-rendering only the components that read them.
+//! - `ticker` — `ticker!`'s per-frame callbacks, paced by the frame loop.
+//! - `reactive` — components: signals, memos, effects, blocks and the
+//!   runtime that mounts them into the host tree.
 //! - `layout` — `taffy` flexbox over retained spatial nodes.
 //! - `style` — patches, tokens, themes, `ComputedStyle`, state rules.
 //! - `render` — scene, scene compiler, and the `RenderBackend` trait.
@@ -39,36 +37,26 @@ pub mod assets;
 pub mod capability;
 pub mod caps;
 pub mod clock;
-pub mod component;
-pub mod context;
 pub mod core;
 mod diagnostics;
-pub mod dsl;
-pub mod element;
 pub mod render;
 pub mod transition;
 // pub mod event;
 pub mod event_system;
-pub mod fiber;
 pub mod focus;
 #[cfg(test)]
-mod component_bench;
-#[cfg(test)]
-mod frame_bench;
-pub mod lanes;
+mod test_tree;
 pub mod layout;
 pub mod node;
 pub mod platform;
 pub mod prelude;
-pub mod prop;
 pub mod property;
+pub mod reactive;
 pub mod runtime;
 pub mod scroll;
 pub mod shortcut;
 pub mod size;
-pub mod state;
 pub mod style;
-pub mod template;
 pub mod ticker;
 pub mod widgets;
 
@@ -78,6 +66,7 @@ pub mod widgets;
 #[allow(unused_imports)]
 pub(crate) mod test_prelude {
     pub(crate) use crate::node::{Draft, Layer, StyleOf};
+    pub(crate) use crate::test_tree::{IntoTree, StaticTree};
     pub(crate) use crate::widgets::ErasedDraft;
     pub(crate) use crate::widgets::canvas::{Canvas, canvas};
     pub(crate) use crate::widgets::container::{Container, center, column, container, row};

@@ -168,8 +168,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use xui_interface::{
-        Affine, Bounds, Color, ComputedBackdropStyle, ComputedEffect, ImageData, ImageKey, Point,
-        Rect, Size,
+        Affine, Bounds, Color, ComputedBackdropStyle, ComputedEffect, ImageData, ImageKey, Point, Size,
     };
 
     #[test]

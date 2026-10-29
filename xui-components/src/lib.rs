@@ -1,23 +1,34 @@
 //! The built-in declarative component library for XUI.
 //!
-//! All 36 component implementations are defined with `#[component]` and composed with
-//! `view!`. They share themed styles, typed props, and semantic event handling. The
-//! component entry points are documented below; macro-generated render functions,
-//! handles, builders, and typestate markers are hidden from the rendered API.
+//! All 36 components are defined with `#[component]` and composed in `view!`. They
+//! share themed styles, typed props, and semantic event handling. Props that callers
+//! bind to changing state (`disabled`, values, items) are `#[source]` props: pass a
+//! source by name and the component follows it. Callbacks take closures
+//! (`on_change: |cx, value| ..`), and element props take `view! { .. }` or a trailing
+//! `{ .. }` block.
 //!
 //! # Quick start
 //!
 //! ```rust
 //! use xui_core::prelude::*;
 //! use xui_components::*;
-//! use xui_macros::view;
+//! use xui_macros::component;
 //!
-//! let content = view! {
-//!     column(gap: 12.0) {
-//!         xui_components::input(accessibility_label: Some("Email".to_owned()), required: true)
-//!         button(text: "Save", variant: ButtonVariant::Primary)
+//! #[component]
+//! fn sign_in() {
+//!     let saving: bool = state!(false);
+//!     view! {
+//!         column(gap: 12.0) {
+//!             xui_components::input(accessibility_label: Some("Email".to_owned()), required: true)
+//!             button(
+//!                 text: "Save",
+//!                 variant: ButtonVariant::Primary,
+//!                 loading: saving,
+//!                 on_click: |cx| saving.set(cx, true),
+//!             )
+//!         }
 //!     }
-//! };
+//! }
 //! ```
 //!
 //! # Component catalog
@@ -102,44 +113,44 @@
 //! `use xui_components::image::image;` for an unqualified `view! { image(...) }`.
 //! `ImageSrc` and `ImageError` are also re-exported at the crate root.
 
+// Ported to `#[component]` one module at a time; see `docs/reactive.md`.
 pub mod button;
+pub mod calendar;
+pub mod collections;
+pub mod command;
+pub mod controls;
 pub mod dropdown;
 pub mod feedback;
 pub mod image;
+pub mod forms;
 pub mod input;
+pub mod overlays;
 pub mod layout;
+pub mod selection;
 pub mod tabs;
 pub mod virtual_list;
-
 pub use button::*;
+pub use calendar::*;
+pub use collections::*;
+pub use command::*;
+pub use controls::*;
 pub use dropdown::*;
 pub use feedback::*;
-pub use input::*;
-
+pub use forms::*;
 pub use image::ImageError;
 pub use image::ImageSrc;
+pub use input::*;
+pub use overlays::*;
+/// The drawer component under a sheet-style name.
+pub use overlays::{Drawer as Sheet, drawer as sheet};
 pub use layout::*;
+pub use selection::*;
 pub use tabs::*;
 pub use virtual_list::*;
 
-pub mod selection;
-pub use selection::*;
-pub mod controls;
-pub use controls::*;
-pub mod forms;
-pub use forms::*;
-pub mod overlays;
-pub use overlays::*;
-pub mod collections;
-pub use collections::*;
-pub mod calendar;
-pub use calendar::*;
-pub mod command;
-pub use command::*;
-
+// An alias is a tag and its marker, since a parent finds the marker by the
+// tag's name (`select(..)` mounts through `Select`).
 /// The dropdown component under a familiar native-control name.
-pub use dropdown::drop_down as select;
+pub use dropdown::{DropDown as Select, drop_down as select};
 /// The dropdown component; accepts the same props as [`select`].
-pub use dropdown::drop_down as combo_box;
-/// The drawer component under a sheet-style name.
-pub use overlays::drawer as sheet;
+pub use dropdown::{DropDown as ComboBox, drop_down as combo_box};

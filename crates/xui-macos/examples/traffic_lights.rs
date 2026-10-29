@@ -23,6 +23,7 @@ use xui_core::prelude::*;
 use xui_core::render::MockRenderBackend;
 use xui_f::FBackend;
 use xui_interface::Size;
+use xui_macros::component;
 use xui_macos::{
     MacOsWindowOptions, MacRunner, MacRunnerOptions, MacWindow, WindowOptions, WindowSize,
 };
@@ -36,11 +37,13 @@ thread_local! {
     static RESULTS: RefCell<Vec<(String, Result<(), String>)>> = const { RefCell::new(Vec::new()) };
 }
 
-fn root(_: &mut HookContext<'_>) -> ElementDesc {
-    container()
-        .with::<container::width>(500.0)
-        .with::<container::height>(400.0)
-        .into_element_desc(Vec::new())
+#[component]
+fn window_content() {
+    view! { container(width: 500.0, height: 400.0) }
+}
+
+fn root(app: &mut App) {
+    app.mount::<WindowContent>(WindowContentProps {});
 }
 
 fn main() -> ExitCode {

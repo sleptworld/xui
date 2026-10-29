@@ -10,7 +10,6 @@ use xui_macros::widget;
 
 use super::props_hash;
 use super::roles::{PaintContent, TextSource};
-use crate::element::ElementDesc;
 use crate::node::{Draft, WidgetInstance, WidgetT};
 use crate::render::{Primitive, RenderTreeWriter, TextPrimitive};
 use crate::text::TextLayoutSlot;
@@ -68,18 +67,6 @@ pub(super) fn apply_text_style(text_props: &mut LayoutProps, style: &ComputedSty
     text_props.style.line_height = style.text.line_height;
     text_props.style.letter_spacing = style.text.letter_spacing;
     text_props.style.decoration = style.text.decoration;
-}
-
-/// A string where an element goes is a text node showing it.
-impl<T> From<T> for ElementDesc
-where
-    T: Into<TextContent>,
-{
-    fn from(value: T) -> Self {
-        text()
-            .with::<text::content>(value)
-            .into_element_desc(Vec::new())
-    }
 }
 
 impl PaintContent for WidgetInstance<Text> {

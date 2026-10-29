@@ -18,10 +18,12 @@
 //! | [`data_grid`](fn@self::data_grid) | A tabular string-data surface with sortable headers and selectable rows. |
 //! | [`tree_view`](fn@self::tree_view) | A tree with independent controlled selection and expansion. |
 
-use xui_core::prelude::*;
-use xui_macros::{component, view};
+use std::collections::HashSet;
 
-use crate::{BoolChangeCallback, IndexChangeCallback};
+use xui_core::prelude::*;
+use xui_macros::component;
+
+use crate::controls::commit;
 
 /// A disclosure section showing content when its trigger is activated.
 ///
@@ -46,84 +48,72 @@ use crate::{BoolChangeCallback, IndexChangeCallback};
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { collapsible(trigger: view! { text("Details") }, content: view! { text("More information") }) };
+/// #[component]
+/// fn example() {
+///     view! { collapsible(trigger: view! { text("Details") }) { text("More information") } }
+/// }
 /// ```
 #[component]
 #[defaults(
-    open = None,
+    open = None::<bool>,
     default_open = false,
-    on_open_change = None,
     style = StyleOf::new(),
     trigger_style = StyleOf::new(),
 )]
 pub fn collapsible(
-    trigger: &ElementDesc,
-    content: &ElementDesc,
-    open: &Option<bool>,
+    trigger: &Children,
+    children: &Children,
+    #[source] open: &Option<bool>,
     default_open: &bool,
-    on_open_change: &Option<BoolChangeCallback>,
+    on_open_change: &Callback<bool>,
     style: &StyleOf<Container>,
     trigger_style: &StyleOf<Container>,
 ) {
-    let state = cx.use_state(|| *default_open);
-    let controlled = open.is_some();
-    let shown = open.unwrap_or(*state.get());
-    let callback = on_open_change.clone();
-    let trigger = view! {
-        container(
-            style: crate::layout::control_style(false).merged(trigger_style),
-            focusable: true,
-            tab_index: 0,
-            accessibility_role: AccessibilityRole::Button,
-            accessibility_expanded: shown,
-            on_click: move |_, event_cx| {
-                let next = !shown;
-                if !controlled {
-                    state.set(next);
-                }
-                if let Some(callback) = &callback {
-                    callback.call(next);
-                }
-                event_cx.request_focus();
-                EventResult::Consumed
-            },
-        ) {
-            ..trigger.clone()
-        }
-    };
-    let mut children = vec![trigger];
-    if shown {
-        children.push(content.clone());
-    }
-    let mut root_style = StyleOf::new();
-    root_style.merge(style);
+    let own: bool = state!(*default_open);
+    let shown: bool = memo!(open.unwrap_or(*own));
     view! {
         container(
-            style: root_style,
+            style: style.clone(),
             flex_direction: FlexDirectionStyle::Column,
         ) {
-            ..children
+            container(
+                style: crate::layout::control_style(false).merged(trigger_style),
+                focusable: true,
+                tab_index: 0,
+                accessibility_role: AccessibilityRole::Button,
+                accessibility_expanded: *shown,
+                on_click: |cx, _event, event_cx| {
+                    commit(cx, !shown.get(), open, own, on_open_change);
+                    event_cx.request_focus();
+                    EventResult::Consumed
+                },
+            ) {
+                slot(trigger)
+            }
+            if *shown {
+                slot(children)
+            }
         }
     }
 }
 
 /// An identified disclosure section with title, content, and disabled state.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AccordionItem {
     pub id: String,
-    pub title: ElementDesc,
-    pub content: ElementDesc,
+    pub title: Children,
+    pub content: Children,
     pub disabled: bool,
 }
 
 impl AccordionItem {
-    pub fn new(id: impl Into<String>, title: ElementDesc, content: ElementDesc) -> Self {
+    pub fn new(id: impl Into<String>, title: impl Into<Children>, content: impl Into<Children>) -> Self {
         Self {
             id: id.into(),
-            title,
-            content,
+            title: title.into(),
+            content: content.into(),
             disabled: false,
         }
     }
@@ -162,103 +152,84 @@ pub type OptionalIndexChangeCallback = Callback<Option<usize>>;
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { accordion(items: vec![AccordionItem::new("details", view! { text("Details") }, view! { text("Information") })]) };
+/// #[component]
+/// fn example() {
+///     view! { accordion(items: vec![AccordionItem::new("details", "Details", "Information")]) }
+/// }
 /// ```
 #[component]
 #[defaults(
-    expanded = None,
-    default_expanded = None,
+    expanded = None::<Option<usize>>,
+    default_expanded = None::<usize>,
     collapsible = true,
-    on_change = None,
     style = StyleOf::new(),
     trigger_style = StyleOf::new(),
     content_style = StyleOf::new(),
 )]
 pub fn accordion(
-    items: &Vec<AccordionItem>,
-    expanded: &Option<Option<usize>>,
+    #[source] items: &Vec<AccordionItem>,
+    #[source] expanded: &Option<Option<usize>>,
     default_expanded: &Option<usize>,
     collapsible: &bool,
-    on_change: &Option<OptionalIndexChangeCallback>,
+    on_change: &Callback<Option<usize>>,
     style: &StyleOf<Container>,
     trigger_style: &StyleOf<Container>,
     content_style: &StyleOf<Container>,
 ) {
-    let state = cx.use_state(|| *default_expanded);
-    let controlled = expanded.is_some();
-    let active = expanded.unwrap_or(*state.get());
-    let mut children = Vec::with_capacity(items.len());
-    for (index, item) in items.iter().enumerate() {
-        let shown = active == Some(index);
-        let disabled = item.disabled;
-        let callback = on_change.clone();
-        let can_collapse = *collapsible;
-        let interactive = !disabled;
-
-        let mut section = vec![view! {
-            container(
-                style: StyleOf::new()
-                    .with::<container::padding>(EdgeInsets::symmetric(12.0, 10.0))
-                    .with::<container::border_color>(ColorToken::Border)
-                    .with::<container::border_width>(1.0).merged(&crate::layout::control_style(disabled)).merged(trigger_style),
-                focusable: !disabled,
-                tab_index: if disabled { -1 } else { 0 },
-                accessibility_role: AccessibilityRole::Button,
-                accessibility_expanded: shown,
-                accessibility_disabled: disabled,
-                on_click: move |_, event_cx| { if !interactive { return EventResult::Ignored; }
-                    let next = if shown && can_collapse {
-                        None
-                    } else {
-                        Some(index)
-                    };
-                    if !controlled {
-                        state.set(next);
-                    }
-                    if let Some(callback) = &callback {
-                        callback.call(next);
-                    }
-                    event_cx.request_focus();
-                    EventResult::Consumed
-                },
-            ) {
-                ..item.title.clone()
-            }
-        }];
-        if shown {
-            section.push(view! {
-                container(
-                    style: StyleOf::new().with::<container::padding>(EdgeInsets::all(12.0)).merged(content_style),
-                ) {
-                    ..item.content.clone()
-                }
-            });
-        }
-        children.push(view! {
-            container(
-                key: item.id.clone(),
-                flex_direction: FlexDirectionStyle::Column,
-            ) {
-                ..section
-            }
-        });
-    }
-    let mut root_style = StyleOf::new();
-    root_style.merge(style);
+    let own: Option<usize> = state!(*default_expanded);
+    let active: Option<usize> = memo!(expanded.unwrap_or(*own));
     view! {
         container(
-            style: root_style,
+            style: style.clone(),
             flex_direction: FlexDirectionStyle::Column,
         ) {
-            ..children
+            for (index, item) in items.iter().cloned().enumerate() {
+                container(flex_direction: FlexDirectionStyle::Column) {
+                    container(
+                        style: StyleOf::new()
+                            .with::<container::padding>(EdgeInsets::symmetric(12.0, 10.0))
+                            .with::<container::border_color>(ColorToken::Border)
+                            .with::<container::border_width>(1.0)
+                            .merged(&crate::layout::control_style(item.disabled))
+                            .merged(trigger_style),
+                        focusable: !item.disabled,
+                        tab_index: if item.disabled { -1 } else { 0 },
+                        accessibility_role: AccessibilityRole::Button,
+                        accessibility_expanded: *active == Some(*index),
+                        accessibility_disabled: item.disabled,
+                        on_click: |cx, _event, event_cx| {
+                            if item.disabled {
+                                return EventResult::Ignored;
+                            }
+                            let shown = active.get() == Some(*index);
+                            let next = if shown && *collapsible { None } else { Some(*index) };
+                            commit(cx, next, expanded, own, on_change);
+                            event_cx.request_focus();
+                            EventResult::Consumed
+                        },
+                    ) {
+                        slot(item.title)
+                    }
+                    if *active == Some(*index) {
+                        container(
+                            style: StyleOf::new()
+                                .with::<container::padding>(EdgeInsets::all(12.0))
+                                .merged(content_style),
+                        ) {
+                            slot(item.content)
+                        }
+                    }
+                }
+                .key(item.id.clone())
+            }
         }
     }
 }
 
 /// A breadcrumb label with optional disabled navigation.
-#[derive(Clone, Debug, Hash)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct BreadcrumbItem {
     pub label: String,
     pub disabled: bool,
@@ -294,73 +265,60 @@ impl BreadcrumbItem {
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { breadcrumb(items: vec![BreadcrumbItem::new("Home"), BreadcrumbItem::new("Settings")]) };
+/// #[component]
+/// fn example() {
+///     view! { breadcrumb(items: vec![BreadcrumbItem::new("Home"), BreadcrumbItem::new("Settings")]) }
+/// }
 /// ```
 #[component]
 #[defaults(
-    on_navigate = None,
     separator = "/".to_string(),
     style = StyleOf::new(),
     item_style = StyleOf::new(),
 )]
 pub fn breadcrumb(
-    items: &Vec<BreadcrumbItem>,
-    on_navigate: &Option<IndexChangeCallback>,
-    separator: &String,
+    #[source] items: &Vec<BreadcrumbItem>,
+    on_navigate: &Callback<usize>,
+    #[source] separator: &String,
     style: &StyleOf<Container>,
     item_style: &StyleOf<Container>,
 ) {
-    let mut children = Vec::new();
-    for (index, item) in items.iter().enumerate() {
-        if index > 0 {
-            children.push(view! {
-                xui_core::prelude::text(
-                    separator.clone(),
-                )
-            });
-        }
-        let current = index + 1 == items.len();
-        let callback = on_navigate.clone();
-        let disabled = item.disabled || current;
-        let navigation_enabled = !disabled;
-
-        children.push(view! {
-            container(
-                style: crate::layout::control_style(disabled).merged(item_style),
-                focusable: !disabled,
-                tab_index: if disabled { -1 } else { 0 },
-                accessibility_role: if current {
-                    AccessibilityRole::Text
-                } else {
-                    AccessibilityRole::Link
-                },
-                accessibility_label: item.label.clone(),
-                accessibility_disabled: disabled,
-                on_click: move |_, event_cx| { if !navigation_enabled { return EventResult::Ignored; }
-                    event_cx.request_focus();
-                    if let Some(callback) = &callback {
-                        callback.call(index);
-                    }
-                    EventResult::Consumed
-                },
-            ) {
-                xui_core::prelude::text(
-                    item.label.clone(),
-                )
-            }
-        });
-    }
-    let mut root_style = StyleOf::new().with::<container::gap>(8.0);
-    root_style.merge(style);
     view! {
         container(
-            style: root_style,
+            style: StyleOf::new().with::<container::gap>(8.0).merged(style),
             flex_direction: FlexDirectionStyle::Row,
             align: AlignStyle::Center,
         ) {
-            ..children
+            for (index, item) in items.iter().cloned().enumerate() {
+                if *index > 0 {
+                    text(separator.clone())
+                }
+                container(
+                    style: crate::layout::control_style(item.disabled || *index + 1 == items.len())
+                        .merged(item_style),
+                    focusable: !(item.disabled || *index + 1 == items.len()),
+                    tab_index: if item.disabled || *index + 1 == items.len() { -1 } else { 0 },
+                    accessibility_role: if *index + 1 == items.len() {
+                        AccessibilityRole::Text
+                    } else {
+                        AccessibilityRole::Link
+                    },
+                    accessibility_label: item.label.clone(),
+                    accessibility_disabled: item.disabled || *index + 1 == items.len(),
+                    on_click: |cx, _event, event_cx| {
+                        if item.disabled || *index + 1 == items.read().len() {
+                            return EventResult::Ignored;
+                        }
+                        event_cx.request_focus();
+                        on_navigate.call(cx, *index);
+                        EventResult::Consumed
+                    },
+                ) {
+                    text(item.label.clone())
+                }
+            }
         }
     }
 }
@@ -388,145 +346,144 @@ pub fn breadcrumb(
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { pagination(page_count: 10usize, page: 2usize) };
+/// #[component]
+/// fn example() {
+///     view! { pagination(page_count: 10usize, page: 2usize) }
+/// }
 /// ```
 #[component]
 #[defaults(
     page = 0,
     sibling_count = 1,
-    on_change = None,
     style = StyleOf::new(),
     item_style = StyleOf::new(),
 )]
 pub fn pagination(
-    page_count: &usize,
-    page: &usize,
-    sibling_count: &usize,
-    on_change: &Option<IndexChangeCallback>,
+    #[source] page_count: &usize,
+    #[source] page: &usize,
+    #[source] sibling_count: &usize,
+    on_change: &Callback<usize>,
     style: &StyleOf<Container>,
     item_style: &StyleOf<Container>,
 ) {
-    let page_count = *page_count;
-    if page_count == 0 {
-        return view! {
-            container(
-                accessibility_hidden: true,
-            )
-        };
-    }
-    let current = (*page).min(page_count.saturating_sub(1));
-    let start = current.saturating_sub(*sibling_count);
-    let end = current
-        .saturating_add(*sibling_count)
-        .saturating_add(1)
-        .min(page_count);
-    let navigation_button = |label: String, target: usize, disabled: bool| {
-        let callback = on_change.clone();
-        let navigation_enabled = !disabled;
-
-        view! {
-            container(
-                style: StyleOf::new()
-                    .with::<container::size>(Size::fix(36.0, 36.0))
-                    .with::<container::align>(AlignStyle::Center)
-                    .with::<container::justify>(JustifyStyle::Center).merged(&crate::layout::control_style(disabled)).merged(item_style),
-                focusable: !disabled,
-                tab_index: if disabled { -1 } else { 0 },
-                accessibility_role: AccessibilityRole::Button,
-                accessibility_label: label.clone(),
-                accessibility_disabled: disabled,
-                on_click: move |_, event_cx| { if !navigation_enabled { return EventResult::Ignored; }
-                    event_cx.request_focus();
-                    if let Some(callback) = &callback {
-                        callback.call(target);
+    let current: usize = memo!((*page).min(page_count.saturating_sub(1)));
+    let pages: Vec<usize> = memo!({
+        let start = current.saturating_sub(*sibling_count);
+        let end = current.saturating_add(*sibling_count).saturating_add(1).min(*page_count);
+        (start..end).collect()
+    });
+    let last: usize = memo!(page_count.saturating_sub(1));
+    view! {
+        container(
+            style: StyleOf::new().with::<container::gap>(4.0).merged(style),
+            flex_direction: FlexDirectionStyle::Row,
+            accessibility_hidden: *page_count == 0,
+        ) {
+            if *page_count > 0 {
+                page_button(label: "First page".to_string(), target: 0, disabled: *current == 0, on_change: on_change, item_style: item_style.clone())
+                page_button(
+                    label: "Previous page".to_string(),
+                    target: current.saturating_sub(1),
+                    disabled: *current == 0,
+                    on_change: on_change,
+                    item_style: item_style.clone(),
+                )
+                for index in pages.clone() {
+                    container(
+                        style: StyleOf::new()
+                            .with::<container::size>(Size::fix(36.0, 36.0))
+                            .with::<container::align>(AlignStyle::Center)
+                            .with::<container::justify>(JustifyStyle::Center)
+                            .with::<container::background>(if *index == *current {
+                                ColorStyle::from(ColorToken::Primary)
+                            } else {
+                                ColorStyle::from(Color::TRANSPARENT)
+                            })
+                            .with::<container::border_radius>(RadiusToken::Sm),
+                        focusable: true,
+                        tab_index: 0,
+                        accessibility_role: AccessibilityRole::Button,
+                        accessibility_label: format!("Page {}", *index + 1),
+                        accessibility_selected: *index == *current,
+                        on_click: |cx, _event, event_cx| {
+                            event_cx.request_focus();
+                            on_change.call(cx, *index);
+                            EventResult::Consumed
+                        },
+                    ) {
+                        text((*index + 1).to_string())
                     }
-                    EventResult::Consumed
-                },
-            ) {
-                xui_core::prelude::text(
-                    label.clone(),
+                    .key(*index)
+                }
+                page_button(
+                    label: "Next page".to_string(),
+                    target: (*current + 1).min(*last),
+                    disabled: *current + 1 >= *page_count,
+                    on_change: on_change,
+                    item_style: item_style.clone(),
+                )
+                page_button(
+                    label: "Last page".to_string(),
+                    target: *last,
+                    disabled: *current + 1 >= *page_count,
+                    on_change: on_change,
+                    item_style: item_style.clone(),
                 )
             }
         }
-    };
-    let mut children = vec![
-        navigation_button("First page".to_owned(), 0, current == 0),
-        navigation_button(
-            "Previous page".to_owned(),
-            current.saturating_sub(1),
-            current == 0,
-        ),
-    ];
-    for index in start..end {
-        let callback = on_change.clone();
-        let selected = index == current;
-        children.push(view! {
-            container(
-                style: StyleOf::new()
-                    .with::<container::size>(Size::fix(36.0, 36.0))
-                    .with::<container::align>(AlignStyle::Center)
-                    .with::<container::justify>(JustifyStyle::Center)
-                    .with::<container::background>(if selected {
-                        ColorStyle::from(ColorToken::Primary)
-                    } else {
-                        ColorStyle::from(Color::TRANSPARENT)
-                })
-                    .with::<container::border_radius>(RadiusToken::Sm),
-                focusable: true,
-                tab_index: 0,
-                accessibility_role: AccessibilityRole::Button,
-                accessibility_label: format!("Page {}", index + 1),
-                accessibility_selected: selected,
-                on_click: move |_, event_cx| {
-                    event_cx.request_focus();
-                    if let Some(callback) = &callback {
-                        callback.call(index);
-                    }
-                    EventResult::Consumed
-                },
-            ) {
-                xui_core::prelude::text(
-                    (index + 1).to_string(),
-                )
-            }
-        });
     }
-    children.push(navigation_button(
-        "Next page".to_owned(),
-        (current + 1).min(page_count - 1),
-        current + 1 >= page_count,
-    ));
-    children.push(navigation_button(
-        "Last page".to_owned(),
-        page_count - 1,
-        current + 1 >= page_count,
-    ));
-    let mut root_style = StyleOf::new().with::<container::gap>(4.0);
-    root_style.merge(style);
+}
+
+/// One of `pagination`'s first/previous/next/last buttons.
+#[component]
+fn page_button(
+    #[source] label: &String,
+    #[source] target: &usize,
+    #[source] disabled: &bool,
+    on_change: &Callback<usize>,
+    item_style: &StyleOf<Container>,
+) {
     view! {
         container(
-            style: root_style,
-            flex_direction: FlexDirectionStyle::Row,
+            style: StyleOf::new()
+                .with::<container::size>(Size::fix(36.0, 36.0))
+                .with::<container::align>(AlignStyle::Center)
+                .with::<container::justify>(JustifyStyle::Center)
+                .merged(&crate::layout::control_style(*disabled))
+                .merged(item_style),
+            focusable: !*disabled,
+            tab_index: if *disabled { -1 } else { 0 },
+            accessibility_role: AccessibilityRole::Button,
+            accessibility_label: label.clone(),
+            accessibility_disabled: *disabled,
+            on_click: |cx, _event, event_cx| {
+                if disabled.get() {
+                    return EventResult::Ignored;
+                }
+                event_cx.request_focus();
+                on_change.call(cx, target.get());
+                EventResult::Consumed
+            },
         ) {
-            ..children
+            text(label.clone())
         }
     }
 }
 
 /// An identified table row containing arbitrary element cells.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TableRow {
     pub id: String,
-    pub cells: Vec<ElementDesc>,
+    pub cells: Vec<Children>,
 }
 
 impl TableRow {
-    pub fn new(id: impl Into<String>, cells: Vec<ElementDesc>) -> Self {
+    pub fn new(id: impl Into<String>, cells: impl IntoIterator<Item = impl Into<Children>>) -> Self {
         Self {
             id: id.into(),
-            cells,
+            cells: cells.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -555,96 +512,79 @@ impl TableRow {
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { data_table(rows: vec![TableRow::new("row-1", vec![view! { text("Alpha") }])]) };
+/// #[component]
+/// fn example() {
+///     view! { data_table(rows: vec![TableRow::new("row-1", ["Alpha"])]) }
+/// }
 /// ```
 #[component]
 #[defaults(
-    headers = Vec::new(),
+    headers = Vec::<Children>::new(),
     style = StyleOf::new(),
     row_style = StyleOf::new(),
     header_style = StyleOf::new(),
     cell_style = StyleOf::new(),
-    column_tracks = None,
+    column_tracks = None::<GridTracks>,
 )]
 pub fn data_table(
-    rows: &Vec<TableRow>,
-    headers: &Vec<ElementDesc>,
+    #[source] rows: &Vec<TableRow>,
+    #[source] headers: &Vec<Children>,
     style: &StyleOf<Container>,
     row_style: &StyleOf<Grid>,
     header_style: &StyleOf<Grid>,
     cell_style: &StyleOf<Container>,
     column_tracks: &Option<GridTracks>,
 ) {
-    let columns = headers
-        .len()
-        .max(rows.iter().map(|row| row.cells.len()).max().unwrap_or(1));
-    let make_row = |key: String, cells: Vec<ElementDesc>, header: bool| {
-        let cells: Vec<ElementDesc> = cells
-            .into_iter()
-            .map(|cell| {
-                view! {
-                    container(
-                        style: StyleOf::new()
-                            .with::<container::padding>(EdgeInsets::all(10.0))
-                            .with::<container::width>(Sizing::Fill).merged(cell_style),
-                        accessibility_role: if header {
-                            AccessibilityRole::ColumnHeader
-                        } else {
-                            AccessibilityRole::Cell
-                        },
-                    ) {
-                        ..cell
-                    }
-                }
-            })
-            .collect();
-        let mut style = StyleOf::new()
-            .with::<container::width>(Sizing::Fill)
-            .with::<container::border_color>(ColorToken::Border)
-            .with::<container::border_width>(1.0);
-        if header {
-            style = style
-                .with::<container::background>(ColorToken::MutedSurface)
-                .merged(header_style);
-        } else {
-            style.merge(row_style);
-        }
-        view! {
-            grid(
-                key: key,
-                style: style,
-                columns: column_tracks.clone().unwrap_or_else(|| GridTracks::repeat(columns, GridTrackSize::flexible())),
-                accessibility_role: AccessibilityRole::Row,
-            ) {
-                ..cells
-            }
-        }
-    };
-    let mut children = Vec::with_capacity(rows.len() + 1);
-    if !headers.is_empty() {
-        children.push(make_row("header".to_owned(), headers.clone(), true));
-    }
-    children.extend(
-        rows.iter()
-            .map(|row| make_row(row.id.clone(), row.cells.clone(), false)),
-    );
-    let mut root_style = StyleOf::new().with::<container::width>(Sizing::Fill);
-    root_style.merge(style);
+    let columns: usize = memo!(headers.len().max(rows.iter().map(|row| row.cells.len()).max().unwrap_or(1)));
+    let line: StyleOf<Grid> = StyleOf::new()
+        .with::<container::width>(Sizing::Fill)
+        .with::<container::border_color>(ColorToken::Border)
+        .with::<container::border_width>(1.0);
+    let cell: StyleOf<Container> = StyleOf::new()
+        .with::<container::padding>(EdgeInsets::all(10.0))
+        .with::<container::width>(Sizing::Fill)
+        .merged(cell_style);
     view! {
         container(
-            style: root_style,
+            style: StyleOf::new().with::<container::width>(Sizing::Fill).merged(style),
             flex_direction: FlexDirectionStyle::Column,
             accessibility_role: AccessibilityRole::Table,
         ) {
-            ..children
+            if !headers.is_empty() {
+                grid(
+                    style: line.clone().with::<container::background>(ColorToken::MutedSurface).merged(header_style),
+                    columns: column_tracks.clone().unwrap_or_else(|| GridTracks::repeat(*columns, GridTrackSize::flexible())),
+                    accessibility_role: AccessibilityRole::Row,
+                ) {
+                    for header in headers.clone() {
+                        container(style: cell.clone(), accessibility_role: AccessibilityRole::ColumnHeader) {
+                            slot(header)
+                        }
+                    }
+                }
+            }
+            for row in rows.clone() {
+                grid(
+                    style: line.clone().merged(row_style),
+                    columns: column_tracks.clone().unwrap_or_else(|| GridTracks::repeat(*columns, GridTrackSize::flexible())),
+                    accessibility_role: AccessibilityRole::Row,
+                ) {
+                    for value in row.cells.clone() {
+                        container(style: cell.clone(), accessibility_role: AccessibilityRole::Cell) {
+                            slot(value)
+                        }
+                    }
+                }
+                .key(row.id.clone())
+            }
         }
     }
 }
 
 /// An identified grid column with a label and optional sort interaction.
-#[derive(Clone, Debug, Hash)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct DataGridColumn {
     pub id: String,
     pub label: String,
@@ -667,7 +607,7 @@ impl DataGridColumn {
 }
 
 /// An identified grid row containing string cells and optional disabled selection.
-#[derive(Clone, Debug, Hash)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct DataGridRow {
     pub id: String,
     pub cells: Vec<String>,
@@ -735,158 +675,140 @@ pub type GridSortCallback = Callback<GridSort>;
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { data_grid(columns: vec![DataGridColumn::new("name", "Name")], rows: vec![DataGridRow::new("row-1", vec!["Alpha".to_owned()])]) };
+/// #[component]
+/// fn example() {
+///     view! { data_grid(columns: vec![DataGridColumn::new("name", "Name")], rows: vec![DataGridRow::new("row-1", vec!["Alpha".to_owned()])]) }
+/// }
 /// ```
 #[component]
 #[defaults(
-    selected_row = None,
-    sort = None,
-    on_row_select = None,
-    on_sort = None,
+    selected_row = None::<String>,
+    sort = None::<GridSort>,
     style = StyleOf::new(),
     header_style = StyleOf::new(),
     row_style = StyleOf::new(),
     cell_style = StyleOf::new(),
-    column_tracks = None,
+    column_tracks = None::<GridTracks>,
 )]
 pub fn data_grid(
-    columns: &Vec<DataGridColumn>,
-    rows: &Vec<DataGridRow>,
-    selected_row: &Option<String>,
-    sort: &Option<GridSort>,
-    on_row_select: &Option<StringSelectCallback>,
-    on_sort: &Option<GridSortCallback>,
+    #[source] columns: &Vec<DataGridColumn>,
+    #[source] rows: &Vec<DataGridRow>,
+    #[source] selected_row: &Option<String>,
+    #[source] sort: &Option<GridSort>,
+    on_row_select: &Callback<String>,
+    on_sort: &Callback<GridSort>,
     style: &StyleOf<Container>,
     header_style: &StyleOf<Container>,
     row_style: &StyleOf<Grid>,
     cell_style: &StyleOf<Container>,
     column_tracks: &Option<GridTracks>,
 ) {
-    let count = columns.len().max(1);
-    let tracks = column_tracks
-        .clone()
-        .unwrap_or_else(|| GridTracks::repeat(count, GridTrackSize::flexible()));
-    let headers: Vec<ElementDesc> = columns
-        .iter()
-        .map(|column| {
-            let callback = on_sort.clone();
-            let current = sort.as_ref().filter(|sort| sort.column_id == column.id);
-            let indicator = match current.map(|sort| sort.direction) {
-                Some(SortDirection::Ascending) => " ↑",
-                Some(SortDirection::Descending) => " ↓",
-                None => "",
-            };
-            let next = GridSort {
-                column_id: column.id.clone(),
-                direction: match current.map(|sort| sort.direction) {
-                    Some(SortDirection::Ascending) => SortDirection::Descending,
-                    _ => SortDirection::Ascending,
-                },
-            };
-            let sortable = column.sortable;
-
-            view! {
-                container(
-                    style: StyleOf::new()
-                        .with::<container::padding>(EdgeInsets::all(10.0))
-                        .with::<container::background>(ColorToken::MutedSurface)
-                        .with::<container::font_weight>(FontWeight::Bold).merged(&crate::layout::control_style(!column.sortable)).merged(header_style),
-                    focusable: column.sortable,
-                    tab_index: if column.sortable { 0 } else { -1 },
-                    accessibility_role: AccessibilityRole::ColumnHeader,
-                    accessibility_label: column.label.clone(),
-                    on_click: move |_, event_cx| { if !sortable { return EventResult::Ignored; }
-                        event_cx.request_focus();
-                        if let Some(callback) = &callback {
-                            callback.call(next.clone());
-                        }
-                        EventResult::Consumed
-                    },
-                ) {
-                    xui_core::prelude::text(
-                        format!("{}{indicator}", column.label),
-                    )
-                }
-            }
-        })
-        .collect();
-    let header = view! {
-        grid(
-            columns: tracks.clone(),
-            accessibility_role: AccessibilityRole::Row,
-        ) {
-            ..headers
-        }
-    };
-    let mut children = vec![header];
-    for row in rows {
-        let selected = selected_row.as_ref() == Some(&row.id);
-        let callback = on_row_select.clone();
-        let id = row.id.clone();
-        let disabled = row.disabled;
-        let cells: Vec<ElementDesc> = (0..count)
-            .map(|index| {
-                view! {
-                    container(
-                        style: StyleOf::new().with::<container::padding>(EdgeInsets::all(10.0)).merged(cell_style),
-                        accessibility_role: AccessibilityRole::Cell,
-                    ) {
-                        xui_core::prelude::text(
-                            row.cells.get(index).cloned().unwrap_or_default(),
-                        )
-                    }
-                }
-            })
-            .collect();
-        let selectable = !disabled;
-
-        children.push(view! {
-            grid(
-                key: row.id.clone(),
-                style: StyleOf::new()
-                    .with::<container::background>(if selected {
-                        ColorStyle::from(ColorToken::MutedSurface)
-                    } else {
-                        ColorStyle::from(Color::TRANSPARENT)
-                })
-                    .with::<container::border_color>(ColorToken::Border)
-                    .with::<container::border_width>(1.0).merged(&crate::layout::control_style(disabled)).merged(row_style),
-                columns: tracks.clone(),
-                focusable: !disabled,
-                tab_index: if disabled { -1 } else { 0 },
-                accessibility_role: AccessibilityRole::Row,
-                accessibility_label: id.clone(),
-                accessibility_selected: selected,
-                accessibility_disabled: disabled,
-                on_click: move |_, event_cx| { if !selectable { return EventResult::Ignored; }
-                    event_cx.request_focus();
-                    if let Some(callback) = &callback {
-                        callback.call(id.clone());
-                    }
-                    EventResult::Consumed
-                },
-            ) {
-                ..cells
-            }
-        });
-    }
-    let mut root_style = StyleOf::new().with::<container::width>(Sizing::Fill);
-    root_style.merge(style);
+    let count: usize = memo!(columns.len().max(1));
     view! {
         container(
-            style: root_style,
+            style: StyleOf::new().with::<container::width>(Sizing::Fill).merged(style),
             flex_direction: FlexDirectionStyle::Column,
             accessibility_role: AccessibilityRole::Table,
         ) {
-            ..children
+            grid(
+                columns: column_tracks.clone().unwrap_or_else(|| GridTracks::repeat(*count, GridTrackSize::flexible())),
+                accessibility_role: AccessibilityRole::Row,
+            ) {
+                for column in columns.clone() {
+                    container(
+                        style: StyleOf::new()
+                            .with::<container::padding>(EdgeInsets::all(10.0))
+                            .with::<container::background>(ColorToken::MutedSurface)
+                            .with::<container::font_weight>(FontWeight::Bold)
+                            .merged(&crate::layout::control_style(!column.sortable))
+                            .merged(header_style),
+                        focusable: column.sortable,
+                        tab_index: if column.sortable { 0 } else { -1 },
+                        accessibility_role: AccessibilityRole::ColumnHeader,
+                        accessibility_label: column.label.clone(),
+                        on_click: |cx, _event, event_cx| {
+                            if !column.sortable {
+                                return EventResult::Ignored;
+                            }
+                            event_cx.request_focus();
+                            let next = next_sort(&sort.read(), &column.id);
+                            on_sort.call(cx, next);
+                            EventResult::Consumed
+                        },
+                    ) {
+                        text(format!("{}{}", column.label, sort_indicator(sort, &column.id)))
+                    }
+                    .key(column.id.clone())
+                }
+            }
+            for row in rows.clone() {
+                grid(
+                    style: StyleOf::new()
+                        .with::<container::background>(if selected_row.as_ref() == Some(&row.id) {
+                            ColorStyle::from(ColorToken::MutedSurface)
+                        } else {
+                            ColorStyle::from(Color::TRANSPARENT)
+                        })
+                        .with::<container::border_color>(ColorToken::Border)
+                        .with::<container::border_width>(1.0)
+                        .merged(&crate::layout::control_style(row.disabled))
+                        .merged(row_style),
+                    columns: column_tracks.clone().unwrap_or_else(|| GridTracks::repeat(*count, GridTrackSize::flexible())),
+                    focusable: !row.disabled,
+                    tab_index: if row.disabled { -1 } else { 0 },
+                    accessibility_role: AccessibilityRole::Row,
+                    accessibility_label: row.id.clone(),
+                    accessibility_selected: selected_row.as_ref() == Some(&row.id),
+                    accessibility_disabled: row.disabled,
+                    on_click: |cx, _event, event_cx| {
+                        if row.disabled {
+                            return EventResult::Ignored;
+                        }
+                        event_cx.request_focus();
+                        on_row_select.call(cx, row.id.clone());
+                        EventResult::Consumed
+                    },
+                ) {
+                    for index in 0..*count {
+                        container(
+                            style: StyleOf::new().with::<container::padding>(EdgeInsets::all(10.0)).merged(cell_style),
+                            accessibility_role: AccessibilityRole::Cell,
+                        ) {
+                            text(row.cells.get(*index).cloned().unwrap_or_default())
+                        }
+                    }
+                }
+                .key(row.id.clone())
+            }
         }
     }
 }
 
+/// The arrow after a column's label: which way it sorts, if it does.
+fn sort_indicator(sort: &Option<GridSort>, column: &str) -> &'static str {
+    match sort.as_ref().filter(|sort| sort.column_id == column).map(|sort| sort.direction) {
+        Some(SortDirection::Ascending) => " ↑",
+        Some(SortDirection::Descending) => " ↓",
+        None => "",
+    }
+}
+
+/// The sort a press on `column` asks for: ascending, or the reverse of its own.
+fn next_sort(sort: &Option<GridSort>, column: &str) -> GridSort {
+    let current = sort.as_ref().filter(|sort| sort.column_id == column).map(|sort| sort.direction);
+    GridSort {
+        column_id: column.to_owned(),
+        direction: match current {
+            Some(SortDirection::Ascending) => SortDirection::Descending,
+            _ => SortDirection::Ascending,
+        },
+    }
+}
+
 /// An identified leaf or branch with children and optional disabled interaction.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TreeNode {
     pub id: String,
     pub label: String,
@@ -924,88 +846,33 @@ pub type StringSelectCallback = Callback<String>;
 /// Callback requesting the complete set of expanded tree-node IDs.
 pub type TreeExpansionCallback = Callback<Vec<String>>;
 
-fn tree_nodes(
-    nodes: &[TreeNode],
+/// A node shown in a tree view: its place in the flattened, expanded tree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VisibleNode {
+    id: String,
+    label: String,
     depth: usize,
-    expanded: &std::rc::Rc<std::collections::HashSet<String>>,
-    expansion_state: xui_core::state::State<Vec<String>>,
-    expansion_controlled: bool,
-    on_expanded_change: &Option<TreeExpansionCallback>,
-    selected: &Option<String>,
-    selection_state: xui_core::state::State<Option<String>>,
-    selection_controlled: bool,
-    on_select: &Option<StringSelectCallback>,
-    item_style: &StyleOf<Container>,
-) -> Vec<ElementDesc> {
-    let mut output = Vec::with_capacity(nodes.len());
+    has_children: bool,
+    expanded: bool,
+    disabled: bool,
+}
+
+/// The nodes shown, in order: every root, and the children of every expanded node.
+fn visible_nodes(nodes: &[TreeNode], expanded: &HashSet<String>, depth: usize, out: &mut Vec<VisibleNode>) {
     for node in nodes {
         let is_expanded = expanded.contains(&node.id);
-        let has_children = !node.children.is_empty();
-        let id = node.id.clone();
-        let selected_now = selected.as_ref() == Some(&node.id);
-        let callback = on_select.clone();
-        let expansion_callback = on_expanded_change.clone();
-        let expansion = if has_children {
-            Some(expanded.clone())
-        } else {
-            None
-        };
-        let disabled = node.disabled;
-        let row_style = crate::layout::control_style(disabled)
-            .with::<container::padding>(EdgeInsets::new(8.0 + depth as f32 * 16.0, 8.0, 6.0, 6.0))
-            .with::<container::background>(if selected_now {
-                ColorStyle::from(ColorToken::Accent)
-            } else {
-                ColorStyle::from(Color::TRANSPARENT)
-            })
-            .when_style(
-                WidgetStateMatcher::all(WidgetState::HOVERED),
-                StyleOf::<Container>::new().with::<container::background>(ColorToken::Muted),
-            )
-            .merged(item_style);
-        output.push(view! {
-            row(style: row_style, key: node.id.clone(), gap: 6.0,
-                focusable: !disabled, tab_index: if disabled { -1 } else { 0 },
-                accessibility_role: AccessibilityRole::TreeItem,
-                accessibility_label: node.label.clone(),
-                accessibility_expanded: is_expanded, accessibility_selected: selected_now,
-                accessibility_disabled: disabled,
-                on_click: move |_, event_cx| {
-                    if disabled { return EventResult::Ignored; }
-                    if let Some(expansion) = &expansion {
-                        let mut next = (**expansion).clone();
-                        if is_expanded { next.remove(&id); } else { next.insert(id.clone()); }
-                        let mut next: Vec<String> = next.into_iter().collect();
-                        next.sort_unstable();
-                        if !expansion_controlled { expansion_state.set(next.clone()); }
-                        if let Some(callback) = &expansion_callback { callback.call(next); }
-                    }
-                    if !selection_controlled { selection_state.set(Some(id.clone())); }
-                    if let Some(callback) = &callback { callback.call(id.clone()); }
-                    event_cx.request_focus();
-                    EventResult::Consumed
-            }) {
-                xui_core::prelude::text(if has_children { if is_expanded { "▾" } else { "▸" } } else { "" })
-                xui_core::prelude::text(node.label.clone())
-            }
+        out.push(VisibleNode {
+            id: node.id.clone(),
+            label: node.label.clone(),
+            depth,
+            has_children: !node.children.is_empty(),
+            expanded: is_expanded,
+            disabled: node.disabled,
         });
         if is_expanded {
-            output.extend(tree_nodes(
-                &node.children,
-                depth + 1,
-                expanded,
-                expansion_state,
-                expansion_controlled,
-                on_expanded_change,
-                selected,
-                selection_state,
-                selection_controlled,
-                on_select,
-                item_style,
-            ));
+            visible_nodes(&node.children, expanded, depth + 1, out);
         }
     }
-    output
 }
 
 /// A tree with independent controlled selection and expansion.
@@ -1035,57 +902,91 @@ fn tree_nodes(
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { tree_view(nodes: vec![TreeNode::branch("folder", "Folder", vec![TreeNode::leaf("file", "File")])]) };
+/// #[component]
+/// fn example() {
+///     view! { tree_view(nodes: vec![TreeNode::branch("folder", "Folder", vec![TreeNode::leaf("file", "File")])]) }
+/// }
 /// ```
 #[component]
 #[defaults(
-    selected = None,
-    default_selected = None,
-    expanded = None,
-    default_expanded = Vec::new(),
-    on_expanded_change = None,
-    on_select = None,
+    selected = None::<Option<String>>,
+    default_selected = None::<String>,
+    expanded = None::<Vec<String>>,
+    default_expanded = Vec::<String>::new(),
     style = StyleOf::new(),
     item_style = StyleOf::new(),
 )]
 pub fn tree_view(
-    nodes: &Vec<TreeNode>,
-    selected: &Option<String>,
+    #[source] nodes: &Vec<TreeNode>,
+    #[source] selected: &Option<Option<String>>,
     default_selected: &Option<String>,
-    expanded: &Option<Vec<String>>,
+    #[source] expanded: &Option<Vec<String>>,
     default_expanded: &Vec<String>,
-    on_expanded_change: &Option<TreeExpansionCallback>,
-    on_select: &Option<StringSelectCallback>,
+    on_expanded_change: &Callback<Vec<String>>,
+    on_select: &Callback<Option<String>>,
     style: &StyleOf<Container>,
     item_style: &StyleOf<Container>,
 ) {
-    let expansion = cx.use_state(|| default_expanded.clone());
-    let selection = cx.use_state(|| default_selected.clone());
-    let expanded_ids = std::rc::Rc::new(
-        expanded
-            .as_ref()
-            .unwrap_or(expansion.get())
-            .iter()
-            .cloned()
-            .collect::<std::collections::HashSet<String>>(),
-    );
-    let selected_id = selected.clone().or_else(|| selection.get().clone());
-    let children = tree_nodes(
-        nodes,
-        0,
-        &expanded_ids,
-        expansion,
-        expanded.is_some(),
-        on_expanded_change,
-        &selected_id,
-        selection,
-        selected.is_some(),
-        on_select,
-        item_style,
-    );
+    let own_expanded: Vec<String> = state!(default_expanded.clone());
+    let own_selected: Option<String> = state!(default_selected.clone());
+    let expanded_ids: Vec<String> = memo!(expanded.clone().unwrap_or_else(|| own_expanded.clone()));
+    let selected_id: Option<String> = memo!(selected.clone().unwrap_or_else(|| own_selected.clone()));
+    let visible: Vec<VisibleNode> = memo!({
+        let mut out = Vec::new();
+        visible_nodes(nodes, &expanded_ids.iter().cloned().collect(), 0, &mut out);
+        out
+    });
     view! {
-        column(children, style: style.clone(), accessibility_role: AccessibilityRole::Tree)
+        column(style: style.clone(), accessibility_role: AccessibilityRole::Tree) {
+            for node in visible.clone() {
+                row(
+                    style: crate::layout::control_style(node.disabled)
+                        .with::<container::padding>(EdgeInsets::new(8.0 + node.depth as f32 * 16.0, 8.0, 6.0, 6.0))
+                        .with::<container::background>(if selected_id.as_ref() == Some(&node.id) {
+                            ColorStyle::from(ColorToken::Accent)
+                        } else {
+                            ColorStyle::from(Color::TRANSPARENT)
+                        })
+                        .when_style(
+                            WidgetStateMatcher::all(WidgetState::HOVERED),
+                            StyleOf::<Container>::new().with::<container::background>(ColorToken::Muted),
+                        )
+                        .merged(item_style),
+                    gap: 6.0,
+                    focusable: !node.disabled,
+                    tab_index: if node.disabled { -1 } else { 0 },
+                    accessibility_role: AccessibilityRole::TreeItem,
+                    accessibility_label: node.label.clone(),
+                    accessibility_expanded: node.expanded,
+                    accessibility_selected: selected_id.as_ref() == Some(&node.id),
+                    accessibility_disabled: node.disabled,
+                    on_click: |cx, _event, event_cx| {
+                        if node.disabled {
+                            return EventResult::Ignored;
+                        }
+                        if node.has_children {
+                            let mut next: Vec<String> = expanded_ids.get();
+                            if node.expanded {
+                                next.retain(|id| *id != node.id);
+                            } else {
+                                next.push(node.id.clone());
+                            }
+                            next.sort_unstable();
+                            next.dedup();
+                            commit(cx, next, expanded, own_expanded, on_expanded_change);
+                        }
+                        commit(cx, Some(node.id.clone()), selected, own_selected, on_select);
+                        event_cx.request_focus();
+                        EventResult::Consumed
+                    },
+                ) {
+                    text(if node.has_children { if node.expanded { "▾" } else { "▸" } } else { "" })
+                    text(node.label.clone())
+                }
+                .key(node.id.clone())
+            }
+        }
     }
 }

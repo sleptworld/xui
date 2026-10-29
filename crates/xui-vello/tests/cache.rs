@@ -9,17 +9,12 @@ mod common;
 
 use std::sync::OnceLock;
 
-use common::*;
-use xui_core::{
-    app::ComponentFn,
-    prelude::*,
-    text::TextHost,
-    widgets::{CanvasController, CanvasWidget, ContainerWidget, ImageWidget},
-};
+use xui_core::{app::AppRoot, prelude::*, text::TextHost, widgets::CanvasController};
 use xui_cosmic::CosmicEngine;
 use xui_interface::{
     Effect, ImageData, PathBuilder, PathFill, Point, Sampling, Sizing,
 };
+use xui_macros::component;
 use xui_vello::{ResourceStats, VelloBackend, VelloBackendOptions};
 
 fn backend(options: VelloBackendOptions) -> Option<VelloBackend<CosmicEngine>> {
@@ -33,7 +28,7 @@ fn backend(options: VelloBackendOptions) -> Option<VelloBackend<CosmicEngine>> {
 }
 
 /// One frame of `root`, `size` logical pixels square, into `backend`.
-fn draw(backend: &mut VelloBackend<CosmicEngine>, root: ComponentFn, size: f32) -> ResourceStats {
+fn draw(backend: &mut VelloBackend<CosmicEngine>, root: AppRoot, size: f32) -> ResourceStats {
     let mut app = App::new(root);
     app.resize(Size::new(size, size));
     let mut text = TextHost::new(CosmicEngine::new(1.0));
@@ -50,31 +45,42 @@ fn shared(slot: &'static OnceLock<ImageData>, shade: u8) -> ImageData {
     slot.get_or_init(|| picture(shade)).clone()
 }
 
-fn image_widget(key: &str, data: ImageData) -> ElementDesc {
-    ImageWidget::new()
-        .image_data(key, data)
-        .sampling(Sampling::Nearest)
-        .style(Style::new().width(32.0).height(32.0))
-        .into_element_desc(vec![])
+#[component]
+fn picture_box(key: &String, data: &ImageData) {
+    view! {
+        image(
+            source: (ImageKey::from(key.as_str()), data.clone()),
+            sampling: Sampling::Nearest,
+            width: 32.0,
+            height: 32.0,
+        )
+    }
+}
+
+fn show_image(app: &mut App, key: &str, data: ImageData) {
+    app.mount::<PictureBox>(PictureBoxProps { key: key.to_string(), data });
 }
 
 static A: OnceLock<ImageData> = OnceLock::new();
 static B: OnceLock<ImageData> = OnceLock::new();
 static C: OnceLock<ImageData> = OnceLock::new();
 
-fn show_a(_: &mut HookContext<'_>) -> ElementDesc {
-    image_widget("a", shared(&A, 10))
+fn show_a(app: &mut App) {
+    show_image(app, "a", shared(&A, 10));
 }
-fn show_b(_: &mut HookContext<'_>) -> ElementDesc {
-    image_widget("b", shared(&B, 20))
+fn show_b(app: &mut App) {
+    show_image(app, "b", shared(&B, 20));
 }
-fn show_c(_: &mut HookContext<'_>) -> ElementDesc {
-    image_widget("c", shared(&C, 30))
+fn show_c(app: &mut App) {
+    show_image(app, "c", shared(&C, 30));
 }
-fn show_nothing(_: &mut HookContext<'_>) -> ElementDesc {
-    ContainerWidget::new()
-        .style(Style::new().width(10.0).height(10.0))
-        .into_element_desc(vec![])
+fn show_nothing(app: &mut App) {
+    app.mount::<Nothing>(NothingProps {});
+}
+
+#[component]
+fn nothing() {
+    view! { container(width: 10.0, height: 10.0) }
 }
 
 #[test]
@@ -125,17 +131,21 @@ fn the_image_cache_stays_inside_its_budget() {
     assert!(backend.resource_stats().image_entries <= 2);
 }
 
-fn blurred_layer(_: &mut HookContext<'_>) -> ElementDesc {
+fn blurred_layer(app: &mut App) {
+    app.mount::<BlurredLayerScene>(BlurredLayerSceneProps {});
+}
+
+#[component]
+fn blurred_layer_scene() {
     // A layer as large as the window, so its filter textures track the window.
-    ContainerWidget::new()
-        .style(
-            Style::new()
-                .width(Sizing::Fill)
-                .height(Sizing::Fill)
-                .background(Color::rgb(1.0, 0.0, 0.0))
-                .effects(vec![Effect::blur(2.0)]),
+    view! {
+        container(
+            width: Sizing::Fill,
+            height: Sizing::Fill,
+            background: Color::rgb(1.0, 0.0, 0.0),
+            effects: vec![Effect::blur(2.0)],
         )
-        .into_element_desc(vec![])
+    }
 }
 
 #[test]
@@ -209,7 +219,7 @@ fn the_filter_pool_stays_inside_its_byte_budget() {
     assert!(trimmed.filter_texture_bytes <= 40 * 1024, "{trimmed:?}");
 }
 
-fn path_root(_: &mut HookContext<'_>) -> ElementDesc {
+fn path_root(app: &mut App) {
     static PATH: OnceLock<xui_interface::PathData> = OnceLock::new();
     let path = PATH
         .get_or_init(|| {
@@ -225,9 +235,12 @@ fn path_root(_: &mut HookContext<'_>) -> ElementDesc {
     let controller = CanvasController::with_painter(move |painter| {
         painter.fill_path(path.clone(), PathFill::new(Color::rgb(0.0, 0.0, 1.0)));
     });
-    CanvasWidget::new(controller)
-        .style(Style::new().width(64.0).height(64.0))
-        .into_element_desc()
+    app.mount::<Painted64>(Painted64Props { controller });
+}
+
+#[component]
+fn painted64(controller: &CanvasController) {
+    view! { canvas(controller: controller.clone(), width: 64.0, height: 64.0) }
 }
 
 #[test]
@@ -243,10 +256,13 @@ fn a_path_is_converted_once() {
     assert_eq!(stats.path_segments, 4, "{stats:?}");
 }
 
-fn some_text(_: &mut HookContext<'_>) -> ElementDesc {
-    xui_core::widgets::TextWidget::new("cache")
-        .style(Style::new().width(64.0).height(32.0))
-        .into_element_desc()
+fn some_text(app: &mut App) {
+    app.mount::<SomeTextScene>(SomeTextSceneProps {});
+}
+
+#[component]
+fn some_text_scene() {
+    view! { text("cache", width: 64.0, height: 32.0) }
 }
 
 #[test]

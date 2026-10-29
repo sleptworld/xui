@@ -11,13 +11,13 @@
 //! | [`command_palette`](fn@self::command_palette) | A dialog listing commands filtered by a caller-supplied query. |
 
 use xui_core::prelude::*;
-use xui_macros::{component, view};
+use xui_macros::component;
 
-use crate::{BoolChangeCallback, MenuSelectCallback, dialog};
+use crate::dialog;
 
 /// An identified command with searchable keywords, a display shortcut, and disabled
 /// state.
-#[derive(Clone, Debug, Hash)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct CommandItem {
     pub id: String,
     pub label: String,
@@ -87,162 +87,132 @@ fn command_matches(item: &CommandItem, query: &str) -> bool {
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { command_palette(items: vec![CommandItem::new("open", "Open file").keywords(["document"])], query: "file", open: true) };
+/// #[component]
+/// fn example() {
+///     view! { command_palette(items: vec![CommandItem::new("open", "Open file").keywords(["document"])], query: "file", open: true) }
+/// }
 /// ```
 #[component]
 #[defaults(
     query = String::new(),
     open = false,
-    on_open_change = None,
-    on_select = None,
     empty_text = "No commands found".to_string(),
     style = StyleOf::new(),
 )]
 pub fn command_palette(
-    items: &Vec<CommandItem>,
-    query: &String,
-    open: &bool,
-    on_open_change: &Option<BoolChangeCallback>,
-    on_select: &Option<MenuSelectCallback>,
-    empty_text: &String,
+    #[source] items: &Vec<CommandItem>,
+    #[source] query: &String,
+    #[source] open: &bool,
+    on_open_change: &Callback<bool>,
+    on_select: &Callback<usize>,
+    #[source] empty_text: &String,
     style: &StyleOf<Container>,
 ) {
-    let handles = cx.use_memo_with(
-        items.iter().map(|item| item.id.clone()).collect::<Vec<_>>(),
-        || {
-            (0..items.len())
-                .map(|_| FocusHandle::new())
-                .collect::<Vec<_>>()
-                .into_iter()
-                .collect::<std::rc::Rc<[FocusHandle]>>()
-        },
-    );
-    let normalized_query = query.trim().to_lowercase();
-    let model = std::rc::Rc::new(crate::SelectionModel::new(items.iter().map(|item| {
+    let normalized_query: String = memo!(query.trim().to_lowercase());
+    let handles: Vec<FocusHandle> = memo!((0..items.len()).map(|_| FocusHandle::new()).collect());
+    let model: crate::SelectionModel = memo!(crate::SelectionModel::new(items.iter().map(|item| {
         crate::SelectionItem::new(
             item.id.clone(),
             item.label.clone(),
-            item.disabled || !command_matches(item, &normalized_query),
+            item.disabled || !command_matches(item, normalized_query),
         )
     })));
-    if !*open {
-        return view! {
-            container(
-                accessibility_hidden: true,
-            )
-        };
-    }
-    let visible = items
-        .iter()
-        .enumerate()
-        .filter(|(_, item)| command_matches(item, &normalized_query))
-        .collect::<Vec<_>>();
-    let mut rows = Vec::with_capacity(visible.len().max(1) + 1);
-    rows.push(view! {
-        xui_core::prelude::text(
-            if query.is_empty() {
-                "Type to filter commands".to_owned()
-            } else {
-                format!("Results for “{query}”")
-            },
-            style: StyleOf::new()
-                .with::<container::padding>(EdgeInsets::all(10.0))
-                .with::<container::font_size>(FontSizeToken::Sm),
-        )
-    });
-    if visible.is_empty() {
-        rows.push(view! {
-            container(
-                style: StyleOf::new().with::<container::padding>(EdgeInsets::all(16.0)),
-                accessibility_live_region: AccessibilityLiveRegion::Polite,
-            ) {
-                xui_core::prelude::text(
-                    empty_text.clone(),
-                )
-            }
-        });
-    } else {
-        for (index, item) in visible {
-            let selected = on_select.clone();
-            let close = on_open_change.clone();
-            let disabled = item.disabled;
-            let handles = handles.get().clone();
-            let model = model.clone();
-            let mut children = vec![view! {
-                xui_core::prelude::text(
-                    item.label.clone(),
-                )
-            }];
-            if let Some(shortcut) = &item.shortcut {
-                children.push(view! {
-                    xui_core::prelude::text(
-                        shortcut.clone(),
-                        style: StyleOf::new().with::<container::font_size>(FontSizeToken::Sm),
-                    )
-                });
-            }
-            let interactive = !disabled;
-
-            rows.push(view! {
-                container(
-                    key: item.id.clone(),
-                    style: StyleOf::new()
-                        .with::<container::padding>(EdgeInsets::all(10.0))
-                        .with::<container::justify>(JustifyStyle::SpaceBetween)
-                        .with::<container::border_radius>(RadiusToken::Sm)
-                        .when_style(WidgetStateMatcher::all(WidgetState::HOVERED), StyleOf::<Container>::new().with::<container::background>(ColorToken::MutedSurface)),
-                    flex_direction: FlexDirectionStyle::Row,
-                    focus_handle: handles[index].clone(),
-                    shortcuts: crate::selection::selection_shortcuts().map(|(shortcut, command)| ShortcutBinding { shortcut, command }).to_vec(),
-                    on_command: move |event, event_cx| {
-                        if disabled { return EventResult::Ignored; }
-                        let Some(target) = crate::selection::selection_target(&model, index, event.command) else { return EventResult::Ignored; };
-                        handles[target].request_focus(event_cx); EventResult::Consumed
-                    },
-                    focusable: !disabled,
-                    tab_index: if disabled { -1 } else { 0 },
-                    accessibility_role: AccessibilityRole::Option,
-                    accessibility_label: item.label.clone(),
-                    accessibility_disabled: disabled,
-                    on_click: move |_, _| { if !interactive { return EventResult::Ignored; }
-                        if let Some(callback) = &selected {
-                            callback.call(index);
-                        }
-                        if let Some(callback) = &close {
-                            callback.call(false);
-                        }
-                        EventResult::Consumed
-                    },
-                ) {
-                    ..children
-                }
-            });
-        }
-    }
-    let mut content_style = StyleOf::new()
+    // The commands the query matches, with their index among all of them.
+    let visible: Vec<(usize, CommandItem)> = memo!(
+        items
+            .iter()
+            .cloned()
+            .enumerate()
+            .filter(|(_, item)| command_matches(item, normalized_query))
+            .collect()
+    );
+    let mut content_style: StyleOf<Container> = StyleOf::new()
         .with::<container::min_width>(420.0)
         .with::<container::max_height>(480.0)
         .with::<container::scroll_direction>(ScrollDirectionStyle::Vertical);
     content_style.merge(style);
-    let content = view! {
-        container(
-            style: content_style,
-            flex_direction: FlexDirectionStyle::Column,
-            accessibility_role: AccessibilityRole::ListBox,
-            accessibility_label: "Commands",
-        ) {
-            ..rows
-        }
-    };
     view! {
-        dialog(
-            content: content,
-            open: Some(*open),
-            title: Some("Command palette".to_owned()),
-            on_open_change: on_open_change.share(),
-        )
+        container() {
+            dialog(
+                open: Some(*open),
+                title: Some("Command palette".to_owned()),
+                on_open_change: on_open_change,
+            ) {
+                container(
+                    style: content_style.clone(),
+                    flex_direction: FlexDirectionStyle::Column,
+                    accessibility_role: AccessibilityRole::ListBox,
+                    accessibility_label: "Commands",
+                ) {
+                    text(
+                        if query.is_empty() {
+                            "Type to filter commands".to_owned()
+                        } else {
+                            format!("Results for “{query}”")
+                        },
+                        style: StyleOf::new()
+                            .with::<container::padding>(EdgeInsets::all(10.0))
+                            .with::<container::font_size>(FontSizeToken::Sm),
+                    )
+                    if visible.is_empty() {
+                        container(
+                            style: StyleOf::new().with::<container::padding>(EdgeInsets::all(16.0)),
+                            accessibility_live_region: AccessibilityLiveRegion::Polite,
+                        ) {
+                            text(empty_text.clone())
+                        }
+                    }
+                    for (index, item) in visible.clone() {
+                        container(
+                            style: StyleOf::new()
+                                .with::<container::padding>(EdgeInsets::all(10.0))
+                                .with::<container::justify>(JustifyStyle::SpaceBetween)
+                                .with::<container::border_radius>(RadiusToken::Sm)
+                                .when_style(
+                                    WidgetStateMatcher::all(WidgetState::HOVERED),
+                                    StyleOf::<Container>::new().with::<container::background>(ColorToken::MutedSurface),
+                                ),
+                            flex_direction: FlexDirectionStyle::Row,
+                            focus_handle: handles[*index].clone(),
+                            shortcuts: crate::selection::selection_shortcuts()
+                                .map(|(shortcut, command)| ShortcutBinding { shortcut, command })
+                                .to_vec(),
+                            on_command: |_cx, event, event_cx| {
+                                if item.disabled {
+                                    return EventResult::Ignored;
+                                }
+                                let Some(target) = crate::selection::selection_target(&model.read(), *index, event.command) else {
+                                    return EventResult::Ignored;
+                                };
+                                handles.read()[target].request_focus(event_cx);
+                                EventResult::Consumed
+                            },
+                            focusable: !item.disabled,
+                            tab_index: if item.disabled { -1 } else { 0 },
+                            accessibility_role: AccessibilityRole::Option,
+                            accessibility_label: item.label.clone(),
+                            accessibility_disabled: item.disabled,
+                            on_click: |cx| {
+                                if item.disabled {
+                                    return EventResult::Ignored;
+                                }
+                                on_select.call(cx, *index);
+                                on_open_change.call(cx, false);
+                                EventResult::Consumed
+                            },
+                        ) {
+                            text(item.label.clone())
+                            if let Some(shortcut) = item.shortcut.clone() {
+                                text(shortcut.clone(), style: StyleOf::new().with::<container::font_size>(FontSizeToken::Sm))
+                            }
+                        }
+                        .key(item.id.clone())
+                    }
+                }
+            }
+        }
     }
 }
 

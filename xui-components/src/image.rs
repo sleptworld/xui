@@ -16,11 +16,11 @@ use tokio::io::AsyncReadExt;
 use xui_core::assets::AssetId;
 use xui_core::assets::load_image_asset;
 use xui_core::prelude::*;
-use xui_macros::{component, view};
+use xui_macros::component;
 use zune_core::bytestream::ZCursor;
 use zune_core::colorspace::ColorSpace;
 use zune_core::options::DecoderOptions;
-use zune_image::image::Image;
+use zune_image::image::Image as DecodedImage;
 
 /// A source-loading or decoding failure reported by the image resource.
 #[derive(Debug, Error, Clone)]
@@ -198,81 +198,74 @@ impl From<u32> for ImageOpacity {
 /// | `repeat` | `Option<ImageRepeat>` | `None` |
 /// | `sampling` | `Option<Sampling>` | `None` |
 /// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
-/// | `loading` | `Option<ElementDesc>` | `None` |
-/// | `fallback` | `Option<ElementDesc>` | `None` |
+/// | `loading` | `Children` | a placeholder |
+/// | `fallback` | `Children` | a placeholder |
 ///
 /// # Example
 ///
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { xui_components::image::image(src: "asset://images/logo.png", alt: Some("Logo".to_owned()), width: 64.0, height: 64.0) };
+/// #[component]
+/// fn example() {
+///     view! { xui_components::image::image(src: "asset://images/logo.png", alt: Some("Logo".to_owned()), width: 64.0f32, height: 64.0f32) }
+/// }
 /// ```
 #[component]
 #[defaults(
-    alt = None,
+    alt = None::<String>,
     width = ImageSize::Auto,
     height = ImageSize::Auto,
     opacity = ImageOpacity::default(),
     image_style = ImageStyle::default(),
-    fit = None,
-    alignment = None,
-    repeat = None,
-    sampling = None,
+    fit = None::<ImageFit>,
+    alignment = None::<Alignment>,
+    repeat = None::<ImageRepeat>,
+    sampling = None::<Sampling>,
     style = StyleOf::new(),
-    loading = None,
-    fallback = None,
 )]
 pub fn image(
-    src: &ImageSrc,
-    alt: &Option<String>,
-    width: &ImageSize,
-    height: &ImageSize,
-    opacity: &ImageOpacity,
+    #[source] src: &ImageSrc,
+    #[source] alt: &Option<String>,
+    #[source] width: &ImageSize,
+    #[source] height: &ImageSize,
+    #[source] opacity: &ImageOpacity,
     image_style: &ImageStyle,
     fit: &Option<ImageFit>,
     alignment: &Option<Alignment>,
     repeat: &Option<ImageRepeat>,
     sampling: &Option<Sampling>,
     style: &StyleOf<Container>,
-    loading: &Option<ElementDesc>,
-    fallback: &Option<ElementDesc>,
+    loading: &Children,
+    fallback: &Children,
 ) {
-    let image_key = image_key(src);
-    let resource_src = src.clone();
-    let fetch_src = resource_src.clone();
-    let image_src = cx.use_resource(
-        resource_src,
-        move |_| async move { get_image(&fetch_src).await },
-    );
-    let mut style = style.clone();
-
-    style = width.apply_width(style);
-    style = height.apply_height(style);
-    let image_style = resolve_image_style(*image_style, *fit, *alignment, *repeat, *sampling);
-
-    use AsyncValue::*;
-
-    match image_src.get() {
-        Pending => loading
-            .clone()
-            .unwrap_or_else(|| placeholder(style, alt.as_deref())),
-        Ready(image_data) => view! {
-            container(style: style) { xui_core::prelude::image(
-                source: (image_key, image_data),
-                size: Size::fill(),
-                image_style: image_style,
-                opacity: opacity.get(),
-                accessibility_role: AccessibilityRole::Image,
-                accessibility_label: alt.clone().unwrap_or_default(),
-            ) }
-        },
-
-        Error(_) => fallback
-            .clone()
-            .unwrap_or_else(|| placeholder(style, alt.as_deref())),
+    let pixels: AsyncValue<ImageData, ImageError> = resource!({
+        let src = src.clone();
+        async move { get_image(&src).await }
+    });
+    let frame_style: StyleOf<Container> = memo!(height.apply_height(width.apply_width(style.clone())));
+    let resolved_style: ImageStyle = resolve_image_style(*image_style, *fit, *alignment, *repeat, *sampling);
+    view! {
+        container(style: frame_style.clone()) {
+            if let Some(pixels) = pixels.ready().cloned() {
+                xui_core::prelude::image(
+                    source: (image_key(src), pixels.clone()),
+                    size: Size::fill(),
+                    image_style: *resolved_style,
+                    opacity: opacity.get(),
+                    accessibility_role: AccessibilityRole::Image,
+                    accessibility_label: alt.clone().unwrap_or_default(),
+                )
+            } else if pixels.is_pending() && !loading.is_empty() {
+                slot(loading)
+            } else if !pixels.is_pending() && !fallback.is_empty() {
+                slot(fallback)
+            } else if let Some(alt) = alt.clone().filter(|text| !text.is_empty()) {
+                text(alt.clone())
+            }
+        }
     }
 }
 
@@ -298,13 +291,7 @@ fn resolve_image_style(
     image_style
 }
 
-fn placeholder(style: StyleOf<Container>, alt: Option<&str>) -> ElementDesc {
-    let children = alt
-        .filter(|text| !text.is_empty())
-        .map(|text| vec![ElementDesc::from(text.to_owned())])
-        .unwrap_or_default();
-    view! { container(style: style) { ..children } }
-}
+
 
 async fn get_network_image(path: &str) -> Result<ImageData, ImageError> {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
@@ -373,7 +360,7 @@ fn image_key(src: &ImageSrc) -> ImageKey {
 
 fn decode_image(bytes: impl AsRef<[u8]>) -> anyhow::Result<ImageData> {
     let cursor = ZCursor::new(bytes.as_ref());
-    let mut image = Image::read(cursor, DecoderOptions::default())?;
+    let mut image = DecodedImage::read(cursor, DecoderOptions::default())?;
     image.convert_color(ColorSpace::RGBA)?;
     let (width, height) = image.dimensions();
     let width = u32::try_from(width)?;
@@ -424,7 +411,7 @@ mod tests {
 
     #[test]
     fn decode_image_returns_rgba_pixels() {
-        let source = Image::from_u8(&[1, 2, 3, 255, 4, 5, 6, 255], 2, 1, ColorSpace::RGBA);
+        let source = DecodedImage::from_u8(&[1, 2, 3, 255, 4, 5, 6, 255], 2, 1, ColorSpace::RGBA);
         let png = source
             .write_to_vec(zune_image::codecs::ImageFormat::PNG)
             .unwrap();

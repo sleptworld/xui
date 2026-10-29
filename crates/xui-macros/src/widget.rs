@@ -96,7 +96,6 @@ use syn::{
     Attribute, Error, Expr, Fields, Ident, ItemStruct, Meta, Path, Result, Token, Type, Visibility,
 };
 
-use crate::component::ident_pascal_case;
 use crate::krate;
 
 struct PropField {
@@ -1157,6 +1156,25 @@ fn ident_snake_case(ident: &Ident) -> String {
                 output.push('_');
             }
             output.extend(ch.to_lowercase());
+        } else {
+            output.push(ch);
+        }
+    }
+    output
+}
+
+/// `foo_bar` → `FooBar`.
+pub(crate) fn ident_pascal_case(ident: &Ident) -> String {
+    let source = ident.to_string();
+    let source = source.strip_prefix("r#").unwrap_or(&source);
+    let mut output = String::new();
+    let mut uppercase_next = true;
+    for ch in source.chars() {
+        if ch == '_' {
+            uppercase_next = true;
+        } else if uppercase_next {
+            output.extend(ch.to_uppercase());
+            uppercase_next = false;
         } else {
             output.push(ch);
         }

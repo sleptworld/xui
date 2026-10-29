@@ -844,7 +844,7 @@ mod tests {
     use xui_core::render::MockRenderBackend;
     use xui_f::FBackend;
 
-    use xui_core::widgets::text_input;
+    use xui_macros::component;
     use xui_interface::HostCapabilities;
 
     use crate::{
@@ -959,8 +959,13 @@ mod tests {
 
     type TestShell = Shell<FakeWindow, MockRenderBackend, FBackend>;
 
-    fn root(_cx: &mut HookContext<'_>) -> ElementDesc {
-        container().into_element_desc(Vec::new())
+    #[component]
+    fn empty() {
+        view! { container() }
+    }
+
+    fn root(app: &mut App) {
+        app.mount::<Empty>(EmptyProps {});
     }
 
     fn start(options: ShellOptions) -> (TestShell, Arc<FakeWindow>, ShellControl) {
@@ -1053,12 +1058,17 @@ mod tests {
         );
     }
 
-    fn field(_cx: &mut HookContext<'_>) -> ElementDesc {
-        container().into_element_desc(vec![
-            text_input()
-                .style(Style::new().size(Size::fix(120.0, 30.0)))
-                .into_element_desc(),
-        ])
+    #[component]
+    fn text_field() {
+        view! {
+            container {
+                text_input(width: 120.0, height: 30.0)
+            }
+        }
+    }
+
+    fn field(app: &mut App) {
+        app.mount::<TextField>(TextFieldProps {});
     }
 
     /// An idle focused field costs a timed frame per blink, and no frame in

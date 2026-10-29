@@ -1,8 +1,9 @@
 use xui_core::prelude::*;
-use xui_macros::xui;
+use xui_macros::component;
 
 fn main() {}
 
-fn mismatched() -> ElementDesc {
+#[component]
+fn mismatched() {
     xui! { <container><text>{"hi"}</text></grid> }
 }

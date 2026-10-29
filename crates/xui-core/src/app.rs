@@ -1,18 +1,13 @@
-use crate::ElementDesc;
 use crate::clock::FrameTime;
-use crate::component::ComponentRuntime;
 use crate::core::Size;
 use crate::event_system::dispatcher;
 use crate::event_system::translator::EventTranslator;
-use crate::lanes::{DEFAULT_LANE, event_lane, with_update_lane};
 use crate::platform::PlatformHandle;
 use crate::render::RenderBackend;
-use crate::state::{AsyncDispatcher, AsyncMessage, HookContext, Scheduler};
 use crate::style::Theme;
 use crate::text::TextHost;
 use crate::ui_runtime::{RenderFrameError, UiRuntime};
 use std::future::Future;
-use std::sync::mpsc;
 use std::time::Duration;
 use tokio::runtime::{
     Builder as TokioRuntimeBuilder, Handle as TokioHandle, Runtime as TokioRuntime,
@@ -22,7 +17,9 @@ use xui_interface::TextBackend;
 use crate::scroll::AppliedScroll;
 use xui_interface::events::{EventResult, RawEvent, ScrollPhase, ScrollSource};
 
-pub type ComponentFn = for<'a, 'b> fn(&'a mut HookContext<'b>) -> ElementDesc;
+/// What an app starts with: typically mounts its root component,
+/// `|app| { app.mount::<Gallery>(GalleryProps {}); }`.
+pub type AppRoot = fn(&mut App);
 
 #[derive(Debug)]
 pub enum AppRenderError<E> {
@@ -47,12 +44,12 @@ thread_local! {
 
 pub struct App {
     ui_runtime: UiRuntime,
-    components: ComponentRuntime,
+    reactive: crate::reactive::Runtime,
     event_translator: EventTranslator,
     size: Size<f32>,
     tokio_runtime: TokioRuntime,
-    async_dispatcher: AsyncDispatcher,
-    async_receiver: mpsc::Receiver<AsyncMessage>,
+    /// Results of `resource!` futures, waiting for the main thread.
+    finished: std::sync::mpsc::Receiver<(u64, Box<dyn std::any::Any + Send>)>,
     platform: PlatformHandle,
 }
 
@@ -182,32 +179,32 @@ impl App {
                 .result;
         result
     }
-    pub fn new(root_component: ComponentFn) -> Self {
+    /// An app set up by `root`, which mounts what it shows.
+    pub fn new(root: AppRoot) -> Self {
         let mut ui_runtime = UiRuntime::new();
         let platform = PlatformHandle::default();
         ui_runtime.set_platform(platform.clone());
-        let scheduler = Scheduler::default();
         let tokio_runtime = Self::create_tokio_runtime();
-        let (async_sender, async_receiver) = mpsc::channel();
-        let async_dispatcher = AsyncDispatcher::new(async_sender);
-        let components = ComponentRuntime::new_with_async(
-            ui_runtime.root(),
-            scheduler,
-            async_dispatcher.clone(),
-            Some(tokio_runtime.handle().clone()),
-            ui_runtime.tickers(),
-            root_component,
+        let mut reactive = crate::reactive::Runtime::new();
+        let (sender, finished) = std::sync::mpsc::channel();
+        let handle = tokio_runtime.handle().clone();
+        reactive.tasks_mut().connect(
+            Box::new(move |future| {
+                handle.spawn(future);
+            }),
+            sender,
         );
-        Self {
+        let mut app = Self {
             ui_runtime,
-            components,
+            reactive,
             event_translator: EventTranslator::default(),
             size: Size::<f32>::ZERO,
             tokio_runtime,
-            async_dispatcher,
-            async_receiver,
+            finished,
             platform,
-        }
+        };
+        root(&mut app);
+        app
     }
 
     fn create_tokio_runtime() -> TokioRuntime {
@@ -220,6 +217,37 @@ impl App {
 
     pub fn ui_runtime(&self) -> &UiRuntime {
         &self.ui_runtime
+    }
+
+    /// Mounts reactive component `C` at the root, and runs its first effects.
+    pub fn mount<C: crate::reactive::Component>(
+        &mut self,
+        props: <C::Instance as crate::reactive::ComponentDef>::Props,
+    ) -> crate::reactive::InstanceId {
+        let root = self.ui_runtime.root();
+        self.reactive.mount::<C>(&mut self.ui_runtime, root, props)
+    }
+
+    /// A signal the application owns rather than a component: state to hand
+    /// a root as a `#[source]` prop, and to write with [`update`](Self::update).
+    pub fn signal<T>(&mut self, value: T) -> crate::reactive::Signal<T> {
+        self.reactive.signal(value)
+    }
+
+    /// The reactive runtime the app's components are mounted in.
+    pub fn reactive(&self) -> &crate::reactive::Runtime {
+        &self.reactive
+    }
+
+    /// Runs `f`, which writes signals as a handler would; the next frame
+    /// (or event) flushes what it wrote.
+    pub fn update(&mut self, f: impl FnOnce(&mut crate::reactive::Cx<'_>)) {
+        f(&mut crate::reactive::Cx::handler(self.reactive.notifier()));
+    }
+
+    /// Unmounts a component [`mount`](Self::mount) mounted.
+    pub fn unmount(&mut self, id: crate::reactive::InstanceId) {
+        self.reactive.unmount(&mut self.ui_runtime, id);
     }
 
     #[cfg(test)]
@@ -235,26 +263,17 @@ impl App {
         self.ui_runtime.set_theme(theme);
     }
 
-    /// Sets the application-wide context of type `T`: what
-    /// [`HookContext::use_context`] returns where no ancestor provides a `T`.
+    /// Sets the application-wide context of type `T`: what `context!()`
+    /// reads where no ancestor provides a `T`.
     ///
     /// Can be called before the first frame, to hand the root component
     /// something it cannot take as props, or at any time after; a changed
-    /// value re-renders only the components that read it. See
-    /// [`crate::context`].
+    /// value updates only the components that read it.
     pub fn provide_context<T: PartialEq + 'static>(&mut self, value: T) {
-        self.components.provide_context(value);
+        self.reactive.provide_context(value);
     }
 
-    /// Clears the application-wide context of type `T`.
-    pub fn remove_context<T: 'static>(&mut self) {
-        self.components.remove_context::<T>();
-    }
 
-    /// The application-wide context of type `T`, if one is set.
-    pub fn context<T: Clone + 'static>(&self) -> Option<T> {
-        self.components.context()
-    }
 
     pub fn tokio_handle(&self) -> TokioHandle {
         self.tokio_runtime.handle().clone()
@@ -281,8 +300,7 @@ impl App {
         self.ui_runtime
             .scroll_request_queue()
             .set_wake(std::rc::Rc::new(move || scroll_wake()));
-        self.async_dispatcher
-            .set_wake_callback(move || wake.as_ref()());
+        self.reactive.tasks().set_wake(wake);
     }
 
     /// Physical pixels per logical pixel. Canvas painters use it to size
@@ -300,12 +318,15 @@ impl App {
         self.ui_runtime.set_scale_factor(scale_factor);
     }
 
+    /// Writes the results of the `resource!` futures that finished since
+    /// the last call; whether there were any.
     pub fn drain_async_messages(&mut self) -> bool {
-        let mut changed = false;
-        while let Ok(message) = self.async_receiver.try_recv() {
-            changed |= self.components.scheduler().enqueue_async_message(message);
+        let mut any = false;
+        while let Ok(finished) = self.finished.try_recv() {
+            self.reactive.finish_task(finished);
+            any = true;
         }
-        changed
+        any
     }
 
     pub fn resize(&mut self, size: Size<f32>) {
@@ -314,10 +335,6 @@ impl App {
             self.ui_runtime
                 .mark_subtree_layout_dirty(self.ui_runtime.root());
         }
-    }
-
-    fn scheduler(&self) -> &Scheduler {
-        self.components.scheduler()
     }
 
     pub fn dispatch_event<T: TextBackend>(
@@ -329,12 +346,8 @@ impl App {
         self.ui_runtime.update_tree(self.size, text);
         // Before the input: a clamp that layout just made happened first.
         self.dispatch_clamped_scrolls(text);
-        let lane = event_lane(&event);
-        let result = with_update_lane(lane, || {
-            self.ui_runtime
-                .dispatch_event(text, &mut self.event_translator, event)
-        });
-        result
+        self.ui_runtime
+            .dispatch_event(text, &mut self.event_translator, event)
     }
 
     /// Publishes the frame's time, before anything in it is stepped or drawn.
@@ -474,19 +487,17 @@ impl App {
         let now = std::time::Instant::now();
         let ui_runtime = &mut self.ui_runtime;
         let translator = &mut self.event_translator;
-        with_update_lane(DEFAULT_LANE, || {
-            for scroll in scrolls {
-                let event = translator.scroll_offset_event(
-                    scroll,
-                    source,
-                    ScrollPhase::Move,
-                    now,
-                    xui_interface::Modifiers::default(),
-                    None,
-                );
-                dispatcher::dispatch_semantic(ui_runtime, text, event);
-            }
-        });
+        for scroll in scrolls {
+            let event = translator.scroll_offset_event(
+                scroll,
+                source,
+                ScrollPhase::Move,
+                now,
+                xui_interface::Modifiers::default(),
+                None,
+            );
+            dispatcher::dispatch_semantic(ui_runtime, text, event);
+        }
     }
 
     /// Scrolls for a navigation key -- arrows, Page Up/Down, Home/End, Space --
@@ -510,11 +521,9 @@ impl App {
             return EventResult::Ignored;
         }
         let ui_runtime = &mut self.ui_runtime;
-        with_update_lane(event_lane(&RawEvent::Keyboard(*raw)), || {
-            for event in events {
-                dispatcher::dispatch_semantic(ui_runtime, text, event);
-            }
-        });
+        for event in events {
+            dispatcher::dispatch_semantic(ui_runtime, text, event);
+        }
         EventResult::Consumed
     }
 
@@ -561,24 +570,22 @@ impl App {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.components.is_dirty() || self.ui_runtime.is_dirty()
+        self.reactive.is_dirty() || self.ui_runtime.is_dirty()
     }
 
-    #[inline]
+    /// Asks for a frame that lays out and paints everything again: after a
+    /// change the runtime cannot see, such as the scale factor.
     pub fn mark_needs_rebuild(&mut self) {
-        self.components.mark_root_dirty();
+        self.ui_runtime
+            .mark_subtree_layout_dirty(self.ui_runtime.root());
     }
 
     #[inline]
     fn rebuild_sync_if_needed(&mut self) {
-        self.components.rebuild_sync_if_needed(&mut self.ui_runtime);
-    }
-
-    /// Renders and commits every pending component, and nothing after: what
-    /// `component_bench` times on its own.
-    #[cfg(test)]
-    pub(crate) fn flush_components(&mut self) {
-        self.rebuild_sync_if_needed();
+        // What handlers wrote since the last flush.
+        if self.reactive.is_dirty() {
+            self.reactive.flush(&mut self.ui_runtime);
+        }
     }
 
 
@@ -591,111 +598,5 @@ impl App {
             text.handle_node_lifecycle(&event);
             backend.handle_node_lifecycle(&event);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_prelude::*;
-    use crate::event_system::callbacks::EventProps;
-    use crate::lanes::{DEFAULT_LANE, NO_LANES};
-    use crate::prelude::{CanvasController, canvas, container};
-    use crate::render::{BuiltDraw, BuiltFrame, BuiltItem, MockRenderBackend, RenderBackend};
-    use crate::state::State;
-    use crate::text::{TextHost, testing::ZeroTextBackend};
-    use core::convert::Infallible;
-    use std::cell::RefCell;
-    use std::time::Instant;
-    use xui_interface::events::{
-        Modifiers, PointerButton, PointerButtons, PointerKind, RawPointerButton, XuiPointerId,
-    };
-    use xui_interface::{
-        Affine, Color, ComputedColorStyle, PathBuilder, PathFill, Point, VectorScene,
-        VectorSceneBuilder,
-    };
-
-    #[derive(Default)]
-    struct NoPresentBackend {
-        inner: MockRenderBackend,
-    }
-
-    impl<T> RenderBackend<T> for NoPresentBackend {
-        type Error = Infallible;
-
-        fn begin_frame(&mut self, size: Size<f32>) -> Result<(), Self::Error> {
-            self.inner.frame_size = Some(size);
-            Ok(())
-        }
-
-        fn submit(&mut self, frame: &BuiltFrame, _text: &mut T) -> Result<(), Self::Error> {
-            self.inner.last_frame = Some(frame.clone());
-            Ok(())
-        }
-
-        fn end_frame(&mut self) -> Result<(), Self::Error> {
-            self.inner.frames += 1;
-            Ok(())
-        }
-
-        fn did_present(&self) -> bool {
-            false
-        }
-    }
-
-    thread_local! {
-        static STATE_SLOT: RefCell<Option<State<bool>>> = const { RefCell::new(None) };
-        static CANVAS_SLOT: RefCell<Option<CanvasController>> = const { RefCell::new(None) };
-    }
-
-    fn canvas_scene(color: Color) -> VectorScene {
-        let mut path = PathBuilder::new();
-        path.move_to(Point::new(0.0, 0.0))
-            .line_to(Point::new(40.0, 0.0))
-            .line_to(Point::new(40.0, 20.0))
-            .line_to(Point::new(0.0, 20.0))
-            .close();
-        let mut scene = VectorSceneBuilder::new();
-        scene.fill_path(path.build(), Affine::IDENTITY, PathFill::new(color));
-        scene.build()
-    }
-
-    fn clickable_canvas_root(cx: &mut HookContext<'_>) -> ElementDesc {
-        let highlighted = cx.use_state(|| false);
-        let controller = cx.use_ref(|| CanvasController::with_scene(canvas_scene(Color::BLACK)));
-        let canvas_handle = controller.get().clone();
-        let click_handle = canvas_handle.clone();
-        CANVAS_SLOT.with(|slot| {
-            *slot.borrow_mut() = Some(canvas_handle.clone());
-        });
-        canvas().with::<canvas::controller>(canvas_handle).with::<canvas::width>(40.0).with::<canvas::height>(20.0).with_on::<canvas::on_click, _>(move |_, _| {
-                let next = !*highlighted.get();
-                click_handle.set_scene(canvas_scene(if next {
-                    Color::WHITE
-                } else {
-                    Color::BLACK
-                }));
-                highlighted.set(next);
-                EventResult::Consumed
-            }).into_element_desc(Vec::new())
-    }
-
-    fn static_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-        container().with::<container::style>(
-                StyleOf::<Container>::new().with::<container::width>(40.0).with::<container::height>(20.0).with::<container::background>(Color::BLACK),
-            ).into_element_desc(Vec::new())
-    }
-
-    fn stateful_root(cx: &mut HookContext<'_>) -> ElementDesc {
-        let state = cx.use_state(|| false);
-        STATE_SLOT.with(|slot| {
-            *slot.borrow_mut() = Some(state);
-        });
-        let color = if *state.get() {
-            Color::WHITE
-        } else {
-            Color::BLACK
-        };
-        container().with::<container::width>(40.0).with::<container::height>(20.0).with::<container::background>(color).into_element_desc(Vec::new())
     }
 }

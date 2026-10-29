@@ -4,59 +4,66 @@ use xui_components::*;
 use xui_core::prelude::*;
 use xui_cosmic::CosmicEngine;
 use xui_interface::events::*;
-use xui_macros::view;
+use xui_macros::component;
 
 thread_local! {
     static CASE: Cell<usize> = const { Cell::new(0) };
     static VALUES: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
     static CONTROLLER: TextController = TextController::with_text("initial");
 }
-fn root(cx: &mut HookContext<'_>) -> ElementDesc {
-    let bool_change = cx.use_callback((), |value: bool| {
-        VALUES.with(|v| v.borrow_mut().push(if value { 1.0 } else { 0.0 }))
-    });
-    let number_change =
-        cx.use_callback((), |value: f32| VALUES.with(|v| v.borrow_mut().push(value)));
-    let index_change = cx.use_callback((), |value: usize| {
-        VALUES.with(|v| v.borrow_mut().push(value as f32))
-    });
-    match CASE.get() {
-        0 => {
-            view! { checkbox(disabled: true, label: Some(view! { text("Label") }), on_change: Some(bool_change)) }
+fn record(value: f32) {
+    VALUES.with(|v| v.borrow_mut().push(value));
+}
+
+#[component]
+fn interaction() {
+    let case: usize = CASE.get();
+    view! {
+        column(width: Sizing::Fill, height: Sizing::Fill) {
+            match *case {
+                0 => checkbox(disabled: true, label: view! { text("Label") }, on_change: |_cx, value| record(if value { 1.0 } else { 0.0 })),
+                1 => checkbox(checked: Some(true), on_change: |_cx, value| record(if value { 1.0 } else { 0.0 })),
+                2 => radio_group(
+                    orientation: SelectionOrientation::Horizontal,
+                    items: vec![RadioItem::new("a", "A", "A"), RadioItem::new("b", "B", "B").disabled(true), RadioItem::new("c", "C", "C")],
+                    on_change: |_cx, value| record(value as f32),
+                ),
+                3 => slider(min: 10.0, max: 0.0, step: -2.0, default_value: 4.0, on_change: |_cx, value| record(value)),
+                4 => xui_components::input(controller: Some(CONTROLLER.with(Clone::clone)), read_only: true),
+                5 => xui_components::input(disabled: true, controller: Some(CONTROLLER.with(Clone::clone))),
+                6 => xui_components::input(),
+                7 => drop_down(
+                    items: vec![DropDownItem::new("a", "A"), DropDownItem::new("b", "B").disabled(true), DropDownItem::new("c", "C")],
+                    on_change: |_cx, value| record(value as f32),
+                ),
+                8 => menu(
+                    trigger: view! { text("Open") },
+                    items: vec![MenuItem::new("a", "A"), MenuItem::new("b", "B").disabled(true), MenuItem::new("c", "C")],
+                    default_open: true,
+                    on_select: |_cx, value| record(value as f32),
+                ),
+                9 => tree_view(
+                    nodes: vec![TreeNode::branch("a", "A", vec![TreeNode::leaf("b", "B")])],
+                    expanded: Some(Vec::new()),
+                    on_expanded_change: |_cx, ids: Vec<String>| record(ids.len() as f32),
+                ),
+                10 => virtual_list(
+                    item_count: 100_000,
+                    item_height: 20.0,
+                    viewport_height: 100.0,
+                    render_item: VirtualItemRenderer::new(|index: usize| index.to_string().into()),
+                    style: StyleOf::new().with::<container::height>(Sizing::Fill),
+                ),
+                _ => container(),
+            }
         }
-        1 => view! { checkbox(checked: Some(true), on_change: Some(bool_change)) },
-        2 => {
-            view! { radio_group(orientation: SelectionOrientation::Horizontal, items: vec![RadioItem::new("a", "A", view! { text("A") }), RadioItem::new("b", "B", view! { text("B") }).disabled(true), RadioItem::new("c", "C", view! { text("C") })], on_change: Some(index_change)) }
-        }
-        3 => {
-            view! { slider(min: 10.0, max: 0.0, step: -2.0, default_value: 4.0, on_change: Some(number_change)) }
-        }
-        4 => {
-            view! { xui_components::input(controller: CONTROLLER.with(Clone::clone), read_only: true) }
-        }
-        5 => {
-            view! { xui_components::input(disabled: true, controller: CONTROLLER.with(Clone::clone)) }
-        }
-        6 => view! { xui_components::input() },
-        7 => {
-            view! { drop_down(items: vec![DropDownItem::new("a", "A"), DropDownItem::new("b", "B").disabled(true), DropDownItem::new("c", "C")], on_change: Some(index_change)) }
-        }
-        8 => {
-            view! { menu(trigger: view! { text("Open") }, items: vec![MenuItem::new("a", "A"), MenuItem::new("b", "B").disabled(true), MenuItem::new("c", "C")], default_open: true, on_select: Some(index_change)) }
-        }
-        9 => {
-            let expansion = cx.use_callback((), |ids: Vec<String>| {
-                VALUES.with(|v| v.borrow_mut().push(ids.len() as f32))
-            });
-            view! { tree_view(nodes: vec![TreeNode::branch("a", "A", vec![TreeNode::leaf("b", "B")])], expanded: Some(Vec::new()), on_expanded_change: Some(expansion)) }
-        }
-        10 => {
-            let render = cx.use_callback((), |index: usize| view! { text(index.to_string()) });
-            view! { virtual_list(item_count: 100_000usize, item_height: 20.0, viewport_height: 100.0, render_item: render, style: StyleOf::new().with::<container::height>(Sizing::Fill)) }
-        }
-        _ => unreachable!(),
     }
 }
+
+fn root(app: &mut App) {
+    app.mount::<Interaction>(InteractionProps {});
+}
+
 struct Harness {
     runtime: GuiRuntime<MockRenderBackend, CosmicEngine>,
 }
@@ -206,7 +213,8 @@ fn virtual_list_follows_viewport_resize_without_a_wheel_event() {
     h.render();
     let rows = |h: &Harness| {
         let tree = h.runtime.app().ui_runtime();
-        let scroller = tree.children(tree.root()).next().unwrap();
+        let column = tree.children(tree.root()).next().unwrap();
+        let scroller = tree.children(column).next().unwrap();
         let spacer = tree.children(scroller).next().unwrap();
         tree.children(spacer).count()
     };

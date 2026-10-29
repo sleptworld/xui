@@ -1,9 +1,10 @@
 use xui_core::prelude::*;
-use xui_macros::view;
+use xui_macros::component;
 
 fn main() {}
 
-fn padded() -> ElementDesc {
+#[component]
+fn padded() {
     // A named argument and a modifier are the same setter.
     view! { container(padding: EdgeInsets::all(4.0)).padding(EdgeInsets::all(8.0)) }
 }

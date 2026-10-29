@@ -4,5 +4,5 @@ fn main() {}
 
 #[component(memoize)]
 fn row(label: &String) {
-    unimplemented!()
+    view! { container() }
 }

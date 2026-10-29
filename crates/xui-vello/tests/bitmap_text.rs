@@ -4,8 +4,9 @@
 mod common;
 
 use common::*;
-use xui_core::{app::ComponentFn, prelude::*, widgets::TextWidget};
-use xui_interface::Effect;
+use xui_core::{app::AppRoot, prelude::*};
+use xui_interface::{Effect, PositionStyle};
+use xui_macros::component;
 use xui_vello::{AtlasOptions, ResourceStats, VelloBackendOptions};
 
 fn options(bitmap_text: bool) -> VelloBackendOptions {
@@ -16,7 +17,7 @@ fn options(bitmap_text: bool) -> VelloBackendOptions {
     }
 }
 
-fn draw(root: ComponentFn, scale: f32, bitmap_text: bool) -> Option<(Frame, ResourceStats)> {
+fn draw(root: AppRoot, scale: f32, bitmap_text: bool) -> Option<(Frame, ResourceStats)> {
     render_options(root, scale, options(bitmap_text), |_| {})
 }
 
@@ -110,30 +111,24 @@ fn hidpi_text_is_rendered_at_the_physical_size() {
 }
 
 /// Red text, and a blue box painted after it over its left half.
-fn covered_text(_: &mut HookContext<'_>) -> ElementDesc {
-    block(
-        Style::new().width(SIZE).height(SIZE),
-        vec![
-            TextWidget::new("Hello xui")
-                .style(
-                    Style::new()
-                        .width(SIZE)
-                        .height(SIZE)
-                        .color(RED)
-                        .font_size(32.0),
-                )
-                .into_element_desc(),
-            block(
-                Style::new()
-                    .absolute()
-                    .inset(EdgeInsets::all(0.0))
-                    .width(50.0)
-                    .height(SIZE)
-                    .background(BLUE),
-                vec![],
-            ),
-        ],
-    )
+fn covered_text(app: &mut App) {
+    app.mount::<CoveredTextScene>(CoveredTextSceneProps {});
+}
+
+#[component]
+fn covered_text_scene() {
+    view! {
+        container(width: SIZE, height: SIZE) {
+            text("Hello xui", width: SIZE, height: SIZE, color: RED, font_size: 32.0)
+            container(
+                position: PositionStyle::Absolute,
+                inset: EdgeInsets::all(0.0),
+                width: 50.0,
+                height: SIZE,
+                background: BLUE,
+            )
+        }
+    }
 }
 
 #[test]
@@ -160,31 +155,24 @@ fn a_shape_painted_after_text_covers_it() {
 /// [`text_root`] in a layer of its own: an identity colour matrix isolates
 /// it without changing what it draws, so the text is composed in linear
 /// light, over transparent, and the layer over the root.
-fn layered_text(_: &mut HookContext<'_>) -> ElementDesc {
+fn layered_text(app: &mut App) {
+    app.mount::<LayeredTextScene>(LayeredTextSceneProps {});
+}
+
+#[component]
+fn layered_text_scene() {
     #[rustfmt::skip]
-    let identity = [
+    let identity: [f32; 20] = [
         1.0, 0.0, 0.0, 0.0, 0.0,
         0.0, 1.0, 0.0, 0.0, 0.0,
         0.0, 0.0, 1.0, 0.0, 0.0,
         0.0, 0.0, 0.0, 1.0, 0.0,
     ];
-    block(
-        Style::new()
-            .width(SIZE)
-            .height(SIZE)
-            .effects(vec![Effect::ColorMatrix(identity)]),
-        vec![
-            TextWidget::new("Hello xui")
-                .style(
-                    Style::new()
-                        .width(SIZE)
-                        .height(SIZE)
-                        .color(RED)
-                        .font_size(32.0),
-                )
-                .into_element_desc(),
-        ],
-    )
+    view! {
+        container(width: SIZE, height: SIZE, effects: vec![Effect::ColorMatrix(*identity)]) {
+            text("Hello xui", width: SIZE, height: SIZE, color: RED, font_size: 32.0)
+        }
+    }
 }
 
 #[test]
@@ -214,17 +202,13 @@ fn text_in_an_isolated_layer_is_drawn_from_bitmaps_too() {
     );
 }
 
-fn rotated_text(_: &mut HookContext<'_>) -> ElementDesc {
-    TextWidget::new("Hello xui")
-        .style(
-            Style::new()
-                .width(SIZE)
-                .height(SIZE)
-                .color(RED)
-                .font_size(32.0)
-                .rotate(0.3),
-        )
-        .into_element_desc()
+fn rotated_text(app: &mut App) {
+    app.mount::<RotatedTextScene>(RotatedTextSceneProps {});
+}
+
+#[component]
+fn rotated_text_scene() {
+    view! { text("Hello xui", width: SIZE, height: SIZE, color: RED, font_size: 32.0, rotate: 0.3) }
 }
 
 #[test]

@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 use xui_core::prelude::*;
-use xui_macros::{component, view};
+use xui_macros::component;
 
 /// A static, decorative placeholder for content that has not loaded.
 ///
@@ -36,9 +36,12 @@ use xui_macros::{component, view};
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { skeleton(width: Sizing::fix(160.0), height: Sizing::fix(20.0)) };
+/// #[component]
+/// fn example() {
+///     view! { skeleton(width: Sizing::fix(160.0), height: Sizing::fix(20.0)) }
+/// }
 /// ```
 #[component]
 #[defaults(
@@ -46,16 +49,19 @@ use xui_macros::{component, view};
     height = Sizing::fix(16.0),
     style = StyleOf::new(),
 )]
-pub fn skeleton(width: &Sizing, height: &Sizing, style: &StyleOf<Container>) {
-    let mut root_style = StyleOf::new()
-        .with::<container::width>(*width)
-        .with::<container::height>(*height)
-        .with::<container::background>(ColorToken::MutedSurface)
-        .with::<container::border_radius>(RadiusToken::Sm);
-    root_style.merge(style);
+pub fn skeleton(#[source] width: &Sizing, #[source] height: &Sizing, style: &StyleOf<Container>) {
+    let root_style: StyleOf<Container> = memo!({
+        let mut root_style = StyleOf::new()
+            .with::<container::width>(*width)
+            .with::<container::height>(*height)
+            .with::<container::background>(ColorToken::MutedSurface)
+            .with::<container::border_radius>(RadiusToken::Sm);
+        root_style.merge(style);
+        root_style
+    });
     view! {
         container(
-            style: root_style,
+            style: root_style.clone(),
             accessibility_hidden: true,
         )
     }
@@ -86,9 +92,12 @@ const SPINNER_PERIOD: Duration = Duration::from_millis(800);
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { spinner(size: 20.0, label: "Loading results") };
+/// #[component]
+/// fn example() {
+///     view! { spinner(size: 20.0, label: "Loading results") }
+/// }
 /// ```
 #[component]
 #[defaults(
@@ -99,39 +108,39 @@ const SPINNER_PERIOD: Duration = Duration::from_millis(800);
     paused = false,
 )]
 pub fn spinner(
-    label: &String,
-    size: &f32,
+    #[source] label: &String,
+    #[source] size: &f32,
     style: &StyleOf<Container>,
-    period: &Duration,
-    paused: &bool,
+    #[source] period: &Duration,
+    #[source] paused: &bool,
 ) {
-    let size = &if size.is_finite() {
-        size.max(0.0)
-    } else {
-        24.0
-    };
-    let mut root_style = StyleOf::new()
-        .with::<container::size>(Size::fix(*size, *size))
-        .with::<container::align>(AlignStyle::Center)
-        .with::<container::justify>(JustifyStyle::Center);
-    root_style.merge(style);
-    let mut indicator = icon()
-        .with::<icon::data>(loader_circle_icon())
-        .with::<icon::size>(Size::fix(*size, *size));
-    if !*paused {
-        indicator = indicator.animate(
-            Animation::new((*period).max(Duration::from_millis(1))).infinite(),
-            |from| from.set::<icon::rotate>(0.0),
-            |to| to.set::<icon::rotate>(std::f32::consts::TAU),
-        );
-    }
-    let indicator = indicator.into_element_desc(Vec::new());
+    let side: f32 = memo!(if size.is_finite() { size.max(0.0) } else { 24.0 });
+    let root_style: StyleOf<Container> = memo!({
+        let mut root_style = StyleOf::new()
+            .with::<container::size>(Size::fix(*side, *side))
+            .with::<container::align>(AlignStyle::Center)
+            .with::<container::justify>(JustifyStyle::Center);
+        root_style.merge(style);
+        root_style
+    });
     view! {
         container(
-            style: root_style,
+            style: root_style.clone(),
             accessibility_label: label.clone(),
         ) {
-            ..indicator
+            icon(
+                data: loader_circle_icon(),
+                size: Size::fix(*side, *side),
+                draft: |indicator| if *paused {
+                    indicator
+                } else {
+                    indicator.animate(
+                        Animation::new((*period).max(Duration::from_millis(1))).infinite(),
+                        |from| from.set::<icon::rotate>(0.0),
+                        |to| to.set::<icon::rotate>(std::f32::consts::TAU),
+                    )
+                },
+            )
         }
     }
 }
@@ -179,55 +188,56 @@ pub enum CalloutTone {
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { callout(content: view! { text("Your settings were saved.") }, title: Some("Saved".to_owned())) };
+/// #[component]
+/// fn example() {
+///     view! { callout(title: Some("Saved".to_owned())) { text("Your settings were saved.") } }
+/// }
 /// ```
 #[component]
 #[defaults(
-    title = None,
+    title = None::<String>,
     tone = CalloutTone::Info,
     style = StyleOf::new(),
     title_style = StyleOf::new(),
 )]
 pub fn callout(
-    content: &ElementDesc,
-    title: &Option<String>,
-    tone: &CalloutTone,
+    children: &Children,
+    #[source] title: &Option<String>,
+    #[source] tone: &CalloutTone,
     style: &StyleOf<Container>,
     title_style: &StyleOf<Text>,
 ) {
-    let color = match tone {
-        CalloutTone::Info => Color::hex("#1d4ed8"),
-        CalloutTone::Success => Color::hex("#15803d"),
-        CalloutTone::Warning => Color::hex("#a16207"),
-        CalloutTone::Danger => Color::hex("#b91c1c"),
-    };
-    let mut children = Vec::with_capacity(2);
-    if let Some(title) = title {
-        children.push(view! {
-            xui_core::prelude::text(
-                title.clone(),
-                style: StyleOf::new().with::<container::font_weight>(FontWeight::Bold).merged(title_style),
-            )
-        });
-    }
-    children.push(content.clone());
-    let mut root_style = StyleOf::new()
-        .with::<container::background>(ColorToken::Background)
-        .with::<container::color>(ColorToken::Foreground)
-        .with::<container::gap>(6.0)
-        .with::<container::padding>(EdgeInsets::all(12.0))
-        .with::<container::border_width>(1.0)
-        .with::<container::border_color>(color)
-        .with::<container::border_radius>(RadiusToken::Md);
-    root_style.merge(style);
+    let heading_style: StyleOf<Text> =
+        StyleOf::new().with::<container::font_weight>(FontWeight::Bold).merged(title_style);
+    let root_style: StyleOf<Container> = memo!({
+        let color = match tone {
+            CalloutTone::Info => Color::hex("#1d4ed8"),
+            CalloutTone::Success => Color::hex("#15803d"),
+            CalloutTone::Warning => Color::hex("#a16207"),
+            CalloutTone::Danger => Color::hex("#b91c1c"),
+        };
+        let mut root_style = StyleOf::new()
+            .with::<container::background>(ColorToken::Background)
+            .with::<container::color>(ColorToken::Foreground)
+            .with::<container::gap>(6.0)
+            .with::<container::padding>(EdgeInsets::all(12.0))
+            .with::<container::border_width>(1.0)
+            .with::<container::border_color>(color)
+            .with::<container::border_radius>(RadiusToken::Md);
+        root_style.merge(style);
+        root_style
+    });
     view! {
         container(
-            style: root_style,
+            style: root_style.clone(),
             flex_direction: FlexDirectionStyle::Column,
         ) {
-            ..children
+            if let Some(title) = title.clone() {
+                text(title.clone(), style: heading_style.clone())
+            }
+            slot(children)
         }
     }
 }

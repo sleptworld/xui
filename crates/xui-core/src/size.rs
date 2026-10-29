@@ -1,12 +1,10 @@
 //! Observe a widget's size after layout, without changing its layout rules.
 //!
-//! ```
-//! use xui_core::prelude::*;
-//!
-//! fn panel(cx: &mut HookContext<'_>) -> ElementDesc {
-//!     let size = cx.use_size();
-//!     let latest = size.get(); // None until the widget has been laid out
-//!     container().with::<container::size_observer>(size).into_element_desc(Vec::new())
+//! ```ignore
+//! #[component]
+//! fn panel() {
+//!     let size: Option<Size<f32>> = size!(); // None until laid out
+//!     view! { container(size_observer: size) { text(format!("{size:?}")) } }
 //! }
 //! ```
 
@@ -17,37 +15,43 @@ use std::rc::Rc;
 
 use xui_interface::{NodeId, Size};
 
-use crate::fiber::FiberId;
-use crate::lanes::DEFAULT_LANE;
-use crate::state::Scheduler;
 
 struct SizeState {
     node: Cell<Option<NodeId>>,
     size: Cell<Option<Size<f32>>>,
-    owner: FiberId,
-    scheduler: Scheduler,
+    /// Told the size whenever it changes.
+    notify: Box<dyn Fn(Option<Size<f32>>)>,
 }
 
-/// A stable subscription created by [`crate::state::HookContext::use_size`].
+/// What binds a host to a `size!()` source.
 ///
 /// Bind it to one widget using `.with::<container::size_observer>(observer.clone())`. Sizes are
 /// the final layout border box in logical pixels, including padding, excluding
-/// transforms and overflowing content. A change schedules the owning component
-/// on the ordinary update lane, for a subsequent render. There is no layout
-/// containment and no layout/rebuild loop before painting.
+/// transforms and overflowing content. A change writes the source, which the
+/// next flush propagates. There is no layout containment and no
+/// layout/rebuild loop before painting.
 #[derive(Clone)]
 pub struct SizeObserver {
     inner: Rc<SizeState>,
 }
 
 impl SizeObserver {
-    pub(crate) fn new(owner: FiberId, scheduler: Scheduler) -> Self {
+    /// An observer that writes the size into `signal`: what `size!()` binds.
+    pub(crate) fn reactive(
+        signal: crate::reactive::Signal<Option<Size<f32>>>,
+        notifier: crate::reactive::Notifier,
+    ) -> Self {
+        Self::with_notify(Box::new(move |size| {
+            signal.set(&mut crate::reactive::Cx::handler(&notifier), size)
+        }))
+    }
+
+    fn with_notify(notify: Box<dyn Fn(Option<Size<f32>>)>) -> Self {
         Self {
             inner: Rc::new(SizeState {
                 node: Cell::new(None),
                 size: Cell::new(None),
-                owner,
-                scheduler,
+                notify,
             }),
         }
     }
@@ -87,9 +91,7 @@ impl SizeObserver {
     }
 
     pub(crate) fn notify(&self) {
-        self.inner
-            .scheduler
-            .mark_component_dirty(self.inner.owner, DEFAULT_LANE);
+        (self.inner.notify)(self.inner.size.get());
     }
 }
 
@@ -113,197 +115,5 @@ impl Eq for SizeObserver {}
 impl Hash for SizeObserver {
     fn hash<H: Hasher>(&self, state: &mut H) {
         Rc::as_ptr(&self.inner).hash(state);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[allow(unused_imports)]
-    use crate::test_prelude::*;
-    use std::cell::RefCell;
-
-    use super::*;
-    use crate::app::{App, ComponentFn};
-    use crate::element::ElementDesc;
-    use crate::render::MockRenderBackend;
-    use crate::runtime::{GuiRuntime, RuntimeEvent};
-    use crate::state::{HookContext, State};
-    use crate::text::testing::ZeroTextBackend;
-    
-    use xui_interface::{EdgeInsets};
-
-    thread_local! {
-        static LOG: RefCell<Vec<Option<Size<f32>>>> = const { RefCell::new(Vec::new()) };
-        static OBSERVER: RefCell<Option<SizeObserver>> = const { RefCell::new(None) };
-        static VISIBLE: RefCell<Option<State<bool>>> = const { RefCell::new(None) };
-    }
-
-    fn observe(cx: &mut HookContext<'_>) -> SizeObserver {
-        let observer = cx.use_size();
-        LOG.with(|log| log.borrow_mut().push(observer.get()));
-        OBSERVER.with(|slot| *slot.borrow_mut() = Some(observer.clone()));
-        observer
-    }
-
-    fn take_log() -> Vec<Option<Size<f32>>> {
-        LOG.with(|log| std::mem::take(&mut *log.borrow_mut()))
-    }
-
-    fn latest() -> Option<Size<f32>> {
-        OBSERVER.with(|slot| slot.borrow().as_ref().unwrap().get())
-    }
-
-    fn runtime(root: ComponentFn) -> GuiRuntime<MockRenderBackend, ZeroTextBackend> {
-        take_log();
-        let mut runtime = GuiRuntime::new(
-            App::new(root),
-            MockRenderBackend::default(),
-            ZeroTextBackend,
-        );
-        runtime.handle_event(RuntimeEvent::Resize(Size::new(400.0, 300.0)));
-        runtime
-    }
-
-    fn root(cx: &mut HookContext<'_>) -> ElementDesc {
-        let observer = observe(cx);
-        container().with::<container::size_observer>(observer).with::<container::padding>(EdgeInsets::all(10.0)).into_element_desc(vec![
-                container().with::<container::style>(StyleOf::<Container>::new().with::<container::height>(40.0)).into_element_desc(Vec::new()),
-            ])
-    }
-
-    #[test]
-    fn size_is_published_after_layout_and_renders_later_without_containment() {
-        let mut runtime = runtime(root);
-        runtime.frame().unwrap();
-        assert_eq!(take_log(), [None], "no rebuild inside the first frame");
-        assert_eq!(
-            latest(),
-            Some(Size::new(400.0, 60.0)),
-            "padding and content size the box normally"
-        );
-        assert_eq!(runtime.app().ui_runtime().stats.layout_passes, 1);
-        assert!(runtime.app().is_dirty());
-
-        runtime.frame().unwrap();
-        assert_eq!(take_log(), [Some(Size::new(400.0, 60.0))]);
-        assert!(
-            !runtime.app().is_dirty(),
-            "recommitting the same observer preserves its size"
-        );
-        let passes = runtime.app().ui_runtime().stats.layout_passes;
-        assert!(!runtime.frame().unwrap().rendered);
-        assert!(take_log().is_empty());
-        assert_eq!(runtime.app().ui_runtime().stats.layout_passes, passes);
-
-        runtime.handle_event(RuntimeEvent::Resize(Size::new(250.0, 300.0)));
-        runtime.frame().unwrap();
-        assert!(
-            take_log().is_empty(),
-            "resize publishes without invoking the component"
-        );
-        assert_eq!(latest(), Some(Size::new(250.0, 60.0)));
-        runtime.frame().unwrap();
-        assert_eq!(take_log(), [Some(Size::new(250.0, 60.0))]);
-        assert!(!runtime.app().is_dirty());
-    }
-
-    fn toggle_root(cx: &mut HookContext<'_>) -> ElementDesc {
-        let observer = observe(cx);
-        let visible = cx.use_state(|| true);
-        VISIBLE.with(|slot| *slot.borrow_mut() = Some(visible));
-        let child = container().with::<container::width>(120.0).with::<container::height>(40.0);
-        let child = if *visible.get() {
-            child.with::<container::size_observer>(observer)
-        } else {
-            child
-        };
-        container().into_element_desc(vec![child.into_element_desc(Vec::new())])
-    }
-
-    fn set_visible(value: bool) {
-        slot::Runtime::with_phase(slot::RenderPhase::Event, || {
-            VISIBLE.with(|slot| slot.borrow().unwrap().set(value));
-        });
-    }
-
-    #[test]
-    fn attaching_and_detaching_on_an_existing_node_notifies_after_commit() {
-        let mut runtime = runtime(toggle_root);
-        runtime.frame().unwrap();
-        runtime.frame().unwrap();
-        take_log();
-        let passes = runtime.app().ui_runtime().stats.layout_passes;
-
-        set_visible(false);
-        runtime.frame().unwrap();
-        assert_eq!(latest(), None);
-        assert!(
-            runtime.app().is_dirty(),
-            "detachment update survives the committing render"
-        );
-        runtime.frame().unwrap();
-        assert_eq!(take_log(), [Some(Size::new(120.0, 40.0)), None]);
-        assert!(!runtime.app().is_dirty());
-
-        set_visible(true);
-        runtime.frame().unwrap();
-        assert_eq!(latest(), Some(Size::new(120.0, 40.0)));
-        runtime.frame().unwrap();
-        assert_eq!(take_log(), [None, Some(Size::new(120.0, 40.0))]);
-        assert!(!runtime.app().is_dirty());
-        assert_eq!(
-            runtime.app().ui_runtime().stats.layout_passes,
-            passes,
-            "subscription changes do not invalidate geometry"
-        );
-    }
-
-    fn leaf_root(cx: &mut HookContext<'_>) -> ElementDesc {
-        text().with::<text::content>("observed leaf").with::<text::size_observer>(observe(cx)).with::<text::width>(80.0).with::<text::height>(20.0).into_element_desc(Vec::new())
-    }
-
-    #[test]
-    fn observes_a_leaf_and_clears_the_handle_when_the_runtime_is_dropped() {
-        let mut runtime = runtime(leaf_root);
-        runtime.frame().unwrap();
-        assert_eq!(latest(), Some(Size::new(80.0, 20.0)));
-        runtime.frame().unwrap();
-        assert_eq!(take_log(), [None, Some(Size::new(80.0, 20.0))]);
-        drop(runtime);
-        assert_eq!(latest(), None);
-    }
-
-    fn removable_root(cx: &mut HookContext<'_>) -> ElementDesc {
-        let observer = observe(cx);
-        let visible = cx.use_state(|| true);
-        VISIBLE.with(|slot| *slot.borrow_mut() = Some(visible));
-        let children = if *visible.get() {
-            vec![
-                container().with::<container::size_observer>(observer).with::<container::width>(90.0).with::<container::height>(30.0).into_element_desc(Vec::new()),
-            ]
-        } else {
-            Vec::new()
-        };
-        container().into_element_desc(children)
-    }
-
-    #[test]
-    fn removal_clears_the_subscription_and_the_handle_can_observe_a_new_node() {
-        let mut runtime = runtime(removable_root);
-        runtime.frame().unwrap();
-        runtime.frame().unwrap();
-        take_log();
-        set_visible(false);
-        runtime.frame().unwrap();
-        assert_eq!(latest(), None);
-        runtime.frame().unwrap();
-        assert_eq!(take_log(), [Some(Size::new(90.0, 30.0)), None]);
-        assert!(!runtime.app().is_dirty());
-        set_visible(true);
-        runtime.frame().unwrap();
-        assert_eq!(latest(), Some(Size::new(90.0, 30.0)));
-        runtime.frame().unwrap();
-        assert_eq!(take_log(), [None, Some(Size::new(90.0, 30.0))]);
-        assert!(!runtime.app().is_dirty());
     }
 }

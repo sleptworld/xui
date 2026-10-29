@@ -1,28 +1,29 @@
 use xui_core::prelude::*;
-use xui_macros::view;
+use xui_macros::component;
 
 fn main() {}
 
-fn bare_path(rows: Vec<ElementDesc>) -> ElementDesc {
+#[component]
+fn bare_path(rows: &u32) {
     view! { column { rows } }
 }
 
-fn braced_splice(rows: Vec<ElementDesc>) -> ElementDesc {
-    view! { column { text("a") {rows} } }
-}
-
-fn content_and_body() -> ElementDesc {
+#[component]
+fn content_and_body() {
     view! { column("x") { text("a") } }
 }
 
-fn content_after_named() -> ElementDesc {
+#[component]
+fn content_after_named() {
     view! { text(color: Color::BLACK, "x") }
 }
 
-fn two_roots() -> ElementDesc {
+#[component]
+fn two_roots() {
     view! { text("a") text("b") }
 }
 
-fn empty_modifier() -> ElementDesc {
+#[component]
+fn empty_modifier() {
     view! { container().clip() }
 }

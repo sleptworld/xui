@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use xui_core::prelude::*;
 
-use xui_macros::{component, style, view};
+use xui_macros::{component, style};
 
 use crate::{SelectionItem, SelectionModel, SelectionOrientation};
 
@@ -58,18 +58,18 @@ fn navigation_shortcuts() -> [(Shortcut, CommandId); 6] {
     ]
 }
 
-fn commit_bool(
-    value: bool,
-    controlled: bool,
-    state: xui_core::state::State<bool>,
-    callback: &Option<BoolChangeCallback>,
+/// Commits a new value: kept in `own` unless `controlled` holds one, and reported.
+pub(crate) fn commit<T: Clone + 'static>(
+    cx: &mut Cx<'_>,
+    value: T,
+    controlled: &ReadSignal<Option<T>>,
+    own: &Signal<T>,
+    callback: &Callback<T>,
 ) {
-    if !controlled {
-        state.set(value);
+    if controlled.with(Option::is_none) {
+        own.set(cx, value.clone());
     }
-    if let Some(callback) = callback {
-        callback.call(value);
-    }
+    callback.call(cx, value);
 }
 
 /// A labeled checkbox supporting controlled, uncontrolled, and indeterminate states.
@@ -99,93 +99,90 @@ fn commit_bool(
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { checkbox(default_checked: true, label: Some(view! { text("Remember me") })) };
+/// #[component]
+/// fn example() {
+///     view! { checkbox(default_checked: true, label: view! { text("Remember me") }) }
+/// }
 /// ```
 #[component]
 #[defaults(
-    checked = None,
+    checked = None::<bool>,
     default_checked = false,
     indeterminate = false,
     disabled = false,
-    label = None,
-    on_change = None,
-    accessibility_label = None,
+    accessibility_label = None::<String>,
     style = StyleOf::new(),
     indicator_style = StyleOf::new(),
 )]
 pub fn checkbox(
-    checked: &Option<bool>,
+    #[source] checked: &Option<bool>,
     default_checked: &bool,
-    indeterminate: &bool,
-    disabled: &bool,
-    label: &Option<ElementDesc>,
-    on_change: &Option<BoolChangeCallback>,
-    accessibility_label: &Option<String>,
+    #[source] indeterminate: &bool,
+    #[source] disabled: &bool,
+    label: &Children,
+    on_change: &Callback<bool>,
+    #[source] accessibility_label: &Option<String>,
     style: &StyleOf<Container>,
     indicator_style: &StyleOf<Container>,
 ) {
-    let state = cx.use_state(|| *default_checked);
-    let controlled = checked.is_some();
-    let value = checked.unwrap_or(*state.get());
-    let callback = on_change.clone();
-    let mark = if *indeterminate {
-        "−"
-    } else if value {
-        "✓"
-    } else {
-        ""
-    };
-    let checked_state = if *indeterminate {
-        AccessibilityChecked::Mixed
-    } else if value {
-        AccessibilityChecked::True
-    } else {
-        AccessibilityChecked::False
-    };
-
-    let box_style = style!(container {
-        size: Size::fix(20.0, 20.0),
-        border_width: 1.0,
-        border_color: if value || *indeterminate {
-            ColorToken::Primary
-        } else {
-            ColorToken::Border
-        },
-        background: if value || *indeterminate {
-            ColorStyle::from(ColorToken::Primary)
-        } else {
-            ColorStyle::from(Color::TRANSPARENT)
-        },
-        border_radius: RadiusToken::Sm,
-    })
-    .merged(indicator_style);
-
-    let disabled = *disabled;
-    let root_style = crate::layout::control_style(disabled)
-        .with::<container::align>(AlignStyle::Center)
-        .with::<container::gap>(8.0)
-        .with::<container::min_height>(32.0)
-        .merged(style);
+    let own: bool = state!(*default_checked);
+    let value: bool = memo!(checked.unwrap_or(*own));
+    let box_style: StyleOf<Container> = memo!(
+        style!(container {
+            size: Size::fix(20.0, 20.0),
+            border_width: 1.0,
+            border_color: if *value || *indeterminate {
+                ColorToken::Primary
+            } else {
+                ColorToken::Border
+            },
+            background: if *value || *indeterminate {
+                ColorStyle::from(ColorToken::Primary)
+            } else {
+                ColorStyle::from(Color::TRANSPARENT)
+            },
+            border_radius: RadiusToken::Sm,
+        })
+        .merged(indicator_style)
+        .with::<container::color>(ColorToken::PrimaryForeground)
+    );
+    let root_style: StyleOf<Container> = memo!(
+        crate::layout::control_style(*disabled)
+            .with::<container::align>(AlignStyle::Center)
+            .with::<container::gap>(8.0)
+            .with::<container::min_height>(32.0)
+            .merged(style)
+    );
     view! {
-        row(style: root_style, focusable: !disabled,
-            tab_index: if disabled { -1 } else { 0 },
+        row(
+            style: root_style.clone(),
+            focusable: !*disabled,
+            tab_index: if *disabled { -1 } else { 0 },
             accessibility_role: AccessibilityRole::Checkbox,
             accessibility_label: accessibility_label.clone().unwrap_or_default(),
-            accessibility_checked: checked_state, accessibility_disabled: disabled,
-            on_click: move |event, event_cx| {
-                if disabled || event.button.is_some_and(|button| button != PointerButton::Primary) {
+            accessibility_checked: if *indeterminate {
+                AccessibilityChecked::Mixed
+            } else if *value {
+                AccessibilityChecked::True
+            } else {
+                AccessibilityChecked::False
+            },
+            accessibility_disabled: *disabled,
+            on_click: |cx, event, event_cx| {
+                if disabled.get() || event.button.is_some_and(|button| button != PointerButton::Primary) {
                     return EventResult::Ignored;
                 }
                 event_cx.request_focus();
-                commit_bool(!value, controlled, state, &callback);
+                commit(cx, !value.get(), checked, own, on_change);
                 EventResult::Consumed
-        }) {
-            center(style: box_style.with::<container::color>(ColorToken::PrimaryForeground)) {
-                xui_core::prelude::text(mark)
+            },
+        ) {
+            center(style: box_style.clone()) {
+                xui_core::prelude::text(if *indeterminate { "−" } else if *value { "✓" } else { "" })
             }
-            if let Some(label) = label { ..label.clone() }
+            slot(label)
         }
     }
 }
@@ -224,111 +221,104 @@ const SWITCH_TRAVEL: f32 = SWITCH_TRACK_WIDTH - SWITCH_THUMB_SIZE - SWITCH_TRACK
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { switch(default_checked: true, label: Some(view! { text("Notifications") })) };
+/// #[component]
+/// fn example() {
+///     view! { switch(default_checked: true, label: view! { text("Notifications") }) }
+/// }
 /// ```
 #[component]
 #[defaults(
-    checked = None,
+    checked = None::<bool>,
     default_checked = false,
     disabled = false,
-    label = None,
-    on_change = None,
-    accessibility_label = None,
+    accessibility_label = None::<String>,
     style = StyleOf::new(),
     track_style = StyleOf::new(),
     thumb_style = StyleOf::new(),
 )]
 pub fn switch(
-    checked: &Option<bool>,
+    #[source] checked: &Option<bool>,
     default_checked: &bool,
-    disabled: &bool,
-    label: &Option<ElementDesc>,
-    on_change: &Option<BoolChangeCallback>,
-    accessibility_label: &Option<String>,
+    #[source] disabled: &bool,
+    label: &Children,
+    on_change: &Callback<bool>,
+    #[source] accessibility_label: &Option<String>,
     style: &StyleOf<Container>,
     track_style: &StyleOf<Container>,
     thumb_style: &StyleOf<Container>,
 ) {
-    let state = cx.use_state(|| *default_checked);
-    let controlled = checked.is_some();
-    let value = checked.unwrap_or(*state.get());
-    let callback = on_change.clone();
-    let disabled = *disabled;
-
-    let motion = Transition::new(Duration::from_millis(180)).ease(Easing::CubicOut);
-
-    let resolved_track = style!(container {
-        size: Size::fix(SWITCH_TRACK_WIDTH, SWITCH_TRACK_HEIGHT),
-        padding: EdgeInsets::all(SWITCH_TRACK_PADDING),
-        border_radius: SWITCH_TRACK_HEIGHT / 2.0,
-        align: AlignStyle::Center,
-        justify: JustifyStyle::Start,
-        background: if value {
-            ColorStyle::from(ColorToken::Primary)
-        } else {
-            ColorStyle::from(ColorToken::MutedSurface)
-        },
-    })
-    .merged(track_style);
-
-    let resolved_thumb = style!(container {
-        size: Size::fix(SWITCH_THUMB_SIZE, SWITCH_THUMB_SIZE),
-        border_radius: SWITCH_THUMB_SIZE / 2.0,
-        background: ColorToken::Background,
-        translate_x: if value { SWITCH_TRAVEL } else { 0.0 },
-    })
-    .merged(thumb_style);
-
-    let track = view! {
-        container(style: resolved_track, transition: motion) { container(style: resolved_thumb, transition: motion) }
-    };
-
-    let mut children = vec![track];
-    if let Some(label) = label {
-        children.push(label.clone());
-    }
-
+    let own: bool = state!(*default_checked);
+    let value: bool = memo!(checked.unwrap_or(*own));
+    let motion: Transition = Transition::new(Duration::from_millis(180)).ease(Easing::CubicOut);
+    let resolved_track: StyleOf<Container> = memo!(
+        style!(container {
+            size: Size::fix(SWITCH_TRACK_WIDTH, SWITCH_TRACK_HEIGHT),
+            padding: EdgeInsets::all(SWITCH_TRACK_PADDING),
+            border_radius: SWITCH_TRACK_HEIGHT / 2.0,
+            align: AlignStyle::Center,
+            justify: JustifyStyle::Start,
+            background: if *value {
+                ColorStyle::from(ColorToken::Primary)
+            } else {
+                ColorStyle::from(ColorToken::MutedSurface)
+            },
+        })
+        .merged(track_style)
+    );
+    let resolved_thumb: StyleOf<Container> = memo!(
+        style!(container {
+            size: Size::fix(SWITCH_THUMB_SIZE, SWITCH_THUMB_SIZE),
+            border_radius: SWITCH_THUMB_SIZE / 2.0,
+            background: ColorToken::Background,
+            translate_x: if *value { SWITCH_TRAVEL } else { 0.0 },
+        })
+        .merged(thumb_style)
+    );
     // `center` fills its parent by default; a switch is sized by its track and
     // label.
-    let root_style = crate::layout::control_style(disabled)
-        .with::<container::size>(Size::new(Sizing::Hug, Sizing::Hug))
-        .with::<container::align>(AlignStyle::Center)
-        .with::<container::gap>(8.0)
-        .with::<container::min_height>(32.0)
-        .merged(style);
-
+    let root_style: StyleOf<Container> = memo!(
+        crate::layout::control_style(*disabled)
+            .with::<container::size>(Size::new(Sizing::Hug, Sizing::Hug))
+            .with::<container::align>(AlignStyle::Center)
+            .with::<container::gap>(8.0)
+            .with::<container::min_height>(32.0)
+            .merged(style)
+    );
     view! {
-        center(style: root_style, flex_direction: FlexDirectionStyle::Row, focusable: !disabled, tab_index: if disabled { -1 } else { 0 }, accessibility_role: AccessibilityRole::Switch, accessibility_checked: if value {
-                AccessibilityChecked::True
-            } else {
-                AccessibilityChecked::False
-            }, accessibility_disabled: disabled, accessibility_label: accessibility_label.clone().unwrap_or_default(), on_click: move |event, event_cx| {
-                if disabled {
-                    return EventResult::Ignored;
-                }
-                if event
-                    .button
-                    .is_some_and(|button| button != PointerButton::Primary)
-                {
+        center(
+            style: root_style.clone(),
+            flex_direction: FlexDirectionStyle::Row,
+            focusable: !*disabled,
+            tab_index: if *disabled { -1 } else { 0 },
+            accessibility_role: AccessibilityRole::Switch,
+            accessibility_checked: if *value { AccessibilityChecked::True } else { AccessibilityChecked::False },
+            accessibility_disabled: *disabled,
+            accessibility_label: accessibility_label.clone().unwrap_or_default(),
+            on_click: |cx, event, event_cx| {
+                if disabled.get() || event.button.is_some_and(|button| button != PointerButton::Primary) {
                     return EventResult::Ignored;
                 }
                 event_cx.request_focus();
-                commit_bool(!value, controlled, state, &callback);
+                commit(cx, !value.get(), checked, own, on_change);
                 EventResult::Consumed
-        }) { ..
-            children
+            },
+        ) {
+            container(style: resolved_track.clone(), transition: *motion) {
+                container(style: resolved_thumb.clone(), transition: *motion)
+            }
+            slot(label)
         }
     }
 }
 
 /// An identified radio choice with a visual label, accessibility name, and disabled
 /// state.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RadioItem {
     pub id: String,
-    pub label: ElementDesc,
+    pub label: Children,
     pub accessibility_label: String,
     pub disabled: bool,
 }
@@ -337,7 +327,7 @@ impl RadioItem {
     pub fn new(
         id: impl Into<String>,
         accessibility_label: impl Into<String>,
-        label: impl Into<ElementDesc>,
+        label: impl Into<Children>,
     ) -> Self {
         Self {
             id: id.into(),
@@ -380,134 +370,50 @@ impl RadioItem {
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { radio_group(items: vec![RadioItem::new("a", "Choice A", view! { text("Choice A") })]) };
+/// #[component]
+/// fn example() {
+///     view! { radio_group(items: vec![RadioItem::new("a", "Choice A", "Choice A")]) }
+/// }
 /// ```
 #[component]
 #[defaults(
-    selected = None,
+    selected = None::<usize>,
     default_selected = 0,
     disabled = false,
     orientation = SelectionOrientation::Vertical,
-    on_change = None,
-    accessibility_label = None,
+    accessibility_label = None::<String>,
     style = StyleOf::new(),
     item_style = StyleOf::new(),
     indicator_style = StyleOf::new(),
 )]
 pub fn radio_group(
-    items: &Vec<RadioItem>,
-    selected: &Option<usize>,
+    #[source] items: &Vec<RadioItem>,
+    #[source] selected: &Option<usize>,
     default_selected: &usize,
-    disabled: &bool,
+    #[source] disabled: &bool,
     orientation: &SelectionOrientation,
-    on_change: &Option<IndexChangeCallback>,
-    accessibility_label: &Option<String>,
+    on_change: &Callback<usize>,
+    #[source] accessibility_label: &Option<String>,
     style: &StyleOf<Container>,
     item_style: &StyleOf<Container>,
     indicator_style: &StyleOf<Container>,
 ) {
-    let orientation = *orientation;
-    let model = std::rc::Rc::new(SelectionModel::new(items.iter().map(|item| {
-        SelectionItem::new(
-            item.id.clone(),
-            item.accessibility_label.clone(),
-            *disabled || item.disabled,
-        )
+    let model: SelectionModel = memo!(SelectionModel::new(items.iter().map(|item| {
+        SelectionItem::new(item.id.clone(), item.accessibility_label.clone(), *disabled || item.disabled)
     })));
-    let initial = model.normalize(*default_selected).unwrap_or(0);
-    let state = cx.use_state(|| initial);
-    let active = model.normalize(selected.unwrap_or(*state.get()));
-    let controlled = selected.is_some();
-    let handles = cx.use_memo_with(
-        items.iter().map(|item| item.id.clone()).collect::<Vec<_>>(),
-        || {
-            let handles: std::rc::Rc<[FocusHandle]> = (0..items.len())
-                .map(|_| FocusHandle::new())
-                .collect::<Vec<_>>()
-                .into();
-            handles
-        },
-    );
-    let mut children = Vec::with_capacity(items.len());
-    for (index, item) in items.iter().enumerate() {
-        let selected_now = active == Some(index);
-        let item_disabled = *disabled || item.disabled;
-        let callback = on_change.clone();
-        let keyboard_callback = on_change.clone();
-        let model = model.clone();
-        let handles = handles.get().clone();
-        let interactive = !item_disabled;
-
-        let dot = view! {
-            container(
-                style: StyleOf::new()
-                    .with::<container::size>(Size::fix(18.0, 18.0))
-                    .with::<container::border_width>(if selected_now { 5.0 } else { 1.0 })
-                    .with::<container::border_color>(if selected_now {
-                        ColorToken::Primary
-                    } else {
-                        ColorToken::Border
-                })
-                    .with::<container::border_radius>(9.0).merged(indicator_style),
-            )
-        };
-        children.push(view! {
-            container(
-                style: crate::layout::control_style(item_disabled)
-                    .with::<container::align>(AlignStyle::Center)
-                    .with::<container::gap>(8.0)
-                    .with::<container::min_height>(32.0).merged(item_style),
-                flex_direction: FlexDirectionStyle::Row,
-                focusable: !item_disabled,
-                tab_index: if selected_now { 0 } else { -1 },
-                focus_handle: handles[index].clone(),
-                accessibility_role: AccessibilityRole::Radio,
-                accessibility_label: item.accessibility_label.clone(),
-                accessibility_checked: if selected_now {
-                    AccessibilityChecked::True
-                } else {
-                    AccessibilityChecked::False
-                },
-                accessibility_disabled: item_disabled,
-                on_click: move |_, event_cx| { if !interactive { return EventResult::Ignored; }
-                    event_cx.request_focus();
-                    if !controlled {
-                        state.set(index);
-                    }
-                    if let Some(callback) = &callback {
-                        callback.call(index);
-                    }
-                    EventResult::Consumed
-                },
-                shortcuts: [
-                    (Shortcut::named(if orientation == SelectionOrientation::Horizontal { NamedKey::ArrowLeft } else { NamedKey::ArrowUp }).allow_repeat(true), PREVIOUS),
-                    (Shortcut::named(if orientation == SelectionOrientation::Horizontal { NamedKey::ArrowRight } else { NamedKey::ArrowDown }).allow_repeat(true), NEXT),
-                    (Shortcut::named(NamedKey::Home), FIRST), (Shortcut::named(NamedKey::End), LAST),
-                ].map(|(shortcut, command)| ShortcutBinding { shortcut, command }).to_vec(),
-                on_command: move |event, event_cx| { if !interactive { return EventResult::Ignored; }
-                    let next = match event.command {
-                        FIRST => model.first(), LAST => model.last(),
-                        PREVIOUS => model.adjacent(index, -1),
-                        NEXT => model.adjacent(index, 1),
-                        _ => return EventResult::Ignored,
-                    };
-                    let Some(next) = next else { return EventResult::Ignored; };
-                    handles[next].request_focus(event_cx);
-                    if !controlled {
-                        state.set(next);
-                    }
-                    if let Some(callback) = &keyboard_callback { callback.call(next); }
-                    EventResult::Consumed
-                },
-            ) {
-                ..dot
-                ..item.label.clone()
-            }
-        });
-    }
-
+    let own: usize = state!(*default_selected);
+    let active: Option<usize> = memo!(model.normalize(selected.unwrap_or(*own)));
+    let handles: Vec<FocusHandle> = memo!((0..items.len()).map(|_| FocusHandle::new()).collect());
+    let shortcuts: Vec<ShortcutBinding> = [
+        (Shortcut::named(if *orientation == SelectionOrientation::Horizontal { NamedKey::ArrowLeft } else { NamedKey::ArrowUp }).allow_repeat(true), PREVIOUS),
+        (Shortcut::named(if *orientation == SelectionOrientation::Horizontal { NamedKey::ArrowRight } else { NamedKey::ArrowDown }).allow_repeat(true), NEXT),
+        (Shortcut::named(NamedKey::Home), FIRST),
+        (Shortcut::named(NamedKey::End), LAST),
+    ]
+    .map(|(shortcut, command)| ShortcutBinding { shortcut, command })
+    .to_vec();
     view! {
         container(
             style: StyleOf::new().with::<container::gap>(4.0).merged(style),
@@ -522,7 +428,68 @@ pub fn radio_group(
             },
             accessibility_label: accessibility_label.clone().unwrap_or_default(),
         ) {
-            ..children
+            for (index, item) in items.iter().cloned().enumerate() {
+                container(
+                    style: crate::layout::control_style(*disabled || item.disabled)
+                        .with::<container::align>(AlignStyle::Center)
+                        .with::<container::gap>(8.0)
+                        .with::<container::min_height>(32.0)
+                        .merged(item_style),
+                    flex_direction: FlexDirectionStyle::Row,
+                    focusable: !(*disabled || item.disabled),
+                    tab_index: if *active == Some(*index) { 0 } else { -1 },
+                    focus_handle: handles[*index].clone(),
+                    accessibility_role: AccessibilityRole::Radio,
+                    accessibility_label: item.accessibility_label.clone(),
+                    accessibility_checked: if *active == Some(*index) {
+                        AccessibilityChecked::True
+                    } else {
+                        AccessibilityChecked::False
+                    },
+                    accessibility_disabled: *disabled || item.disabled,
+                    on_click: |cx, _event, event_cx| {
+                        if disabled.get() || item.disabled {
+                            return EventResult::Ignored;
+                        }
+                        event_cx.request_focus();
+                        commit(cx, *index, selected, own, on_change);
+                        EventResult::Consumed
+                    },
+                    shortcuts: shortcuts.clone(),
+                    on_command: |cx, event, event_cx| {
+                        if disabled.get() || item.disabled {
+                            return EventResult::Ignored;
+                        }
+                        let model = model.get();
+                        let next = match event.command {
+                            FIRST => model.first(),
+                            LAST => model.last(),
+                            PREVIOUS => model.adjacent(*index, -1),
+                            NEXT => model.adjacent(*index, 1),
+                            _ => return EventResult::Ignored,
+                        };
+                        let Some(next) = next else { return EventResult::Ignored };
+                        handles.read()[next].request_focus(event_cx);
+                        commit(cx, next, selected, own, on_change);
+                        EventResult::Consumed
+                    },
+                ) {
+                    container(
+                        style: StyleOf::new()
+                            .with::<container::size>(Size::fix(18.0, 18.0))
+                            .with::<container::border_width>(if *active == Some(*index) { 5.0 } else { 1.0 })
+                            .with::<container::border_color>(if *active == Some(*index) {
+                                ColorToken::Primary
+                            } else {
+                                ColorToken::Border
+                            })
+                            .with::<container::border_radius>(9.0)
+                            .merged(indicator_style),
+                    )
+                    slot(item.label)
+                }
+                .key(item.id.clone())
+            }
         }
     }
 }
@@ -579,73 +546,56 @@ fn clamp_step(value: f32, min: f32, max: f32, step: f32) -> f32 {
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { slider(min: 0.0, max: 10.0, step: 0.5, default_value: 4.0) };
+/// #[component]
+/// fn example() {
+///     view! { slider(min: 0.0, max: 10.0, step: 0.5, default_value: 4.0) }
+/// }
 /// ```
 #[component]
 #[defaults(
-    value = None,
+    value = None::<f32>,
     default_value = 0.0,
     min = 0.0,
     max = 100.0,
     step = 1.0,
     disabled = false,
-    on_change = None,
-    accessibility_label = None,
+    accessibility_label = None::<String>,
     style = StyleOf::new(),
     track_style = StyleOf::new(),
     fill_style = StyleOf::new(),
     thumb_style = StyleOf::new(),
 )]
 pub fn slider(
-    value: &Option<f32>,
+    #[source] value: &Option<f32>,
     default_value: &f32,
-    min: &f32,
-    max: &f32,
-    step: &f32,
-    disabled: &bool,
-    on_change: &Option<ValueChangeCallback>,
-    accessibility_label: &Option<String>,
+    #[source] min: &f32,
+    #[source] max: &f32,
+    #[source] step: &f32,
+    #[source] disabled: &bool,
+    on_change: &Callback<f32>,
+    #[source] accessibility_label: &Option<String>,
     style: &StyleOf<Container>,
     track_style: &StyleOf<Container>,
     fill_style: &StyleOf<Container>,
     thumb_style: &StyleOf<Container>,
 ) {
-    let (min, max, step) = slider_bounds(*min, *max, *step);
-    let state = cx.use_state(|| clamp_step(*default_value, min, max, step));
-    let controlled = value.is_some();
-    let current = clamp_step(value.unwrap_or(*state.get()), min, max, step);
-    let span = f64::from(max) - f64::from(min);
-    let ratio = if span <= f64::from(f32::EPSILON) {
-        0.0
-    } else {
-        ((f64::from(current) - f64::from(min)) / span).clamp(0.0, 1.0) as f32
-    };
-    let commit = on_change.clone();
-    let size = cx.use_size();
-    let width = size.get().map_or(16.0, |size| size.width);
-
-    let navigation_enabled = !*disabled;
-
-    let rail = view! {
-        container(
-            style: StyleOf::new()
-                .with::<container::position>(PositionStyle::Relative)
-                .with::<container::width>(Sizing::Fill)
-                .with::<container::height>(6.0)
-                .with::<container::background>(ColorToken::MutedSurface)
-                .with::<container::border_radius>(3.0).merged(track_style),
-        ) {
-            container(
-                style: StyleOf::new()
-                    .with::<container::width>(Sizing::percent(ratio))
-                    .with::<container::height>(6.0)
-                    .with::<container::background>(ColorToken::Primary)
-                    .with::<container::border_radius>(3.0).merged(fill_style),
-            )
+    let bounds: (f32, f32, f32) = memo!(slider_bounds(*min, *max, *step));
+    let own: f32 = state!({
+        let (min, max, step) = slider_bounds(min.get(), max.get(), step.get());
+        clamp_step(*default_value, min, max, step)
+    });
+    let current: f32 = memo!(clamp_step(value.unwrap_or(*own), bounds.0, bounds.1, bounds.2));
+    let ratio: f32 = memo!({
+        let span = f64::from(bounds.1) - f64::from(bounds.0);
+        if span <= f64::from(f32::EPSILON) {
+            0.0
+        } else {
+            ((f64::from(*current) - f64::from(bounds.0)) / span).clamp(0.0, 1.0) as f32
         }
-    };
+    });
+    let size: Option<Size<f32>> = size!();
     view! {
         container(
             style: crate::layout::control_style(*disabled)
@@ -657,15 +607,21 @@ pub fn slider(
             focusable: !*disabled,
             tab_index: if *disabled { -1 } else { 0 },
             accessibility_role: AccessibilityRole::Slider,
-            accessibility_numeric_value: current as f64,
-            accessibility_min_value: min as f64, accessibility_max_value: max as f64, accessibility_step_value: step as f64,
+            accessibility_numeric_value: *current as f64,
+            accessibility_min_value: bounds.0 as f64,
+            accessibility_max_value: bounds.1 as f64,
+            accessibility_step_value: bounds.2 as f64,
             accessibility_disabled: *disabled,
             accessibility_label: accessibility_label.clone().unwrap_or_default(),
-            on_click: move |event, event_cx| { if !navigation_enabled { return EventResult::Ignored; }
-                if event.button.is_some_and(|button| button != PointerButton::Primary) { return EventResult::Ignored; }
+            on_click: |cx, event, event_cx| {
+                if disabled.get() || event.button.is_some_and(|button| button != PointerButton::Primary) {
+                    return EventResult::Ignored;
+                }
                 let Some(pointer) = event.pointer.as_ref() else {
                     return EventResult::Ignored;
                 };
+                let (min, max, step) = bounds.get();
+                let span = f64::from(max) - f64::from(min);
                 let width = event_cx.node_ref.layout.width().max(1.0);
                 let local = pointer.coords.window.x - event_cx.node_ref.world_origin.x;
                 let next = clamp_step(
@@ -674,44 +630,56 @@ pub fn slider(
                     max,
                     step,
                 );
-                if !controlled {
-                    state.set(next);
-                }
-                if let Some(callback) = &commit {
-                    callback.call(next);
-                }
+                commit(cx, next, value, own, on_change);
                 event_cx.request_focus();
                 EventResult::Consumed
             },
             shortcuts: navigation_shortcuts().map(|(shortcut, command)| ShortcutBinding { shortcut, command }).to_vec(),
-            on_command: {
-                let callback = on_change.clone();
-                move |event, _| {
-                    if !navigation_enabled { return EventResult::Ignored; }
-                    let next = match event.command {
-                        PREVIOUS => current - step,
-                        NEXT => current + step,
-                        FIRST => min,
-                        LAST => max,
-                        _ => return EventResult::Ignored,
-                    };
-                    let next = clamp_step(next, min, max, step);
-                    if !controlled {
-                        state.set(next);
-                    }
-                    if let Some(callback) = &callback {
-                        callback.call(next);
-                    }
-                    EventResult::Consumed
+            on_command: |cx, event| {
+                if disabled.get() {
+                    return EventResult::Ignored;
                 }
+                let ((min, max, step), current) = (bounds.get(), current.get());
+                let next = match event.command {
+                    PREVIOUS => current - step,
+                    NEXT => current + step,
+                    FIRST => min,
+                    LAST => max,
+                    _ => return EventResult::Ignored,
+                };
+                commit(cx, clamp_step(next, min, max, step), value, own, on_change);
+                EventResult::Consumed
             },
         ) {
-            ..rail
             container(
-                style: StyleOf::new().with::<container::position>(PositionStyle::Absolute).with::<container::inset>(EdgeInsets::new(0.0, 0.0, 8.0, 0.0))
-                    .with::<container::size>(Size::fix(16.0, 16.0)).with::<container::translate_x>(ratio * (width - 16.0).max(0.0))
-                    .with::<container::background>(ColorToken::Background).with::<container::border_color>(ColorToken::Primary)
-                    .with::<container::border_width>(2.0).with::<container::border_radius>(8.0).merged(thumb_style),
+                style: StyleOf::new()
+                    .with::<container::position>(PositionStyle::Relative)
+                    .with::<container::width>(Sizing::Fill)
+                    .with::<container::height>(6.0)
+                    .with::<container::background>(ColorToken::MutedSurface)
+                    .with::<container::border_radius>(3.0)
+                    .merged(track_style),
+            ) {
+                container(
+                    style: StyleOf::new()
+                        .with::<container::width>(Sizing::percent(*ratio))
+                        .with::<container::height>(6.0)
+                        .with::<container::background>(ColorToken::Primary)
+                        .with::<container::border_radius>(3.0)
+                        .merged(fill_style),
+                )
+            }
+            container(
+                style: StyleOf::new()
+                    .with::<container::position>(PositionStyle::Absolute)
+                    .with::<container::inset>(EdgeInsets::new(0.0, 0.0, 8.0, 0.0))
+                    .with::<container::size>(Size::fix(16.0, 16.0))
+                    .with::<container::translate_x>(*ratio * (size.map_or(16.0, |size| size.width) - 16.0).max(0.0))
+                    .with::<container::background>(ColorToken::Background)
+                    .with::<container::border_color>(ColorToken::Primary)
+                    .with::<container::border_width>(2.0)
+                    .with::<container::border_radius>(8.0)
+                    .merged(thumb_style),
             )
         }
     }
@@ -738,36 +706,30 @@ pub fn slider(
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { progress(value: 40.0, max: 100.0) };
+/// #[component]
+/// fn example() {
+///     view! { progress(value: 40.0, max: 100.0) }
+/// }
 /// ```
 #[component]
 #[defaults(
     value = 0.0,
     max = 100.0,
-    accessibility_label = None,
+    accessibility_label = None::<String>,
     style = StyleOf::new(),
     indicator_style = StyleOf::new(),
 )]
 pub fn progress(
-    value: &f32,
-    max: &f32,
-    accessibility_label: &Option<String>,
+    #[source] value: &f32,
+    #[source] max: &f32,
+    #[source] accessibility_label: &Option<String>,
     style: &StyleOf<Container>,
     indicator_style: &StyleOf<Container>,
 ) {
-    let max = if max.is_finite() && *max > 0.0 {
-        *max
-    } else {
-        1.0
-    };
-    let value = if value.is_finite() {
-        value.clamp(0.0, max)
-    } else {
-        0.0
-    };
-
+    let limit: f32 = memo!(if max.is_finite() && *max > 0.0 { *max } else { 1.0 });
+    let amount: f32 = memo!(if value.is_finite() { value.clamp(0.0, *limit) } else { 0.0 });
     view! {
         container(
             style: StyleOf::new()
@@ -777,16 +739,18 @@ pub fn progress(
                 .with::<container::border_radius>(4.0)
                 .merged(style),
             accessibility_role: AccessibilityRole::ProgressIndicator,
-            accessibility_numeric_value: value as f64,
-            accessibility_min_value: 0.0, accessibility_max_value: max as f64,
+            accessibility_numeric_value: *amount as f64,
+            accessibility_min_value: 0.0,
+            accessibility_max_value: *limit as f64,
             accessibility_label: accessibility_label.clone().unwrap_or_default(),
         ) {
             container(
                 style: StyleOf::new()
-                    .with::<container::width>(Sizing::percent(value / max))
+                    .with::<container::width>(Sizing::percent(*amount / *limit))
                     .with::<container::height>(Sizing::Fill)
                     .with::<container::background>(ColorToken::Primary)
-                    .with::<container::border_radius>(4.0).merged(indicator_style),
+                    .with::<container::border_radius>(4.0)
+                    .merged(indicator_style),
             )
         }
     }
@@ -817,27 +781,31 @@ pub enum SeparatorOrientation {
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { separator(orientation: SeparatorOrientation::Horizontal) };
+/// #[component]
+/// fn example() {
+///     view! { separator(orientation: SeparatorOrientation::Horizontal) }
+/// }
 /// ```
 #[component]
 #[defaults(
     orientation = SeparatorOrientation::Horizontal,
     style = StyleOf::new(),
 )]
-pub fn separator(orientation: &SeparatorOrientation, style: &StyleOf<Container>) {
-    let base = match orientation {
-        SeparatorOrientation::Horizontal => StyleOf::new()
-            .with::<container::width>(Sizing::Fill)
-            .with::<container::height>(1.0),
-        SeparatorOrientation::Vertical => StyleOf::new()
-            .with::<container::width>(1.0)
-            .with::<container::height>(Sizing::Fill),
-    };
+pub fn separator(#[source] orientation: &SeparatorOrientation, style: &StyleOf<Container>) {
     view! {
         container(
-            style: base.with::<container::background>(ColorToken::Border).merged(style),
+            style: match orientation {
+                SeparatorOrientation::Horizontal => StyleOf::new()
+                    .with::<container::width>(Sizing::Fill)
+                    .with::<container::height>(1.0),
+                SeparatorOrientation::Vertical => StyleOf::new()
+                    .with::<container::width>(1.0)
+                    .with::<container::height>(Sizing::Fill),
+            }
+            .with::<container::background>(ColorToken::Border)
+            .merged(style),
             accessibility_hidden: true,
         )
     }
@@ -871,43 +839,43 @@ pub enum BadgeVariant {
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { badge(text: "New", variant: BadgeVariant::Primary) };
+/// #[component]
+/// fn example() {
+///     view! { badge(text: "New", variant: BadgeVariant::Primary) }
+/// }
 /// ```
 #[component]
 #[defaults(
     style = StyleOf::new(),
     variant = BadgeVariant::Secondary,
 )]
-pub fn badge(text: &String, style: &StyleOf<Container>, variant: &BadgeVariant) {
-    let variant_style = match variant {
-        BadgeVariant::Primary => StyleOf::new()
-            .with::<container::background>(ColorToken::Primary)
-            .with::<container::color>(ColorToken::PrimaryForeground),
-        BadgeVariant::Secondary => StyleOf::new()
-            .with::<container::background>(ColorToken::Secondary)
-            .with::<container::color>(ColorToken::SecondaryForeground),
-        BadgeVariant::Outline => StyleOf::new()
-            .with::<container::background>(ColorToken::Background)
-            .with::<container::color>(ColorToken::Foreground)
-            .with::<container::border_width>(1.0)
-            .with::<container::border_color>(ColorToken::Border),
-        BadgeVariant::Danger => StyleOf::new()
-            .with::<container::background>(ColorToken::Destructive)
-            .with::<container::color>(ColorToken::DestructiveForeground),
-    };
+pub fn badge(#[source] text: &String, style: &StyleOf<Container>, #[source] variant: &BadgeVariant) {
     view! {
         container(
-            style: variant_style
-                .with::<container::padding>(EdgeInsets::symmetric(8.0, 3.0))
-                .with::<container::border_radius>(999.0)
-                .with::<container::font_size>(FontSizeToken::Sm)
-                .merged(style),
+            style: match variant {
+                BadgeVariant::Primary => StyleOf::new()
+                    .with::<container::background>(ColorToken::Primary)
+                    .with::<container::color>(ColorToken::PrimaryForeground),
+                BadgeVariant::Secondary => StyleOf::new()
+                    .with::<container::background>(ColorToken::Secondary)
+                    .with::<container::color>(ColorToken::SecondaryForeground),
+                BadgeVariant::Outline => StyleOf::new()
+                    .with::<container::background>(ColorToken::Background)
+                    .with::<container::color>(ColorToken::Foreground)
+                    .with::<container::border_width>(1.0)
+                    .with::<container::border_color>(ColorToken::Border),
+                BadgeVariant::Danger => StyleOf::new()
+                    .with::<container::background>(ColorToken::Destructive)
+                    .with::<container::color>(ColorToken::DestructiveForeground),
+            }
+            .with::<container::padding>(EdgeInsets::symmetric(8.0, 3.0))
+            .with::<container::border_radius>(999.0)
+            .with::<container::font_size>(FontSizeToken::Sm)
+            .merged(style),
         ) {
-            xui_core::prelude::text(
-                text.clone(),
-            )
+            xui_core::prelude::text(text.clone())
         }
     }
 }
@@ -934,52 +902,47 @@ pub fn badge(text: &String, style: &StyleOf<Container>, variant: &BadgeVariant) 
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { avatar(accessibility_label: "Alex", fallback: "AL") };
+/// #[component]
+/// fn example() {
+///     view! { avatar(accessibility_label: "Alex", fallback: "AL") }
+/// }
 /// ```
 #[component]
 #[defaults(
     size = 40.0,
-    image = None,
     fallback = "?".to_string(),
     style = StyleOf::new(),
     fallback_style = StyleOf::new(),
 )]
 pub fn avatar(
-    accessibility_label: &String,
-    size: &f32,
-    image: &Option<ElementDesc>,
-    fallback: &String,
+    #[source] accessibility_label: &String,
+    #[source] size: &f32,
+    image: &Children,
+    #[source] fallback: &String,
     style: &StyleOf<Container>,
     fallback_style: &StyleOf<Text>,
 ) {
-    let size = &if size.is_finite() {
-        size.max(0.0)
-    } else {
-        40.0
-    };
+    let side: f32 = memo!(if size.is_finite() { size.max(0.0) } else { 40.0 });
     view! {
         container(
             style: StyleOf::new()
-                .with::<container::size>(Size::fix(*size, *size))
+                .with::<container::size>(Size::fix(*side, *side))
                 .with::<container::align>(AlignStyle::Center)
                 .with::<container::justify>(JustifyStyle::Center)
                 .with::<container::clip>(true)
                 .with::<container::background>(ColorToken::MutedSurface)
-                .with::<container::border_radius>(*size / 2.0)
+                .with::<container::border_radius>(*side / 2.0)
                 .merged(style),
             accessibility_role: AccessibilityRole::Image,
             accessibility_label: accessibility_label.clone(),
         ) {
-            ..image
-                .clone()
-                .unwrap_or_else(|| view! {
-                    xui_core::prelude::text(
-                        fallback.clone(),
-                        style: fallback_style.clone(),
-                    )
-            })
+            if image.is_empty() {
+                text(fallback.clone(), style: fallback_style.clone())
+            } else {
+                slot(image)
+            }
         }
     }
 }
@@ -1001,15 +964,18 @@ pub fn avatar(
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { card(content: view! { text("Card content") }) };
+/// #[component]
+/// fn example() {
+///     view! { card { text("Card content") } }
+/// }
 /// ```
 #[component]
 #[defaults(
     style = StyleOf::new(),
 )]
-pub fn card(content: &ElementDesc, style: &StyleOf<Container>) {
+pub fn card(children: &Children, style: &StyleOf<Container>) {
     view! {
         container(
             style: StyleOf::new()
@@ -1020,7 +986,7 @@ pub fn card(content: &ElementDesc, style: &StyleOf<Container>) {
                 .with::<container::border_radius>(RadiusToken::Lg)
                 .merged(style),
         ) {
-            ..content.clone()
+            slot(children)
         }
     }
 }

@@ -1,47 +1,72 @@
-error[E0308]: mismatched types
-  --> tests/ui/component_named_like_a_host.rs:18:13
+error[E0277]: `Draft<shadow::Text, TextRequirements<TextLabelMissing>>` is not a host widget
+  --> tests/ui/component_named_like_a_host.rs:20:22
    |
-18 |     xui! { <text label={String::from("x")} /> }
-   |     --------^^^^-------------------------------
-   |     |       |
-   |     |       expected fn pointer, found fn item
-   |     arguments to this function are incorrect
+18 | #[component]
+   | ------------ required by a bound introduced by this call
+19 | fn shadowed() {
+20 |     view! { column { text(label: String::from("x")) } }
+   |                      ^^^^ the element macros treat this tag as a host widget by its name
    |
-   = note: expected fn pointer `fn() -> Draft<_, xui_core::property::Complete>`
-                 found fn item `fn() -> Draft<__xui_text::Text, TextRequirements<TextPropsLabelMissing>> {__xui_text::text}`
-note: function defined here
-  --> src/template.rs
+   = help: the trait `HostTag` is not implemented for `Draft<shadow::Text, TextRequirements<TextLabelMissing>>`
+   = note: host widget names are reserved: a component cannot be called `container`, `text`, ..
+help: the trait `HostTag` is implemented for `Draft<N>`
+  --> src/reactive/host.rs
    |
-   | pub fn host_type<N: WidgetVariant>(_tag: fn() -> Draft<N>) -> WidgetType {
-   |        ^^^^^^^^^
+   | impl<N: WidgetVariant> HostTag for Draft<N> {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `__host`
+  --> src/reactive/template.rs
+   |
+   | pub fn __host<T: super::host::HostTag>(tag: fn() -> T) -> fn() -> T {
+   |                  ^^^^^^^^^^^^^^^^^^^^ required by this bound in `__host`
+
+error[E0277]: property `__xui_text_label` does not accept `String`
+  --> tests/ui/component_named_like_a_host.rs:18:1
+   |
+18 | #[component]
+   | ^^^^^^^^^^^^ not a value of `__xui_text_label`
+19 | fn shadowed() {
+20 |     view! { column { text(label: String::from("x")) } }
+   |                                  ----------------- this tail expression is of type `String`
+   |
+help: the trait `Accepts<String>` is not implemented for `__xui_text_label`
+  --> tests/ui/component_named_like_a_host.rs:10:5
+   |
+10 |     #[component]
+   |     ^^^^^^^^^^^^
+help: the following other types implement trait `Accepts<T>`
+  --> tests/ui/component_named_like_a_host.rs:10:5
+   |
+10 |     #[component]
+   |     ^^^^^^^^^^^^
+   |     |
+   |     `__xui_text_label` implements `Accepts<Expr<String>>`
+   |     `__xui_text_label` implements `Accepts<SourceArg<__XuiHandle>>`
+   = note: required for `String` to implement `IntoProp<__xui_text_label>`
+note: required by a bound in `Draft::<N, R>::__with`
+  --> src/node.rs
+   |
+   |     pub fn __with<P: Property>(
+   |            ------ required by a bound in this associated function
+...
+   |         value: impl IntoProp<P>,
+   |                     ^^^^^^^^^^^ required by this bound in `Draft::<N, R>::__with`
+   = note: this error originates in the attribute macro `component` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0308]: mismatched types
-  --> tests/ui/component_named_like_a_host.rs:18:13
+  --> tests/ui/component_named_like_a_host.rs:18:1
    |
-18 |     xui! { <text label={String::from("x")} /> }
-   |     --------^^^^-------------------------------
-   |     |       |
-   |     |       expected fn pointer, found fn item
-   |     arguments to this function are incorrect
+18 | #[component]
+   | ^^^^^^^^^^^^
+   | |
+   | expected `Draft<_>`, found `Draft<Text, TextRequirements<...>>`
+   | arguments to this function are incorrect
    |
-   = note: expected fn pointer `fn() -> Draft<_, xui_core::property::Complete>`
-                 found fn item `fn() -> Draft<__xui_text::Text, TextRequirements<TextPropsLabelMissing>> {__xui_text::text}`
-note: function defined here
-  --> src/template.rs
+   = note: expected struct `Draft<_, xui_core::property::Complete>`
+              found struct `Draft<shadow::Text, TextRequirements<TextLabelSet>>`
+note: associated function defined here
+  --> src/reactive/template.rs
    |
-   | pub fn host<N, R>(tag: fn() -> Draft<N, R>) -> fn() -> Draft<N, R>
-   |        ^^^^
-
-error[E0282]: type annotations needed
-  --> tests/ui/component_named_like_a_host.rs:18:18
-   |
-18 |     xui! { <text label={String::from("x")} /> }
-   |                  ^^^^^ cannot infer type
-
-warning: unused variable: `label`
-  --> tests/ui/component_named_like_a_host.rs:10:17
-   |
-10 |     pub fn text(label: &String) {
-   |                 ^^^^^ help: if this is intentional, prefix it with an underscore: `_label`
-   |
-   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+   |     pub fn new<N: NodeDef>(draft: Draft<N>) -> Self
+   |            ^^^
+   = note: this error originates in the attribute macro `component` (in Nightly builds, run with -Z macro-backtrace for more info)

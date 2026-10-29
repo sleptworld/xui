@@ -26,9 +26,9 @@ error[E0277]: `xui_core::Layer<ContainerStyleSet>` has no `xui_core::node::OwnPr
 14 |         layer.set::<container::flex_wrap>(true);
    |               ^^^ this node cannot hold properties of this scope
    |
-   = help: the trait `xui_core::Node` is not implemented for `xui_core::Layer<ContainerStyleSet>`
+   = help: the trait `Node` is not implemented for `xui_core::Layer<ContainerStyleSet>`
    = note: a capability's properties exist only on nodes that select that capability
-help: the trait `xui_core::Node` is implemented for `Draft<N, R>`
+help: the trait `Node` is implemented for `Draft<N, R>`
   --> src/node.rs
    |
    | impl<N: NodeDef, R> Node for Draft<N, R> {

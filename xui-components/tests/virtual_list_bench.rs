@@ -13,7 +13,7 @@ use xui_components::*;
 use xui_core::prelude::*;
 use xui_core::text::TextHost;
 use xui_cosmic::CosmicEngine;
-use xui_macros::xui;
+use xui_macros::component;
 
 const ITEM_HEIGHT: f32 = 20.0;
 const VIEWPORT: Size<f32> = Size {
@@ -30,62 +30,70 @@ fn exclusive() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn row(index: usize) -> ElementDesc {
-    container()
-        .with::<container::style>(
-            StyleOf::new()
+/// One row: a label and a swatch.
+#[component]
+fn bench_row(index: &usize) {
+    view! {
+        container(
+            style: StyleOf::new()
                 .with::<container::width>(Sizing::Fill)
                 .with::<container::height>(ITEM_HEIGHT)
                 .with::<container::background>(Color::hex("#141414")),
-        )
-        .into_element_desc(vec![
-            text()
-                .with::<text::content>(format!("row {index}"))
-                .with::<text::style>(
-                    StyleOf::new()
-                        .with::<container::width>(120.0)
-                        .with::<container::height>(16.0),
-                )
-                .into_element_desc(Vec::new()),
-            container()
-                .with::<container::style>(
-                    StyleOf::new()
-                        .with::<container::width>(16.0)
-                        .with::<container::height>(16.0)
-                        .with::<container::background>(Color::hex("#3b82f6")),
-                )
-                .into_element_desc(Vec::new()),
-        ])
+        ) {
+            text(
+                format!("row {index}"),
+                style: StyleOf::new().with::<container::width>(120.0).with::<container::height>(16.0),
+            )
+            container(
+                style: StyleOf::new()
+                    .with::<container::width>(16.0)
+                    .with::<container::height>(16.0)
+                    .with::<container::background>(Color::hex("#3b82f6")),
+            )
+        }
+    }
 }
 
 /// Every row mounted, which is what the framework did before virtualization.
-fn plain_list(_cx: &mut HookContext<'_>) -> ElementDesc {
-    let rows: Vec<ElementDesc> = (0..ROWS.load(Ordering::Relaxed)).map(row).collect();
-    container()
-        .with::<container::style>(
-            StyleOf::new()
+#[component]
+fn plain_rows() {
+    let rows: usize = ROWS.load(Ordering::Relaxed);
+    view! {
+        container(
+            style: StyleOf::new()
                 .with::<container::width>(Sizing::Fill)
                 .with::<container::height>(VIEWPORT.height)
                 .with::<container::scroll_direction>(ScrollDirectionStyle::Vertical),
-        )
-        .into_element_desc(rows)
+        ) {
+            for index in 0..*rows {
+                bench_row(index: *index)
+            }
+        }
+    }
 }
 
-fn virtual_list_root(cx: &mut HookContext<'_>) -> ElementDesc {
-    let render_item: Callback<usize, ElementDesc> = cx.use_callback((), row);
-    let count = ROWS.load(Ordering::Relaxed);
-    let style = StyleOf::new()
-        .with::<container::width>(Sizing::Fill)
-        .with::<container::height>(VIEWPORT.height);
-    xui! {
-        <virtual_list
-            item_count={count}
-            item_height={ITEM_HEIGHT}
-            viewport_height={VIEWPORT.height}
-            render_item={render_item}
-            style={style}
-        />
+#[component]
+fn virtual_rows() {
+    let count: usize = ROWS.load(Ordering::Relaxed);
+    let render_item: VirtualItemRenderer =
+        VirtualItemRenderer::new(|index: usize| Children::component::<BenchRow>(BenchRowProps { index }));
+    view! {
+        virtual_list(
+            item_count: *count,
+            item_height: ITEM_HEIGHT,
+            viewport_height: VIEWPORT.height,
+            render_item: render_item.clone(),
+            style: StyleOf::new().with::<container::width>(Sizing::Fill).with::<container::height>(VIEWPORT.height),
+        )
     }
+}
+
+fn plain_list(app: &mut App) {
+    app.mount::<PlainRows>(PlainRowsProps {});
+}
+
+fn virtual_list_root(app: &mut App) {
+    app.mount::<VirtualRows>(VirtualRowsProps {});
 }
 
 struct Harness {
@@ -95,16 +103,18 @@ struct Harness {
 }
 
 impl Harness {
-    fn mount(root: fn(&mut HookContext<'_>) -> ElementDesc, rows: usize) -> (Self, Duration) {
+    fn mount(root: AppRoot, rows: usize) -> (Self, Duration) {
         ROWS.store(rows, Ordering::Relaxed);
+        let text = TextHost::new(CosmicEngine::new(1.0));
+        // Components mount as the app is built, so that is part of the mount.
+        let started = Instant::now();
         let mut app = App::new(root);
         app.resize(VIEWPORT);
         let mut harness = Self {
             app,
-            text: TextHost::new(CosmicEngine::new(1.0)),
+            text,
             backend: MockRenderBackend::default(),
         };
-        let started = Instant::now();
         harness.render();
         while harness.app.is_dirty() {
             harness.render();
@@ -153,7 +163,7 @@ fn virtualized_versus_plain() {
         for (label, root) in [
             (
                 "plain",
-                plain_list as fn(&mut HookContext<'_>) -> ElementDesc,
+                plain_list as AppRoot,
             ),
             ("virtual", virtual_list_root),
         ] {

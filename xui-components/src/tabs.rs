@@ -13,10 +13,8 @@
 use std::time::Duration;
 
 use crate::{SelectionActivationMode, SelectionOrientation};
-use std::rc::Rc;
 use xui_core::prelude::*;
-use xui_core::state::State;
-use xui_macros::{component, view};
+use xui_macros::component;
 
 const PREVIOUS_TAB: CommandId = CommandId("xui.tabs.previous");
 const NEXT_TAB: CommandId = CommandId("xui.tabs.next");
@@ -27,20 +25,21 @@ const LAST_TAB: CommandId = CommandId("xui.tabs.last");
 pub type TabChangeCallback = Callback<usize>;
 
 /// One selectable tab and the content displayed while it is active.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TabItem {
     pub id: String,
-    pub label: ElementDesc,
-    pub content: ElementDesc,
+    pub label: Children,
+    pub content: Children,
     pub disabled: bool,
 }
 
 impl TabItem {
-    pub fn new(id: impl Into<String>, label: impl Into<Component>, content: ElementDesc) -> Self {
+    /// `content` is text, or a component: `Children::component::<Panel>(PanelProps { .. })`.
+    pub fn new(id: impl Into<String>, label: impl Into<Children>, content: impl Into<Children>) -> Self {
         Self {
             id: id.into(),
             label: label.into(),
-            content,
+            content: content.into(),
             disabled: false,
         }
     }
@@ -157,29 +156,21 @@ fn adjacent_enabled(items: &[TabItem], current: usize, direction: isize) -> Opti
 }
 
 fn activate_tab(
+    cx: &mut Cx<'_>,
     index: usize,
-    controlled: bool,
-    internal_selection: State<usize>,
-    on_change: &Option<TabChangeCallback>,
+    selected: &ReadSignal<Option<usize>>,
+    own: &Signal<usize>,
+    on_change: &Callback<usize>,
 ) {
-    if !controlled {
-        internal_selection.set(index);
+    if selected.with(Option::is_none) {
+        own.set(cx, index);
     }
-    if let Some(on_change) = on_change {
-        on_change.call(index);
-    }
+    on_change.call(cx, index);
 }
 
-fn tab_ids(items: &[TabItem]) -> Vec<String> {
-    items.iter().map(|item| item.id.clone()).collect()
-}
 
-fn new_focus_handles(count: usize) -> Rc<[FocusHandle]> {
-    (0..count)
-        .map(|_| FocusHandle::new())
-        .collect::<Vec<_>>()
-        .into()
-}
+
+
 
 /// An accessible tab list with one mounted content panel and configurable keyboard
 /// activation.
@@ -210,184 +201,143 @@ fn new_focus_handles(count: usize) -> Rc<[FocusHandle]> {
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { tabs(items: vec![TabItem::new("account", "Account", view! { text("Account settings") })]) };
+/// #[component]
+/// fn example() {
+///     view! { tabs(items: vec![TabItem::new("account", "Account", "Account settings")]) }
+/// }
 /// ```
 #[component]
 #[defaults(
-    selected = None,
+    selected = None::<usize>,
     default_selected = 0,
     orientation = SelectionOrientation::Horizontal,
     activation = SelectionActivationMode::Automatic,
     wrap = true,
-    on_change = None,
     style = TabsStyle::default(),
     id_prefix = String::new(),
 )]
 pub fn tabs(
-    items: &Vec<TabItem>,
-    selected: &Option<usize>,
+    #[source] items: &Vec<TabItem>,
+    #[source] selected: &Option<usize>,
     default_selected: &usize,
     orientation: &SelectionOrientation,
     activation: &SelectionActivationMode,
     wrap: &bool,
-    on_change: &Option<TabChangeCallback>,
+    on_change: &Callback<usize>,
     style: &TabsStyle,
     id_prefix: &String,
 ) {
     static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let generated_id = cx.use_memo(|| {
-        format!(
-            "tabs-{}",
-            NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        )
-    });
-    let id_prefix = if id_prefix.is_empty() {
-        generated_id.get()
+    let id_base: String = if id_prefix.is_empty() {
+        format!("tabs-{}", NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
     } else {
-        id_prefix
+        id_prefix.clone()
     };
-
-    let initial_selection =
-        normalized_selection(items, selected.unwrap_or(*default_selected)).unwrap_or(0);
-    let internal_selection = cx.use_state(|| initial_selection);
-    let requested = selected.unwrap_or(*internal_selection.get());
-    let active = normalized_selection(items, requested);
-    let controlled = selected.is_some();
-
-    let handle_dependencies = tab_ids(items);
-    let handle_count = items.len();
-    let focus_handles =
-        cx.use_memo_with(handle_dependencies, move || new_focus_handles(handle_count));
-
-    let orientation = *orientation;
-    let automatic = *activation == SelectionActivationMode::Automatic;
-    let wrap = *wrap;
-    let first_enabled = items.iter().position(|item| !item.disabled);
-    let last_enabled = items.iter().rposition(|item| !item.disabled);
-    let mut tab_elements = Vec::with_capacity(items.len());
-
-    for (index, item) in items.iter().enumerate() {
-        let is_active = active == Some(index);
-        let tab_id = format!("{id_prefix}-tab-{}", item.id);
-        let panel_id = format!("{id_prefix}-panel-{}", item.id);
-        let previous = if item.disabled || (!wrap && Some(index) == first_enabled) {
-            None
-        } else {
-            adjacent_enabled(items, index, -1)
-        };
-        let next = if item.disabled || (!wrap && Some(index) == last_enabled) {
-            None
-        } else {
-            adjacent_enabled(items, index, 1)
-        };
-        let handles = focus_handles.get().clone();
-        let callback = on_change.clone();
-        let state = internal_selection;
-        let disabled = item.disabled;
-
-        let tab_style = if disabled {
-            style.disabled_tab.clone()
-        } else if is_active {
-            style.selected_tab.clone()
-        } else {
-            style.tab.clone()
-        };
-
-        let tab = view! {
-            container(
-                key: format!("tab-{}", item.id),
-                style: tab_style,
-                transition: Transition::new(Duration::from_millis(150)),
-                flex_direction: FlexDirectionStyle::Row,
-                focusable: !disabled,
-                tab_index: if is_active && !disabled { 0 } else { -1 },
-                focus_handle: focus_handles.get()[index].clone(),
-                accessibility_role: AccessibilityRole::Tab,
-                accessibility_id: tab_id,
-                accessibility_selected: is_active,
-                accessibility_disabled: disabled,
-                accessibility_controls: panel_id,
-                shortcuts: [(
-                        Shortcut::named(if orientation == SelectionOrientation::Horizontal { NamedKey::ArrowLeft } else { NamedKey::ArrowUp }).allow_repeat(true),
-                        PREVIOUS_TAB,
-                    ),(
-                        Shortcut::named(if orientation == SelectionOrientation::Horizontal { NamedKey::ArrowRight } else { NamedKey::ArrowDown }).allow_repeat(true),
-                        NEXT_TAB,
-                    ),(Shortcut::named(NamedKey::Home), FIRST_TAB),(Shortcut::named(NamedKey::End), LAST_TAB)].map(|(shortcut, command)| ShortcutBinding { shortcut, command }).to_vec(),
-                on_click: move |_, event_cx| {
-                    if disabled {
-                        return EventResult::Ignored;
-                    }
-                    event_cx.request_focus();
-                    activate_tab(index, controlled, state, &callback);
-                    EventResult::Consumed
-                },
-                on_command: {
-                    let callback = on_change.clone();
-                    move |event, event_cx| {
-                        if disabled { return EventResult::Ignored; }
-                        let target = match event.command {
-                            PREVIOUS_TAB => previous,
-                            NEXT_TAB => next,
-                            FIRST_TAB => first_enabled,
-                            LAST_TAB => last_enabled,
-                            _ => return EventResult::Ignored,
-                        };
-                        let Some(target) = target else {
-                            return EventResult::Ignored;
-                        };
-                        handles[target].request_focus(event_cx);
-                        if automatic { activate_tab(target, controlled, state, &callback); }
-                        EventResult::Consumed
-                    }
-                },
-            ) {
-                ..item.label.clone()
-            }
-        };
-
-        tab_elements.push(tab);
-    }
-
-    let list_style = if orientation == SelectionOrientation::Vertical {
-        style.list.clone().with::<container::height>(Sizing::Hug)
-    } else {
+    let own: usize = state!(
+        normalized_selection(&items.read(), selected.get().unwrap_or(*default_selected)).unwrap_or(0)
+    );
+    let active: Option<usize> = memo!(normalized_selection(items, selected.unwrap_or(*own)));
+    let handles: Vec<FocusHandle> = memo!((0..items.len()).map(|_| FocusHandle::new()).collect());
+    // The active item, keyed below so a different tab mounts its own panel.
+    let panel: Option<TabItem> = memo!(active.and_then(|index| items.get(index).cloned()));
+    let horizontal: bool = *orientation == SelectionOrientation::Horizontal;
+    let shortcuts: Vec<ShortcutBinding> = [
+        (Shortcut::named(if horizontal { NamedKey::ArrowLeft } else { NamedKey::ArrowUp }).allow_repeat(true), PREVIOUS_TAB),
+        (Shortcut::named(if horizontal { NamedKey::ArrowRight } else { NamedKey::ArrowDown }).allow_repeat(true), NEXT_TAB),
+        (Shortcut::named(NamedKey::Home), FIRST_TAB),
+        (Shortcut::named(NamedKey::End), LAST_TAB),
+    ]
+    .map(|(shortcut, command)| ShortcutBinding { shortcut, command })
+    .to_vec();
+    let list_style: StyleOf<Container> = if horizontal {
         style.list.clone()
+    } else {
+        style.list.clone().with::<container::height>(Sizing::Hug)
     };
-    let tab_list = view! {
-        container(
-            style: list_style,
-            flex_direction: if orientation == SelectionOrientation::Horizontal { FlexDirectionStyle::Row } else { FlexDirectionStyle::Column },
-            accessibility_role: AccessibilityRole::TabList,
-        ) {
-            ..tab_elements
-        }
-    };
-
-    let mut children = vec![tab_list];
-    if let Some(active) = active {
-        let item = &items[active];
-        children.push(view! {
-            container(
-                key: format!("panel-{}", item.id),
-                style: style.panel.clone(),
-                accessibility_role: AccessibilityRole::TabPanel,
-                accessibility_id: format!("{id_prefix}-panel-{}", item.id),
-                accessibility_labelled_by: format!("{id_prefix}-tab-{}", item.id),
-            ) {
-                ..item.content.clone()
-            }
-        });
-    }
-
     view! {
         container(
             style: style.root.clone(),
             flex_direction: FlexDirectionStyle::Column,
         ) {
-            ..children
+            container(
+                style: list_style.clone(),
+                flex_direction: if *horizontal { FlexDirectionStyle::Row } else { FlexDirectionStyle::Column },
+                accessibility_role: AccessibilityRole::TabList,
+            ) {
+                for (index, item) in items.iter().cloned().enumerate() {
+                    container(
+                        style: if item.disabled {
+                            style.disabled_tab.clone()
+                        } else if *active == Some(*index) {
+                            style.selected_tab.clone()
+                        } else {
+                            style.tab.clone()
+                        },
+                        transition: Transition::new(Duration::from_millis(150)),
+                        flex_direction: FlexDirectionStyle::Row,
+                        focusable: !item.disabled,
+                        tab_index: if *active == Some(*index) && !item.disabled { 0 } else { -1 },
+                        focus_handle: handles[*index].clone(),
+                        accessibility_role: AccessibilityRole::Tab,
+                        accessibility_id: format!("{id_base}-tab-{}", item.id),
+                        accessibility_selected: *active == Some(*index),
+                        accessibility_disabled: item.disabled,
+                        accessibility_controls: format!("{id_base}-panel-{}", item.id),
+                        shortcuts: shortcuts.clone(),
+                        on_click: |cx, _event, event_cx| {
+                            if item.disabled {
+                                return EventResult::Ignored;
+                            }
+                            event_cx.request_focus();
+                            activate_tab(cx, *index, selected, own, on_change);
+                            EventResult::Consumed
+                        },
+                        on_command: |cx, event, event_cx| {
+                            if item.disabled {
+                                return EventResult::Ignored;
+                            }
+                            let target = {
+                                let items = items.read();
+                                let first = items.iter().position(|item| !item.disabled);
+                                let last = items.iter().rposition(|item| !item.disabled);
+                                match event.command {
+                                    PREVIOUS_TAB if !*wrap && Some(*index) == first => None,
+                                    PREVIOUS_TAB => adjacent_enabled(&items, *index, -1),
+                                    NEXT_TAB if !*wrap && Some(*index) == last => None,
+                                    NEXT_TAB => adjacent_enabled(&items, *index, 1),
+                                    FIRST_TAB => first,
+                                    LAST_TAB => last,
+                                    _ => return EventResult::Ignored,
+                                }
+                            };
+                            let Some(target) = target else {
+                                return EventResult::Ignored;
+                            };
+                            handles.read()[target].request_focus(event_cx);
+                            if *activation == SelectionActivationMode::Automatic {
+                                activate_tab(cx, target, selected, own, on_change);
+                            }
+                            EventResult::Consumed
+                        },
+                    ) {
+                        slot(item.label)
+                    }
+                    .key(item.id.clone())
+                }
+            }
+            for item in panel.clone() {
+                container(
+                    style: style.panel.clone(),
+                    accessibility_role: AccessibilityRole::TabPanel,
+                    accessibility_id: format!("{id_base}-panel-{}", item.id),
+                    accessibility_labelled_by: format!("{id_base}-tab-{}", item.id),
+                ) {
+                    slot(item.content)
+                }
+                .key(item.id.clone())
+            }
         }
     }
 }
@@ -397,16 +347,7 @@ mod tests {
     use super::*;
 
     fn item(id: &str, disabled: bool) -> TabItem {
-        TabItem::new(
-            id,
-            id.to_string(),
-            view! {
-                xui_core::prelude::text(
-                    id.to_string(),
-                )
-            },
-        )
-        .disabled(disabled)
+        TabItem::new(id, id.to_string(), id.to_string()).disabled(disabled)
     }
 
     #[test]

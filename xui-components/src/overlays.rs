@@ -18,23 +18,11 @@
 //! | [`toast`](fn@self::toast) | A portal-mounted transient message with a semantic tone and live announcement. |
 
 use xui_core::prelude::*;
-use xui_macros::{component, view};
+use xui_macros::component;
 
-use crate::BoolChangeCallback;
+use crate::controls::commit;
 
-fn notify_open(
-    next: bool,
-    controlled: bool,
-    state: xui_core::state::State<bool>,
-    callback: &Option<BoolChangeCallback>,
-) {
-    if !controlled {
-        state.set(next);
-    }
-    if let Some(callback) = callback {
-        callback.call(next);
-    }
-}
+
 
 fn overlay_panel_style() -> StyleOf<Container> {
     StyleOf::new()
@@ -74,16 +62,18 @@ fn overlay_panel_style() -> StyleOf<Container> {
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { dialog(content: view! { text("Dialog content") }, title: Some("Settings".to_owned()), open: Some(true)) };
+/// #[component]
+/// fn example() {
+///     view! { dialog(title: Some("Settings".to_owned()), open: Some(true)) { text("Dialog content") } }
+/// }
 /// ```
 #[component]
 #[defaults(
-    open = None,
+    open = None::<bool>,
     default_open = false,
-    title = None,
-    on_open_change = None,
+    title = None::<String>,
     close_on_escape = true,
     close_on_pointer_outside = true,
     z_index = 2000,
@@ -92,11 +82,11 @@ fn overlay_panel_style() -> StyleOf<Container> {
     backdrop_style = StyleOf::new(),
 )]
 pub fn dialog(
-    content: &ElementDesc,
-    open: &Option<bool>,
+    children: &Children,
+    #[source] open: &Option<bool>,
     default_open: &bool,
-    title: &Option<String>,
-    on_open_change: &Option<BoolChangeCallback>,
+    #[source] title: &Option<String>,
+    on_open_change: &Callback<bool>,
     close_on_escape: &bool,
     close_on_pointer_outside: &bool,
     z_index: &i32,
@@ -104,77 +94,71 @@ pub fn dialog(
     title_style: &StyleOf<Text>,
     backdrop_style: &StyleOf<Container>,
 ) {
-    let state = cx.use_state(|| *default_open);
-    let controlled = open.is_some();
-    let shown = open.unwrap_or(*state.get());
-    if !shown {
-        return view! {
-            container(
-                accessibility_hidden: true,
-            )
-        };
-    }
-    let callback = on_open_change.clone();
-    let close_escape = *close_on_escape;
-    let close_outside = *close_on_pointer_outside;
-    let mut panel_style = overlay_panel_style()
+    let own: bool = state!(*default_open);
+    let shown: bool = memo!(open.unwrap_or(*own));
+    let mut panel_style: StyleOf<Container> = overlay_panel_style()
         .with::<container::min_width>(0.0)
         .with::<container::width>(Sizing::percent(0.9))
         .with::<container::max_width>(640.0)
         .with::<container::max_height>(Sizing::percent(0.9))
         .with::<container::scroll_direction>(ScrollDirectionStyle::Vertical);
     panel_style.merge(style);
-    let mut panel_children = Vec::with_capacity(2);
-    if let Some(title) = title {
-        panel_children.push(view! {
-            xui_core::prelude::text(
-                title.clone(),
-                style: StyleOf::new()
-                    .with::<container::font_size>(FontSizeToken::Lg)
-                    .with::<container::font_weight>(FontWeight::Bold).merged(title_style),
-            )
-        });
-    }
-    panel_children.push(content.clone());
-    let panel = view! {
-        container(
-            style: panel_style,
-            flex_direction: FlexDirectionStyle::Column,
-            gap: 12.0,
-            focusable: true,
-            tab_index: 0,
-            accessibility_role: AccessibilityRole::Dialog,
-            accessibility_label: title.clone().unwrap_or_default(),
-            on_click: |_, _| EventResult::Consumed,
-        ) {
-            ..panel_children
-        }
-    };
-    let root = view! {
-        container(
-            style: StyleOf::new()
-                .with::<container::position>(PositionStyle::Absolute)
-                .with::<container::inset>(EdgeInsets::zero())
-                .with::<container::size>(Size::fill())
-                .with::<container::align>(AlignStyle::Center)
-                .with::<container::justify>(JustifyStyle::Center)
-                .with::<container::background>(Color::rgba(0.0, 0.0, 0.0, 0.46)).merged(backdrop_style),
-            on_click: { let callback = on_open_change.clone(); move |_, _| { if close_outside { notify_open(false, controlled, state, &callback); } EventResult::Consumed } },
-        ) {
-            ..panel
-        }
-    };
-    portal(vec![root])
-        .on_dismiss(move |reason| {
-            if (reason == DismissReason::Escape && close_escape)
-                || (reason == DismissReason::PointerOutside && close_outside)
-            {
-                notify_open(false, controlled, state, &callback);
+    view! {
+        container(accessibility_hidden: !*shown) {
+            if *shown {
+                portal(
+                    z_index: *z_index,
+                    modal: true,
+                    on_dismiss: |cx, reason| {
+                        if (reason == DismissReason::Escape && *close_on_escape)
+                            || (reason == DismissReason::PointerOutside && *close_on_pointer_outside)
+                        {
+                            commit(cx, false, open, own, on_open_change);
+                        }
+                    },
+                ) {
+                    container(
+                        style: StyleOf::new()
+                            .with::<container::position>(PositionStyle::Absolute)
+                            .with::<container::inset>(EdgeInsets::zero())
+                            .with::<container::size>(Size::fill())
+                            .with::<container::align>(AlignStyle::Center)
+                            .with::<container::justify>(JustifyStyle::Center)
+                            .with::<container::background>(Color::rgba(0.0, 0.0, 0.0, 0.46))
+                            .merged(backdrop_style),
+                        on_click: |cx| {
+                            if *close_on_pointer_outside {
+                                commit(cx, false, open, own, on_open_change);
+                            }
+                            EventResult::Consumed
+                        },
+                    ) {
+                        container(
+                            style: panel_style.clone(),
+                            flex_direction: FlexDirectionStyle::Column,
+                            gap: 12.0,
+                            focusable: true,
+                            tab_index: 0,
+                            accessibility_role: AccessibilityRole::Dialog,
+                            accessibility_label: title.clone().unwrap_or_default(),
+                            on_click: |_cx| EventResult::Consumed,
+                        ) {
+                            if let Some(title) = title.clone() {
+                                text(
+                                    title.clone(),
+                                    style: StyleOf::new()
+                                        .with::<container::font_size>(FontSizeToken::Lg)
+                                        .with::<container::font_weight>(FontWeight::Bold)
+                                        .merged(title_style),
+                                )
+                            }
+                            slot(children)
+                        }
+                    }
+                }
             }
-        })
-        .z_index(*z_index)
-        .modal(true)
-        .into()
+        }
+    }
 }
 
 /// An anchored portal opened by a focusable trigger.
@@ -206,15 +190,17 @@ pub fn dialog(
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { popover(trigger: view! { text("More") }, content: view! { text("Additional details") }) };
+/// #[component]
+/// fn example() {
+///     view! { popover(trigger: view! { text("More") }) { text("Additional details") } }
+/// }
 /// ```
 #[component]
 #[defaults(
-    open = None,
+    open = None::<bool>,
     default_open = false,
-    on_open_change = None,
     placement = AnchorPlacement::default(),
     modal = false,
     z_index = 1500,
@@ -223,68 +209,57 @@ pub fn dialog(
     disabled = false,
 )]
 pub fn popover(
-    trigger: &ElementDesc,
-    content: &ElementDesc,
-    open: &Option<bool>,
+    trigger: &Children,
+    children: &Children,
+    #[source] open: &Option<bool>,
     default_open: &bool,
-    on_open_change: &Option<BoolChangeCallback>,
+    on_open_change: &Callback<bool>,
     placement: &AnchorPlacement,
     modal: &bool,
     z_index: &i32,
     style: &StyleOf<Container>,
     trigger_style: &StyleOf<Container>,
-    disabled: &bool,
+    #[source] disabled: &bool,
 ) {
-    let state = cx.use_state(|| *default_open);
-    let controlled = open.is_some();
-    let shown = !*disabled && open.unwrap_or(*state.get());
-    let disabled = *disabled;
-    let callback = on_open_change.clone();
-    let trigger_root = view! {
-        container(
-            style: crate::layout::control_style(disabled).merged(trigger_style),
-            accessibility_role: AccessibilityRole::Button,
-            accessibility_expanded: shown,
-            focusable: !disabled,
-            tab_index: if disabled { -1 } else { 0 },
-            accessibility_disabled: disabled,
-            on_click: move |_, event_cx| {
-                if disabled { return EventResult::Ignored; }
-                event_cx.request_focus();
-                notify_open(!shown, controlled, state, &callback);
-                EventResult::Consumed
-            },
-        ) {
-            ..trigger.clone()
-        }
-    };
-    let mut children = vec![trigger_root];
-    if shown {
-        let callback = on_open_change.clone();
-        let mut panel_style = overlay_panel_style();
-        panel_style.merge(style);
-        let panel = view! {
-            container(
-                style: panel_style.with::<container::position>(PositionStyle::Absolute),
-                on_click: |_, _| EventResult::Consumed,
-            ) {
-                ..content.clone()
-            }
-        };
-        children.push(
-            portal(vec![panel])
-                .on_dismiss(move |_| {
-                    notify_open(false, controlled, state, &callback);
-                })
-                .z_index(*z_index)
-                .modal(*modal)
-                .anchor(*placement)
-                .into(),
-        );
-    }
+    let own: bool = state!(*default_open);
+    let shown: bool = memo!(!*disabled && open.unwrap_or(*own));
+    let mut panel_style: StyleOf<Container> = overlay_panel_style();
+    panel_style.merge(style);
     view! {
         container() {
-            ..children
+            container(
+                style: crate::layout::control_style(*disabled).merged(trigger_style),
+                accessibility_role: AccessibilityRole::Button,
+                accessibility_expanded: *shown,
+                focusable: !*disabled,
+                tab_index: if *disabled { -1 } else { 0 },
+                accessibility_disabled: *disabled,
+                on_click: |cx, _event, event_cx| {
+                    if disabled.get() {
+                        return EventResult::Ignored;
+                    }
+                    event_cx.request_focus();
+                    commit(cx, !shown.get(), open, own, on_open_change);
+                    EventResult::Consumed
+                },
+            ) {
+                slot(trigger)
+                if *shown {
+                    portal(
+                        z_index: *z_index,
+                        modal: *modal,
+                        anchor: *placement,
+                        on_dismiss: |cx, _reason| commit(cx, false, open, own, on_open_change),
+                    ) {
+                        container(
+                            style: panel_style.clone().with::<container::position>(PositionStyle::Absolute),
+                            on_click: |_cx| EventResult::Consumed,
+                        ) {
+                            slot(children)
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -312,9 +287,12 @@ pub fn popover(
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { tooltip(trigger: view! { text("Help") }, text: "Show help") };
+/// #[component]
+/// fn example() {
+///     view! { tooltip(trigger: view! { text("Help") }, text: "Show help") }
+/// }
 /// ```
 #[component]
 #[defaults(
@@ -324,71 +302,56 @@ pub fn popover(
     trigger_style = StyleOf::new(),
 )]
 pub fn tooltip(
-    trigger: &ElementDesc,
-    text: &String,
+    trigger: &Children,
+    #[source] text: &String,
     placement: &AnchorPlacement,
     z_index: &i32,
     style: &StyleOf<Container>,
     trigger_style: &StyleOf<Container>,
 ) {
-    let hovered = cx.use_state(|| false);
-    let focused = cx.use_state(|| false);
-    let trigger = view! {
+    let hovered: bool = state!(false);
+    let focused: bool = state!(false);
+    let mut tooltip_style: StyleOf<Container> = StyleOf::new()
+        .with::<container::position>(PositionStyle::Absolute)
+        .with::<container::padding>(EdgeInsets::symmetric(8.0, 5.0))
+        .with::<container::background>(ColorToken::Foreground)
+        .with::<container::color>(ColorToken::Background)
+        .with::<container::border_radius>(RadiusToken::Sm)
+        .with::<container::max_width>(280.0)
+        .with::<container::font_size>(FontSizeToken::Sm);
+    tooltip_style.merge(style);
+    view! {
         container(
             style: trigger_style.clone(),
-            on_pointer_enter: move |_, _| {
-                hovered.set(true);
+            on_pointer_enter: |cx| {
+                hovered.set(cx, true);
                 EventResult::Ignored
             },
-            on_pointer_leave: move |_, _| {
-                hovered.set(false);
+            on_pointer_leave: |cx| {
+                hovered.set(cx, false);
                 EventResult::Ignored
             },
-            on_focus_in: move |_, _| {
-                focused.set(true);
+            on_focus_in: |cx| {
+                focused.set(cx, true);
                 EventResult::Ignored
             },
-            on_focus_out: move |_, _| {
-                focused.set(false);
+            on_focus_out: |cx| {
+                focused.set(cx, false);
                 EventResult::Ignored
             },
         ) {
-            ..trigger.clone()
-        }
-    };
-    let mut children = vec![trigger];
-    if *hovered.get() || *focused.get() {
-        let mut tooltip_style = StyleOf::new()
-            .with::<container::position>(PositionStyle::Absolute)
-            .with::<container::padding>(EdgeInsets::symmetric(8.0, 5.0))
-            .with::<container::background>(ColorToken::Foreground)
-            .with::<container::color>(ColorToken::Background)
-            .with::<container::border_radius>(RadiusToken::Sm)
-            .with::<container::max_width>(280.0)
-            .with::<container::font_size>(FontSizeToken::Sm);
-        tooltip_style.merge(style);
-        let tip = view! {
-            container(
-                style: tooltip_style,
-                accessibility_role: AccessibilityRole::Tooltip,
-                accessibility_label: text.clone(),
-            ) {
-                xui_core::prelude::text(
-                    text.clone(),
-                )
+            slot(trigger)
+            if *hovered || *focused {
+                portal(z_index: *z_index, hit_test: false, anchor: placement.offset(6.0)) {
+                    container(
+                        style: tooltip_style.clone(),
+                        accessibility_role: AccessibilityRole::Tooltip,
+                        accessibility_label: text.clone(),
+                    ) {
+                        xui_core::prelude::text(text.clone())
+                    }
+                }
             }
-        };
-        children.push(
-            portal(vec![tip])
-                .z_index(*z_index)
-                .hit_test(false)
-                .anchor((*placement).offset(6.0))
-                .into(),
-        );
-    }
-    view! {
-        container() {
-            ..children
         }
     }
 }
@@ -428,42 +391,35 @@ pub enum DrawerSide {
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { drawer(content: view! { text("Settings") }, side: DrawerSide::Right, open: Some(true)) };
+/// #[component]
+/// fn example() {
+///     view! { drawer(side: DrawerSide::Right, open: Some(true)) { text("Settings") } }
+/// }
 /// ```
 #[component]
 #[defaults(
-    open = None,
+    open = None::<bool>,
     side = DrawerSide::Right,
-    on_open_change = None,
     z_index = 2200,
     style = StyleOf::new(),
     backdrop_style = StyleOf::new(),
     default_open = false,
 )]
 pub fn drawer(
-    content: &ElementDesc,
-    open: &Option<bool>,
+    children: &Children,
+    #[source] open: &Option<bool>,
     side: &DrawerSide,
-    on_open_change: &Option<BoolChangeCallback>,
+    on_open_change: &Callback<bool>,
     z_index: &i32,
     style: &StyleOf<Container>,
     backdrop_style: &StyleOf<Container>,
     default_open: &bool,
 ) {
-    let state = cx.use_state(|| *default_open);
-    let controlled = open.is_some();
-    let shown = open.unwrap_or(*state.get());
-    if !shown {
-        return view! {
-            container(
-                accessibility_hidden: true,
-            )
-        };
-    }
-    let callback = on_open_change.clone();
-    let (direction, justify, sizing) = match side {
+    let own: bool = state!(*default_open);
+    let shown: bool = memo!(open.unwrap_or(*own));
+    let (layout_direction, justify, sizing) = match side {
         DrawerSide::Left => (
             FlexDirectionStyle::Row,
             JustifyStyle::Start,
@@ -497,46 +453,52 @@ pub fn drawer(
                 .with::<container::max_height>(280.0),
         ),
     };
-    let mut panel_style = sizing
+    let direction: FlexDirectionStyle = layout_direction;
+    let backdrop: StyleOf<Container> = StyleOf::new()
+        .with::<container::position>(PositionStyle::Absolute)
+        .with::<container::inset>(EdgeInsets::zero())
+        .with::<container::size>(Size::fill())
+        .with::<container::justify>(justify)
+        .with::<container::background>(Color::rgba(0.0, 0.0, 0.0, 0.4))
+        .merged(backdrop_style);
+    let mut panel_style: StyleOf<Container> = sizing
         .with::<container::padding>(EdgeInsets::all(20.0))
         .with::<container::background>(ColorToken::Surface);
     panel_style.merge(style);
-    let panel = view! {
-        container(
-            style: panel_style,
-            focusable: true,
-            tab_index: 0,
-            accessibility_role: AccessibilityRole::Dialog,
-            on_click: |_, _| EventResult::Consumed,
-        ) {
-            ..content.clone()
+    view! {
+        container(accessibility_hidden: !*shown) {
+            if *shown {
+                portal(
+                    z_index: *z_index,
+                    modal: true,
+                    on_dismiss: |cx, _reason| commit(cx, false, open, own, on_open_change),
+                ) {
+                    container(
+                        style: backdrop.clone(),
+                        flex_direction: *direction,
+                        on_click: |cx| {
+                            commit(cx, false, open, own, on_open_change);
+                            EventResult::Consumed
+                        },
+                    ) {
+                        container(
+                            style: panel_style.clone(),
+                            focusable: true,
+                            tab_index: 0,
+                            accessibility_role: AccessibilityRole::Dialog,
+                            on_click: |_cx| EventResult::Consumed,
+                        ) {
+                            slot(children)
+                        }
+                    }
+                }
+            }
         }
-    };
-    let root = view! {
-        container(
-            style: StyleOf::new()
-                .with::<container::position>(PositionStyle::Absolute)
-                .with::<container::inset>(EdgeInsets::zero())
-                .with::<container::size>(Size::fill())
-                .with::<container::justify>(justify)
-                .with::<container::background>(Color::rgba(0.0, 0.0, 0.0, 0.4)).merged(backdrop_style),
-            flex_direction: direction,
-            on_click: { let callback = on_open_change.clone(); move |_, _| { notify_open(false, controlled, state, &callback); EventResult::Consumed } },
-        ) {
-            ..panel
-        }
-    };
-    portal(vec![root])
-        .on_dismiss(move |_| {
-            notify_open(false, controlled, state, &callback);
-        })
-        .z_index(*z_index)
-        .modal(true)
-        .into()
+    }
 }
 
 /// An identified menu action with a display label and disabled state.
-#[derive(Clone, Debug, Hash)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct MenuItem {
     pub id: String,
     pub label: String,
@@ -589,140 +551,105 @@ pub type MenuSelectCallback = Callback<usize>;
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { menu(trigger: view! { text("Actions") }, items: vec![MenuItem::new("copy", "Copy")]) };
+/// #[component]
+/// fn example() {
+///     view! { menu(trigger: view! { text("Actions") }, items: vec![MenuItem::new("copy", "Copy")]) }
+/// }
 /// ```
 #[component]
 #[defaults(
-    open = None,
+    open = None::<bool>,
     default_open = false,
-    on_open_change = None,
-    on_select = None,
     placement = AnchorPlacement::default(),
     z_index = 1600,
     style = StyleOf::new(),
     item_style = StyleOf::new(),
 )]
 pub fn menu(
-    trigger: &ElementDesc,
-    items: &Vec<MenuItem>,
-    open: &Option<bool>,
+    trigger: &Children,
+    #[source] items: &Vec<MenuItem>,
+    #[source] open: &Option<bool>,
     default_open: &bool,
-    on_open_change: &Option<BoolChangeCallback>,
-    on_select: &Option<MenuSelectCallback>,
+    on_open_change: &Callback<bool>,
+    on_select: &Callback<usize>,
     placement: &AnchorPlacement,
     z_index: &i32,
     style: &StyleOf<Container>,
     item_style: &StyleOf<Container>,
 ) {
-    let handles = cx.use_memo_with(
-        items.iter().map(|item| item.id.clone()).collect::<Vec<_>>(),
-        || {
-            (0..items.len())
-                .map(|_| FocusHandle::new())
-                .collect::<Vec<_>>()
-                .into_iter()
-                .collect::<std::rc::Rc<[FocusHandle]>>()
-        },
-    );
-    let model = std::rc::Rc::new(crate::SelectionModel::new(items.iter().map(|item| {
-        crate::SelectionItem::new(item.id.clone(), item.label.clone(), item.disabled)
-    })));
-    let state = cx.use_state(|| *default_open);
-    let controlled = open.is_some();
-    let shown = open.unwrap_or(*state.get());
-    let selected = on_select.clone();
-    let open_callback = on_open_change.clone();
-    let rows = if shown {
-        items
-        .iter()
-        .enumerate()
-        .map(|(index, item)| {
-            let selected = selected.clone();
-            let open_callback = open_callback.clone();
-            let disabled = item.disabled;
-            let handles = handles.get().clone();
-            let model = model.clone();
-            let interactive = !disabled;
-
-            view! {
-                container(
-                    style: StyleOf::new()
-                        .with::<container::padding>(EdgeInsets::symmetric(10.0, 7.0))
-                        .with::<container::border_radius>(RadiusToken::Sm)
-                        .when_style(WidgetStateMatcher::all(WidgetState::HOVERED), StyleOf::<Container>::new().with::<container::background>(ColorToken::Accent)).merged(&crate::layout::control_style(disabled)).merged(item_style),
-                    key: item.id.clone(),
-                    focus_handle: handles[index].clone(),
-                    shortcuts: crate::selection::selection_shortcuts().map(|(shortcut, command)| ShortcutBinding { shortcut, command }).to_vec(),
-                    on_command: move |event, event_cx| {
-                        if disabled { return EventResult::Ignored; }
-                        let Some(target) = crate::selection::selection_target(&model, index, event.command) else { return EventResult::Ignored; };
-                        handles[target].request_focus(event_cx);
-                        EventResult::Consumed
-                    },
-                    focusable: !disabled,
-                    tab_index: if disabled { -1 } else { 0 },
-                    accessibility_role: AccessibilityRole::MenuItem,
-                    accessibility_label: item.label.clone(),
-                    accessibility_disabled: disabled,
-                    on_click: move |_, _| { if !interactive { return EventResult::Ignored; }
-                        if let Some(callback) = &selected {
-                            callback.call(index);
-                        }
-                        if !controlled {
-                            state.set(false);
-                        }
-                        if let Some(callback) = &open_callback {
-                            callback.call(false);
-                        }
-                        EventResult::Consumed
-                    },
-                ) {
-                    xui_core::prelude::text(
-                        item.label.clone(),
-                    )
-                }
-            }
-        })
-        .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-    let mut content_style = StyleOf::new()
+    let handles: Vec<FocusHandle> = memo!((0..items.len()).map(|_| FocusHandle::new()).collect());
+    let model: crate::SelectionModel = memo!(crate::SelectionModel::new(
+        items.iter().map(|item| crate::SelectionItem::new(item.id.clone(), item.label.clone(), item.disabled))
+    ));
+    let own: bool = state!(*default_open);
+    let shown: bool = memo!(open.unwrap_or(*own));
+    let mut content_style: StyleOf<Container> = StyleOf::new()
         .with::<container::min_width>(180.0)
         .with::<container::padding>(EdgeInsets::all(4.0));
     content_style.merge(style);
-    let content = view! {
-        container(
-            style: content_style,
-            flex_direction: FlexDirectionStyle::Column,
-            accessibility_role: AccessibilityRole::Menu,
-        ) {
-            ..rows
-        }
-    };
-    let change = cx.use_callback((controlled, state, on_open_change.clone()), {
-        let callback = on_open_change.clone();
-        move |next| {
-            if !controlled {
-                state.set(next);
-            }
-            if let Some(callback) = &callback {
-                callback.call(next);
-            }
-        }
-    });
     view! {
-        popover(
-            trigger: trigger.share(),
-            content: content,
-            open: Some(shown),
-            on_open_change: Some(change),
-            placement: *placement,
-            modal: true,
-            z_index: *z_index,
-        )
+        container() {
+            popover(
+                trigger: trigger,
+                open: Some(*shown),
+                on_open_change: |cx, next| commit(cx, next, open, own, on_open_change),
+                placement: *placement,
+                modal: true,
+                z_index: *z_index,
+            ) {
+                container(
+                    style: content_style.clone(),
+                    flex_direction: FlexDirectionStyle::Column,
+                    accessibility_role: AccessibilityRole::Menu,
+                ) {
+                    for (index, item) in items.iter().cloned().enumerate() {
+                        container(
+                    style: StyleOf::new()
+                        .with::<container::padding>(EdgeInsets::symmetric(10.0, 7.0))
+                        .with::<container::border_radius>(RadiusToken::Sm)
+                        .when_style(
+                            WidgetStateMatcher::all(WidgetState::HOVERED),
+                            StyleOf::<Container>::new().with::<container::background>(ColorToken::Accent),
+                        )
+                        .merged(&crate::layout::control_style(item.disabled))
+                        .merged(item_style),
+                    focus_handle: handles[*index].clone(),
+                    shortcuts: crate::selection::selection_shortcuts()
+                        .map(|(shortcut, command)| ShortcutBinding { shortcut, command })
+                        .to_vec(),
+                    on_command: |_cx, event, event_cx| {
+                        if item.disabled {
+                            return EventResult::Ignored;
+                        }
+                        let Some(target) = crate::selection::selection_target(&model.read(), *index, event.command) else {
+                            return EventResult::Ignored;
+                        };
+                        handles.read()[target].request_focus(event_cx);
+                        EventResult::Consumed
+                    },
+                    focusable: !item.disabled,
+                    tab_index: if item.disabled { -1 } else { 0 },
+                    accessibility_role: AccessibilityRole::MenuItem,
+                    accessibility_label: item.label.clone(),
+                    accessibility_disabled: item.disabled,
+                    on_click: |cx| {
+                        if item.disabled {
+                            return EventResult::Ignored;
+                        }
+                        on_select.call(cx, *index);
+                        commit(cx, false, open, own, on_open_change);
+                        EventResult::Consumed
+                    },
+                ) {
+                    text(item.label.clone())
+                }
+                .key(item.id.clone())
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -753,175 +680,129 @@ pub fn menu(
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { context_menu(trigger: view! { text("Right-click here") }, items: vec![MenuItem::new("copy", "Copy")]) };
+/// #[component]
+/// fn example() {
+///     view! { context_menu(trigger: view! { text("Right-click here") }, items: vec![MenuItem::new("copy", "Copy")]) }
+/// }
 /// ```
 #[component]
 #[defaults(
-    open = None,
+    open = None::<bool>,
     default_open = false,
-    on_open_change = None,
-    on_select = None,
     z_index = 1700,
     style = StyleOf::new(),
     item_style = StyleOf::new(),
 )]
 pub fn context_menu(
-    trigger: &ElementDesc,
-    items: &Vec<MenuItem>,
-    open: &Option<bool>,
+    trigger: &Children,
+    #[source] items: &Vec<MenuItem>,
+    #[source] open: &Option<bool>,
     default_open: &bool,
-    on_open_change: &Option<BoolChangeCallback>,
-    on_select: &Option<MenuSelectCallback>,
+    on_open_change: &Callback<bool>,
+    on_select: &Callback<usize>,
     z_index: &i32,
     style: &StyleOf<Container>,
     item_style: &StyleOf<Container>,
 ) {
-    let handles = cx.use_memo_with(
-        items.iter().map(|item| item.id.clone()).collect::<Vec<_>>(),
-        || {
-            (0..items.len())
-                .map(|_| FocusHandle::new())
-                .collect::<Vec<_>>()
-                .into_iter()
-                .collect::<std::rc::Rc<[FocusHandle]>>()
-        },
-    );
-    let model = std::rc::Rc::new(crate::SelectionModel::new(items.iter().map(|item| {
-        crate::SelectionItem::new(item.id.clone(), item.label.clone(), item.disabled)
-    })));
-    let state = cx.use_state(|| *default_open);
-    let position = cx.use_state(|| Point::new(0.0, 0.0));
-    let controlled = open.is_some();
-    let shown = open.unwrap_or(*state.get());
-    let opened = on_open_change.clone();
-    let trigger = view! {
+    let handles: Vec<FocusHandle> = memo!((0..items.len()).map(|_| FocusHandle::new()).collect());
+    let model: crate::SelectionModel = memo!(crate::SelectionModel::new(
+        items.iter().map(|item| crate::SelectionItem::new(item.id.clone(), item.label.clone(), item.disabled))
+    ));
+    let own: bool = state!(*default_open);
+    let shown: bool = memo!(open.unwrap_or(*own));
+    let position: Point = state!(Point::new(0.0, 0.0));
+    let panel_style: StyleOf<Container> = memo!({
+        let mut panel_style = overlay_panel_style()
+            .with::<container::min_width>(180.0)
+            .with::<container::padding>(EdgeInsets::all(4.0))
+            .with::<container::margin>(EdgeInsets::new(position.x.max(0.0), 0.0, position.y.max(0.0), 0.0));
+        panel_style.merge(style);
+        panel_style
+    });
+    view! {
         container(
-            on_context_menu: move |event, event_cx| {
+            on_context_menu: |cx, event, event_cx| {
                 let point = event
                     .position
                     .or_else(|| event.pointer.map(|pointer| pointer.coords.window))
                     .unwrap_or(event_cx.node_ref.world_origin);
-                position.set(point);
-                if !controlled {
-                    state.set(true);
-                }
-                if let Some(callback) = &opened {
-                    callback.call(true);
-                }
+                position.set(cx, point);
+                commit(cx, true, open, own, on_open_change);
                 EventResult::Consumed
             },
         ) {
-            ..trigger.clone()
-        }
-    };
-    let mut children = vec![trigger];
-    if shown {
-        let selected = on_select.clone();
-        let closed = on_open_change.clone();
-        let rows = items
-            .iter()
-            .enumerate()
-            .map(|(index, item)| {
-                let selected = selected.clone();
-                let closed = closed.clone();
-                let disabled = item.disabled;
-            let handles = handles.get().clone();
-            let model = model.clone();
-                let navigation_enabled = !disabled;
-
-                view! {
+            slot(trigger)
+            if *shown {
+                portal(
+                    z_index: *z_index,
+                    modal: true,
+                    on_dismiss: |cx, _reason| commit(cx, false, open, own, on_open_change),
+                ) {
                     container(
                         style: StyleOf::new()
-                            .with::<container::padding>(EdgeInsets::symmetric(10.0, 7.0))
-                            .with::<container::border_radius>(RadiusToken::Sm)
-                            .when_style(WidgetStateMatcher::all(WidgetState::HOVERED), StyleOf::<Container>::new().with::<container::background>(ColorToken::Accent)).merged(&crate::layout::control_style(disabled)).merged(item_style),
-                        key: item.id.clone(),
-                        focus_handle: handles[index].clone(),
-                        shortcuts: crate::selection::selection_shortcuts().map(|(shortcut, command)| ShortcutBinding { shortcut, command }).to_vec(),
-                        on_command: move |event, event_cx| {
-                            if disabled { return EventResult::Ignored; }
-                            let Some(target) = crate::selection::selection_target(&model, index, event.command) else { return EventResult::Ignored; };
-                            handles[target].request_focus(event_cx);
-                            EventResult::Consumed
-                        },
-                        focusable: !disabled,
-                        tab_index: if disabled { -1 } else { 0 },
-                        accessibility_role: AccessibilityRole::MenuItem,
-                        accessibility_label: item.label.clone(),
-                        accessibility_disabled: disabled,
-                        on_click: move |_, _| { if !navigation_enabled { return EventResult::Ignored; }
-                            if let Some(callback) = &selected {
-                                callback.call(index);
-                            }
-                            if !controlled {
-                                state.set(false);
-                            }
-                            if let Some(callback) = &closed {
-                                callback.call(false);
-                            }
+                            .with::<container::position>(PositionStyle::Absolute)
+                            .with::<container::inset>(EdgeInsets::zero())
+                            .with::<container::size>(Size::fill()),
+                        on_click: |cx| {
+                            commit(cx, false, open, own, on_open_change);
                             EventResult::Consumed
                         },
                     ) {
-                        xui_core::prelude::text(
-                            item.label.clone(),
+                        container(
+                            style: panel_style.clone(),
+                            flex_direction: FlexDirectionStyle::Column,
+                            accessibility_role: AccessibilityRole::Menu,
+                            on_click: |_cx| EventResult::Consumed,
+                        ) {
+                            for (index, item) in items.iter().cloned().enumerate() {
+                                container(
+                    style: StyleOf::new()
+                        .with::<container::padding>(EdgeInsets::symmetric(10.0, 7.0))
+                        .with::<container::border_radius>(RadiusToken::Sm)
+                        .when_style(
+                            WidgetStateMatcher::all(WidgetState::HOVERED),
+                            StyleOf::<Container>::new().with::<container::background>(ColorToken::Accent),
                         )
+                        .merged(&crate::layout::control_style(item.disabled))
+                        .merged(item_style),
+                    focus_handle: handles[*index].clone(),
+                    shortcuts: crate::selection::selection_shortcuts()
+                        .map(|(shortcut, command)| ShortcutBinding { shortcut, command })
+                        .to_vec(),
+                    on_command: |_cx, event, event_cx| {
+                        if item.disabled {
+                            return EventResult::Ignored;
+                        }
+                        let Some(target) = crate::selection::selection_target(&model.read(), *index, event.command) else {
+                            return EventResult::Ignored;
+                        };
+                        handles.read()[target].request_focus(event_cx);
+                        EventResult::Consumed
+                    },
+                    focusable: !item.disabled,
+                    tab_index: if item.disabled { -1 } else { 0 },
+                    accessibility_role: AccessibilityRole::MenuItem,
+                    accessibility_label: item.label.clone(),
+                    accessibility_disabled: item.disabled,
+                    on_click: |cx| {
+                        if item.disabled {
+                            return EventResult::Ignored;
+                        }
+                        on_select.call(cx, *index);
+                        commit(cx, false, open, own, on_open_change);
+                        EventResult::Consumed
+                    },
+                ) {
+                    text(item.label.clone())
+                }
+                .key(item.id.clone())
+                            }
+                        }
                     }
                 }
-            })
-            .collect::<Vec<_>>();
-        let point = *position.get();
-        let mut panel_style = overlay_panel_style()
-            .with::<container::min_width>(180.0)
-            .with::<container::padding>(EdgeInsets::all(4.0))
-            .with::<container::margin>(EdgeInsets::new(
-                point.x.max(0.0),
-                0.0,
-                point.y.max(0.0),
-                0.0,
-            ));
-        panel_style.merge(style);
-        let panel = view! {
-            container(
-                style: panel_style,
-                flex_direction: FlexDirectionStyle::Column,
-                accessibility_role: AccessibilityRole::Menu,
-                on_click: |_, _| EventResult::Consumed,
-            ) {
-                ..rows
             }
-        };
-        let closed = on_open_change.clone();
-        let root = view! {
-            container(
-                style: StyleOf::new()
-                    .with::<container::position>(PositionStyle::Absolute)
-                    .with::<container::inset>(EdgeInsets::zero())
-                    .with::<container::size>(Size::fill()),
-                on_click: { let callback = on_open_change.clone(); move |_, _| { notify_open(false, controlled, state, &callback); EventResult::Consumed } },
-            ) {
-                ..panel
-            }
-        };
-        children.push(
-            portal(vec![root])
-                .on_dismiss(move |_| {
-                    if !controlled {
-                        state.set(false);
-                    }
-                    if let Some(callback) = &closed {
-                        callback.call(false);
-                    }
-                })
-                .z_index(*z_index)
-                .modal(true)
-                .into(),
-        );
-    }
-    view! {
-        container() {
-            ..children
         }
     }
 }
@@ -957,9 +838,12 @@ pub enum ToastTone {
 /// ```rust
 /// use xui_core::prelude::*;
 /// use xui_components::*;
-/// use xui_macros::view;
+/// use xui_macros::component;
 ///
-/// let _ = view! { toast(message: "Saved", open: true) };
+/// #[component]
+/// fn example() {
+///     view! { toast(message: "Saved", open: true) }
+/// }
 /// ```
 #[component]
 #[defaults(
@@ -969,54 +853,50 @@ pub enum ToastTone {
     style = StyleOf::new(),
 )]
 pub fn toast(
-    message: &String,
-    open: &bool,
-    tone: &ToastTone,
+    #[source] message: &String,
+    #[source] open: &bool,
+    #[source] tone: &ToastTone,
     z_index: &i32,
     style: &StyleOf<Container>,
 ) {
-    if !*open {
-        return view! {
-            container(
-                accessibility_hidden: true,
-            )
+    let toast_style: StyleOf<Container> = memo!({
+        let background: ColorStyle = match tone {
+            ToastTone::Neutral => ColorToken::Surface.into(),
+            ToastTone::Success => Color::hex("#166534").into(),
+            ToastTone::Warning => Color::hex("#92400e").into(),
+            ToastTone::Danger => Color::hex("#991b1b").into(),
         };
+        let mut toast_style = StyleOf::new()
+            .with::<container::max_width>(420.0)
+            .with::<container::padding>(EdgeInsets::all(12.0))
+            .with::<container::background>(background)
+            .with::<container::border_radius>(RadiusToken::Md);
+        toast_style.merge(style);
+        toast_style
+    });
+    view! {
+        container(accessibility_hidden: !*open) {
+            if *open {
+                portal(z_index: *z_index, hit_test: false) {
+                    container(
+                        style: StyleOf::new()
+                            .with::<container::position>(PositionStyle::Absolute)
+                            .with::<container::inset>(EdgeInsets::zero())
+                            .with::<container::size>(Size::fill())
+                            .with::<container::padding>(EdgeInsets::all(16.0))
+                            .with::<container::align>(AlignStyle::End)
+                            .with::<container::justify>(JustifyStyle::Start),
+                    ) {
+                        container(
+                            style: toast_style.clone(),
+                            accessibility_live_region: AccessibilityLiveRegion::Polite,
+                            accessibility_label: message.clone(),
+                        ) {
+                            text(message.clone())
+                        }
+                    }
+                }
+            }
+        }
     }
-    let background: ColorStyle = match tone {
-        ToastTone::Neutral => ColorToken::Surface.into(),
-        ToastTone::Success => Color::hex("#166534").into(),
-        ToastTone::Warning => Color::hex("#92400e").into(),
-        ToastTone::Danger => Color::hex("#991b1b").into(),
-    };
-    let mut toast_style = StyleOf::new()
-        .with::<container::max_width>(420.0)
-        .with::<container::padding>(EdgeInsets::all(12.0))
-        .with::<container::background>(background)
-        .with::<container::border_radius>(RadiusToken::Md);
-    toast_style.merge(style);
-    let item = view! {
-        container(
-            style: toast_style,
-            accessibility_live_region: AccessibilityLiveRegion::Polite,
-            accessibility_label: message.clone(),
-        ) {
-            xui_core::prelude::text(
-                message.clone(),
-            )
-        }
-    };
-    let root = view! {
-        container(
-            style: StyleOf::new()
-                .with::<container::position>(PositionStyle::Absolute)
-                .with::<container::inset>(EdgeInsets::zero())
-                .with::<container::size>(Size::fill())
-                .with::<container::padding>(EdgeInsets::all(16.0))
-                .with::<container::align>(AlignStyle::End)
-                .with::<container::justify>(JustifyStyle::Start),
-        ) {
-            ..item
-        }
-    };
-    portal(vec![root]).z_index(*z_index).hit_test(false).into()
 }

@@ -4,5 +4,5 @@ fn main() {}
 
 #[component]
 fn row<'a>(label: &&'a str) {
-    unimplemented!()
+    view! { container() }
 }

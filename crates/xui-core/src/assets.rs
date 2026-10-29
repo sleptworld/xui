@@ -107,9 +107,6 @@ struct Interned {
 
 struct AssetRuntime {
     manager: Option<Arc<AssetManager>>,
-    /// Bumped whenever the manager changes, so a value loaded from the old one
-    /// can tell it is stale. See [`HookContext::use_asset`](crate::state::HookContext::use_asset).
-    generation: u64,
     /// One value per parsed asset, held here alongside everyone else holding
     /// it. A value only this table holds has been released.
     interned: FxHashMap<ParsedAssetKey, Interned>,
@@ -125,7 +122,6 @@ impl Default for AssetRuntime {
     fn default() -> Self {
         Self {
             manager: None,
-            generation: 0,
             interned: FxHashMap::default(),
             clock: 0,
             released_budget: RELEASED_BUDGET_BYTES,
@@ -211,18 +207,10 @@ pub fn clear_asset_manager() {
 }
 
 fn replace_runtime(manager: Option<Arc<AssetManager>>) {
-    let mut runtime = runtime();
-    let generation = runtime.generation + 1;
-    *runtime = AssetRuntime {
+    *runtime() = AssetRuntime {
         manager,
-        generation,
         ..AssetRuntime::default()
     };
-}
-
-/// Which manager the runtime is on. See [`AssetRuntime::generation`].
-pub(crate) fn generation() -> u64 {
-    runtime().generation
 }
 
 /// Drops parsed values nothing holds any more, beyond the small budget kept
@@ -238,7 +226,7 @@ pub(crate) fn collect_released() {
 ///
 /// Asset-backed widgets load from their builders, which run on every rebuild,
 /// so a format that is costly to parse wants a shared entry point instead --
-/// see [`load_shared_asset`] and [`HookContext::use_asset`](crate::state::HookContext::use_asset).
+/// see [`load_shared_asset`].
 pub fn load_asset<T: AssetFormat>(id: AssetId) -> Option<T::Output> {
     let found = Found::lookup(id, None)?;
     found.parse::<T>()
@@ -631,10 +619,6 @@ mod tests {
     }
 
     impl Mounted {
-        fn lookups(&self) -> usize {
-            self.lookups.load(Ordering::Relaxed)
-        }
-
         fn loads(&self) -> usize {
             self.loads.load(Ordering::Relaxed)
         }
@@ -797,40 +781,6 @@ mod tests {
         clear_asset_manager();
     }
 
-    #[test]
-    fn use_asset_looks_up_once_per_manager() {
-        use crate::fiber::FiberArena;
-        use crate::lanes::SYNC_LANE;
-        use crate::state::{HookContext, HookStorage, Scheduler};
-
-        let _runtime = exclusive_runtime();
-        let asset = install_one("images/pixel.png", pixel_png());
-        let mut storage = HookStorage::default();
-        let scheduler = Scheduler::default();
-        let owner = FiberArena::new().root();
-        scheduler.set_root(owner);
-        let render = |storage: &mut HookStorage, id| {
-            let mut cx = HookContext::new(storage, owner, scheduler.clone(), SYNC_LANE);
-            cx.use_asset::<ImageAsset>(id)
-        };
-
-        let first = render(&mut storage, asset.id).unwrap();
-        let lookups = asset.lookups();
-        let second = render(&mut storage, asset.id).unwrap();
-        assert_eq!(first, second);
-        assert_eq!(
-            asset.lookups(),
-            lookups,
-            "a rebuild looked the asset up again"
-        );
-
-        let replacement = install_one("images/pixel.png", pixel_png());
-        let third = render(&mut storage, asset.id).unwrap();
-        assert_ne!(third, first, "a new manager kept serving the old value");
-        assert_eq!(replacement.loads(), 1);
-
-        clear_asset_manager();
-    }
 
     #[test]
     fn a_missing_external_package_is_named_in_the_error() {

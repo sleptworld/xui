@@ -1,9 +1,8 @@
 //! End-to-end demo application for the `xui` framework: the Component Gallery.
 //!
 //! Every `xui-components` control on the shadcn/ui-style theme, one page per
-//! component, plus icons, canvas scenes, and backdrop blur. Pages are built
-//! with the `xui!` macro and `#[component]` functions; the image page loads
-//! from the packed `assets/`.
+//! component, plus icons, canvas scenes, and backdrop blur. Pages are
+//! `#[component]`s; the image page loads from the packed `assets/`.
 //!
 //! `cargo run -p xui-example-app` (add `XUI_THEME=dark` for the dark palette;
 //! `--features skia` runs it on Skia instead of Vello).
@@ -48,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn run_vello(theme: Theme, options: MacRunnerOptions) -> Result<(), Box<dyn std::error::Error>> {
     MacRunner::with_fallible_options(
         move |window| -> Result<_, std::io::Error> {
-            let mut app = App::new(gallery::gallery_component);
+            let mut app = App::new(gallery::gallery_root);
             app.set_theme(theme);
             let backend = xui_vello::VelloBackend::<xui_f::FBackend>::new(window)
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
@@ -70,7 +69,7 @@ fn run_vello(theme: Theme, options: MacRunnerOptions) -> Result<(), Box<dyn std:
 fn run_skia(theme: Theme, options: MacRunnerOptions) -> Result<(), Box<dyn std::error::Error>> {
     MacRunner::with_fallible_options(
         move |window| -> Result<_, std::io::Error> {
-            let mut app = App::new(gallery::gallery_component);
+            let mut app = App::new(gallery::gallery_root);
             app.set_theme(theme);
             let backend = xui_skia::SkiaBackend::<xui_f::FBackend>::new(window)
                 .map_err(|error| std::io::Error::other(error.to_string()))?;

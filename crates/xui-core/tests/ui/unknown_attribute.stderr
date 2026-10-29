@@ -1,11 +1,11 @@
 error[E0599]: no method named `paddign` found for struct `widgets::container::ContainerProperties` in the current scope
- --> tests/ui/unknown_attribute.rs:7:23
+ --> tests/ui/unknown_attribute.rs:8:23
   |
-7 |     xui! { <container paddign={EdgeInsets::all(8.0)} /> }
+8 |     xui! { <container paddign={EdgeInsets::all(8.0)} /> }
   |                       ^^^^^^^
   |
 help: there is a method `padding` with a similar name
   |
-7 -     xui! { <container paddign={EdgeInsets::all(8.0)} /> }
-7 +     xui! { <container padding={EdgeInsets::all(8.0)} /> }
+8 -     xui! { <container paddign={EdgeInsets::all(8.0)} /> }
+8 +     xui! { <container padding={EdgeInsets::all(8.0)} /> }
   |

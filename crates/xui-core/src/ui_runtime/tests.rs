@@ -7,7 +7,6 @@ use crate::core::Size;
 use crate::event_system::translator::EventTranslator;
 use crate::event_system::{Flow, Handler};
 use crate::focus::FocusHandle;
-use crate::render::RenderNodeKind;
 use crate::text::TextHost;
 use crate::text::TextLayoutSlot;
 use crate::text::testing::ZeroTextBackend;
@@ -20,11 +19,11 @@ use crate::widgets::canvas_text_slot;
 use crate::node::{Draft, StyleOf};
 use crate::widgets::ErasedDraft;
 use crate::widgets::CanvasController;
-use crate::widgets::canvas::{Canvas, canvas};
-use crate::widgets::container::{Container, center, column, container, row};
+use crate::widgets::canvas::canvas;
+use crate::widgets::container::{Container, center, container};
 use crate::widgets::text::{Text, text};
 use crate::widgets::text_input::{TextInput, text_input};
-use crate::widgets::z_stack::{ZStack, z_stack};
+use crate::widgets::z_stack::z_stack;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -466,7 +465,7 @@ fn update_host(arena: &mut UiRuntime, id: NodeId, widget: impl ErasedDraft + 'st
 // Event system: handler sharing, Flow, and the widget stage
 // ---------------------------------------------------------------------
 
-fn pointer_at(position: Point) -> RawPointerButton {
+pub(crate) fn pointer_at(position: Point) -> RawPointerButton {
     RawPointerButton {
         position,
         pointer_id: XuiPointerId::new(0),
@@ -482,7 +481,7 @@ fn pointer_at(position: Point) -> RawPointerButton {
 /// Clicks the centre of `node` by driving the real raw-event pipeline, so
 /// the semantic events under test are the ones the translator actually
 /// produces.
-fn click(arena: &mut UiRuntime, measurer: &TextHost<ZeroTextBackend>, node: NodeId) {
+pub(crate) fn click(arena: &mut UiRuntime, measurer: &TextHost<ZeroTextBackend>, node: NodeId) {
     let bounds = arena.node(node).unwrap().layout;
     let point = Point::new(
         (bounds.min.x + bounds.max.x) * 0.5,
@@ -625,7 +624,7 @@ fn entering_a_leaf_reports_every_ancestor_that_gained_hover_once_each() {
                 }),
     );
 
-    let mut nest = |arena: &mut UiRuntime, parent: NodeId, name: &'static str, size: f32| {
+    let nest = |arena: &mut UiRuntime, parent: NodeId, name: &'static str, size: f32| {
         let log = Rc::clone(&counts);
         let widget = container().with::<container::size>(Size::fix(size, size)).with_on::<container::on_hovered, _>(move |event, _| {
                     log.borrow_mut().push((name, event.hovered));
@@ -1567,7 +1566,7 @@ fn stopping_propagation_hides_the_event_from_ancestors() {
     );
 }
 
-fn pointer_move(position: Point) -> RawEvent {
+pub(crate) fn pointer_move(position: Point) -> RawEvent {
     RawEvent::PointerMove(RawPointerMove {
         position,
         pointer_id: XuiPointerId::new(0),
@@ -1953,7 +1952,7 @@ fn mount_portal(
     owner: NodeId,
     visual_root: NodeId,
     options: OverlayEntryOptions,
-    behavior: crate::element::PortalBehavior,
+    behavior: PortalBehavior,
 ) -> OverlayEntryId {
     let entry = arena
         .mount_overlay_entry(visual_root, None, options)
@@ -1969,8 +1968,15 @@ fn mount_portal(
     entry
 }
 
-fn anchored(placement: crate::anchor::AnchorPlacement) -> crate::element::PortalBehavior {
-    crate::element::PortalBehavior {
+/// What a portal does beyond stacking, as the old element model passed it.
+#[derive(Default)]
+struct PortalBehavior {
+    anchor: Option<crate::anchor::AnchorPlacement>,
+    on_dismiss: Option<crate::widgets::DismissHandler>,
+}
+
+fn anchored(placement: crate::anchor::AnchorPlacement) -> PortalBehavior {
+    PortalBehavior {
         anchor: Some(placement),
         ..Default::default()
     }
@@ -2203,7 +2209,7 @@ fn dismissable_portal(
                 StyleOf::<Container>::new().with::<container::position>(xui_interface::PositionStyle::Absolute).with::<container::inset>(xui_interface::EdgeInsets::new(100.0, 0.0, 100.0, 0.0)).with::<container::size>(Size::fix(60.0, 40.0)),
             ),
     );
-    let behavior = crate::element::PortalBehavior {
+    let behavior = PortalBehavior {
         on_dismiss: Some(crate::widgets::DismissHandler::new({
             let seen = Rc::clone(&seen);
             move |reason| seen.borrow_mut().push(reason)
@@ -3037,7 +3043,7 @@ fn a_style_transform_is_a_frame_property_on_the_layout_root() {
 #[test]
 fn a_looping_rotation_spins_on_frame_properties_alone() {
     let mut arena = UiRuntime::new();
-    let node = create_host(&mut arena, (spinning(1000)));
+    let node = create_host(&mut arena, spinning(1000));
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
     assert!(arena.is_animating(), "mounting with an animation starts it");
@@ -3073,7 +3079,7 @@ fn a_looping_rotation_spins_on_frame_properties_alone() {
 #[test]
 fn the_same_animation_keeps_its_place_and_a_different_one_starts_over() {
     let mut arena = UiRuntime::new();
-    let node = create_host(&mut arena, (spinning(1000)));
+    let node = create_host(&mut arena, spinning(1000));
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
     arena.tick_style_animations(Duration::from_millis(250));
@@ -3082,7 +3088,7 @@ fn the_same_animation_keeps_its_place_and_a_different_one_starts_over() {
     update_host(
         &mut arena,
         node,
-        (spinning(1000).with::<container::background>(Color::BLACK)),
+        spinning(1000).with::<container::background>(Color::BLACK),
     );
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
     assert!((rotation(&arena, node) - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
@@ -3090,7 +3096,7 @@ fn the_same_animation_keeps_its_place_and_a_different_one_starts_over() {
     update_host(
         &mut arena,
         node,
-        (spinning(500).with::<container::background>(Color::BLACK)),
+        spinning(500).with::<container::background>(Color::BLACK),
     );
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
     assert_eq!(
@@ -3141,7 +3147,7 @@ fn a_finite_animation_ends_at_the_target_and_stops_asking_for_frames() {
 #[test]
 fn removing_an_animating_node_drops_its_animation() {
     let mut arena = UiRuntime::new();
-    let node = create_host(&mut arena, (spinning(1000)));
+    let node = create_host(&mut arena, spinning(1000));
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
     assert!(arena.is_animating());
@@ -3344,7 +3350,7 @@ fn an_animating_child_follows_its_parents_transition() {
     let child = child_of(
         &mut arena,
         parent,
-        (spinning(1000)),
+        spinning(1000),
     );
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);

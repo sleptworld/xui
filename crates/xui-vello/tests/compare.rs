@@ -12,11 +12,11 @@
 mod common;
 
 use common::*;
-use xui_core::{app::ComponentFn, prelude::*, text::TextHost};
+use xui_core::{app::AppRoot, prelude::*, text::TextHost};
 use xui_cosmic::CosmicEngine;
 use xui_skia::{SkiaBackend, SkiaBackendOptions};
 
-fn render_skia(root: ComponentFn, scale: f32) -> Frame {
+fn render_skia(root: AppRoot, scale: f32) -> Frame {
     let mut backend = SkiaBackend::<CosmicEngine>::headless(
         scale,
         SkiaBackendOptions {
@@ -132,7 +132,7 @@ fn dump(dir: &std::path::Path, name: &str, skia: &Frame, vello: &Frame) {
 /// device pixels and does not grow with the scale factor (it measures 10px wide
 /// at both 1x and 2x), while every other blur in the Skia backend, and Vello's
 /// shadow, scales. Vello is the consistent one; it is not made to copy that.
-const SCENES: &[(&str, ComponentFn, f64, f64)] = &[
+const SCENES: &[(&str, AppRoot, f64, f64)] = &[
     ("solid", solid_root, 0.01, 0.01),
     ("rounded_clip", rounded_clip_root, 0.5, 0.5),
     ("box_shadow", shadow_root, 1.5, 4.0),

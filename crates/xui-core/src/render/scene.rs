@@ -898,16 +898,6 @@ impl RenderScene {
         }
     }
 
-    fn single_child(&self, id: RenderNodeId) -> Result<Option<RenderNodeId>, SceneError> {
-        match &self.nodes.get(id).ok_or(SceneError::MissingNode(id))?.kind {
-            RenderNodeKind::Transform(node) => Ok(node.child),
-            RenderNodeKind::Clip(node) => Ok(node.child),
-            RenderNodeKind::Layer(node) => Ok(node.child),
-            RenderNodeKind::Primitive(_) => Err(SceneError::NodeCannotHaveChildren(id)),
-            RenderNodeKind::Group(_) => Err(SceneError::UseGroupChildrenApi(id)),
-        }
-    }
-
     fn set_single_child_value(
         &mut self,
         id: RenderNodeId,

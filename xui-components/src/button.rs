@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use xui_core::prelude::*;
 
-use xui_macros::{component, view};
+use xui_macros::component;
 
 const ACTIVATE_BUTTON: CommandId = CommandId("xui.button.activate");
 
@@ -236,12 +236,6 @@ fn resolved_style(
     style
 }
 
-fn invoke(callback: &Option<ButtonClickCallback>) {
-    if let Some(callback) = callback {
-        callback.call(());
-    }
-}
-
 /// A focusable action button with semantic variants, loading state, and keyboard
 /// activation.
 ///
@@ -260,10 +254,10 @@ fn invoke(callback: &Option<ButtonClickCallback>) {
 /// | `disabled` | `bool` | `false` |
 /// | `loading` | `bool` | `false` |
 /// | `full_width` | `bool` | `false` |
-/// | `leading` | `Option<ElementDesc>` | `None` |
-/// | `trailing` | `Option<ElementDesc>` | `None` |
-/// | `loading_indicator` | `Option<ElementDesc>` | `None` |
-/// | `on_click` | `Option<ButtonClickCallback>` | `None` |
+/// | `leading` | `Children` | none |
+/// | `trailing` | `Children` | none |
+/// | `loading_indicator` | `Children` | a spinner |
+/// | `on_click` | `Callback<()>` | none |
 /// | `accessibility_label` | `Option<String>` | `None` |
 /// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
 /// | `label_style` | `StyleOf<Container>` | `StyleOf::new()` |
@@ -271,12 +265,8 @@ fn invoke(callback: &Option<ButtonClickCallback>) {
 ///
 /// # Example
 ///
-/// ```rust
-/// use xui_core::prelude::*;
-/// use xui_components::*;
-/// use xui_macros::view;
-///
-/// let _ = view! { button(text: "Save", variant: ButtonVariant::Primary) };
+/// ```ignore
+/// view! { button(text: "Save", variant: ButtonVariant::Primary, on_click: |cx| saved.set(cx, true)) }
 /// ```
 #[component]
 #[defaults(
@@ -285,91 +275,78 @@ fn invoke(callback: &Option<ButtonClickCallback>) {
     disabled = false,
     loading = false,
     full_width = false,
-    leading = None,
-    trailing = None,
-    loading_indicator = None,
-    on_click = None,
-    accessibility_label = None,
+    accessibility_label = None::<String>,
     style = StyleOf::new(),
     label_style = StyleOf::new(),
     transition_duration = Duration::from_millis(150),
 )]
 pub fn button(
-    text: &String,
-    variant: &ButtonVariant,
-    size: &ButtonSize,
-    disabled: &bool,
-    loading: &bool,
-    full_width: &bool,
-    leading: &Option<ElementDesc>,
-    trailing: &Option<ElementDesc>,
-    loading_indicator: &Option<ElementDesc>,
-    on_click: &Option<ButtonClickCallback>,
-    accessibility_label: &Option<String>,
-    style: &StyleOf<Container>,
+    #[source] text: &String,
+    #[source] variant: &ButtonVariant,
+    #[source] size: &ButtonSize,
+    #[source] disabled: &bool,
+    #[source] loading: &bool,
+    #[source] full_width: &bool,
+    leading: &Children,
+    trailing: &Children,
+    loading_indicator: &Children,
+    on_click: &Callback<()>,
+    #[source] accessibility_label: &Option<String>,
+    #[source] style: &StyleOf<Container>,
     label_style: &StyleOf<Text>,
     transition_duration: &Duration,
 ) {
-    let interactive = !*disabled && !*loading;
-    let mut root_style = resolved_style(*variant, *size, interactive, *full_width, &StyleOf::new());
-    root_style.merge(style);
-    let label = accessibility_label.clone().unwrap_or_else(|| text.clone());
-
-    let mut children = Vec::with_capacity(3);
-    if *loading {
-        children.push(loading_indicator.clone().unwrap_or_else(|| {
-            view! {
-                crate::spinner(size: 16.0, label: "Loading")
-            }
-        }));
-    } else if let Some(leading) = leading {
-        children.push(leading.clone());
-    }
-    children.push(view! {
-        xui_core::prelude::text(
-            text.clone(),
-            style: label_style.clone(),
-        )
+    let interactive: bool = memo!(!*disabled && !*loading);
+    let root_style: StyleOf<Container> = memo!({
+        let mut root_style = resolved_style(*variant, *size, *interactive, *full_width, &StyleOf::new());
+        root_style.merge(style);
+        root_style
     });
-    if !*loading && let Some(trailing) = trailing {
-        children.push(trailing.clone());
-    }
-
-    let click_callback = on_click.clone();
-    let command_callback = on_click.clone();
+    let label: String = memo!(accessibility_label.clone().unwrap_or_else(|| text.clone()));
 
     view! {
         container(
-            style: root_style,
+            style: root_style.clone(),
             transition: Transition::new(*transition_duration),
             flex_direction: FlexDirectionStyle::Row,
-            focusable: interactive,
-            tab_index: if interactive { 0 } else { -1 },
+            focusable: *interactive,
+            tab_index: if *interactive { 0 } else { -1 },
             accessibility_role: AccessibilityRole::Button,
-            accessibility_label: label,
-            accessibility_disabled: !interactive,
+            accessibility_label: label.clone(),
+            accessibility_disabled: !*interactive,
             accessibility_description: if *loading { "Loading" } else { "" },
-            shortcuts: [(Shortcut::named(NamedKey::Enter), ACTIVATE_BUTTON),(Shortcut::named(NamedKey::Space), ACTIVATE_BUTTON)].map(|(shortcut, command)| ShortcutBinding { shortcut, command }).to_vec(),
-            on_click: move |event, event_cx| { if !interactive { return EventResult::Ignored; }
-                if event
-                    .button
-                    .is_some_and(|button| button != PointerButton::Primary)
-                {
+            shortcuts: [(Shortcut::named(NamedKey::Enter), ACTIVATE_BUTTON), (Shortcut::named(NamedKey::Space), ACTIVATE_BUTTON)]
+                .map(|(shortcut, command)| ShortcutBinding { shortcut, command })
+                .to_vec(),
+            on_click: |cx, event, event_cx| {
+                if !interactive.get() || event.button.is_some_and(|button| button != PointerButton::Primary) {
                     return EventResult::Ignored;
                 }
                 event_cx.request_focus();
-                invoke(&click_callback);
+                on_click.call(cx, ());
                 EventResult::Consumed
             },
-            on_command: move |event, _| { if !interactive { return EventResult::Ignored; }
-                if event.command != ACTIVATE_BUTTON {
+            on_command: |cx, event| {
+                if !interactive.get() || event.command != ACTIVATE_BUTTON {
                     return EventResult::Ignored;
                 }
-                invoke(&command_callback);
+                on_click.call(cx, ());
                 EventResult::Consumed
             },
         ) {
-            ..children
+            if *loading {
+                if loading_indicator.is_empty() {
+                    crate::spinner(size: 16.0, label: "Loading".to_string())
+                } else {
+                    slot(loading_indicator)
+                }
+            } else {
+                slot(leading)
+            }
+            xui_core::prelude::text(text.clone(), style: label_style.clone())
+            if !*loading {
+                slot(trailing)
+            }
         }
     }
 }

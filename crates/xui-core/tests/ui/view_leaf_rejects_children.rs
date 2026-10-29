@@ -1,8 +1,9 @@
 use xui_core::prelude::*;
-use xui_macros::view;
+use xui_macros::component;
 
 fn main() {}
 
-fn canvas_with_body(controller: CanvasController) -> ElementDesc {
-    view! { canvas(controller: controller) { text("canvas takes no body") } }
+#[component]
+fn canvas_with_body(controller: &CanvasController) {
+    view! { canvas(controller: controller.clone()) { text("canvas takes no body") } }
 }

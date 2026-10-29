@@ -5,7 +5,8 @@ use xui_components::*;
 use xui_core::prelude::*;
 use xui_core::text::TextHost;
 use xui_cosmic::CosmicEngine;
-use xui_macros::view;
+use xui_components::image::{ImageSize, ImageSrc};
+use xui_macros::component;
 
 thread_local! { static CASE: Cell<usize> = const { Cell::new(0) }; }
 const COMPONENTS: &[&str] = &[
@@ -47,75 +48,79 @@ const COMPONENTS: &[&str] = &[
     "command_palette",
 ];
 
-fn root(cx: &mut HookContext<'_>) -> ElementDesc {
-    let content = view! { text("Content") };
-    let trigger = view! { text("Open") };
-    let render_item = cx.use_callback((), |index: usize| view! { text(index.to_string()) });
-    match CASE.get() {
-        0 => view! { xui_components::button(text: "Save", loading: true) },
-        1 => view! { xui_components::input(invalid: true, required: true) },
-        2 => {
-            view! { drop_down(items: vec![DropDownItem::new("a", "Alpha"), DropDownItem::new("b", "Beta").disabled(true)], default_open: true) }
+#[component]
+fn catalog() {
+    let case: usize = CASE.get();
+    let render_item: VirtualItemRenderer = VirtualItemRenderer::new(|index: usize| index.to_string().into());
+    view! {
+        column {
+            match *case {
+                0 => xui_components::button(text: "Save".to_string(), loading: true),
+                1 => xui_components::input(invalid: true, required: true),
+                2 => drop_down(
+                    items: vec![DropDownItem::new("a", "Alpha"), DropDownItem::new("b", "Beta").disabled(true)],
+                    default_open: true,
+                ),
+                3 => tabs(
+                    items: vec![TabItem::new("a", "Alpha", "Content")],
+                    activation: SelectionActivationMode::Manual,
+                    orientation: SelectionOrientation::Vertical,
+                ),
+                4 => xui_components::image::image(
+                    src: ImageSrc::from("asset://missing.png"),
+                    alt: Some("Missing".to_owned()),
+                    width: ImageSize::from(80.0),
+                    height: ImageSize::from(60.0),
+                ),
+                5 => virtual_list(item_count: 100_000, item_height: 20.0, viewport_height: 100.0, render_item: render_item.clone()),
+                6 => skeleton(),
+                7 => spinner(paused: true),
+                8 => callout(title: Some("Note".to_owned())) { text("Content") },
+                9 => checkbox(label: view! { text("Content") }, indeterminate: true),
+                10 => switch(label: view! { text("Content") }, checked: Some(true)),
+                11 => radio_group(items: vec![RadioItem::new("a", "Alpha", "Content")]),
+                12 => slider(min: 10.0, max: -10.0, step: -2.0),
+                13 => progress(value: f32::NAN, max: f32::INFINITY),
+                14 => separator(),
+                15 => badge(text: "New".to_string()),
+                16 => avatar(accessibility_label: "Profile".to_string(), fallback: "AB".to_string()),
+                17 => card { text("Content") },
+                18 => form_field(
+                    label: "Email".to_string(),
+                    required: true,
+                    status: FieldStatus::Error,
+                    message: Some("Required".to_owned()),
+                ) {
+                    text("Content")
+                },
+                19 => dialog(open: Some(true), title: Some("Dialog".to_owned())) { text("Content") },
+                20 => popover(trigger: view! { text("Open") }, default_open: true) { text("Content") },
+                21 => tooltip(trigger: view! { text("Open") }, text: "Tip".to_string()),
+                22 => drawer(open: Some(true)) { text("Content") },
+                23 => menu(trigger: view! { text("Open") }, items: vec![MenuItem::new("a", "Action")], default_open: true),
+                24 => context_menu(trigger: view! { text("Open") }, items: vec![MenuItem::new("a", "Action")], default_open: true),
+                25 => toast(message: "Saved".to_string(), open: true),
+                26 => collapsible(trigger: view! { text("Open") }, default_open: true) { text("Content") },
+                27 => accordion(items: vec![AccordionItem::new("a", "Open", "Content")], default_expanded: Some(0)),
+                28 => breadcrumb(items: vec![BreadcrumbItem::new("Home"), BreadcrumbItem::new("Current")]),
+                29 => pagination(page_count: 100, page: 99, sibling_count: usize::MAX),
+                30 => data_table(rows: vec![TableRow::new("a", ["Content"])]),
+                31 => data_grid(
+                    columns: vec![DataGridColumn::new("name", "Name")],
+                    rows: vec![DataGridRow::new("a", ["Alpha"])],
+                ),
+                32 => tree_view(nodes: vec![TreeNode::leaf("a", "Alpha")]),
+                33 => calendar(month: CalendarMonth { year: 2026, month: 255 }),
+                34 => date_picker(trigger: view! { text("Open") }, month: CalendarMonth::new(2026, 10), default_open: true),
+                35 => command_palette(items: vec![CommandItem::new("open", "Open File")], query: "FILE".to_string(), open: true),
+                _ => container(),
+            }
         }
-        3 => {
-            view! { tabs(items: vec![TabItem::new("a", "Alpha", content)], activation: SelectionActivationMode::Manual, orientation: SelectionOrientation::Vertical) }
-        }
-        4 => {
-            view! { xui_components::image::image(src: "asset://missing.png", alt: Some("Missing".to_owned()), width: 80.0, height: 60.0) }
-        }
-        5 => {
-            view! { virtual_list(item_count: 100_000usize, item_height: 20.0, viewport_height: 100.0, render_item: render_item) }
-        }
-        6 => view! { skeleton() },
-        7 => view! { spinner(paused: true) },
-        8 => view! { callout(content: content, title: Some("Note".to_owned())) },
-        9 => view! { checkbox(label: Some(content), indeterminate: true) },
-        10 => view! { switch(label: Some(content), checked: Some(true)) },
-        11 => view! { radio_group(items: vec![RadioItem::new("a", "Alpha", content)]) },
-        12 => view! { slider(min: 10.0, max: -10.0, step: -2.0) },
-        13 => view! { progress(value: f32::NAN, max: f32::INFINITY) },
-        14 => view! { separator() },
-        15 => view! { badge(text: "New") },
-        16 => view! { avatar(accessibility_label: "Profile", fallback: "AB") },
-        17 => view! { card(content: content) },
-        18 => {
-            view! { form_field(label: "Email", control: content, required: true, status: FieldStatus::Error, message: Some("Required".to_owned())) }
-        }
-        19 => {
-            view! { dialog(content: content, open: Some(true), title: Some("Dialog".to_owned())) }
-        }
-        20 => view! { popover(trigger: trigger, content: content, default_open: true) },
-        21 => view! { tooltip(trigger: trigger, text: "Tip") },
-        22 => view! { drawer(content: content, open: Some(true)) },
-        23 => {
-            view! { menu(trigger: trigger, items: vec![MenuItem::new("a", "Action")], default_open: true) }
-        }
-        24 => {
-            view! { context_menu(trigger: trigger, items: vec![MenuItem::new("a", "Action")], default_open: true) }
-        }
-        25 => view! { toast(message: "Saved", open: true) },
-        26 => view! { collapsible(trigger: trigger, content: content, default_open: true) },
-        27 => {
-            view! { accordion(items: vec![AccordionItem::new("a", trigger, content)], default_expanded: Some(0)) }
-        }
-        28 => {
-            view! { breadcrumb(items: vec![BreadcrumbItem::new("Home"), BreadcrumbItem::new("Current")]) }
-        }
-        29 => view! { pagination(page_count: 100usize, page: 99usize, sibling_count: usize::MAX) },
-        30 => view! { data_table(rows: vec![TableRow::new("a", vec![content])]) },
-        31 => {
-            view! { data_grid(columns: vec![DataGridColumn::new("name", "Name")], rows: vec![DataGridRow::new("a", vec!["Alpha".to_owned()])]) }
-        }
-        32 => view! { tree_view(nodes: vec![TreeNode::leaf("a", "Alpha")]) },
-        33 => view! { calendar(month: CalendarMonth { year: 2026, month: 255 }) },
-        34 => {
-            view! { date_picker(trigger: trigger, month: CalendarMonth::new(2026, 10), default_open: true) }
-        }
-        35 => {
-            view! { command_palette(items: vec![CommandItem::new("open", "Open File")], query: "FILE", open: true) }
-        }
-        _ => unreachable!(),
     }
+}
+
+fn root(app: &mut App) {
+    app.mount::<Catalog>(CatalogProps {});
 }
 
 #[test]

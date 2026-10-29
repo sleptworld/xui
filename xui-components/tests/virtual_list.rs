@@ -11,7 +11,7 @@ use xui_core::text::TextHost;
 use xui_cosmic::CosmicEngine;
 use xui_interface::Translation;
 use xui_interface::events::{Modifiers, RawEvent, RawWheel, ScrollDelta};
-use xui_macros::xui;
+use xui_macros::component;
 
 const ITEM_COUNT: usize = 100_000;
 const ITEM_HEIGHT: f32 = 20.0;
@@ -28,21 +28,25 @@ thread_local! {
     static RENDER_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 
-fn list_root(cx: &mut HookContext<'_>) -> ElementDesc {
-    let render_item: VirtualItemRenderer = cx.use_callback((), |index: usize| {
+/// A row: its index, at the row's height.
+#[component]
+fn list_row(index: &usize) {
+    view! {
+        text(
+            format!("row {index}"),
+            style: StyleOf::new().with::<container::width>(Sizing::Fill).with::<container::height>(ITEM_HEIGHT),
+        )
+    }
+}
+
+#[component]
+fn list() {
+    let render_item: VirtualItemRenderer = VirtualItemRenderer::new(|index: usize| {
         RENDER_CALLS.with(|calls| calls.set(calls.get() + 1));
         RENDERED.with(|slot| slot.borrow_mut().push(index));
-        text()
-            .with::<text::content>(format!("row {index}"))
-            .with::<text::style>(
-                StyleOf::new()
-                    .with::<container::width>(Sizing::Fill)
-                    .with::<container::height>(ITEM_HEIGHT),
-            )
-            .into_element_desc(Vec::new())
+        Children::component::<ListRow>(ListRowProps { index })
     });
-
-    let style = StyleOf::new()
+    let style: StyleOf<Container> = StyleOf::new()
         .with::<container::width>(Sizing::Fill)
         .with::<container::height>(VIEWPORT.height);
     xui! {
@@ -50,10 +54,14 @@ fn list_root(cx: &mut HookContext<'_>) -> ElementDesc {
             item_count={ITEM_COUNT}
             item_height={ITEM_HEIGHT}
             viewport_height={VIEWPORT.height}
-            render_item={render_item}
-            style={style}
+            render_item={render_item.clone()}
+            style={style.clone()}
         />
     }
+}
+
+fn list_root(app: &mut App) {
+    app.mount::<List>(ListProps {});
 }
 
 struct Harness {

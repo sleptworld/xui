@@ -25,6 +25,9 @@ xui-shell = { path = "../xui-shell" }
 xui-skia = { path = "../xui-skia", optional = true }
 xui-vello = { path = "../xui-vello", optional = true }
 
+[dev-dependencies]
+xui-macros = { path = "../xui-macros" }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 dispatch2 = "0.3.1"
 objc2 = "0.6.4"

@@ -1,8 +1,8 @@
 error[E0425]: cannot find function `containr` in this scope
- --> tests/ui/unknown_tag.rs:7:13
+ --> tests/ui/unknown_tag.rs:8:21
   |
-7 |     xui! { <containr /> }
-  |             ^^^^^^^^
+8 |     xui! { <column><containr /></column> }
+  |                     ^^^^^^^^
   |
  ::: src/widgets/container.rs
   |
@@ -11,5 +11,5 @@ error[E0425]: cannot find function `containr` in this scope
   |
 help: a function with a similar name exists
   |
-7 |     xui! { <container /> }
-  |                    +
+8 |     xui! { <column><container /></column> }
+  |                            +

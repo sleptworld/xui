@@ -1,4 +1,4 @@
-error: component functions cannot take lifetime parameters: props are stored as `'static` values, so give them owned types
+error: a component outlives its parent's borrows, so it takes no lifetime parameters
  --> tests/ui/component_rejects_lifetimes.rs:6:8
   |
 6 | fn row<'a>(label: &&'a str) {

@@ -24,7 +24,8 @@ use xui_interface::events::{
     Modifiers, PointerButtons, PointerKind, RawEvent, RawPointerMove, RawWheel, ScrollDelta,
     XuiPointerId,
 };
-use xui_interface::Translation;
+use xui_interface::{ColorValue, LengthValue, Translation};
+use xui_macros::component;
 use xui_skia::{SkiaBackend, SkiaBackendOptions, SkiaFrameStats, SkiaOptimizations};
 
 const VIEWPORT: Size<f32> = Size {
@@ -41,94 +42,87 @@ static SCROLL: AtomicUsize = AtomicUsize::new(0);
 /// (inlinable), a rounded clip, a transformed subtree, a blurred layer and a
 /// backdrop layer (neither inlinable), a gradient, text, and a scroll container
 /// whose rows run well past the viewport (cullable).
-fn scene(_cx: &mut HookContext<'_>) -> ElementDesc {
-    let rows: Vec<ElementDesc> = (0..ROWS).map(row).collect();
-    container()
-        .style(
-            Style::new()
-                .size(Size::fill())
-                .background(Color::hex("#0a0a0a"))
-                .clip(true),
-        )
-        .into_element_desc(vec![
-            container()
-                .style(
-                    Style::new()
-                        .size(Size::fill())
-                        .scroll_vertical()
-                        .clip(true)
-                        .padding(EdgeInsets::all(8.0)),
-                )
-                .into_element_desc(rows),
+#[component]
+fn scene() {
+    view! {
+        container(size: Size::fill(), background: Color::hex("#0a0a0a"), clip: true) {
+            container(
+                size: Size::fill(),
+                scroll_direction: ScrollDirectionStyle::Vertical,
+                clip: true,
+                padding: EdgeInsets::all(8.0),
+            ) {
+                for index in 0..ROWS {
+                    list_row(index: *index)
+                }
+            }
             // A backdrop layer over the scrolling content: reads the
             // destination, so it must never be inlined or culled away.
-            container()
-                .style(
-                    Style::new()
-                        .absolute()
-                        .inset(EdgeInsets::new(40.0, 0.0, 0.0, 24.0))
-                        .width(200.0)
-                        .height(80.0)
-                        .border_radius(16.0)
-                        .background(Color::rgba(1.0, 1.0, 1.0, 0.10))
-                        .backdrop_blur(12.0)
-                        .clip(true),
-                )
-                .into_element_desc(vec![TextWidget::new("backdrop")
-                    .style(Style::new().width(160.0).height(20.0))
-                    .into_element_desc()]),
-        ])
+            container(
+                position: PositionStyle::Absolute,
+                inset: EdgeInsets::new(40.0, 0.0, 0.0, 24.0),
+                width: 200.0,
+                height: 80.0,
+                border_radius: 16.0,
+                background: Color::rgba(1.0, 1.0, 1.0, 0.10),
+                backdrop_blur: 12.0,
+                clip: true,
+            ) {
+                text("backdrop", width: 160.0, height: 20.0)
+            }
+        }
+    }
 }
 
-fn row(index: usize) -> ElementDesc {
-    let mut style = Style::new()
-        .width(Sizing::fill())
-        .height(30.0)
-        .padding(EdgeInsets::all(4.0))
-        .gap(6.0)
-        .background(Color::hex("#141414"))
-        .border_radius(6.0)
-        .clip(true)
+fn row_style(index: usize) -> StyleOf<Container> {
+    let style = StyleOf::<Container>::new()
+        .with::<container::width>(Sizing::fill())
+        .with::<container::height>(30.0)
+        .with::<container::padding>(EdgeInsets::all(4.0))
+        .with::<container::gap>(6.0)
+        .with::<container::background>(Color::hex("#141414"))
+        .with::<container::border_radius>(6.0)
+        .with::<container::clip>(true)
         // Hovering has to change something, or the frames after a pointer move
         // are identical and the damage tracker rightly repaints nothing.
-        .when(WidgetState::HOVERED, |patch| {
-            patch.background(Color::hex("#2a2a2a"))
-        });
+        .when_style(
+            WidgetStateMatcher::all(WidgetState::HOVERED),
+            StyleOf::new().with::<container::background>(Color::hex("#2a2a2a")),
+        );
 
     // Sprinkle the non-inlinable shapes through the list so both paths run in
     // the same frame.
-    style = match index % 5 {
-        0 => style.background(ColorStyle::linear_gradient(
+    match index % 5 {
+        0 => style.with::<container::background>(ColorStyle::linear_gradient(
             Point::new(0.0, 0.0),
             Point::new(1.0, 1.0),
             Color::hex("#1d4ed8"),
             Color::hex("#9333ea"),
         )),
-        1 => style.effects(vec![Effect::blur(2.0)]),
-        2 => style.translate_x(6.0),
-        3 => style.box_shadow(
-            Color::rgba(0.0, 0.0, 0.0, 0.5),
+        1 => style.with::<container::effects>(vec![Effect::blur(2.0)]),
+        2 => style.with::<container::translate_x>(6.0),
+        3 => style.with::<container::box_shadow>((
+            ColorValue::from(Color::rgba(0.0, 0.0, 0.0, 0.5)),
             Point::new(2.0, 2.0),
-            4.0,
-            0.0,
-        ),
+            LengthValue::from(4.0),
+            LengthValue::from(0.0),
+        )),
         _ => style,
-    };
+    }
+}
 
-    container().style(style).into_element_desc(vec![
-        TextWidget::new(if index % 3 == 0 { "row label" } else { "item" })
-            .style(Style::new().width(120.0).height(20.0))
-            .into_element_desc(),
-        container()
-            .style(
-                Style::new()
-                    .width(16.0)
-                    .height(16.0)
-                    .border_radius(8.0)
-                    .background(Color::hex("#3b82f6")),
-            )
-            .into_element_desc(Vec::new()),
-    ])
+#[component]
+fn list_row(index: &usize) {
+    view! {
+        container(style: row_style(*index)) {
+            text(if *index % 3 == 0 { "row label" } else { "item" }, width: 120.0, height: 20.0)
+            container(width: 16.0, height: 16.0, border_radius: 8.0, background: Color::hex("#3b82f6"))
+        }
+    }
+}
+
+fn scene_root(app: &mut App) {
+    app.mount::<Scene>(SceneProps {});
 }
 
 // ---------------------------------------------------------------- driver --
@@ -141,7 +135,7 @@ struct Harness {
 
 impl Harness {
     fn new(optimizations: SkiaOptimizations) -> Self {
-        let mut app = App::new(scene);
+        let mut app = App::new(scene_root);
         app.resize(VIEWPORT);
         Self {
             app,

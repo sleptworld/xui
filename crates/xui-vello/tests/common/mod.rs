@@ -3,18 +3,17 @@
 #![allow(dead_code, unused_imports)]
 
 use xui_core::{
-    app::ComponentFn,
+    app::AppRoot,
     prelude::*,
     text::TextHost,
-    widgets::{
-        CANVAS_GPU_FORMAT, CANVAS_GPU_USAGES, CanvasController, CanvasGpuContext, CanvasWidget,
-        ContainerWidget, ImageWidget, TextWidget,
-    },
+    widgets::{CANVAS_GPU_FORMAT, CANVAS_GPU_USAGES, CanvasController, CanvasGpuContext},
 };
 use xui_cosmic::CosmicEngine;
 use xui_interface::{
-    ColorStyle, Effect, FilterQuality, FlexDirectionStyle, ImageData, ImageFit, Point, Sampling, ShadowStyle,
+    ColorStyle, Effect, FilterQuality, FlexDirectionStyle, ImageData, ImageFit, Point, PositionStyle,
+    Sampling, ShadowStyle,
 };
+use xui_macros::component;
 use xui_vello::{Unsupported, VelloBackend, VelloBackendOptions};
 
 pub const SIZE: f32 = 100.0;
@@ -36,14 +35,14 @@ impl Frame {
 }
 
 /// Renders `root` at scale 1 into a `SIZE` x `SIZE` frame.
-pub fn render(root: ComponentFn) -> Option<Frame> {
+pub fn render(root: AppRoot) -> Option<Frame> {
     render_with(root, |_| {})
 }
 
 /// [`render`], with a chance to use the backend (to register textures, say)
 /// before the frame is drawn.
 pub fn render_with(
-    root: ComponentFn,
+    root: AppRoot,
     setup: impl FnOnce(&mut VelloBackend<CosmicEngine>),
 ) -> Option<Frame> {
     render_scaled(root, 1.0, setup)
@@ -51,7 +50,7 @@ pub fn render_with(
 
 /// [`render_with`] on a display with `scale` physical pixels per logical one.
 pub fn render_scaled(
-    root: ComponentFn,
+    root: AppRoot,
     scale: f32,
     setup: impl FnOnce(&mut VelloBackend<CosmicEngine>),
 ) -> Option<Frame> {
@@ -70,7 +69,7 @@ pub fn render_scaled(
 /// [`render_scaled`] with `options`, returning the backend's resource stats
 /// after the frame as well.
 pub fn render_options(
-    root: ComponentFn,
+    root: AppRoot,
     scale: f32,
     options: VelloBackendOptions,
     setup: impl FnOnce(&mut VelloBackend<CosmicEngine>),
@@ -113,59 +112,57 @@ pub fn is_close(actual: [u8; 4], expected: [u8; 4]) -> bool {
         .all(|(a, e)| (*a as i32 - e as i32).abs() <= 2)
 }
 
-pub fn block(style: Style, children: Vec<ElementDesc>) -> ElementDesc {
-    ContainerWidget::new().style(style).into_element_desc(children)
+/// A box with no children: `container` with only its attributes.
+pub fn solid_root(app: &mut App) {
+    app.mount::<Solid>(SolidProps {});
 }
 
-pub fn solid_root(_: &mut HookContext<'_>) -> ElementDesc {
-    block(
-        Style::new().width(SIZE).height(SIZE).background(RED),
-        vec![],
-    )
+#[component]
+fn solid() {
+    view! { container(width: SIZE, height: SIZE, background: RED) }
 }
 
-pub fn rounded_clip_root(_: &mut HookContext<'_>) -> ElementDesc {
+pub fn rounded_clip_root(app: &mut App) {
+    app.mount::<RoundedClip>(RoundedClipProps {});
+}
+
+#[component]
+fn rounded_clip() {
     // A blue child that overflows its parent: only the rounded parent's
     // interior may show it.
-    let child = block(
-        Style::new().width(SIZE).height(SIZE).background(BLUE),
-        vec![],
-    );
-    block(
-        Style::new()
-            .width(SIZE)
-            .height(SIZE)
-            .background(RED)
-            .border_radius(40.0)
-            .clip(true),
-        vec![child],
-    )
+    view! {
+        container(width: SIZE, height: SIZE, background: RED, border_radius: 40.0, clip: true) {
+            container(width: SIZE, height: SIZE, background: BLUE)
+        }
+    }
 }
 
 /// A 40x40 red box 30px in from the corner of the white root surface, with
 /// `effects` on it. Each effect makes it an isolated, filtered layer.
-pub fn effect_root(effects: Vec<Effect>) -> impl Fn(&mut HookContext<'_>) -> ElementDesc {
-    move |_| {
-        block(
-            Style::new().width(SIZE).height(SIZE),
-            vec![block(
-                Style::new()
-                    .width(40.0)
-                    .height(40.0)
-                    .margin(EdgeInsets::all(30.0))
-                    .background(RED)
-                    .effects(effects.clone()),
-                vec![],
-            )],
-        )
+#[component]
+fn effect_box(effects: &Vec<Effect>) {
+    view! {
+        container(width: SIZE, height: SIZE) {
+            container(
+                width: 40.0,
+                height: 40.0,
+                margin: EdgeInsets::all(30.0),
+                background: RED,
+                effects: effects.clone(),
+            )
+        }
     }
 }
 
-pub fn blur_root(cx: &mut HookContext<'_>) -> ElementDesc {
-    effect_root(vec![Effect::blur(4.0)])(cx)
+pub fn effect_root(app: &mut App, effects: Vec<Effect>) {
+    app.mount::<EffectBox>(EffectBoxProps { effects });
 }
 
-pub fn swap_root(cx: &mut HookContext<'_>) -> ElementDesc {
+pub fn blur_root(app: &mut App) {
+    effect_root(app, vec![Effect::blur(4.0)]);
+}
+
+pub fn swap_root(app: &mut App) {
     // Red and blue trade places; green and alpha are left alone.
     #[rustfmt::skip]
     let matrix = [
@@ -174,31 +171,31 @@ pub fn swap_root(cx: &mut HookContext<'_>) -> ElementDesc {
         1.0, 0.0, 0.0, 0.0, 0.0,
         0.0, 0.0, 0.0, 1.0, 0.0,
     ];
-    effect_root(vec![Effect::ColorMatrix(matrix)])(cx)
+    effect_root(app, vec![Effect::ColorMatrix(matrix)]);
 }
 
-pub fn shadow_effect_root(cx: &mut HookContext<'_>) -> ElementDesc {
-    effect_root(vec![Effect::DropShadow {
-        color: Color::rgba(0.0, 0.0, 0.0, 1.0).into(),
-        offset_x: 0.0.into(),
-        offset_y: 25.0.into(),
-        sigma_x: 3.0.into(),
-        sigma_y: 3.0.into(),
-        spread: 0.0.into(),
-        quality: FilterQuality::default(),
-    }])(cx)
+pub fn shadow_effect_root(app: &mut App) {
+    effect_root(
+        app,
+        vec![Effect::DropShadow {
+            color: Color::rgba(0.0, 0.0, 0.0, 1.0).into(),
+            offset_x: 0.0.into(),
+            offset_y: 25.0.into(),
+            sigma_x: 3.0.into(),
+            sigma_y: 3.0.into(),
+            spread: 0.0.into(),
+            quality: FilterQuality::default(),
+        }],
+    );
 }
 
-pub fn text_root(_: &mut HookContext<'_>) -> ElementDesc {
-    TextWidget::new("Hello xui")
-        .style(
-            Style::new()
-                .width(SIZE)
-                .height(SIZE)
-                .color(RED)
-                .font_size(32.0),
-        )
-        .into_element_desc()
+pub fn text_root(app: &mut App) {
+    app.mount::<HelloText>(HelloTextProps {});
+}
+
+#[component]
+fn hello_text() {
+    view! { text("Hello xui", width: SIZE, height: SIZE, color: RED, font_size: 32.0) }
 }
 
 pub fn count(frame: &Frame, matches: impl Fn([u8; 4]) -> bool) -> usize {
@@ -220,75 +217,100 @@ pub fn quad() -> ImageData {
     )
 }
 
-pub fn image_root(_: &mut HookContext<'_>) -> ElementDesc {
-    ImageWidget::new()
-        .image_data("quad", quad())
-        .fit(ImageFit::Fill)
-        // Nearest keeps the four quadrants hard-edged.
-        .sampling(Sampling::Nearest)
-        .style(Style::new().width(SIZE).height(SIZE))
-        .into_element_desc(vec![])
+pub fn image_root(app: &mut App) {
+    app.mount::<QuadImage>(QuadImageProps {});
 }
 
-pub fn contained_image_root(_: &mut HookContext<'_>) -> ElementDesc {
+#[component]
+fn quad_image() {
+    // Nearest keeps the four quadrants hard-edged.
+    view! {
+        image(
+            source: (ImageKey::from("quad"), quad()),
+            fit: ImageFit::Fill,
+            sampling: Sampling::Nearest,
+            width: SIZE,
+            height: SIZE,
+        )
+    }
+}
+
+pub fn contained_image_root(app: &mut App) {
+    app.mount::<ContainedImage>(ContainedImageProps {});
+}
+
+#[component]
+fn contained_image() {
     // A square image in a wide box: `Contain` leaves bands on both sides.
-    ImageWidget::new()
-        .image_data("quad-contain", quad())
-        .fit(ImageFit::Contain)
-        .sampling(Sampling::Nearest)
-        .style(Style::new().width(SIZE).height(50.0).background(BLUE))
-        .into_element_desc(vec![])
+    view! {
+        image(
+            source: (ImageKey::from("quad-contain"), quad()),
+            fit: ImageFit::Contain,
+            sampling: Sampling::Nearest,
+            width: SIZE,
+            height: 50.0,
+            background: BLUE,
+        )
+    }
 }
 
-pub fn shadow_root(_: &mut HookContext<'_>) -> ElementDesc {
+pub fn shadow_root(app: &mut App) {
+    app.mount::<ShadowBox>(ShadowBoxProps {});
+}
+
+#[component]
+fn shadow_box() {
     // The root surface is white. A 40x40 box at the top-left of the frame casts
     // a black shadow 20px straight down, blurred with sigma 4.
-    block(
-        Style::new().width(SIZE).height(SIZE),
-        vec![block(
-            Style::new()
-                .width(40.0)
-                .height(40.0)
-                .margin(EdgeInsets::all(20.0))
-                .background(RED)
-                .shadow(
-                    ShadowStyle::new()
-                        .color(Color::rgba(0.0, 0.0, 0.0, 1.0))
-                        .offset(Point::new(0.0, 20.0))
-                        .blur(4.0),
-                ),
-            vec![],
-        )],
-    )
+    view! {
+        container(width: SIZE, height: SIZE) {
+            container(
+                width: 40.0,
+                height: 40.0,
+                margin: EdgeInsets::all(20.0),
+                background: RED,
+                shadow: ShadowStyle::new()
+                    .color(Color::rgba(0.0, 0.0, 0.0, 1.0))
+                    .offset(Point::new(0.0, 20.0))
+                    .blur(4.0),
+            )
+        }
+    }
 }
 
 pub fn luma(p: [u8; 4]) -> u32 {
     p[0] as u32 + p[1] as u32 + p[2] as u32
 }
 
-pub fn linear_gradient_root(_: &mut HookContext<'_>) -> ElementDesc {
-    // Left edge red, right edge blue, in fractions of the box.
-    block(
-        Style::new().width(SIZE).height(SIZE).background(ColorStyle::linear_gradient(
-            Point::new(0.0, 0.5),
-            Point::new(1.0, 0.5),
-            RED,
-            BLUE,
-        )),
-        vec![],
-    )
+pub fn linear_gradient_root(app: &mut App) {
+    app.mount::<LinearGradient>(LinearGradientProps {});
 }
 
-pub fn radial_gradient_root(_: &mut HookContext<'_>) -> ElementDesc {
-    block(
-        Style::new().width(SIZE).height(SIZE).background(ColorStyle::radial_gradient(
-            Point::new(0.5, 0.5),
-            0.5,
-            RED,
-            BLUE,
-        )),
-        vec![],
-    )
+#[component]
+fn linear_gradient() {
+    // Left edge red, right edge blue, in fractions of the box.
+    view! {
+        container(
+            width: SIZE,
+            height: SIZE,
+            background: ColorStyle::linear_gradient(Point::new(0.0, 0.5), Point::new(1.0, 0.5), RED, BLUE),
+        )
+    }
+}
+
+pub fn radial_gradient_root(app: &mut App) {
+    app.mount::<RadialGradient>(RadialGradientProps {});
+}
+
+#[component]
+fn radial_gradient() {
+    view! {
+        container(
+            width: SIZE,
+            height: SIZE,
+            background: ColorStyle::radial_gradient(Point::new(0.5, 0.5), 0.5, RED, BLUE),
+        )
+    }
 }
 
 pub fn clear(device: &wgpu::Device, queue: &wgpu::Queue, view: &wgpu::TextureView, color: wgpu::Color) {
@@ -312,7 +334,18 @@ pub fn clear(device: &wgpu::Device, queue: &wgpu::Queue, view: &wgpu::TextureVie
     queue.submit([encoder.finish()]);
 }
 
-pub fn gpu_canvas_root(_: &mut HookContext<'_>) -> ElementDesc {
+/// A full-size canvas drawn by `controller`.
+#[component]
+pub fn painted(controller: &CanvasController) {
+    view! { canvas(controller: controller.clone(), width: SIZE, height: SIZE) }
+}
+
+/// Mounts a full-size canvas drawn by `controller`.
+pub fn mount_canvas(app: &mut App, controller: CanvasController) {
+    app.mount::<Painted>(PaintedProps { controller });
+}
+
+pub fn gpu_canvas_root(app: &mut App) {
     // The painter fills its target with blue; the framework composites it.
     let controller = CanvasController::with_gpu_painter::<()>(|_, gpu| {
         clear(
@@ -322,14 +355,12 @@ pub fn gpu_canvas_root(_: &mut HookContext<'_>) -> ElementDesc {
             wgpu::Color { r: 0.0, g: 0.0, b: 1.0, a: 1.0 },
         );
     });
-    CanvasWidget::new(controller)
-        .style(Style::new().width(SIZE).height(SIZE))
-        .into_element_desc()
+    mount_canvas(app, controller);
 }
 
 pub const REGISTERED: xui_interface::ExternalTextureId = xui_interface::ExternalTextureId(7);
 
-pub fn registered_texture_root(_: &mut HookContext<'_>) -> ElementDesc {
+pub fn registered_texture_root(app: &mut App) {
     let controller = CanvasController::with_painter(|painter| {
         // Left half of the canvas only.
         painter.texture(
@@ -338,50 +369,52 @@ pub fn registered_texture_root(_: &mut HookContext<'_>) -> ElementDesc {
             xui_interface::Bounds::from_origin_size((0.0, 0.0), (50.0, 100.0)),
         );
     });
-    CanvasWidget::new(controller)
-        .style(Style::new().width(SIZE).height(SIZE))
-        .into_element_desc()
+    mount_canvas(app, controller);
 }
 
 /// Red left half, blue right half, and a glass panel over the middle with a
 /// backdrop blur: the seam between the colours is hard outside the panel and
 /// soft inside it.
-pub fn glass_root(_: &mut HookContext<'_>) -> ElementDesc {
-    let half = |color| block(Style::new().width(50.0).height(SIZE).background(color), vec![]);
-    let pane = block(
-        Style::new()
-            .width(50.0)
-            .height(SIZE)
-            .absolute()
-            .inset(EdgeInsets::new(25.0, 0.0, 0.0, 0.0))
-            .backdrop_blur(8.0),
-        vec![],
-    );
-    ContainerWidget::new()
-        .style(Style::new().width(SIZE).height(SIZE))
-        .flex_direction(FlexDirectionStyle::Row)
-        .into_element_desc(vec![half(RED), half(BLUE), pane])
+pub fn glass_root(app: &mut App) {
+    app.mount::<Glass>(GlassProps {});
 }
 
-pub fn glass_with_content_root(_: &mut HookContext<'_>) -> ElementDesc {
-    let green = block(
-        Style::new().width(10.0).height(10.0).background(Color::rgb(0.0, 1.0, 0.0)),
-        vec![],
-    );
-    let pane = ContainerWidget::new()
-        .style(
-            Style::new()
-                .width(50.0)
-                .height(SIZE)
-                .absolute()
-                .inset(EdgeInsets::new(25.0, 0.0, 0.0, 0.0))
-                .backdrop_blur(8.0),
-        )
-        .into_element_desc(vec![green]);
-    block(
-        Style::new().width(SIZE).height(SIZE).background(RED),
-        vec![pane],
-    )
+#[component]
+fn glass() {
+    view! {
+        container(width: SIZE, height: SIZE, flex_direction: FlexDirectionStyle::Row) {
+            container(width: 50.0, height: SIZE, background: RED)
+            container(width: 50.0, height: SIZE, background: BLUE)
+            container(
+                width: 50.0,
+                height: SIZE,
+                position: PositionStyle::Absolute,
+                inset: EdgeInsets::new(25.0, 0.0, 0.0, 0.0),
+                backdrop_blur: 8.0,
+            )
+        }
+    }
+}
+
+pub fn glass_with_content_root(app: &mut App) {
+    app.mount::<GlassWithContent>(GlassWithContentProps {});
+}
+
+#[component]
+fn glass_with_content() {
+    view! {
+        container(width: SIZE, height: SIZE, background: RED) {
+            container(
+                width: 50.0,
+                height: SIZE,
+                position: PositionStyle::Absolute,
+                inset: EdgeInsets::new(25.0, 0.0, 0.0, 0.0),
+                backdrop_blur: 8.0,
+            ) {
+                container(width: 10.0, height: 10.0, background: Color::rgb(0.0, 1.0, 0.0))
+            }
+        }
+    }
 }
 
 

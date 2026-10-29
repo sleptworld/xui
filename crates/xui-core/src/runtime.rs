@@ -419,21 +419,19 @@ mod tests {
     #[allow(unused_imports)]
     use crate::test_prelude::*;
     use super::*;
-    use crate::test_prelude::*;
+    
     use crate::app::App;
-    use crate::element::ElementDesc;
     use crate::render::MockRenderBackend;
-    use crate::state::HookContext;
     use crate::text::testing::ZeroTextBackend;
     
     use std::cell::{Cell, RefCell};
     use std::time::Duration;
 
-    fn body() -> ElementDesc {
-        container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(40.0).with::<container::height>(20.0)).into_element_desc(Vec::new())
+    fn body() -> StaticTree {
+        container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(40.0).with::<container::height>(20.0)).into_tree(Vec::new())
     }
 
-    fn root(_cx: &mut HookContext<'_>) -> ElementDesc {
+    fn root() -> StaticTree {
         body()
     }
 
@@ -443,14 +441,20 @@ mod tests {
         static TICKER: RefCell<Option<crate::ticker::Ticker>> = const { RefCell::new(None) };
     }
 
-    fn ticking_root(cx: &mut HookContext<'_>) -> ElementDesc {
+    /// Counts its creations: a ticker runs without creating anything again.
+    #[xui_macros::component]
+    fn ticking() {
         RENDERS.with(|renders| renders.set(renders.get() + 1));
-        let ticker = cx.use_ticker(|frame| {
+        let ticker: crate::ticker::Ticker = ticker!(|_cx, frame| {
             TICKS.with(|ticks| ticks.borrow_mut().push(frame));
             crate::ticker::Tick::Continue
         });
-        TICKER.with(|slot| *slot.borrow_mut() = Some(ticker));
-        body()
+        TICKER.with(|slot| *slot.borrow_mut() = Some(ticker.clone()));
+        view! { container(width: 40.0, height: 20.0) }
+    }
+
+    fn ticking_root(app: &mut App) {
+        app.mount::<Ticking>(TickingProps {});
     }
 
     fn reset_ticking_root() {
@@ -464,14 +468,14 @@ mod tests {
     }
 
     fn runtime() -> GuiRuntime<MockRenderBackend, ZeroTextBackend> {
-        runtime_with(root)
+        runtime_with(|app| {
+                app.mount_static(root());
+            })
     }
 
-    fn runtime_with(
-        component: crate::app::ComponentFn,
-    ) -> GuiRuntime<MockRenderBackend, ZeroTextBackend> {
+    fn runtime_with(root: crate::app::AppRoot) -> GuiRuntime<MockRenderBackend, ZeroTextBackend> {
         let mut runtime = GuiRuntime::new(
-            App::new(component),
+            App::new(root),
             MockRenderBackend::default(),
             ZeroTextBackend,
         );
@@ -481,7 +485,7 @@ mod tests {
 
     mod keyboard_scroll {
         use super::*;
-        use crate::event_system::callbacks::EventProps;
+        
         use xui_interface::events::{
             EventResult, KeyState, Modifiers, NamedKey, PhysicalKey, RawKeyboard, ScrollSource,
         };
@@ -493,7 +497,7 @@ mod tests {
 
         /// A 200x100 vertical scroller over a focusable 400px row that claims
         /// End through a shortcut, the way a tab list claims its arrows.
-        fn root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        fn root() -> StaticTree {
             container().with::<container::style>(
                     StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(100.0)
                         .with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical),
@@ -501,11 +505,11 @@ mod tests {
                     if let Some(after) = event.offset_after {
                         SCROLLS.with(|scrolls| scrolls.borrow_mut().push((event.source, after.y)));
                     }
-                }).into_element_desc(vec![
+                }).into_tree(vec![
                     container().with::<container::width>(200.0).with::<container::height>(400.0).with::<container::tab_index>(0).with::<container::shortcuts>([xui_interface::ShortcutBinding {
                         shortcut: Shortcut::named(NamedKey::End),
                         command: CommandId("test.end"),
-                    }]).with_on::<container::on_command, _>(|_, _| EventResult::Consumed).into_element_desc(Vec::new()),
+                    }]).with_on::<container::on_command, _>(|_, _| EventResult::Consumed).into_tree(Vec::new()),
                 ])
         }
 
@@ -539,7 +543,9 @@ mod tests {
 
         #[test]
         fn unclaimed_navigation_keys_scroll_the_focused_nodes_container() {
-            let mut runtime = runtime_with(root);
+            let mut runtime = runtime_with(|app| {
+                app.mount_static(root());
+            });
             runtime.frame().unwrap();
             runtime.handle_event(key(NamedKey::Tab, false));
             assert!(runtime.app().ui_runtime().focused_node().is_some());
@@ -564,7 +570,9 @@ mod tests {
 
         #[test]
         fn a_key_claimed_by_a_shortcut_does_not_scroll() {
-            let mut runtime = runtime_with(root);
+            let mut runtime = runtime_with(|app| {
+                app.mount_static(root());
+            });
             runtime.frame().unwrap();
             runtime.handle_event(key(NamedKey::Tab, false));
 
@@ -684,7 +692,7 @@ mod tests {
         runtime.set_window_visible(false);
         // Something invalidated the window while it was hidden -- a resize, a
         // state change. It still has to paint, and it still must not move.
-        runtime.app_mut().mark_needs_rebuild();
+        runtime.app_mut().resize(Size::new(401.0, 300.0));
         runtime.frame_at(start + Duration::from_secs(30)).unwrap();
         let held = runtime.frame_time();
         assert_eq!(held.delta(), Duration::ZERO);
@@ -727,23 +735,23 @@ mod tests {
         let ticks = ticks();
         assert_eq!(
             ticks.len(),
-            3,
-            "installed during the first frame's render, so it runs on the three after it"
+            4,
+            "mounted with the app, before the first frame, so it runs on every frame"
         );
         assert_eq!(
             ticks.iter().map(|tick| tick.index()).collect::<Vec<_>>(),
-            vec![2, 3, 4],
+            vec![1, 2, 3, 4],
             "once per frame, with that frame's own time"
         );
         assert!(
-            ticks
+            ticks[1..]
                 .iter()
                 .all(|tick| tick.delta() == Duration::from_millis(16))
         );
         assert_eq!(
             RENDERS.with(Cell::get),
             1,
-            "a ticking frame is not a reconciling frame -- that is the whole point"
+            "a ticker never creates its component again"
         );
     }
 
@@ -785,11 +793,11 @@ mod tests {
         runtime.frame_at(start).unwrap();
         runtime.frame_at(start + Duration::from_millis(16)).unwrap();
         let before = ticks().len();
-        assert_eq!(before, 1);
+        assert_eq!(before, 2);
 
         runtime.set_window_visible(false);
         // Hidden, but something invalidated the window, so a frame still runs.
-        runtime.app_mut().mark_needs_rebuild();
+        runtime.app_mut().resize(Size::new(401.0, 300.0));
         runtime.frame_at(start + Duration::from_secs(10)).unwrap();
         assert_eq!(
             ticks().len(),
@@ -826,7 +834,7 @@ mod tests {
 
     mod platform_traffic {
         use super::*;
-        use crate::event_system::callbacks::EventProps;
+        
         use xui_interface::events::{EventSource as InputSource, Modifiers, NamedKey};
         use xui_interface::{
             ClipboardContent, ClipboardTarget, PlatformRequest, PointerKind, RawKeyboard,
@@ -851,12 +859,12 @@ mod tests {
         }
 
         /// A handler on the outer node, and a focusable inner node with none.
-        fn bubbling_root(_cx: &mut HookContext<'_>) -> ElementDesc {
+        fn bubbling_root() -> StaticTree {
             container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(100.0).with::<container::height>(100.0)).with_on::<container::on_command, _>(|event, _| {
                     record(event);
                     xui_interface::events::EventResult::Consumed
-                }).into_element_desc(vec![
-                    container().with::<container::width>(50.0).with::<container::height>(50.0).with::<container::tab_index>(0).into_element_desc(Vec::new()),
+                }).into_tree(vec![
+                    container().with::<container::width>(50.0).with::<container::height>(50.0).with::<container::tab_index>(0).into_tree(Vec::new()),
                 ])
         }
 
@@ -882,7 +890,9 @@ mod tests {
         #[test]
         fn a_platform_command_bubbles_from_the_focused_node_and_has_no_shortcut() {
             commands_seen();
-            let mut runtime = runtime_with(bubbling_root);
+            let mut runtime = runtime_with(|app| {
+                app.mount_static(bubbling_root());
+            });
             runtime.frame().unwrap();
             runtime.handle_event(tab());
             assert!(runtime.app().ui_runtime().focused_node().is_some());
@@ -900,7 +910,9 @@ mod tests {
         #[test]
         fn a_platform_command_with_nothing_focused_goes_to_the_command_root() {
             commands_seen();
-            let mut runtime = runtime_with(bubbling_root);
+            let mut runtime = runtime_with(|app| {
+                app.mount_static(bubbling_root());
+            });
             runtime.frame().unwrap();
             assert!(runtime.app().ui_runtime().focused_node().is_none());
 
@@ -991,8 +1003,8 @@ mod tests {
             assert_eq!(handle.window_state(), state);
         }
 
-        fn leaving_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-            container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(100.0).with::<container::height>(100.0)).with_on::<container::on_pointer_leave, _>(|_, _| LEAVES.with(|leaves| leaves.set(leaves.get() + 1))).into_element_desc(Vec::new())
+        fn leaving_root() -> StaticTree {
+            container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(100.0).with::<container::height>(100.0)).with_on::<container::on_pointer_leave, _>(|_, _| LEAVES.with(|leaves| leaves.set(leaves.get() + 1))).into_tree(Vec::new())
         }
 
         fn pointer_at(x: f32, y: f32) -> RuntimeEvent {
@@ -1022,7 +1034,9 @@ mod tests {
         #[test]
         fn leaving_the_window_clears_hover_once() {
             LEAVES.with(|leaves| leaves.set(0));
-            let mut runtime = runtime_with(leaving_root);
+            let mut runtime = runtime_with(|app| {
+                app.mount_static(leaving_root());
+            });
             runtime.frame().unwrap();
 
             runtime.handle_event(pointer_at(10.0, 10.0));
@@ -1051,10 +1065,10 @@ mod tests {
         const HALF: Duration = Duration::from_millis(500);
 
         /// Two fields side by side, so focus has somewhere to move.
-        fn fields(_cx: &mut HookContext<'_>) -> ElementDesc {
-            container().with::<container::width>(400.0).with::<container::height>(300.0).into_element_desc(vec![
-                    text_input().with::<text_input::style>(StyleOf::<TextInput>::new().with::<text_input::size>(XSize::fix(120.0, 30.0))).into_element_desc(Vec::new()),
-                    text_input().with::<text_input::style>(StyleOf::<TextInput>::new().with::<text_input::size>(XSize::fix(120.0, 30.0))).into_element_desc(Vec::new()),
+        fn fields() -> StaticTree {
+            container().with::<container::width>(400.0).with::<container::height>(300.0).into_tree(vec![
+                    text_input().with::<text_input::style>(StyleOf::<TextInput>::new().with::<text_input::size>(XSize::fix(120.0, 30.0))).into_tree(Vec::new()),
+                    text_input().with::<text_input::style>(StyleOf::<TextInput>::new().with::<text_input::size>(XSize::fix(120.0, 30.0))).into_tree(Vec::new()),
                 ])
         }
 
@@ -1062,7 +1076,9 @@ mod tests {
             capabilities: HostCapabilities,
             t0: Instant,
         ) -> GuiRuntime<MockRenderBackend, ZeroTextBackend> {
-            let mut runtime = runtime_with(fields);
+            let mut runtime = runtime_with(|app| {
+                app.mount_static(fields());
+            });
             runtime.handle_event(RuntimeEvent::Capabilities(capabilities));
             runtime.frame_at(t0).unwrap();
             runtime
@@ -1229,97 +1245,6 @@ mod tests {
                 Some(back + HALF),
                 "one blink, then the beat starts over, rather than a burst to catch up"
             );
-        }
-    }
-
-    /// A state update re-renders the component that owns the state and
-    /// nothing else: not the root, and not the owner's siblings.
-    mod scoped_rerender {
-        use super::*;
-        use crate::ErasedPropsRef;
-        use crate::event_system::callbacks::EventProps;
-        use crate::fiber::{ComponentRender, ComponentType};
-        use crate::widgets::component;
-        use xui_interface::events::{
-            Modifiers, PointerButton, PointerButtons, PointerKind, RawPointerButton, XuiPointerId,
-        };
-        use xui_interface::{Point};
-
-        thread_local! {
-            static ROOT_RENDERS: Cell<usize> = const { Cell::new(0) };
-            static PRESSED_RENDERS: Cell<usize> = const { Cell::new(0) };
-            static SIBLING_RENDERS: Cell<usize> = const { Cell::new(0) };
-        }
-
-        struct NoProps;
-
-        fn counter(cx: &mut HookContext<'_>, _: Option<ErasedPropsRef<'_>>) -> ElementDesc {
-            PRESSED_RENDERS.with(|renders| renders.set(renders.get() + 1));
-            let presses = cx.use_state(|| 0u32);
-            container().with::<container::width>(100.0).with::<container::height>(100.0).with_on::<container::on_press_start, _>(move |_, _| presses.update(|presses| *presses += 1)).into_element_desc(Vec::new())
-        }
-
-        fn sibling(_cx: &mut HookContext<'_>, _: Option<ErasedPropsRef<'_>>) -> ElementDesc {
-            SIBLING_RENDERS.with(|renders| renders.set(renders.get() + 1));
-            container().with::<container::width>(100.0).with::<container::height>(100.0).into_element_desc(Vec::new())
-        }
-
-        fn root(_cx: &mut HookContext<'_>) -> ElementDesc {
-            ROOT_RENDERS.with(|renders| renders.set(renders.get() + 1));
-            container().into_element_desc(vec![
-                component(ComponentRender::new(
-                    ComponentType::of::<NoProps>("counter"),
-                    counter,
-                ))
-                .props(NoProps)
-                .into(),
-                component(ComponentRender::new(
-                    ComponentType::of::<NoProps>("sibling"),
-                    sibling,
-                ))
-                .props(NoProps)
-                .into(),
-            ])
-        }
-
-        fn renders() -> (usize, usize, usize) {
-            (
-                ROOT_RENDERS.with(Cell::get),
-                PRESSED_RENDERS.with(Cell::get),
-                SIBLING_RENDERS.with(Cell::get),
-            )
-        }
-
-        fn press_counter() -> RuntimeEvent {
-            RuntimeEvent::Input(RawEvent::PointerDown(RawPointerButton {
-                position: Point::new(10.0, 10.0),
-                pointer_id: XuiPointerId::new(0),
-                device_id: None,
-                kind: PointerKind::Mouse,
-                button: PointerButton::Primary,
-                buttons: PointerButtons::default(),
-                modifiers: Modifiers::default(),
-                timestamp: Instant::now(),
-            }))
-        }
-
-        #[test]
-        fn a_state_update_re_renders_only_the_component_that_owns_it() {
-            for renders in [&ROOT_RENDERS, &PRESSED_RENDERS, &SIBLING_RENDERS] {
-                renders.with(|renders| renders.set(0));
-            }
-            let mut runtime = runtime_with(root);
-            runtime.frame().unwrap();
-            assert_eq!(renders(), (1, 1, 1), "mount");
-
-            runtime.handle_event(press_counter());
-            runtime.frame().unwrap();
-            assert!(!runtime.app().is_dirty(), "the update was not fully rendered");
-
-            let (root, pressed, sibling) = renders();
-            assert_eq!(pressed, 2, "the component that owns the state re-ran once");
-            assert_eq!(root, 1, "the root re-ran for a descendant's state");
-            assert_eq!(sibling, 1, "a sibling re-ran for another component's state");
         }
     }
 }

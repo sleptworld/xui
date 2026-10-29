@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
-    runner(dashboard::flight_icing_dashboard_component, Some(options))
+    runner(dashboard::dashboard_root, Some(options))
         .run()
         .unwrap();
     Ok(())

@@ -192,7 +192,7 @@ fn message_loop() {
 /// painter draws on the device the frame is composed from.
 #[cfg(feature = "vello")]
 pub fn runner(
-    app: xui_core::app::ComponentFn,
+    app: xui_core::app::AppRoot,
     options: Option<WinRunnerOptions>,
 ) -> WinRunner<xui_vello::VelloBackend<xui_f::FBackend>, xui_f::FBackend> {
     let app = App::new(app);
@@ -215,7 +215,7 @@ pub fn runner(
 /// `runner`, on the Skia backend.
 #[cfg(feature = "skia")]
 pub fn skia_runner(
-    app: xui_core::app::ComponentFn,
+    app: xui_core::app::AppRoot,
     options: Option<WinRunnerOptions>,
 ) -> WinRunner<xui_skia::SkiaBackend<xui_f::FBackend>, xui_f::FBackend> {
     let app = App::new(app);

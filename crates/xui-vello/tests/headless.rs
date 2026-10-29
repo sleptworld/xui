@@ -9,18 +9,15 @@ mod common;
 use common::*;
 
 use xui_core::{
-    app::ComponentFn,
     prelude::*,
     text::TextHost,
-    widgets::{
-        CANVAS_GPU_FORMAT, CANVAS_GPU_USAGES, CanvasController, CanvasGpuContext, CanvasWidget,
-        ContainerWidget, ImageWidget, TextWidget,
-    },
+    widgets::{CANVAS_GPU_FORMAT, CANVAS_GPU_USAGES, CanvasController, CanvasGpuContext},
 };
 use xui_cosmic::CosmicEngine;
 use xui_interface::{
     ColorStyle, Effect, FilterQuality, FlexDirectionStyle, ImageData, ImageFit, Point, Sampling, ShadowStyle,
 };
+use xui_macros::component;
 use xui_vello::{Unsupported, VelloBackend, VelloBackendOptions};
 
 #[test]
@@ -264,7 +261,7 @@ const GREEN: wgpu::Color = wgpu::Color { r: 0.0, g: 1.0, b: 0.0, a: 1.0 };
 
 /// Red everywhere; a green texture over the middle; a blue square over the
 /// texture. Paint order is red, texture, blue.
-fn texture_between_shapes(_: &mut HookContext<'_>) -> ElementDesc {
+fn texture_between_shapes(app: &mut App) {
     let controller = CanvasController::with_painter(|painter| {
         painter.rect(
             xui_interface::Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
@@ -280,9 +277,7 @@ fn texture_between_shapes(_: &mut HookContext<'_>) -> ElementDesc {
             Color::rgb(0.0, 0.0, 1.0),
         );
     });
-    CanvasWidget::new(controller)
-        .style(Style::new().width(SIZE).height(SIZE))
-        .into_element_desc()
+    mount_canvas(app, controller);
 }
 
 #[test]
@@ -302,7 +297,7 @@ fn a_texture_sits_where_it_was_painted_in_the_order() {
     assert_eq!(frame.unsupported, Default::default());
 }
 
-fn half_transparent_texture(_: &mut HookContext<'_>) -> ElementDesc {
+fn half_transparent_texture(app: &mut App) {
     let controller = CanvasController::with_painter(|painter| {
         painter.texture_with(
             REGISTERED,
@@ -312,9 +307,7 @@ fn half_transparent_texture(_: &mut HookContext<'_>) -> ElementDesc {
             Sampling::Linear,
         );
     });
-    CanvasWidget::new(controller)
-        .style(Style::new().width(SIZE).height(SIZE))
-        .into_element_desc()
+    mount_canvas(app, controller);
 }
 
 #[test]
@@ -348,24 +341,24 @@ fn an_srgb_texture_keeps_its_colour() {
     assert!(is_close(frame.at(25, 50), [188, 188, 188, 255]), "{:?}", frame.at(25, 50));
 }
 
-fn clipped_texture(_: &mut HookContext<'_>) -> ElementDesc {
-    let controller = CanvasController::with_painter(|painter| {
+fn clipped_texture(app: &mut App) {
+    app.mount::<ClippedTextureScene>(ClippedTextureSceneProps {});
+}
+
+#[component]
+fn clipped_texture_scene() {
+    let controller: CanvasController = CanvasController::with_painter(|painter| {
         painter.texture(
             REGISTERED,
             1,
             xui_interface::Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
         );
     });
-    block(
-        Style::new()
-            .width(SIZE)
-            .height(SIZE)
-            .border_radius(40.0)
-            .clip(true),
-        vec![CanvasWidget::new(controller)
-            .style(Style::new().width(SIZE).height(SIZE))
-            .into_element_desc()],
-    )
+    view! {
+        container(width: SIZE, height: SIZE, border_radius: 40.0, clip: true) {
+            canvas(controller: controller.clone(), width: SIZE, height: SIZE)
+        }
+    }
 }
 
 #[test]
@@ -384,26 +377,26 @@ fn a_texture_is_cut_by_a_rounded_clip() {
     assert!(is_close(frame.at(50, 1), [0, 255, 0, 255]), "{:?}", frame.at(50, 1));
 }
 
-fn texture_in_a_blurred_layer(_: &mut HookContext<'_>) -> ElementDesc {
-    let controller = CanvasController::with_painter(|painter| {
+fn texture_in_a_blurred_layer(app: &mut App) {
+    app.mount::<TextureInABlurredLayerScene>(TextureInABlurredLayerSceneProps {});
+}
+
+#[component]
+fn texture_in_a_blurred_layer_scene() {
+    let controller: CanvasController = CanvasController::with_painter(|painter| {
         painter.texture(
             REGISTERED,
             1,
             xui_interface::Bounds::from_origin_size((0.0, 0.0), (60.0, 60.0)),
         );
     });
-    block(
-        Style::new().width(SIZE).height(SIZE),
-        vec![block(
-            Style::new()
-                .width(60.0)
-                .height(60.0)
-                .effects(vec![Effect::blur(2.0)]),
-            vec![CanvasWidget::new(controller)
-                .style(Style::new().width(60.0).height(60.0))
-                .into_element_desc()],
-        )],
-    )
+    view! {
+        container(width: SIZE, height: SIZE) {
+            container(width: 60.0, height: 60.0, effects: vec![Effect::blur(2.0)]) {
+                canvas(controller: controller.clone(), width: 60.0, height: 60.0)
+            }
+        }
+    }
 }
 
 #[test]
@@ -419,7 +412,7 @@ fn a_texture_inside_a_filtered_layer_is_composed_there() {
     assert_eq!(frame.unsupported, Default::default());
 }
 
-fn texture_at_an_odd_offset(_: &mut HookContext<'_>) -> ElementDesc {
+fn texture_at_an_odd_offset(app: &mut App) {
     let controller = CanvasController::with_painter(|painter| {
         painter.rect(
             xui_interface::Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
@@ -432,9 +425,7 @@ fn texture_at_an_odd_offset(_: &mut HookContext<'_>) -> ElementDesc {
             xui_interface::Bounds::from_origin_size((11.0, 13.0), (41.0, 37.0)),
         );
     });
-    CanvasWidget::new(controller)
-        .style(Style::new().width(SIZE).height(SIZE))
-        .into_element_desc()
+    mount_canvas(app, controller);
 }
 
 #[test]
@@ -480,23 +471,27 @@ fn a_backdrop_blur_mixes_colours_in_linear_light() {
     );
 }
 
-fn dim_gray_root(_: &mut HookContext<'_>) -> ElementDesc {
+fn dim_gray_root(app: &mut App) {
+    app.mount::<DimGray>(DimGrayProps {});
+}
+
+#[component]
+fn dim_gray() {
     // A mid-grey box (188 encoded is 0.5 linear), halved by a colour matrix.
-    let halve = [
+    let halve: [f32; 20] = [
         0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0,
         1.0, 0.0,
     ];
-    block(
-        Style::new().width(SIZE).height(SIZE),
-        vec![block(
-            Style::new()
-                .width(60.0)
-                .height(60.0)
-                .background(Color::rgb(188.0 / 255.0, 188.0 / 255.0, 188.0 / 255.0))
-                .effects(vec![Effect::ColorMatrix(halve)]),
-            vec![],
-        )],
-    )
+    view! {
+        container(width: SIZE, height: SIZE) {
+            container(
+                width: 60.0,
+                height: 60.0,
+                background: Color::rgb(188.0 / 255.0, 188.0 / 255.0, 188.0 / 255.0),
+                effects: vec![Effect::ColorMatrix(*halve)],
+            )
+        }
+    }
 }
 
 #[test]

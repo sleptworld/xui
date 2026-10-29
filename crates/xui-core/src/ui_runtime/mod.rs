@@ -1,6 +1,6 @@
 //! Modular host UI runtime.
 
-use crate::fiber::Key;
+use xui_interface::Key;
 use crate::render::{
     BuiltFrame, DirtySnapshot, FrameBuildError, FramePropertiesSnapshot, SceneCompileError,
 };
@@ -41,7 +41,7 @@ mod style_pass;
 mod work;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 /// Cross-subsystem owner. Node identity lives only in `HostTree`; every other
 /// subsystem stores its own `NodeId`-keyed data.

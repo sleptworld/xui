@@ -1,11 +1,13 @@
-error: attribute `padding` is set more than once
- --> tests/ui/view_duplicate_attribute.rs:8:54
+error: `padding` is set twice
+ --> tests/ui/view_duplicate_attribute.rs:9:54
   |
-8 |     view! { container(padding: EdgeInsets::all(4.0)).padding(EdgeInsets::all(8.0)) }
+9 |     view! { container(padding: EdgeInsets::all(4.0)).padding(EdgeInsets::all(8.0)) }
   |                                                      ^^^^^^^
 
-error: `padding` was first set here
- --> tests/ui/view_duplicate_attribute.rs:8:23
+warning: unused import: `xui_core::prelude::*`
+ --> tests/ui/view_duplicate_attribute.rs:1:5
   |
-8 |     view! { container(padding: EdgeInsets::all(4.0)).padding(EdgeInsets::all(8.0)) }
-  |                       ^^^^^^^
+1 | use xui_core::prelude::*;
+  |     ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

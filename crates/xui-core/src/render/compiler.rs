@@ -1045,8 +1045,7 @@ mod tests {
     };
     use std::sync::Arc;
     use xui_interface::{
-        Bounds, Color, ComputedColorStyle, ComputedEffect, FilterQuality, ImageData, ImageKey,
-        Rect, Size,
+        Bounds, Color, ComputedColorStyle, ComputedEffect, FilterQuality, ImageData, ImageKey, Size,
     };
 
     fn shape(rect: Bounds, color: Color) -> Primitive {
@@ -1709,7 +1708,7 @@ mod tests {
             Bounds::from_origin_size((rng.coordinate(), rng.coordinate()), (10.0, 10.0))
         };
         // A new subtree, attached under `parent`, behind a wrapper of some kind.
-        let mut wrap =
+        let wrap =
             |source: &mut RenderScene, nodes: &mut Vec<RenderNodeId>, wrapper: RenderNodeId| {
                 let inner = source.insert_group();
                 source.set_child(wrapper, Some(inner)).unwrap();

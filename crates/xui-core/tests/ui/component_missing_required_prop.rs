@@ -1,13 +1,14 @@
 use xui_core::prelude::*;
-use xui_macros::{component, xui};
+use xui_macros::component;
 
 fn main() {}
 
 #[component]
 fn badge(label: &String, tone: &String) {
-    xui! { <text>{format!("{label}/{tone}")}</text> }
+    view! { text(format!("{label}/{tone}")) }
 }
 
-fn missing() -> ElementDesc {
-    xui! { <badge label={String::from("hi")} /> }
+#[component]
+fn missing() {
+    view! { column { badge(label: String::from("hi")) } }
 }

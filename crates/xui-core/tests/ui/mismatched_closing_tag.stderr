@@ -1,5 +1,13 @@
 error: expected closing tag </container>
- --> tests/ui/mismatched_closing_tag.rs:7:44
+ --> tests/ui/mismatched_closing_tag.rs:8:44
   |
-7 |     xui! { <container><text>{"hi"}</text></grid> }
+8 |     xui! { <container><text>{"hi"}</text></grid> }
   |                                            ^^^^
+
+warning: unused import: `xui_core::prelude::*`
+ --> tests/ui/mismatched_closing_tag.rs:1:5
+  |
+1 | use xui_core::prelude::*;
+  |     ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

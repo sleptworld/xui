@@ -1629,7 +1629,6 @@ mod tests {
     use super::*;
     use crate::render::{RenderNodeKind, RenderScene};
     use crate::style::Theme as StyleTheme;
-    use crate::test_prelude::*;
     use slotmap::Key as _;
     use xui_interface::{PathBuilder, VectorSceneBuilder};
 

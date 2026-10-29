@@ -11,10 +11,12 @@ use std::time::{Duration, Instant};
 use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
 };
-use xui_core::app::ComponentFn;
+use xui_core::app::AppRoot;
 use xui_core::prelude::*;
 use xui_core::render::MockRenderBackend;
 use xui_core::ticker::{Tick, Ticker};
+use xui_interface::events::ShortcutBinding;
+use xui_macros::component;
 use xui_f::FBackend;
 use xui_interface::events::{EventResult, KeyState, NamedKey, PhysicalKey};
 use xui_interface::{
@@ -148,16 +150,21 @@ impl PlatformWindow for FakeWindow {
 
 type TestShell = Shell<FakeWindow, MockRenderBackend, FBackend>;
 
-fn empty(_cx: &mut HookContext<'_>) -> ElementDesc {
-    container().into_element_desc(Vec::new())
+#[component]
+fn empty_box() {
+    view! { container() }
 }
 
-fn start(root: ComponentFn) -> (TestShell, Arc<FakeWindow>) {
+fn empty(app: &mut App) {
+    app.mount::<EmptyBox>(EmptyBoxProps {});
+}
+
+fn start(root: AppRoot) -> (TestShell, Arc<FakeWindow>) {
     start_with(root, |_| {})
 }
 
 fn start_with(
-    root: ComponentFn,
+    root: AppRoot,
     configure: impl FnOnce(&FakeWindow),
 ) -> (TestShell, Arc<FakeWindow>) {
     let window = Arc::new(FakeWindow::new());
@@ -543,37 +550,44 @@ thread_local! {
     static STAMPS: RefCell<Vec<Instant>> = const { RefCell::new(Vec::new()) };
     static COMMANDS: RefCell<Vec<(CommandId, bool)>> = const { RefCell::new(Vec::new()) };
     static FRAMES: RefCell<Vec<xui_core::clock::FrameTime>> = const { RefCell::new(Vec::new()) };
-    static TICKER: RefCell<Option<Ticker>> = const { RefCell::new(None) };
 }
 
 /// A 200x200 logical box that watches everything the shell can send to it.
-fn watcher(_cx: &mut HookContext<'_>) -> ElementDesc {
-    container()
-        .style(Style::new().width(200.0).height(200.0))
-        .on_pointer_leave(|_, _| LEAVES.with(|leaves| leaves.set(leaves.get() + 1)))
-        .on_press_cancel(|_, _| PRESS_CANCELS.with(|cancels| cancels.set(cancels.get() + 1)))
-        .on_press_start(|event, _| {
-            PRESSES.with(|presses| {
-                presses
-                    .borrow_mut()
-                    .push((event.pointer.pointer_id.0, event.pointer.is_primary));
-            });
-        })
-        .on_context_menu(|event, _| {
-            CONTEXT_TRIGGERS.with(|triggers| triggers.borrow_mut().push(event.trigger));
-        })
-        .on_pointer_move(|event, _| {
-            STAMPS.with(|stamps| stamps.borrow_mut().push(event.meta.timestamp))
-        })
-        .on_command(|event, _| {
-            COMMANDS.with(|commands| {
-                commands
-                    .borrow_mut()
-                    .push((event.command, event.shortcut.is_none()));
-            });
-            EventResult::Consumed
-        })
-        .into_element_desc(Vec::new())
+#[component]
+fn watching_box() {
+    view! {
+        container(
+            width: 200.0,
+            height: 200.0,
+            on_pointer_leave: |_cx| LEAVES.with(|leaves| leaves.set(leaves.get() + 1)),
+            on_press_cancel: |_cx| PRESS_CANCELS.with(|cancels| cancels.set(cancels.get() + 1)),
+            on_press_start: |_cx, event| {
+                PRESSES.with(|presses| {
+                    presses
+                        .borrow_mut()
+                        .push((event.pointer.pointer_id.0, event.pointer.is_primary));
+                });
+            },
+            on_context_menu: |_cx, event| {
+                CONTEXT_TRIGGERS.with(|triggers| triggers.borrow_mut().push(event.trigger));
+            },
+            on_pointer_move: |_cx, event| {
+                STAMPS.with(|stamps| stamps.borrow_mut().push(event.meta.timestamp))
+            },
+            on_command: |_cx, event| {
+                COMMANDS.with(|commands| {
+                    commands
+                        .borrow_mut()
+                        .push((event.command, event.shortcut.is_none()));
+                });
+                EventResult::Consumed
+            },
+        )
+    }
+}
+
+fn watcher(app: &mut App) {
+    app.mount::<WatchingBox>(WatchingBoxProps {});
 }
 
 fn reset_watcher() {
@@ -701,13 +715,24 @@ fn key(named: NamedKey) -> ShellEvent {
     })
 }
 
-fn shortcut_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-    container()
-        .style(Style::new().width(100.0).height(100.0))
-        .tab_index(0)
-        .shortcut(Shortcut::named(NamedKey::End), CommandId("test.end"))
-        .on_command(|_, _| EventResult::Consumed)
-        .into_element_desc(Vec::new())
+#[component]
+fn shortcut_box() {
+    view! {
+        container(
+            width: 100.0,
+            height: 100.0,
+            tab_index: 0,
+            shortcuts: vec![ShortcutBinding {
+                shortcut: Shortcut::named(NamedKey::End),
+                command: CommandId("test.end"),
+            }],
+            on_command: |_cx| EventResult::Consumed,
+        )
+    }
+}
+
+fn shortcut_root(app: &mut App) {
+    app.mount::<ShortcutBox>(ShortcutBoxProps {});
 }
 
 #[test]
@@ -778,13 +803,17 @@ fn outside_a_live_resize_a_resize_asks_for_a_frame_instead_of_painting() {
     );
 }
 
-fn ticking(cx: &mut HookContext<'_>) -> ElementDesc {
-    let ticker = cx.use_ticker(|frame| {
+#[component]
+fn ticking_box() {
+    let ticker: Ticker = ticker!(|_cx, frame| {
         FRAMES.with(|frames| frames.borrow_mut().push(frame));
         Tick::Continue
     });
-    TICKER.with(|slot| *slot.borrow_mut() = Some(ticker));
-    container().into_element_desc(Vec::new())
+    view! { container() }
+}
+
+fn ticking(app: &mut App) {
+    app.mount::<TickingBox>(TickingBoxProps {});
 }
 
 #[test]

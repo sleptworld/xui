@@ -1,12 +1,8 @@
 pub use crate::animation::{AnimablePaintStyle, AnimableStyle};
-pub use crate::app::App;
-pub use crate::component::ComponentRuntime;
-pub use crate::context::context_provider;
+pub use crate::app::{App, AppRoot};
 pub use crate::core::{Color, EdgeInsets, Point, Rect, Size};
-pub use crate::dsl::{Children, Content, IntoElement, NoChildren};
-pub use crate::element::{
-    Component, ComponentDesc, ElementDesc, Expanded, ExpandedHost, FragmentDesc, IntoChildren,
-    PortalBehavior, PortalDesc, portal,
+pub use crate::reactive::{
+    AsyncValue, Callback, Children, Component, Cx, Memo, PortalSpec, ReadSignal, Signal, Source,
 };
 pub use xui_animation::{Easing, Transition};
 #[allow(deprecated)]
@@ -22,20 +18,14 @@ pub use crate::clock::{FrameClock, FrameTime};
 pub use crate::event_system::EventState;
 pub use crate::event_system::callbacks::{AnyHandler, EventKind, EventMask, ListenPhase};
 pub use crate::event_system::{Flow, Handler};
-pub use crate::fiber::{ComponentCall, ComponentRender, ComponentType, ErasedPropsRef};
 pub use crate::focus::{FocusHandle, FocusManager, FocusRequest, FocusTransition};
 pub use crate::node::{Draft, Layer, Node, StyleOf, StyleRule, WidgetInstance, WidgetT};
-pub use crate::prop::{Prop, Share};
 pub use crate::property::{Accepts, FieldProperty, HostProperty, IntoProp, Property, Slot};
 pub use crate::render::{MockRenderBackend, RenderBackend};
 pub use crate::runtime::{ControlFlow, FrameReport, GuiRuntime, QueueEventSource, RuntimeEvent};
 pub use crate::scroll::{ScrollController, ScrollMetrics};
 pub use crate::shortcut::{ShortcutManager, ShortcutRegistrationId};
 pub use crate::size::SizeObserver;
-pub use crate::state::{
-    AsyncStateSetter, AsyncValue, Callback, HookContext, HookRef, Memo, Resource, ResourceContext,
-    TaskContext,
-};
 pub use crate::style::{
     AlignStyle, BackdropFilter, BackdropMask, BackdropStyle, BlendMode, ColorMatrix, ColorStyle,
     ColorToken, ColorValue, ComputedBackdropFilter, ComputedBackdropMask, ComputedBackdropStyle,
@@ -55,7 +45,7 @@ pub use crate::widgets::{
     CanvasTextMetrics, DismissReason, GridFlow, GridTrackSize, GridTracks, IconData, IconLayer,
     IconStroke, OverlayChild, OverlayEntry, OverlayEntryId, OverlayEntryOptions, OverlayModelError,
     OverlayScope, OverlayScopeId, SvgIconError, TextCommand, TextController, TextInputChange,
-    TextKeymap, TextSelection, WidgetI, WithChildren, component,
+    TextKeymap, TextSelection, WidgetI,
 };
 // Each tag: its marker, its property module and its constructor, which share
 // the tag's name (`container`, `container::width`, `container()`).

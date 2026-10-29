@@ -1,8 +1,9 @@
 use xui_core::prelude::*;
-use xui_macros::view;
+use xui_macros::component;
 
 fn main() {}
 
-fn misspelled() -> ElementDesc {
+#[component]
+fn misspelled() {
     view! { container().paddin(EdgeInsets::all(8.0)) }
 }

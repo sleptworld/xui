@@ -55,17 +55,6 @@ impl UiRuntime {
         self.hosts.parent(id)
     }
 
-    #[inline]
-    #[cfg(test)]
-    pub(crate) fn anchors(&self) -> &super::anchor::AnchorSystem {
-        &self.anchor_system
-    }
-
-    #[cfg(test)]
-    pub(crate) fn compiled_scene(&self) -> Option<&crate::render::CompiledScene> {
-        self.render_system.compiler.compiled_scene()
-    }
-
     pub(crate) fn focused_node(&self) -> Option<NodeId> {
         self.interaction_system.focus.focused()
     }
@@ -219,6 +208,12 @@ impl UiRuntime {
         id: NodeId,
     ) -> Option<&xui_interface::AccessibilityProperties> {
         Accessibility::get(&self.columns, id)
+    }
+
+    /// The work scheduled on `id`, cleared, as a frame would.
+    #[cfg(test)]
+    pub(crate) fn take_work(&mut self, id: NodeId) -> crate::ui_runtime::state::HostWorkFlags {
+        std::mem::replace(&mut self.hosts[id].work, crate::ui_runtime::state::HostWorkFlags::empty())
     }
 
     /// `viewport_pos` in `id`'s local coordinates: relative to its border box,

@@ -196,6 +196,7 @@ mod tests {
     use xui_core::prelude::*;
     use xui_core::render::MockRenderBackend;
     use xui_f::FBackend;
+    use xui_macros::component;
     use xui_interface::WindowRegion;
 
     use super::*;
@@ -255,22 +256,26 @@ mod tests {
         static MOVES: RefCell<Vec<(f32, f32)>> = const { RefCell::new(Vec::new()) };
     }
 
-    fn recording_root(_cx: &mut HookContext<'_>) -> ElementDesc {
-        container()
-            .style(
-                Style::new()
-                    .width(200.0)
-                    .height(200.0)
-                    .cursor(CursorIcon::Pointer),
+    #[component]
+    fn recording() {
+        view! {
+            container(
+                width: 200.0,
+                height: 200.0,
+                cursor: CursorIcon::Pointer,
+                on_pointer_move: |_cx, event| {
+                    MOVES.with(|moves| {
+                        moves
+                            .borrow_mut()
+                            .push((event.pointer.coords.window.x, event.pointer.coords.window.y));
+                    });
+                },
             )
-            .on_pointer_move(|event, _| {
-                MOVES.with(|moves| {
-                    moves
-                        .borrow_mut()
-                        .push((event.pointer.coords.window.x, event.pointer.coords.window.y));
-                });
-            })
-            .into_element_desc(Vec::new())
+        }
+    }
+
+    fn recording_root(app: &mut App) {
+        app.mount::<Recording>(RecordingProps {});
     }
 
     fn start() -> (Rc<TestHandle>, Arc<ReentrantWindow>) {

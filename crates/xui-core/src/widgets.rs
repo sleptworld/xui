@@ -6,7 +6,6 @@
 //! live in the runtime's columns. What a widget's own code does — paint its
 //! content, shape its text, react to events — are its roles ([`roles`]).
 
-use std::any::Any;
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -18,11 +17,9 @@ use xui_interface::{WidgetUpdateFlags, style::ComputedStyle};
 
 use crate::capability::CommitCx;
 use crate::caps::{CapMask, Columns};
-use crate::element::{ComponentDesc, ElementDesc};
-use crate::fiber::{ComponentRender, Key};
+use xui_interface::Key;
 use crate::node::{Draft, HostNode, WidgetInstance, WidgetT};
 use crate::render::RenderTreeWriter;
-use crate::state::HookContext;
 
 pub use crate::event_system::callbacks::EventHandlers;
 
@@ -342,10 +339,6 @@ pub(crate) trait ErasedDraft {
         columns: &mut Columns,
         cx: &mut CommitCx<'_>,
     ) -> WidgetUpdateFlags;
-
-    fn clone_box(&self) -> Box<dyn ErasedDraft>;
-
-    fn as_any(&self) -> &dyn Any;
 }
 
 impl<N> ErasedDraft for Draft<N>
@@ -385,14 +378,6 @@ where
         flags |= N::props_dirty(&instance.props, &props);
         let old = std::mem::replace(&mut instance.props, props);
         flags | N::update(&old, &instance.props, &mut instance.state)
-    }
-
-    fn clone_box(&self) -> Box<dyn ErasedDraft> {
-        Box::new(self.clone())
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 }
 
@@ -478,39 +463,6 @@ impl WidgetI {
     }
 }
 
-impl<N> Draft<N>
-where
-    N: WidgetVariant,
-    N::Props: Clone,
-    N::Behavior: Clone,
-{
-    /// This draft, with `children`, as an element.
-    pub fn into_element_desc(self, children: Vec<ElementDesc>) -> ElementDesc {
-        crate::template::TemplateDesc::draft(self, children).into()
-    }
-}
-
-pub type RootComponentRender = fn(&mut HookContext) -> ElementDesc;
-
-pub trait WithChildren {
-    fn with_children(self, children: Vec<ElementDesc>) -> Self;
-}
-
-impl ComponentDesc {
-    pub fn key(mut self, key: impl Into<Key>) -> Self {
-        self.key = Some(key.into());
-        self
-    }
-
-    pub fn props<P>(mut self, props: P) -> Self
-    where
-        P: Any,
-    {
-        self.props = Some(Rc::new(props));
-        self
-    }
-}
-
 /// The root of every host tree.
 pub(crate) fn root_widget() -> Draft<Root> {
     root::root()
@@ -519,10 +471,6 @@ pub(crate) fn root_widget() -> Draft<Root> {
 /// The layer portals mount under.
 pub(crate) fn root_overlayer_widget() -> Draft<RootOverlayer> {
     overlay::root_overlayer()
-}
-
-pub fn component(render: ComponentRender) -> ComponentDesc {
-    ComponentDesc::new(render, None)
 }
 
 pub(super) fn props_hash<T: Hash>(props: &T) -> u64 {

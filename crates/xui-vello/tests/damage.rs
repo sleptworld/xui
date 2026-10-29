@@ -7,26 +7,23 @@
 
 mod common;
 
-use std::cell::Cell;
-
 use common::*;
-use xui_core::{
-    app::ComponentFn,
-    prelude::*,
-    text::TextHost,
-    widgets::{ContainerWidget, TextWidget},
-};
+use xui_core::{prelude::*, text::TextHost, widgets::CanvasController};
 use xui_cosmic::CosmicEngine;
-use xui_interface::{Effect, FlexDirectionStyle};
+use xui_interface::{Effect, FlexDirectionStyle, PositionStyle};
+use xui_macros::component;
 use xui_vello::{FrameStats, VelloBackend, VelloBackendOptions};
 
-thread_local! {
-    /// Which version of the scene the components below draw.
-    static STEP: Cell<u32> = const { Cell::new(0) };
-}
+/// Mounts a scene that draws version `step` of itself.
+type Scene = fn(&mut App, &Signal<u32>);
 
-fn step() -> u32 {
-    STEP.with(Cell::get)
+/// An app showing version `step` of `scene`, and the signal that picks it.
+fn app_at(scene: Scene, step: u32) -> (App, Signal<u32>) {
+    let mut app = App::new(|_| {});
+    let step = app.signal(step);
+    scene(&mut app, &step);
+    app.resize(Size::new(SIZE, SIZE));
+    (app, step)
 }
 
 fn backend() -> Option<VelloBackend<CosmicEngine>> {
@@ -52,23 +49,19 @@ fn render_once(
 ///
 /// Returns the patched pixels, the from-scratch pixels, and the stats after the
 /// second frame.
-fn patched_and_fresh(root: ComponentFn) -> Option<(Vec<u8>, Vec<u8>, FrameStats)> {
+fn patched_and_fresh(scene: Scene) -> Option<(Vec<u8>, Vec<u8>, FrameStats)> {
     let mut patched = backend()?;
     let mut text = TextHost::new(CosmicEngine::new(1.0));
-    STEP.with(|s| s.set(0));
-    let mut app = App::new(root);
-    app.resize(Size::new(SIZE, SIZE));
+    let (mut app, step) = app_at(scene, 0);
     render_once(&mut patched, &mut app, &mut text);
-    STEP.with(|s| s.set(1));
-    app.mark_needs_rebuild();
+    app.update(|cx| step.set(cx, 1));
     render_once(&mut patched, &mut app, &mut text);
     let stats = patched.frame_stats();
     let patched_pixels = patched.read_pixels_rgba8().expect("pixels");
 
     let mut fresh = backend()?;
     let mut text = TextHost::new(CosmicEngine::new(1.0));
-    let mut app = App::new(root);
-    app.resize(Size::new(SIZE, SIZE));
+    let (mut app, _) = app_at(scene, 1);
     render_once(&mut fresh, &mut app, &mut text);
     let fresh_pixels = fresh.read_pixels_rgba8().expect("pixels");
     Some((patched_pixels, fresh_pixels, stats))
@@ -95,59 +88,33 @@ fn assert_same(patched: &[u8], fresh: &[u8]) {
 const FULL: u64 = (SIZE as u64) * (SIZE as u64);
 
 /// Dock previews cover text and move without rebuilding the panes underneath.
-fn dock_preview(_: &mut HookContext<'_>) -> ElementDesc {
-    dock_preview_scene(true)
+fn dock_preview(app: &mut App, step: &Signal<u32>) {
+    app.mount::<DockPreviewScene>(DockPreviewSceneProps { step: step.into(), moving: true });
 }
 
-fn dock_preview_scene(moving: bool) -> ElementDesc {
-    let mut children = vec![
-        TextWidget::new("Pane title")
-            .style(Style::new().font_size(14.0).color(Color::WHITE))
-            .into_element_desc(),
-    ];
-    if !moving {
-        children.push(
-            ContainerWidget::new()
-                .style(
-                    Style::new()
-                        .absolute()
-                        .inset(EdgeInsets::new(25.0, 0.0, 50.0, 0.0))
-                        .width(10.0)
-                        .height(10.0)
-                        .background(if step() == 0 {
-                            Color::WHITE
-                        } else {
-                            Color::BLACK
-                        }),
+#[component]
+fn dock_preview_scene(#[source] step: &u32, moving: &bool) {
+    view! {
+        container(width: SIZE, height: SIZE, background: Color::rgb(0.08, 0.08, 0.1)) {
+            text("Pane title", font_size: 14.0, color: Color::WHITE)
+            if !*moving {
+                container(
+                    position: PositionStyle::Absolute,
+                    inset: EdgeInsets::new(25.0, 0.0, 50.0, 0.0),
+                    width: 10.0,
+                    height: 10.0,
+                    background: if *step == 0 { Color::WHITE } else { Color::BLACK },
                 )
-                .into_element_desc(vec![]),
-        );
-    }
-    children.push(
-        ContainerWidget::new()
-            .style(
-                Style::new()
-                    .absolute()
-                    .inset(EdgeInsets::new(
-                        if !moving || step() == 0 { 10.0 } else { 45.0 },
-                        0.0,
-                        8.0,
-                        0.0,
-                    ))
-                    .width(40.0)
-                    .height(70.0)
-                    .background(Color::rgba(0.1, 0.4, 1.0, 0.3)),
+            }
+            container(
+                position: PositionStyle::Absolute,
+                inset: EdgeInsets::new(if !*moving || *step == 0 { 10.0 } else { 45.0 }, 0.0, 8.0, 0.0),
+                width: 40.0,
+                height: 70.0,
+                background: Color::rgba(0.1, 0.4, 1.0, 0.3),
             )
-            .into_element_desc(vec![]),
-    );
-    ContainerWidget::new()
-        .style(
-            Style::new()
-                .width(SIZE)
-                .height(SIZE)
-                .background(Color::rgb(0.08, 0.08, 0.1)),
-        )
-        .into_element_desc(children)
+        }
+    }
 }
 
 #[test]
@@ -158,10 +125,10 @@ fn moving_translucent_dock_preview_matches_fresh_render() {
     assert_same(&patched, &fresh);
 }
 
-fn changing_under_dock_preview(_: &mut HookContext<'_>) -> ElementDesc {
+fn changing_under_dock_preview(app: &mut App, step: &Signal<u32>) {
     // Change a small item away from the title while the blue overlay stays put.
     // The overlay cuts the text band in a full frame; the patch culls the title.
-    dock_preview_scene(false)
+    app.mount::<DockPreviewScene>(DockPreviewSceneProps { step: step.into(), moving: false });
 }
 
 #[test]
@@ -181,40 +148,31 @@ fn patch_under_translucent_dock_preview_matches_fresh_render() {
     assert!(max_delta <= 1, "largest channel difference: {max_delta}");
 }
 
-fn square(color: Color, side: f32) -> ElementDesc {
-    ContainerWidget::new()
-        .style(Style::new().width(side).height(side).background(color))
-        .into_element_desc(vec![])
+/// Blue at step 0, green after.
+fn corner_color(step: u32) -> Color {
+    if step == 0 { Color::rgb(0.0, 0.0, 1.0) } else { Color::rgb(0.0, 0.8, 0.0) }
 }
 
 /// A static red field with a 20x20 box in the corner that changes colour.
-fn corner_box(_: &mut HookContext<'_>) -> ElementDesc {
-    let color = if step() == 0 {
-        Color::rgb(0.0, 0.0, 1.0)
-    } else {
-        Color::rgb(0.0, 0.8, 0.0)
-    };
-    ContainerWidget::new()
-        .style(
-            Style::new()
-                .width(SIZE)
-                .height(SIZE)
-                .background(Color::rgb(1.0, 0.0, 0.0)),
-        )
-        .into_element_desc(vec![
+fn corner_box(app: &mut App, step: &Signal<u32>) {
+    app.mount::<CornerBoxScene>(CornerBoxSceneProps { step: step.into() });
+}
+
+#[component]
+fn corner_box_scene(#[source] step: &u32) {
+    view! {
+        container(width: SIZE, height: SIZE, background: Color::rgb(1.0, 0.0, 0.0)) {
             // Left alone.
-            square(Color::rgb(0.9, 0.9, 0.0), 30.0),
-            ContainerWidget::new()
-                .style(
-                    Style::new()
-                        .absolute()
-                        .inset(EdgeInsets::new(75.0, 0.0, 75.0, 0.0))
-                        .width(20.0)
-                        .height(20.0)
-                        .background(color),
-                )
-                .into_element_desc(vec![]),
-        ])
+            container(width: 30.0, height: 30.0, background: Color::rgb(0.9, 0.9, 0.0))
+            container(
+                position: PositionStyle::Absolute,
+                inset: EdgeInsets::new(75.0, 0.0, 75.0, 0.0),
+                width: 20.0,
+                height: 20.0,
+                background: corner_color(*step),
+            )
+        }
+    }
 }
 
 #[test]
@@ -247,9 +205,7 @@ fn the_first_frame_is_drawn_in_full() {
         return;
     };
     let mut text = TextHost::new(CosmicEngine::new(1.0));
-    STEP.with(|s| s.set(0));
-    let mut app = App::new(corner_box);
-    app.resize(Size::new(SIZE, SIZE));
+    let (mut app, _) = app_at(corner_box, 0);
     render_once(&mut backend, &mut app, &mut text);
     let stats = backend.frame_stats();
     assert_eq!(stats.last_pixels, FULL, "{stats:?}");
@@ -257,35 +213,29 @@ fn the_first_frame_is_drawn_in_full() {
 }
 
 /// A changing box over a blurred layer: the patch lands inside a filtered one.
-fn over_a_blurred_layer(_: &mut HookContext<'_>) -> ElementDesc {
-    let color = if step() == 0 {
-        Color::rgb(0.0, 0.0, 1.0)
-    } else {
-        Color::rgb(0.0, 0.8, 0.0)
-    };
-    ContainerWidget::new()
-        .style(Style::new().width(SIZE).height(SIZE))
-        .into_element_desc(vec![
-            ContainerWidget::new()
-                .style(
-                    Style::new()
-                        .width(60.0)
-                        .height(60.0)
-                        .background(Color::rgb(1.0, 0.0, 0.0))
-                        .effects(vec![Effect::blur(3.0)]),
-                )
-                .into_element_desc(vec![]),
-            ContainerWidget::new()
-                .style(
-                    Style::new()
-                        .absolute()
-                        .inset(EdgeInsets::new(70.0, 0.0, 70.0, 0.0))
-                        .width(20.0)
-                        .height(20.0)
-                        .background(color),
-                )
-                .into_element_desc(vec![]),
-        ])
+fn over_a_blurred_layer(app: &mut App, step: &Signal<u32>) {
+    app.mount::<OverABlurredLayerScene>(OverABlurredLayerSceneProps { step: step.into() });
+}
+
+#[component]
+fn over_a_blurred_layer_scene(#[source] step: &u32) {
+    view! {
+        container(width: SIZE, height: SIZE) {
+            container(
+                width: 60.0,
+                height: 60.0,
+                background: Color::rgb(1.0, 0.0, 0.0),
+                effects: vec![Effect::blur(3.0)],
+            )
+            container(
+                position: PositionStyle::Absolute,
+                inset: EdgeInsets::new(70.0, 0.0, 70.0, 0.0),
+                width: 20.0,
+                height: 20.0,
+                background: corner_color(*step),
+            )
+        }
+    }
 }
 
 #[test]
@@ -299,41 +249,33 @@ fn a_patch_beside_a_filtered_layer_matches() {
 
 /// The seam between a red and a blue half is blurred inside a glass panel. The
 /// box that changes sits *under* the panel, so the panel's result is stale.
-fn under_glass(_: &mut HookContext<'_>) -> ElementDesc {
-    let color = if step() == 0 {
-        Color::rgb(0.0, 0.0, 1.0)
-    } else {
-        Color::rgb(0.0, 1.0, 1.0)
-    };
-    let half = |c| {
-        ContainerWidget::new()
-            .style(Style::new().width(50.0).height(SIZE).background(c))
-            .into_element_desc(vec![])
-    };
-    let pane = ContainerWidget::new()
-        .style(
-            Style::new()
-                .width(50.0)
-                .height(SIZE)
-                .absolute()
-                .inset(EdgeInsets::new(25.0, 0.0, 0.0, 0.0))
-                .backdrop_blur(8.0),
-        )
-        .into_element_desc(vec![]);
-    let changing = ContainerWidget::new()
-        .style(
-            Style::new()
-                .absolute()
-                .inset(EdgeInsets::new(40.0, 0.0, 40.0, 0.0))
-                .width(10.0)
-                .height(10.0)
-                .background(color),
-        )
-        .into_element_desc(vec![]);
-    ContainerWidget::new()
-        .style(Style::new().width(SIZE).height(SIZE))
-        .flex_direction(FlexDirectionStyle::Row)
-        .into_element_desc(vec![half(Color::rgb(1.0, 0.0, 0.0)), half(color), changing, pane])
+fn under_glass(app: &mut App, step: &Signal<u32>) {
+    app.mount::<UnderGlassScene>(UnderGlassSceneProps { step: step.into() });
+}
+
+#[component]
+fn under_glass_scene(#[source] step: &u32) {
+    let color: Color = memo!(if *step == 0 { Color::rgb(0.0, 0.0, 1.0) } else { Color::rgb(0.0, 1.0, 1.0) });
+    view! {
+        container(width: SIZE, height: SIZE, flex_direction: FlexDirectionStyle::Row) {
+            container(width: 50.0, height: SIZE, background: Color::rgb(1.0, 0.0, 0.0))
+            container(width: 50.0, height: SIZE, background: *color)
+            container(
+                position: PositionStyle::Absolute,
+                inset: EdgeInsets::new(40.0, 0.0, 40.0, 0.0),
+                width: 10.0,
+                height: 10.0,
+                background: *color,
+            )
+            container(
+                width: 50.0,
+                height: SIZE,
+                position: PositionStyle::Absolute,
+                inset: EdgeInsets::new(25.0, 0.0, 0.0, 0.0),
+                backdrop_blur: 8.0,
+            )
+        }
+    }
 }
 
 #[test]
@@ -350,13 +292,17 @@ fn a_change_under_glass_repaints_the_glass() {
 }
 
 /// Text that changes: its old and new extents are both damaged.
-fn changing_text(_: &mut HookContext<'_>) -> ElementDesc {
-    let label = if step() == 0 { "one" } else { "three" };
-    ContainerWidget::new()
-        .style(Style::new().width(SIZE).height(SIZE))
-        .into_element_desc(vec![TextWidget::new(label)
-            .style(Style::new().width(SIZE).height(20.0).font_size(14.0))
-            .into_element_desc()])
+fn changing_text(app: &mut App, step: &Signal<u32>) {
+    app.mount::<ChangingTextScene>(ChangingTextSceneProps { step: step.into() });
+}
+
+#[component]
+fn changing_text_scene(#[source] step: &u32) {
+    view! {
+        container(width: SIZE, height: SIZE) {
+            text(if *step == 0 { "one" } else { "three" }, width: SIZE, height: 20.0, font_size: 14.0)
+        }
+    }
 }
 
 #[test]
@@ -374,12 +320,11 @@ fn a_second_identical_frame_draws_nothing() {
         return;
     };
     let mut text = TextHost::new(CosmicEngine::new(1.0));
-    STEP.with(|s| s.set(0));
-    let mut app = App::new(corner_box);
-    app.resize(Size::new(SIZE, SIZE));
+    let (mut app, step) = app_at(corner_box, 0);
     render_once(&mut backend, &mut app, &mut text);
     let before = backend.read_pixels_rgba8().expect("pixels");
-    // Rebuilding changes nothing in the scene, so no region is damaged.
+    // Writing the value it already has changes nothing, so no region is damaged.
+    app.update(|cx| step.set(cx, 0));
     app.mark_needs_rebuild();
     render_once(&mut backend, &mut app, &mut text);
     let stats = backend.frame_stats();
@@ -391,9 +336,13 @@ const TEXTURE: xui_interface::ExternalTextureId = xui_interface::ExternalTexture
 
 /// A red field with a registered texture over its left half. The texture's
 /// revision follows the step, as a canvas that redrew into it would bump it.
-fn textured(_: &mut HookContext<'_>) -> ElementDesc {
-    let revision = step() as u64 + 1;
-    let controller = xui_core::widgets::CanvasController::with_painter(move |painter| {
+fn textured(app: &mut App, step: &Signal<u32>) {
+    app.mount::<TexturedScene>(TexturedSceneProps { step: step.into() });
+}
+
+fn texture_painter(step: u32) -> CanvasController {
+    let revision = step as u64 + 1;
+    CanvasController::with_painter(move |painter| {
         painter.rect(
             xui_interface::Bounds::from_origin_size((0.0, 0.0), (100.0, 100.0)),
             Color::rgb(1.0, 0.0, 0.0),
@@ -403,10 +352,12 @@ fn textured(_: &mut HookContext<'_>) -> ElementDesc {
             revision,
             xui_interface::Bounds::from_origin_size((10.0, 10.0), (40.0, 40.0)),
         );
-    });
-    xui_core::widgets::CanvasWidget::new(controller)
-        .style(Style::new().width(SIZE).height(SIZE))
-        .into_element_desc()
+    })
+}
+
+#[component]
+fn textured_scene(#[source] step: &u32) {
+    view! { canvas(controller: texture_painter(*step), width: SIZE, height: SIZE) }
 }
 
 fn paint(backend: &VelloBackend<CosmicEngine>, texture: &wgpu::Texture, color: wgpu::Color) {
@@ -425,15 +376,12 @@ fn redrawing_a_texture_repaints_only_where_it_is() {
     let texture = texture_of(&patched, 4, green);
     patched.set_wgpu_texture(TEXTURE, &texture);
     let mut text = TextHost::new(CosmicEngine::new(1.0));
-    STEP.with(|s| s.set(0));
-    let mut app = App::new(textured);
-    app.resize(Size::new(SIZE, SIZE));
+    let (mut app, step) = app_at(textured, 0);
     render_once(&mut patched, &mut app, &mut text);
 
     // The application draws into its texture again and says so.
     paint(&patched, &texture, blue);
-    STEP.with(|s| s.set(1));
-    app.mark_needs_rebuild();
+    app.update(|cx| step.set(cx, 1));
     render_once(&mut patched, &mut app, &mut text);
     let stats = patched.frame_stats();
     let patched_pixels = patched.read_pixels_rgba8().expect("pixels");
@@ -442,8 +390,7 @@ fn redrawing_a_texture_repaints_only_where_it_is() {
     let texture = texture_of(&fresh, 4, blue);
     fresh.set_wgpu_texture(TEXTURE, &texture);
     let mut text = TextHost::new(CosmicEngine::new(1.0));
-    let mut app = App::new(textured);
-    app.resize(Size::new(SIZE, SIZE));
+    let (mut app, _) = app_at(textured, 1);
     render_once(&mut fresh, &mut app, &mut text);
     assert_same(&patched_pixels, &fresh.read_pixels_rgba8().expect("pixels"));
 

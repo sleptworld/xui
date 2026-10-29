@@ -1,8 +1,9 @@
 use xui_core::prelude::*;
-use xui_macros::xui;
+use xui_macros::component;
 
 fn main() {}
 
-fn typo() -> ElementDesc {
-    xui! { <containr /> }
+#[component]
+fn typo() {
+    xui! { <column><containr /></column> }
 }
