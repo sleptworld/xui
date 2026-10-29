@@ -390,12 +390,42 @@ impl UiRuntime {
         }
         let mut compiled = Vec::with_capacity(dirty.len());
         for id in dirty {
-            if !self.canvas_nodes.contains_key(id) || compiled.contains(&id) {
+            if compiled.contains(&id) {
                 continue;
             }
-            compiled.push(id);
-            self.compile_canvas(id, measurer);
+            if self.canvas_nodes.contains_key(id) {
+                compiled.push(id);
+                self.compile_canvas(id, measurer);
+            } else if self.surface_nodes.contains_key(id) {
+                compiled.push(id);
+                self.sync_surface(id, measurer);
+            }
         }
+    }
+
+    /// Lays a text surface's viewport out against its final size, and
+    /// rebuilds its paint.
+    fn sync_surface<T: TextBackend>(&mut self, id: NodeId, measurer: &mut TextHost<T>) {
+        let layout = self.layout_tree.node(id).layout;
+        let style = self.style_system.effective(id).clone();
+        let content = crate::widgets::text_input_content_box(
+            Bounds::from_origin_size((0.0, 0.0), (layout.width(), layout.height())),
+            style.layout.padding,
+        );
+        let widget = self.hosts[id].widget.clone();
+        widget.with_widgets_mut(|node| {
+            if let Widgets::TextSurface(surface) = node {
+                surface
+                    .state
+                    .sync(crate::widgets::text_surface::SurfaceFrame {
+                        owner: id,
+                        viewport: content.size(),
+                        style: &style,
+                        measurer,
+                    });
+            }
+        });
+        self.mark_work(id, HostWorkFlags::REBUILD_PAINT);
     }
 
     fn compile_canvas<T: TextBackend>(&mut self, id: NodeId, measurer: &mut TextHost<T>) {
@@ -412,14 +442,7 @@ impl UiRuntime {
         let text_boxes = widget.with_widgets_mut(|node| match node {
             Widgets::Canvas(canvas) => {
                 let mut measure_text = |text_id, props: &TextProps, constraints| {
-                    let input = TextLayoutInput::new(
-                        props.text.clone(),
-                        constraints,
-                        (&props.style).into(),
-                        props.paragraph.clone(),
-                        props.text_box.clone(),
-                        font_context,
-                    );
+                    let input = TextLayoutInput::from_props(props.clone(), constraints, font_context);
                     let metrics =
                         measurer.measure_slot_metrics(id, canvas_text_slot(text_id), input);
                     crate::widgets::CanvasTextMetrics {
@@ -457,14 +480,7 @@ impl UiRuntime {
                 .map(|(text_id, _, _, _)| canvas_text_slot(*text_id)),
         );
         for (text_id, _bounds, props, constraints) in text_boxes {
-            let input = TextLayoutInput::new(
-                props.text,
-                constraints,
-                props.style.into(),
-                props.paragraph,
-                props.text_box,
-                font_context,
-            );
+            let input = TextLayoutInput::from_props(props, constraints, font_context);
             measurer.get_or_shape_slot(id, canvas_text_slot(text_id), input);
         }
 

@@ -1739,6 +1739,59 @@ fn final_text_width_is_activated_after_layout_measurement() {
 }
 
 #[test]
+fn text_runs_reach_the_layout_as_shape_runs() {
+    use xui_interface::{Color, FontWeight, ShapeRuns, TextRun, TextRunStyle};
+
+    let mut arena = UiRuntime::new();
+    let runs = vec![
+        TextRun::new(0..5, TextRunStyle::new().font_weight(FontWeight::Bold)),
+        // Paint only: no shape run for it.
+        TextRun::new(6..11, TextRunStyle::new().color(Color::WHITE)),
+    ];
+    let node = create_host(
+        &mut arena,
+        text()
+            .with::<text::content>("hello world")
+            .with::<text::runs>(runs)
+            .with::<text::width>(200.0),
+    );
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
+
+    let host_node = arena.node(node).unwrap();
+    let props = host_node
+        .widget
+        .with_widgets(|widget| widget.text_layout_props(&host_node.effective_style))
+        .unwrap();
+    assert_eq!(props.shape_runs.len(), 1);
+    assert_eq!(props.shape_runs.as_slice()[0].range, 0..5);
+    assert_eq!(
+        props.shape_runs.as_slice()[0].style.font_weight,
+        FontWeight::Bold
+    );
+
+    // The active layout is keyed on the runs: the same text without them is
+    // another layout.
+    let width = TextLayoutConstraints::max_width(host_node.layout.width());
+    let epoch = measurer.font_epoch();
+    let active = measurer
+        .active_slot(node, TextLayoutSlot::PRIMARY)
+        .expect("final layout must activate regular text");
+    let mut plain = props.clone();
+    plain.shape_runs = ShapeRuns::empty();
+    let styled = TextLayoutInput::from_props(props, width, epoch);
+    assert_eq!(
+        measurer.activate_slot(node, TextLayoutSlot::PRIMARY, styled),
+        active
+    );
+    let plain = TextLayoutInput::from_props(plain, width, epoch);
+    assert_ne!(
+        measurer.activate_slot(node, TextLayoutSlot::PRIMARY, plain),
+        active
+    );
+}
+
+#[test]
 fn mounted_text_input_has_an_active_layout_before_any_edit() {
     // A definite size means Taffy never runs the measure function, so the
     // paint layout must come from post-layout activation; without it the

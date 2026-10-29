@@ -203,8 +203,10 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
                 arena.visual_layout(id),
                 node.effective_style.layout.padding,
             );
-            let handle = self.text_backend.active_slot(id, TextLayoutSlot::PRIMARY)?;
-            let layout = self.text_backend.query(handle)?;
+            let layout = self
+                .text_backend
+                .active_slot(id, TextLayoutSlot::PRIMARY)
+                .and_then(|handle| self.text_backend.query(handle));
             node.widget.platform_text_input_session(rect, layout)
         });
         let cursor = arena.resolved_cursor();

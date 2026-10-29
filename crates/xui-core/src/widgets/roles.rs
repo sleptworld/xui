@@ -55,11 +55,13 @@ pub(crate) trait HandleEvent {
 
 /// A text input session the platform edits through its IME.
 pub(crate) trait PlatformTextInput {
+    /// `text_layout` is the node's primary slot, when it has one laid out.
+    /// `None` when there is no session to open.
     fn text_input_session(
         &self,
         content_rect: Bounds,
-        text_layout: &dyn TextLayoutQuery,
-    ) -> xui_interface::TextInputSession;
+        text_layout: Option<&dyn TextLayoutQuery>,
+    ) -> Option<xui_interface::TextInputSession>;
 }
 
 /// A size the widget has of itself, before layout: an image's pixel size.

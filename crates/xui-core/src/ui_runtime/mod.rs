@@ -78,6 +78,9 @@ pub struct UiRuntime {
     /// `text_nodes`: the post-layout pass has to find them without walking the
     /// whole tree.
     pub(super) canvas_nodes: SparseSecondaryMap<NodeId, ()>,
+    /// Index of live `WidgetType::TextSurface` hosts. Synced in the same
+    /// post-layout window as canvases, and queued through the same list.
+    pub(super) surface_nodes: SparseSecondaryMap<NodeId, ()>,
     /// Canvases whose last drawing asked to be drawn again. Kept as a set so
     /// `is_dirty` -- consulted after every batch of events -- stays O(1)
     /// instead of borrowing every canvas widget to ask.

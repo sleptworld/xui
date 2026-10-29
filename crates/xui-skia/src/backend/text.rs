@@ -5,10 +5,12 @@ use skia_safe::{
     Canvas, ClipOp, Font, FontMgr, FontStyle as SkFontStyle, GlyphId as SkGlyphId,
     Point as SkPoint, TextBlob, TextBlobBuilder, Typeface as SkTypeface,
 };
+use std::ops::Range;
 use xui_core::text::{TextHost, TextLayoutHandle};
+
 use xui_interface::{
-    Affine, FontCollection, FontData, FontWeight, NodeId, ParagraphLayout, Rect, TextBackend,
-    TextVerticalAlign,
+    Affine, Color, FontCollection, FontData, FontWeight, NodeId, PaintRuns, ParagraphLayout, Rect,
+    TextBackend, TextPaintProps, TextVerticalAlign,
 };
 
 use super::{
@@ -18,12 +20,12 @@ use super::{
 };
 use crate::{SkiaBackendError, text::sk_font_style};
 
-/// Only `draw_glyphs`, which is itself test-only, needs this.
-#[cfg(test)]
-use xui_interface::Color;
-
 pub(super) struct CachedTextBlob {
+    /// Every glyph, for text without paint runs.
     blob: Option<TextBlob>,
+    /// The glyphs grouped by color, one blob per color, with the paint they
+    /// were grouped by: the runs and the default color.
+    colored: Option<(PaintRuns, Color, Vec<(Color, TextBlob)>)>,
     font_epoch: u64,
     pub(super) owner: NodeId,
     pub(super) last_used_frame: u64,
@@ -38,7 +40,7 @@ impl<T: TextBackend> SkiaBackend<T> {
         opacity: f32,
         text: &mut TextHost<T>,
     ) -> Result<(), SkiaBackendError> {
-        let Some(handle) = text.active_slot(primitive.node_id, primitive.slot) else {
+        let Some(handle) = text.active_layout(primitive.node_id, primitive.unit) else {
             return Err(SkiaBackendError::InvalidFrame(
                 "text primitive has no active layout".into(),
             ));
@@ -73,11 +75,25 @@ impl<T: TextBackend> SkiaBackend<T> {
             }
         }
 
-        let color = alpha_color(primitive.paint.style.color, opacity);
-        if let Some(blob) =
-            self.text_blob_for_layout(text.backend(), handle, primitive.node_id, &layout)?
-        {
-            canvas.draw_text_blob(blob, (origin.x, origin.y), &solid_paint(color));
+        if primitive.paint.runs.is_empty() {
+            let color = alpha_color(primitive.paint.style.color, opacity);
+            if let Some(blob) =
+                self.text_blob_for_layout(text.backend(), handle, primitive.node_id, &layout)?
+            {
+                canvas.draw_text_blob(blob, (origin.x, origin.y), &solid_paint(color));
+            }
+        } else {
+            let blobs = self.colored_text_blobs(
+                text.backend(),
+                handle,
+                primitive.node_id,
+                &layout,
+                &primitive.paint,
+            )?;
+            for (color, blob) in blobs {
+                let paint = solid_paint(alpha_color(color, opacity));
+                canvas.draw_text_blob(blob, (origin.x, origin.y), &paint);
+            }
         }
 
         if let Some(caret) = primitive.paint.caret {
@@ -112,7 +128,7 @@ impl<T: TextBackend> SkiaBackend<T> {
                 );
             }
         }
-        draw_text_decorations(canvas, &layout.lines, primitive, origin, opacity);
+        draw_text_decorations(canvas, &layout, primitive, origin, opacity);
         canvas.restore_to_count(save);
         Ok(())
     }
@@ -205,13 +221,30 @@ impl<T: TextBackend> SkiaBackend<T> {
         backend: &T,
         layout: &ParagraphLayout<T::FontId>,
     ) -> Result<Option<TextBlob>, SkiaBackendError> {
+        let pieces = layout
+            .runs
+            .iter()
+            .enumerate()
+            .map(|(index, run)| (index, run.glyph_range.clone()));
+        self.build_text_blob_from(backend, layout, pieces)
+    }
+
+    /// A blob of `pieces`: each is a glyph run, by index, and the range of
+    /// its glyphs to draw.
+    fn build_text_blob_from(
+        &mut self,
+        backend: &T,
+        layout: &ParagraphLayout<T::FontId>,
+        pieces: impl IntoIterator<Item = (usize, Range<usize>)>,
+    ) -> Result<Option<TextBlob>, SkiaBackendError> {
         let mut builder = TextBlobBuilder::new();
         let mut has_glyphs = false;
-        for run in &layout.runs {
-            let glyphs = layout.glyphs.get(run.glyph_range.clone()).ok_or_else(|| {
+        for (run_index, glyph_range) in pieces {
+            let run = &layout.runs[run_index];
+            let glyphs = layout.glyphs.get(glyph_range.clone()).ok_or_else(|| {
                 SkiaBackendError::InvalidFrame(format!(
                     "text run glyph range {:?} exceeds {} glyphs",
-                    run.glyph_range,
+                    glyph_range,
                     layout.glyphs.len()
                 ))
             })?;
@@ -259,12 +292,65 @@ impl<T: TextBackend> SkiaBackend<T> {
             handle,
             CachedTextBlob {
                 blob: blob.clone(),
+                colored: None,
                 font_epoch,
                 owner,
                 last_used_frame: self.frame_index,
             },
         );
         Ok(blob)
+    }
+
+    /// `layout`'s glyphs as one blob per color of `paint`, cached with the
+    /// layout until the layout, the fonts or the paint runs change.
+    fn colored_text_blobs(
+        &mut self,
+        backend: &T,
+        handle: TextLayoutHandle,
+        owner: NodeId,
+        layout: &ParagraphLayout<T::FontId>,
+        paint: &TextPaintProps,
+    ) -> Result<Vec<(Color, TextBlob)>, SkiaBackendError> {
+        let font_epoch = backend.fonts().epoch();
+        if let Some(cached) = self.text_blob_cache.get_mut(&handle)
+            && cached.font_epoch == font_epoch
+            && let Some((runs, default, blobs)) = &cached.colored
+            && *runs == paint.runs
+            && *default == paint.style.color
+        {
+            cached.last_used_frame = self.frame_index;
+            return Ok(blobs.clone());
+        }
+        let mut groups: Vec<(Color, Vec<(usize, Range<usize>)>)> = Vec::new();
+        for span in paint.glyph_spans(layout) {
+            match groups.iter_mut().find(|(color, _)| *color == span.color) {
+                Some((_, pieces)) => pieces.push((span.run, span.glyphs)),
+                None => groups.push((span.color, vec![(span.run, span.glyphs)])),
+            }
+        }
+        let mut blobs = Vec::with_capacity(groups.len());
+        for (color, pieces) in groups {
+            if let Some(blob) = self.build_text_blob_from(backend, layout, pieces)? {
+                blobs.push((color, blob));
+            }
+        }
+        let cached = self
+            .text_blob_cache
+            .entry(handle)
+            .or_insert(CachedTextBlob {
+                blob: None,
+                colored: None,
+                font_epoch,
+                owner,
+                last_used_frame: self.frame_index,
+            });
+        if cached.font_epoch != font_epoch {
+            cached.blob = None;
+            cached.font_epoch = font_epoch;
+        }
+        cached.colored = Some((paint.runs.clone(), paint.style.color, blobs.clone()));
+        cached.last_used_frame = self.frame_index;
+        Ok(blobs)
     }
 
     #[cfg(test)]
@@ -283,35 +369,26 @@ impl<T: TextBackend> SkiaBackend<T> {
     }
 }
 
-fn draw_text_decorations(
+fn draw_text_decorations<F>(
     canvas: &Canvas,
-    lines: &[xui_interface::LineLayout],
+    layout: &ParagraphLayout<F>,
     primitive: &xui_core::render::TextPrimitive,
     origin: xui_interface::Point,
     opacity: f32,
 ) {
-    let decoration = primitive.paint.style.decoration;
-    if !decoration.underline && !decoration.line_through {
-        return;
-    }
-    let mut paint = solid_paint(alpha_color(primitive.paint.style.color, opacity));
-    paint.set_stroke_width((primitive.paint.style.font_size / 16.0).max(1.0));
-    for line in lines {
-        if decoration.underline {
-            let y = origin.y + line.baseline + paint.stroke_width();
-            canvas.draw_line(
-                (origin.x + line.x, y),
-                (origin.x + line.x + line.width, y),
-                &paint,
-            );
+    let width = (primitive.paint.style.font_size / 16.0).max(1.0);
+    for span in primitive.paint.decoration_spans(layout) {
+        let line = &layout.lines[span.line];
+        let mut paint = solid_paint(alpha_color(span.color, opacity));
+        paint.set_stroke_width(width);
+        let (x0, x1) = (origin.x + span.x.start, origin.x + span.x.end);
+        if span.decoration.underline {
+            let y = origin.y + line.baseline + width;
+            canvas.draw_line((x0, y), (x1, y), &paint);
         }
-        if decoration.line_through {
+        if span.decoration.line_through {
             let y = origin.y + line.y + line.height * 0.5;
-            canvas.draw_line(
-                (origin.x + line.x, y),
-                (origin.x + line.x + line.width, y),
-                &paint,
-            );
+            canvas.draw_line((x0, y), (x1, y), &paint);
         }
     }
 }
@@ -373,5 +450,116 @@ mod text_draw_tests {
         assert!(surface.read_pixels(&info, &mut pixels, 240 * 4, (0, 0)));
         assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] != 0));
         assert!(!renderer.font_cache.is_empty());
+    }
+
+    #[test]
+    fn paint_runs_color_their_glyphs_and_nothing_else() {
+        use xui_core::render::TextPrimitive;
+        use xui_core::text::TextLayoutSlot;
+        use xui_interface::{
+            Bounds, NodeId, PaintRun, PaintRuns, TextDecoration, TextPaintProps, TextPaintStyle,
+        };
+
+        let (width, height) = (240, 60);
+        let blue = Color::rgba(0.0, 0.0, 1.0, 1.0);
+        let red = Color::rgba(1.0, 0.0, 0.0, 1.0);
+        let mut host = TextHost::new(CosmicEngine::new(1.0));
+        let node = NodeId::default();
+        let text = "MMMM MMMM";
+        let style = TextStyle {
+            font_size: 24.0,
+            font_weight: FontWeight::Bold,
+            ..TextStyle::default()
+        };
+        let font_context = host.font_epoch();
+        host.activate_slot(
+            node,
+            TextLayoutSlot::PRIMARY,
+            TextLayoutInput::new(
+                TextContent::from_static(text),
+                TextLayoutConstraints::max_width(width as f32),
+                style.clone().into(),
+                ParagraphStyle::default(),
+                TextBoxStyle::default(),
+                font_context,
+            ),
+        );
+        let primitive = TextPrimitive {
+            bounds: Bounds::from_origin_size((0.0, 0.0), (width as f32, height as f32)),
+            node_id: node,
+            unit: TextLayoutSlot::PRIMARY.into(),
+            layout_revision: 0,
+            vertical_align: TextVerticalAlign::Top,
+            paint: TextPaintProps::new(TextPaintStyle {
+                color: blue,
+                font_size: style.font_size,
+                line_height: style.line_height,
+                decoration: TextDecoration::default(),
+            })
+            .with_runs(PaintRuns::new(vec![PaintRun {
+                range: 0..4,
+                color: red,
+                decoration: TextDecoration::default(),
+            }])),
+        };
+
+        let mut renderer =
+            SkiaBackend::<CosmicEngine>::headless(1.0, SkiaBackendOptions::default());
+        let mut surface = skia_safe::surfaces::raster_n32_premul((width, height)).unwrap();
+        surface.canvas().clear(skia_safe::Color::TRANSPARENT);
+        renderer
+            .draw_text(
+                surface.canvas(),
+                &primitive,
+                Affine::IDENTITY,
+                1.0,
+                &mut host,
+            )
+            .unwrap();
+
+        let mut pixels = vec![0u8; (width * height * 4) as usize];
+        let info = ImageInfo::new(
+            (width, height),
+            ColorType::RGBA8888,
+            AlphaType::Unpremul,
+            ColorSpace::new_srgb(),
+        );
+        assert!(surface.read_pixels(&info, &mut pixels, width as usize * 4, (0, 0)));
+
+        // Where each word ends and starts, from the layout.
+        let layout = host
+            .layout(host.active_slot(node, TextLayoutSlot::PRIMARY).unwrap())
+            .unwrap();
+        let first_end = layout
+            .clusters
+            .iter()
+            .filter(|cluster| cluster.text_range.start.offset() < 4)
+            .map(|cluster| cluster.hitbox.x + cluster.hitbox.width)
+            .fold(0.0, f32::max);
+        let second_start = layout
+            .clusters
+            .iter()
+            .filter(|cluster| cluster.text_range.start.offset() > 4)
+            .map(|cluster| cluster.hitbox.x)
+            .fold(f32::INFINITY, f32::min);
+        assert!(first_end < second_start, "{first_end} vs {second_start}");
+        let (mut left, mut right) = ([0u32; 2], [0u32; 2]);
+        for (index, pixel) in pixels.chunks_exact(4).enumerate() {
+            if pixel[3] < 128 {
+                continue;
+            }
+            let x = (index % width as usize) as f32;
+            let side = if x < first_end {
+                &mut left
+            } else if x >= second_start {
+                &mut right
+            } else {
+                continue;
+            };
+            side[usize::from(pixel[2] > pixel[0])] += 1;
+        }
+        // [red-ish, blue-ish] ink on each side of the space.
+        assert!(left[0] > 0 && left[1] == 0, "left word: {left:?}");
+        assert!(right[1] > 0 && right[0] == 0, "right word: {right:?}");
     }
 }

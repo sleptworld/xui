@@ -5,8 +5,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use xui_interface::{
     ComputedTextStyle, FontFamily, FontStyle, FontWeight, GlyphFlags, GlyphInstance, GlyphRun,
     LineHeight, LineLayout, OverflowWrap, ParagraphLayout, ParagraphMetrics, Point, Rect,
-    TextAlign, TextCluster, TextContent, TextLayoutConstraints, TextLayoutInput, TextOffset,
-    TextOverflow, TextRange, WhiteSpace,
+    ShapeRuns, TextAlign, TextCluster, TextContent, TextLayoutConstraints, TextLayoutInput,
+    TextOffset, TextOverflow, TextRange, WhiteSpace,
 };
 
 use smallvec::SmallVec;
@@ -14,7 +14,7 @@ use smallvec::SmallVec;
 use crate::{
     FFontId, bidi,
     font::{FaceMetrics, FontStore},
-    shape::{self, LineFonts, ShapedLine},
+    shape::{self, LineStyles, ShapedLine},
 };
 
 #[derive(Debug, Clone)]
@@ -47,6 +47,7 @@ pub struct FHardLayout {
 struct HardLayoutKey {
     text: TextContent,
     style: ShapeStyleKey,
+    runs: ShapeRuns,
     font_context_revision: u64,
     font_epoch: u64,
 }
@@ -55,6 +56,7 @@ impl PartialEq for HardLayoutKey {
     fn eq(&self, other: &Self) -> bool {
         self.text.as_str() == other.text.as_str()
             && self.style == other.style
+            && self.runs == other.runs
             && self.font_context_revision == other.font_context_revision
             && self.font_epoch == other.font_epoch
     }
@@ -178,7 +180,8 @@ fn lay_out(
     let strut = hard_layout.strut;
     let mut pen_y = 0.0;
     // Only lines that are not whole paragraphs are shaped here.
-    let mut line_fonts = None;
+    let mut line_styles = None;
+    let mut ellipsis_styles = None;
 
     for (line_index, spec) in specs.iter().enumerate() {
         let is_last_output = line_index + 1 == specs.len();
@@ -187,14 +190,14 @@ fn lay_out(
         let mut shaped = if visible_range == prepared.source.content {
             Cow::Borrowed(&prepared.measured)
         } else {
-            let line_fonts =
-                line_fonts.get_or_insert_with(|| LineFonts::new(fonts, &input.default_style));
+            let line_styles = line_styles.get_or_insert_with(|| {
+                LineStyles::new(fonts, &input.default_style, &input.shape_runs)
+            });
             Cow::Owned(shape::shape_line(
                 fonts,
-                line_fonts,
+                line_styles,
                 text,
                 visible_range.clone(),
-                &input.default_style,
                 bidi,
             ))
         };
@@ -209,14 +212,13 @@ fn lay_out(
             let anchor = visible_range.end;
             let ellipsis_text = "…";
             let ellipsis_bidi = bidi::Resolver::new(ellipsis_text);
-            let line_fonts =
-                line_fonts.get_or_insert_with(|| LineFonts::new(fonts, &input.default_style));
+            let ellipsis_styles = ellipsis_styles
+                .get_or_insert_with(|| LineStyles::plain(fonts, &input.default_style));
             let mut ellipsis = shape::shape_line(
                 fonts,
-                line_fonts,
+                ellipsis_styles,
                 ellipsis_text,
                 0..ellipsis_text.len(),
-                &input.default_style,
                 &ellipsis_bidi,
             );
             make_synthetic(&mut ellipsis, anchor, u8::from(shaped.base_rtl));
@@ -228,14 +230,14 @@ fn lay_out(
         {
             while visible_range.start < visible_range.end && shaped.width + ellipsis.width > limit {
                 visible_range.end = previous_grapheme_boundary(text, visible_range.clone());
-                let line_fonts =
-                    line_fonts.get_or_insert_with(|| LineFonts::new(fonts, &input.default_style));
+                let line_styles = line_styles.get_or_insert_with(|| {
+                    LineStyles::new(fonts, &input.default_style, &input.shape_runs)
+                });
                 shaped = Cow::Owned(shape::shape_line(
                     fonts,
-                    line_fonts,
+                    line_styles,
                     text,
                     visible_range.clone(),
-                    &input.default_style,
                     bidi,
                 ));
             }
@@ -275,7 +277,6 @@ fn lay_out(
                 spec,
                 box_metrics,
                 &geometry,
-                input.default_style.font_weight,
                 ellipsized,
             );
         }
@@ -329,16 +330,19 @@ fn line_box<'a>(
     strut: FaceMetrics,
     style: &ComputedTextStyle,
 ) -> LineBox {
+    // In pixels: runs in a larger style than the default make their line taller.
+    let font_size = style.font_size.max(0.0);
     let metrics = pieces
         .into_iter()
         .flatten()
         .flat_map(|piece| piece.runs.iter())
-        .fold(strut, |metrics, run| metrics.max(run.metrics));
-    let font_size = style.font_size.max(0.0);
-    let ascent = metrics.ascent * font_size;
-    let descent = metrics.descent * font_size;
+        .fold(strut.scaled(font_size), |metrics, run| {
+            metrics.max(run.metrics.scaled(run.font_size.max(0.0)))
+        });
+    let ascent = metrics.ascent;
+    let descent = metrics.descent;
     let height = match style.line_height {
-        LineHeight::Normal => metrics.line_height() * font_size,
+        LineHeight::Normal => metrics.line_height(),
         LineHeight::Px(px) => px,
         LineHeight::Em(em) => em * font_size,
     }
@@ -360,19 +364,13 @@ fn prepare_if_needed(fonts: &mut FontStore, state: &mut FParagraphState, input: 
 
     let text = input.text.as_str();
     let bidi = bidi::Resolver::from_content(input.text.clone());
-    let line_fonts = LineFonts::new(fonts, &input.default_style);
-    let strut = fonts.strut_metrics(line_fonts.candidates());
+    let line_styles = LineStyles::new(fonts, &input.default_style, &input.shape_runs);
+    let strut = fonts.strut_metrics(line_styles.candidates());
     let paragraphs = hard_paragraphs(text)
         .into_iter()
         .map(|source| {
-            let measured = shape::shape_line(
-                fonts,
-                &line_fonts,
-                text,
-                source.content.clone(),
-                &input.default_style,
-                &bidi,
-            );
+            let measured =
+                shape::shape_line(fonts, &line_styles, text, source.content.clone(), &bidi);
             PreparedHardParagraph::new(source, measured)
         })
         .collect();
@@ -389,6 +387,7 @@ impl HardLayoutKey {
         Self {
             text: input.text.clone(),
             style: ShapeStyleKey::from(&input.default_style),
+            runs: input.shape_runs.clone(),
             font_context_revision: input.font_context_revision,
             font_epoch,
         }
@@ -636,7 +635,6 @@ fn emit_line(
     spec: &LineSpec,
     line_box: LineBox,
     geometry: &LineGeometry,
-    font_weight: xui_interface::FontWeight,
     ellipsized: bool,
 ) {
     let LineBox {
@@ -706,8 +704,8 @@ fn emit_line(
                 glyph_range: run_glyph_start..output.glyphs.len(),
                 font_id: run.font_id,
                 font_size: run.font_size,
-                font_weight,
-                style_id: 0,
+                font_weight: run.font_weight,
+                style_id: run.style_id,
                 bidi_level: run.bidi_level,
             });
         }
@@ -837,6 +835,8 @@ mod tests {
                 text_range: 0..offset,
                 font_id: FFontId(0),
                 font_size: 16.0,
+                font_weight: FontWeight::Normal,
+                style_id: 0,
                 bidi_level: 0,
                 metrics: FaceMetrics::FALLBACK,
                 glyphs: Vec::new(),

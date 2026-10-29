@@ -290,14 +290,7 @@ impl UiRuntime {
                 let constraints = TextLayoutConstraints::default();
                 let font_context = measurer.font_epoch();
 
-                let input = TextLayoutInput::new(
-                    props.text,
-                    constraints,
-                    props.style.into(),
-                    props.paragraph,
-                    props.text_box,
-                    font_context,
-                );
+                let input = TextLayoutInput::from_props(props, constraints, font_context);
                 measurer.get_or_shape_slot(node_id, TextLayoutSlot::PRIMARY, input);
             }
             _ => {}

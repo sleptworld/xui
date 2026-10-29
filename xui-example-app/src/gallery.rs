@@ -18,10 +18,11 @@ pub enum Page {
     Image,
     VirtualList,
     Canvas,
+    Editor,
 }
 
 impl Page {
-    pub const ALL: [Page; 8] = [
+    pub const ALL: [Page; 9] = [
         Page::Button,
         Page::Spinner,
         Page::Input,
@@ -30,6 +31,7 @@ impl Page {
         Page::Image,
         Page::VirtualList,
         Page::Canvas,
+        Page::Editor,
     ];
 
     fn title(self) -> &'static str {
@@ -42,6 +44,7 @@ impl Page {
             Page::Image => "Image",
             Page::VirtualList => "Virtual List",
             Page::Canvas => "Icon & Canvas",
+            Page::Editor => "Editor",
         }
     }
 
@@ -55,6 +58,7 @@ impl Page {
             Page::Image => "Loads images from assets, files, or URLs, with fit modes.",
             Page::VirtualList => "Renders only the rows near the viewport of a long list.",
             Page::Canvas => "Path and SVG icons, vector canvas scenes, and backdrop blur.",
+            Page::Editor => "A code editor on a text surface: only what is on screen is laid out.",
         }
     }
 
@@ -68,6 +72,7 @@ impl Page {
             Page::Image => lucide_rs::icons::image(),
             Page::VirtualList => lucide_rs::icons::list(),
             Page::Canvas => lucide_rs::icons::shapes(),
+            Page::Editor => lucide_rs::icons::file_code(),
         }
     }
 }
@@ -794,6 +799,93 @@ fn canvas_page() {
     }
 }
 
+/// Lines of the sample the editor page opens with: enough that only a sliver
+/// of them is ever laid out.
+const EDITOR_SAMPLE_FUNCTIONS: usize = 2_000;
+
+/// A long, plausible Rust file, highlighted, for the editor page.
+fn demo_editor() -> xui_editor::EditorHandle {
+    use xui_editor::{BufferHandle, EditorHandle, EditorStyle, KeywordHighlighter};
+
+    let mut text = String::from(
+        "// A generated file: scroll it, select across lines, Option-click for\n\
+         // another caret, type with an IME, undo with Cmd-Z.\n\n",
+    );
+    for index in 0..EDITOR_SAMPLE_FUNCTIONS {
+        text.push_str(&format!(
+            "/// Scales sample {index} by its weight.\n\
+             pub fn sample_{index}(value: f32) -> f32 {{\n\
+             \x20   let weight = {weight}.0;\n\
+             \x20   if value > 0.5 {{\n\
+             \x20       return value * weight; // the common case\n\
+             \x20   }}\n\
+             \x20   println!(\"sample {index}: {{}}\", value);\n\
+             \x20   value\n\
+             }}\n\n",
+            weight = index % 97 + 1,
+        ));
+    }
+
+    let color = |r, g, b| TextRunStyle::new().color(Color::rgba(r, g, b, 1.0));
+    let highlighter = KeywordHighlighter::new()
+        .keywords(
+            ["pub", "fn", "let", "if", "else", "return", "mut", "for", "in", "while", "match"],
+            color(0.62, 0.36, 0.86).font_weight(FontWeight::SemiBold),
+        )
+        .keywords(["f32", "u32", "usize", "bool", "String"], color(0.18, 0.62, 0.72))
+        .strings(color(0.30, 0.62, 0.30))
+        .numbers(color(0.86, 0.52, 0.18))
+        .line_comment("//", color(0.55, 0.57, 0.62).font_style(FontStyle::Italic));
+
+    let buffer = BufferHandle::new(&text);
+    buffer.set_highlighter(Some(Box::new(highlighter)));
+    let editor = EditorHandle::new(&buffer);
+    editor.update(|view| {
+        view.set_style(EditorStyle {
+            caret: Color::rgba(0.25, 0.52, 1.0, 1.0),
+            wrap: false,
+            ..EditorStyle::default()
+        })
+    });
+    editor
+}
+
+#[component]
+fn editor_page() {
+    let editor: xui_editor::EditorHandle = demo_editor();
+    let lines: usize = editor
+        .buffer()
+        .read(|buffer| buffer.document().line_count());
+    view! {
+        page_body {
+            example(title: format!("{lines} lines of Rust")) {
+                container(
+                    style: StyleOf::new()
+                        .with::<container::width>(Sizing::fill())
+                        .with::<container::height>(460.0)
+                        .with::<container::background>(ColorToken::Background)
+                        .with::<container::border_color>(ColorToken::Border)
+                        .with::<container::border_width>(1.0)
+                        .with::<container::border_radius>(RadiusToken::Md)
+                        .with::<container::clip>(true),
+                ) {
+                    text_surface(
+                        model: editor.surface(),
+                        wrap: SurfaceWrap::None,
+                        width: Sizing::fill(),
+                        height: 460.0,
+                        padding: EdgeInsets::all(12.0),
+                        font_family: "Menlo",
+                        font_size: 13.0,
+                        line_height: LineHeight::Px(20.0),
+                    )
+                }
+            }
+            muted(text: "Arrows, Option-arrows and Cmd-arrows move; Shift extends. Double-click selects a word, triple-click a line, and Option-click adds a caret.")
+        }
+    }
+}
+
 // ---- shell -----------------------------------------------------------------
 
 #[component]
@@ -903,6 +995,7 @@ pub fn gallery() {
                         Page::Image => image_page(),
                         Page::VirtualList => virtual_list_page(),
                         Page::Canvas => canvas_page(),
+                        Page::Editor => editor_page(),
                     }
                 }
             }

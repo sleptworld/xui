@@ -4,10 +4,12 @@ use std::{fs, process::Command};
 fn embedded_and_external_projects_compile_and_load_assets() {
     let temp = tempfile::tempdir().unwrap();
     let project = temp.path();
+    // The workspace root is where its lockfile is, however deep this crate sits.
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap();
-    let xui_path = workspace.join("xui");
+        .ancestors()
+        .find(|dir| dir.join("Cargo.lock").is_file())
+        .expect("xui-cli is built inside the xui workspace");
+    let xui_core_path = workspace.join("crates/xui-core");
     fs::create_dir_all(project.join("src")).unwrap();
     fs::create_dir_all(project.join("assets/data")).unwrap();
     fs::write(project.join("assets/data/app.bin"), b"hello from xpak").unwrap();
@@ -15,7 +17,7 @@ fn embedded_and_external_projects_compile_and_load_assets() {
         project.join("Cargo.toml"),
         format!(
             "[package]\nname = \"xui-assets-smoke\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nxui-core = {{ path = {:?} }}\n",
-            xui_path.to_str().unwrap()
+            xui_core_path.to_str().unwrap()
         ),
     )
     .unwrap();

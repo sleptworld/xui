@@ -41,6 +41,11 @@ pub use crate::style::{
 pub use crate::ticker::{Tick, Ticker};
 pub use crate::ui_runtime::{NodeView, RenderFrameError, UiRuntime};
 pub use crate::widgets::{
+    BlockChange, BlockId, DecorKind, DecorLayer, SurfaceBlock, SurfaceChanges, SurfaceCx,
+    SurfaceDecor, SurfaceInput, SurfacePointer, SurfacePointerKind, SurfacePosition, SurfaceRange,
+    SurfaceWrap, TextSurfaceHandle, TextSurfaceModel, UnderlineStyle, WeakTextSurfaceHandle,
+};
+pub use crate::widgets::{
     CanvasContent, CanvasController, CanvasPainter, CanvasPick, CanvasPickTag, CanvasTextLayout,
     CanvasTextMetrics, DismissReason, GridFlow, GridTrackSize, GridTracks, IconData, IconLayer,
     IconStroke, OverlayChild, OverlayEntry, OverlayEntryId, OverlayEntryOptions, OverlayModelError,
@@ -56,6 +61,7 @@ pub use crate::widgets::icon::{Icon, icon};
 pub use crate::widgets::image::{Image, image};
 pub use crate::widgets::text::{Text, text};
 pub use crate::widgets::text_input::{TextInput, text_input};
+pub use crate::widgets::text_surface::{TextSurface, text_surface};
 pub use crate::widgets::z_stack::{ZStack, z_stack};
 pub use xui_interface::{
     AccessibilityChecked, AccessibilityLiveRegion, AccessibilityOrientation, AccessibilityPopup,
@@ -66,6 +72,7 @@ pub use xui_interface::{
     NamedKey, NodeId, OverflowWrap, ParagraphStyle, PathBuilder, PathData, PathFill, PathSegment,
     PathStroke, PhysicalKey, Sampling, Shape, Shortcut, ShortcutBinding, ShortcutKey,
     ShortcutModifiers, Sizing, StyleDiffFlags, TextAlign, TextBoxStyle, TextContent,
-    TextDecoration, TextLayoutConstraints, TextOverflow, TextProps, TextStyle, TextVerticalAlign,
-    VectorCommand, VectorScene, VectorSceneBuilder, WhiteSpace, WidgetUpdateFlags,
+    TextDecoration, TextLayoutConstraints, TextOverflow, TextProps, TextRun, TextRunStyle,
+    TextRuns, TextStyle, TextVerticalAlign, VectorCommand, VectorScene, VectorSceneBuilder,
+    WhiteSpace, WidgetUpdateFlags,
 };

@@ -10,7 +10,8 @@
 //! shared collection renderers read, and glyphs are rendered by an
 //! [`xui_swash::SwashRasterizer`] over it. `xui-interface` paragraph and text-box options (alignment,
 //! wrap, ellipsis, max lines, font weight/style/stretch/family, line height,
-//! underline) are mapped onto cosmic-text equivalents.
+//! underline) are mapped onto cosmic-text equivalents, and shape runs onto
+//! rich-text spans.
 
 use cosmic_text::{
     Align, Attrs, Buffer, Ellipsize, EllipsizeHeightLimit, Family, FontSystem, Metrics, Shaping,
@@ -360,13 +361,37 @@ impl CosmicEngine {
         buffer.set_metrics_and_size(metrics, width, height);
 
         let attrs = attrs_for_style(&input.default_style);
-        let text_len = input.text.as_str().len();
-        buffer.set_text(
-            input.text.as_str(),
-            &attrs,
-            Shaping::Advanced,
-            align_for_paragraph(input.paragraph_style.align),
-        );
+        let text = input.text.as_str();
+        let text_len = text.len();
+        let align = align_for_paragraph(input.paragraph_style.align);
+        if input.shape_runs.is_empty() {
+            buffer.set_text(text, &attrs, Shaping::Advanced, align);
+        } else {
+            // A span's metadata is the style id its glyphs report.
+            let run_styles: Vec<ComputedTextStyle> = input
+                .shape_runs
+                .as_slice()
+                .iter()
+                .map(|run| run.style.apply(&input.default_style))
+                .collect();
+            let spans =
+                input
+                    .shape_runs
+                    .segments(text, 0..text_len)
+                    .map(|(range, run)| match run {
+                        None => (&text[range], attrs.clone()),
+                        Some(index) => {
+                            let style = &run_styles[index];
+                            let metrics = Metrics::new(
+                                style.font_size,
+                                line_height(input.default_style.line_height, style.font_size),
+                            );
+                            let span = attrs_for_style(style).metadata(index + 1).metrics(metrics);
+                            (&text[range], span)
+                        }
+                    });
+            buffer.set_rich_text(spans, &attrs, Shaping::Advanced, align);
+        }
         buffer.shape_until_scroll(&mut self.font_system, false);
 
         let line_bases = compute_line_base_byte_offsets(input.text.as_str());
@@ -861,6 +886,7 @@ fn compute_line_base_byte_offsets(text: &str) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use xui_interface::{ShapeRun, ShapeRuns, ShapeStyle};
 
     fn layout(
         text: &'static str,
@@ -1021,5 +1047,39 @@ mod tests {
             image.pixels.len(),
             image.width as usize * image.height as usize
         );
+    }
+
+    #[test]
+    fn shape_runs_become_spans_with_their_own_style() {
+        let mut engine = CosmicEngine::default();
+        let epoch = engine.fonts().epoch();
+        let mut style = ShapeStyle::of(&TextStyle::default().into());
+        style.font_weight = FontWeight::Bold;
+        style.font_size *= 2.0;
+        let input = |runs: ShapeRuns| {
+            TextLayoutInput::new(
+                "plain big".into(),
+                TextLayoutConstraints::UNBOUNDED,
+                TextStyle::default().into(),
+                ParagraphStyle::default(),
+                TextBoxStyle::default(),
+                epoch,
+            )
+            .with_shape_runs(runs)
+        };
+        let mut state = engine.create_state();
+        let plain = engine.layout_paragraph(&mut state, input(ShapeRuns::empty()));
+        let styled = engine.layout_paragraph(
+            &mut state,
+            input(ShapeRuns::new(vec![ShapeRun { range: 6..9, style }])),
+        );
+
+        assert!(styled.size().width > plain.size().width);
+        let big: Vec<_> = styled.runs.iter().filter(|run| run.style_id == 1).collect();
+        assert!(!big.is_empty());
+        for run in big {
+            assert_eq!(run.font_weight, FontWeight::Bold);
+            assert!(run.text_range.start.offset() >= 6);
+        }
     }
 }

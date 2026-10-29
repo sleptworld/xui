@@ -70,6 +70,7 @@ pub(crate) mod roles;
 pub(crate) mod root;
 pub(crate) mod text;
 pub(crate) mod text_input;
+pub(crate) mod text_surface;
 pub(crate) mod z_stack;
 
 pub(crate) use canvas::CanvasInvalidator;
@@ -92,6 +93,11 @@ pub use text_input::keymap::{TextCommand, TextKeymap};
 pub(crate) use text_input::text_input_content_box;
 pub use text_input::value::TextSelection;
 pub use text_input::{TextController, TextInputChange};
+pub use text_surface::{
+    BlockChange, BlockId, DecorKind, DecorLayer, SurfaceBlock, SurfaceChanges, SurfaceCx,
+    SurfaceDecor, SurfaceInput, SurfacePointer, SurfacePointerKind, SurfacePosition, SurfaceRange,
+    SurfaceWrap, TextSurfaceHandle, TextSurfaceModel, UnderlineStyle, WeakTextSurfaceHandle,
+};
 
 use canvas::Canvas;
 use container::Container;
@@ -102,6 +108,7 @@ use overlay::RootOverlayer;
 use root::Root;
 use text::Text;
 use text_input::TextInput;
+use text_surface::TextSurface;
 use z_stack::ZStack;
 
 /// A widget's place in [`Widgets`].
@@ -244,6 +251,7 @@ define_widgets! {
     ZStack => ZStack [arrange],
     Text => Text [paint, text],
     TextInput => TextInput [paint, text, events, text_input, default_focus] via state,
+    TextSurface => TextSurface [paint, events, text_input, default_focus] via state,
     Canvas => Canvas [paint] via state,
     Image => Image [paint, intrinsic_size],
     Icon => Icon [paint],
@@ -294,11 +302,11 @@ impl Widgets {
     pub(crate) fn platform_text_input_session(
         &self,
         content_rect: Bounds,
-        text_layout: &dyn crate::text::TextLayoutQuery,
+        text_layout: Option<&dyn crate::text::TextLayoutQuery>,
     ) -> Option<xui_interface::TextInputSession> {
         self.roles()
             .as_text_input()
-            .map(|it| it.text_input_session(content_rect, text_layout))
+            .and_then(|it| it.text_input_session(content_rect, text_layout))
     }
 
     pub fn intrinsic_size(&self) -> Option<Size<f32>> {
@@ -431,7 +439,7 @@ impl WidgetI {
     pub(crate) fn platform_text_input_session(
         &self,
         content_rect: Bounds,
-        text_layout: &dyn crate::text::TextLayoutQuery,
+        text_layout: Option<&dyn crate::text::TextLayoutQuery>,
     ) -> Option<xui_interface::TextInputSession> {
         self.with_widgets(|widget| widget.platform_text_input_session(content_rect, text_layout))
     }

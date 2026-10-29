@@ -609,7 +609,7 @@ fn built_draw(primitive: &Primitive, common: BuiltDrawData) -> Option<BuiltDraw>
         }),
         Primitive::Text(primitive) => BuiltDraw::Text(BuiltText {
             common,
-            primitive: *primitive,
+            primitive: primitive.clone(),
         }),
         Primitive::Batch(_) => return None,
     })

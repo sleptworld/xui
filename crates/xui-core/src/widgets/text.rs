@@ -4,7 +4,7 @@
 use xui_interface::TextProps as LayoutProps;
 use xui_interface::{
     Bounds, ComputedStyle, ParagraphStyle, TextBoxStyle, TextContent, TextPaintProps,
-    TextPaintStyle,
+    TextPaintStyle, TextRun, TextRuns,
 };
 use xui_macros::widget;
 
@@ -38,6 +38,11 @@ pub struct Text {
     #[default]
     #[dirty(LAYOUT_INPUT | PAINT_OUTPUT)]
     pub content: TextContent,
+    /// Styles over byte ranges of `content`, on top of the computed style.
+    /// Font overrides reshape the text; color and decoration only repaint it.
+    #[default]
+    #[dirty(LAYOUT_INPUT | PAINT_OUTPUT)]
+    pub runs: TextRuns<TextRun>,
     /// How lines break and align.
     #[default]
     #[dirty(LAYOUT_INPUT | PAINT_OUTPUT)]
@@ -91,10 +96,11 @@ impl PaintContent for WidgetInstance<Text> {
             .primitive(Primitive::Text(TextPrimitive {
                 node_id,
                 bounds: content,
-                slot: TextLayoutSlot::PRIMARY,
+                unit: TextLayoutSlot::PRIMARY.into(),
                 layout_revision: props_hash(&self.text_layout(style)),
                 vertical_align: self.props.paragraph.vertical_align,
-                paint: TextPaintProps::new(TextPaintStyle::from_computed(&style.text)),
+                paint: TextPaintProps::new(TextPaintStyle::from_computed(&style.text))
+                    .with_runs(self.props.runs.split(&style.text).1),
             }))
             .expect("widget render tree must remain valid");
     }
@@ -110,6 +116,7 @@ impl TextSource for WidgetInstance<Text> {
         props.paragraph = self.props.paragraph.clone();
         props.text_box = self.props.text_box.clone();
         apply_text_style(&mut props, style);
+        props.shape_runs = self.props.runs.split(&style.text).0;
         props
     }
 }

@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::{Color, ComputedTextStyle, NodeLifecycleEvent, Point, Rect, Size};
+use crate::{Color, ComputedTextStyle, NodeLifecycleEvent, Point, Rect, ShapeRuns, Size};
 
 /// A text backend: fonts, shaping and (optionally) glyph rasterization, as
 /// three parts with different ownership.
@@ -368,6 +368,8 @@ impl RasterizedGlyphFormat {
 pub struct TextProps {
     pub text: TextContent,
     pub style: TextStyle,
+    /// Font overrides over parts of `text`; see [`ShapeRuns`].
+    pub shape_runs: ShapeRuns,
     pub paragraph: ParagraphStyle,
     pub text_box: TextBoxStyle,
 }
@@ -401,6 +403,7 @@ impl Hash for TextProps {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.text.hash(state);
         self.style.hash(state);
+        self.shape_runs.hash(state);
         self.paragraph.hash(state);
         self.text_box.hash(state);
     }
@@ -1013,6 +1016,10 @@ pub struct GlyphRun<F> {
     /// their canvas/device transform, not by modifying this value.
     pub font_size: f32,
     pub font_weight: FontWeight,
+    /// Which style the glyphs were shaped in:
+    /// [`DEFAULT_TEXT_STYLE_ID`](crate::DEFAULT_TEXT_STYLE_ID) for the
+    /// paragraph's default, `i + 1` for shape run `i`. A backend that cannot
+    /// tell reports the default; nothing paints by it.
     pub style_id: TextStyleId,
     pub bidi_level: u8,
 }
@@ -1126,6 +1133,9 @@ pub enum Affinity {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextLayoutInput {
     pub text: TextContent,
+    /// Font overrides over parts of `text`, on top of `default_style`. Empty
+    /// for single-style text.
+    pub shape_runs: ShapeRuns,
     pub constraints: TextLayoutConstraints,
     pub default_style: ComputedTextStyle,
     pub paragraph_style: ParagraphStyle,
@@ -1146,6 +1156,7 @@ impl TextLayoutInput {
     ) -> Self {
         Self {
             text,
+            shape_runs: ShapeRuns::empty(),
             constraints,
             default_style,
             paragraph_style,
@@ -1154,15 +1165,31 @@ impl TextLayoutInput {
             // scale_factor,
         }
     }
+
+    /// The input that lays `props` out under `constraints`.
+    pub fn from_props(
+        props: TextProps,
+        constraints: TextLayoutConstraints,
+        font_context_revision: u64,
+    ) -> Self {
+        Self::new(
+            props.text,
+            constraints,
+            props.style.into(),
+            props.paragraph,
+            props.text_box,
+            font_context_revision,
+        )
+        .with_shape_runs(props.shape_runs)
+    }
+
+    pub fn with_shape_runs(mut self, runs: ShapeRuns) -> Self {
+        self.shape_runs = runs;
+        self
+    }
 }
 
 pub type TextStyleId = u32;
-
-#[derive(Debug, Clone)]
-pub struct TextSpan {
-    pub range: TextRange,
-    pub style_id: TextStyleId,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TextLayoutKey {

@@ -20,7 +20,8 @@ impl UiRuntime {
             return;
         }
         node.work |= flags;
-        let is_canvas = node.node_type == WidgetType::Canvas;
+        // Both are compiled after layout, from the list canvases use.
+        let is_canvas = matches!(node.node_type, WidgetType::Canvas | WidgetType::TextSurface);
 
         if newly_added.intersects(HostWorkFlags::RECALC_LAYOUT | HostWorkFlags::SYNC_TREE) {
             // Host dirtiness alone is not enough: Taffy keeps intrinsic and

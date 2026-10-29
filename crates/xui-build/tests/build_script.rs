@@ -22,7 +22,12 @@ fn cargo_run(project: &Path, expected: &str) {
 fn plain_cargo_builds_rebuilds_and_runs_a_package() {
     let temp = tempfile::tempdir().unwrap();
     let project = temp.path();
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    // The workspace root is where its lockfile is, however deep this crate sits.
+    let workspace = manifest
+        .ancestors()
+        .find(|dir| dir.join("Cargo.lock").is_file())
+        .expect("xui-build is built inside the xui workspace");
     fs::create_dir_all(project.join("src")).unwrap();
     fs::create_dir_all(project.join("assets/data")).unwrap();
     fs::write(
@@ -31,8 +36,8 @@ fn plain_cargo_builds_rebuilds_and_runs_a_package() {
             "[package]\nname = \"xui-build-smoke\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
              [dependencies]\nxui-core = {{ path = {:?} }}\n\n\
              [build-dependencies]\nxui-build = {{ path = {:?} }}\n",
-            workspace.join("xui").to_str().unwrap(),
-            workspace.join("xui-build").to_str().unwrap(),
+            workspace.join("crates/xui-core").to_str().unwrap(),
+            manifest.to_str().unwrap(),
         ),
     )
     .unwrap();

@@ -7,7 +7,7 @@ use xui_interface::{
 };
 
 use super::ContentVersion;
-use crate::text::TextLayoutSlot;
+use crate::text::TextUnitRef;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PrimitiveChange {
@@ -71,11 +71,11 @@ impl Primitive {
             },
             (Self::Text(a), Self::Text(b)) => PrimitiveChange {
                 geometry: a.bounds != b.bounds
-                    || a.slot != b.slot
+                    || a.unit != b.unit
                     || a.layout_revision != b.layout_revision
                     || a.vertical_align != b.vertical_align,
                 paint: a.node_id != b.node_id
-                    || a.slot != b.slot
+                    || a.unit != b.unit
                     || a.layout_revision != b.layout_revision
                     || a.paint != b.paint,
             },
@@ -135,11 +135,12 @@ pub struct ImagePrimitive {
     pub opacity: f32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TextPrimitive {
     pub bounds: Bounds,
     pub node_id: NodeId,
-    pub slot: TextLayoutSlot,
+    /// Which of the node's text units it draws.
+    pub unit: TextUnitRef,
     pub layout_revision: u64,
     pub vertical_align: TextVerticalAlign,
     pub paint: TextPaintProps,

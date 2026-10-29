@@ -15,10 +15,10 @@ use skia_safe::{
     },
 };
 use xui_interface::{
-    FontCollection as XuiFontCollection, FontData, FontFamily, FontQuery, FontStretch, FontWeight,
-    GlyphFlags, GlyphInstance, GlyphRun, LineHeight, LineLayout, NoRasterizer, ParagraphLayout,
-    Point, Rect, Shaper, TextAlign, TextBackend, TextCluster, TextLayoutConstraints,
-    TextLayoutInput, TextOffset, TextOverflow, TextRange, WhiteSpace,
+    ComputedTextStyle, FontCollection as XuiFontCollection, FontData, FontFamily, FontQuery,
+    FontStretch, FontWeight, GlyphFlags, GlyphInstance, GlyphRun, LineHeight, LineLayout,
+    NoRasterizer, ParagraphLayout, Point, Rect, Shaper, TextAlign, TextBackend, TextCluster,
+    TextLayoutConstraints, TextLayoutInput, TextOffset, TextOverflow, TextRange, WhiteSpace,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -216,25 +216,7 @@ impl Shaper for SkiaTextBackend {
             return empty_layout();
         }
 
-        let mut text_style = SkTextStyle::new();
-        text_style.set_font_size(input.default_style.font_size.max(1.0));
-        text_style.set_font_style(sk_font_style(
-            input.default_style.font_weight,
-            FontStretch::Normal,
-            input.default_style.font_style,
-        ));
-        let families = style_family_names(&input.default_style.font_family);
-        if !families.is_empty() {
-            text_style.set_font_families(&families);
-        }
-        text_style.set_letter_spacing(input.default_style.letter_spacing);
-        text_style.set_height(
-            computed_line_height(
-                input.default_style.line_height,
-                input.default_style.font_size,
-            ) / input.default_style.font_size.max(1.0),
-        );
-        text_style.set_height_override(true);
+        let text_style = sk_text_style(&input.default_style, input.default_style.line_height);
 
         let mut paragraph_style = SkParagraphStyle::new();
         paragraph_style.set_text_style(&text_style);
@@ -255,7 +237,22 @@ impl Shaper for SkiaTextBackend {
 
         let mut builder = ParagraphBuilder::new(&paragraph_style, self.font_collection());
         builder.push_style(&text_style);
-        builder.add_text(input.text.as_str());
+        let text = input.text.as_str();
+        for (range, run) in input.shape_runs.segments(text, 0..text.len()) {
+            match run {
+                None => {
+                    builder.add_text(&text[range]);
+                }
+                Some(index) => {
+                    let style = input.shape_runs.as_slice()[index]
+                        .style
+                        .apply(&input.default_style);
+                    builder.push_style(&sk_text_style(&style, input.default_style.line_height));
+                    builder.add_text(&text[range]);
+                    builder.pop();
+                }
+            }
+        }
         let mut paragraph = builder.build();
         let width = match input.constraints {
             TextLayoutConstraints::Definate(width) => width.max(0.0),
@@ -440,6 +437,26 @@ fn empty_layout<F>() -> ParagraphLayout<F> {
         glyphs: Vec::new(),
         clusters: Vec::new(),
     }
+}
+
+/// A Skia text style for `style`, its lines `line_height` tall.
+fn sk_text_style(style: &ComputedTextStyle, line_height: LineHeight) -> SkTextStyle {
+    let mut text_style = SkTextStyle::new();
+    text_style.set_font_size(style.font_size.max(1.0));
+    text_style.set_font_style(sk_font_style(
+        style.font_weight,
+        FontStretch::Normal,
+        style.font_style,
+    ));
+    let families = style_family_names(&style.font_family);
+    if !families.is_empty() {
+        text_style.set_font_families(&families);
+    }
+    text_style.set_letter_spacing(style.letter_spacing);
+    text_style
+        .set_height(computed_line_height(line_height, style.font_size) / style.font_size.max(1.0));
+    text_style.set_height_override(true);
+    text_style
 }
 
 fn computed_line_height(line_height: LineHeight, font_size: f32) -> f32 {

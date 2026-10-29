@@ -25,8 +25,8 @@ use xui_core::{
 };
 use crate::lru::ByteLru;
 use xui_interface::{
-    Color, FontCollection, FontData as XuiFontData, LineLayout, ParagraphLayout, Point, Rect,
-    TextBackend, TextVerticalAlign,
+    Color, FontCollection, FontData as XuiFontData, ParagraphLayout, Point, Rect, TextBackend,
+    TextVerticalAlign,
 };
 use xui_wgpu_text::{GlyphRunDraw, PositionedGlyph, RectDraw, TextDraw};
 
@@ -109,7 +109,7 @@ pub(crate) fn paragraph<T: TextBackend>(
     text: &TextHost<T>,
     primitive: &TextPrimitive,
 ) -> Option<Paragraph<T::FontId>> {
-    let handle = text.active_slot(primitive.node_id, primitive.slot)?;
+    let handle = text.active_layout(primitive.node_id, primitive.unit)?;
     let layout = text.layout(handle)?;
     let bounds = primitive.bounds;
     let y_offset = match primitive.vertical_align {
@@ -194,7 +194,7 @@ fn foreground<T: TextBackend>(
             });
         }
     }
-    decorations(&mut strokes, &layout.lines, primitive, origin);
+    decorations(&mut strokes, layout, primitive, origin);
     strokes
 }
 
@@ -203,21 +203,28 @@ fn foreground<T: TextBackend>(
 /// to target pixels and is a translation and a uniform scale; `clip` is in
 /// target pixels.
 pub(crate) struct BitmapParts<F> {
-    runs: Vec<(F, f32, Vec<PositionedGlyph>)>,
-    color: [f32; 4],
+    /// One per stretch of a glyph run in one color.
+    runs: Vec<BitmapRun<F>>,
     rects: Vec<RectDraw>,
     clip: [f32; 4],
 }
 
+struct BitmapRun<F> {
+    font: F,
+    ppem: f32,
+    color: [f32; 4],
+    glyphs: Vec<PositionedGlyph>,
+}
+
 impl<F: Copy> BitmapParts<F> {
     pub fn draws(&self) -> Vec<TextDraw<'_, F>> {
-        let glyphs = self.runs.iter().map(|(font, ppem, glyphs)| {
+        let glyphs = self.runs.iter().map(|run| {
             TextDraw::Glyphs(GlyphRunDraw {
-                font: *font,
-                ppem: *ppem,
-                color: self.color,
+                font: run.font,
+                ppem: run.ppem,
+                color: run.color,
                 clip: Some(self.clip),
-                glyphs,
+                glyphs: &run.glyphs,
             })
         });
         glyphs
@@ -237,28 +244,31 @@ pub(crate) fn bitmap_parts<T: TextBackend>(
     let px = |x: f32, y: f32| (x * scale + dx, y * scale + dy);
     let paint = &primitive.paint;
     let (layout, origin) = (&paragraph.layout, paragraph.origin);
-    let runs = if paint.style.color.a > 0.0 {
-        layout
-            .runs
-            .iter()
-            .map(|run| {
-                let glyphs = layout.glyphs[run.glyph_range.clone()]
-                    .iter()
-                    .map(|glyph| {
-                        let (x, y) = px(origin.x + glyph.draw_pos.x, origin.y + glyph.draw_pos.y);
-                        PositionedGlyph {
-                            id: glyph.glyph_id,
-                            x,
-                            y,
-                        }
-                    })
-                    .collect();
-                (run.font_id, run.font_size * scale, glyphs)
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let runs = paint
+        .glyph_spans(layout)
+        .into_iter()
+        .filter(|span| span.color.a > 0.0)
+        .map(|span| {
+            let run = &layout.runs[span.run];
+            let glyphs = layout.glyphs[span.glyphs]
+                .iter()
+                .map(|glyph| {
+                    let (x, y) = px(origin.x + glyph.draw_pos.x, origin.y + glyph.draw_pos.y);
+                    PositionedGlyph {
+                        id: glyph.glyph_id,
+                        x,
+                        y,
+                    }
+                })
+                .collect();
+            BitmapRun {
+                font: run.font_id,
+                ppem: run.font_size * scale,
+                color: color_array(span.color),
+                glyphs,
+            }
+        })
+        .collect();
     let rects = foreground(primitive, text, paragraph)
         .into_iter()
         .map(|stroke| {
@@ -280,12 +290,7 @@ pub(crate) fn bitmap_parts<T: TextBackend>(
             }
         })
         .collect();
-    BitmapParts {
-        runs,
-        color: color_array(paint.style.color),
-        rects,
-        clip,
-    }
+    BitmapParts { runs, rects, clip }
 }
 
 /// A text primitive as Vello draws it: selection, glyph outlines, and the
@@ -305,28 +310,29 @@ pub(crate) fn encode_text<T: TextBackend>(
     scene.push_clip_layer(Fill::NonZero, world, &bounds_rect(primitive));
 
     let (paint, origin, layout) = (&primitive.paint, paragraph.origin, &paragraph.layout);
-    if paint.style.color.a > 0.0 {
-        let brush = color(paint.style.color);
-        for run in &layout.runs {
-            let Some(font) = fonts.resolve(&**text.backend().fonts(), run.font_id) else {
-                gaps.missing_font = true;
-                continue;
-            };
-            let glyphs = layout.glyphs[run.glyph_range.clone()].iter().map(|glyph| Glyph {
-                id: glyph.glyph_id,
-                x: origin.x + glyph.draw_pos.x,
-                y: origin.y + glyph.draw_pos.y,
-            });
-            // Positions come from the shaper already, so hinting only snaps
-            // outlines. Measured against Skia it is the closer of the two.
-            scene
-                .draw_glyphs(&font)
-                .font_size(run.font_size)
-                .transform(world)
-                .hint(true)
-                .brush(brush)
-                .draw(Fill::NonZero, glyphs);
+    for span in paint.glyph_spans(layout) {
+        if span.color.a <= 0.0 {
+            continue;
         }
+        let run = &layout.runs[span.run];
+        let Some(font) = fonts.resolve(&**text.backend().fonts(), run.font_id) else {
+            gaps.missing_font = true;
+            continue;
+        };
+        let glyphs = layout.glyphs[span.glyphs].iter().map(|glyph| Glyph {
+            id: glyph.glyph_id,
+            x: origin.x + glyph.draw_pos.x,
+            y: origin.y + glyph.draw_pos.y,
+        });
+        // Positions come from the shaper already, so hinting only snaps
+        // outlines. Measured against Skia it is the closer of the two.
+        scene
+            .draw_glyphs(&font)
+            .font_size(run.font_size)
+            .transform(world)
+            .hint(true)
+            .brush(color(span.color))
+            .draw(Fill::NonZero, glyphs);
     }
     for stroke in foreground(primitive, text, &paragraph) {
         stroke_line(scene, world, stroke.from, stroke.to, stroke.width, stroke.ink);
@@ -346,20 +352,16 @@ fn bounds_rect(primitive: &TextPrimitive) -> KurboRect {
     )
 }
 
-fn decorations(
+fn decorations<F>(
     strokes: &mut Vec<ForegroundLine>,
-    lines: &[LineLayout],
+    layout: &ParagraphLayout<F>,
     primitive: &TextPrimitive,
     origin: Point,
 ) {
-    let decoration = primitive.paint.style.decoration;
-    if !decoration.underline && !decoration.line_through {
-        return;
-    }
     let width = (primitive.paint.style.font_size / 16.0).max(1.0);
-    let ink = primitive.paint.style.color;
-    for line in lines {
-        let (x0, x1) = (origin.x + line.x, origin.x + line.x + line.width);
+    for span in primitive.paint.decoration_spans(layout) {
+        let (line, decoration, ink) = (&layout.lines[span.line], span.decoration, span.color);
+        let (x0, x1) = (origin.x + span.x.start, origin.x + span.x.end);
         if decoration.underline {
             let y = origin.y + line.baseline + width;
             strokes.push(ForegroundLine {

@@ -37,7 +37,7 @@ pub(crate) fn host_kind(tag: &Path) -> Option<HostKind> {
         "container" | "row" | "column" | "center" | "grid" | "z_stack" | "image" => {
             HostKind::Parent
         }
-        "text_input" | "canvas" | "icon" => HostKind::Leaf,
+        "text_input" | "text_surface" | "canvas" | "icon" => HostKind::Leaf,
         "text" => HostKind::Text,
         _ => return None,
     })

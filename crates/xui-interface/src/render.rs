@@ -1,11 +1,12 @@
 use crate::{
-    Bounds, Color, ComputedColorStyle, ComputedStrokeStyle, ComputedTextStyle, LineHeight, Point,
-    Rect, Size, TextDecoration, TextProps, TextRange,
+    Bounds, Color, ComputedColorStyle, ComputedStrokeStyle, ComputedTextStyle, LineHeight,
+    PaintRuns, ParagraphLayout, Point, Rect, Size, TextDecoration, TextProps, TextRange,
 };
 use std::{
     any::Any,
     collections::{HashSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
+    ops::Range,
     path::PathBuf,
     sync::{
         Arc,
@@ -1447,9 +1448,12 @@ mod path_tests {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TextPaintProps {
+    /// The paint of text no run covers.
     pub style: TextPaintStyle,
+    /// Color and decoration over parts of the text; see [`PaintRuns`].
+    pub runs: PaintRuns,
     pub caret: Option<TextCaret>,
     pub selection: Option<TextSelectionPaint>,
     pub ime: Option<TextImePaint>,
@@ -1459,11 +1463,277 @@ impl TextPaintProps {
     pub fn new(style: TextPaintStyle) -> Self {
         Self {
             style,
+            runs: PaintRuns::empty(),
             caret: None,
             selection: None,
             ime: None,
         }
     }
+
+    pub fn with_runs(mut self, runs: PaintRuns) -> Self {
+        self.runs = runs;
+        self
+    }
+
+    /// The color and decoration of the text at byte `offset`.
+    pub fn paint_at(&self, offset: usize) -> (Color, TextDecoration) {
+        self.runs
+            .at(offset)
+            .map_or((self.style.color, self.style.decoration), |run| {
+                (run.color, run.decoration)
+            })
+    }
+
+    /// The glyphs of `layout`, cut wherever their color changes: one span per
+    /// glyph run when there are no paint runs. A glyph takes the paint of the
+    /// first byte of its cluster.
+    ///
+    /// A glyph run that lies wholly inside one paint run, or wholly between
+    /// them, is decided once from its text range and comes out as one span;
+    /// only a run a color boundary crosses is walked, a cluster at a time,
+    /// with a cursor over the paint runs instead of a search per cluster.
+    pub fn glyph_spans<F>(&self, layout: &ParagraphLayout<F>) -> Vec<GlyphPaintSpan> {
+        let mut spans = Vec::with_capacity(layout.runs.len());
+        for (run_index, run) in layout.runs.iter().enumerate() {
+            if run.glyph_range.is_empty() {
+                continue;
+            }
+            let mut cursor = match self.classify(run) {
+                RunPaint::Uniform(color, _) => {
+                    spans.push(GlyphPaintSpan {
+                        run: run_index,
+                        glyphs: run.glyph_range.clone(),
+                        color,
+                    });
+                    continue;
+                }
+                RunPaint::Mixed(cursor) => cursor,
+            };
+            for_each_cluster(layout, run, |cluster, glyphs| {
+                let color = cursor
+                    .at(cluster_offset(cluster))
+                    .map_or(self.style.color, |paint| paint.color);
+                match spans.last_mut() {
+                    Some(span)
+                        if span.run == run_index
+                            && span.glyphs.end == glyphs.start
+                            && span.color == color =>
+                    {
+                        span.glyphs.end = glyphs.end;
+                    }
+                    _ => spans.push(GlyphPaintSpan {
+                        run: run_index,
+                        glyphs,
+                        color,
+                    }),
+                }
+            });
+        }
+        spans
+    }
+
+    /// Where `layout`'s underlines and line-throughs go, line by line. With no
+    /// paint runs a decorated paragraph is decorated across each line's whole
+    /// width; with them, across the clusters each run's decoration covers.
+    /// Glyph runs are decided whole where they can be, as in
+    /// [`glyph_spans`](Self::glyph_spans).
+    pub fn decoration_spans<F>(&self, layout: &ParagraphLayout<F>) -> Vec<DecorationSpan> {
+        let mut spans = Vec::new();
+        if self.runs.is_empty() {
+            let decoration = self.style.decoration;
+            if decoration.underline || decoration.line_through {
+                spans.extend(
+                    layout
+                        .lines
+                        .iter()
+                        .enumerate()
+                        .map(|(index, line)| DecorationSpan {
+                            line: index,
+                            x: line.x..line.x + line.width,
+                            color: self.style.color,
+                            decoration,
+                        }),
+                );
+            }
+            return spans;
+        }
+        let mut push = |line: usize, x: Range<f32>, color: Color, decoration: TextDecoration| {
+            if !decoration.underline && !decoration.line_through {
+                return;
+            }
+            match spans.last_mut() {
+                Some(span)
+                    if span.line == line
+                        && span.color == color
+                        && span.decoration == decoration
+                        && (span.x.end - x.start).abs() < 0.5 =>
+                {
+                    span.x.end = x.end;
+                }
+                _ => spans.push(DecorationSpan {
+                    line,
+                    x,
+                    color,
+                    decoration,
+                }),
+            }
+        };
+        for (line_index, line) in layout.lines.iter().enumerate() {
+            let Some(runs) = layout.runs.get(line.run_range.clone()) else {
+                continue;
+            };
+            for run in runs {
+                if run.glyph_range.is_empty() {
+                    continue;
+                }
+                match self.classify(run) {
+                    RunPaint::Uniform(color, decoration) => {
+                        if let Some(x) = run_extent(layout, run) {
+                            push(line_index, x, color, decoration);
+                        }
+                    }
+                    RunPaint::Mixed(mut cursor) => {
+                        for_each_cluster(layout, run, |cluster, _| {
+                            let (color, decoration) = cursor
+                                .at(cluster_offset(cluster))
+                                .map_or((self.style.color, self.style.decoration), |paint| {
+                                    (paint.color, paint.decoration)
+                                });
+                            let x = cluster.hitbox.x..cluster.hitbox.x + cluster.hitbox.width;
+                            push(line_index, x, color, decoration);
+                        });
+                    }
+                }
+            }
+        }
+        spans
+    }
+
+    /// Whether `run` takes one paint throughout, decided from its text range
+    /// alone, or a cursor to walk it with when a boundary crosses it.
+    ///
+    /// A run's text range covers every cluster in it (each backend builds it
+    /// as their hull), so a range inside one paint run, or inside a gap
+    /// between them, settles every glyph in the run. A cluster with no text
+    /// at the run's end takes the run's paint.
+    fn classify(&self, run: &crate::GlyphRun<impl Sized>) -> RunPaint<'_> {
+        let runs = self.runs.as_slice();
+        let start = run.text_range.start.offset();
+        // The last byte a cluster in it can start at.
+        let last = run.text_range.end.offset().saturating_sub(1).max(start);
+        let index = runs.partition_point(|paint| paint.range.end <= start);
+        match runs.get(index) {
+            Some(paint) if paint.range.start <= start && last < paint.range.end => {
+                RunPaint::Uniform(paint.color, paint.decoration)
+            }
+            Some(paint) if paint.range.start <= last => {
+                RunPaint::Mixed(PaintCursor { runs, index })
+            }
+            _ => RunPaint::Uniform(self.style.color, self.style.decoration),
+        }
+    }
+}
+
+/// How the paint of one glyph run is decided; see [`TextPaintProps::classify`].
+enum RunPaint<'a> {
+    Uniform(Color, TextDecoration),
+    Mixed(PaintCursor<'a>),
+}
+
+/// A position among paint runs that moves to the run holding each offset it
+/// is asked about. Offsets that only rise (a left-to-right run's clusters) or
+/// only fall (a right-to-left run's) cost it a step per paint run passed.
+struct PaintCursor<'a> {
+    runs: &'a [crate::PaintRun],
+    /// The first paint run that ends after the last offset asked about.
+    index: usize,
+}
+
+impl<'a> PaintCursor<'a> {
+    fn at(&mut self, offset: usize) -> Option<&'a crate::PaintRun> {
+        while self.index > 0 && self.runs[self.index - 1].range.end > offset {
+            self.index -= 1;
+        }
+        while self
+            .runs
+            .get(self.index)
+            .is_some_and(|paint| paint.range.end <= offset)
+        {
+            self.index += 1;
+        }
+        self.runs
+            .get(self.index)
+            .filter(|paint| paint.range.start <= offset)
+    }
+}
+
+/// Calls `visit` with each cluster of `run`, in glyph order, and the glyphs of
+/// it the run holds. A cluster is visited once however many glyphs it has; one
+/// a backend let straddle two runs is cut to this run's part.
+fn for_each_cluster<F>(
+    layout: &ParagraphLayout<F>,
+    run: &crate::GlyphRun<F>,
+    mut visit: impl FnMut(&crate::TextCluster, Range<usize>),
+) {
+    let end = run.glyph_range.end.min(layout.glyphs.len());
+    let mut index = run.glyph_range.start;
+    while index < end {
+        let glyph = &layout.glyphs[index];
+        let Some(cluster) = layout.clusters.get(glyph.cluster) else {
+            index += 1;
+            continue;
+        };
+        // A cluster whose glyph range does not hold this glyph is malformed;
+        // take the glyph alone rather than skip or loop.
+        let next = if cluster.glyph_range.contains(&index) {
+            cluster.glyph_range.end.min(end)
+        } else {
+            index + 1
+        };
+        visit(cluster, index..next);
+        index = next;
+    }
+}
+
+/// The first byte of `cluster`'s text: the byte its paint is looked up by.
+fn cluster_offset(cluster: &crate::TextCluster) -> usize {
+    cluster.text_range.start.offset()
+}
+
+/// The horizontal extent of `run`'s clusters, in paragraph-local x. Glyphs in
+/// a run are in visual order, so its first and last clusters bound it.
+fn run_extent<F>(layout: &ParagraphLayout<F>, run: &crate::GlyphRun<F>) -> Option<Range<f32>> {
+    let cluster_of = |index: usize| {
+        let glyph = layout.glyphs.get(index)?;
+        layout.clusters.get(glyph.cluster)
+    };
+    let first = cluster_of(run.glyph_range.start)?;
+    let last = cluster_of(run.glyph_range.end.checked_sub(1)?)?;
+    let left = first.hitbox.x.min(last.hitbox.x);
+    let right = (first.hitbox.x + first.hitbox.width).max(last.hitbox.x + last.hitbox.width);
+    Some(left..right)
+}
+
+/// Consecutive glyphs of one glyph run drawn in one color; see
+/// [`TextPaintProps::glyph_spans`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlyphPaintSpan {
+    /// Index into `ParagraphLayout::runs`.
+    pub run: usize,
+    /// Indices into `ParagraphLayout::glyphs`, within that run's.
+    pub glyphs: std::ops::Range<usize>,
+    pub color: Color,
+}
+
+/// A stretch of one line to underline or strike through, in paragraph-local
+/// x; see [`TextPaintProps::decoration_spans`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecorationSpan {
+    /// Index into `ParagraphLayout::lines`.
+    pub line: usize,
+    pub x: std::ops::Range<f32>,
+    pub color: Color,
+    pub decoration: TextDecoration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1874,5 +2144,309 @@ mod affine_tests {
     fn rejects_a_scale_whose_inverse_overflows() {
         // The smallest subnormal: non-zero and finite, but its reciprocal is not.
         assert!(Affine::scale(f32::from_bits(1), 1.0).invert().is_none());
+    }
+}
+
+#[cfg(test)]
+mod text_paint_tests {
+    use super::*;
+    use crate::{
+        FontWeight, GlyphFlags, GlyphInstance, GlyphRun, LineLayout, PaintRun, TextCluster,
+        TextOffset,
+    };
+
+    /// "abcd" on one line: one glyph run, a glyph and a cluster per byte,
+    /// each 10 wide.
+    fn layout() -> ParagraphLayout<u32> {
+        let bytes = |start: usize, end: usize| {
+            TextRange::new(TextOffset::byte_offset(start), TextOffset::byte_offset(end))
+        };
+        let clusters = (0..4)
+            .map(|offset| TextCluster {
+                source_line: 0,
+                local_text_range: offset..offset + 1,
+                text_range: bytes(offset, offset + 1),
+                glyph_range: offset..offset + 1,
+                hitbox: Rect::new(offset as f32 * 10.0, 0.0, 10.0, 20.0),
+            })
+            .collect();
+        let glyphs = (0..4)
+            .map(|offset| GlyphInstance {
+                glyph_id: offset as u32 + 1,
+                draw_pos: Point::new(offset as f32 * 10.0, 15.0),
+                hitbox: Rect::new(offset as f32 * 10.0, 0.0, 10.0, 20.0),
+                cluster: offset,
+                flags: GlyphFlags::empty(),
+            })
+            .collect();
+        ParagraphLayout {
+            lines: vec![LineLayout {
+                source_line: 0,
+                text_range: bytes(0, 4),
+                run_range: 0..1,
+                glyph_range: 0..4,
+                cluster_range: 0..4,
+                x: 0.0,
+                y: 0.0,
+                width: 40.0,
+                height: 20.0,
+                baseline: 15.0,
+                hard_break: false,
+                ellipsized: false,
+            }],
+            runs: vec![GlyphRun {
+                text_range: bytes(0, 4),
+                glyph_range: 0..4,
+                font_id: 0,
+                font_size: 16.0,
+                font_weight: FontWeight::Normal,
+                style_id: 0,
+                bidi_level: 0,
+            }],
+            glyphs,
+            clusters,
+        }
+    }
+
+    fn paint() -> TextPaintProps {
+        TextPaintProps::new(TextPaintStyle {
+            color: Color::BLACK,
+            font_size: 16.0,
+            line_height: LineHeight::Normal,
+            decoration: TextDecoration::default(),
+        })
+    }
+
+    fn red_underlined(range: std::ops::Range<usize>) -> PaintRun {
+        PaintRun {
+            range,
+            color: Color::rgba(1.0, 0.0, 0.0, 1.0),
+            decoration: TextDecoration {
+                underline: true,
+                line_through: false,
+            },
+        }
+    }
+
+    #[test]
+    fn glyphs_without_paint_runs_are_one_span_per_run() {
+        assert_eq!(
+            paint().glyph_spans(&layout()),
+            [GlyphPaintSpan {
+                run: 0,
+                glyphs: 0..4,
+                color: Color::BLACK,
+            }]
+        );
+    }
+
+    #[test]
+    fn paint_runs_cut_glyph_runs_where_the_color_changes() {
+        let paint = paint().with_runs(PaintRuns::new(vec![red_underlined(1..3)]));
+        let red = Color::rgba(1.0, 0.0, 0.0, 1.0);
+        let spans: Vec<_> = paint
+            .glyph_spans(&layout())
+            .into_iter()
+            .map(|span| (span.glyphs, span.color))
+            .collect();
+        assert_eq!(
+            spans,
+            [(0..1, Color::BLACK), (1..3, red), (3..4, Color::BLACK)]
+        );
+    }
+
+    #[test]
+    fn decorations_follow_the_clusters_their_run_covers() {
+        let layout = layout();
+        assert!(paint().decoration_spans(&layout).is_empty());
+
+        let paint = paint().with_runs(PaintRuns::new(vec![red_underlined(1..3)]));
+        let spans = paint.decoration_spans(&layout);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].x, 10.0..30.0);
+        assert!(spans[0].decoration.underline);
+
+        // A decorated paragraph without runs is decorated line-wide.
+        let mut whole = TextPaintProps::new(TextPaintStyle {
+            decoration: TextDecoration {
+                underline: false,
+                line_through: true,
+            },
+            ..paint.style
+        });
+        whole.runs = PaintRuns::empty();
+        assert_eq!(whole.decoration_spans(&layout)[0].x, 0.0..40.0);
+    }
+
+    type Bytes = std::ops::Range<usize>;
+
+    /// A one-line layout from `clusters` (bytes, glyphs) and `runs` (bytes,
+    /// glyphs, bidi level). Glyph `i` is 10 wide at x = 10 i.
+    fn custom(clusters: &[(Bytes, Bytes)], runs: &[(Bytes, Bytes, u8)]) -> ParagraphLayout<u32> {
+        let bytes = |range: &Bytes| {
+            TextRange::new(
+                TextOffset::byte_offset(range.start),
+                TextOffset::byte_offset(range.end),
+            )
+        };
+        let glyph_count = clusters
+            .iter()
+            .map(|(_, glyphs)| glyphs.end)
+            .max()
+            .unwrap_or(0);
+        let mut glyphs: Vec<GlyphInstance> = (0..glyph_count)
+            .map(|index| GlyphInstance {
+                glyph_id: index as u32 + 1,
+                draw_pos: Point::new(index as f32 * 10.0, 15.0),
+                hitbox: Rect::new(index as f32 * 10.0, 0.0, 10.0, 20.0),
+                cluster: 0,
+                flags: GlyphFlags::empty(),
+            })
+            .collect();
+        let clusters = clusters
+            .iter()
+            .enumerate()
+            .map(|(index, (text, glyph_range))| {
+                for glyph in glyph_range.clone() {
+                    glyphs[glyph].cluster = index;
+                }
+                let x = glyph_range.start as f32 * 10.0;
+                TextCluster {
+                    source_line: 0,
+                    local_text_range: text.clone(),
+                    text_range: bytes(text),
+                    glyph_range: glyph_range.clone(),
+                    hitbox: Rect::new(x, 0.0, glyph_range.len() as f32 * 10.0, 20.0),
+                }
+            })
+            .collect::<Vec<_>>();
+        ParagraphLayout {
+            lines: vec![LineLayout {
+                source_line: 0,
+                text_range: bytes(&(0..4)),
+                run_range: 0..runs.len(),
+                glyph_range: 0..glyph_count,
+                cluster_range: 0..clusters.len(),
+                x: 0.0,
+                y: 0.0,
+                width: glyph_count as f32 * 10.0,
+                height: 20.0,
+                baseline: 15.0,
+                hard_break: false,
+                ellipsized: false,
+            }],
+            runs: runs
+                .iter()
+                .map(|(text, glyph_range, bidi_level)| GlyphRun {
+                    text_range: bytes(text),
+                    glyph_range: glyph_range.clone(),
+                    font_id: 0,
+                    font_size: 16.0,
+                    font_weight: FontWeight::Normal,
+                    style_id: 0,
+                    bidi_level: *bidi_level,
+                })
+                .collect(),
+            glyphs,
+            clusters,
+        }
+    }
+
+    fn red(range: Bytes) -> PaintRun {
+        PaintRun {
+            decoration: TextDecoration::default(),
+            ..red_underlined(range)
+        }
+    }
+
+    fn colors(paint: &TextPaintProps, layout: &ParagraphLayout<u32>) -> Vec<(usize, Bytes, Color)> {
+        paint
+            .glyph_spans(layout)
+            .into_iter()
+            .map(|span| (span.run, span.glyphs, span.color))
+            .collect()
+    }
+
+    const RED: Color = Color {
+        r: 1.0,
+        g: 0.0,
+        b: 0.0,
+        a: 1.0,
+    };
+
+    #[test]
+    fn a_right_to_left_run_walks_its_clusters_backwards() {
+        // Visual order: glyph 0 is byte 3, glyph 3 is byte 0.
+        let layout = custom(
+            &[(3..4, 0..1), (2..3, 1..2), (1..2, 2..3), (0..1, 3..4)],
+            &[(0..4, 0..4, 1)],
+        );
+        let paint = paint().with_runs(PaintRuns::new(vec![red(1..3)]));
+        assert_eq!(
+            colors(&paint, &layout),
+            [
+                (0, 0..1, Color::BLACK),
+                (0, 1..3, RED),
+                (0, 3..4, Color::BLACK)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_ligature_takes_the_paint_of_its_first_byte() {
+        // One glyph for bytes 1..3.
+        let layout = custom(
+            &[(0..1, 0..1), (1..3, 1..2), (3..4, 2..3)],
+            &[(0..4, 0..3, 0)],
+        );
+        let starts_inside = paint().with_runs(PaintRuns::new(vec![red(2..4)]));
+        assert_eq!(
+            colors(&starts_inside, &layout),
+            [(0, 0..2, Color::BLACK), (0, 2..3, RED)]
+        );
+        let covers_first = paint().with_runs(PaintRuns::new(vec![red(1..2)]));
+        assert_eq!(
+            colors(&covers_first, &layout),
+            [
+                (0, 0..1, Color::BLACK),
+                (0, 1..2, RED),
+                (0, 2..3, Color::BLACK)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_run_inside_one_paint_comes_out_whole() {
+        let layout = custom(
+            &[(0..1, 0..1), (1..2, 1..2), (2..3, 2..3), (3..4, 3..4)],
+            &[(0..2, 0..2, 0), (2..4, 2..4, 0)],
+        );
+        let paint = paint().with_runs(PaintRuns::new(vec![red_underlined(2..4)]));
+        assert_eq!(
+            colors(&paint, &layout),
+            [(0, 0..2, Color::BLACK), (1, 2..4, RED)]
+        );
+        let decorations = paint.decoration_spans(&layout);
+        assert_eq!(decorations.len(), 1);
+        assert_eq!(decorations[0].x, 20.0..40.0);
+    }
+
+    #[test]
+    fn a_cluster_across_two_runs_is_cut_to_each() {
+        // Cluster 1 (bytes 1..3) has glyphs 1 and 2, which two runs split.
+        let layout = custom(
+            &[(0..1, 0..1), (1..3, 1..3), (3..4, 3..4)],
+            &[(0..3, 0..2, 0), (1..4, 2..4, 0)],
+        );
+        let paint = paint().with_runs(PaintRuns::new(vec![red(1..3)]));
+        assert_eq!(
+            colors(&paint, &layout),
+            [
+                (0, 0..1, Color::BLACK),
+                (0, 1..2, RED),
+                (1, 2..3, RED),
+                (1, 3..4, Color::BLACK),
+            ]
+        );
     }
 }

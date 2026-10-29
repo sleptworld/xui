@@ -1,10 +1,11 @@
 pub mod cache;
+mod sequence;
 
 pub use cache::{
     ParagraphId, ParagraphInfo, ShaperState, TextCacheStats, TextDocumentId, TextHost,
-    TextLayoutHandle, TextLayoutSlot, TextUnitId, TextUnitLocation,
+    TextLayoutHandle, TextLayoutSlot, TextUnitId, TextUnitLocation, TextUnitRef,
 };
-use xui_interface::{Point, Rect, Size, TextPosition, TextRange};
+use xui_interface::{Affinity, NodeId, Point, Rect, Size, TextBackend, TextPosition, TextRange};
 
 /// Geometry queries supported by a resident shaped-text layout.
 pub trait TextLayoutQuery {
@@ -20,6 +21,112 @@ pub trait TextLayoutQuery {
 
     fn selection_rects(&self, _range: TextRange) -> Vec<Rect> {
         Vec::new()
+    }
+
+    /// [`hit_test_point`](Self::hit_test_point) as a byte offset into the
+    /// laid-out text, whatever unit the backend reports in.
+    fn hit_test_byte(&self, _point: Point) -> Option<(usize, Affinity)> {
+        None
+    }
+
+    /// The caret before byte `offset` of the laid-out text.
+    fn caret_rect_at_byte(&self, _offset: usize, _affinity: Affinity) -> Option<Rect> {
+        None
+    }
+
+    /// The lines' boxes, top to bottom, in layout coordinates.
+    fn line_rects(&self) -> Vec<Rect> {
+        Vec::new()
+    }
+}
+
+/// Read access to every resident layout and virtual document of every owner,
+/// for widgets that own more than one text unit. Events reach those widgets
+/// with one (`EventContext::text_units`).
+pub trait TextUnitLookup {
+    fn active_query(&self, owner: NodeId, unit: TextUnitRef) -> Option<&dyn TextLayoutQuery>;
+    fn document_len(&self, owner: NodeId, document: TextDocumentId) -> Option<usize>;
+    fn document_height(&self, owner: NodeId, document: TextDocumentId) -> Option<f32>;
+    fn paragraph_at(&self, owner: NodeId, document: TextDocumentId, index: usize)
+    -> Option<ParagraphId>;
+    fn paragraph_at_y(&self, owner: NodeId, document: TextDocumentId, y: f32)
+    -> Option<ParagraphId>;
+    fn paragraph_index(
+        &self,
+        owner: NodeId,
+        document: TextDocumentId,
+        paragraph: ParagraphId,
+    ) -> Option<usize>;
+    fn paragraph_top(
+        &self,
+        owner: NodeId,
+        document: TextDocumentId,
+        paragraph: ParagraphId,
+    ) -> Option<f32>;
+    fn paragraph_height(
+        &self,
+        owner: NodeId,
+        document: TextDocumentId,
+        paragraph: ParagraphId,
+    ) -> Option<f32>;
+}
+
+impl<B: TextBackend> TextUnitLookup for TextHost<B> {
+    fn active_query(&self, owner: NodeId, unit: TextUnitRef) -> Option<&dyn TextLayoutQuery> {
+        self.query(self.active_layout(owner, unit)?)
+    }
+
+    fn document_len(&self, owner: NodeId, document: TextDocumentId) -> Option<usize> {
+        TextHost::document_len(self, owner, document)
+    }
+
+    fn document_height(&self, owner: NodeId, document: TextDocumentId) -> Option<f32> {
+        TextHost::document_height(self, owner, document)
+    }
+
+    fn paragraph_at(
+        &self,
+        owner: NodeId,
+        document: TextDocumentId,
+        index: usize,
+    ) -> Option<ParagraphId> {
+        TextHost::paragraph_at(self, owner, document, index).map(|info| info.id)
+    }
+
+    fn paragraph_at_y(
+        &self,
+        owner: NodeId,
+        document: TextDocumentId,
+        y: f32,
+    ) -> Option<ParagraphId> {
+        TextHost::paragraph_at_y(self, owner, document, y).map(|info| info.id)
+    }
+
+    fn paragraph_index(
+        &self,
+        owner: NodeId,
+        document: TextDocumentId,
+        paragraph: ParagraphId,
+    ) -> Option<usize> {
+        TextHost::paragraph_index(self, owner, document, paragraph)
+    }
+
+    fn paragraph_top(
+        &self,
+        owner: NodeId,
+        document: TextDocumentId,
+        paragraph: ParagraphId,
+    ) -> Option<f32> {
+        TextHost::paragraph_top(self, owner, document, paragraph)
+    }
+
+    fn paragraph_height(
+        &self,
+        owner: NodeId,
+        document: TextDocumentId,
+        paragraph: ParagraphId,
+    ) -> Option<f32> {
+        TextHost::paragraph(self, owner, document, paragraph).map(|info| info.height())
     }
 }
 

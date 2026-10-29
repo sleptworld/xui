@@ -68,6 +68,15 @@ impl FaceMetrics {
         self.ascent + self.descent + self.line_gap
     }
 
+    /// The metrics in pixels at `font_size`.
+    pub fn scaled(self, font_size: f32) -> Self {
+        Self {
+            ascent: self.ascent * font_size,
+            descent: self.descent * font_size,
+            line_gap: self.line_gap * font_size,
+        }
+    }
+
     pub fn max(self, other: Self) -> Self {
         Self {
             ascent: self.ascent.max(other.ascent),

@@ -25,6 +25,7 @@ pub mod state;
 pub mod style;
 pub mod styles;
 pub mod text;
+pub mod text_runs;
 pub mod transition;
 pub mod widget;
 
@@ -65,6 +66,7 @@ pub use style::{
     WidgetStateMatcher,
 };
 pub use text::*;
+pub use text_runs::*;
 pub use transition::{
     Animation, AnimationDirection, AnimationProgress, Easing, Iterations, Transition,
 };

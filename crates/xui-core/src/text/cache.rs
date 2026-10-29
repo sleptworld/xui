@@ -19,6 +19,7 @@ use xui_interface::{
 };
 
 use super::TextLayoutQuery;
+use super::sequence::HeightSequence;
 
 new_key_type! {
     /// Stable identity of one logical text unit.
@@ -56,6 +57,20 @@ impl TextLayoutSlot {
 
     pub const fn get(self) -> u32 {
         self.0
+    }
+}
+
+/// Which of an owner's text units something draws or queries: a direct slot,
+/// or a paragraph of one of its documents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TextUnitRef {
+    Slot(TextLayoutSlot),
+    Paragraph(TextDocumentId, ParagraphId),
+}
+
+impl From<TextLayoutSlot> for TextUnitRef {
+    fn from(slot: TextLayoutSlot) -> Self {
+        Self::Slot(slot)
     }
 }
 
@@ -221,6 +236,16 @@ impl<B: TextBackend> TextHost<B> {
         Some(handle)
     }
 
+    /// The active layout of `owner`'s unit `unit`, slot or paragraph.
+    pub fn active_layout(&self, owner: NodeId, unit: TextUnitRef) -> Option<TextLayoutHandle> {
+        match unit {
+            TextUnitRef::Slot(slot) => self.active_slot(owner, slot),
+            TextUnitRef::Paragraph(document, paragraph) => {
+                self.active_unit(self.paragraph_unit(owner, document, paragraph)?)
+            }
+        }
+    }
+
     pub fn active_slot(&self, owner: NodeId, slot: TextLayoutSlot) -> Option<TextLayoutHandle> {
         self.active_unit(self.direct_unit(owner, slot)?)
     }
@@ -378,6 +403,20 @@ impl<B: TextBackend> TextHost<B> {
         self.replace_active_unit(unit, key, handle, true);
         self.enforce_unit_variant_limit(unit, Some(key), 0);
         Some(handle)
+    }
+
+    /// Returns a cached layout for a document paragraph, or shapes and
+    /// activates it. `None` when the paragraph is not in the document.
+    pub fn activate_paragraph(
+        &mut self,
+        owner: NodeId,
+        document: TextDocumentId,
+        paragraph: ParagraphId,
+        input: TextLayoutInput,
+    ) -> Option<TextLayoutHandle> {
+        let unit = self.paragraph_unit(owner, document, paragraph)?;
+        let key = layout_key_for_input(&input);
+        self.activate_unit(unit, key, input)
     }
 
     /// Backwards-compatible convenience for callers that intentionally shape
@@ -729,9 +768,9 @@ impl<B: TextBackend> TextHost<B> {
             estimated_height: sanitize_height(estimated_height),
             measured_height: None,
         });
-        let index = index.min(document_cache.order.len());
-        document_cache.order.insert(index, paragraph);
-        document_cache.rebuild_height_index();
+        let height = sanitize_height(estimated_height);
+        document_cache.sequence.insert(index, paragraph, height);
+        document_cache.clamp_visible_range();
 
         self.units.get_mut(unit)?.location = TextUnitLocation::Paragraph {
             owner,
@@ -753,8 +792,8 @@ impl<B: TextBackend> TextHost<B> {
             .and_then(|cache| cache.documents.get_mut(document))
             .and_then(|document| {
                 let record = document.paragraphs.remove(paragraph)?;
-                document.order.retain(|candidate| *candidate != paragraph);
-                document.rebuild_height_index();
+                document.sequence.remove(paragraph);
+                document.clamp_visible_range();
                 Some(record.unit)
             })
         else {
@@ -798,24 +837,17 @@ impl<B: TextBackend> TextHost<B> {
         index: usize,
     ) -> Option<ParagraphInfo> {
         let document = self.owners.get(&owner)?.documents.get(document)?;
-        let paragraph = *document.order.get(index)?;
+        let paragraph = document.sequence.at(index)?;
         Some(document.paragraphs.get(paragraph)?.info(paragraph))
     }
 
     pub fn document_len(&self, owner: NodeId, document: TextDocumentId) -> Option<usize> {
-        Some(
-            self.owners
-                .get(&owner)?
-                .documents
-                .get(document)?
-                .order
-                .len(),
-        )
+        Some(self.owners.get(&owner)?.documents.get(document)?.sequence.len())
     }
 
     pub fn document_height(&self, owner: NodeId, document: TextDocumentId) -> Option<f32> {
         let document = self.owners.get(&owner)?.documents.get(document)?;
-        Some(document.height_index.prefix_sum(document.order.len()))
+        Some(document.sequence.total())
     }
 
     pub fn paragraph_top(
@@ -825,11 +857,31 @@ impl<B: TextBackend> TextHost<B> {
         paragraph: ParagraphId,
     ) -> Option<f32> {
         let document = self.owners.get(&owner)?.documents.get(document)?;
-        let index = document
-            .order
-            .iter()
-            .position(|candidate| *candidate == paragraph)?;
-        Some(document.height_index.prefix_sum(index))
+        document.sequence.top_of(paragraph)
+    }
+
+    /// Where `paragraph` is in its document's order.
+    pub fn paragraph_index(
+        &self,
+        owner: NodeId,
+        document: TextDocumentId,
+        paragraph: ParagraphId,
+    ) -> Option<usize> {
+        let document = self.owners.get(&owner)?.documents.get(document)?;
+        document.sequence.index_of(paragraph)
+    }
+
+    /// The paragraphs at `range` of the document's order, in order.
+    pub fn paragraphs_in(
+        &self,
+        owner: NodeId,
+        document: TextDocumentId,
+        range: Range<usize>,
+    ) -> Vec<ParagraphId> {
+        self.owners
+            .get(&owner)
+            .and_then(|cache| cache.documents.get(document))
+            .map_or_else(Vec::new, |document| document.sequence.keys(range))
     }
 
     pub fn paragraph_at_y(
@@ -839,25 +891,7 @@ impl<B: TextBackend> TextHost<B> {
         y: f32,
     ) -> Option<ParagraphInfo> {
         let document = self.owners.get(&owner)?.documents.get(document)?;
-        if document.order.is_empty() || y < 0.0 {
-            return None;
-        }
-        let total = document.height_index.prefix_sum(document.order.len());
-        if y >= total {
-            return None;
-        }
-
-        let mut low = 0;
-        let mut high = document.order.len();
-        while low < high {
-            let mid = low + (high - low) / 2;
-            if document.height_index.prefix_sum(mid + 1) <= y {
-                low = mid + 1;
-            } else {
-                high = mid;
-            }
-        }
-        let paragraph = *document.order.get(low)?;
+        let paragraph = document.sequence.at_y(y)?;
         Some(document.paragraphs.get(paragraph)?.info(paragraph))
     }
 
@@ -875,23 +909,36 @@ impl<B: TextBackend> TextHost<B> {
         else {
             return false;
         };
-        let Some(index) = document
-            .order
-            .iter()
-            .position(|candidate| *candidate == paragraph)
+        let Some(record) = document.paragraphs.get_mut(paragraph) else {
+            return false;
+        };
+        record.measured_height = measured_height.map(sanitize_height);
+        let height = record.height();
+        document.sequence.set_height(paragraph, height)
+    }
+
+    /// Replaces `paragraph`'s estimate, which its height is while it has no
+    /// measured one.
+    pub fn update_paragraph_estimate(
+        &mut self,
+        owner: NodeId,
+        document: TextDocumentId,
+        paragraph: ParagraphId,
+        estimated_height: f32,
+    ) -> bool {
+        let Some(document) = self
+            .owners
+            .get_mut(&owner)
+            .and_then(|cache| cache.documents.get_mut(document))
         else {
             return false;
         };
         let Some(record) = document.paragraphs.get_mut(paragraph) else {
             return false;
         };
-        let old_height = record.height();
-        record.measured_height = measured_height.map(sanitize_height);
-        let delta = record.height() - old_height;
-        if delta != 0.0 {
-            document.height_index.add(index, delta);
-        }
-        true
+        record.estimated_height = sanitize_height(estimated_height);
+        let height = record.height();
+        document.sequence.set_height(paragraph, height)
     }
 
     pub fn set_visible_paragraphs(
@@ -907,8 +954,9 @@ impl<B: TextBackend> TextHost<B> {
         else {
             return false;
         };
-        let start = range.start.min(document.order.len());
-        let end = range.end.clamp(start, document.order.len());
+        let len = document.sequence.len();
+        let start = range.start.min(len);
+        let end = range.end.clamp(start, len);
         document.visible_range = start..end;
         true
     }
@@ -1233,60 +1281,17 @@ impl OwnerCache {
 #[derive(Default)]
 struct DocumentCache {
     paragraphs: SlotMap<ParagraphId, ParagraphRecord>,
-    order: Vec<ParagraphId>,
-    height_index: HeightIndex,
+    /// The paragraphs in order, with their heights.
+    sequence: HeightSequence<ParagraphId>,
     visible_range: Range<usize>,
 }
 
 impl DocumentCache {
-    fn rebuild_height_index(&mut self) {
-        self.height_index =
-            HeightIndex::from_values(self.order.iter().filter_map(|paragraph| {
-                self.paragraphs.get(*paragraph).map(ParagraphRecord::height)
-            }));
-        let start = self.visible_range.start.min(self.order.len());
-        let end = self.visible_range.end.clamp(start, self.order.len());
+    fn clamp_visible_range(&mut self) {
+        let len = self.sequence.len();
+        let start = self.visible_range.start.min(len);
+        let end = self.visible_range.end.clamp(start, len);
         self.visible_range = start..end;
-    }
-}
-
-/// A compact Fenwick tree used only by virtual-document paragraph metadata.
-///
-/// Indices accepted by the public methods are zero based; prefix sums use an
-/// exclusive end, which keeps document calculations free of `index - 1`.
-#[derive(Default)]
-struct HeightIndex {
-    inner: Vec<f32>,
-}
-
-impl HeightIndex {
-    fn from_values(values: impl IntoIterator<Item = f32>) -> Self {
-        let values: Vec<_> = values.into_iter().collect();
-        let mut index = Self {
-            inner: vec![0.0; values.len() + 1],
-        };
-        for (position, value) in values.into_iter().enumerate() {
-            index.add(position, value);
-        }
-        index
-    }
-
-    fn add(&mut self, index: usize, delta: f32) {
-        let mut cursor = index + 1;
-        while cursor < self.inner.len() {
-            self.inner[cursor] += delta;
-            cursor += cursor & cursor.wrapping_neg();
-        }
-    }
-
-    fn prefix_sum(&self, end: usize) -> f32 {
-        let mut cursor = end.min(self.inner.len().saturating_sub(1));
-        let mut sum = 0.0;
-        while cursor > 0 {
-            sum += self.inner[cursor];
-            cursor -= cursor & cursor.wrapping_neg();
-        }
-        sum
     }
 }
 
@@ -1409,6 +1414,38 @@ impl<B: TextBackend> TextLayoutQuery for LayoutEntry<B> {
             range,
         ))
     }
+
+    fn hit_test_byte(&self, point: Point) -> Option<(usize, Affinity)> {
+        let position = self.layout.hit_test_point(point)?;
+        let offset = match position.offset.unit {
+            TextOffsetUnit::Utf8Byte => position.offset.raw,
+            _ => {
+                let text = self.input.as_ref()?.text.as_str();
+                char_to_byte_offset(text, text_offset_to_char(text, position.offset))
+            }
+        };
+        Some((offset, position.affinity))
+    }
+
+    fn caret_rect_at_byte(&self, offset: usize, affinity: Affinity) -> Option<Rect> {
+        let unit = layout_offset_unit(&self.layout);
+        let offset = match unit {
+            TextOffsetUnit::Utf8Byte => TextOffset::byte_offset(offset),
+            _ => {
+                let text = self.input.as_ref()?.text.as_str();
+                char_to_layout_offset(text, byte_to_char_index(text, offset), unit)
+            }
+        };
+        self.layout.caret_rect(TextPosition { offset, affinity })
+    }
+
+    fn line_rects(&self) -> Vec<Rect> {
+        self.layout
+            .lines
+            .iter()
+            .map(|line| Rect::new(line.x, line.y, line.width, line.height))
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1449,7 +1486,7 @@ fn layout_key_for_input(input: &TextLayoutInput) -> TextLayoutKey {
     };
     TextLayoutKey {
         text_revision: hash_value(&input.text),
-        style_revision: shape_style_hash(&input.default_style),
+        style_revision: shape_style_hash(&input.default_style, &input.shape_runs),
         layout_style_hash: hash_value(&(&input.paragraph_style, &input.text_box_style)),
         max_width_bits,
         max_height_bits: f32::INFINITY.to_bits(),
@@ -1467,8 +1504,12 @@ fn same_content(a: &TextLayoutKey, b: &TextLayoutKey) -> bool {
         && a.font_context_revision == b.font_context_revision
 }
 
-fn shape_style_hash(style: &xui_interface::ComputedTextStyle) -> u64 {
+fn shape_style_hash(
+    style: &xui_interface::ComputedTextStyle,
+    runs: &xui_interface::ShapeRuns,
+) -> u64 {
     let mut hasher = KEY_HASHER.build_hasher();
+    runs.hash(&mut hasher);
     style.font_family.hash(&mut hasher);
     style.font_size.to_bits().hash(&mut hasher);
     style.font_weight.hash(&mut hasher);

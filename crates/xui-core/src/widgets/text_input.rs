@@ -941,7 +941,7 @@ impl PaintContent for TextInputState {
                             rect.origin(),
                             (rect.width() + self.scroll_x, rect.height()),
                         ),
-                        slot: crate::text::TextLayoutSlot::PRIMARY,
+                        unit: crate::text::TextLayoutSlot::PRIMARY.into(),
                         layout_revision: self.controller.revision(),
                         // Centered, so a box taller than one line keeps
                         // its text, caret, and selection on the midline.
@@ -1000,8 +1000,9 @@ impl PlatformTextInput for TextInputState {
     fn text_input_session(
         &self,
         content_rect: Bounds,
-        text_layout: &dyn crate::text::TextLayoutQuery,
-    ) -> TextInputSession {
+        text_layout: Option<&dyn crate::text::TextLayoutQuery>,
+    ) -> Option<TextInputSession> {
+        let text_layout = text_layout?;
         let mut cursor_area = text_layout
             .caret_rect(self.controller.selection().extent)
             .unwrap_or_else(|| Rect::new(0.0, 0.0, 1.0, content_rect.height().max(1.0)));
@@ -1011,11 +1012,11 @@ impl PlatformTextInput for TextInputState {
         cursor_area.width = cursor_area.width.max(1.0);
         cursor_area.height = cursor_area.height.max(1.0);
 
-        TextInputSession {
+        Some(TextInputSession {
             cursor_area,
             purpose: TextInputPurpose::Normal,
             multiline: false,
-        }
+        })
     }
 }
 

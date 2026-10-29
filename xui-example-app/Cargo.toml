@@ -21,6 +21,7 @@ xui-core = { path = "../crates/xui-core" }
 xui-macros = { path = "../crates/xui-macros" }
 xui-macos = { path = "../crates/xui-macos" }
 xui-components = { path = "../xui-components" }
+xui-editor = { path = "../crates/xui-editor" }
 xui-skia = { path = "../crates/xui-skia", optional = true }
 xui-f = { path = "../crates/xui-f" }
 lucide-rs = { path = "../lucide-rs" }

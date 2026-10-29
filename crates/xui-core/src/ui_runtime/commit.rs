@@ -69,6 +69,7 @@ impl UiRuntime {
             window_visible: true,
             frame_time: crate::clock::FrameTime::ZERO,
             canvas_invalidations: crate::widgets::CanvasInvalidator::default(),
+            surface_nodes: Default::default(),
             tickers: crate::ticker::TickerRegistry::default(),
             wakes: slotmap::SparseSecondaryMap::new(),
             scale_factor: 1.0,
@@ -263,6 +264,11 @@ impl UiRuntime {
             WidgetType::Text | WidgetType::TextInput => {
                 self.text_nodes.insert(id, ());
             }
+            WidgetType::TextSurface => {
+                self.surface_nodes.insert(id, ());
+                self.bind_surface_handle(id);
+                work |= HostWorkFlags::SHAPE_CHANGE;
+            }
             _ => {}
         }
         self.mark_work(id, work);
@@ -337,6 +343,13 @@ impl UiRuntime {
         }
         if self.canvas_nodes.remove(id).is_some() {
             self.unbind_canvas_controller(id);
+        }
+        if self.surface_nodes.remove(id).is_some() {
+            self.hosts[id].widget.with_widgets_mut(|widget| {
+                if let Widgets::TextSurface(surface) = widget {
+                    surface.state.unbind();
+                }
+            });
         }
         self.canvases_wanting_repaint.remove(id);
         self.wakes.remove(id);
@@ -454,6 +467,15 @@ impl UiRuntime {
         self.hosts[id].widget.with_widgets_mut(|widget| {
             if let Widgets::Canvas(canvas) = widget {
                 canvas.state.bind(id, invalidator);
+            }
+        });
+    }
+
+    fn bind_surface_handle(&mut self, id: NodeId) {
+        let invalidator = self.canvas_invalidator();
+        self.hosts[id].widget.with_widgets_mut(|widget| {
+            if let Widgets::TextSurface(surface) = widget {
+                surface.state.bind(id, invalidator);
             }
         });
     }

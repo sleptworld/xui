@@ -323,7 +323,8 @@ fn dispatch_builtin_event<B: TextBackend>(
                 let text_layout = primary_text_query(host_text_cache, node_id);
                 let mut cx =
                     EventContext::new(node, text_layout, phase, &mut update, &mut requests)
-                        .with_platform(arena.platform());
+                        .with_platform(arena.platform())
+                        .with_text_units(host_text_cache);
                 node.widget.handle_event(event, &mut cx)
             })
             .unwrap_or(EventResult::Ignored)

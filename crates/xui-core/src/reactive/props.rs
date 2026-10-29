@@ -54,7 +54,10 @@ pub fn __expr<P: PropKind>(
     deps: Vec<SourceId>,
     compute: impl Fn() -> P::Item + 'static,
 ) -> Expr<P::Item> {
-    Expr { deps, compute: Box::new(compute) }
+    Expr {
+        deps,
+        compute: Box::new(compute),
+    }
 }
 
 /// How a parent's value of type `V` becomes prop `Self`: converted with
@@ -125,7 +128,9 @@ impl<T: PartialEq + 'static> Tracked<T> {
                 Signal::new(id, value).read_only()
             }
             // Reads nothing of the parent's: a constant, with no effect to bind.
-            Self::Derived(Expr { deps, compute }) if deps.is_empty() => Self::Constant(compute()).resolve(cx),
+            Self::Derived(Expr { deps, compute }) if deps.is_empty() => {
+                Self::Constant(compute()).resolve(cx)
+            }
             Self::Derived(Expr { deps, compute }) => {
                 let id = cx.graph.insert();
                 cx.owned.push(id);
@@ -173,6 +178,8 @@ pub trait MountDraft<C> {
 
 /// A child's mount, its props resolved by `props` at mount.
 #[doc(hidden)]
-pub fn __pending_with<C: ComponentDef>(props: impl FnOnce(&mut PropCx<'_>) -> C::Props + 'static) -> PendingMount {
+pub fn __pending_with<C: ComponentDef>(
+    props: impl FnOnce(&mut PropCx<'_>) -> C::Props + 'static,
+) -> PendingMount {
     Box::new(move |runtime: &mut Runtime, ui, place| runtime.mount_with::<C>(ui, props, place))
 }

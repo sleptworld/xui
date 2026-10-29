@@ -171,14 +171,7 @@ impl UiRuntime {
                 } else {
                     TextLayoutConstraints::max_width(content_width.max(0.0))
                 };
-                let input = TextLayoutInput::new(
-                    props.text,
-                    constraints,
-                    props.style.into(),
-                    props.paragraph,
-                    props.text_box,
-                    font_context,
-                );
+                let input = TextLayoutInput::from_props(props, constraints, font_context);
                 Some((id, input))
             })
             .collect();
@@ -210,7 +203,12 @@ impl UiRuntime {
         let old_rect = previous.layout;
         let layout_changed = old_rect != rect || previous.world_origin != world_origin;
         let size_changed = old_rect.width() != rect.width() || old_rect.height() != rect.height();
-        if size_changed && self.hosts[id].node_type == WidgetType::Canvas {
+        if size_changed
+            && matches!(
+                self.hosts[id].node_type,
+                WidgetType::Canvas | WidgetType::TextSurface
+            )
+        {
             self.ui_state.mark_canvas_dirty(id);
         }
         let mut subtree_work = {
@@ -337,14 +335,7 @@ fn measure_layout_context<T: TextBackend>(
                 };
 
                 let font_context = measurer.font_epoch();
-                let input = TextLayoutInput::new(
-                    props.text,
-                    constraints,
-                    props.style.into(),
-                    props.paragraph,
-                    props.text_box,
-                    font_context,
-                );
+                let input = TextLayoutInput::from_props(props, constraints, font_context);
                 // Text is painted wrapped at its final width (a text input,
                 // unbounded), so min- and max-content probes are only sized.
                 let metrics = if node.node_type != WidgetType::TextInput

@@ -848,7 +848,7 @@ impl CompiledCanvas {
                     let text = Primitive::Text(TextPrimitive {
                         node_id,
                         bounds: *bounds,
-                        slot: canvas_text_slot(*id),
+                        unit: canvas_text_slot(*id).into(),
                         layout_revision: *revision,
                         vertical_align: props.paragraph.vertical_align,
                         paint: TextPaintProps::new(TextPaintStyle {
@@ -993,7 +993,7 @@ impl CanvasInvalidator {
         std::mem::take(&mut *self.pending.borrow_mut())
     }
 
-    fn push(&self, id: NodeId, flags: WidgetUpdateFlags) {
+    pub(crate) fn push(&self, id: NodeId, flags: WidgetUpdateFlags) {
         self.pending.borrow_mut().push((id, flags));
         let wake = self.wake.borrow().clone();
         if let Some(wake) = wake {
@@ -2159,7 +2159,7 @@ mod tests {
         let Primitive::Text(text) = &items[2].primitive else {
             panic!("third item should be text");
         };
-        assert_eq!(text.slot, TextLayoutSlot::new(1));
+        assert_eq!(text.unit, TextLayoutSlot::new(1).into());
         let text_bounds = Bounds::from_origin_size((10.0, 12.0), (80.0, 24.0));
         assert_eq!(text.bounds, text_bounds);
         assert_eq!(

@@ -2024,7 +2024,7 @@ impl<T: TextBackend> WGPUBackend<T> {
         }
 
         let handle = text
-            .active_slot(command.node_id, command.slot)
+            .active_layout(command.node_id, command.unit)
             .expect("text layout must be prepared before paint");
         let layout = text
             .layout(handle)

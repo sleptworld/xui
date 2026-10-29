@@ -134,8 +134,8 @@ mod tests {
     use super::*;
     use xui_interface::{
         ComputedTextStyle, FontFamily, FontStretch, FontStyle, FontWeight, LineHeight,
-        OverflowWrap, ParagraphStyle, TextAlign, TextBoxStyle, TextContent, TextLayoutConstraints,
-        TextOverflow, TextStyle, WhiteSpace,
+        OverflowWrap, ParagraphStyle, ShapeRun, ShapeRuns, ShapeStyle, TextAlign, TextBoxStyle,
+        TextContent, TextLayoutConstraints, TextOverflow, TextStyle, WhiteSpace,
     };
     use xui_interface::{
         FontCollection, FontData, GlyphRasterizer, GlyphRequest, RasterOptions,
@@ -450,5 +450,82 @@ mod tests {
         assert_eq!(short.height, 64.0);
         assert_eq!(tall.height, 96.0);
         assert!((tall.baseline - short.baseline - 16.0).abs() < 0.01);
+    }
+
+    fn shape_run(range: std::ops::Range<usize>, edit: impl FnOnce(&mut ShapeStyle)) -> ShapeRun {
+        let mut style = ShapeStyle::of(&ComputedTextStyle::from(TextStyle::default()));
+        edit(&mut style);
+        ShapeRun { range, style }
+    }
+
+    #[test]
+    fn shape_runs_split_glyph_runs_and_report_their_style() {
+        let mut backend = FBackend::new();
+        if backend.face_count() == 0 {
+            return;
+        }
+        // "plain " is 0..6, "bold" 6..10.
+        let runs = ShapeRuns::new(vec![shape_run(6..10, |style| {
+            style.font_weight = FontWeight::Bold;
+        })]);
+        let request = input("plain bold", 400.0).with_shape_runs(runs);
+        let mut state = backend.create_state();
+        let layout = backend.layout_paragraph(&mut state, request);
+
+        for run in &layout.runs {
+            let start = run.text_range.start.offset();
+            let expected = if start >= 6 {
+                (1, FontWeight::Bold)
+            } else {
+                (0, FontWeight::Normal)
+            };
+            assert_eq!((run.style_id, run.font_weight), expected, "run at {start}");
+            assert!(
+                run.text_range.end.offset() <= 6 || start >= 6,
+                "a glyph run crosses the shape run boundary"
+            );
+        }
+        assert!(layout.runs.iter().any(|run| run.style_id == 1));
+    }
+
+    #[test]
+    fn a_larger_shape_run_makes_its_line_taller() {
+        let mut backend = FBackend::new();
+        if backend.face_count() == 0 {
+            return;
+        }
+        let mut line = |runs: ShapeRuns| {
+            let mut state = backend.create_state();
+            let layout = backend
+                .layout_paragraph(&mut state, input("small BIG", 400.0).with_shape_runs(runs));
+            (layout.lines[0].height, layout.size().width)
+        };
+        let (plain_height, plain_width) = line(ShapeRuns::empty());
+        let (big_height, big_width) = line(ShapeRuns::new(vec![shape_run(6..9, |style| {
+            style.font_size *= 3.0;
+        })]));
+        assert!(
+            big_height > plain_height * 2.0,
+            "{big_height} vs {plain_height}"
+        );
+        assert!(big_width > plain_width, "{big_width} vs {plain_width}");
+    }
+
+    #[test]
+    fn changing_shape_runs_reshapes_a_reused_state() {
+        let mut backend = FBackend::new();
+        if backend.face_count() == 0 {
+            return;
+        }
+        let mut state = backend.create_state();
+        let plain = backend.layout_paragraph(&mut state, input("reused state", 400.0));
+        let bold = backend.layout_paragraph(
+            &mut state,
+            input("reused state", 400.0)
+                .with_shape_runs(ShapeRuns::new(vec![shape_run(0..6, |style| {
+                    style.font_size *= 2.0
+                })])),
+        );
+        assert!(bold.size().width > plain.size().width);
     }
 }

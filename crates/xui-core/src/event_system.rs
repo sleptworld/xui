@@ -144,6 +144,7 @@ pub struct EventContext<'a> {
     pub phase: EventPhase,
     pub node_ref: NodeView<'a>,
     text_layout: Option<&'a dyn TextLayoutQuery>,
+    text_units: Option<&'a dyn crate::text::TextUnitLookup>,
     request_update: &'a mut WidgetUpdateFlags,
     requests: &'a mut EventRequests,
     platform: Option<&'a crate::platform::PlatformHandle>,
@@ -160,11 +161,25 @@ impl<'a> EventContext<'a> {
         Self {
             node_ref,
             text_layout,
+            text_units: None,
             phase,
             request_update,
             requests,
             platform: None,
         }
+    }
+
+    /// Lets the handler query every text unit and document laid out, not
+    /// only the node's primary slot. The dispatcher always sets it.
+    pub fn with_text_units(mut self, text_units: &'a dyn crate::text::TextUnitLookup) -> Self {
+        self.text_units = Some(text_units);
+        self
+    }
+
+    /// Every resident text layout and virtual document; see
+    /// [`Self::with_text_units`].
+    pub fn text_units(&self) -> Option<&'a dyn crate::text::TextUnitLookup> {
+        self.text_units
     }
 
     /// Lets the handler reach the host: see [`Self::send_platform`] and
@@ -334,8 +349,13 @@ pub fn dispatch_event_pipeline<B: TextBackend>(
         &mut semantic,
     );
 
-    for event in translator.translate_raw_event(&event, arena) {
-        semantic.push(dispatcher::dispatch_semantic(arena, host_text_cache, event));
+    // A widget that consumed a wheel scrolled itself (a text surface does):
+    // the containers around it do not scroll as well.
+    let scrolled_itself = matches!(event, RawEvent::Wheel(_)) && raw.result.is_consumed();
+    if !scrolled_itself {
+        for event in translator.translate_raw_event(&event, arena) {
+            semantic.push(dispatcher::dispatch_semantic(arena, host_text_cache, event));
+        }
     }
 
     drain_focus_requests(

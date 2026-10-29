@@ -5408,6 +5408,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "xui-editor"
+version = "0.1.0"
+dependencies = [
+ "ropey",
+ "rustc-hash 2.1.3",
+ "unicode-segmentation",
+ "xui-core",
+ "xui-f",
+ "xui-interface",
+]
+
+[[package]]
 name = "xui-example-app"
 version = "0.1.0"
 dependencies = [
@@ -5418,6 +5430,7 @@ dependencies = [
  "xui-components",
  "xui-core",
  "xui-cosmic",
+ "xui-editor",
  "xui-f",
  "xui-macos",
  "xui-macros",

@@ -1,0 +1,15 @@
+[package]
+name = "xui-editor"
+version = "0.1.0"
+edition = "2024"
+description = "A text and code editor model for xui's TextSurface"
+
+[dependencies]
+xui-core = { path = "../xui-core" }
+xui-interface = { path = "../xui-interface" }
+ropey = "1.6.1"
+rustc-hash = "2.1.2"
+unicode-segmentation = "1.13.2"
+
+[dev-dependencies]
+xui-f = { path = "../xui-f" }

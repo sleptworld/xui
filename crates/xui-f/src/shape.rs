@@ -4,7 +4,10 @@ use harfrust::Direction;
 use smallvec::SmallVec;
 use unicode_script::{Script, UnicodeScript as _};
 use unicode_segmentation::UnicodeSegmentation;
-use xui_interface::{ComputedTextStyle, FontQuery, FontStretch, GlyphFlags, Point};
+use xui_interface::{
+    ComputedTextStyle, DEFAULT_TEXT_STYLE_ID, FontQuery, FontStretch, FontWeight, GlyphFlags,
+    Point, ShapeRuns, TextStyleId,
+};
 
 use crate::{
     FFontId, bidi,
@@ -33,6 +36,8 @@ pub(crate) struct ShapedRun {
     pub font_id: FFontId,
     /// Logical pixels per em.
     pub font_size: f32,
+    pub font_weight: FontWeight,
+    pub style_id: TextStyleId,
     pub bidi_level: u8,
     pub metrics: FaceMetrics,
     pub glyphs: Vec<ShapedGlyph>,
@@ -57,13 +62,14 @@ struct FontSpan {
 
 /// The font query a text style asks for and the faces it found, looked up
 /// once for every line of a paragraph.
-pub(crate) struct LineFonts {
+struct LineFonts {
+    style: ComputedTextStyle,
     query: FontQuery,
     candidates: Arc<[FFontId]>,
 }
 
 impl LineFonts {
-    pub fn new(fonts: &mut FontStore, style: &ComputedTextStyle) -> Self {
+    fn new(fonts: &mut FontStore, style: ComputedTextStyle) -> Self {
         let query = FontQuery {
             families: vec![style.font_family.clone()],
             weight: style.font_weight,
@@ -71,11 +77,44 @@ impl LineFonts {
             stretch: FontStretch::Normal,
         };
         let candidates = fonts.candidates_for(&query);
-        Self { query, candidates }
+        Self {
+            style,
+            query,
+            candidates,
+        }
+    }
+}
+
+/// Every style a paragraph is shaped in: its default, then one per shape run,
+/// each with its fonts looked up once.
+pub(crate) struct LineStyles {
+    runs: ShapeRuns,
+    /// The default first, then shape run `i` at `i + 1`, so an index here is
+    /// the style id its glyph runs report.
+    styles: Vec<LineFonts>,
+}
+
+impl LineStyles {
+    pub fn new(fonts: &mut FontStore, default: &ComputedTextStyle, runs: &ShapeRuns) -> Self {
+        let mut styles = Vec::with_capacity(runs.len() + 1);
+        styles.push(LineFonts::new(fonts, default.clone()));
+        for run in runs.as_slice() {
+            styles.push(LineFonts::new(fonts, run.style.apply(default)));
+        }
+        Self {
+            runs: runs.clone(),
+            styles,
+        }
     }
 
+    /// The default style alone, for text that takes no runs.
+    pub fn plain(fonts: &mut FontStore, default: &ComputedTextStyle) -> Self {
+        Self::new(fonts, default, &ShapeRuns::empty())
+    }
+
+    /// The default style's fonts.
     pub fn candidates(&self) -> &[FFontId] {
-        &self.candidates
+        &self.styles[0].candidates
     }
 }
 
@@ -96,10 +135,9 @@ impl ShapedLine {
 
 pub(crate) fn shape_line(
     fonts: &mut FontStore,
-    line_fonts: &LineFonts,
+    styles: &LineStyles,
     text: &str,
     range: Range<usize>,
-    style: &ComputedTextStyle,
     resolver: &bidi::Resolver,
 ) -> ShapedLine {
     let order = resolver.resolve(range);
@@ -110,19 +148,32 @@ pub(crate) fn shape_line(
     };
 
     for bidi_run in order.runs {
-        let mut spans = font_spans(
-            fonts,
-            text,
-            bidi_run.range,
-            &line_fonts.query,
-            &line_fonts.candidates,
-        );
+        // Shaping never crosses a shape run's boundary: each piece of the bidi
+        // run is itemized by font in its own style.
+        let mut spans = SmallVec::<[(FontSpan, usize); 2]>::new();
+        let mut script = None;
+        for (piece, run) in styles.runs.segments(text, bidi_run.range) {
+            let style_index = run.map_or(0, |index| index + 1);
+            let line_fonts = &styles.styles[style_index];
+            let (piece_spans, last_script) = font_spans(
+                fonts,
+                text,
+                piece,
+                &line_fonts.query,
+                &line_fonts.candidates,
+                script,
+            );
+            script = last_script;
+            spans.extend(piece_spans.into_iter().map(|span| (span, style_index)));
+        }
         if bidi_run.level % 2 == 1 {
             spans.reverse();
         }
         output.runs.reserve(spans.len());
-        for span in spans {
-            if let Some(run) = shape_span(fonts, text, span, bidi_run.level, style) {
+        for (span, style_index) in spans {
+            let style = &styles.styles[style_index].style;
+            let style_id = TextStyleId::try_from(style_index).unwrap_or(DEFAULT_TEXT_STYLE_ID);
+            if let Some(run) = shape_span(fonts, text, span, bidi_run.level, style, style_id) {
                 output.width += run.advance;
                 output.runs.push(run);
             }
@@ -131,20 +182,24 @@ pub(crate) fn shape_line(
     output
 }
 
+/// Itemizes `range` by font. `script` is the script the text before `range`
+/// ended in, carried into text with none of its own (punctuation after a
+/// style change); the script `range` ends in is returned with the spans.
 fn font_spans(
     fonts: &mut FontStore,
     text: &str,
     range: Range<usize>,
     query: &FontQuery,
     candidates: &[FFontId],
-) -> SmallVec<[FontSpan; 2]> {
+    script: Option<Script>,
+) -> (SmallVec<[FontSpan; 2]>, Option<Script>) {
     let mut spans = SmallVec::new();
     let Some(slice) = text.get(range.clone()) else {
-        return spans;
+        return (spans, script);
     };
     // The first grapheme with a strong script is the one holding the first
     // character with one.
-    let mut current_script = strong_script(slice).unwrap_or(Script::Common);
+    let mut current_script = strong_script(slice).or(script).unwrap_or(Script::Common);
     for (offset, grapheme) in slice.grapheme_indices(true) {
         if let Some(script) = strong_script(grapheme) {
             current_script = script;
@@ -172,7 +227,7 @@ fn font_spans(
             });
         }
     }
-    spans
+    (spans, Some(current_script))
 }
 
 fn shape_span(
@@ -181,6 +236,7 @@ fn shape_span(
     span: FontSpan,
     bidi_level: u8,
     style: &ComputedTextStyle,
+    style_id: TextStyleId,
 ) -> Option<ShapedRun> {
     let metrics = fonts.face(span.font_id)?.metrics;
     let slice = text.get(span.range.clone())?;
@@ -305,6 +361,8 @@ fn shape_span(
         text_range: span.range,
         font_id: span.font_id,
         font_size: style.font_size,
+        font_weight: style.font_weight,
+        style_id,
         bidi_level,
         metrics,
         glyphs,
