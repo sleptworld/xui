@@ -13,7 +13,7 @@ use xui_wgpu_text::{AtlasOptions, TextBatch, TextRenderer};
 use crate::{
     VelloBackendError, WgpuContext,
     encode::{BitmapText, ClipMask, Inherit, Surface, SurfaceOp, Unsupported, encode_frame},
-    filter::{ENCODED_FORMAT, Finish, FilterRenderer, LINEAR_FORMAT, Placed, PlanTextures, Slot},
+    filter::{ENCODED_FORMAT, Finish, FilterRenderer, WORK_FORMAT, Placed, PlanTextures, Slot},
     layer_cache::{CacheUpdate, LayerCache},
     texture::ExternalTextures,
     image::ImageCache,
@@ -518,7 +518,9 @@ impl<T: TextBackend> VelloBackend<T> {
     /// A surface that is one band of 2D content, on an opaque clear colour
     /// and followed by nothing but text, is one Vello render straight into
     /// `dest`, with the text drawn over it there. Anything else is composed
-    /// here (see [`Self::compose`]) and written out as Vello writes.
+    /// here (see [`Self::compose`]) and written out as Vello writes. Both
+    /// blend the same way, on encoded values, so which one a frame takes
+    /// changes nothing it shows.
     fn render_surface(
         &mut self,
         surface: Surface,
@@ -604,11 +606,11 @@ impl<T: TextBackend> VelloBackend<T> {
         self.context.queue.submit([encoder.finish()]);
     }
 
-    /// Composes `surface` in paint order, from `clear`, and returns it linear
-    /// and premultiplied.
+    /// Composes `surface` in paint order, from `clear`, and returns it
+    /// premultiplied, in the work space.
     ///
     /// A band is rendered by Vello on transparent and drawn over what is
-    /// composed so far; a texture is drawn over it; a child layer has its own
+    /// composed so far; text and textures are drawn over it; a child layer has its own
     /// surface composed first, and then its plan runs with what is composed so
     /// far as both its backdrop and its destination. Nothing goes through
     /// Vello's image atlas.
@@ -628,8 +630,7 @@ impl<T: TextBackend> VelloBackend<T> {
             ops,
         } = surface;
         let mut composed: Option<Slot> = None;
-        let mut ops = ops.into_iter().peekable();
-        while let Some(op) = ops.next() {
+        for op in ops {
             let device = &self.context.device;
             let queue = &self.context.queue;
             let below = |filters: &mut FilterRenderer, composed: Option<Slot>| {
@@ -648,18 +649,6 @@ impl<T: TextBackend> VelloBackend<T> {
                         self.filters.view(band),
                         &render_params(extent, base),
                     )?;
-                    // Text right after an opaque band is drawn into it, as
-                    // Vello writes it: encoded, where opaque straight alpha is
-                    // premultiplied too.
-                    if composed.is_none() && opaque(clear) {
-                        let mut text = Vec::new();
-                        while let Some(SurfaceOp::Text(_)) = ops.peek() {
-                            if let Some(SurfaceOp::Text(batch)) = ops.next() {
-                                text.push(batch);
-                            }
-                        }
-                        self.draw_text(self.filters.view(band), ENCODED_FORMAT, &text);
-                    }
                     match composed {
                         None => self.filters.premultiplied(device, queue, band, extent),
                         Some(below) => self.filters.band_over(device, queue, band, below, extent),
@@ -667,7 +656,7 @@ impl<T: TextBackend> VelloBackend<T> {
                 }
                 SurfaceOp::Text(batch) => {
                     let below = below(&mut self.filters, composed);
-                    self.draw_text(self.filters.view(below), LINEAR_FORMAT, [&batch]);
+                    self.draw_text(self.filters.view(below), WORK_FORMAT, [&batch]);
                     below
                 }
                 SurfaceOp::Texture { draw, clip_mask } => {
@@ -1130,7 +1119,7 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for VelloBackend<T> {
             let renderer = self.text_renderer.get_or_insert_with(|| {
                 TextRenderer::new(
                     device,
-                    &[ENCODED_FORMAT, LINEAR_FORMAT],
+                    &[ENCODED_FORMAT, WORK_FORMAT],
                     self.options.glyph_atlas,
                 )
             });

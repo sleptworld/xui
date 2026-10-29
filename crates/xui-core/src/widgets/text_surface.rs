@@ -23,8 +23,9 @@ use xui_interface::events::{KeyState, PointerButton, RawEvent, SemanticEvent, Xu
 use xui_interface::{
     Affine, Affinity, Bounds, Color, ComputedColorStyle, ComputedStyle, ComputedTextStyle,
     EventRef, EventResult, LineHeight, NodeId, Point, Rect, Size, TextBackend, TextBoxStyle,
-    TextInputPurpose, TextInputSession, TextLayoutConstraints, TextLayoutInput, TextOffset,
-    TextPaintProps, TextPaintStyle, TextRange, TextVerticalAlign, WidgetUpdateFlags,
+    TextCaret, TextContent, TextInputPurpose, TextInputSession, TextLayoutConstraints,
+    TextLayoutInput, TextOffset, TextPaintProps, TextPaintStyle, TextRange, TextVerticalAlign,
+    WidgetUpdateFlags,
 };
 use xui_macros::widget;
 
@@ -149,7 +150,14 @@ struct PaintedBlock {
     /// Its top, in content coordinates.
     top: f32,
     size: Size<f32>,
+    /// Its text, to turn byte offsets into the char offsets carets take.
+    text: TextContent,
     paint: TextPaintProps,
+    /// The carets in it. They are painted with its glyphs, in its text
+    /// primitive, never as shapes of their own: a shape over text changes
+    /// how a renderer composes everything after it, so a blinking one made
+    /// the whole page's text change with each blink.
+    carets: Vec<TextCaret>,
     revision: u64,
 }
 
@@ -159,7 +167,6 @@ struct DecorRect {
     rect: Rect,
     color: Color,
     layer: DecorLayer,
-    caret: bool,
 }
 
 /// A text surface's state while mounted: its virtual document, scroll,
@@ -301,6 +308,15 @@ impl TextSurfaceState {
     #[cfg(test)]
     pub(crate) fn paragraph_of(&self, block: BlockId) -> Option<ParagraphId> {
         self.paragraphs.get(&block).copied()
+    }
+
+    /// The carets painted with each block's text, while focused.
+    #[cfg(test)]
+    pub(crate) fn painted_carets(&self) -> Vec<(ParagraphId, TextCaret)> {
+        self.painted
+            .iter()
+            .flat_map(|block| block.carets.iter().map(|caret| (block.paragraph, *caret)))
+            .collect()
     }
 
     #[cfg(test)]
@@ -493,7 +509,9 @@ impl TextSurfaceState {
                 paragraph,
                 top,
                 size: Size::new(width, height),
+                text: block.text.clone(),
                 paint: TextPaintProps::new(paint_style).with_runs(paint_runs),
+                carets: Vec::new(),
                 revision: handle_revision(*handle),
             });
         }
@@ -504,7 +522,12 @@ impl TextSurfaceState {
             .filter_map(|block| self.blocks.get(&block.paragraph).copied())
             .collect();
         let decorations = model.decorations(&visible);
-        self.decor = self.resolve_decorations(measurer, owner, document, &decorations, &text_style);
+        let (decor, carets) =
+            self.resolve_decorations(measurer, owner, document, &decorations, &text_style);
+        self.decor = decor;
+        for (position, caret) in carets {
+            self.painted[position].carets.push(caret);
+        }
         self.ime_caret = model
             .primary_caret()
             .and_then(|at| self.geometry(owner, &*measurer).caret_rect(at));
@@ -669,7 +692,8 @@ impl TextSurfaceState {
         Reveal::Done(scroll)
     }
 
-    /// The model's decorations as rectangles, for the blocks painted.
+    /// The model's decorations as rectangles, for the blocks painted, and its
+    /// carets, by the index of the painted block they are in.
     fn resolve_decorations<T: TextBackend>(
         &self,
         measurer: &TextHost<T>,
@@ -677,8 +701,9 @@ impl TextSurfaceState {
         document: TextDocumentId,
         decorations: &[SurfaceDecor],
         text_style: &ComputedTextStyle,
-    ) -> Vec<DecorRect> {
+    ) -> (Vec<DecorRect>, Vec<(usize, TextCaret)>) {
         let mut rects = Vec::new();
+        let mut carets = Vec::new();
         let thickness = (text_style.font_size / 16.0).max(1.0);
         let index_of = |position: &SurfacePosition| {
             let paragraph = *self.paragraphs.get(&position.block)?;
@@ -696,7 +721,7 @@ impl TextSurfaceState {
                 } else {
                     (decor.range.end, decor.range.start, end_index, start_index)
                 };
-            for block in &self.painted {
+            for (position, block) in self.painted.iter().enumerate() {
                 let Some(index) = measurer.paragraph_index(owner, document, block.paragraph) else {
                     continue;
                 };
@@ -724,17 +749,15 @@ impl TextSurfaceState {
                 };
                 match decor.kind {
                     DecorKind::Caret { color, width } => {
-                        if index != end_index {
-                            continue;
-                        }
-                        if let Some(mut rect) = query.caret_rect_at_byte(end.offset, end.affinity) {
-                            rect.width = width.max(1.0);
-                            rects.push(DecorRect {
-                                rect: shift(rect),
-                                color,
-                                layer: decor.layer,
-                                caret: true,
-                            });
+                        if index == end_index {
+                            carets.push((
+                                position,
+                                TextCaret {
+                                    char_index: char_index(block.text.as_str(), end.offset),
+                                    color,
+                                    width: width.max(1.0),
+                                },
+                            ));
                         }
                     }
                     DecorKind::Background(color) => {
@@ -743,7 +766,6 @@ impl TextSurfaceState {
                                 rect: shift(rect),
                                 color,
                                 layer: decor.layer,
-                                caret: false,
                             });
                         }
                     }
@@ -754,7 +776,6 @@ impl TextSurfaceState {
                                     rect: side,
                                     color,
                                     layer: decor.layer,
-                                    caret: false,
                                 });
                             }
                         }
@@ -766,7 +787,6 @@ impl TextSurfaceState {
                                     rect: piece,
                                     color,
                                     layer: decor.layer,
-                                    caret: false,
                                 });
                             }
                         }
@@ -774,7 +794,7 @@ impl TextSurfaceState {
                 }
             }
         }
-        rects
+        (rects, carets)
     }
 
     fn content_point(&self, cx: &EventContext<'_>, position: Point) -> Point {
@@ -1037,7 +1057,7 @@ impl TextSurfaceState {
     }
 
     fn has_caret(&self) -> bool {
-        self.decor.iter().any(|decor| decor.caret)
+        self.painted.iter().any(|block| !block.carets.is_empty())
     }
 
     /// Shows the caret and starts its blink over from `at`, as a text input
@@ -1121,7 +1141,7 @@ impl PaintContent for TextSurfaceState {
         let show_carets = self.focused && self.caret_on;
         let decor = |writer: &mut RenderTreeWriter<'_>, layer: DecorLayer| {
             for decor in &self.decor {
-                if decor.layer != layer || (decor.caret && !show_carets) {
+                if decor.layer != layer {
                     continue;
                 }
                 let rect = decor.rect;
@@ -1151,7 +1171,13 @@ impl PaintContent for TextSurfaceState {
                             unit: TextUnitRef::Paragraph(block.document, block.paragraph),
                             layout_revision: block.revision,
                             vertical_align: TextVerticalAlign::Top,
-                            paint: block.paint.clone(),
+                            paint: if show_carets && !block.carets.is_empty() {
+                                let mut paint = block.paint.clone();
+                                paint.carets.clone_from(&block.carets);
+                                paint
+                            } else {
+                                block.paint.clone()
+                            },
                         }))?;
                     }
                     decor(writer, DecorLayer::AboveText)
@@ -1257,6 +1283,15 @@ fn anchor_at<T: TextBackend>(
     let info = measurer.paragraph_at_y(owner, document, y)?;
     let top = measurer.paragraph_top(owner, document, info.id)?;
     Some((info.id, y - top))
+}
+
+/// How many chars of `text` come before byte `offset`, the unit carets take.
+fn char_index(text: &str, offset: usize) -> usize {
+    let mut offset = offset.min(text.len());
+    while !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    text[..offset].chars().count()
 }
 
 fn handle_revision(handle: crate::text::TextLayoutHandle) -> u64 {

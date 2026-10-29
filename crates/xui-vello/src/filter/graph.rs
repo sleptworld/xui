@@ -77,7 +77,7 @@ impl FilterRenderer {
             .iter()
             .map(|slot| {
                 let extent = (slot.extent.width.max(1), slot.extent.height.max(1));
-                self.acquire_in(device, extent, Space::Linear)
+                self.acquire_in(device, extent, Space::Work)
             })
             .collect();
         let result = self.encode_plan(device, queue, plan, textures, scale, &slots);
@@ -198,7 +198,7 @@ impl FilterRenderer {
                 inputs,
                 Target {
                     view: &self.pool[out_slot.0].view,
-                    space: Space::Linear,
+                    space: Space::Work,
                     blend,
                     scissor: Some(scissor),
                 },
@@ -531,7 +531,7 @@ mod tests {
             backdrop_bounds: None,
             composite: CompositeInstance::default(),
             scale_factor: 1.0,
-            color_texture_class: TextureClass::LINEAR_COLOR,
+            color_texture_class: TextureClass::COLOR,
             external_aliasing: ExternalAliasing::Distinct,
             limits: PlanLimits::default(),
         }
@@ -707,22 +707,6 @@ mod tests {
         assert_eq!(&out[500 * 4..501 * 4], WHITE, "the layer is over its shadow");
     }
 
-    fn srgb_decode(value: f32) -> f32 {
-        if value <= 0.04045 {
-            value / 12.92
-        } else {
-            ((value + 0.055) / 1.055).powf(2.4)
-        }
-    }
-
-    fn srgb_encode(value: f32) -> f32 {
-        if value <= 0.003_130_8 {
-            value * 12.92
-        } else {
-            1.055 * value.powf(1.0 / 2.4) - 0.055
-        }
-    }
-
     /// The backdrop is the texture it is composited into. Inverted, it reads
     /// before it writes; multiplied with no filter, the plan copies it first.
     #[test]
@@ -731,19 +715,16 @@ mod tests {
         let gray = 128u8;
         let cases = [
             (
-                // In linear light, as everything here is: 128 is 0.216.
+                // On the encoded values, as everything here is.
                 BackdropFilter::Invert(1.0),
                 BlendMode::Normal,
-                (srgb_encode(1.0 - srgb_decode(gray as f32 / 255.0)) * 255.0).round() as u8,
+                255 - gray,
             ),
             (
                 // An identity filter, dropped by the compiler: no filter pass.
                 BackdropFilter::Invert(0.0),
                 BlendMode::Multiply,
-                {
-                    let linear = srgb_decode(gray as f32 / 255.0);
-                    (srgb_encode(linear * linear) * 255.0).round() as u8
-                },
+                ((gray as f32 / 255.0).powi(2) * 255.0).round() as u8,
             ),
         ];
         for (filter, blend_mode, expected) in cases {

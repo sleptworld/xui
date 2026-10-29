@@ -598,17 +598,19 @@ fn half_float(bits: u16) -> f32 {
     }
 }
 
+/// A float target holds what a compositor puts in it: here, encoded values,
+/// which text blends on as they are, as it does into an 8-bit target.
 #[test]
-fn linear_targets_get_decoded_colour_blended_in_linear_light() {
+fn float_targets_blend_encoded_colour_as_it_is() {
     let Some(gpu) = gpu() else { return };
-    const LINEAR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-    let mut renderer = TextRenderer::<u32>::new(&gpu.device, &[LINEAR], AtlasOptions::default());
+    const FLOAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+    let mut renderer = TextRenderer::<u32>::new(&gpu.device, &[FLOAT], AtlasOptions::default());
     let target = TextTarget {
         origin_px: (0, 0),
         extent: (4, 4),
     };
-    // The red value a half-covered pixel holds, in linear light.
-    let mut linear = |color: [f32; 4], background: f64| {
+    // The red value a half-covered pixel holds.
+    let mut red = |color: [f32; 4], background: f64| {
         renderer.begin_frame(0);
         let batch = renderer.prepare(
             &gpu.device,
@@ -629,21 +631,21 @@ fn linear_targets_get_decoded_colour_blended_in_linear_light() {
             b: background,
             a: 1.0,
         };
-        let texels = gpu.draw_into(&mut renderer, target.extent, &[batch], LINEAR, clear);
+        let texels = gpu.draw_into(&mut renderer, target.extent, &[batch], FLOAT, clear);
         // Texel (1, 1): eight bytes a texel, red first.
         let at = (4 + 1) * 8;
         half_float(u16::from_le_bytes([texels[at], texels[at + 1]]))
     };
     let coverage = 128.0 / 255.0;
-    let black_on_white = linear([0.0, 0.0, 0.0, 1.0], 1.0);
+    let black_on_white = red([0.0, 0.0, 0.0, 1.0], 1.0);
     assert!(
         (black_on_white - (1.0 - coverage)).abs() < 0.005,
         "{black_on_white}"
     );
-    // Mid grey (encoded 0.5) is decoded before it is blended.
-    let grey_on_black = linear([0.5, 0.5, 0.5, 1.0], 0.0);
+    // Mid grey (encoded 0.5) blends as 0.5, not decoded to 0.214 first.
+    let grey_on_black = red([0.5, 0.5, 0.5, 1.0], 0.0);
     assert!(
-        (grey_on_black - 0.214 * coverage).abs() < 0.005,
+        (grey_on_black - 0.5 * coverage).abs() < 0.005,
         "{grey_on_black}"
     );
 }

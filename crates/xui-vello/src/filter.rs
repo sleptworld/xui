@@ -5,8 +5,10 @@
 //! [`filter.wgsl`](../filter.wgsl): bands of 2D content drawn over one another,
 //! application textures drawn between them, and isolated layers run through
 //! their render-graph plans (`graph`): filters, backdrops, masks, and the
-//! composite into the parent. Filters and layer composites use linear light,
-//! premultiplied; joining 2D bands preserves Vello's encoded-space blending.
+//! composite into the parent. Everything is computed on sRGB-encoded values,
+//! premultiplied: the space Vello blends in inside a band, so joining bands,
+//! drawing text, compositing layers and filtering all agree with it (see the
+//! crate's "Colour space").
 
 use moka::sync::Cache;
 use rustc_hash::FxBuildHasher;
@@ -19,33 +21,48 @@ pub(crate) use graph::{Placed, PlanTextures};
 /// What Vello writes and what the frame holds: sRGB-encoded values, 8 bits.
 pub(crate) const ENCODED_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-/// What every filter and composite computes in: premultiplied, linear light,
-/// half-float so the linear values do not band the way 8 bits of them would.
-pub(crate) const LINEAR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// What every filter and composite computes in: the same sRGB-encoded values,
+/// premultiplied, in half-float so a chain of passes (a blur cut into stages,
+/// a backdrop under a backdrop) does not round to 8 bits at every step.
+pub(crate) const WORK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-/// Which of the two a pooled texture holds.
+/// Which of the two a pooled texture holds. Both hold sRGB-encoded values;
+/// they differ in alpha and in precision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Space {
-    /// 8-bit sRGB-encoded, as Vello writes it. Can be a Vello target.
+    /// 8 bits, straight alpha, as Vello writes it. Can be a Vello target.
     Encoded,
-    /// Half-float linear light, premultiplied. Where the work is done.
-    Linear,
+    /// Half-float, premultiplied. Where the work is done.
+    Work,
 }
 
 impl Space {
     fn format(self) -> wgpu::TextureFormat {
         match self {
             Self::Encoded => ENCODED_FORMAT,
-            Self::Linear => LINEAR_FORMAT,
+            Self::Work => WORK_FORMAT,
         }
     }
 
     fn bytes_per_texel(self) -> u64 {
         match self {
             Self::Encoded => 4,
-            Self::Linear => 8,
+            Self::Work => 8,
         }
     }
+}
+
+/// Whether sampling a texture of `format` gives linear light rather than the
+/// sRGB-encoded values the compositor works in: an sRGB format, which the
+/// hardware decodes, or a float one, which by convention holds linear light.
+pub(crate) fn samples_linear(format: wgpu::TextureFormat) -> bool {
+    format.is_srgb()
+        || matches!(
+            format,
+            wgpu::TextureFormat::Rgba16Float
+                | wgpu::TextureFormat::Rgba32Float
+                | wgpu::TextureFormat::Rg11b10Ufloat
+        )
 }
 
 /// A clip on an external texture, evaluated per pixel in the shader.
@@ -231,11 +248,11 @@ struct Mask {
 
 pub(crate) struct FilterRenderer {
     /// One pipeline per kind of output: the shader is the same.
-    pipeline_linear: wgpu::RenderPipeline,
+    pipeline_work: wgpu::RenderPipeline,
     pipeline_encoded: wgpu::RenderPipeline,
-    /// Linear, drawn over what the output holds: a composite into a parent.
+    /// Work space, drawn over what the output holds: a composite into a parent.
     pipeline_over: wgpu::RenderPipeline,
-    /// Linear, drawn under what the output holds.
+    /// Work space, drawn under what the output holds.
     pipeline_under: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
@@ -324,10 +341,10 @@ impl FilterRenderer {
             cache: None,
             })
         };
-        let pipeline_linear = make_pipeline(LINEAR_FORMAT, None);
+        let pipeline_work = make_pipeline(WORK_FORMAT, None);
         let pipeline_encoded = make_pipeline(ENCODED_FORMAT, None);
         let pipeline_over = make_pipeline(
-            LINEAR_FORMAT,
+            WORK_FORMAT,
             Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
         );
         let under = wgpu::BlendComponent {
@@ -336,7 +353,7 @@ impl FilterRenderer {
             operation: wgpu::BlendOperation::Add,
         };
         let pipeline_under = make_pipeline(
-            LINEAR_FORMAT,
+            WORK_FORMAT,
             Some(wgpu::BlendState {
                 color: under,
                 alpha: under,
@@ -366,7 +383,7 @@ impl FilterRenderer {
         });
         let dummy = dummy_texture.create_view(&wgpu::TextureViewDescriptor::default());
         Self {
-            pipeline_linear,
+            pipeline_work,
             pipeline_encoded,
             pipeline_over,
             pipeline_under,
@@ -521,7 +538,7 @@ impl FilterRenderer {
             usage: match space {
                 // Vello writes these with a compute shader.
                 Space::Encoded => wgpu::TextureUsages::STORAGE_BINDING,
-                Space::Linear => wgpu::TextureUsages::empty(),
+                Space::Work => wgpu::TextureUsages::empty(),
             } | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::COPY_SRC
@@ -575,7 +592,7 @@ impl FilterRenderer {
         third: Option<Input>,
         extent: (u32, u32),
     ) -> Slot {
-        let out = self.acquire_in(device, extent, Space::Linear);
+        let out = self.acquire_in(device, extent, Space::Work);
         self.encode_pass(
             device,
             encoder,
@@ -584,7 +601,7 @@ impl FilterRenderer {
             second,
             third,
             &self.pool[out.0].view,
-            Space::Linear,
+            Space::Work,
         );
         out
     }
@@ -707,9 +724,9 @@ impl FilterRenderer {
         });
         pass.set_pipeline(match (target.space, target.blend) {
             (Space::Encoded, _) => &self.pipeline_encoded,
-            (Space::Linear, Blend::Replace | Blend::Overwrite) => &self.pipeline_linear,
-            (Space::Linear, Blend::Over) => &self.pipeline_over,
-            (Space::Linear, Blend::Under) => &self.pipeline_under,
+            (Space::Work, Blend::Replace | Blend::Overwrite) => &self.pipeline_work,
+            (Space::Work, Blend::Over) => &self.pipeline_over,
+            (Space::Work, Blend::Under) => &self.pipeline_under,
         });
         if let Some([x, y, width, height]) = target.scissor {
             pass.set_scissor_rect(x, y, width, height);
@@ -718,8 +735,9 @@ impl FilterRenderer {
         pass.draw(0..3, 0..1);
     }
 
-    /// A linear texture of `extent` holding `color` (sRGB-encoded, straight)
-    /// everywhere: where a composition starts when no band comes first.
+    /// A work texture of `extent` holding `color` (sRGB-encoded, straight)
+    /// everywhere, premultiplied: where a composition starts when no band
+    /// comes first.
     pub(crate) fn clear(
         &mut self,
         device: &wgpu::Device,
@@ -727,14 +745,7 @@ impl FilterRenderer {
         extent: (u32, u32),
         color: [f32; 4],
     ) -> Slot {
-        let out = self.acquire_in(device, extent, Space::Linear);
-        let decode = |c: f32| {
-            if c <= 0.04045 {
-                c / 12.92
-            } else {
-                ((c + 0.055) / 1.055).powf(2.4)
-            }
-        };
+        let out = self.acquire_in(device, extent, Space::Work);
         let alpha = color[3].clamp(0.0, 1.0) as f64;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("xui-vello clear"),
@@ -747,9 +758,9 @@ impl FilterRenderer {
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: decode(color[0]) as f64 * alpha,
-                        g: decode(color[1]) as f64 * alpha,
-                        b: decode(color[2]) as f64 * alpha,
+                        r: color[0] as f64 * alpha,
+                        g: color[1] as f64 * alpha,
+                        b: color[2] as f64 * alpha,
                         a: alpha,
                     }),
                     store: wgpu::StoreOp::Store,
@@ -764,9 +775,8 @@ impl FilterRenderer {
         out
     }
 
-    /// A band of 2D content, as Vello wrote it (sRGB-encoded, straight alpha),
-    /// becomes the start of the composition: linear and premultiplied. `band`
-    /// is released.
+    /// A band of 2D content, as Vello wrote it (straight alpha), becomes the
+    /// start of the composition, premultiplied. `band` is released.
     pub(crate) fn premultiplied(
         &mut self,
         device: &wgpu::Device,
@@ -783,8 +793,8 @@ impl FilterRenderer {
         out
     }
 
-    /// `front` over `back`, both linear and premultiplied and of `extent`,
-    /// into a new texture. Neither is released.
+    /// `front` over `back`, both premultiplied and of `extent`, into a new
+    /// texture. Neither is released.
     pub(crate) fn over(
         &mut self,
         device: &wgpu::Device,
@@ -809,8 +819,9 @@ impl FilterRenderer {
         copy
     }
 
-    /// A band of 2D content over what is composed so far, blended in Vello's
-    /// encoded colour space so band cuts do not change colours. Both are released.
+    /// A band of 2D content over what is composed so far: the source-over
+    /// Vello itself would have done had the band not been cut. Both are
+    /// released.
     pub(crate) fn band_over(
         &mut self,
         device: &wgpu::Device,
@@ -848,18 +859,11 @@ impl FilterRenderer {
         extent: (u32, u32),
     ) -> Slot {
         let mut params = Params::op(18);
-        // Bit 0: the values are encoded and must be decoded. An sRGB format is
-        // decoded by the hardware as it is sampled, and a float one holds
-        // linear light already; anything else is taken to be sRGB-encoded.
-        let format = draw.texture.format();
-        let already_linear = format.is_srgb()
-            || matches!(
-                format,
-                wgpu::TextureFormat::Rgba16Float
-                    | wgpu::TextureFormat::Rgba32Float
-                    | wgpu::TextureFormat::Rg11b10Ufloat
-            );
-        let flags = (!already_linear as u32) | ((draw.nearest as u32) << 1);
+        // Bit 0: what is sampled is linear light and must be encoded. An sRGB
+        // format is decoded by the hardware as it is sampled, and a float one
+        // is taken to hold linear light, as a renderer that wants more than
+        // 8 bits writes it; anything else holds sRGB-encoded values already.
+        let flags = (samples_linear(draw.texture.format()) as u32) | ((draw.nearest as u32) << 1);
         params.op[1] = flags;
         params.tex0 = [draw.inverse[0], draw.inverse[1], draw.inverse[2], draw.inverse[3]];
         params.tex1 = [draw.inverse[4], draw.inverse[5], draw.opacity, draw.clips.len() as f32];
@@ -874,7 +878,7 @@ impl FilterRenderer {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("xui-vello texture"),
         });
-        let out = self.acquire_in(device, extent, Space::Linear);
+        let out = self.acquire_in(device, extent, Space::Work);
         self.encode_to(
             device,
             &mut encoder,
@@ -882,7 +886,7 @@ impl FilterRenderer {
             [Some(Input::Slot(below)), Some(Input::View(&view)), None, mask],
             Target {
                 view: &self.pool[out.0].view,
-                space: Space::Linear,
+                space: Space::Work,
                 blend: Blend::Replace,
                 scissor: None,
             },
@@ -910,8 +914,8 @@ impl FilterRenderer {
         Some(Input::Slot(mask.slot))
     }
 
-    /// The finished composition (linear, premultiplied) written as Vello writes:
-    /// sRGB-encoded, straight alpha. `composed` is released.
+    /// The finished composition (premultiplied) written as Vello writes:
+    /// straight alpha, 8 bits. `composed` is released.
     pub(crate) fn finish(
         &mut self,
         device: &wgpu::Device,

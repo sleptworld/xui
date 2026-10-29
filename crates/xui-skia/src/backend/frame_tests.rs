@@ -526,7 +526,7 @@
 //                 backdrop_bounds: None,
 //                 composite: instance.composite,
 //                 scale_factor: 1.0,
-//                 color_texture_class: TextureClass::LINEAR_COLOR,
+//                 color_texture_class: TextureClass::COLOR,
 //                 external_aliasing: ExternalAliasing::Distinct,
 //                 limits: PlanLimits::default(),
 //             })

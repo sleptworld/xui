@@ -39,13 +39,15 @@
 //!
 //! # Colour
 //!
-//! Colours are given sRGB-encoded with straight alpha. A batch can be drawn
-//! into a target that holds encoded values (`Rgba8Unorm` and the like), where
-//! it blends in encoded space, as most 2D renderers blend within a scene, or
-//! into one that holds linear light (an sRGB or float format), where colours
-//! are decoded and blend in linear light, as a layer composed over others in
-//! linear light does. The same text is a little lighter in the second, dark
-//! on light, and a little heavier light on dark.
+//! Colours are given sRGB-encoded with straight alpha, and text blends on
+//! encoded values, as the 2D renderers it is drawn among do: into any target
+//! the values are written as they are, whatever its format holds them in
+//! (`Rgba8Unorm`, or a float format a compositor keeps its encoded values in).
+//! The one exception is an sRGB format, which the hardware encodes as it is
+//! written: there colours are decoded first, so an opaque colour lands as it
+//! was given. Blending into such a target is the hardware's, in linear light;
+//! nothing in this crate can change that, so a renderer that wants text to
+//! match its own blending should not draw into one.
 
 mod atlas;
 
@@ -233,15 +235,11 @@ pub struct TextRenderer<F> {
     uploaded: usize,
 }
 
-/// Whether a target of `format` holds linear light.
+/// Whether the hardware encodes what is written to a target of `format`, so
+/// the shader has to write linear light for the stored values to come out
+/// encoded.
 fn is_linear(format: wgpu::TextureFormat) -> bool {
     format.is_srgb()
-        || matches!(
-            format,
-            wgpu::TextureFormat::Rgba16Float
-                | wgpu::TextureFormat::Rgba32Float
-                | wgpu::TextureFormat::Rg11b10Ufloat
-        )
 }
 
 impl<F: Copy + Eq + Hash> TextRenderer<F> {

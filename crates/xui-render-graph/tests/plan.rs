@@ -16,7 +16,7 @@ fn context() -> LayerPlanContext {
         backdrop_bounds: Some(rect_bounds(20.0, 30.0, 40.0, 30.0)),
         composite: CompositeInstance::default(),
         scale_factor: 1.0,
-        color_texture_class: TextureClass::LINEAR_COLOR,
+        color_texture_class: TextureClass::COLOR,
         external_aliasing: ExternalAliasing::Distinct,
         limits: PlanLimits::default(),
     }

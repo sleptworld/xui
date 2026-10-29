@@ -917,11 +917,13 @@ impl PaintContent for TextInputState {
     ) {
         let rect = text_input_content_box(rect, style.layout.padding);
         let mut paint = TextPaintProps::new(TextPaintStyle::from_computed(&style.text));
-        paint.caret = (self.focused && self.caret_on).then_some(TextCaret {
-            char_index: self.controller.selection().extent,
-            color: style.text.color,
-            width: 1.0,
-        });
+        paint
+            .carets
+            .extend((self.focused && self.caret_on).then_some(TextCaret {
+                char_index: self.controller.selection().extent,
+                color: style.text.color,
+                width: 1.0,
+            }));
         let selection = self.controller.selection().range();
         if self.focused && !selection.is_empty() {
             paint.selection = Some(TextSelectionPaint {

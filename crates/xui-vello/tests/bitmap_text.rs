@@ -153,8 +153,8 @@ fn a_shape_painted_after_text_covers_it() {
 }
 
 /// [`text_root`] in a layer of its own: an identity colour matrix isolates
-/// it without changing what it draws, so the text is composed in linear
-/// light, over transparent, and the layer over the root.
+/// it without changing what it draws, so the text is composed over
+/// transparent, and the layer over the root.
 fn layered_text(app: &mut App) {
     app.mount::<LayeredTextScene>(LayeredTextSceneProps {});
 }
@@ -177,10 +177,8 @@ fn layered_text_scene() {
 
 #[test]
 fn text_in_an_isolated_layer_is_drawn_from_bitmaps_too() {
-    // In the layer, text is composed in linear light, as Vello's own outlines
-    // are there: its edges differ from text drawn straight over the root,
-    // for bitmaps and outlines alike, so it is held against outlines in the
-    // same layer.
+    // Bitmaps and outlines rasterize differently, so they are held to the
+    // same bounds, not the same pixels.
     let (Some((bitmap, stats)), Some((outline, _))) = (
         draw(layered_text, 1.0, true),
         draw(layered_text, 1.0, false),
@@ -240,4 +238,93 @@ fn text_the_atlas_cannot_hold_is_drawn_as_outlines() {
     };
     assert!(ink(&full) > 100, "the text is drawn, not left with holes");
     assert_eq!(full.pixels, outline.pixels, "as Vello outlines, whole");
+}
+
+fn max_difference(a: &Frame, b: &Frame, rows: std::ops::Range<usize>) -> u8 {
+    assert_eq!(a.pixels.len(), b.pixels.len());
+    let row = a.width * 4;
+    a.pixels[rows.start * row..rows.end * row]
+        .iter()
+        .zip(&b.pixels[rows.start * row..rows.end * row])
+        .map(|(x, y)| x.abs_diff(*y))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Text composed in an isolated layer is the text drawn straight over the
+/// root: both blend on encoded values, and source-over does not care where
+/// it is grouped.
+#[test]
+fn text_in_an_isolated_layer_is_the_same_text() {
+    let (Some((plain, _)), Some((layered, _))) =
+        (draw(text_root, 1.0, true), draw(layered_text, 1.0, true))
+    else {
+        return;
+    };
+    let height = plain.pixels.len() / 4 / plain.width;
+    let worst = max_difference(&plain, &layered, 0..height);
+    assert!(worst <= 1, "the layer changed the text by {worst}");
+}
+
+fn later_text_plain(app: &mut App) {
+    app.mount::<LaterText>(LaterTextProps { cover: false });
+}
+
+fn later_text_covered(app: &mut App) {
+    app.mount::<LaterText>(LaterTextProps { cover: true });
+}
+
+/// Two lines of text, and optionally a translucent box over the first, drawn
+/// between them: it overlaps text, so the renderer closes the band there and
+/// draws the second line after a cut.
+#[component]
+fn later_text(cover: &bool) {
+    view! {
+        container(width: SIZE, height: SIZE) {
+            text(
+                "First",
+                position: PositionStyle::Absolute,
+                inset: EdgeInsets::new(4.0, 0.0, 4.0, 0.0),
+                color: RED,
+                font_size: 24.0,
+            )
+            if *cover {
+                container(
+                    position: PositionStyle::Absolute,
+                    inset: EdgeInsets::new(10.0, 0.0, 8.0, 0.0),
+                    width: 30.0,
+                    height: 20.0,
+                    background: Color::rgba(0.0, 0.0, 1.0, 0.5),
+                )
+            }
+            text(
+                "Later",
+                position: PositionStyle::Absolute,
+                inset: EdgeInsets::new(4.0, 0.0, 60.0, 0.0),
+                color: RED,
+                font_size: 24.0,
+            )
+        }
+    }
+}
+
+/// A shape over earlier text changes nothing about later text. It used to:
+/// text after a band cut was blended in linear light and text before it on
+/// encoded values, so anything appearing over text (a blinking caret, a
+/// hover highlight) made every later line of the page shift in weight.
+#[test]
+fn a_shape_over_earlier_text_leaves_later_text_as_it_was() {
+    let (Some((plain, _)), Some((covered, _))) = (
+        draw(later_text_plain, 1.0, true),
+        draw(later_text_covered, 1.0, true),
+    ) else {
+        return;
+    };
+    let height = plain.pixels.len() / 4 / plain.width;
+    assert!(
+        max_difference(&plain, &covered, 0..40) > 16,
+        "the box should be there"
+    );
+    let worst = max_difference(&plain, &covered, 55..height);
+    assert!(worst <= 1, "the second line changed by {worst}");
 }

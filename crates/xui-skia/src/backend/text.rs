@@ -96,7 +96,7 @@ impl<T: TextBackend> SkiaBackend<T> {
             }
         }
 
-        if let Some(caret) = primitive.paint.caret {
+        for caret in &primitive.paint.carets {
             let rect = text
                 .query(handle)
                 .and_then(|query| query.caret_rect(caret.char_index))

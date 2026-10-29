@@ -1454,7 +1454,10 @@ pub struct TextPaintProps {
     pub style: TextPaintStyle,
     /// Color and decoration over parts of the text; see [`PaintRuns`].
     pub runs: PaintRuns,
-    pub caret: Option<TextCaret>,
+    /// Carets drawn with the glyphs, in the same pass: a caret drawn as a
+    /// shape of its own over the text would change how the renderer composes
+    /// everything after it, every time it blinks.
+    pub carets: Vec<TextCaret>,
     pub selection: Option<TextSelectionPaint>,
     pub ime: Option<TextImePaint>,
 }
@@ -1464,7 +1467,7 @@ impl TextPaintProps {
         Self {
             style,
             runs: PaintRuns::empty(),
-            caret: None,
+            carets: Vec::new(),
             selection: None,
             ime: None,
         }

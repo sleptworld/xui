@@ -330,7 +330,9 @@ pub struct WeakTextSurfaceHandle {
 impl WeakTextSurfaceHandle {
     /// The handle, while anything still holds it.
     pub fn upgrade(&self) -> Option<TextSurfaceHandle> {
-        self.inner.upgrade().map(|inner| TextSurfaceHandle { inner })
+        self.inner
+            .upgrade()
+            .map(|inner| TextSurfaceHandle { inner })
     }
 }
 

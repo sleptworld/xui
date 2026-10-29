@@ -145,8 +145,8 @@ fn close(actual: u8, expected: u8) -> bool {
     actual.abs_diff(expected) <= 2
 }
 
-/// Half of white over black, in linear light, encoded.
-const HALF: u8 = 188;
+/// Half of white over black: half of the encoded value, as every blend is.
+const HALF: u8 = 128;
 
 #[test]
 fn an_opacity_group_is_composed_as_one() {
@@ -462,18 +462,9 @@ fn triangle() -> ClipShape {
     }
 }
 
-fn srgb_encode(value: f32) -> f32 {
-    if value <= 0.003_130_8 {
-        value * 12.92
-    } else {
-        1.055 * value.powf(1.0 / 2.4) - 0.055
-    }
-}
-
 /// A path clip around an isolated layer is Vello's coverage of the path, pixel
-/// for pixel: the same as Vello clipping a fill drawn in place, but for the
-/// composite being in linear light (white at coverage `a` over black is
-/// `encode(a)`, where Vello's own blend gives `a`).
+/// for pixel: the same as Vello clipping a fill drawn in place, since the
+/// composite blends on the same encoded values Vello does.
 #[test]
 fn a_path_clip_on_a_layer_is_the_shape_vello_fills() {
     let Some(inline) = draw(|source, root| {
@@ -494,7 +485,7 @@ fn a_path_clip_on_a_layer_is_the_shape_vello_fills() {
         for x in 0..SIZE as usize {
             let coverage = inline.at(x, y)[0];
             edge += (coverage != 0 && coverage != 255) as usize;
-            let expected = (255.0 * srgb_encode(coverage as f32 / 255.0)).round() as u8;
+            let expected = coverage;
             let got = layered.at(x, y)[0];
             assert!(
                 got.abs_diff(expected) <= 1,

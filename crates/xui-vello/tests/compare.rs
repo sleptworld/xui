@@ -120,12 +120,9 @@ fn dump(dir: &std::path::Path, name: &str, skia: &Frame, vello: &Frame) {
 /// the loose one: Skia rasterizes through the platform (CoreText on macOS),
 /// which positions and weights glyphs differently from an outline fill.
 ///
-/// `backdrop_blur`, `layer_blur` and `layer_drop_shadow` are loose because
-/// Vello composes in linear light and Skia on the encoded values: half of red
-/// over white is 188 against 128 in the green and blue. A backdrop blur mixes
-/// two colours; a layer blur or a shadow is one colour whose soft edge is
-/// composited over another, which is the same mix. Inside the shapes the two
-/// agree. The bounds go back to 1 when Skia is linear too.
+/// Both compose on sRGB-encoded values, so blurs, shadows and backdrops mix
+/// colours the same way: those scenes are held to 1, and a renderer that
+/// starts blending in another space fails them.
 ///
 /// `box_shadow` is loose at 2x for a reason that is Skia's: its shape shadow
 /// uses `MaskFilter::blur(.., respect_ctm = false)`, so the blur radius is in
@@ -141,10 +138,10 @@ const SCENES: &[(&str, AppRoot, f64, f64)] = &[
     ("image_fill", image_root, 0.01, 0.01),
     ("image_contain", contained_image_root, 0.01, 0.01),
     ("text", text_root, 6.0, 8.0),
-    ("layer_blur", blur_root, 6.0, 6.0),
+    ("layer_blur", blur_root, 1.0, 1.0),
     ("layer_colour_matrix", swap_root, 0.01, 0.01),
-    ("layer_drop_shadow", shadow_effect_root, 4.5, 4.5),
-    ("backdrop_blur", glass_root, 9.0, 9.0),
+    ("layer_drop_shadow", shadow_effect_root, 1.0, 1.0),
+    ("backdrop_blur", glass_root, 1.0, 1.0),
     ("backdrop_with_content", glass_with_content_root, 0.01, 0.01),
 ];
 

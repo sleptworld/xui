@@ -498,7 +498,7 @@ impl<T: TextBackend> Encoder<'_, T> {
                 transform: instance.composite.transform,
             },
             scale_factor: self.scale,
-            color_texture_class: TextureClass::LINEAR_COLOR,
+            color_texture_class: TextureClass::COLOR,
             external_aliasing: ExternalAliasing::BackdropAndDestination,
             limits: self.limits,
         };
@@ -528,7 +528,7 @@ impl<T: TextBackend> Encoder<'_, T> {
                     backdrop_bounds: None,
                     composite: CompositeInstance::default(),
                     scale_factor: self.scale,
-                    color_texture_class: TextureClass::LINEAR_COLOR,
+                    color_texture_class: TextureClass::COLOR,
                     external_aliasing: ExternalAliasing::Distinct,
                     limits: self.limits,
                 };

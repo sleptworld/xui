@@ -8,9 +8,10 @@
 // filtered. A rectangle's quad covers every pixel it touches, and its edges
 // are antialiased by the area of each pixel they cover.
 //
-// Colours are sRGB-encoded with straight alpha, as UI colours are. `LINEAR`
-// says whether the target holds linear light (a float or sRGB format): they
-// are decoded for it, and then blend in linear light.
+// Colours are sRGB-encoded with straight alpha, as UI colours are, and are
+// written as they are: text blends on encoded values. `LINEAR` is set for an
+// sRGB target only, whose hardware encodes what is written; colours are
+// decoded for it so that what is stored is the same.
 
 override LINEAR: bool = false;
 
@@ -67,8 +68,8 @@ fn decode(c: vec3<f32>) -> vec3<f32> {
     return select(pow((c + 0.055) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045));
 }
 
-// `color` covering `coverage` of a pixel, premultiplied, as the target holds
-// it: encoded values, or linear light.
+// `color` covering `coverage` of a pixel, premultiplied. Encoded values, except
+// into an sRGB target (`LINEAR`), whose hardware encodes what is written.
 fn ink(color: vec4<f32>, coverage: f32) -> vec4<f32> {
     let alpha = color.a * coverage;
     if LINEAR {

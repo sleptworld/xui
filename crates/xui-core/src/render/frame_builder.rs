@@ -1683,7 +1683,7 @@ mod tests {
                 backdrop_bounds: None,
                 composite: instance.composite,
                 scale_factor: 1.0,
-                color_texture_class: xui_render_graph::TextureClass::LINEAR_COLOR,
+                color_texture_class: xui_render_graph::TextureClass::COLOR,
                 external_aliasing: xui_render_graph::ExternalAliasing::Distinct,
                 limits: xui_render_graph::PlanLimits::default(),
             })

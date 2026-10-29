@@ -8,10 +8,15 @@
 // Left at their defaults, every texture is aligned with the output pixel for
 // pixel and read whole.
 //
-// Filters and layer composites use linear light, premultiplied, in half-float
-// textures. Vello's output (sRGB-encoded, straight alpha) is decoded on the way
-// in (op 0) and encoded on the way out (ops 20, 21). Joining 2D bands (op 17)
-// uses Vello's encoded-space blend so splitting a band does not change colours.
+// One colour space throughout: sRGB-encoded values, premultiplied, in
+// half-float textures; the space Vello blends in inside a band. Vello's output
+// (straight alpha) is premultiplied on the way in (op 0) and unpremultiplied on
+// the way out (op 20), and nothing in between converts: joining bands (op 17),
+// layer and backdrop composites, blend modes and every filter work on the
+// values as they are, so cutting a band, isolating a layer or drawing text in
+// one place rather than another never changes a colour. The one conversion is
+// of what a texture sampler hands back as linear light (an sRGB or float
+// external texture, op 18), which is encoded once, as it is drawn.
 
 struct Params {
     // x: the operation; y: blend mode; z: mask kind (backdrop composite).
@@ -176,17 +181,7 @@ fn composite(source: vec4f, destination: vec4f, mode: u32) -> vec4f {
     return vec4f(premul, alpha);
 }
 
-fn srgb_decode(c: vec3f) -> vec3f {
-    let lo = c / 12.92;
-    let hi = pow((c + vec3f(0.055)) / 1.055, vec3f(2.4));
-    return select(hi, lo, c <= vec3f(0.04045));
-}
-
-// An sRGB-encoded, straight-alpha colour as linear and premultiplied.
-fn decode_premult(v: vec4f) -> vec4f {
-    return premultiply(vec4f(srgb_decode(v.rgb), v.a));
-}
-
+// Linear light as sRGB-encoded values: for what a sampler decoded.
 fn srgb_encode(c: vec3f) -> vec3f {
     let lo = c * 12.92;
     let hi = 1.055 * pow(max(c, vec3f(0.0)), vec3f(1.0 / 2.4)) - vec3f(0.055);
@@ -265,7 +260,7 @@ fn clip_coverage(pos: vec2f) -> f32 {
 }
 
 // An external texture drawn over what is composed so far. The texture is
-// premultiplied; the output is too, in linear light.
+// premultiplied; the output is too, encoded like everything else.
 //
 // Everything is computed for every pixel and only the last line chooses: a
 // clip's coverage uses derivatives, and a derivative taken after some pixels
@@ -288,9 +283,9 @@ fn texture_over(pos: vec2f, below: vec4f) -> vec4f {
         c = textureSampleLevel(src1, linear_sampler, clamped, 0.0);
     }
     if (u.op.y & 1u) != 0u {
-        // Encoded values, premultiplied: decode the colour, keep it premultiplied.
+        // Linear light, premultiplied: encode the colour, keep it premultiplied.
         let straight = select(vec3f(0.0), c.rgb / c.a, c.a > 0.000001);
-        c = vec4f(srgb_decode(straight) * c.a, c.a);
+        c = vec4f(srgb_encode(straight) * c.a, c.a);
     }
     c = c * (clamp(u.tex1.z, 0.0, 1.0) * clip_coverage(pos));
     return select(below, c + below * (1.0 - c.a), inside);
@@ -300,7 +295,7 @@ fn texture_over(pos: vec2f, below: vec4f) -> vec4f {
 fn fs_main(@builtin(position) position: vec4f) -> @location(0) vec4f {
     let p = vec2i(position.xy);
     let kind = u.op.x;
-    if kind == 0u { return decode_premult(load0(p)); }
+    if kind == 0u { return premultiply(load0(p)); }
     if kind == 1u { return gaussian(p, vec2i(1, 0)); }
     if kind == 2u { return gaussian(p, vec2i(0, 1)); }
     if kind == 3u {
@@ -329,29 +324,23 @@ fn fs_main(@builtin(position) position: vec4f) -> @location(0) vec4f {
         let original = load0(p);
         let shifted = p - vec2i(round(u.p0.xy));
         let a = clamp(u.color.a * load1(shifted).a, 0.0, 1.0);
-        return over(original, vec4f(srgb_decode(u.color.rgb) * a, a));
+        return over(original, vec4f(u.color.rgb * a, a));
     }
     if kind == 17u {
-        // Match Vello's encoded-space source-over. Band boundaries change
-        // when a damage patch culls text or layers; blending bands in linear
-        // light would then change the colour of an otherwise identical draw.
-        let band = premultiply(load0(p));
-        let below = unpremultiply(load1(p));
-        let encoded = premultiply(vec4f(srgb_encode(below.rgb), below.a));
-        return decode_premult(unpremultiply(over(band, encoded)));
+        // The band (straight alpha, as Vello writes it) over what is composed
+        // so far: the source-over Vello does inside a band.
+        return over(premultiply(load0(p)), load1(p));
     }
     if kind == 18u {
         return texture_over(position.xy, load0(p));
     }
     if kind == 20u {
-        // Linear premultiplied -> sRGB-encoded, straight.
-        let v = unpremultiply(load0(p));
-        return vec4f(srgb_encode(v.rgb), v.a);
+        // Premultiplied -> straight, as Vello writes.
+        return unpremultiply(load0(p));
     }
     if kind == 21u {
-        // Linear premultiplied -> sRGB-encoded, premultiplied.
-        let v = unpremultiply(load0(p));
-        return vec4f(srgb_encode(v.rgb) * v.a, v.a);
+        // Premultiplied, as it is: an 8-bit copy.
+        return load0(p);
     }
     if kind == 12u {
         // Crop. The source is premultiplied already.
@@ -385,7 +374,7 @@ fn fs_main(@builtin(position) position: vec4f) -> @location(0) vec4f {
         return vec4f(load0(p + offset).r, center.g, load0(p - offset).b, center.a);
     }
     if kind == 24u {
-        // Input 0 over input 1, both linear and premultiplied.
+        // Input 0 over input 1, both premultiplied.
         let front = load0(p);
         return front + load1(p) * (1.0 - front.a);
     }

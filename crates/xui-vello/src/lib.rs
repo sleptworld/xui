@@ -17,10 +17,8 @@
 //! not, even at the atlas's limit, is outlines for that frame). Its
 //! glyphs, caret and decorations wait for the band they were drawn in to close
 //! and are drawn over it then, so a band is not cut for every text; a later
-//! draw in the band that overlaps one closes the band first. Text right after
-//! the first band on an opaque clear colour is drawn into that band as Vello
-//! wrote it (encoded), as Vello's own glyphs would be; any other is drawn over
-//! the composition in linear light.
+//! draw in the band that overlaps one closes the band first. Where the cuts
+//! fall changes nothing text looks like (see "Colour space").
 //!
 //! **This crate composes**, with its own `wgpu` passes
 //! ([`filter.wgsl`](../src/filter.wgsl)), following the frame's layer tree:
@@ -50,15 +48,32 @@
 //!
 //! # Colour space
 //!
-//! The render graph's working space is linear light, and everything this crate
-//! computes is: filters, backdrops, and the composition of bands and textures
-//! run on premultiplied, half-float, linear textures. Vello's output (sRGB
-//! encoded, straight alpha) is decoded on the way in and encoded on the way out.
-//! What Vello itself blends inside a band, shape over shape, stays in the
-//! encoded space it works in, so a half-transparent *shape* and a
-//! half-transparent *layer* or *texture* over the same white do not come out
-//! the same (128 against 188). An sRGB or float external texture is already
-//! linear when sampled; any other format is taken to be sRGB-encoded.
+//! One working space, everywhere: **sRGB-encoded values, premultiplied**. It
+//! is the space Vello blends in inside a band, which nothing here can change,
+//! and the one the Skia backend and CSS compose in, so every way of drawing
+//! the same thing gives the same colour:
+//!
+//! | Stage | What it does to colour |
+//! |---|---|
+//! | Colours in the scene | sRGB-encoded, straight alpha, as styles give them |
+//! | Vello, inside a band | blends shape over shape on encoded values |
+//! | A band joining the composition | premultiplied, then source-over |
+//! | Text from bitmaps (`xui-wgpu-text`) | source-over on encoded values |
+//! | Layer composites, opacity, blend modes | on encoded values |
+//! | Filters: blur, colour matrix, shadow, backdrop | on encoded values |
+//! | External texture, 8-bit unorm | taken as encoded |
+//! | External texture, sRGB or float format | sampled as linear light, encoded once |
+//! | Out to the frame | unpremultiplied, 8 bits |
+//!
+//! Nothing between a band and the frame converts, so cutting a band, isolating
+//! a layer, drawing text before or after some other draw, or composing a frame
+//! by the fast path or in full never changes a pixel's colour. Work textures
+//! are half-float only for precision across chains of passes (a blur cut into
+//! stages, a backdrop under a backdrop); what they hold is the same encoded
+//! values. The cost of the choice is the one every encoded-space renderer
+//! pays: a blur between two saturated colours, or a half-transparent colour
+//! over another, is darker in the middle than mixing light would be (half of
+//! red over blue is 128 rather than 188).
 //!
 //! # Between frames
 //!

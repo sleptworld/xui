@@ -231,8 +231,8 @@ fn a_backdrop_blur_softens_what_is_behind_the_layer() {
     assert!(is_close(frame.at(10, 50), [255, 0, 0, 255]), "{:?}", frame.at(10, 50));
     assert!(is_close(frame.at(90, 50), [0, 0, 255, 255]), "{:?}", frame.at(90, 50));
     // Just inside it, five pixels from the seam, the two colours have mixed.
-    // The blur is in linear light: 27% blue there is 146 once encoded, where
-    // blurring the encoded values would have given about 69.
+    // The blur works on the encoded values, as Skia's does: 27% blue there is
+    // about 69.
     let near = frame.at(45, 50);
     assert!(near[0] > 110 && near[0] < 240, "red should have faded: {near:?}");
     assert!(near[2] > 20 && near[2] < 175, "blue should have bled in: {near:?}");
@@ -240,9 +240,9 @@ fn a_backdrop_blur_softens_what_is_behind_the_layer() {
     let ramp: Vec<u8> = (30..70).map(|x| frame.at(x, 50)[0]).collect();
     assert!(ramp.windows(2).all(|w| w[0] >= w[1]), "not monotonic: {ramp:?}");
     // Deep inside the panel, far from the seam, the blur is nearly nothing: a
-    // 0.3% blue tail, which the steep part of the sRGB curve encodes as about 8.
+    // 0.3% blue tail, a value or two.
     let far = frame.at(28, 50);
-    assert!(far[0] == 255 && far[1] == 0 && far[2] < 16, "{far:?}");
+    assert!(far[0] >= 250 && far[1] == 0 && far[2] < 4, "{far:?}");
     assert_eq!(frame.unsupported, Default::default());
 }
 
@@ -320,9 +320,9 @@ fn a_texture_takes_the_opacity_of_its_command() {
     };
     // Half green over the white surface behind it.
     let mixed = frame.at(50, 50);
-    // Half of the colour, in linear light: the red and blue of 0.5 linear are
-    // 188 encoded, not 128.
-    assert!(is_close(mixed, [188, 255, 188, 255]), "{mixed:?}");
+    // Half of the colour, as a half-transparent shape would give: the white's
+    // red and blue halved, 128.
+    assert!(is_close(mixed, [128, 255, 128, 255]), "{mixed:?}");
 }
 
 #[test]
@@ -457,16 +457,21 @@ fn a_texture_edge_is_clean_where_it_splits_a_pixel_quad() {
 }
 
 #[test]
-fn a_backdrop_blur_mixes_colours_in_linear_light() {
+fn a_backdrop_blur_mixes_the_encoded_colours() {
     let Some(frame) = render(glass_root) else {
         return;
     };
-    // On the seam itself red and blue are half and half. Half of each in linear
-    // light is 0.5, which sRGB encodes as 188; in the encoded values it would be
-    // 128, a visibly darker purple.
+    // On the seam itself red and blue are half and half: half of each encoded
+    // value, 128, as Skia and a half-transparent shape give.
+    // The pixel sits a little to one side of the seam, so the two are not
+    // exactly equal, but what one loses the other gains.
     let seam = frame.at(50, 50);
+    let (red, blue) = (seam[0] as i32, seam[2] as i32);
     assert!(
-        (seam[0] as i32 - 188).abs() <= 6 && (seam[2] as i32 - 188).abs() <= 6 && seam[1] < 4,
+        (red + blue - 255).abs() <= 3
+            && (red - 128).abs() <= 10
+            && (blue - 128).abs() <= 10
+            && seam[1] < 4,
         "{seam:?}"
     );
 }
@@ -477,7 +482,7 @@ fn dim_gray_root(app: &mut App) {
 
 #[component]
 fn dim_gray() {
-    // A mid-grey box (188 encoded is 0.5 linear), halved by a colour matrix.
+    // A grey box, 188, halved by a colour matrix.
     let halve: [f32; 20] = [
         0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0,
         1.0, 0.0,
@@ -495,15 +500,14 @@ fn dim_gray() {
 }
 
 #[test]
-fn a_colour_matrix_acts_on_linear_light() {
+fn a_colour_matrix_acts_on_the_encoded_values() {
     let Some(frame) = render(dim_gray_root) else {
         return;
     };
-    // 0.5 linear halved is 0.25 linear, which sRGB encodes as 137. On the
-    // encoded values it would be 94.
+    // 188 halved is 94, as Skia's colour matrix gives.
     let inside = frame.at(30, 30);
     assert!(
-        (inside[0] as i32 - 137).abs() <= 3 && inside[0] == inside[1] && inside[1] == inside[2],
+        (inside[0] as i32 - 94).abs() <= 3 && inside[0] == inside[1] && inside[1] == inside[2],
         "{inside:?}"
     );
 }

@@ -93,7 +93,7 @@ impl<T: TextBackend> SkiaBackend<T> {
                 backdrop_bounds,
                 composite: instance.composite,
                 scale_factor: self.scale_factor,
-                color_texture_class: TextureClass::LINEAR_COLOR,
+                color_texture_class: TextureClass::COLOR,
                 external_aliasing: ExternalAliasing::Distinct,
                 limits: PlanLimits::default(),
             },

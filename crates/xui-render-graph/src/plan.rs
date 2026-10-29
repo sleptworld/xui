@@ -32,7 +32,8 @@ impl TransientSlotId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TextureClass(pub u32);
 impl TextureClass {
-    pub const LINEAR_COLOR: Self = Self(0);
+    /// Colour, premultiplied, in the backend's working space (sRGB-encoded).
+    pub const COLOR: Self = Self(0);
     pub const MASK: Self = Self(1);
 }
 

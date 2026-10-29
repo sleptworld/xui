@@ -809,7 +809,7 @@ impl<T: TextBackend> WGPUBackend<T> {
                     backdrop_bounds: Some(destination_clip),
                     composite: instance.composite,
                     scale_factor: self.scale_factor,
-                    color_texture_class: TextureClass::LINEAR_COLOR,
+                    color_texture_class: TextureClass::COLOR,
                     external_aliasing: ExternalAliasing::Distinct,
                     limits: PlanLimits {
                         max_texture_dimension_2d: self.device.limits().max_texture_dimension_2d,
@@ -1493,7 +1493,7 @@ impl<T: TextBackend> WGPUBackend<T> {
                         backdrop_bounds,
                         composite: instance.composite,
                         scale_factor: self.scale_factor,
-                        color_texture_class: TextureClass::LINEAR_COLOR,
+                        color_texture_class: TextureClass::COLOR,
                         external_aliasing: ExternalAliasing::Distinct,
                         limits: PlanLimits {
                             max_texture_dimension_2d: self.device.limits().max_texture_dimension_2d,
@@ -1977,7 +1977,7 @@ impl<T: TextBackend> WGPUBackend<T> {
                                     transform,
                                 },
                                 scale_factor: self.scale_factor,
-                                color_texture_class: TextureClass::LINEAR_COLOR,
+                                color_texture_class: TextureClass::COLOR,
                                 external_aliasing: ExternalAliasing::Distinct,
                                 limits: PlanLimits {
                                     max_texture_dimension_2d: self
@@ -2061,10 +2061,10 @@ impl<T: TextBackend> WGPUBackend<T> {
             }
         }
 
-        let caret_rect = command
-            .paint
-            .caret
-            .and_then(|caret| layout_query.and_then(|query| query.caret_rect(caret.char_index)));
+        let caret_rect =
+            command.paint.carets.first().and_then(|caret| {
+                layout_query.and_then(|query| query.caret_rect(caret.char_index))
+            });
 
         let rasterizer = text.backend().rasterizer().cloned();
 
@@ -2123,7 +2123,7 @@ impl<T: TextBackend> WGPUBackend<T> {
             }
         }
 
-        if let Some(caret) = command.paint.caret {
+        if let Some(&caret) = command.paint.carets.first() {
             push_text_caret(
                 command,
                 text_rect,
@@ -2186,7 +2186,7 @@ fn alpha_style(style: ComputedColorStyle, opacity: f32) -> ComputedColorStyle {
 
 fn alpha_text_paint(mut paint: TextPaintProps, opacity: f32) -> TextPaintProps {
     paint.style.color = alpha_color(paint.style.color, opacity);
-    if let Some(caret) = &mut paint.caret {
+    for caret in &mut paint.carets {
         caret.color = alpha_color(caret.color, opacity);
     }
     if let Some(selection) = &mut paint.selection {

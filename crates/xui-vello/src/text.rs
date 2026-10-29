@@ -166,7 +166,7 @@ fn foreground<T: TextBackend>(
     let mut strokes = Vec::new();
     let (paint, origin, layout) = (&primitive.paint, paragraph.origin, &paragraph.layout);
     let query = text.query(paragraph.handle);
-    if let Some(caret) = paint.caret {
+    for caret in &paint.carets {
         let rect = query
             .and_then(|query| query.caret_rect(caret.char_index))
             .unwrap_or(Rect::new(

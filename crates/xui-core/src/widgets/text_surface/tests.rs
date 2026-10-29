@@ -381,15 +381,21 @@ fn decorations_span_blocks_and_carets_sit_at_their_position() {
     fixture.handle.invalidate();
     fixture.frame();
     let rects = fixture.state(|state| state.decoration_rects());
-    // Part of block 1, all of block 2, part of block 3, and the caret.
-    assert!(rects.len() >= 4, "{rects:?}");
-    let caret = rects.last().unwrap();
-    assert_eq!(caret.width, 2.0);
+    // Part of block 1, all of block 2, part of block 3. The caret is not a
+    // shape: a shape over the text, appearing and vanishing as it blinks,
+    // changed how the renderer composed the rest of the page each time.
+    assert_eq!(rects.len(), 3, "{rects:?}");
     let rows: Vec<f32> = rects.iter().map(|rect| rect.y).collect();
-    assert!(
-        rows.windows(2).take(2).all(|pair| pair[0] < pair[1]),
-        "{rows:?}"
-    );
+    assert!(rows.windows(2).all(|pair| pair[0] < pair[1]), "{rows:?}");
+
+    // It is painted with its block's glyphs instead, at its char offset.
+    let third = fixture.model.borrow().id(3);
+    let paragraph = fixture.state(|state| state.paragraph_of(third)).unwrap();
+    let carets = fixture.state(|state| state.painted_carets());
+    assert_eq!(carets.len(), 1);
+    assert_eq!(carets[0].0, paragraph);
+    assert_eq!(carets[0].1.char_index, 3);
+    assert_eq!(carets[0].1.width, 2.0);
 }
 
 #[test]
