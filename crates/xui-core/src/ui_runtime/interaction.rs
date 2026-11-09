@@ -24,6 +24,8 @@ pub(crate) struct InteractionSystem {
     /// `Sync`; it borrows from `&self` instead, which is the lifetime callers
     /// want anyway.
     pub no_handlers: EventHandlers,
+    /// A drag from outside the window that is over it.
+    pub external_drag: Option<super::ExternalDrag>,
 }
 
 impl InteractionSystem {
@@ -35,6 +37,7 @@ impl InteractionSystem {
             clamped_scrolls: Vec::new(),
             detached_size_observers: Vec::new(),
             no_handlers: EventHandlers::EMPTY,
+            external_drag: None,
         }
     }
 
@@ -86,6 +89,13 @@ impl InteractionSystem {
         self.event_state.clear_node(id);
         self.focus.clear_node(id);
         self.clamped_scrolls.retain(|scroll| scroll.node != id);
+        // A target removed mid-drag gets no leave; the next move finds
+        // whatever is under the drag now.
+        if let Some(drag) = &mut self.external_drag
+            && drag.target.is_some_and(|(target, _)| target == id)
+        {
+            drag.target = None;
+        }
     }
 }
 

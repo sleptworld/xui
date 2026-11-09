@@ -33,7 +33,7 @@ pub use core::{Bounds, Color, EdgeInsets, Point, Rect, Size, Sizing, Translation
 pub use dirty::{StyleDiffFlags, WidgetUpdateFlags};
 #[allow(deprecated)]
 pub use events::{
-    CommandEvent, CommandId, ContextMenuTrigger, Event, EventPhase, EventRef, EventRequest,
+    CommandEvent, CommandId, ContextMenuTrigger, DropEvent, Event, EventPhase, EventRef, EventRequest,
     EventRequests, EventResult, FocusReason, GestureKind, GesturePhase, KeyState, KeyText,
     Modifiers, NamedKey, PhysicalKey, PlatformReplyEvent, PointerBoundaryEvent, PointerButton,
     PointerButtons, PointerCoords, PointerKind, PointerMoveEvent, PointerSnapshot, RawContextMenu,

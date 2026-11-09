@@ -326,6 +326,7 @@ impl PlatformWindow for MacWindow {
         HostCapabilities::CLIPBOARD
             | HostCapabilities::FULLSCREEN
             | HostCapabilities::WINDOW_DRAG
+            | HostCapabilities::DRAG_DROP
             | HostCapabilities::NATIVE_MENU_BAR
             | HostCapabilities::OPEN_URL
             | HostCapabilities::TIMED_REDRAW

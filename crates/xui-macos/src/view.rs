@@ -1,27 +1,30 @@
 use std::cell::{Cell, OnceCell, RefCell};
+use std::path::PathBuf;
 use std::rc::Weak;
 use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Bool, Sel};
+use objc2::runtime::{AnyObject, Bool, ProtocolObject, Sel};
 use objc2::{
     AllocAnyThread, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message,
     define_class, msg_send, sel,
 };
 use objc2_app_kit::{
-    NSCursor, NSEvent, NSEventModifierFlags, NSEventPhase, NSEventType, NSResponder,
+    NSCursor, NSDragOperation, NSDraggingInfo, NSEvent, NSEventModifierFlags, NSEventPhase,
+    NSEventType, NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypeString, NSResponder,
     NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSNotFound, NSObject, NSObjectProtocol,
     NSPoint, NSRange, NSRangePointer, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString,
-    NSUInteger,
+    NSUInteger, NSURL,
 };
 use objc2_quartz_core::CADisplayLink;
 use xui_interface::events::{KeyState, KeyText, RawIme, TextPayload};
 use xui_interface::{
-    ContextMenuTrigger, CursorIcon, Modifiers, Point, PointerButton, Rect, ScrollDelta, TextOffset,
-    TextRange, Translation, WindowRegion, commands,
+    ContextMenuTrigger, CursorIcon, DragEvent, DragPayload, DropAccepts, DropEffect, Modifiers,
+    Point, PointerButton, Rect, ScrollDelta, TextOffset, TextRange, Translation, WindowRegion,
+    commands,
 };
 use xui_shell::{FrameInfo, KeyInput, PublishedHandle, ShellEvent, ShellOutcome};
 
@@ -70,6 +73,9 @@ pub(crate) struct ViewIvars {
     /// does not deliver it twice.
     offered_key: Cell<Option<(u64, u16)>>,
     tracking_area: RefCell<Option<Retained<NSTrackingArea>>>,
+    /// What the drag over the view carries; `Some` from `draggingEntered:`
+    /// until the runtime has been told it left or dropped.
+    drag_kinds: Cell<Option<DropAccepts>>,
 }
 
 define_class!(
@@ -304,6 +310,69 @@ define_class!(
             Bool::new(outcome.consumed)
         }
 
+        // NSDraggingDestination. NSView already conforms; these override its
+        // defaults. What a drag would do here is answered from the published
+        // drop targets, after the runtime has seen the event.
+
+        #[unsafe(method(draggingEntered:))]
+        fn dragging_entered(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+            let payload = drag_payload(&sender.draggingPasteboard());
+            let kinds = payload.kinds();
+            let position = self.drag_position(sender);
+            self.ivars().drag_kinds.set(Some(kinds));
+            self.send(ShellEvent::Drag(DragEvent::Enter { payload, position }));
+            self.drag_operation(sender, position, kinds)
+        }
+
+        #[unsafe(method(draggingUpdated:))]
+        fn dragging_updated(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+            let Some(kinds) = self.ivars().drag_kinds.get() else {
+                return NSDragOperation::None;
+            };
+            let position = self.drag_position(sender);
+            self.send(ShellEvent::Drag(DragEvent::Over { position }));
+            self.drag_operation(sender, position, kinds)
+        }
+
+        #[unsafe(method(draggingExited:))]
+        fn dragging_exited(&self, _sender: Option<&ProtocolObject<dyn NSDraggingInfo>>) {
+            self.end_drag();
+        }
+
+        /// Refusing here makes AppKit slide the dragged image back to where it
+        /// came from, rather than calling `performDragOperation:`.
+        #[unsafe(method(prepareForDragOperation:))]
+        fn prepare_for_drag_operation(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
+            let accepted = self.ivars().drag_kinds.get().is_some_and(|kinds| {
+                let position = self.drag_position(sender);
+                self.drag_operation(sender, position, kinds) != NSDragOperation::None
+            });
+            if !accepted {
+                self.end_drag();
+            }
+            accepted
+        }
+
+        #[unsafe(method(performDragOperation:))]
+        fn perform_drag_operation(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
+            // No early `return`: `define_class!` converts only the tail
+            // expression to `Bool`.
+            let entered = self.ivars().drag_kinds.take().is_some();
+            if entered {
+                let payload = drag_payload(&sender.draggingPasteboard());
+                let position = self.drag_position(sender);
+                self.send(ShellEvent::Drag(DragEvent::Drop { payload, position }));
+            }
+            entered
+        }
+
+        /// Sent however the drag finished. One that ended with neither a drop
+        /// nor an exit -- cancelled over the window -- still owes a `Leave`.
+        #[unsafe(method(draggingEnded:))]
+        fn dragging_ended(&self, _sender: &ProtocolObject<dyn NSDraggingInfo>) {
+            self.end_drag();
+        }
+
         #[unsafe(method(viewDidMoveToWindow))]
         fn view_did_move_to_window(&self) {
             unsafe { msg_send![super(self), viewDidMoveToWindow] }
@@ -480,8 +549,13 @@ impl XuiView {
             swallowed_press: Cell::new(false),
             offered_key: Cell::new(None),
             tracking_area: RefCell::new(None),
+            drag_kinds: Cell::new(None),
         });
-        unsafe { msg_send![super(this), initWithFrame: frame] }
+        let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
+        // SAFETY: both are constants AppKit defines.
+        let types = unsafe { [NSPasteboardTypeFileURL, NSPasteboardTypeString] };
+        this.registerForDraggedTypes(&NSArray::from_slice(&types));
+        this
     }
 
     pub(crate) fn set_sink(&self, sink: Weak<dyn EventSink>) {
@@ -640,6 +714,47 @@ impl XuiView {
                 true
             }
             _ => false,
+        }
+    }
+
+    fn drag_position(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> Point {
+        let point = self.convertPoint_fromView(sender.draggingLocation(), None);
+        Point::new(point.x as f32, point.y as f32)
+    }
+
+    /// The operation the drop target under `position` asks for, if the drag's
+    /// source allows it.
+    fn drag_operation(
+        &self,
+        sender: &ProtocolObject<dyn NSDraggingInfo>,
+        position: Point,
+        kinds: DropAccepts,
+    ) -> NSDragOperation {
+        let effect = self
+            .ivars()
+            .published
+            .borrow()
+            .as_ref()
+            .map_or(DropEffect::None, |published| {
+                published.drop_effect_at(position, kinds)
+            });
+        let operation = match effect {
+            DropEffect::None => return NSDragOperation::None,
+            DropEffect::Copy => NSDragOperation::Copy,
+            DropEffect::Move => NSDragOperation::Move,
+            DropEffect::Link => NSDragOperation::Link,
+        };
+        if sender.draggingSourceOperationMask().contains(operation) {
+            operation
+        } else {
+            NSDragOperation::None
+        }
+    }
+
+    /// Tells the runtime the drag left, unless it already knows.
+    fn end_drag(&self) {
+        if self.ivars().drag_kinds.take().is_some() {
+            self.send(ShellEvent::Drag(DragEvent::Leave));
         }
     }
 
@@ -872,6 +987,37 @@ fn utf16_to_byte(text: &str, units: usize) -> usize {
         seen += ch.len_utf16();
     }
     text.len()
+}
+
+/// What a drag's pasteboard carries. A drag of files reports only the files:
+/// Finder also puts their names on the pasteboard as text, which would keep a
+/// target that takes files but not text from accepting them.
+fn drag_payload(pasteboard: &NSPasteboard) -> DragPayload {
+    // SAFETY: `NSPasteboardTypeFileURL` is a constant AppKit defines.
+    let file_url = unsafe { NSPasteboardTypeFileURL };
+    let files: Vec<PathBuf> = pasteboard
+        .pasteboardItems()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.stringForType(file_url))
+                .filter_map(|url| NSURL::URLWithString(&url))
+                // Resolves a file-reference URL (`file:///.file/id=…`) to a path.
+                .filter_map(|url| url.filePathURL())
+                .filter_map(|url| url.path())
+                .map(|path| PathBuf::from(path.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let text = if files.is_empty() {
+        // SAFETY: `NSPasteboardTypeString` is a constant AppKit defines.
+        pasteboard
+            .stringForType(unsafe { NSPasteboardTypeString })
+            .map(|text| text.to_string())
+    } else {
+        None
+    };
+    DragPayload { files, text }
 }
 
 #[cfg(test)]

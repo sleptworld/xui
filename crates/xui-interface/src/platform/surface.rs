@@ -36,6 +36,36 @@ pub struct DropAccepts {
     pub text: bool,
 }
 
+impl DropAccepts {
+    pub const NONE: Self = Self {
+        files: false,
+        text: false,
+    };
+    pub const FILES: Self = Self {
+        files: true,
+        text: false,
+    };
+    pub const TEXT: Self = Self {
+        files: false,
+        text: true,
+    };
+    pub const ALL: Self = Self {
+        files: true,
+        text: true,
+    };
+
+    /// Whether nothing is accepted.
+    pub const fn is_empty(self) -> bool {
+        !self.files && !self.text
+    }
+
+    /// Whether a drag carrying `kinds` can be dropped here: everything it
+    /// carries must be accepted.
+    pub const fn admits(self, kinds: DropAccepts) -> bool {
+        (!kinds.files || self.files) && (!kinds.text || self.text)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DropEffect {
     #[default]
@@ -130,9 +160,7 @@ impl PublishedSurface {
             .iter()
             .rev()
             .find(|target| contains(target.rect, point))
-            .filter(|target| {
-                (!kinds.files || target.accepts.files) && (!kinds.text || target.accepts.text)
-            })
+            .filter(|target| target.accepts.admits(kinds))
             .map_or(DropEffect::None, |target| target.effect)
     }
 }

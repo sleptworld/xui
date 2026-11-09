@@ -13,6 +13,9 @@ bitflags! {
         /// `:focus-visible`: by keyboard navigation, or programmatically right
         /// after keyboard input — not by a pointer press.
         const FOCUS_VISIBLE = 1 << 5;
+        /// A drag from outside the window that this drop target accepts is
+        /// over it.
+        const DROP_OVER = 1 << 6;
     }
 }
 

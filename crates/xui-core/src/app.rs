@@ -4,18 +4,21 @@ use crate::event_system::dispatcher;
 use crate::event_system::translator::EventTranslator;
 use crate::platform::PlatformHandle;
 use crate::render::RenderBackend;
+use crate::scroll::AppliedScroll;
 use crate::style::Theme;
 use crate::text::TextHost;
-use crate::ui_runtime::{RenderFrameError, UiRuntime};
+use crate::ui_runtime::{ExternalDrag, RenderFrameError, UiRuntime};
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::{
     Builder as TokioRuntimeBuilder, Handle as TokioHandle, Runtime as TokioRuntime,
 };
 use tokio::task::JoinHandle;
 use xui_interface::TextBackend;
-use crate::scroll::AppliedScroll;
+use xui_interface::events::SemanticEvent;
 use xui_interface::events::{EventResult, RawEvent, ScrollPhase, ScrollSource};
+use xui_interface::{DropEffect, DropEvent, NodeId, Point};
 
 /// What an app starts with: typically mounts its root component,
 /// `|app| { app.mount::<Gallery>(GalleryProps {}); }`.
@@ -141,8 +144,11 @@ impl App {
                 reply.reply,
                 timestamp,
             );
-            let report =
-                crate::event_system::dispatcher::dispatch_semantic(&mut self.ui_runtime, text, event);
+            let report = crate::event_system::dispatcher::dispatch_semantic(
+                &mut self.ui_runtime,
+                text,
+                event,
+            );
             if report.result.is_consumed() {
                 result = EventResult::Consumed;
             }
@@ -273,8 +279,6 @@ impl App {
         self.reactive.provide_context(value);
     }
 
-
-
     pub fn tokio_handle(&self) -> TokioHandle {
         self.tokio_runtime.handle().clone()
     }
@@ -348,6 +352,159 @@ impl App {
         self.dispatch_clamped_scrolls(text);
         self.ui_runtime
             .dispatch_event(text, &mut self.event_translator, event)
+    }
+
+    /// A drag from outside the window, offered to the drop target under it.
+    ///
+    /// The target it left hears `DropLeave` and the one it reached `DropEnter`;
+    /// while it stays on one, that one hears `DropOver`. On `Drop` the target
+    /// under the drop gets it, and the drag is over either way.
+    pub(crate) fn dispatch_external_drag<T: TextBackend>(
+        &mut self,
+        event: xui_interface::DragEvent,
+        text: &mut TextHost<T>,
+    ) -> EventResult {
+        use xui_interface::DragEvent as Native;
+
+        self.rebuild_sync_if_needed();
+        self.ui_runtime.update_tree(self.size, text);
+        let now = std::time::Instant::now();
+        match event {
+            Native::Enter { payload, position } => {
+                // An enter with a drag still on record: the host lost a leave.
+                self.end_external_drag(now, text);
+                *self.ui_runtime.external_drag_mut() = Some(ExternalDrag {
+                    payload: Arc::new(payload),
+                    position,
+                    target: None,
+                });
+                self.move_external_drag(position, now, text)
+            }
+            Native::Over { position } => self.move_external_drag(position, now, text),
+            Native::Leave => {
+                self.end_external_drag(now, text);
+                EventResult::Ignored
+            }
+            Native::Drop { payload, position } => {
+                // The payload as of the drop, which is what the source
+                // promised; an enter the host never sent is no reason to lose it.
+                let payload = Arc::new(payload);
+                let drag = self.ui_runtime.external_drag_mut();
+                match drag {
+                    Some(drag) => drag.payload = payload,
+                    None => {
+                        *drag = Some(ExternalDrag {
+                            payload,
+                            position,
+                            target: None,
+                        })
+                    }
+                }
+                self.move_external_drag(position, now, text);
+                let Some(drag) = self.ui_runtime.external_drag_mut().take() else {
+                    return EventResult::Ignored;
+                };
+                let Some((target, effect)) = drag.target else {
+                    return EventResult::Ignored;
+                };
+                let local = self.ui_runtime.to_local(target, position);
+                let event = self.event_translator.drop_event(
+                    SemanticEvent::Drop,
+                    target,
+                    position,
+                    local,
+                    drag.payload,
+                    effect,
+                    now,
+                );
+                dispatcher::dispatch_semantic(&mut self.ui_runtime, text, event).result
+            }
+        }
+    }
+
+    /// Moves the drag on record to `position`, telling whichever targets that
+    /// concerns.
+    fn move_external_drag<T: TextBackend>(
+        &mut self,
+        position: Point,
+        now: std::time::Instant,
+        text: &mut TextHost<T>,
+    ) -> EventResult {
+        let Some(drag) = self.ui_runtime.external_drag_mut().as_mut() else {
+            return EventResult::Ignored;
+        };
+        drag.position = position;
+
+        let payload = Arc::clone(&drag.payload);
+        let previous = drag.target;
+        let next = self.ui_runtime.drop_target_at(position, payload.kinds());
+        let node = |target: Option<(NodeId, DropEffect)>| target.map(|(node, _)| node);
+
+        let mut result = EventResult::Ignored;
+
+        let mut send = |app: &mut Self, kind: fn(DropEvent) -> SemanticEvent, (node, effect)| {
+            let local = app.ui_runtime.to_local(node, position);
+            let event = app.event_translator.drop_event(
+                kind,
+                node,
+                position,
+                local,
+                Arc::clone(&payload),
+                effect,
+                now,
+            );
+            if dispatcher::dispatch_semantic(&mut app.ui_runtime, text, event)
+                .result
+                .is_consumed()
+            {
+                result = EventResult::Consumed;
+            }
+        };
+
+        if node(previous) == node(next) {
+            if let Some(target) = next {
+                send(self, SemanticEvent::DropOver, target);
+            }
+            return result;
+        }
+
+        if let Some(target) = previous {
+            send(self, SemanticEvent::DropLeave, target);
+        }
+        // Recorded before the enter is sent: a handler that removes the
+        // target clears it through the commit, like any other removal.
+        if let Some(drag) = self.ui_runtime.external_drag_mut() {
+            drag.target = next;
+        }
+        if let Some(target) = next {
+            send(self, SemanticEvent::DropEnter, target);
+        }
+        result
+    }
+
+    /// Forgets the drag on record, telling the target it was over.
+    fn end_external_drag<T: TextBackend>(
+        &mut self,
+        now: std::time::Instant,
+        text: &mut TextHost<T>,
+    ) {
+        let Some(drag) = self.ui_runtime.external_drag_mut().take() else {
+            return;
+        };
+        let Some((node, effect)) = drag.target else {
+            return;
+        };
+        let local = self.ui_runtime.to_local(node, drag.position);
+        let event = self.event_translator.drop_event(
+            SemanticEvent::DropLeave,
+            node,
+            drag.position,
+            local,
+            drag.payload,
+            effect,
+            now,
+        );
+        dispatcher::dispatch_semantic(&mut self.ui_runtime, text, event);
     }
 
     /// Publishes the frame's time, before anything in it is stepped or drawn.
@@ -547,6 +704,9 @@ impl App {
         text: &mut TextHost<T>,
     ) -> Result<(), AppRenderError<B::Error>> {
         self.ui_runtime.update_tree(self.size, text);
+        // Against the layout just settled, which is what this frame shows.
+        self.platform
+            .set_drop_targets(self.ui_runtime.drop_targets());
 
         let Some(frame) = self
             .ui_runtime
@@ -587,7 +747,6 @@ impl App {
             self.reactive.flush(&mut self.ui_runtime);
         }
     }
-
 
     fn flush_node_lifecycle<B: RenderBackend<TextHost<T>>, T: TextBackend>(
         &mut self,

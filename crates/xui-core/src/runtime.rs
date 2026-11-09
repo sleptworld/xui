@@ -41,9 +41,9 @@ pub enum RuntimeEvent {
     /// The window was made fullscreen or maximized, or left either, by someone
     /// other than the runtime.
     WindowState(WindowState),
-    /// A drag crossing the window. Widgets do not consume these yet; what the
-    /// platform wants to know while one is in flight is answered from
-    /// `PlatformOutput::surface`.
+    /// A drag from outside the window crossing it, offered to the drop target
+    /// under it (`drop_accepts`). What the platform wants to know while one is
+    /// in flight is answered from `PlatformOutput::surface`.
     Drag(DragEvent),
     RedrawRequested,
     Exit,
@@ -302,7 +302,13 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
                 self.app.platform().set_window_state(state);
                 Vec::new()
             }
-            RuntimeEvent::Drag(_) => Vec::new(),
+            RuntimeEvent::Drag(drag) => {
+                let result = self
+                    .app
+                    .dispatch_external_drag(drag, &mut self.text_backend);
+                self.refresh_platform_output();
+                vec![result]
+            }
             RuntimeEvent::RedrawRequested => Vec::new(),
             RuntimeEvent::Exit => {
                 self.control_flow = ControlFlow::Exit;
@@ -418,19 +424,25 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     #[allow(unused_imports)]
     use crate::test_prelude::*;
-    use super::*;
-    
+
     use crate::app::App;
     use crate::render::MockRenderBackend;
     use crate::text::testing::ZeroTextBackend;
-    
+
     use std::cell::{Cell, RefCell};
     use std::time::Duration;
 
     fn body() -> StaticTree {
-        container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(40.0).with::<container::height>(20.0)).into_tree(Vec::new())
+        container()
+            .with::<container::style>(
+                StyleOf::<Container>::new()
+                    .with::<container::width>(40.0)
+                    .with::<container::height>(20.0),
+            )
+            .into_tree(Vec::new())
     }
 
     fn root() -> StaticTree {
@@ -471,8 +483,8 @@ mod tests {
 
     fn runtime() -> GuiRuntime<MockRenderBackend, ZeroTextBackend> {
         runtime_with(|app| {
-                app.mount_static(root());
-            })
+            app.mount_static(root());
+        })
     }
 
     fn runtime_with(root: crate::app::AppRoot) -> GuiRuntime<MockRenderBackend, ZeroTextBackend> {
@@ -487,7 +499,7 @@ mod tests {
 
     mod keyboard_scroll {
         use super::*;
-        
+
         use xui_interface::events::{
             EventResult, KeyState, Modifiers, NamedKey, PhysicalKey, RawKeyboard, ScrollSource,
         };
@@ -500,18 +512,31 @@ mod tests {
         /// A 200x100 vertical scroller over a focusable 400px row that claims
         /// End through a shortcut, the way a tab list claims its arrows.
         fn root() -> StaticTree {
-            container().with::<container::style>(
-                    StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(100.0)
-                        .with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical),
-                ).with_on::<container::on_scroll, _>(|event, _| {
+            container()
+                .with::<container::style>(
+                    StyleOf::<Container>::new()
+                        .with::<container::width>(200.0)
+                        .with::<container::height>(100.0)
+                        .with::<container::scroll_direction>(
+                            xui_interface::ScrollDirectionStyle::Vertical,
+                        ),
+                )
+                .with_on::<container::on_scroll, _>(|event, _| {
                     if let Some(after) = event.offset_after {
                         SCROLLS.with(|scrolls| scrolls.borrow_mut().push((event.source, after.y)));
                     }
-                }).into_tree(vec![
-                    container().with::<container::width>(200.0).with::<container::height>(400.0).with::<container::tab_index>(0).with::<container::shortcuts>([xui_interface::ShortcutBinding {
-                        shortcut: Shortcut::named(NamedKey::End),
-                        command: CommandId("test.end"),
-                    }]).with_on::<container::on_command, _>(|_, _| EventResult::Consumed).into_tree(Vec::new()),
+                })
+                .into_tree(vec![
+                    container()
+                        .with::<container::width>(200.0)
+                        .with::<container::height>(400.0)
+                        .with::<container::tab_index>(0)
+                        .with::<container::shortcuts>([xui_interface::ShortcutBinding {
+                            shortcut: Shortcut::named(NamedKey::End),
+                            command: CommandId("test.end"),
+                        }])
+                        .with_on::<container::on_command, _>(|_, _| EventResult::Consumed)
+                        .into_tree(Vec::new()),
                 ])
         }
 
@@ -836,7 +861,7 @@ mod tests {
 
     mod platform_traffic {
         use super::*;
-        
+
         use xui_interface::events::{EventSource as InputSource, Modifiers, NamedKey};
         use xui_interface::{
             ClipboardContent, ClipboardTarget, PlatformRequest, PointerKind, RawKeyboard,
@@ -862,11 +887,22 @@ mod tests {
 
         /// A handler on the outer node, and a focusable inner node with none.
         fn bubbling_root() -> StaticTree {
-            container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(100.0).with::<container::height>(100.0)).with_on::<container::on_command, _>(|event, _| {
+            container()
+                .with::<container::style>(
+                    StyleOf::<Container>::new()
+                        .with::<container::width>(100.0)
+                        .with::<container::height>(100.0),
+                )
+                .with_on::<container::on_command, _>(|event, _| {
                     record(event);
                     xui_interface::events::EventResult::Consumed
-                }).into_tree(vec![
-                    container().with::<container::width>(50.0).with::<container::height>(50.0).with::<container::tab_index>(0).into_tree(Vec::new()),
+                })
+                .into_tree(vec![
+                    container()
+                        .with::<container::width>(50.0)
+                        .with::<container::height>(50.0)
+                        .with::<container::tab_index>(0)
+                        .into_tree(Vec::new()),
                 ])
         }
 
@@ -1006,7 +1042,16 @@ mod tests {
         }
 
         fn leaving_root() -> StaticTree {
-            container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(100.0).with::<container::height>(100.0)).with_on::<container::on_pointer_leave, _>(|_, _| LEAVES.with(|leaves| leaves.set(leaves.get() + 1))).into_tree(Vec::new())
+            container()
+                .with::<container::style>(
+                    StyleOf::<Container>::new()
+                        .with::<container::width>(100.0)
+                        .with::<container::height>(100.0),
+                )
+                .with_on::<container::on_pointer_leave, _>(|_, _| {
+                    LEAVES.with(|leaves| leaves.set(leaves.get() + 1))
+                })
+                .into_tree(Vec::new())
         }
 
         fn pointer_at(x: f32, y: f32) -> RuntimeEvent {
@@ -1057,7 +1102,7 @@ mod tests {
     /// and nothing else asks for a frame in between.
     mod caret_blink {
         use super::*;
-        use crate::widgets::{Widgets};
+        use crate::widgets::Widgets;
         use xui_interface::events::{
             KeyState, Modifiers, NamedKey, PhysicalKey, PointerButton, PointerButtons, PointerKind,
             RawKeyboard, RawPointerButton, XuiPointerId,
@@ -1068,9 +1113,22 @@ mod tests {
 
         /// Two fields side by side, so focus has somewhere to move.
         fn fields() -> StaticTree {
-            container().with::<container::width>(400.0).with::<container::height>(300.0).into_tree(vec![
-                    text_input().with::<text_input::style>(StyleOf::<TextInput>::new().with::<text_input::size>(XSize::fix(120.0, 30.0))).into_tree(Vec::new()),
-                    text_input().with::<text_input::style>(StyleOf::<TextInput>::new().with::<text_input::size>(XSize::fix(120.0, 30.0))).into_tree(Vec::new()),
+            container()
+                .with::<container::width>(400.0)
+                .with::<container::height>(300.0)
+                .into_tree(vec![
+                    text_input()
+                        .with::<text_input::style>(
+                            StyleOf::<TextInput>::new()
+                                .with::<text_input::size>(XSize::fix(120.0, 30.0)),
+                        )
+                        .into_tree(Vec::new()),
+                    text_input()
+                        .with::<text_input::style>(
+                            StyleOf::<TextInput>::new()
+                                .with::<text_input::size>(XSize::fix(120.0, 30.0)),
+                        )
+                        .into_tree(Vec::new()),
                 ])
         }
 
@@ -1247,6 +1305,281 @@ mod tests {
                 Some(back + HALF),
                 "one blink, then the beat starts over, rather than a burst to catch up"
             );
+        }
+    }
+
+    mod external_drop {
+        use super::*;
+        use std::path::PathBuf;
+        use xui_interface::{
+            Color, DragPayload, DropAccepts, DropEffect, DropEvent, Point, Rect, WidgetState,
+        };
+
+        thread_local! {
+            static SEEN: RefCell<Vec<(&'static str, &'static str, Vec<PathBuf>)>> =
+                const { RefCell::new(Vec::new()) };
+        }
+
+        fn record(zone: &'static str, kind: &'static str, event: &DropEvent) {
+            SEEN.with(|seen| {
+                seen.borrow_mut()
+                    .push((zone, kind, event.payload.files.clone()))
+            });
+        }
+
+        fn seen() -> Vec<(&'static str, &'static str)> {
+            SEEN.with(|seen| seen.borrow().iter().map(|(z, k, _)| (*z, *k)).collect())
+        }
+
+        fn zone(name: &'static str, accepts: DropAccepts, children: Vec<StaticTree>) -> StaticTree {
+            container()
+                .with::<container::width>(100.0)
+                .with::<container::height>(100.0)
+                .with::<container::drop_accepts>(accepts)
+                .with_on::<container::on_drop_enter, _>(move |event, _| {
+                    record(name, "enter", event)
+                })
+                .with_on::<container::on_drop_over, _>(move |event, _| record(name, "over", event))
+                .with_on::<container::on_drop_leave, _>(move |event, _| {
+                    record(name, "leave", event)
+                })
+                .with_on::<container::on_drop, _>(move |event, _| record(name, "drop", event))
+                .into_tree(children)
+        }
+
+        /// Files at y 0..100, text at y 100..200, nothing below.
+        fn root() -> StaticTree {
+            container()
+                .with::<container::width>(400.0)
+                .with::<container::height>(300.0)
+                .into_tree(vec![
+                    zone("files", DropAccepts::FILES, Vec::new()),
+                    zone("text", DropAccepts::TEXT, Vec::new()),
+                ])
+        }
+
+        fn drop_runtime() -> GuiRuntime<MockRenderBackend, ZeroTextBackend> {
+            SEEN.with(|seen| seen.borrow_mut().clear());
+            let mut runtime = runtime_with(|app| {
+                app.mount_static(root());
+            });
+            runtime.frame().unwrap();
+            runtime
+        }
+
+        fn files() -> DragPayload {
+            DragPayload {
+                files: vec![PathBuf::from("/tmp/a.png")],
+                text: None,
+            }
+        }
+
+        fn drag(event: xui_interface::DragEvent) -> RuntimeEvent {
+            RuntimeEvent::Drag(event)
+        }
+
+        fn state_at(
+            runtime: &GuiRuntime<MockRenderBackend, ZeroTextBackend>,
+            y: f32,
+        ) -> WidgetState {
+            let arena = runtime.app().ui_runtime();
+            let id = arena.hit_test(Point::new(10.0, y)).unwrap();
+            arena.node(id).unwrap().state
+        }
+
+        #[test]
+        fn declared_targets_are_published_in_paint_order() {
+            let runtime = drop_runtime();
+            let targets = &runtime.platform_output().surface.drop_targets;
+            assert_eq!(targets.len(), 2);
+            assert_eq!(targets[0].rect, Rect::new(0.0, 0.0, 100.0, 100.0));
+            assert_eq!(targets[0].accepts, DropAccepts::FILES);
+            assert_eq!(targets[0].effect, DropEffect::Copy);
+            assert_eq!(targets[1].rect, Rect::new(0.0, 100.0, 100.0, 100.0));
+            let surface = &runtime.platform_output().surface;
+            assert_eq!(
+                surface.drop_effect_at(Point::new(10.0, 10.0), DropAccepts::FILES),
+                DropEffect::Copy
+            );
+            assert_eq!(
+                surface.drop_effect_at(Point::new(10.0, 110.0), DropAccepts::FILES),
+                DropEffect::None
+            );
+        }
+
+        #[test]
+        fn a_drag_is_offered_only_to_a_target_that_takes_it() {
+            let mut runtime = drop_runtime();
+            use xui_interface::DragEvent::*;
+            runtime.handle_event(drag(Enter {
+                payload: files(),
+                position: Point::new(10.0, 10.0),
+            }));
+            assert!(state_at(&runtime, 10.0).contains(WidgetState::DROP_OVER));
+            runtime.handle_event(drag(Over {
+                position: Point::new(20.0, 20.0),
+            }));
+            // Onto the text zone, which does not take files, then off both.
+            runtime.handle_event(drag(Over {
+                position: Point::new(20.0, 120.0),
+            }));
+            assert!(!state_at(&runtime, 10.0).contains(WidgetState::DROP_OVER));
+            assert!(!state_at(&runtime, 120.0).contains(WidgetState::DROP_OVER));
+            runtime.handle_event(drag(Over {
+                position: Point::new(20.0, 20.0),
+            }));
+            runtime.handle_event(drag(Leave));
+            assert_eq!(
+                seen(),
+                vec![
+                    ("files", "enter"),
+                    ("files", "over"),
+                    ("files", "leave"),
+                    ("files", "enter"),
+                    ("files", "leave"),
+                ]
+            );
+            assert!(!state_at(&runtime, 10.0).contains(WidgetState::DROP_OVER));
+        }
+
+        #[test]
+        fn a_drop_reaches_the_target_under_it_with_its_payload() {
+            let mut runtime = drop_runtime();
+            use xui_interface::DragEvent::*;
+            runtime.handle_event(drag(Enter {
+                payload: files(),
+                position: Point::new(10.0, 10.0),
+            }));
+            runtime.handle_event(drag(Drop {
+                payload: files(),
+                position: Point::new(30.0, 40.0),
+            }));
+            assert_eq!(
+                seen(),
+                vec![("files", "enter"), ("files", "over"), ("files", "drop")]
+            );
+            let files = SEEN.with(|seen| seen.borrow().last().unwrap().2.clone());
+            assert_eq!(files, vec![PathBuf::from("/tmp/a.png")]);
+            assert!(!state_at(&runtime, 10.0).contains(WidgetState::DROP_OVER));
+
+            // The drag is over: a stray move afterwards reaches no one.
+            runtime.handle_event(drag(Over {
+                position: Point::new(10.0, 10.0),
+            }));
+            assert_eq!(seen().len(), 3);
+        }
+
+        #[test]
+        fn a_drop_outside_every_target_is_ignored() {
+            let mut runtime = drop_runtime();
+            use xui_interface::DragEvent::*;
+            runtime.handle_event(drag(Enter {
+                payload: files(),
+                position: Point::new(10.0, 250.0),
+            }));
+            let results = runtime.handle_event(drag(Drop {
+                payload: files(),
+                position: Point::new(10.0, 250.0),
+            }));
+            assert!(seen().is_empty());
+            assert_eq!(results, vec![EventResult::Ignored]);
+        }
+
+        #[test]
+        fn the_innermost_target_decides_and_does_not_pass_the_drag_on() {
+            SEEN.with(|seen| seen.borrow_mut().clear());
+            let mut runtime = runtime_with(|app| {
+                app.mount_static(zone(
+                    "outer",
+                    DropAccepts::ALL,
+                    vec![
+                        container()
+                            .with::<container::width>(50.0)
+                            .with::<container::height>(50.0)
+                            .with::<container::drop_accepts>(DropAccepts::TEXT)
+                            .into_tree(Vec::new()),
+                    ],
+                ));
+            });
+            runtime.frame().unwrap();
+            let surface = runtime.platform_output().surface.clone();
+            assert_eq!(surface.drop_targets.len(), 2, "the inner one paints last");
+            assert_eq!(
+                surface.drop_effect_at(Point::new(10.0, 10.0), DropAccepts::FILES),
+                DropEffect::None
+            );
+            assert_eq!(
+                surface.drop_effect_at(Point::new(10.0, 80.0), DropAccepts::FILES),
+                DropEffect::Copy
+            );
+
+            use xui_interface::DragEvent::*;
+            runtime.handle_event(drag(Enter {
+                payload: files(),
+                position: Point::new(10.0, 10.0),
+            }));
+            runtime.handle_event(drag(Over {
+                position: Point::new(10.0, 80.0),
+            }));
+            assert_eq!(seen(), vec![("outer", "enter")]);
+        }
+
+        #[test]
+        fn a_target_is_published_clipped_to_its_ancestors() {
+            let mut runtime = runtime_with(|app| {
+                app.mount_static(
+                    container()
+                        .with::<container::style>(
+                            StyleOf::<Container>::new()
+                                .with::<container::width>(100.0)
+                                .with::<container::height>(40.0)
+                                .with::<container::clip>(true),
+                        )
+                        .into_tree(vec![zone("files", DropAccepts::FILES, Vec::new())]),
+                );
+            });
+            runtime.frame().unwrap();
+            let targets = &runtime.platform_output().surface.drop_targets;
+            assert_eq!(targets.len(), 1);
+            assert_eq!(targets[0].rect, Rect::new(0.0, 0.0, 100.0, 40.0));
+        }
+
+        #[test]
+        fn a_drop_over_rule_styles_the_target_while_a_drag_is_over_it() {
+            let mut runtime = runtime_with(|app| {
+                app.mount_static(
+                    container()
+                        .with::<container::style>(xui_macros::style!(container {
+                            width: 100.0,
+                            height: 100.0,
+                            background: if drop_over {
+                                Color::WHITE
+                            } else {
+                                Color::BLACK
+                            },
+                        }))
+                        .with::<container::drop_accepts>(DropAccepts::FILES)
+                        .into_tree(Vec::new()),
+                );
+            });
+            runtime.frame().unwrap();
+            let background = |runtime: &GuiRuntime<MockRenderBackend, ZeroTextBackend>| {
+                let arena = runtime.app().ui_runtime();
+                let id = arena.hit_test(Point::new(10.0, 10.0)).unwrap();
+                arena.node(id).unwrap().effective_style.paint.background
+            };
+            assert_eq!(background(&runtime), Color::BLACK.into());
+
+            runtime.handle_event(drag(xui_interface::DragEvent::Enter {
+                payload: files(),
+                position: Point::new(10.0, 10.0),
+            }));
+            runtime.frame().unwrap();
+            assert_eq!(background(&runtime), Color::WHITE.into());
+
+            runtime.handle_event(drag(xui_interface::DragEvent::Leave));
+            runtime.frame().unwrap();
+            assert_eq!(background(&runtime), Color::BLACK.into());
         }
     }
 }

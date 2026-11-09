@@ -40,6 +40,7 @@ use crate::render::{ImagePrimitive, Primitive, RenderTreeWriter};
         focus_binding,
         scroll_binding,
         size_observation,
+        droppable,
         events
     ),
     shorthands(sources)

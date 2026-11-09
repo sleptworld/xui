@@ -15,8 +15,8 @@ use crate::scroll::ScrollController;
 use crate::size::SizeObserver;
 use xui_interface::{
     AccessibilityChecked, AccessibilityLiveRegion, AccessibilityOrientation, AccessibilityPopup,
-    AccessibilityProperties, AccessibilityRole, FocusProperties, Focusability, NodeId,
-    OrderedFloat, ShortcutBinding, Transition, Animation,
+    AccessibilityProperties, AccessibilityRole, DropAccepts, DropEffect, FocusProperties,
+    Focusability, NodeId, OrderedFloat, ShortcutBinding, Transition, Animation,
 };
 
 behavior_capability! {
@@ -83,6 +83,27 @@ behavior_capability! {
         /// The timing of the node's keyframe animation; the keyframes are
         /// the node's (`Draft::animate`).
         animation: Animation [optional],
+    }
+}
+
+behavior_capability! {
+    /// Makes the node a target for drags from outside the window: files from
+    /// Finder, text from another application.
+    ///
+    /// A node with `drop_accepts` set gets `on_drop_enter`, `on_drop_over`,
+    /// `on_drop_leave` and `on_drop` for a drag carrying only what it accepts,
+    /// and is in the `drop_over` state while one is over it. The innermost
+    /// target under the pointer is the one asked; one that does not accept the
+    /// drag refuses it rather than passing it to a target around it.
+    ///
+    /// Declared rather than decided in a handler: the platform asks what a drop
+    /// would do while the drag is moving, and is answered from these, published
+    /// after each frame, without calling into the application.
+    pub mod droppable: Droppable dirty(STATE_CHANGE) {
+        /// What the node takes. Nothing, the default, makes it no target.
+        drop_accepts: DropAccepts,
+        /// What a drop here does, as the platform shows it. Copy when unset.
+        drop_effect: DropEffect [optional],
     }
 }
 

@@ -303,6 +303,10 @@ fn semantic_state_change(event: &SemanticEvent) -> Option<(xui_interface::Widget
         SemanticEvent::DragEnd(_) | SemanticEvent::DragCancel(_) => {
             Some((xui_interface::WidgetState::DRAGGING, false))
         }
+        SemanticEvent::DropEnter(_) => Some((xui_interface::WidgetState::DROP_OVER, true)),
+        SemanticEvent::DropLeave(_) | SemanticEvent::Drop(_) => {
+            Some((xui_interface::WidgetState::DROP_OVER, false))
+        }
         _ => None,
     }
 }

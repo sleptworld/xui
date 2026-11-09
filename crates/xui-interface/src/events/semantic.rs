@@ -3,7 +3,7 @@ use super::raw::{
 };
 use super::shortcut::{CommandId, Shortcut};
 use crate::core::{Point, Translation};
-use crate::platform::{PlatformReply, RequestId};
+use crate::platform::{DragPayload, DropEffect, PlatformReply, RequestId};
 use crate::widget::NodeId;
 use std::time::{Duration, Instant};
 
@@ -90,6 +90,13 @@ pub enum SemanticEvent {
 
     /// A deadline this node asked for has passed. See [`WakeEvent`].
     Wake(WakeEvent),
+
+    // A drag from outside the window, over a node that declared itself a drop
+    // target. See [`DropEvent`].
+    DropEnter(DropEvent),
+    DropOver(DropEvent),
+    DropLeave(DropEvent),
+    Drop(DropEvent),
 }
 
 impl SemanticEvent {
@@ -124,6 +131,11 @@ impl SemanticEvent {
 
             SemanticEvent::PlatformReply(e) => &e.meta,
             SemanticEvent::Wake(e) => &e.meta,
+
+            SemanticEvent::DropEnter(e)
+            | SemanticEvent::DropOver(e)
+            | SemanticEvent::DropLeave(e)
+            | SemanticEvent::Drop(e) => &e.meta,
         }
     }
 
@@ -158,6 +170,11 @@ impl SemanticEvent {
 
             SemanticEvent::PlatformReply(e) => &mut e.meta,
             SemanticEvent::Wake(e) => &mut e.meta,
+
+            SemanticEvent::DropEnter(e)
+            | SemanticEvent::DropOver(e)
+            | SemanticEvent::DropLeave(e)
+            | SemanticEvent::Drop(e) => &mut e.meta,
         }
     }
 
@@ -200,6 +217,12 @@ impl SemanticEvent {
             SemanticEvent::PlatformReply(_) => PropagationMode::Direct,
             // The same: the deadline is the asking node's.
             SemanticEvent::Wake(_) => PropagationMode::Direct,
+            // To the drop target alone. It is already the nearest target to the
+            // point; bubbling would offer the same drop to an enclosing target.
+            SemanticEvent::DropEnter(_)
+            | SemanticEvent::DropOver(_)
+            | SemanticEvent::DropLeave(_)
+            | SemanticEvent::Drop(_) => PropagationMode::Direct,
         }
     }
 
@@ -246,6 +269,25 @@ pub struct WakeEvent {
     /// rather than from `meta.timestamp` keeps a periodic wake from drifting by
     /// however late each frame was.
     pub deadline: Instant,
+}
+
+/// A drag from outside the window -- files from Finder, text from another
+/// application -- over a node that declared itself a drop target.
+///
+/// `DropEnter` comes when the drag reaches the target, `DropOver` as it moves
+/// within it, and then either `DropLeave` (it moved off, or was cancelled) or
+/// `Drop`. Only a target that accepts what the drag carries hears of it.
+#[derive(Debug, Clone)]
+pub struct DropEvent {
+    pub meta: EventMeta,
+    /// Where the drag is, in window coordinates.
+    pub position: Point,
+    /// The same point relative to the target's own box.
+    pub local_position: Point,
+    /// What the drag carries. Shared: every event of one drag has the same.
+    pub payload: std::sync::Arc<DragPayload>,
+    /// The effect the target declared, which the platform is showing.
+    pub effect: DropEffect,
 }
 
 #[derive(Debug, Clone)]

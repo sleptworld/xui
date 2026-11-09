@@ -1,13 +1,13 @@
 //! Read-only queries: tree shape, geometry, hit testing, focus and pointer state.
 
+use crate::caps::Registered;
+use crate::caps::behavior::{Accessibility, Events, Focus, Shortcuts};
 use crate::core::Point;
 use crate::event_system::EventState;
 use crate::event_system::callbacks::{EventHandlers, EventMask};
 use crate::focus::FocusManager;
 use crate::ui_runtime::paint_pass::is_drawn;
 use crate::ui_runtime::{EventPath, NodeView, UiRuntime};
-use crate::caps::Registered;
-use crate::caps::behavior::{Accessibility, Events, Focus, Shortcuts};
 use crate::widgets::Widgets;
 use xui_interface::{Bounds, CursorIcon, FocusProperties, Focusability, NodeId};
 
@@ -154,9 +154,9 @@ impl UiRuntime {
     }
 
     pub(crate) fn is_focusable(&self, id: NodeId) -> bool {
-        if Accessibility::get(&self.columns, id).is_some_and(|a11y| {
-            a11y.disabled == Some(true) || a11y.hidden == Some(true)
-        }) {
+        if Accessibility::get(&self.columns, id)
+            .is_some_and(|a11y| a11y.disabled == Some(true) || a11y.hidden == Some(true))
+        {
             return false;
         }
         let focus = self.focus_properties(id);
@@ -213,7 +213,10 @@ impl UiRuntime {
     /// The work scheduled on `id`, cleared, as a frame would.
     #[cfg(test)]
     pub(crate) fn take_work(&mut self, id: NodeId) -> crate::ui_runtime::state::HostWorkFlags {
-        std::mem::replace(&mut self.hosts[id].work, crate::ui_runtime::state::HostWorkFlags::empty())
+        std::mem::replace(
+            &mut self.hosts[id].work,
+            crate::ui_runtime::state::HostWorkFlags::empty(),
+        )
     }
 
     /// `viewport_pos` in `id`'s local coordinates: relative to its border box,
@@ -395,7 +398,7 @@ impl UiRuntime {
         layer(hit_root) >= layer(visual_root)
     }
 
-    fn overlay_entry_interaction(&self, visual_root: NodeId) -> Option<(bool, bool)> {
+    pub(super) fn overlay_entry_interaction(&self, visual_root: NodeId) -> Option<(bool, bool)> {
         let widget = self.hosts[self.root_overlayer].widget.clone();
         widget.with_widgets(|widgets| {
             let Widgets::RootOverlayer(overlayer) = widgets else {

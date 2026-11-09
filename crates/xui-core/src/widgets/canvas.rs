@@ -1267,6 +1267,7 @@ impl Default for CanvasController {
         motion,
         focus_binding,
         size_observation,
+        droppable,
         events
     )
 )]

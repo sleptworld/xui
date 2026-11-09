@@ -35,6 +35,7 @@ use crate::node::{Draft, WidgetT};
         focus_binding,
         scroll_binding,
         size_observation,
+        droppable,
         events
     )
 )]

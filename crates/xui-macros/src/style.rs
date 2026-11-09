@@ -85,6 +85,7 @@ const STATE_DISABLED: u32 = 1 << 3;
 const STATE_SELECTED: u32 = 1 << 4;
 const STATE_CHECKED: u32 = 1 << 5;
 const STATE_DRAGGING: u32 = 1 << 6;
+const STATE_DROP_OVER: u32 = 1 << 7;
 
 pub fn expand_style(style: &StyleInput) -> Result<TokenStream2> {
     let xui_core = krate::xui()?;
@@ -436,6 +437,7 @@ fn state_flag(ident: &Ident) -> Option<u32> {
         "selected" => Some(STATE_SELECTED),
         "checked" => Some(STATE_CHECKED),
         "dragging" => Some(STATE_DRAGGING),
+        "drop_over" => Some(STATE_DROP_OVER),
         _ => None,
     }
 }
@@ -462,6 +464,9 @@ fn widget_state_tokens(mask: u32, xui_core: &TokenStream2) -> TokenStream2 {
     }
     if mask & STATE_DRAGGING != 0 {
         tokens.push(quote!(#xui_core::WidgetState::DRAGGING));
+    }
+    if mask & STATE_DROP_OVER != 0 {
+        tokens.push(quote!(#xui_core::WidgetState::DROP_OVER));
     }
 
     tokens

@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use xui_interface::{
-    Appearance, HostCapabilities, MenuBar, NodeId, PlatformCommand, PlatformReply, PlatformRequest,
+    Appearance, DropTarget, HostCapabilities, MenuBar, NodeId, PlatformCommand, PlatformReply, PlatformRequest,
     PublishedSurface, RequestId, WindowState,
 };
 
@@ -143,8 +143,20 @@ impl PlatformHandle {
 
     /// Publishes what the host may read without asking the runtime: window
     /// regions, drop targets, the focused text input's document.
+    ///
+    /// Drop targets set here last until the next frame, which replaces them
+    /// with those the nodes declare.
     pub fn set_surface(&self, surface: PublishedSurface) {
         self.0.borrow_mut().surface = surface;
+    }
+
+    /// Replaces the published drop targets, which the runtime gathers from the
+    /// nodes that declare `drop_accepts`, after each layout.
+    pub(crate) fn set_drop_targets(&self, targets: Vec<DropTarget>) {
+        let mut bridge = self.0.borrow_mut();
+        if *bridge.surface.drop_targets != *targets {
+            bridge.surface.drop_targets = targets.into();
+        }
     }
 
     /// What the host can do, as it reported at startup.

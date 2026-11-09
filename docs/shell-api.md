@@ -319,9 +319,10 @@ window:
 
 - **No host implements any of it.** Every default is "unsupported".
 - **Few widgets use it.** Only the text input does, for the edit commands (see
-  above). Nothing declares a window region or a drop target yet (a style flag is
-  the obvious spelling for a caption region), and `RuntimeEvent::Drag` and
-  `RawEvent::Gesture` are accepted and go nowhere.
+  above). Nothing declares a window region yet (a style flag is the obvious
+  spelling for a caption region), and `RawEvent::Gesture` is accepted and goes
+  nowhere. Drop targets have since been added; see "External drag and drop"
+  below.
 - **`Appearance`, capabilities and window state are stored, not reactive.** A
   component reading them is not re-rendered when they change, and `Appearance`
   does not yet feed the theme tokens.
@@ -338,7 +339,8 @@ window:
 
 0. **Types and plumbing, no host changes.** *Done.*
 1. **macOS: the daily-use gaps.** *Done* — see below.
-2. **macOS: appearance, dialogs, drag and drop, native context menu.**
+2. **macOS: appearance, dialogs, drag and drop, native context menu.** Drag and
+   drop is done; see below.
 3. Touch, gestures, notifications.
 4. Windows, then `xui-winit` forwarding the winit events it currently drops
    (`CursorLeft`, `Touch`, `DroppedFile`, `ThemeChanged`).
@@ -446,3 +448,33 @@ Still open:
 - **Caption regions in the widget layer.** How an application declares one.
 - **Multi-window.** Kept out: one `Shell` per window, one window per run. When it
   arrives, `perform` needs to know which window; adding that is mechanical.
+
+## External drag and drop
+
+Drags from outside the window (files from Finder, text from another
+application) reach nodes that declare themselves drop targets.
+
+- **Declaring a target.** The `droppable` behaviour capability, selected by
+  `container`, `grid`, `z_stack`, `image` and `canvas`: `drop_accepts`
+  (`DropAccepts::FILES`, `TEXT`, `ALL`) and `drop_effect` (Copy when unset). A
+  node with nothing accepted is no target.
+- **Events.** `on_drop_enter`, `on_drop_over`, `on_drop_leave` and `on_drop`, each
+  a `DropEvent` with the window and local position, the shared `DragPayload`
+  and the effect. They go to the target alone (`PropagationMode::Direct`). The
+  target is the innermost one under the point; if it does not take everything
+  the drag carries there is no target, and an enclosing one is not asked.
+- **Style.** The target is in `WidgetState::DROP_OVER` while an accepted drag
+  is over it: `style!(background: if drop_over { .. })`.
+- **What the host answers from.** After each layout the runtime publishes every
+  reachable target, clipped by its ancestors, in paint order, into
+  `PublishedSurface::drop_targets`, so `drop_effect_at` agrees with the
+  runtime's own choice. Targets under a modal layer, in an overlay that does
+  not hit test, or in a subtree that is not drawn are left out. One covered by
+  a sibling that is no target is not: the host may then offer a drop the
+  runtime has nowhere to deliver.
+- **`xui-macos`.** `XuiView` registers file URLs and plain text, sends
+  `Enter`/`Over`/`Leave`/`Drop`, and answers `draggingUpdated:` from the
+  published targets, limited to what the drag's source allows. A drag of files
+  reports only the files, because Finder also puts their names on the pasteboard
+  as text, and a target that takes files but not text would otherwise refuse
+  them. It reports `HostCapabilities::DRAG_DROP`.

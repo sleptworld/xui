@@ -7,11 +7,11 @@ pub use crate::reactive::{
 pub use xui_animation::{Easing, Transition};
 #[allow(deprecated)]
 pub use xui_interface::events::{
-    ClickEvent, ContextMenuEvent, DragEvent, Event, EventPhase, EventRequest, EventRequests,
+    ClickEvent, ContextMenuEvent, DragEvent, DropEvent, Event, EventPhase, EventRequest, EventRequests,
     EventResult, FocusEvent, HoverEvent, PointerBoundaryEvent, PointerButton, PointerMoveEvent,
     PressEvent, ScrollEvent, SemanticEvent,
 };
-pub use xui_interface::{Animation, AnimationDirection, Iterations};
+pub use xui_interface::{Animation, AnimationDirection, DragPayload, DropAccepts, DropEffect, Iterations};
 
 pub use crate::anchor::{AnchorAlign, AnchorPlacement, AnchorSide};
 pub use crate::clock::{FrameClock, FrameTime};

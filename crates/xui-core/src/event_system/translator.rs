@@ -170,6 +170,35 @@ impl EventTranslator {
         })
     }
 
+    /// A drag from outside the window, at `target`. `kind` is the variant:
+    /// `SemanticEvent::Drop`, `SemanticEvent::DropEnter`, ..
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn drop_event(
+        &mut self,
+        kind: fn(xui_interface::DropEvent) -> SemanticEvent,
+        target: NodeId,
+        position: xui_interface::Point,
+        local_position: xui_interface::Point,
+        payload: std::sync::Arc<xui_interface::DragPayload>,
+        effect: xui_interface::DropEffect,
+        timestamp: Instant,
+    ) -> SemanticEvent {
+        kind(xui_interface::DropEvent {
+            meta: self.make_meta(
+                timestamp,
+                target,
+                target,
+                EventPhase::Target,
+                EventSource::Platform,
+                Modifiers::default(),
+            ),
+            position,
+            local_position,
+            payload,
+            effect,
+        })
+    }
+
     /// A deadline `node` asked for, delivered in the frame at `timestamp`.
     pub(crate) fn wake_event(
         &mut self,

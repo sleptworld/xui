@@ -161,6 +161,7 @@ impl GridTracks {
         focus_binding,
         scroll_binding,
         size_observation,
+        droppable,
         events
     )
 )]

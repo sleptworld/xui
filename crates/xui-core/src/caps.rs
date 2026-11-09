@@ -472,6 +472,7 @@ capabilities! {
         focus_binding: FocusBinding [sparse commit],
         scroll_binding: ScrollBinding [sparse commit],
         size_observation: SizeObservation [sparse commit],
+        droppable: Droppable [sparse],
         events: Events [sparse],
     }
 }

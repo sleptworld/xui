@@ -28,11 +28,14 @@ pub(crate) mod tree;
 // The runtime's API, one file per caller.
 mod commit;
 mod config;
+mod drop;
 mod frame;
 mod input;
 mod query;
 mod scroll;
 mod wake;
+
+pub(crate) use drop::ExternalDrag;
 
 // The pipeline's private stages.
 mod layout_pass;

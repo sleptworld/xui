@@ -21,7 +21,7 @@
 use smallvec::SmallVec;
 use xui_interface::EventPhase;
 use xui_interface::events::semantic::{
-    ClickEvent, CommandEvent, ContextMenuEvent, DragEvent, FocusEvent, HoverEvent,
+    ClickEvent, CommandEvent, ContextMenuEvent, DragEvent, DropEvent, FocusEvent, HoverEvent,
     PlatformReplyEvent, PointerBoundaryEvent, PointerMoveEvent, PressEvent, ScrollEvent,
     SemanticEvent, WakeEvent,
 };
@@ -304,6 +304,13 @@ events! {
     PlatformReply: PlatformReply(PlatformReplyEvent) => on_platform_reply;
 
     Wake:         Wake(WakeEvent)                => on_wake;
+
+    // A drag from outside the window. Delivered only to a node with
+    // `drop_accepts` set, and only for what it accepts.
+    DropEnter:    DropEnter(DropEvent)           => on_drop_enter;
+    DropOver:     DropOver(DropEvent)            => on_drop_over;
+    DropLeave:    DropLeave(DropEvent)           => on_drop_leave;
+    Drop:         Drop(DropEvent)                => on_drop;
 }
 
 impl EventMask {
