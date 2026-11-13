@@ -298,13 +298,28 @@ pub fn runner(
     app: AppRoot,
     options: Option<WinitRunnerOptions>,
 ) -> WinitRunner<xui_vello::VelloBackend<FBackend>, FBackend> {
+    runner_with_device(app, options, xui_vello::DeviceNeeds::default())
+}
+
+/// [`runner`], on a device that also gives the app's canvas GPU painters
+/// what `needs` asks, where the adapter can.
+#[cfg(feature = "vello")]
+pub fn runner_with_device(
+    app: AppRoot,
+    options: Option<WinitRunnerOptions>,
+    needs: xui_vello::DeviceNeeds,
+) -> WinitRunner<xui_vello::VelloBackend<FBackend>, FBackend> {
     let app = App::new(app);
     let options = options.unwrap_or_default();
     WinitRunner::with_fallible_options(
         move |window| -> Result<_, std::io::Error> {
             let mut app = app;
-            let backend = xui_vello::VelloBackend::<FBackend>::new(window)
-                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            let backend = xui_vello::VelloBackend::<FBackend>::new_with_device(
+                window,
+                Default::default(),
+                &needs,
+            )
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
             let context = backend.wgpu_context();
             app.set_gpu_context(xui_core::widgets::CanvasGpuContext::new(
                 context.device().clone(),

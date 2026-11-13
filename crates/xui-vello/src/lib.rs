@@ -118,7 +118,7 @@ mod paths;
 mod text;
 mod texture;
 
-pub use backend::{FrameStats, ResourceStats, VelloBackend, VelloBackendOptions};
+pub use backend::{DeviceNeeds, FrameStats, ResourceStats, VelloBackend, VelloBackendOptions};
 pub use xui_wgpu_text::AtlasOptions;
 pub use context::WgpuContext;
 pub use encode::Unsupported;

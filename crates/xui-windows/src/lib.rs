@@ -38,7 +38,7 @@ mod window;
 mod wndproc;
 
 #[cfg(feature = "vello")]
-pub use app::runner;
+pub use app::{runner, runner_with_device};
 #[cfg(feature = "skia")]
 pub use app::skia_runner;
 pub use app::{WinBackendInitError, WinRunError, WinRunner, WinRunnerOptions};

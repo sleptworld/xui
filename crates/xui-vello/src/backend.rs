@@ -69,6 +69,36 @@ impl Default for VelloBackendOptions {
     }
 }
 
+/// What an app's own GPU painters ask of the device, beyond what xui needs:
+/// a canvas painter that samples arrays of textures, say. A device that
+/// cannot give all of it is opened without any of it, so a painter checks
+/// `device.features()` before relying on them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DeviceNeeds {
+    pub features: wgpu::Features,
+    pub limits: wgpu::Limits,
+}
+
+/// Opens `adapter`'s device as `plain` describes it, with `needs` on top
+/// where the adapter can give them.
+async fn open_device(
+    adapter: &wgpu::Adapter,
+    plain: wgpu::DeviceDescriptor<'_>,
+    needs: &DeviceNeeds,
+) -> Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError> {
+    if *needs != DeviceNeeds::default() && adapter.features().contains(needs.features) {
+        let asked = wgpu::DeviceDescriptor {
+            required_features: needs.features,
+            required_limits: needs.limits.clone(),
+            ..plain.clone()
+        };
+        if let Ok(opened) = adapter.request_device(&asked).await {
+            return Ok(opened);
+        }
+    }
+    adapter.request_device(&plain).await
+}
+
 /// How much of each frame was drawn, for diagnosing and for tests.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FrameStats {
@@ -213,12 +243,23 @@ impl<T: TextBackend> VelloBackend<T> {
         window: Arc<dyn SurfaceTarget>,
         options: VelloBackendOptions,
     ) -> Result<Self, VelloBackendError> {
-        pollster::block_on(Self::new_async(window, options))
+        Self::new_with_device(window, options, &DeviceNeeds::default())
+    }
+
+    /// [`Self::new_with_options`], on a device that also gives the app's
+    /// painters what `needs` asks, where the adapter can.
+    pub fn new_with_device(
+        window: Arc<dyn SurfaceTarget>,
+        options: VelloBackendOptions,
+        needs: &DeviceNeeds,
+    ) -> Result<Self, VelloBackendError> {
+        pollster::block_on(Self::new_async(window, options, needs))
     }
 
     async fn new_async(
         window: Arc<dyn SurfaceTarget>,
         options: VelloBackendOptions,
+        needs: &DeviceNeeds,
     ) -> Result<Self, VelloBackendError> {
         let size = window.surface_size();
         let scale_factor = window.scale_factor() as f32;
@@ -239,13 +280,16 @@ impl<T: TextBackend> VelloBackend<T> {
         {
             return Err(VelloBackendError::UnsupportedVectorTarget);
         }
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
+        let (device, queue) = open_device(
+            &adapter,
+            wgpu::DeviceDescriptor {
                 label: Some("xui-vello device"),
                 memory_hints: wgpu::MemoryHints::Performance,
                 ..Default::default()
-            })
-            .await?;
+            },
+            needs,
+        )
+        .await?;
 
         let mut config = surface
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
@@ -312,12 +356,23 @@ impl<T: TextBackend> VelloBackend<T> {
         scale_factor: f32,
         options: VelloBackendOptions,
     ) -> Result<Self, VelloBackendError> {
-        pollster::block_on(Self::headless_async(scale_factor, options))
+        Self::headless_with_device(scale_factor, options, &DeviceNeeds::default())
+    }
+
+    /// [`Self::headless`], on a device that also gives the app's painters
+    /// what `needs` asks, where the adapter can.
+    pub fn headless_with_device(
+        scale_factor: f32,
+        options: VelloBackendOptions,
+        needs: &DeviceNeeds,
+    ) -> Result<Self, VelloBackendError> {
+        pollster::block_on(Self::headless_async(scale_factor, options, needs))
     }
 
     async fn headless_async(
         scale_factor: f32,
         options: VelloBackendOptions,
+        needs: &DeviceNeeds,
     ) -> Result<Self, VelloBackendError> {
         let instance = wgpu::Instance::default();
         let adapter = match instance
@@ -337,12 +392,15 @@ impl<T: TextBackend> VelloBackend<T> {
                     .await?
             }
         };
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
+        let (device, queue) = open_device(
+            &adapter,
+            wgpu::DeviceDescriptor {
                 label: Some("xui-vello headless device"),
                 ..Default::default()
-            })
-            .await?;
+            },
+            needs,
+        )
+        .await?;
         let renderer = new_renderer(&device)?;
         let filters = FilterRenderer::new(&device, options.filter_texture_budget_bytes);
         Ok(Self {

@@ -348,12 +348,27 @@ pub fn runner(
     app: xui_core::app::AppRoot,
     options: Option<MacRunnerOptions>,
 ) -> MacRunner<xui_vello::VelloBackend<xui_f::FBackend>, xui_f::FBackend> {
+    runner_with_device(app, options, xui_vello::DeviceNeeds::default())
+}
+
+/// [`runner`], on a device that also gives the app's canvas GPU painters
+/// what `needs` asks, where the adapter can.
+#[cfg(feature = "vello")]
+pub fn runner_with_device(
+    app: xui_core::app::AppRoot,
+    options: Option<MacRunnerOptions>,
+    needs: xui_vello::DeviceNeeds,
+) -> MacRunner<xui_vello::VelloBackend<xui_f::FBackend>, xui_f::FBackend> {
     let app = App::new(app);
     MacRunner::with_fallible_options(
         move |window| -> Result<_, std::io::Error> {
             let mut app = app;
-            let backend = xui_vello::VelloBackend::<xui_f::FBackend>::new(window)
-                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            let backend = xui_vello::VelloBackend::<xui_f::FBackend>::new_with_device(
+                window,
+                Default::default(),
+                &needs,
+            )
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
             let context = backend.wgpu_context();
             app.set_gpu_context(xui_core::widgets::CanvasGpuContext::new(
                 context.device().clone(),

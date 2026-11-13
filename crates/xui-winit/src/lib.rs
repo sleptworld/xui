@@ -31,7 +31,7 @@ pub(crate) mod renders;
 mod wgpu;
 
 #[cfg(feature = "vello")]
-pub use runner::runner;
+pub use runner::{runner, runner_with_device};
 #[cfg(feature = "skia")]
 pub use runner::skia_runner;
 #[cfg(feature = "wgpu")]
@@ -52,7 +52,7 @@ pub use wgpu::{
 };
 
 #[cfg(feature = "vello")]
-pub use xui_vello::{VelloBackend, VelloBackendOptions};
+pub use xui_vello::{DeviceNeeds, VelloBackend, VelloBackendOptions};
 
 #[cfg(feature = "skia")]
 pub use xui_skia::{

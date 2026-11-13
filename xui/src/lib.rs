@@ -19,7 +19,7 @@ pub mod prelude {
 pub use xui_macos::*;
 
 #[cfg(all(target_os = "macos", feature = "vello"))]
-pub use xui_macos::runner;
+pub use xui_macos::{runner, runner_with_device};
 
 #[cfg(all(target_os = "macos", feature = "skia"))]
 pub use xui_macos::skia_runner;

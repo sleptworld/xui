@@ -52,7 +52,7 @@ mod view;
 mod window;
 
 #[cfg(feature = "vello")]
-pub use app::runner;
+pub use app::{runner, runner_with_device};
 #[cfg(feature = "skia")]
 pub use app::skia_runner;
 pub use app::{MacBackendInitError, MacRunError, MacRunner, MacRunnerOptions};
@@ -60,7 +60,7 @@ pub use window::MacWindow;
 pub use xui_shell::{MacOsWindowOptions, PhysicalSize, WindowOptions, WindowSize};
 
 #[cfg(feature = "vello")]
-pub use xui_vello::{VelloBackend, VelloBackendOptions, wgpu};
+pub use xui_vello::{DeviceNeeds, VelloBackend, VelloBackendOptions, wgpu};
 
 #[cfg(feature = "skia-wgpu")]
 pub use xui_skia::{WgpuContext, WgpuImage};
