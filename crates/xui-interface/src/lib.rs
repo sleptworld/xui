@@ -63,7 +63,7 @@ pub use style::{
     FilterQuality, FlexDirectionStyle, JustifyStyle, LengthValue, LinearGradientStyle, MaskShape,
     PositionStyle, RadialGradientStyle, ScrollDirectionStyle, ScrollbarStyle,
     ScrollbarVisibilityStyle, ShadowStyle, Stroke, StrokeLineStyle, StrokeStyle, StyleValue, Theme,
-    ThemeValue, Token, TransformStyle, VisibilityStyle, WidgetStateMatcher,
+    ThemeMode, ThemeValue, Themes, Token, TransformStyle, VisibilityStyle, WidgetStateMatcher,
 };
 pub use text::*;
 pub use text_runs::*;

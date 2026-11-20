@@ -11,7 +11,8 @@ pub use xui_interface::{
     FilterQuality, FlexDirectionStyle, JustifyStyle, LengthValue, LinearGradientStyle, MaskShape,
     PositionStyle, RadialGradientStyle, ScrollDirectionStyle, ScrollbarStyle,
     ScrollbarVisibilityStyle, ShadowStyle, Stroke, StrokeLineStyle, StrokeStyle, StyleValue, Theme,
-    ThemeValue, Token, TransformStyle, VisibilityStyle, WidgetState, WidgetStateMatcher,
+    ThemeMode, ThemeValue, Themes, Token, TransformStyle, VisibilityStyle, WidgetState,
+    WidgetStateMatcher,
 };
 
 use crate::animation::{has_animatable_difference, interpolate_style};

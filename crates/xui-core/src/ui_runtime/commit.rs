@@ -76,7 +76,7 @@ impl UiRuntime {
             gpu_context: None,
             platform: crate::platform::PlatformHandle::default(),
             raw_event_listeners: 0,
-            theme,
+            theme: std::rc::Rc::new(theme),
             stats: FrameStats::default(),
             style_system,
             anchor_system: Default::default(),

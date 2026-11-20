@@ -295,7 +295,7 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
                 Vec::new()
             }
             RuntimeEvent::Appearance(appearance) => {
-                self.app.platform().set_appearance(appearance);
+                self.app.set_appearance(appearance);
                 Vec::new()
             }
             RuntimeEvent::WindowState(state) => {

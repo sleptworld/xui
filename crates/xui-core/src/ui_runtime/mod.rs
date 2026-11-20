@@ -119,7 +119,7 @@ pub struct UiRuntime {
     /// How many live hosts read raw device events. Almost always zero, which is
     /// what lets raw dispatch skip its whole ancestor walk.
     pub(super) raw_event_listeners: usize,
-    pub(super) theme: Theme,
+    pub(super) theme: std::rc::Rc<Theme>,
     pub(crate) stats: FrameStats,
     pub(super) style_system: StyleSystem,
     pub(super) anchor_system: AnchorSystem,

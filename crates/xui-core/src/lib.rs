@@ -57,6 +57,7 @@ pub mod size;
 pub mod style;
 #[cfg(test)]
 mod test_tree;
+pub mod theme;
 pub mod ticker;
 pub mod widgets;
 

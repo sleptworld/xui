@@ -130,7 +130,7 @@ fn every_component_renders_in_both_themes_and_narrow_layout() {
         CASE.set(case);
         for theme in [Theme::light(), Theme::dark()] {
             let mut app = App::new(root);
-            app.set_theme(theme);
+            app.set_themes(Themes::single(theme));
             app.resize(Size::new(280.0, 400.0));
             let mut text = TextHost::new(CosmicEngine::new(1.0));
             let mut backend = MockRenderBackend::default();

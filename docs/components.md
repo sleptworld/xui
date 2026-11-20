@@ -139,7 +139,9 @@ shadcn/ui: `color::BACKGROUND` and four levels of text from
 `ACCENT`, `DESTRUCTIVE`, `SELECTION`, each with a `*_FOREGROUND`; and `BORDER`,
 `INPUT`, `RING`. They follow the runtime theme instead of hard-coding colors.
 `Theme::light()` (the default) and `Theme::dark()` are the shadcn neutral
-palettes; switch with `App::set_theme`. `color::PRIMARY.alpha(0.9)` expresses
+palettes; set them with `App::set_themes` and choose one with
+`App::set_theme_mode` or, from a handler, the `ThemeHandle` context.
+`color::PRIMARY.alpha(0.9)` expresses
 Tailwind-style `bg-primary/90` hover states, and `color::ACCENT.mix(color::PRIMARY, 0.2)`
 a derived color. An application declares its own tokens the same way and sets
 them with `Theme::with`; see [theme.md](theme.md).

@@ -1,6 +1,6 @@
 # 主题设计
 
-状态：**§2–§4 已实施**（2026-11-21），§5–§6 为提案。依据 `xui-interface/src/style.rs`、`styles/units.rs`、`xui-core/src/ui_runtime/config.rs`、
+状态：**§2–§5 已实施**（2026-11-21），§6 为提案。依据 `xui-interface/src/style.rs`、`styles/units.rs`、`xui-core/src/ui_runtime/config.rs`、
 `xui-core/src/app.rs`、`xui-animation` 与 `xui-components` 的现状整理。
 
 ## 0. 目标
@@ -9,8 +9,8 @@
 |---|---|
 | 应用能加自己的角色 | 内置与应用 token 是同一种东西：命名常量 |
 | 一种机制 | 颜色、间距、圆角、字号都用 `Token<T>`；去掉别名 |
-| 应用内切换主题 | 主题由运行时持有，选择是一个信号，事件回调写它即可 |
-| 代码能读当前主题 | 当前主题作为 context 提供，读者在主题变化时更新 |
+| 应用内切换主题 | 主题由运行时持有，事件回调经 context 中的 `ThemeHandle` 请求切换，下一帧生效 |
+| 依赖主题的值随之更新 | token 在样式计算时解析，画布在绘制时读主题；组件不因换主题重新运行 |
 | 跟随系统 | `ThemeMode::System` 按 `Appearance::color_scheme` 选亮色或暗色主题 |
 | 主题可以是数据 | token 以名字为身份，主题文件的键就是 token 名 |
 
@@ -183,34 +183,51 @@ app.set_themes(Themes { light, dark });   // 默认 Theme::light() / Theme::dark
 app.set_theme_mode(ThemeMode::System);    // 默认 System
 ```
 
-`App::set_theme` 删除。只要一套主题的应用把 `light` 与 `dark` 设成同一个。
+`App::set_theme` 删除。只要一套主题的应用用 `Themes::single(theme)`，把 `light` 与 `dark` 设成同一个。
+`App::theme()` 是当前主题，`App::theme_handle()` 是组件经 context 拿到的同一个 `ThemeHandle`。
 
-### 5.2 组件中
+### 5.2 主题是环境，不是响应式状态
 
-运行时以应用级 context 提供三样东西：
+主题与缩放比例、窗口尺寸一样属于应用的环境：设置它记下一个请求，下一帧生效，不经过信号。依赖主题的工作只发生在值被解析
+或绘制的时候——token 在样式计算时解析，画布的绘制函数经 `canvas.theme()` 读取——组件不会因换主题而重新运行。
+
+运行时以应用级 context 提供两样东西：
 
 | context | 类型 | 用途 |
 |---|---|---|
-| `ThemeControl` | 含 `Signal<ThemeMode>` 与 `Signal<Themes>` | 事件回调切换模式或替换主题 |
-| `Rc<Theme>` | 当前主题 | 需要具体值的代码读取；主题变化时读者更新 |
+| `ThemeHandle` | 句柄，整个应用生命周期内不变 | 事件回调切换模式或替换主题；非响应式地读模式与当前主题 |
 | `Appearance` | 系统外观 | 由 `RuntimeEvent::Appearance` 更新，读者随之更新 |
 
 ```rust
-let control: ThemeControl = context!();
-// in a handler
-control.mode.set(cx, ThemeMode::Dark);
+pub struct ThemeHandle(/* Rc<RefCell<..>> */);
 
-let theme: Rc<Theme> = context!();
-let clear = theme.get(color::BACKGROUND);
+impl ThemeHandle {
+    pub fn mode(&self) -> ThemeMode;
+    pub fn themes(&self) -> Themes;
+    pub fn current(&self) -> Rc<Theme>;
+    pub fn set_mode(&self, mode: ThemeMode);    // 记下请求，下一帧生效
+    pub fn set_themes(&self, themes: Themes);
+}
+
+let theme: ThemeHandle = context!();
+// in a handler
+theme.read().set_mode(ThemeMode::Dark);
 ```
+
+显示当前模式的设置界面（系统／亮色／暗色）由应用用自己的状态保存选择，在回调里同时写它并调用 `set_mode`：这个选择本就是
+应用的偏好，保存与恢复也由应用负责。
 
 ### 5.3 选择当前主题
 
-运行时在每次 flush 后，由（`mode`，`themes`，`appearance.color_scheme`）算出当前主题；与上次不同时：
+句柄上有未处理的请求时 `App::is_dirty()` 为真，宿主据此请求一帧。`App` 在每次样式计算之前（`rebuild_sync_if_needed`，
+flush 之后，effect 发出的请求也赶得上同一帧）取走请求，由（`mode`，`themes`，`appearance.color_scheme`）选出主题，与当前的
+比指针；不同时交给 `UiRuntime::set_theme`：
 
-1. 交给样式系统：重设默认样式，根节点标记 `RESTYLE_TREE`（即现在 `UiRuntime::set_theme` 的做法）；
-2. 使所有画布失效重绘，画布绘制经 `canvas.theme()` 取值；
-3. 以 `provide_context` 更新 `Rc<Theme>`，只有读了它的组件更新。
+1. 重设默认样式，根节点标记 `RESTYLE_TREE`，整棵树重新计算样式并重新布局（长度 token 可能变）；
+2. 以绘制函数作画的画布与文本表面重绘；保留模式的场景不读主题，不重建。
+
+`App::set_themes`、`App::set_theme_mode` 与外观事件当场选择，不等下一帧。`UiRuntime` 持有 `Rc<Theme>`，画布每次绘制取用的是
+同一份主题。
 
 ## 6. 主题文件
 
@@ -228,7 +245,7 @@ background = "#0d0e0f"
 ```
 
 `Theme::parse(&str) -> Result<Theme, ThemeError>` 解析上述格式，颜色接受 `#rgb`、`#rrggbb`、`#rrggbbaa`。主题文件放在资源包中，
-调试构建下 `dev_directory` 挂载源目录，配合 `ThemeControl` 替换主题即可在运行中看到修改。
+调试构建下 `dev_directory` 挂载源目录，配合 `ThemeHandle::set_themes` 替换主题即可在运行中看到修改。
 
 ## 7. 迁移
 
@@ -250,7 +267,7 @@ background = "#0d0e0f"
 
 1. **数据模型**：`Token<T>`、内置 token、新 `Theme`、`ColorRef` / `ColorValue` / `LengthValue`、`Color::from_rgb_u32`；
    迁移 `xui-components` 与示例应用；token 动画插值。此步之后外观与现在一致。
-2. **运行时**：`Themes`、`ThemeMode`、`ThemeControl`、`Rc<Theme>` 与 `Appearance` 两个 context；当前主题的选择；画布失效。
+2. **运行时**：`Themes`、`ThemeMode`、`ThemeHandle` 与 `Appearance` 两个 context；当前主题的选择；画布失效。
 3. **主题文件**：`Theme::parse` 与资源包加载。
 
 ## 9. 限制
@@ -258,5 +275,9 @@ background = "#0d0e0f"
 - 主题漏设某个 token 时静默取默认值，主题文件里拼错的键也静默无效：token 不登记，`Theme` 不知道有哪些名字。需要时可以加一个
   调试构建下的检查，列出文件中未被任何已解析 token 使用过的键。
 - 一棵树只有一个当前主题，不支持像 Flutter `Theme(data:, child:)` 那样给子树换主题。
+- 组件不能响应式地读当前主题。要按深浅选不同资源（如一套图标）时，先用 token 着色；确有需要再提供当前 `ColorScheme`
+  的 context。`Appearance` 是系统外观，模式选定亮或暗时与当前主题不一致，不能替代。
 - 主题切换本身没有过渡动画；以后可由 `Theme` 的逐项插值实现。
+- 还没有宿主上报系统外观：`PlatformWindow::appearance` 在各宿主都是默认值，`ShellEvent::AppearanceChanged` 无人发出，
+  因此 `ThemeMode::System` 目前总是亮色。
 - `Appearance` 的 `accent`、`high_contrast` 暂不使用；以后可分别映射到 `color::PRIMARY` / `color::RING` 与一套高对比主题。

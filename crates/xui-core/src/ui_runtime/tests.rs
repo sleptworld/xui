@@ -4095,3 +4095,35 @@ fn a_child_of_an_undisplayed_node_cannot_take_focus() {
     arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
     assert!(arena.is_focusable(field));
 }
+
+#[test]
+fn a_theme_switch_redraws_every_painter_once() {
+    let mut arena = UiRuntime::new();
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    let id = create_host(
+        &mut arena,
+        canvas()
+            .with::<canvas::controller>(CanvasController::with_painter(|_| {}))
+            .with::<canvas::width>(80.0)
+            .with::<canvas::height>(40.0),
+    );
+    arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
+    let before = canvas_generation(&arena, id);
+
+    let dark = std::rc::Rc::new(Theme::dark());
+    arena.set_theme(dark.clone());
+    arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
+    let switched = canvas_generation(&arena, id);
+    assert!(
+        switched > before,
+        "a painter reads the theme, so it redraws"
+    );
+
+    arena.set_theme(dark);
+    arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
+    assert_eq!(
+        canvas_generation(&arena, id),
+        switched,
+        "the same theme changes nothing"
+    );
+}

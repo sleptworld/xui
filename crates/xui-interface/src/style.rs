@@ -13,6 +13,7 @@ use crate::{
 use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
+    rc::Rc,
     sync::Arc,
 };
 
@@ -454,6 +455,51 @@ impl Theme {
     pub fn with<T: ThemeValue>(mut self, token: Token<T>, value: T) -> Self {
         self.set(token, value);
         self
+    }
+}
+
+/// Which of an application's [`Themes`] is in use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ThemeMode {
+    /// The one matching the system's color scheme.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+/// An application's light and dark themes. One with a single theme sets
+/// both to it ([`Themes::single`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Themes {
+    pub light: Rc<Theme>,
+    pub dark: Rc<Theme>,
+}
+
+impl Default for Themes {
+    fn default() -> Self {
+        Self {
+            light: Rc::new(Theme::light()),
+            dark: Rc::new(Theme::dark()),
+        }
+    }
+}
+
+impl Themes {
+    pub fn single(theme: impl Into<Rc<Theme>>) -> Self {
+        let theme = theme.into();
+        Self {
+            light: theme.clone(),
+            dark: theme,
+        }
+    }
+
+    /// The theme `mode` selects while the system is in `system`.
+    pub fn select(&self, mode: ThemeMode, system: ColorScheme) -> &Rc<Theme> {
+        match (mode, system) {
+            (ThemeMode::Light, _) | (ThemeMode::System, ColorScheme::Light) => &self.light,
+            (ThemeMode::Dark, _) | (ThemeMode::System, ColorScheme::Dark) => &self.dark,
+        }
     }
 }
 
@@ -953,6 +999,28 @@ mod tests {
         assert_eq!(
             resolve(ColorValue::from(Color::WHITE).alpha(0.5)),
             Color::WHITE.alpha(0.5)
+        );
+    }
+
+    #[test]
+    fn the_mode_selects_a_theme() {
+        let themes = Themes::default();
+        let select = |mode, system| themes.select(mode, system).scheme;
+        assert_eq!(
+            select(ThemeMode::System, ColorScheme::Dark),
+            ColorScheme::Dark
+        );
+        assert_eq!(
+            select(ThemeMode::System, ColorScheme::Light),
+            ColorScheme::Light
+        );
+        assert_eq!(
+            select(ThemeMode::Light, ColorScheme::Dark),
+            ColorScheme::Light
+        );
+        assert_eq!(
+            select(ThemeMode::Dark, ColorScheme::Light),
+            ColorScheme::Dark
         );
     }
 

@@ -37,9 +37,10 @@ pub use crate::style::{
     ComputedTextStyle, CursorIcon, DisplayStyle, Effect, FilterQuality, FlexDirectionStyle,
     JustifyStyle, LengthValue, LinearGradientStyle, MaskShape, PositionStyle, RadialGradientStyle,
     ScrollDirectionStyle, ScrollbarStyle, ScrollbarVisibilityStyle, ShadowStyle, Stroke,
-    StrokeLineStyle, StrokeStyle, StyleValue, Theme, ThemeValue, Token, TransformStyle,
-    VisibilityStyle, WidgetState, WidgetStateMatcher, tokens,
+    StrokeLineStyle, StrokeStyle, StyleValue, Theme, ThemeMode, ThemeValue, Themes, Token,
+    TransformStyle, VisibilityStyle, WidgetState, WidgetStateMatcher, tokens,
 };
+pub use crate::theme::ThemeHandle;
 pub use crate::ticker::{Tick, Ticker};
 pub use crate::ui_runtime::{NodeView, RenderFrameError, UiRuntime};
 pub use crate::widgets::{

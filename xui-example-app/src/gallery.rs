@@ -1059,7 +1059,7 @@ mod tests {
                 let mut app = App::new(|_| {});
                 app.provide_context(InitialPage(page));
                 app.mount::<Gallery>(GalleryProps {});
-                app.set_theme(theme.clone());
+                app.set_themes(Themes::single(theme.clone()));
                 app.resize(Size::new(width as f32, HEIGHT as f32));
                 let mut backend = SkiaBackend::<CosmicEngine>::headless(
                     1.0,
@@ -1110,7 +1110,7 @@ mod tests {
         let mut app = App::new(|_| {});
         app.provide_context(InitialPage(Page::Spinner));
         app.mount::<Gallery>(GalleryProps {});
-        app.set_theme(theme.clone());
+        app.set_themes(Themes::single(theme.clone()));
         let backend = SkiaBackend::<CosmicEngine>::headless(
             1.0,
             SkiaBackendOptions {
@@ -1159,7 +1159,7 @@ mod smoke_tests {
                 let mut app = App::new(|_| {});
                 app.provide_context(InitialPage(page));
                 app.mount::<Gallery>(GalleryProps {});
-                app.set_theme(theme.clone());
+                app.set_themes(Themes::single(theme.clone()));
                 let mut backend = MockRenderBackend::default();
                 let mut text = TextHost::new(CosmicEngine::new(1.0));
                 for width in [1280.0, 820.0] {

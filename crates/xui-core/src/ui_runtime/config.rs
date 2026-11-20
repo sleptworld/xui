@@ -2,6 +2,8 @@
 
 use crate::ui_runtime::UiRuntime;
 use crate::ui_runtime::state::HostWorkFlags;
+use std::rc::Rc;
+
 use xui_interface::{ComputedStyle, Theme};
 
 impl UiRuntime {
@@ -16,16 +18,25 @@ impl UiRuntime {
         self.platform = platform;
     }
 
-    pub(crate) fn theme(&self) -> &Theme {
-        &self.theme
-    }
-
-    pub(crate) fn set_theme(&mut self, theme: Theme) {
-        if self.theme != theme {
-            self.theme = theme;
-            self.style_system
-                .set_default_style(ComputedStyle::initial(&self.theme));
-            self.mark_work(self.root, HostWorkFlags::RESTYLE_TREE);
+    /// Restyles the tree against `theme`, and redraws every canvas and text
+    /// surface, whose painters read the theme directly.
+    pub(crate) fn set_theme(&mut self, theme: impl Into<Rc<Theme>>) {
+        let theme = theme.into();
+        if Rc::ptr_eq(&self.theme, &theme) || self.theme == theme {
+            return;
+        }
+        self.theme = theme;
+        self.style_system
+            .set_default_style(ComputedStyle::initial(&self.theme));
+        self.mark_work(self.root, HostWorkFlags::RESTYLE_TREE);
+        let drawn: Vec<_> = self
+            .canvas_nodes
+            .keys()
+            .chain(self.surface_nodes.keys())
+            .collect();
+        for id in drawn {
+            self.ui_state.mark_canvas_dirty(id);
+            self.mark_work(id, HostWorkFlags::REBUILD_PAINT);
         }
     }
 

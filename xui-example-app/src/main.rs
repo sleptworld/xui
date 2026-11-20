@@ -18,9 +18,10 @@ use xui_macos::{MacOsWindowOptions, MacRunner, MacRunnerOptions, PhysicalSize, W
 
 #[xui_macros::main]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let theme = match std::env::var("XUI_THEME").as_deref() {
-        Ok("dark") => Theme::dark(),
-        _ => Theme::light(),
+    let mode = match std::env::var("XUI_THEME").as_deref() {
+        Ok("dark") => ThemeMode::Dark,
+        Ok("light") => ThemeMode::Light,
+        _ => ThemeMode::System,
     };
     let options = MacRunnerOptions {
         window: WindowOptions::default()
@@ -36,19 +37,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     #[cfg(feature = "skia")]
-    return run_skia(theme, options);
+    return run_skia(mode, options);
 
     #[cfg(not(feature = "skia"))]
-    run_vello(theme, options)
+    run_vello(mode, options)
 }
 
-/// `xui_macos::runner` with a theme applied before the first frame.
+/// `xui_macos::runner` with a theme mode applied before the first frame.
 #[cfg(not(feature = "skia"))]
-fn run_vello(theme: Theme, options: MacRunnerOptions) -> Result<(), Box<dyn std::error::Error>> {
+fn run_vello(mode: ThemeMode, options: MacRunnerOptions) -> Result<(), Box<dyn std::error::Error>> {
     MacRunner::with_fallible_options(
         move |window| -> Result<_, std::io::Error> {
             let mut app = App::new(gallery::gallery_root);
-            app.set_theme(theme);
+            app.set_theme_mode(mode);
             let backend = xui_vello::VelloBackend::<xui_f::FBackend>::new(window)
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
             let context = backend.wgpu_context();
@@ -66,11 +67,11 @@ fn run_vello(theme: Theme, options: MacRunnerOptions) -> Result<(), Box<dyn std:
 
 /// The same gallery on Skia: `cargo run -p xui-example-app --features skia`.
 #[cfg(feature = "skia")]
-fn run_skia(theme: Theme, options: MacRunnerOptions) -> Result<(), Box<dyn std::error::Error>> {
+fn run_skia(mode: ThemeMode, options: MacRunnerOptions) -> Result<(), Box<dyn std::error::Error>> {
     MacRunner::with_fallible_options(
         move |window| -> Result<_, std::io::Error> {
             let mut app = App::new(gallery::gallery_root);
-            app.set_theme(theme);
+            app.set_theme_mode(mode);
             let backend = xui_skia::SkiaBackend::<xui_f::FBackend>::new(window)
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
             Ok((app, xui_f::FBackend::new(), backend))

@@ -323,9 +323,11 @@ window:
   spelling for a caption region), and `RawEvent::Gesture` is accepted and goes
   nowhere. Drop targets have since been added; see "External drag and drop"
   below.
-- **`Appearance`, capabilities and window state are stored, not reactive.** A
-  component reading them is not re-rendered when they change, and `Appearance`
-  does not yet feed the theme tokens.
+- **Capabilities and window state are stored, not reactive.** A component
+  reading them is not re-rendered when they change. `Appearance` is reactive:
+  the app provides it as a context and `ThemeMode::System` follows it (see
+  `theme.md`), but no host reports it yet, so every `appearance()` is the
+  default.
 - **`WindowOptions` is unchanged.** Max size, position, always-on-top,
   fullscreen and icon wait for hosts that honour them; an option that silently
   does nothing is worse than none.

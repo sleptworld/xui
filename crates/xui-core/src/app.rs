@@ -7,8 +7,10 @@ use crate::render::RenderBackend;
 use crate::scroll::AppliedScroll;
 use crate::style::Theme;
 use crate::text::TextHost;
+use crate::theme::ThemeHandle;
 use crate::ui_runtime::{ExternalDrag, RenderFrameError, UiRuntime};
 use std::future::Future;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::{
@@ -18,7 +20,7 @@ use tokio::task::JoinHandle;
 use xui_interface::TextBackend;
 use xui_interface::events::SemanticEvent;
 use xui_interface::events::{EventResult, RawEvent, ScrollPhase, ScrollSource};
-use xui_interface::{DropEffect, DropEvent, NodeId, Point};
+use xui_interface::{Appearance, DropEffect, DropEvent, NodeId, Point, ThemeMode, Themes};
 
 /// What an app starts with: typically mounts its root component,
 /// `|app| { app.mount::<Gallery>(GalleryProps {}); }`.
@@ -54,6 +56,7 @@ pub struct App {
     /// Results of `resource!` futures, waiting for the main thread.
     finished: std::sync::mpsc::Receiver<(u64, Box<dyn std::any::Any + Send>)>,
     platform: PlatformHandle,
+    theme: ThemeHandle,
 }
 
 impl App {
@@ -200,6 +203,11 @@ impl App {
             }),
             sender,
         );
+        let appearance = platform.appearance();
+        let theme = ThemeHandle::new(appearance.color_scheme);
+        reactive.provide_context(theme.clone());
+        reactive.provide_context(appearance);
+        ui_runtime.set_theme(theme.current());
         let mut app = Self {
             ui_runtime,
             reactive,
@@ -208,6 +216,7 @@ impl App {
             tokio_runtime,
             finished,
             platform,
+            theme,
         };
         root(&mut app);
         app
@@ -261,12 +270,45 @@ impl App {
         &mut self.ui_runtime
     }
 
-    pub fn theme(&self) -> &Theme {
-        self.ui_runtime.theme()
+    /// The theme in use.
+    pub fn theme(&self) -> Rc<Theme> {
+        self.theme.current()
     }
 
-    pub fn set_theme(&mut self, theme: Theme) {
-        self.ui_runtime.set_theme(theme);
+    /// The application's themes and which of them is in use: the handle
+    /// components get through `context!()`.
+    pub fn theme_handle(&self) -> &ThemeHandle {
+        &self.theme
+    }
+
+    /// Sets the light and dark themes, at once.
+    pub fn set_themes(&mut self, themes: Themes) {
+        self.theme.set_themes(themes);
+        self.apply_theme();
+    }
+
+    /// Sets which theme is in use, at once; [`ThemeMode::System`] (the
+    /// default) follows the system's color scheme.
+    pub fn set_theme_mode(&mut self, mode: ThemeMode) {
+        self.theme.set_mode(mode);
+        self.apply_theme();
+    }
+
+    /// Records the system's appearance, which readers of the `Appearance`
+    /// context and [`ThemeMode::System`] follow.
+    pub(crate) fn set_appearance(&mut self, appearance: Appearance) {
+        self.platform.set_appearance(appearance);
+        self.reactive.provide_context(appearance);
+        self.apply_theme();
+    }
+
+    /// Restyles the tree against the theme the handle now selects, if that is
+    /// another one.
+    fn apply_theme(&mut self) {
+        let system = self.platform.appearance().color_scheme;
+        if let Some(theme) = self.theme.apply(system) {
+            self.ui_runtime.set_theme(theme);
+        }
     }
 
     /// Sets the application-wide context of type `T`: what `context!()`
@@ -730,7 +772,7 @@ impl App {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.reactive.is_dirty() || self.ui_runtime.is_dirty()
+        self.reactive.is_dirty() || self.ui_runtime.is_dirty() || self.theme.is_requested()
     }
 
     /// Asks for a frame that lays out and paints everything again: after a
@@ -745,6 +787,10 @@ impl App {
         // What handlers wrote since the last flush.
         if self.reactive.is_dirty() {
             self.reactive.flush(&mut self.ui_runtime);
+        }
+        // After the flush, so a theme an effect switched restyles this frame.
+        if self.theme.is_requested() {
+            self.apply_theme();
         }
     }
 
