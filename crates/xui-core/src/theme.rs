@@ -17,9 +17,12 @@
 //! ```
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::fmt;
 use std::rc::Rc;
 
-use xui_interface::{ColorScheme, Theme, ThemeMode, Themes};
+use xui_assets::{AssetData, AssetFormat};
+use xui_interface::{Color, ColorScheme, Theme, ThemeMode, Themes};
 
 /// The application's themes and which of them is in use. Clones share one
 /// state; reads are not tracked.
@@ -104,11 +107,121 @@ impl PartialEq for ThemeHandle {
     }
 }
 
+/// Reads a theme file:
+///
+/// ```toml
+/// name = "Radar Dark"
+/// scheme = "dark"
+///
+/// [colors]
+/// background = "#0d0e0f"
+/// "app.selected-text" = "#a9c4ee"
+///
+/// [lengths]
+/// "radius.sm" = 4
+/// ```
+///
+/// Keys under `[colors]` and `[lengths]` are token names; colors are `#rgb`,
+/// `#rrggbb` or `#rrggbbaa`. A token the file does not name resolves to its
+/// fallback.
+pub fn parse(source: &str) -> Result<Theme, ThemeFileError> {
+    let file: ThemeFile = toml::from_str(source).map_err(ThemeFileError::Syntax)?;
+    let scheme = match file.scheme {
+        SchemeName::Light => ColorScheme::Light,
+        SchemeName::Dark => ColorScheme::Dark,
+    };
+    let mut theme = Theme::new(file.name, scheme);
+    for (name, value) in file.colors {
+        let color = Color::parse_hex(&value).ok_or_else(|| ThemeFileError::Color {
+            name: name.clone(),
+            value: value.clone(),
+        })?;
+        theme.insert(name, color);
+    }
+    for (name, value) in file.lengths {
+        theme.insert(name, value);
+    }
+    Ok(theme)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ThemeFile {
+    name: String,
+    scheme: SchemeName,
+    #[serde(default)]
+    colors: BTreeMap<String, String>,
+    #[serde(default)]
+    lengths: BTreeMap<String, f32>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum SchemeName {
+    Light,
+    Dark,
+}
+
+/// Why a theme file did not parse.
+#[derive(Debug)]
+pub enum ThemeFileError {
+    /// Not TOML, or not the shape [`parse`] reads.
+    Syntax(toml::de::Error),
+    /// A color that is not `#rgb`, `#rrggbb` or `#rrggbbaa`.
+    Color { name: String, value: String },
+    /// An asset that is not UTF-8.
+    Encoding,
+}
+
+impl fmt::Display for ThemeFileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Syntax(error) => write!(f, "{error}"),
+            Self::Color { name, value } => {
+                write!(
+                    f,
+                    "color `{name}` is `{value}`, not #rgb, #rrggbb or #rrggbbaa"
+                )
+            }
+            Self::Encoding => write!(f, "a theme file is UTF-8"),
+        }
+    }
+}
+
+impl std::error::Error for ThemeFileError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Syntax(error) => Some(error),
+            Self::Color { .. } | Self::Encoding => None,
+        }
+    }
+}
+
+/// A theme file in the asset bundle: `load_asset::<ThemeAsset>(id)`. In
+/// debug builds the bundle is mounted from its source directory, so loading
+/// again and handing the result to [`ThemeHandle::set_themes`] shows an edit
+/// without a rebuild.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ThemeAsset;
+
+impl AssetFormat for ThemeAsset {
+    type Output = Theme;
+    type Error = ThemeFileError;
+
+    fn parse(data: AssetData) -> Result<Theme, ThemeFileError> {
+        let source =
+            std::str::from_utf8(data.bytes.as_ref()).map_err(|_| ThemeFileError::Encoding)?;
+        parse(source)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use xui_interface::events::RawEvent;
-    use xui_interface::tokens::color;
-    use xui_interface::{Appearance, ColorScheme, ComputedColorStyle, Theme, ThemeMode};
+    use xui_interface::tokens::{color, radius, spacing};
+    use xui_interface::{
+        Appearance, Color, ColorScheme, ComputedColorStyle, Theme, ThemeMode, Token,
+    };
     use xui_macros::component;
 
     use super::ThemeHandle;
@@ -181,6 +294,47 @@ mod tests {
             background(&gui, id),
             Theme::dark().get(color::BACKGROUND).into()
         );
+    }
+
+    #[test]
+    fn a_theme_file_sets_the_tokens_it_names() {
+        const SELECTED: Token<Color> = Token::new("app.selected-text", Color::BLACK);
+        let theme = super::parse(
+            r##"
+            name = "Radar Dark"
+            scheme = "dark"
+
+            [colors]
+            background = "#0d0e0f"
+            "app.selected-text" = "#a9c4ee"
+
+            [lengths]
+            "radius.sm" = 4
+            "spacing.md" = 10.5
+            "##,
+        )
+        .unwrap();
+
+        assert_eq!(theme.name, "Radar Dark");
+        assert_eq!(theme.scheme, ColorScheme::Dark);
+        assert_eq!(theme.get(color::BACKGROUND), Color::from_rgb_u32(0x0d0e0f));
+        assert_eq!(theme.get(SELECTED), Color::from_rgb_u32(0xa9c4ee));
+        assert_eq!(theme.get(radius::SM), 4.0);
+        assert_eq!(theme.get(spacing::MD), 10.5);
+        assert_eq!(theme.get(color::BORDER), color::BORDER.fallback);
+    }
+
+    #[test]
+    fn a_theme_file_names_what_is_wrong() {
+        let error = |source: &str| super::parse(source).unwrap_err().to_string();
+        let bad_color = error("name = \"x\"\nscheme = \"light\"\n[colors]\nring = \"blue\"\n");
+        assert_eq!(
+            bad_color,
+            "color `ring` is `blue`, not #rgb, #rrggbb or #rrggbbaa"
+        );
+        assert!(error("name = \"x\"\nscheme = \"sepia\"\n").contains("sepia"));
+        assert!(error("name = \"x\"\nscheme = \"light\"\nfonts = 1\n").contains("fonts"));
+        assert!(error("scheme = \"light\"\n").contains("name"));
     }
 
     #[test]

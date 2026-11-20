@@ -1,6 +1,6 @@
 # 主题设计
 
-状态：**§2–§5 已实施**（2026-11-21），§6 为提案。依据 `xui-interface/src/style.rs`、`styles/units.rs`、`xui-core/src/ui_runtime/config.rs`、
+状态：**已实施**（2026-11-21）。依据 `xui-interface/src/style.rs`、`styles/units.rs`、`xui-core/src/ui_runtime/config.rs`、
 `xui-core/src/app.rs`、`xui-animation` 与 `xui-components` 的现状整理。
 
 ## 0. 目标
@@ -244,8 +244,13 @@ background = "#0d0e0f"
 "radius.sm" = 4
 ```
 
-`Theme::parse(&str) -> Result<Theme, ThemeError>` 解析上述格式，颜色接受 `#rgb`、`#rrggbb`、`#rrggbbaa`。主题文件放在资源包中，
-调试构建下 `dev_directory` 挂载源目录，配合 `ThemeHandle::set_themes` 替换主题即可在运行中看到修改。
+`xui::theme::parse(&str) -> Result<Theme, ThemeFileError>` 解析上述格式：`name` 与 `scheme`（`"light"` 或 `"dark"`）必填，
+`[colors]` 与 `[lengths]` 可省，其下的键是 token 名；颜色接受 `#rgb`、`#rrggbb`、`#rrggbbaa`（`Color::parse_hex`），长度写整数或
+小数均可。未知的顶层键、写错的 `scheme` 与颜色都报错，颜色错误指出是哪个键。
+
+主题文件放在资源包中，经 `load_asset::<ThemeAsset>(id)` 读取。调试构建下 `dev_directory` 挂载源目录，再次读取并交给
+`ThemeHandle::set_themes` 即可在运行中看到修改，不必重新构建。解析放在 `xui-core`，`xui-interface` 只多了
+`Color::parse_hex` 与按名字设置的 `Theme::insert`，不依赖 TOML。
 
 ## 7. 迁移
 
@@ -268,7 +273,7 @@ background = "#0d0e0f"
 1. **数据模型**：`Token<T>`、内置 token、新 `Theme`、`ColorRef` / `ColorValue` / `LengthValue`、`Color::from_rgb_u32`；
    迁移 `xui-components` 与示例应用；token 动画插值。此步之后外观与现在一致。
 2. **运行时**：`Themes`、`ThemeMode`、`ThemeHandle` 与 `Appearance` 两个 context；当前主题的选择；画布失效；macOS 上报外观。
-3. **主题文件**：`Theme::parse` 与资源包加载。
+3. **主题文件**：`theme::parse`、`ThemeAsset`、`Color::parse_hex`、`Theme::insert`。
 
 ## 9. 限制
 

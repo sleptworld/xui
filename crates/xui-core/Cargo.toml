@@ -39,6 +39,9 @@ usvg = { version = "0.47.0", default-features = false }
 quick_cache = { version = "0.7.0", default-features = false }
 foldhash = "0.2.0"
 xui-render-graph = { path = "../xui-render-graph" }
+# Theme files (`theme::parse`).
+serde = { workspace = true }
+toml = "0.8"
 wgpu = {workspace=true, optional=true}
 
 [dev-dependencies]

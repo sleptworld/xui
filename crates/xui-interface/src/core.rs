@@ -449,6 +449,29 @@ impl Color {
         )
     }
 
+    /// A color from `#rgb`, `#rrggbb` or `#rrggbbaa`; `None` for anything else.
+    pub fn parse_hex(text: &str) -> Option<Self> {
+        let digits = text.strip_prefix('#')?;
+        if !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let channel = |i: usize, width: usize| {
+            let value = u8::from_str_radix(&digits[i * width..(i + 1) * width], 16).ok()?;
+            Some(if width == 1 { value * 17 } else { value } as f32 / 255.0)
+        };
+        match digits.len() {
+            3 => Some(Self::rgb(channel(0, 1)?, channel(1, 1)?, channel(2, 1)?)),
+            6 => Some(Self::rgb(channel(0, 2)?, channel(1, 2)?, channel(2, 2)?)),
+            8 => Some(Self::rgba(
+                channel(0, 2)?,
+                channel(1, 2)?,
+                channel(2, 2)?,
+                channel(3, 2)?,
+            )),
+            _ => None,
+        }
+    }
+
     /// This color mixed toward `other` by `t` in `0..=1`, component-wise.
     pub fn mix(self, other: Self, t: f32) -> Self {
         let lerp = |a: f32, b: f32| a + (b - a) * t;

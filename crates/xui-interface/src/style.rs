@@ -451,6 +451,12 @@ impl Theme {
         T::table_mut(self).insert(token.name.to_owned(), value);
     }
 
+    /// Sets the token named `name`, for a loader that reads names rather than
+    /// holding the [`Token`] constants.
+    pub fn insert<T: ThemeValue>(&mut self, name: impl Into<String>, value: T) {
+        T::table_mut(self).insert(name.into(), value);
+    }
+
     /// This theme with `token` set to `value`.
     pub fn with<T: ThemeValue>(mut self, token: Token<T>, value: T) -> Self {
         self.set(token, value);
@@ -1022,6 +1028,22 @@ mod tests {
             select(ThemeMode::Dark, ColorScheme::Light),
             ColorScheme::Dark
         );
+    }
+
+    #[test]
+    fn hex_colors_parse_in_three_lengths() {
+        assert_eq!(Color::parse_hex("#fff"), Some(Color::WHITE));
+        assert_eq!(
+            Color::parse_hex("#0d0e0f"),
+            Some(Color::from_rgb_u32(0x0d0e0f))
+        );
+        assert_eq!(
+            Color::parse_hex("#ffffff80"),
+            Some(Color::WHITE.alpha(128.0 / 255.0))
+        );
+        for bad in ["fff", "#ffff", "#gggggg", "#ff00ff0", "#é"] {
+            assert_eq!(Color::parse_hex(bad), None, "{bad}");
+        }
     }
 
     #[test]
