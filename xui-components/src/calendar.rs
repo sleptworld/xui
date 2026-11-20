@@ -13,6 +13,7 @@
 //! | [`date_picker`](fn@self::date_picker) | A date-selection popover combining a supplied trigger and month calendar. |
 
 use xui_core::prelude::*;
+use xui_core::tokens::{color, font_size, radius};
 use xui_macros::component;
 
 use crate::controls::commit;
@@ -221,7 +222,7 @@ pub fn calendar(
                 gap: 4.0,
             ) {
                 for label in WEEKDAYS {
-                    text(*label, style: StyleOf::new().with::<container::font_size>(FontSizeToken::Sm))
+                    text(*label, style: StyleOf::new().with::<container::font_size>(font_size::SM))
                 }
                 for day in days.clone() {
                     if let Some(date) = *day {
@@ -230,19 +231,19 @@ pub fn calendar(
                                 .with::<container::size>(Size::fix(34.0, 34.0))
                                 .with::<container::align>(AlignStyle::Center)
                                 .with::<container::justify>(JustifyStyle::Center)
-                                .with::<container::border_radius>(RadiusToken::Sm)
+                                .with::<container::border_radius>(radius::SM)
                                 .with::<container::background>(if *selected == Some(*date) {
-                                    ColorStyle::from(ColorToken::Primary)
+                                    ColorStyle::from(color::PRIMARY)
                                 } else {
                                     ColorStyle::from(Color::TRANSPARENT)
                                 })
                                 .merged(&crate::layout::control_style(*disabled))
                                 .with::<container::color>(if *disabled {
-                                    ColorToken::MutedForeground
+                                    color::MUTED_FOREGROUND
                                 } else if *selected == Some(*date) {
-                                    ColorToken::PrimaryForeground
+                                    color::PRIMARY_FOREGROUND
                                 } else {
-                                    ColorToken::Foreground
+                                    color::FOREGROUND
                                 })
                                 .merged(day_style)
                                 .merged(if *selected == Some(*date) { selected_day_style } else { day_style }),

@@ -440,6 +440,26 @@ impl Color {
         Self { r, g, b, a }
     }
 
+    /// An opaque color from `0xRRGGBB`.
+    pub const fn from_rgb_u32(rgb: u32) -> Self {
+        Self::rgb(
+            ((rgb >> 16) & 0xff) as f32 / 255.0,
+            ((rgb >> 8) & 0xff) as f32 / 255.0,
+            (rgb & 0xff) as f32 / 255.0,
+        )
+    }
+
+    /// This color mixed toward `other` by `t` in `0..=1`, component-wise.
+    pub fn mix(self, other: Self, t: f32) -> Self {
+        let lerp = |a: f32, b: f32| a + (b - a) * t;
+        Self::rgba(
+            lerp(self.r, other.r),
+            lerp(self.g, other.g),
+            lerp(self.b, other.b),
+            lerp(self.a, other.a),
+        )
+    }
+
     pub fn hex(hex: &str) -> Self {
         let hex = hex.trim_start_matches('#');
 

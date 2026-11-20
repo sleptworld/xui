@@ -5,6 +5,7 @@ use xui_components::image::ImageSrc;
 use xui_components::*;
 use xui_core::core::Bounds;
 use xui_core::prelude::*;
+use xui_core::tokens::{color, font_size, radius};
 use xui_macros::component;
 
 /// A gallery page.
@@ -86,7 +87,7 @@ pub struct InitialPage(pub Page);
 
 fn heading_style() -> StyleOf<Text> {
     StyleOf::new()
-        .with::<container::font_size>(FontSizeToken::Lg)
+        .with::<container::font_size>(font_size::LG)
         .with::<container::font_weight>(FontWeight::SemiBold)
 }
 
@@ -106,8 +107,8 @@ fn muted(#[source] text: &String) {
         xui_core::prelude::text(
             text.clone(),
             style: StyleOf::new()
-                .with::<container::color>(ColorToken::MutedForeground)
-                .with::<container::font_size>(FontSizeToken::Md),
+                .with::<container::color>(color::MUTED_FOREGROUND)
+                .with::<container::font_size>(font_size::MD),
         )
     }
 }
@@ -181,10 +182,10 @@ fn example(title: &String, children: &Children) {
                     .with::<container::padding>(EdgeInsets::all(32.0))
                     .with::<container::align>(AlignStyle::Center)
                     .with::<container::justify>(JustifyStyle::Center)
-                    .with::<container::background>(ColorToken::Background)
-                    .with::<container::border_color>(ColorToken::Border)
+                    .with::<container::background>(color::BACKGROUND)
+                    .with::<container::border_color>(color::BORDER)
                     .with::<container::border_width>(1.0)
-                    .with::<container::border_radius>(RadiusToken::Lg),
+                    .with::<container::border_radius>(radius::LG),
                 flex_direction: FlexDirectionStyle::Column,
             ) {
                 slot(children)
@@ -205,7 +206,7 @@ fn field(label: &String, hint: &Option<String>, children: &Children) {
             text(
                 label.clone(),
                 style: StyleOf::new()
-                    .with::<container::font_size>(FontSizeToken::Md)
+                    .with::<container::font_size>(font_size::MD)
                     .with::<container::font_weight>(FontWeight::Medium),
             )
             slot(children)
@@ -213,8 +214,8 @@ fn field(label: &String, hint: &Option<String>, children: &Children) {
                 text(
                     hint.clone(),
                     style: StyleOf::new()
-                        .with::<container::color>(ColorToken::MutedForeground)
-                        .with::<container::font_size>(FontSizeToken::Sm),
+                        .with::<container::color>(color::MUTED_FOREGROUND)
+                        .with::<container::font_size>(font_size::SM),
                 )
             }
         }
@@ -303,14 +304,14 @@ fn spinner_page() {
             }
             example(title: "Color") {
                 row(gap: 24.0, align: AlignStyle::Center, justify: JustifyStyle::Center) {
-                    spinner(style: StyleOf::new().with::<container::color>(ColorToken::MutedForeground))
-                    spinner(style: StyleOf::new().with::<container::color>(ColorToken::Primary))
-                    spinner(style: StyleOf::new().with::<container::color>(ColorToken::Destructive))
+                    spinner(style: StyleOf::new().with::<container::color>(color::MUTED_FOREGROUND))
+                    spinner(style: StyleOf::new().with::<container::color>(color::PRIMARY))
+                    spinner(style: StyleOf::new().with::<container::color>(color::DESTRUCTIVE))
                 }
             }
             example(title: "Inline") {
                 hstack(gap: 8.0) {
-                    spinner(size: 16.0, style: StyleOf::new().with::<container::color>(ColorToken::MutedForeground))
+                    spinner(size: 16.0, style: StyleOf::new().with::<container::color>(color::MUTED_FOREGROUND))
                     muted(text: "Syncing your changes")
                 }
             }
@@ -373,11 +374,11 @@ fn tab_card(title: &String, description: &String, action: &String, children: &Ch
                 .with::<container::width>(Sizing::fill())
                 .with::<container::gap>(20.0)
                 .with::<container::padding>(EdgeInsets::all(24.0))
-                .with::<container::background>(ColorToken::Card)
-                .with::<container::color>(ColorToken::CardForeground)
-                .with::<container::border_color>(ColorToken::Border)
+                .with::<container::background>(color::CARD)
+                .with::<container::color>(color::CARD_FOREGROUND)
+                .with::<container::border_color>(color::BORDER)
                 .with::<container::border_width>(1.0)
-                .with::<container::border_radius>(RadiusToken::Xl)
+                .with::<container::border_radius>(radius::XL)
                 .with::<container::shadow>(
                     ShadowStyle::new()
                         .color(Color::rgba(0.0, 0.0, 0.0, 0.05))
@@ -477,8 +478,8 @@ fn framed(fit: &ImageFit, caption: &String) {
             container(
                 style: StyleOf::new()
                     .with::<container::size>(Size::fix(180.0, 120.0))
-                    .with::<container::background>(ColorToken::Muted)
-                    .with::<container::border_radius>(RadiusToken::Md)
+                    .with::<container::background>(color::MUTED)
+                    .with::<container::border_radius>(radius::MD)
                     .with::<container::clip>(true),
             ) {
                 xui_components::image::image(
@@ -522,19 +523,19 @@ fn list_item(index: &usize) {
                 .with::<container::padding>(EdgeInsets::symmetric(16.0, 0.0))
                 .with::<container::align>(AlignStyle::Center)
                 .with::<container::justify>(JustifyStyle::SpaceBetween)
-                .with::<container::border_color>(ColorToken::Border)
+                .with::<container::border_color>(color::BORDER)
                 .when_style(
                     WidgetStateMatcher::all(WidgetState::HOVERED),
-                    StyleOf::<Container>::new().with::<container::background>(ColorToken::Muted),
+                    StyleOf::<Container>::new().with::<container::background>(color::MUTED),
                 ),
             flex_direction: FlexDirectionStyle::Row,
         ) {
-            text(format!("Item {}", *index + 1), style: StyleOf::new().with::<container::font_size>(FontSizeToken::Md))
+            text(format!("Item {}", *index + 1), style: StyleOf::new().with::<container::font_size>(font_size::MD))
             text(
                 format!("#{index:05}"),
                 style: StyleOf::new()
-                    .with::<container::color>(ColorToken::MutedForeground)
-                    .with::<container::font_size>(FontSizeToken::Sm),
+                    .with::<container::color>(color::MUTED_FOREGROUND)
+                    .with::<container::font_size>(font_size::SM),
             )
         }
     }
@@ -551,9 +552,9 @@ fn virtual_list_page() {
                 container(
                     style: StyleOf::new()
                         .with::<container::width>(360.0)
-                        .with::<container::border_color>(ColorToken::Border)
+                        .with::<container::border_color>(color::BORDER)
                         .with::<container::border_width>(1.0)
-                        .with::<container::border_radius>(RadiusToken::Md)
+                        .with::<container::border_radius>(radius::MD)
                         .with::<container::clip>(true),
                 ) {
                     virtual_list(
@@ -745,7 +746,7 @@ fn demo_canvas_scene(highlighted: bool) -> VectorScene {
 
 /// An icon in a color.
 #[component]
-fn tinted_icon(data: &IconData, color: &ColorToken) {
+fn tinted_icon(data: &IconData, color: &Token<Color>) {
     view! {
         container(style: StyleOf::new().with::<container::color>(*color)) {
             icon(data: data.clone(), size: Size::fix(32.0, 32.0))
@@ -761,10 +762,10 @@ fn canvas_page() {
         page_body {
             example(title: "Path, stroke, SVG, and Lucide icons") {
                 wrap_row(gap: 24.0) {
-                    tinted_icon(data: filled_icon(), color: ColorToken::Primary)
-                    tinted_icon(data: stroked_icon(), color: ColorToken::Foreground)
-                    tinted_icon(data: svg_icon(), color: ColorToken::MutedForeground)
-                    tinted_icon(data: lucide_rs::icons::palette(), color: ColorToken::Destructive)
+                    tinted_icon(data: filled_icon(), color: color::PRIMARY)
+                    tinted_icon(data: stroked_icon(), color: color::FOREGROUND)
+                    tinted_icon(data: svg_icon(), color: color::MUTED_FOREGROUND)
+                    tinted_icon(data: lucide_rs::icons::palette(), color: color::DESTRUCTIVE)
                 }
             }
             example(title: "Canvas with backdrop blur") {
@@ -871,10 +872,10 @@ fn editor_page() {
                     style: StyleOf::new()
                         .with::<container::width>(Sizing::fill())
                         .with::<container::height>(460.0)
-                        .with::<container::background>(ColorToken::Background)
-                        .with::<container::border_color>(ColorToken::Border)
+                        .with::<container::background>(color::BACKGROUND)
+                        .with::<container::border_color>(color::BORDER)
                         .with::<container::border_width>(1.0)
-                        .with::<container::border_radius>(RadiusToken::Md)
+                        .with::<container::border_radius>(radius::MD)
                         .with::<container::clip>(true),
                 ) {
                     text_surface(
@@ -911,9 +912,9 @@ pub fn gallery() {
         container(
             style: StyleOf::new()
                 .with::<container::size>(Size::fill())
-                .with::<container::background>(ColorToken::Background)
+                .with::<container::background>(color::BACKGROUND)
                 .with::<container::padding>(EdgeInsets::zero().set_top(32.))
-                .with::<container::color>(ColorToken::Foreground),
+                .with::<container::color>(color::FOREGROUND),
             flex_direction: FlexDirectionStyle::Row,
         ) {
             container(
@@ -922,7 +923,7 @@ pub fn gallery() {
                     .with::<container::height>(Sizing::fill())
                     .with::<container::gap>(2.0)
                     .with::<container::padding>(EdgeInsets::all(12.0))
-                    .with::<container::background>(ColorToken::Card),
+                    .with::<container::background>(color::CARD),
                 flex_direction: FlexDirectionStyle::Column,
             ) {
                 container(
@@ -939,8 +940,8 @@ pub fn gallery() {
                     "Components",
                     style: StyleOf::new()
                         .with::<container::padding>(EdgeInsets::new(8.0, 8.0, 0.0, 4.0))
-                        .with::<container::color>(ColorToken::MutedForeground)
-                        .with::<container::font_size>(FontSizeToken::Sm)
+                        .with::<container::color>(color::MUTED_FOREGROUND)
+                        .with::<container::font_size>(font_size::SM)
                         .with::<container::font_weight>(FontWeight::Medium),
                 )
                 for page in Page::ALL {
@@ -953,10 +954,10 @@ pub fn gallery() {
                         style: if *active == *page {
                             nav_style
                                 .clone()
-                                .with::<container::background>(ColorToken::Accent)
-                                .with::<container::color>(ColorToken::AccentForeground)
+                                .with::<container::background>(color::ACCENT)
+                                .with::<container::color>(color::ACCENT_FOREGROUND)
                         } else {
-                            nav_style.clone().with::<container::color>(ColorToken::MutedForeground)
+                            nav_style.clone().with::<container::color>(color::MUTED_FOREGROUND)
                         },
                     )
                     .key(*page)
@@ -966,7 +967,7 @@ pub fn gallery() {
                 style: StyleOf::new()
                     .with::<container::width>(1.0)
                     .with::<container::height>(Sizing::fill())
-                    .with::<container::background>(ColorToken::Border),
+                    .with::<container::background>(color::BORDER),
             )
             container(
                 style: StyleOf::new()
@@ -992,8 +993,8 @@ pub fn gallery() {
                         text(
                             active.description(),
                             style: StyleOf::new()
-                                .with::<container::color>(ColorToken::MutedForeground)
-                                .with::<container::font_size>(FontSizeToken::Lg),
+                                .with::<container::color>(color::MUTED_FOREGROUND)
+                                .with::<container::font_size>(font_size::LG),
                         )
                     }
                     match *active {
@@ -1063,7 +1064,7 @@ mod tests {
                 let mut backend = SkiaBackend::<CosmicEngine>::headless(
                     1.0,
                     SkiaBackendOptions {
-                        clear_color: theme.background,
+                        clear_color: theme.get(color::BACKGROUND),
                         ..SkiaBackendOptions::default()
                     },
                 );
@@ -1113,7 +1114,7 @@ mod tests {
         let backend = SkiaBackend::<CosmicEngine>::headless(
             1.0,
             SkiaBackendOptions {
-                clear_color: theme.background,
+                clear_color: theme.get(color::BACKGROUND),
                 ..SkiaBackendOptions::default()
             },
         );

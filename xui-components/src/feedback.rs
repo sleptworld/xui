@@ -15,6 +15,7 @@
 use std::time::Duration;
 
 use xui_core::prelude::*;
+use xui_core::tokens::{color, radius};
 use xui_macros::component;
 
 /// A static, decorative placeholder for content that has not loaded.
@@ -54,8 +55,8 @@ pub fn skeleton(#[source] width: &Sizing, #[source] height: &Sizing, style: &Sty
         let mut root_style = StyleOf::new()
             .with::<container::width>(*width)
             .with::<container::height>(*height)
-            .with::<container::background>(ColorToken::MutedSurface)
-            .with::<container::border_radius>(RadiusToken::Sm);
+            .with::<container::background>(color::MUTED)
+            .with::<container::border_radius>(radius::SM);
         root_style.merge(style);
         root_style
     });
@@ -224,13 +225,13 @@ pub fn callout(
             CalloutTone::Danger => Color::hex("#b91c1c"),
         };
         let mut root_style = StyleOf::new()
-            .with::<container::background>(ColorToken::Background)
-            .with::<container::color>(ColorToken::Foreground)
+            .with::<container::background>(color::BACKGROUND)
+            .with::<container::color>(color::FOREGROUND)
             .with::<container::gap>(6.0)
             .with::<container::padding>(EdgeInsets::all(12.0))
             .with::<container::border_width>(1.0)
             .with::<container::border_color>(color)
-            .with::<container::border_radius>(RadiusToken::Md);
+            .with::<container::border_radius>(radius::MD);
         root_style.merge(style);
         root_style
     });

@@ -9,7 +9,8 @@ use xui_core::node::{Node, NodeStorage};
 use xui_core::property::Slot;
 use xui_interface::core::{Color, EdgeInsets, Sizing};
 use xui_interface::style::{ComputedStyle, Theme, WidgetStateMatcher};
-use xui_interface::styles::units::{ColorToken, LengthValue, StyleValue};
+use xui_interface::styles::units::{LengthValue, StyleValue};
+use xui_interface::tokens::color;
 use xui_interface::{WidgetState, WidgetUpdateFlags};
 
 #[test]
@@ -119,7 +120,7 @@ fn state_rules_layer_over_the_base_style() {
         .with::<container::background>(Color::WHITE)
         .with::<container::width>(100.0)
         .when(WidgetStateMatcher::all(WidgetState::HOVERED), |layer| {
-            layer.set::<container::background>(ColorToken::Accent);
+            layer.set::<container::background>(color::ACCENT);
         })
         .when(WidgetStateMatcher::all(WidgetState::PRESSED), |layer| {
             layer.set::<container::width>(90.0);
@@ -130,16 +131,10 @@ fn state_rules_layer_over_the_base_style() {
     let both = node.compute_style(WidgetState::HOVERED | WidgetState::PRESSED, &parent, &theme);
 
     assert_eq!(idle.paint.background, Color::WHITE.into());
-    assert_eq!(
-        hovered.paint.background,
-        theme.color(ColorToken::Accent).into()
-    );
+    assert_eq!(hovered.paint.background, theme.get(color::ACCENT).into());
     assert_eq!(hovered.layout.width, Sizing::from(100.0));
     assert_eq!(both.layout.width, Sizing::from(90.0));
-    assert_eq!(
-        both.paint.background,
-        theme.color(ColorToken::Accent).into()
-    );
+    assert_eq!(both.paint.background, theme.get(color::ACCENT).into());
 }
 
 #[test]

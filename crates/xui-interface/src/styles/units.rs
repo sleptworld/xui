@@ -90,92 +90,98 @@ pub fn merge_value<T: Clone>(dest: &mut StyleValue<T>, from: &StyleValue<T>) {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ColorToken {
-    Background,
-    Foreground,
-    Card,
-    CardForeground,
-    Popover,
-    PopoverForeground,
-    Primary,
-    PrimaryForeground,
-    Secondary,
-    SecondaryForeground,
-    /// Subdued surfaces such as a tab list or skeleton.
-    Muted,
-    /// Secondary text: descriptions, placeholders, inactive tabs.
-    MutedForeground,
-    /// Hover and highlight surface for menu items and ghost buttons.
-    Accent,
-    AccentForeground,
-    Destructive,
-    DestructiveForeground,
-    Border,
-    /// Border of form controls.
-    Input,
-    /// Focus ring.
-    Ring,
-    /// Alias of `Foreground`.
-    Text,
-    /// Alias of `PrimaryForeground`.
-    InverseText,
-    /// Alias of `Card`.
-    Surface,
-    /// Alias of `Muted`.
-    MutedSurface,
+/// A named design value that a [`Theme`](crate::style::Theme) resolves.
+///
+/// The name is the token's identity: equality and hashing compare it alone.
+/// Declare each token once, as a constant, and refer to that constant; see
+/// [`crate::tokens`] for the built-in ones. Application and library tokens
+/// prefix their names with their own (`app.selected-text`).
+#[derive(Debug, Clone, Copy)]
+pub struct Token<T> {
+    pub name: &'static str,
+    /// What a theme that does not set this token resolves it to.
+    pub fallback: T,
 }
 
-impl ColorToken {
-    /// This token with its alpha multiplied by `alpha`, like Tailwind's
-    /// `bg-primary/90`.
-    pub fn alpha(self, alpha: f32) -> ColorValue {
-        ColorValue::TokenAlpha(self, alpha)
+impl<T> Token<T> {
+    pub const fn new(name: &'static str, fallback: T) -> Self {
+        Self { name, fallback }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SpacingToken {
-    Xs,
-    Sm,
-    Md,
-    Lg,
-    Xl,
+impl<T> PartialEq for Token<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RadiusToken {
-    Sm,
-    Md,
-    Lg,
-    Xl,
+impl<T> Eq for Token<T> {}
+
+impl<T> core::hash::Hash for Token<T> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FontSizeToken {
-    Sm,
-    Md,
-    Lg,
-    Xl,
+impl Token<Color> {
+    /// This token with its alpha multiplied by `alpha`, like Tailwind's
+    /// `bg-primary/90`.
+    pub fn alpha(self, alpha: f32) -> ColorValue {
+        ColorValue::One(ColorRef::Token(self, alpha))
+    }
+
+    /// This token mixed toward `other` by `t`; see [`ColorValue::Mix`].
+    pub fn mix(self, other: impl Into<ColorRef>, t: f32) -> ColorValue {
+        ColorValue::Mix(self.into(), other.into(), t)
+    }
 }
 
+/// One color before the theme resolves it.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ColorValue {
+pub enum ColorRef {
     Color(Color),
-    Token(ColorToken),
-    /// A token whose resolved alpha is multiplied by the given factor.
-    TokenAlpha(ColorToken, f32),
+    /// A token whose resolved alpha is multiplied by the factor.
+    Token(Token<Color>, f32),
 }
 
-impl From<Color> for ColorValue {
+impl From<Color> for ColorRef {
     fn from(value: Color) -> Self {
         Self::Color(value)
     }
 }
 
-impl From<ColorToken> for ColorValue {
-    fn from(value: ColorToken) -> Self {
-        Self::Token(value)
+impl From<Token<Color>> for ColorRef {
+    fn from(value: Token<Color>) -> Self {
+        Self::Token(value, 1.0)
+    }
+}
+
+/// A declared color.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ColorValue {
+    One(ColorRef),
+    /// The first color mixed toward the second by the factor in `0..=1`,
+    /// component-wise in sRGB.
+    Mix(ColorRef, ColorRef, f32),
+}
+
+impl ColorValue {
+    /// This color with its alpha multiplied by `alpha`.
+    pub fn alpha(self, alpha: f32) -> Self {
+        let scale = |color: ColorRef| match color {
+            ColorRef::Color(color) => ColorRef::Color(color.alpha(color.a * alpha)),
+            ColorRef::Token(token, factor) => ColorRef::Token(token, factor * alpha),
+        };
+        match self {
+            Self::One(color) => Self::One(scale(color)),
+            Self::Mix(from, to, t) => Self::Mix(scale(from), scale(to), t),
+        }
+    }
+}
+
+impl<T: Into<ColorRef>> From<T> for ColorValue {
+    fn from(value: T) -> Self {
+        Self::One(value.into())
     }
 }
 
@@ -204,8 +210,8 @@ impl From<Color> for ColorStyle {
     }
 }
 
-impl From<ColorToken> for ColorStyle {
-    fn from(value: ColorToken) -> Self {
+impl From<Token<Color>> for ColorStyle {
+    fn from(value: Token<Color>) -> Self {
         Self::Solid(value.into())
     }
 }
@@ -324,9 +330,7 @@ impl RadialGradientStyle {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LengthValue {
     Px(f32),
-    Spacing(SpacingToken),
-    Radius(RadiusToken),
-    FontSize(FontSizeToken),
+    Token(Token<f32>),
 }
 
 /// A row-major 4x5 affine RGBA color matrix.
@@ -532,21 +536,9 @@ impl From<f32> for LengthValue {
     }
 }
 
-impl From<SpacingToken> for LengthValue {
-    fn from(value: SpacingToken) -> Self {
-        Self::Spacing(value)
-    }
-}
-
-impl From<RadiusToken> for LengthValue {
-    fn from(value: RadiusToken) -> Self {
-        Self::Radius(value)
-    }
-}
-
-impl From<FontSizeToken> for LengthValue {
-    fn from(value: FontSizeToken) -> Self {
-        Self::FontSize(value)
+impl From<Token<f32>> for LengthValue {
+    fn from(value: Token<f32>) -> Self {
+        Self::Token(value)
     }
 }
 

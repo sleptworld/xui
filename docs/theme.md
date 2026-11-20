@@ -1,6 +1,6 @@
 # 主题设计
 
-状态：**提案**（2026-11-21）。依据 `xui-interface/src/style.rs`、`styles/units.rs`、`xui-core/src/ui_runtime/config.rs`、
+状态：**§2–§4 已实施**（2026-11-21），§5–§6 为提案。依据 `xui-interface/src/style.rs`、`styles/units.rs`、`xui-core/src/ui_runtime/config.rs`、
 `xui-core/src/app.rs`、`xui-animation` 与 `xui-components` 的现状整理。
 
 ## 0. 目标
@@ -128,7 +128,8 @@ pub enum LengthValue {
 
 - `Color`、`Token<Color>` 都实现 `Into<ColorRef>`、`Into<ColorValue>`、`Into<ColorStyle>`；`Token<f32>` 实现 `Into<LengthValue>`。
   `.color(color::PRIMARY)`、`.background(Color::WHITE)` 照常可写。
-- `Token<Color>::alpha(a) -> ColorValue` 取代 `ColorToken::alpha` 与 `TokenAlpha`。
+- `Token<Color>::alpha(a) -> ColorValue` 取代 `ColorToken::alpha` 与 `TokenAlpha`；`ColorValue::alpha(a)` 对任意颜色值乘透明度，
+  禁用态整体减半即用它。
 - `Token<Color>::mix(other, t) -> ColorValue` 用于派生色，例如 `color::ACCENT.mix(color::PRIMARY, 0.2)`。
 - **动画**：`ColorValue::interpolate(One(a), One(b), t)` 得到 `Mix(a, b, t)`，悬停等 token 之间的过渡因此连续，不再跳变。
   只有一端已是 `Mix` 时才退回离散切换。

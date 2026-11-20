@@ -11,6 +11,7 @@
 //! | [`command_palette`](fn@self::command_palette) | A dialog listing commands filtered by a caller-supplied query. |
 
 use xui_core::prelude::*;
+use xui_core::tokens::{color, font_size, radius};
 use xui_macros::component;
 
 use crate::dialog;
@@ -155,7 +156,7 @@ pub fn command_palette(
                         },
                         style: StyleOf::new()
                             .with::<container::padding>(EdgeInsets::all(10.0))
-                            .with::<container::font_size>(FontSizeToken::Sm),
+                            .with::<container::font_size>(font_size::SM),
                     )
                     if visible.is_empty() {
                         container(
@@ -170,10 +171,10 @@ pub fn command_palette(
                             style: StyleOf::new()
                                 .with::<container::padding>(EdgeInsets::all(10.0))
                                 .with::<container::justify>(JustifyStyle::SpaceBetween)
-                                .with::<container::border_radius>(RadiusToken::Sm)
+                                .with::<container::border_radius>(radius::SM)
                                 .when_style(
                                     WidgetStateMatcher::all(WidgetState::HOVERED),
-                                    StyleOf::<Container>::new().with::<container::background>(ColorToken::MutedSurface),
+                                    StyleOf::<Container>::new().with::<container::background>(color::MUTED),
                                 ),
                             flex_direction: FlexDirectionStyle::Row,
                             focus_handle: handles[*index].clone(),
@@ -206,7 +207,7 @@ pub fn command_palette(
                         ) {
                             text(item.label.clone())
                             if let Some(shortcut) = item.shortcut.clone() {
-                                text(shortcut.clone(), style: StyleOf::new().with::<container::font_size>(FontSizeToken::Sm))
+                                text(shortcut.clone(), style: StyleOf::new().with::<container::font_size>(font_size::SM))
                             }
                         }
                         .key(item.id.clone())

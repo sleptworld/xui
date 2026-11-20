@@ -6,11 +6,12 @@
 //! resolves them into the [`ComputedStyle`] here.
 
 use crate::{
-    Affine, Bounds, Color, EdgeInsets, FontFamily, FontStyle, FontWeight, LineHeight, Point, Size,
-    StyleDiffFlags, TextDecoration, WidgetState, core::Sizing, text::TextStyle,
+    Affine, Bounds, Color, ColorScheme, EdgeInsets, FontFamily, FontStyle, FontWeight, LineHeight,
+    Point, Size, StyleDiffFlags, TextDecoration, WidgetState, core::Sizing, text::TextStyle,
 };
 
 use std::{
+    collections::HashMap,
     hash::{Hash, Hasher},
     sync::Arc,
 };
@@ -226,9 +227,9 @@ impl ComputedStyle {
     pub fn initial(theme: &Theme) -> Self {
         Self {
             text: ComputedTextStyle {
-                color: theme.color(ColorToken::Text),
+                color: theme.get(crate::tokens::color::FOREGROUND),
                 font_family: FontFamily::System,
-                font_size: theme.font_size(FontSizeToken::Md),
+                font_size: theme.get(crate::tokens::font_size::MD),
                 font_weight: FontWeight::Normal,
                 font_style: FontStyle::Normal,
                 line_height: LineHeight::Normal,
@@ -370,43 +371,17 @@ inherited_properties! {
     text.decoration,
 }
 
-/// Design tokens resolved by `ColorToken`, `SpacingToken`, `RadiusToken`, and
-/// `FontSizeToken`. The defaults follow shadcn/ui's neutral palette;
-/// [`Theme::light`] is the default and [`Theme::dark`] its dark counterpart.
+/// Values for design [`Token`]s, by name. A token the theme does not set
+/// resolves to its fallback; the built-in tokens' fallbacks are the light
+/// theme (see [`crate::tokens`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Theme {
-    pub background: Color,
-    pub foreground: Color,
-    pub card: Color,
-    pub card_foreground: Color,
-    pub popover: Color,
-    pub popover_foreground: Color,
-    pub primary: Color,
-    pub primary_foreground: Color,
-    pub secondary: Color,
-    pub secondary_foreground: Color,
-    pub muted: Color,
-    pub muted_foreground: Color,
-    pub accent: Color,
-    pub accent_foreground: Color,
-    pub destructive: Color,
-    pub destructive_foreground: Color,
-    pub border: Color,
-    pub input: Color,
-    pub ring: Color,
-    pub spacing_xs: f32,
-    pub spacing_sm: f32,
-    pub spacing_md: f32,
-    pub spacing_lg: f32,
-    pub spacing_xl: f32,
-    pub radius_sm: f32,
-    pub radius_md: f32,
-    pub radius_lg: f32,
-    pub radius_xl: f32,
-    pub font_size_sm: f32,
-    pub font_size_md: f32,
-    pub font_size_lg: f32,
-    pub font_size_xl: f32,
+    pub name: String,
+    /// Whether this is a light or a dark theme, for code that must choose
+    /// between assets, such as an icon set or a viewport's clear color.
+    pub scheme: ColorScheme,
+    colors: HashMap<String, Color>,
+    lengths: HashMap<String, f32>,
 }
 
 impl Default for Theme {
@@ -416,124 +391,104 @@ impl Default for Theme {
 }
 
 impl Theme {
+    /// A theme that sets no token: every token resolves to its fallback.
+    pub fn new(name: impl Into<String>, scheme: ColorScheme) -> Self {
+        Self {
+            name: name.into(),
+            scheme,
+            colors: HashMap::new(),
+            lengths: HashMap::new(),
+        }
+    }
+
     /// shadcn/ui "neutral", light.
     pub fn light() -> Self {
-        Self {
-            background: Color::hex("#ffffff"),
-            foreground: Color::hex("#0a0a0a"),
-            card: Color::hex("#ffffff"),
-            card_foreground: Color::hex("#0a0a0a"),
-            popover: Color::hex("#ffffff"),
-            popover_foreground: Color::hex("#0a0a0a"),
-            primary: Color::hex("#171717"),
-            primary_foreground: Color::hex("#fafafa"),
-            secondary: Color::hex("#f5f5f5"),
-            secondary_foreground: Color::hex("#171717"),
-            muted: Color::hex("#f5f5f5"),
-            muted_foreground: Color::hex("#737373"),
-            accent: Color::hex("#f5f5f5"),
-            accent_foreground: Color::hex("#171717"),
-            destructive: Color::hex("#e7000b"),
-            destructive_foreground: Color::hex("#ffffff"),
-            border: Color::hex("#e5e5e5"),
-            input: Color::hex("#e5e5e5"),
-            ring: Color::hex("#a1a1a1"),
-            // Radii derive from a 10px base radius, as in shadcn/ui.
-            spacing_xs: 4.0,
-            spacing_sm: 8.0,
-            spacing_md: 12.0,
-            spacing_lg: 16.0,
-            spacing_xl: 24.0,
-            radius_sm: 6.0,
-            radius_md: 8.0,
-            radius_lg: 10.0,
-            radius_xl: 14.0,
-            font_size_sm: 12.0,
-            font_size_md: 14.0,
-            font_size_lg: 16.0,
-            font_size_xl: 20.0,
-        }
+        Self::new("Light", ColorScheme::Light)
     }
 
     /// shadcn/ui "neutral", dark.
     pub fn dark() -> Self {
-        Self {
-            background: Color::hex("#0a0a0a"),
-            foreground: Color::hex("#fafafa"),
-            card: Color::hex("#171717"),
-            card_foreground: Color::hex("#fafafa"),
-            popover: Color::hex("#171717"),
-            popover_foreground: Color::hex("#fafafa"),
-            primary: Color::hex("#e5e5e5"),
-            primary_foreground: Color::hex("#171717"),
-            secondary: Color::hex("#262626"),
-            secondary_foreground: Color::hex("#fafafa"),
-            muted: Color::hex("#262626"),
-            muted_foreground: Color::hex("#a1a1a1"),
-            accent: Color::hex("#262626"),
-            accent_foreground: Color::hex("#fafafa"),
+        use crate::tokens::color::*;
+        let hex = Color::from_rgb_u32;
+        Self::new("Dark", ColorScheme::Dark)
+            .with(BACKGROUND, hex(0x0a0a0a))
+            .with(FOREGROUND_STRONG, hex(0xffffff))
+            .with(FOREGROUND, hex(0xfafafa))
+            .with(MUTED_FOREGROUND, hex(0xa1a1a1))
+            .with(FOREGROUND_FAINT, hex(0x525252))
+            .with(CARD, hex(0x171717))
+            .with(CARD_FOREGROUND, hex(0xfafafa))
+            .with(POPOVER, hex(0x171717))
+            .with(POPOVER_FOREGROUND, hex(0xfafafa))
+            .with(PRIMARY, hex(0xe5e5e5))
+            .with(PRIMARY_FOREGROUND, hex(0x171717))
+            .with(SECONDARY, hex(0x262626))
+            .with(SECONDARY_FOREGROUND, hex(0xfafafa))
+            .with(MUTED, hex(0x262626))
+            .with(ACCENT, hex(0x262626))
+            .with(ACCENT_FOREGROUND, hex(0xfafafa))
             // shadcn uses #ff6467 at 60% for dark fills; red-600 keeps white
             // text legible on a solid fill.
-            destructive: Color::hex("#dc2626"),
-            destructive_foreground: Color::hex("#ffffff"),
-            border: Color::rgba(1.0, 1.0, 1.0, 0.10),
-            input: Color::rgba(1.0, 1.0, 1.0, 0.15),
-            ring: Color::hex("#737373"),
-            ..Self::light()
-        }
+            .with(DESTRUCTIVE, hex(0xdc2626))
+            .with(DESTRUCTIVE_FOREGROUND, hex(0xffffff))
+            .with(SELECTION, hex(0x404040))
+            .with(SELECTION_FOREGROUND, hex(0xfafafa))
+            .with(BORDER, Color::rgba(1.0, 1.0, 1.0, 0.10))
+            .with(INPUT, Color::rgba(1.0, 1.0, 1.0, 0.15))
+            .with(RING, hex(0x737373))
     }
 
-    pub fn color(&self, token: ColorToken) -> Color {
-        match token {
-            ColorToken::Background => self.background,
-            ColorToken::Foreground | ColorToken::Text => self.foreground,
-            ColorToken::Card | ColorToken::Surface => self.card,
-            ColorToken::CardForeground => self.card_foreground,
-            ColorToken::Popover => self.popover,
-            ColorToken::PopoverForeground => self.popover_foreground,
-            ColorToken::Primary => self.primary,
-            ColorToken::PrimaryForeground | ColorToken::InverseText => self.primary_foreground,
-            ColorToken::Secondary => self.secondary,
-            ColorToken::SecondaryForeground => self.secondary_foreground,
-            ColorToken::Muted | ColorToken::MutedSurface => self.muted,
-            ColorToken::MutedForeground => self.muted_foreground,
-            ColorToken::Accent => self.accent,
-            ColorToken::AccentForeground => self.accent_foreground,
-            ColorToken::Destructive => self.destructive,
-            ColorToken::DestructiveForeground => self.destructive_foreground,
-            ColorToken::Border => self.border,
-            ColorToken::Input => self.input,
-            ColorToken::Ring => self.ring,
-        }
+    /// The value of `token` in this theme, or its fallback.
+    pub fn get<T: ThemeValue>(&self, token: Token<T>) -> T {
+        T::table(self)
+            .get(token.name)
+            .copied()
+            .unwrap_or(token.fallback)
     }
 
-    pub fn spacing(&self, token: SpacingToken) -> f32 {
-        match token {
-            SpacingToken::Xs => self.spacing_xs,
-            SpacingToken::Sm => self.spacing_sm,
-            SpacingToken::Md => self.spacing_md,
-            SpacingToken::Lg => self.spacing_lg,
-            SpacingToken::Xl => self.spacing_xl,
-        }
+    pub fn set<T: ThemeValue>(&mut self, token: Token<T>, value: T) {
+        T::table_mut(self).insert(token.name.to_owned(), value);
     }
 
-    pub fn radius(&self, token: RadiusToken) -> f32 {
-        match token {
-            RadiusToken::Sm => self.radius_sm,
-            RadiusToken::Md => self.radius_md,
-            RadiusToken::Lg => self.radius_lg,
-            RadiusToken::Xl => self.radius_xl,
-        }
+    /// This theme with `token` set to `value`.
+    pub fn with<T: ThemeValue>(mut self, token: Token<T>, value: T) -> Self {
+        self.set(token, value);
+        self
+    }
+}
+
+/// The value kinds a [`Theme`] stores: [`Color`] and `f32` lengths.
+pub trait ThemeValue: Copy + sealed::Sealed {
+    #[doc(hidden)]
+    fn table(theme: &Theme) -> &HashMap<String, Self>;
+    #[doc(hidden)]
+    fn table_mut(theme: &mut Theme) -> &mut HashMap<String, Self>;
+}
+
+impl ThemeValue for Color {
+    fn table(theme: &Theme) -> &HashMap<String, Self> {
+        &theme.colors
     }
 
-    pub fn font_size(&self, token: FontSizeToken) -> f32 {
-        match token {
-            FontSizeToken::Sm => self.font_size_sm,
-            FontSizeToken::Md => self.font_size_md,
-            FontSizeToken::Lg => self.font_size_lg,
-            FontSizeToken::Xl => self.font_size_xl,
-        }
+    fn table_mut(theme: &mut Theme) -> &mut HashMap<String, Self> {
+        &mut theme.colors
     }
+}
+
+impl ThemeValue for f32 {
+    fn table(theme: &Theme) -> &HashMap<String, Self> {
+        &theme.lengths
+    }
+
+    fn table_mut(theme: &mut Theme) -> &mut HashMap<String, Self> {
+        &mut theme.lengths
+    }
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for crate::Color {}
+    impl Sealed for f32 {}
 }
 
 pub(crate) fn compute_backdrop_style(
@@ -690,10 +645,16 @@ fn normalize_radians(value: f32) -> f32 {
 
 pub(crate) fn color_value(value: ColorValue, theme: &Theme) -> Color {
     match value {
-        ColorValue::Color(color) => color,
-        ColorValue::Token(token) => theme.color(token),
-        ColorValue::TokenAlpha(token, alpha) => {
-            let color = theme.color(token);
+        ColorValue::One(color) => color_ref(color, theme),
+        ColorValue::Mix(from, to, t) => color_ref(from, theme).mix(color_ref(to, theme), t),
+    }
+}
+
+fn color_ref(value: ColorRef, theme: &Theme) -> Color {
+    match value {
+        ColorRef::Color(color) => color,
+        ColorRef::Token(token, alpha) => {
+            let color = theme.get(token);
             color.alpha(color.a * alpha)
         }
     }
@@ -724,9 +685,7 @@ pub(crate) fn color_style(value: ColorStyle, theme: &Theme) -> ComputedColorStyl
 pub(crate) fn length_value(value: LengthValue, theme: &Theme) -> f32 {
     match value {
         LengthValue::Px(value) => value,
-        LengthValue::Spacing(token) => theme.spacing(token),
-        LengthValue::Radius(token) => theme.radius(token),
-        LengthValue::FontSize(token) => theme.font_size(token),
+        LengthValue::Token(token) => theme.get(token),
     }
 }
 
@@ -769,15 +728,28 @@ fn hash_point<H: Hasher>(value: Point, state: &mut H) {
     hash_f32(value.y, state);
 }
 
-impl Hash for ColorValue {
+impl Hash for ColorRef {
     fn hash<H: Hasher>(&self, state: &mut H) {
         core::mem::discriminant(self).hash(state);
         match self {
             Self::Color(color) => hash_color(*color, state),
-            Self::Token(token) => token.hash(state),
-            Self::TokenAlpha(token, alpha) => {
+            Self::Token(token, alpha) => {
                 token.hash(state);
                 hash_f32(*alpha, state);
+            }
+        }
+    }
+}
+
+impl Hash for ColorValue {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        core::mem::discriminant(self).hash(state);
+        match self {
+            Self::One(color) => color.hash(state),
+            Self::Mix(from, to, t) => {
+                from.hash(state);
+                to.hash(state);
+                hash_f32(*t, state);
             }
         }
     }
@@ -817,9 +789,7 @@ impl Hash for LengthValue {
         core::mem::discriminant(self).hash(state);
         match self {
             Self::Px(value) => value.to_bits().hash(state),
-            Self::Spacing(token) => token.hash(state),
-            Self::Radius(token) => token.hash(state),
-            Self::FontSize(token) => token.hash(state),
+            Self::Token(token) => token.hash(state),
         }
     }
 }
@@ -945,5 +915,51 @@ impl Hash for Effect {
                 hash_rect(*bounds, state);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tokens::{color, spacing};
+
+    #[test]
+    fn a_theme_resolves_what_it_sets_and_falls_back_otherwise() {
+        const STRONG: Token<Color> = Token::new("test.strong", Color::WHITE);
+        let red = Color::rgb(1.0, 0.0, 0.0);
+        let theme = Theme::dark().with(STRONG, red).with(spacing::MD, 20.0);
+
+        assert_eq!(theme.get(STRONG), red);
+        assert_eq!(theme.get(spacing::MD), 20.0);
+        assert_eq!(theme.get(spacing::SM), spacing::SM.fallback);
+        assert_ne!(theme.get(color::BACKGROUND), color::BACKGROUND.fallback);
+        assert_eq!(
+            Theme::light().get(color::BACKGROUND),
+            color::BACKGROUND.fallback
+        );
+    }
+
+    #[test]
+    fn colors_resolve_with_alpha_and_mix() {
+        let theme = Theme::light().with(color::PRIMARY, Color::BLACK);
+        let resolve = |value: ColorValue| color_value(value, &theme);
+
+        assert_eq!(resolve(color::PRIMARY.into()), Color::BLACK);
+        assert_eq!(resolve(color::PRIMARY.alpha(0.5)), Color::BLACK.alpha(0.5));
+        assert_eq!(
+            resolve(color::PRIMARY.mix(Color::WHITE, 0.25)),
+            Color::rgb(0.25, 0.25, 0.25)
+        );
+        assert_eq!(
+            resolve(ColorValue::from(Color::WHITE).alpha(0.5)),
+            Color::WHITE.alpha(0.5)
+        );
+    }
+
+    #[test]
+    fn tokens_are_identified_by_name() {
+        let renamed = Token::new(color::PRIMARY.name, Color::WHITE);
+        assert_eq!(renamed, color::PRIMARY);
+        assert_ne!(color::PRIMARY, color::SECONDARY);
     }
 }

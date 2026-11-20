@@ -1,4 +1,5 @@
 use xui_core::prelude::*;
+use xui_core::tokens::{color, radius};
 use xui_macros::{component, defaults};
 
 use crate::{
@@ -198,14 +199,14 @@ impl Default for TableStyle {
             root: Style::new()
                 .width(Sizing::Fill)
                 .border_width(1.0)
-                .border_color(ColorToken::Border)
-                .border_radius(RadiusToken::Md)
+                .border_color(color::BORDER)
+                .border_radius(radius::MD)
                 .clip(true),
             header: Style::new()
                 .width(Sizing::Fill)
-                .background(ColorToken::MutedSurface)
+                .background(color::MUTED)
                 .border_width(1.0)
-                .border_color(ColorToken::Border),
+                .border_color(color::BORDER),
             header_cell: Style::new()
                 .height(Sizing::Fill)
                 .padding(EdgeInsets::symmetric(12.0, 8.0))
@@ -214,9 +215,9 @@ impl Default for TableStyle {
             row: Style::new()
                 .width(Sizing::Fill)
                 .border_width(1.0)
-                .border_color(ColorToken::Border),
-            selected_row: Style::new().background(ColorToken::MutedSurface),
-            disabled_row: Style::new().background(ColorToken::MutedSurface),
+                .border_color(color::BORDER),
+            selected_row: Style::new().background(color::MUTED),
+            disabled_row: Style::new().background(color::MUTED),
             cell: Style::new()
                 .height(Sizing::Fill)
                 .padding(EdgeInsets::symmetric(12.0, 8.0)),

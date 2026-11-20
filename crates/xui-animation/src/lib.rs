@@ -20,7 +20,7 @@ use std::time::Duration;
 use palette::{LinSrgba, Mix, blend::PreAlpha};
 pub use xui_interface::{AnimationProgress, Easing, Transition};
 use xui_interface::{
-    Color, ColorStyle, ColorValue, EdgeInsets, LengthValue, LinearGradientStyle, Point,
+    Color, ColorRef, ColorStyle, ColorValue, EdgeInsets, LengthValue, LinearGradientStyle, Point,
     RadialGradientStyle, ScrollbarStyle, ShadowStyle, Size, Sizing, StrokeStyle, StyleValue,
 };
 
@@ -249,11 +249,17 @@ impl Animatable for Size<Sizing> {
     }
 }
 
+/// Two colors that need the theme to resolve interpolate as a
+/// [`ColorValue::Mix`]; a mix that is already under way switches discretely.
 impl Animatable for ColorValue {
     fn interpolate(from: &Self, to: &Self, progress: f32) -> Self {
+        let progress = clamp_unit(progress);
         match (*from, *to) {
-            (Self::Color(from), Self::Color(to)) => {
-                Self::Color(Color::interpolate(&from, &to, progress))
+            (Self::One(ColorRef::Color(from)), Self::One(ColorRef::Color(to))) => {
+                Color::interpolate(&from, &to, progress).into()
+            }
+            (Self::One(a), Self::One(b)) if progress > 0.0 && progress < 1.0 => {
+                Self::Mix(a, b, progress)
             }
             _ => discrete(from, to, progress),
         }
@@ -435,7 +441,8 @@ fn clamp_unit(value: f32) -> f32 {
 mod tests {
     use super::*;
     use xui_interface::{
-        ColorToken, FontSizeToken, ScrollbarVisibilityStyle, SpacingToken, StrokeLineStyle,
+        ScrollbarVisibilityStyle, StrokeLineStyle,
+        tokens::{color, font_size, spacing},
     };
     use xui_macros::Animatable;
 
@@ -616,28 +623,28 @@ mod tests {
     }
 
     #[test]
-    fn length_and_color_style_discrete_switch_for_different_variants() {
-        let length = LengthValue::interpolate(
-            &LengthValue::Spacing(SpacingToken::Sm),
-            &LengthValue::FontSize(FontSizeToken::Lg),
-            0.5,
-        );
-        assert_eq!(length, LengthValue::Spacing(SpacingToken::Sm));
+    fn length_tokens_switch_discretely() {
+        let length = LengthValue::interpolate(&spacing::SM.into(), &font_size::LG.into(), 0.5);
+        assert_eq!(length, spacing::SM.into());
         assert_eq!(
-            LengthValue::interpolate(
-                &LengthValue::Spacing(SpacingToken::Sm),
-                &LengthValue::FontSize(FontSizeToken::Lg),
-                1.0,
-            ),
-            LengthValue::FontSize(FontSizeToken::Lg)
+            LengthValue::interpolate(&spacing::SM.into(), &font_size::LG.into(), 1.0),
+            font_size::LG.into()
         );
+    }
 
-        let color_style = ColorStyle::interpolate(
-            &ColorStyle::solid(ColorToken::Primary),
-            &Color::WHITE.into(),
-            0.5,
+    #[test]
+    fn color_tokens_interpolate_as_a_mix() {
+        let from: ColorValue = color::ACCENT.into();
+        let to: ColorValue = Color::WHITE.into();
+        assert_eq!(
+            ColorValue::interpolate(&from, &to, 0.25),
+            ColorValue::Mix(color::ACCENT.into(), Color::WHITE.into(), 0.25)
         );
-        assert_eq!(color_style, ColorStyle::solid(ColorToken::Primary));
+        assert_eq!(ColorValue::interpolate(&from, &to, 0.0), from);
+        assert_eq!(ColorValue::interpolate(&from, &to, 1.0), to);
+
+        let mix = color::ACCENT.mix(color::PRIMARY, 0.5);
+        assert_eq!(ColorValue::interpolate(&mix, &to, 0.5), mix);
     }
 
     // #[test]

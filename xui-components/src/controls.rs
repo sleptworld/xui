@@ -22,6 +22,7 @@
 use std::time::Duration;
 
 use xui_core::prelude::*;
+use xui_core::tokens::{color, font_size, radius};
 
 use xui_macros::{component, style};
 
@@ -134,19 +135,19 @@ pub fn checkbox(
             size: Size::fix(20.0, 20.0),
             border_width: 1.0,
             border_color: if *value || *indeterminate {
-                ColorToken::Primary
+                color::PRIMARY
             } else {
-                ColorToken::Border
+                color::BORDER
             },
             background: if *value || *indeterminate {
-                ColorStyle::from(ColorToken::Primary)
+                ColorStyle::from(color::PRIMARY)
             } else {
                 ColorStyle::from(Color::TRANSPARENT)
             },
-            border_radius: RadiusToken::Sm,
+            border_radius: radius::SM,
         })
         .merged(indicator_style)
-        .with::<container::color>(ColorToken::PrimaryForeground)
+        .with::<container::color>(color::PRIMARY_FOREGROUND)
     );
     let root_style: StyleOf<Container> = memo!(
         crate::layout::control_style(*disabled)
@@ -260,9 +261,9 @@ pub fn switch(
             align: AlignStyle::Center,
             justify: JustifyStyle::Start,
             background: if *value {
-                ColorStyle::from(ColorToken::Primary)
+                ColorStyle::from(color::PRIMARY)
             } else {
-                ColorStyle::from(ColorToken::MutedSurface)
+                ColorStyle::from(color::MUTED)
             },
         })
         .merged(track_style)
@@ -271,7 +272,7 @@ pub fn switch(
         style!(container {
             size: Size::fix(SWITCH_THUMB_SIZE, SWITCH_THUMB_SIZE),
             border_radius: SWITCH_THUMB_SIZE / 2.0,
-            background: ColorToken::Background,
+            background: color::BACKGROUND,
             translate_x: if *value { SWITCH_TRAVEL } else { 0.0 },
         })
         .merged(thumb_style)
@@ -499,9 +500,9 @@ pub fn radio_group(
                             .with::<container::size>(Size::fix(18.0, 18.0))
                             .with::<container::border_width>(if *active == Some(*index) { 5.0 } else { 1.0 })
                             .with::<container::border_color>(if *active == Some(*index) {
-                                ColorToken::Primary
+                                color::PRIMARY
                             } else {
-                                ColorToken::Border
+                                color::BORDER
                             })
                             .with::<container::border_radius>(9.0)
                             .merged(indicator_style),
@@ -681,7 +682,7 @@ pub fn slider(
                     .with::<container::position>(PositionStyle::Relative)
                     .with::<container::width>(Sizing::Fill)
                     .with::<container::height>(6.0)
-                    .with::<container::background>(ColorToken::MutedSurface)
+                    .with::<container::background>(color::MUTED)
                     .with::<container::border_radius>(3.0)
                     .merged(track_style),
             ) {
@@ -689,7 +690,7 @@ pub fn slider(
                     style: StyleOf::new()
                         .with::<container::width>(Sizing::percent(*ratio))
                         .with::<container::height>(6.0)
-                        .with::<container::background>(ColorToken::Primary)
+                        .with::<container::background>(color::PRIMARY)
                         .with::<container::border_radius>(3.0)
                         .merged(fill_style),
                 )
@@ -700,8 +701,8 @@ pub fn slider(
                     .with::<container::inset>(EdgeInsets::new(0.0, 0.0, 8.0, 0.0))
                     .with::<container::size>(Size::fix(16.0, 16.0))
                     .with::<container::translate_x>(*ratio * (size.map_or(16.0, |size| size.width) - 16.0).max(0.0))
-                    .with::<container::background>(ColorToken::Background)
-                    .with::<container::border_color>(ColorToken::Primary)
+                    .with::<container::background>(color::BACKGROUND)
+                    .with::<container::border_color>(color::PRIMARY)
                     .with::<container::border_width>(2.0)
                     .with::<container::border_radius>(8.0)
                     .merged(thumb_style),
@@ -768,7 +769,7 @@ pub fn progress(
             style: StyleOf::new()
                 .with::<container::width>(Sizing::Fill)
                 .with::<container::height>(8.0)
-                .with::<container::background>(ColorToken::MutedSurface)
+                .with::<container::background>(color::MUTED)
                 .with::<container::border_radius>(4.0)
                 .merged(style),
             accessibility_role: AccessibilityRole::ProgressIndicator,
@@ -781,7 +782,7 @@ pub fn progress(
                 style: StyleOf::new()
                     .with::<container::width>(Sizing::percent(*amount / *limit))
                     .with::<container::height>(Sizing::Fill)
-                    .with::<container::background>(ColorToken::Primary)
+                    .with::<container::background>(color::PRIMARY)
                     .with::<container::border_radius>(4.0)
                     .merged(indicator_style),
             )
@@ -837,7 +838,7 @@ pub fn separator(#[source] orientation: &SeparatorOrientation, style: &StyleOf<C
                     .with::<container::width>(1.0)
                     .with::<container::height>(Sizing::Fill),
             }
-            .with::<container::background>(ColorToken::Border)
+            .with::<container::background>(color::BORDER)
             .merged(style),
             accessibility_hidden: true,
         )
@@ -893,23 +894,23 @@ pub fn badge(
         container(
             style: match variant {
                 BadgeVariant::Primary => StyleOf::new()
-                    .with::<container::background>(ColorToken::Primary)
-                    .with::<container::color>(ColorToken::PrimaryForeground),
+                    .with::<container::background>(color::PRIMARY)
+                    .with::<container::color>(color::PRIMARY_FOREGROUND),
                 BadgeVariant::Secondary => StyleOf::new()
-                    .with::<container::background>(ColorToken::Secondary)
-                    .with::<container::color>(ColorToken::SecondaryForeground),
+                    .with::<container::background>(color::SECONDARY)
+                    .with::<container::color>(color::SECONDARY_FOREGROUND),
                 BadgeVariant::Outline => StyleOf::new()
-                    .with::<container::background>(ColorToken::Background)
-                    .with::<container::color>(ColorToken::Foreground)
+                    .with::<container::background>(color::BACKGROUND)
+                    .with::<container::color>(color::FOREGROUND)
                     .with::<container::border_width>(1.0)
-                    .with::<container::border_color>(ColorToken::Border),
+                    .with::<container::border_color>(color::BORDER),
                 BadgeVariant::Danger => StyleOf::new()
-                    .with::<container::background>(ColorToken::Destructive)
-                    .with::<container::color>(ColorToken::DestructiveForeground),
+                    .with::<container::background>(color::DESTRUCTIVE)
+                    .with::<container::color>(color::DESTRUCTIVE_FOREGROUND),
             }
             .with::<container::padding>(EdgeInsets::symmetric(8.0, 3.0))
             .with::<container::border_radius>(999.0)
-            .with::<container::font_size>(FontSizeToken::Sm)
+            .with::<container::font_size>(font_size::SM)
             .merged(style),
         ) {
             xui_core::prelude::text(text.clone())
@@ -973,7 +974,7 @@ pub fn avatar(
                 .with::<container::align>(AlignStyle::Center)
                 .with::<container::justify>(JustifyStyle::Center)
                 .with::<container::clip>(true)
-                .with::<container::background>(ColorToken::MutedSurface)
+                .with::<container::background>(color::MUTED)
                 .with::<container::border_radius>(*side / 2.0)
                 .merged(style),
             accessibility_role: AccessibilityRole::Image,
@@ -1021,10 +1022,10 @@ pub fn card(children: &Children, style: &StyleOf<Container>) {
         container(
             style: StyleOf::new()
                 .with::<container::padding>(EdgeInsets::all(16.0))
-                .with::<container::background>(ColorToken::Surface)
+                .with::<container::background>(color::CARD)
                 .with::<container::border_width>(1.0)
-                .with::<container::border_color>(ColorToken::Border)
-                .with::<container::border_radius>(RadiusToken::Lg)
+                .with::<container::border_color>(color::BORDER)
+                .with::<container::border_radius>(radius::LG)
                 .merged(style),
         ) {
             slot(children)

@@ -5,6 +5,7 @@
 //! the component default unchanged; `Value` applies the supplied override.
 
 use xui_core::prelude::*;
+use xui_core::tokens::color;
 
 /// An optional length override; `Auto` retains the component default.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Default)]
@@ -45,14 +46,8 @@ impl From<u32> for ComponentLength {
     }
 }
 
-impl From<SpacingToken> for ComponentLength {
-    fn from(value: SpacingToken) -> Self {
-        Self::Value(value.into())
-    }
-}
-
-impl From<RadiusToken> for ComponentLength {
-    fn from(value: RadiusToken) -> Self {
+impl From<Token<f32>> for ComponentLength {
+    fn from(value: Token<f32>) -> Self {
         Self::Value(value.into())
     }
 }
@@ -168,8 +163,8 @@ impl From<Color> for ComponentColor {
     }
 }
 
-impl From<ColorToken> for ComponentColor {
-    fn from(value: ColorToken) -> Self {
+impl From<Token<Color>> for ComponentColor {
+    fn from(value: Token<Color>) -> Self {
         Self::Value(value.into())
     }
 }
@@ -184,18 +179,18 @@ where
         + xui_core::property::Has<xui_core::caps::style::BoxShadow>,
 {
     let style = StyleOf::new()
-        .with::<container::color>(ColorToken::Foreground)
+        .with::<container::color>(color::FOREGROUND)
         .with::<container::min_width>(0.0);
     if disabled {
-        return style.with::<container::color>(ColorToken::MutedForeground);
+        return style.with::<container::color>(color::MUTED_FOREGROUND);
     }
     style.when_style(
         WidgetStateMatcher::all(WidgetState::FOCUS_VISIBLE),
         StyleOf::<N>::new()
-            .with::<container::border_color>(ColorToken::Ring)
+            .with::<container::border_color>(color::RING)
             .with::<container::shadow>(
                 ShadowStyle::new()
-                    .color(ColorToken::Ring.alpha(0.5))
+                    .color(color::RING.alpha(0.5))
                     .spread(3.0)
                     .blur(0.0),
             ),

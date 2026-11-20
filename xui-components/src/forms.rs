@@ -12,6 +12,7 @@
 //! | [`form_field`](fn@self::form_field) | A labeled form-control wrapper with description and validation feedback. |
 
 use xui_core::prelude::*;
+use xui_core::tokens::{color, font_size};
 use xui_macros::component;
 
 /// The validation emphasis and live-announcement priority of a form field.
@@ -104,9 +105,9 @@ pub fn form_field(
         ) {
             container(
                 style: StyleOf::new().with::<container::gap>(4.0).with::<container::color>(if *disabled {
-                        ColorValue::from(ColorToken::MutedForeground)
+                        ColorValue::from(color::MUTED_FOREGROUND)
                     } else {
-                        ColorValue::from(ColorToken::Foreground)
+                        ColorValue::from(color::FOREGROUND)
                 }).merged(label_style),
                 flex_direction: FlexDirectionStyle::Row,
                 accessibility_role: AccessibilityRole::Label,
@@ -118,8 +119,8 @@ pub fn form_field(
                 text(
                     description.clone(),
                     style: StyleOf::new()
-                        .with::<container::font_size>(FontSizeToken::Sm)
-                        .with::<container::color>(ColorValue::from(ColorToken::MutedForeground))
+                        .with::<container::font_size>(font_size::SM)
+                        .with::<container::color>(ColorValue::from(color::MUTED_FOREGROUND))
                         .merged(description_style),
                 )
             }
@@ -127,7 +128,7 @@ pub fn form_field(
             if let Some(message) = message.clone() {
                 container(
                     style: StyleOf::new()
-                        .with::<container::font_size>(FontSizeToken::Sm)
+                        .with::<container::font_size>(font_size::SM)
                         .with::<container::color>(message_tone(*status).0)
                         .merged(message_style),
                     accessibility_label: message.clone(),
@@ -147,7 +148,7 @@ pub fn form_field(
 /// The color and live region of a message in `status`.
 fn message_tone(status: FieldStatus) -> (ColorValue, Option<AccessibilityLiveRegion>) {
     match status {
-        FieldStatus::Normal => (ColorValue::from(ColorToken::MutedForeground), None),
+        FieldStatus::Normal => (ColorValue::from(color::MUTED_FOREGROUND), None),
         FieldStatus::Success => (
             ColorValue::from(Color::hex("#15803d")),
             Some(AccessibilityLiveRegion::Polite),
@@ -157,7 +158,7 @@ fn message_tone(status: FieldStatus) -> (ColorValue, Option<AccessibilityLiveReg
             Some(AccessibilityLiveRegion::Polite),
         ),
         FieldStatus::Error => (
-            ColorValue::from(ColorToken::Destructive),
+            ColorValue::from(color::DESTRUCTIVE),
             Some(AccessibilityLiveRegion::Assertive),
         ),
     }

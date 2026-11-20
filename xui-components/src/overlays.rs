@@ -18,6 +18,7 @@
 //! | [`toast`](fn@self::toast) | A portal-mounted transient message with a semantic tone and live announcement. |
 
 use xui_core::prelude::*;
+use xui_core::tokens::{color, font_size, radius};
 use xui_macros::component;
 
 use crate::controls::commit;
@@ -25,10 +26,10 @@ use crate::controls::commit;
 fn overlay_panel_style() -> StyleOf<Container> {
     StyleOf::new()
         .with::<container::padding>(EdgeInsets::all(16.0))
-        .with::<container::background>(ColorToken::Surface)
+        .with::<container::background>(color::CARD)
         .with::<container::border_width>(1.0)
-        .with::<container::border_color>(ColorToken::Border)
-        .with::<container::border_radius>(RadiusToken::Lg)
+        .with::<container::border_color>(color::BORDER)
+        .with::<container::border_radius>(radius::LG)
 }
 
 /// A modal portal containing a titled dialog panel and backdrop.
@@ -145,7 +146,7 @@ pub fn dialog(
                                 text(
                                     title.clone(),
                                     style: StyleOf::new()
-                                        .with::<container::font_size>(FontSizeToken::Lg)
+                                        .with::<container::font_size>(font_size::LG)
                                         .with::<container::font_weight>(FontWeight::Bold)
                                         .merged(title_style),
                                 )
@@ -312,11 +313,11 @@ pub fn tooltip(
     let mut tooltip_style: StyleOf<Container> = StyleOf::new()
         .with::<container::position>(PositionStyle::Absolute)
         .with::<container::padding>(EdgeInsets::symmetric(8.0, 5.0))
-        .with::<container::background>(ColorToken::Foreground)
-        .with::<container::color>(ColorToken::Background)
-        .with::<container::border_radius>(RadiusToken::Sm)
+        .with::<container::background>(color::FOREGROUND)
+        .with::<container::color>(color::BACKGROUND)
+        .with::<container::border_radius>(radius::SM)
         .with::<container::max_width>(280.0)
-        .with::<container::font_size>(FontSizeToken::Sm);
+        .with::<container::font_size>(font_size::SM);
     tooltip_style.merge(style);
     view! {
         container(
@@ -461,7 +462,7 @@ pub fn drawer(
         .merged(backdrop_style);
     let mut panel_style: StyleOf<Container> = sizing
         .with::<container::padding>(EdgeInsets::all(20.0))
-        .with::<container::background>(ColorToken::Surface);
+        .with::<container::background>(color::CARD);
     panel_style.merge(style);
     view! {
         container(accessibility_hidden: !*shown) {
@@ -607,10 +608,10 @@ pub fn menu(
                         container(
                     style: StyleOf::new()
                         .with::<container::padding>(EdgeInsets::symmetric(10.0, 7.0))
-                        .with::<container::border_radius>(RadiusToken::Sm)
+                        .with::<container::border_radius>(radius::SM)
                         .when_style(
                             WidgetStateMatcher::all(WidgetState::HOVERED),
-                            StyleOf::<Container>::new().with::<container::background>(ColorToken::Accent),
+                            StyleOf::<Container>::new().with::<container::background>(color::ACCENT),
                         )
                         .merged(&crate::layout::control_style(item.disabled))
                         .merged(item_style),
@@ -765,10 +766,10 @@ pub fn context_menu(
                                 container(
                     style: StyleOf::new()
                         .with::<container::padding>(EdgeInsets::symmetric(10.0, 7.0))
-                        .with::<container::border_radius>(RadiusToken::Sm)
+                        .with::<container::border_radius>(radius::SM)
                         .when_style(
                             WidgetStateMatcher::all(WidgetState::HOVERED),
-                            StyleOf::<Container>::new().with::<container::background>(ColorToken::Accent),
+                            StyleOf::<Container>::new().with::<container::background>(color::ACCENT),
                         )
                         .merged(&crate::layout::control_style(item.disabled))
                         .merged(item_style),
@@ -866,7 +867,7 @@ pub fn toast(
 ) {
     let toast_style: StyleOf<Container> = memo!({
         let background: ColorStyle = match tone {
-            ToastTone::Neutral => ColorToken::Surface.into(),
+            ToastTone::Neutral => color::CARD.into(),
             ToastTone::Success => Color::hex("#166534").into(),
             ToastTone::Warning => Color::hex("#92400e").into(),
             ToastTone::Danger => Color::hex("#991b1b").into(),
@@ -875,7 +876,7 @@ pub fn toast(
             .with::<container::max_width>(420.0)
             .with::<container::padding>(EdgeInsets::all(12.0))
             .with::<container::background>(background)
-            .with::<container::border_radius>(RadiusToken::Md);
+            .with::<container::border_radius>(radius::MD);
         toast_style.merge(style);
         toast_style
     });

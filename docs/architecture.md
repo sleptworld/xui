@@ -62,8 +62,8 @@ The shared vocabulary every other crate agrees on:
 
 - **Geometry** — `Color`, `Point`, `Rect`, `Size`, `Sizing`, `EdgeInsets`,
   `Bounds`, `Translation`.
-- **Style** — `ComputedStyle`, style values and units, tokens (`ColorToken`,
-  `SpacingToken`, `FontSizeToken`, `RadiusToken`), `Theme`, `WidgetStateMatcher`
+- **Style** — `ComputedStyle`, style values and units, design tokens
+  (`Token<T>`, the built-in ones in `tokens`), `Theme`, `WidgetStateMatcher`
   for state rules.
 - **Events** — raw window/pointer/keyboard events (`RawWindowEvent`,
   `RawPointerButton`, `RawKeyboard`, `RawWheel`, …), semantic requests

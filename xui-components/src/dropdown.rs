@@ -13,6 +13,7 @@
 use crate::controls::commit;
 use crate::{SelectionItem, SelectionModel};
 use xui_core::prelude::*;
+use xui_core::tokens::{color, font_size, radius};
 use xui_macros::component;
 const PREVIOUS_OPTION: CommandId = CommandId("xui.dropdown.previous");
 const NEXT_OPTION: CommandId = CommandId("xui.dropdown.next");
@@ -60,7 +61,7 @@ pub struct DropDownStyle {
 impl Default for DropDownStyle {
     fn default() -> Self {
         let focus_ring = ShadowStyle::new()
-            .color(ColorToken::Ring.alpha(0.5))
+            .color(color::RING.alpha(0.5))
             .blur(0.0)
             .spread(3.0);
         let option = StyleOf::new()
@@ -69,20 +70,20 @@ impl Default for DropDownStyle {
             .with::<container::padding>(EdgeInsets::new(8.0, 8.0, 6.0, 6.0))
             .with::<container::align>(AlignStyle::Center)
             .with::<container::justify>(JustifyStyle::SpaceBetween)
-            .with::<container::border_radius>(RadiusToken::Sm)
-            .with::<container::font_size>(FontSizeToken::Md)
-            .with::<container::color>(ColorToken::PopoverForeground)
+            .with::<container::border_radius>(radius::SM)
+            .with::<container::font_size>(font_size::MD)
+            .with::<container::color>(color::POPOVER_FOREGROUND)
             .when_style(
                 WidgetStateMatcher::all(WidgetState::HOVERED),
                 StyleOf::<Container>::new()
-                    .with::<container::background>(ColorToken::Accent)
-                    .with::<container::color>(ColorToken::AccentForeground),
+                    .with::<container::background>(color::ACCENT)
+                    .with::<container::color>(color::ACCENT_FOREGROUND),
             )
             .when_style(
                 WidgetStateMatcher::all(WidgetState::FOCUS_VISIBLE),
                 StyleOf::<Container>::new()
-                    .with::<container::background>(ColorToken::Accent)
-                    .with::<container::color>(ColorToken::AccentForeground),
+                    .with::<container::background>(color::ACCENT)
+                    .with::<container::color>(color::ACCENT_FOREGROUND),
             );
         Self {
             root: StyleOf::new().with::<container::min_width>(180.0),
@@ -92,12 +93,12 @@ impl Default for DropDownStyle {
                 .with::<container::padding>(EdgeInsets::symmetric(12.0, 8.0))
                 .with::<container::align>(AlignStyle::Center)
                 .with::<container::justify>(JustifyStyle::SpaceBetween)
-                .with::<container::background>(ColorToken::Background)
-                .with::<container::color>(ColorToken::Foreground)
-                .with::<container::font_size>(FontSizeToken::Md)
-                .with::<container::border_color>(ColorToken::Input)
+                .with::<container::background>(color::BACKGROUND)
+                .with::<container::color>(color::FOREGROUND)
+                .with::<container::font_size>(font_size::MD)
+                .with::<container::border_color>(color::INPUT)
                 .with::<container::border_width>(1.0)
-                .with::<container::border_radius>(RadiusToken::Md)
+                .with::<container::border_radius>(radius::MD)
                 .with::<container::shadow>(
                     ShadowStyle::new()
                         .color(Color::rgba(0.0, 0.0, 0.0, 0.05))
@@ -107,7 +108,7 @@ impl Default for DropDownStyle {
                 .when_style(
                     WidgetStateMatcher::all(WidgetState::FOCUS_VISIBLE),
                     StyleOf::<Container>::new()
-                        .with::<container::border_color>(ColorToken::Ring)
+                        .with::<container::border_color>(color::RING)
                         .with::<container::shadow>(focus_ring),
                 ),
             // Like the focus ring, shown only for keyboard focus, not because
@@ -115,11 +116,11 @@ impl Default for DropDownStyle {
             trigger_open: StyleOf::new(),
             menu: StyleOf::new()
                 .with::<container::padding>(EdgeInsets::all(4.0))
-                .with::<container::background>(ColorToken::Popover)
-                .with::<container::color>(ColorToken::PopoverForeground)
-                .with::<container::border_color>(ColorToken::Border)
+                .with::<container::background>(color::POPOVER)
+                .with::<container::color>(color::POPOVER_FOREGROUND)
+                .with::<container::border_color>(color::BORDER)
                 .with::<container::border_width>(1.0)
-                .with::<container::border_radius>(RadiusToken::Md)
+                .with::<container::border_radius>(radius::MD)
                 .with::<container::shadow>(
                     ShadowStyle::new()
                         .color(Color::rgba(0.0, 0.0, 0.0, 0.1))
@@ -136,9 +137,9 @@ impl Default for DropDownStyle {
                 .with::<container::padding>(EdgeInsets::new(8.0, 8.0, 6.0, 6.0))
                 .with::<container::align>(AlignStyle::Center)
                 .with::<container::justify>(JustifyStyle::SpaceBetween)
-                .with::<container::border_radius>(RadiusToken::Sm)
-                .with::<container::font_size>(FontSizeToken::Md)
-                .with::<container::color>(ColorToken::PopoverForeground.alpha(0.5)),
+                .with::<container::border_radius>(radius::SM)
+                .with::<container::font_size>(font_size::MD)
+                .with::<container::color>(color::POPOVER_FOREGROUND.alpha(0.5)),
             option,
         }
     }
@@ -272,8 +273,8 @@ pub fn drop_down(
         let mut trigger_style = style.trigger.clone();
         if *disabled {
             trigger_style = trigger_style
-                .with::<container::color>(ColorToken::Foreground.alpha(0.5))
-                .with::<container::border_color>(ColorToken::Input.alpha(0.5));
+                .with::<container::color>(color::FOREGROUND.alpha(0.5))
+                .with::<container::border_color>(color::INPUT.alpha(0.5));
         }
         if *shown {
             trigger_style.merge(&style.trigger_open);
@@ -332,10 +333,10 @@ pub fn drop_down(
                     style: if selected_label.is_some() {
                         StyleOf::new()
                     } else {
-                        StyleOf::new().with::<container::color>(ColorToken::MutedForeground)
+                        StyleOf::new().with::<container::color>(color::MUTED_FOREGROUND)
                     },
                 )
-                container(style: StyleOf::new().with::<container::color>(ColorToken::MutedForeground)) {
+                container(style: StyleOf::new().with::<container::color>(color::MUTED_FOREGROUND)) {
                     icon(data: chevron_down_icon(), size: Size::fix(16.0, 16.0))
                 }
                 // Written inside the trigger, so the trigger owns the portal and

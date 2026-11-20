@@ -3630,7 +3630,7 @@ fn a_theme_switch_reaches_tokens_only_a_keyframe_names() {
     let mut arena = UiRuntime::new();
     arena.set_theme(Theme::light());
     let primary = |layer: &mut crate::node::Layer<_>| {
-        layer.set::<container::background>(xui_interface::ColorToken::Primary)
+        layer.set::<container::background>(xui_interface::tokens::color::PRIMARY)
     };
     let pulse = xui_interface::Animation::new(Duration::from_millis(100)).infinite();
     let node = create_host(
@@ -3643,14 +3643,13 @@ fn a_theme_switch_reaches_tokens_only_a_keyframe_names() {
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
-    let mut retinted = Theme::light();
-    retinted.primary = Color::rgba(1.0, 0.0, 0.0, 1.0);
-    arena.set_theme(retinted.clone());
+    let red = Color::rgba(1.0, 0.0, 0.0, 1.0);
+    arena.set_theme(Theme::light().with(xui_interface::tokens::color::PRIMARY, red));
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
     assert_eq!(
         arena.style_system.effective(node).paint.background,
-        xui_interface::ComputedColorStyle::Solid(retinted.primary)
+        xui_interface::ComputedColorStyle::Solid(red)
     );
 }
 

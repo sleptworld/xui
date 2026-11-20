@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use crate::{SelectionActivationMode, SelectionOrientation};
 use xui_core::prelude::*;
+use xui_core::tokens::{color, font_size, radius};
 use xui_macros::component;
 
 const PREVIOUS_TAB: CommandId = CommandId("xui.tabs.previous");
@@ -74,18 +75,18 @@ impl Default for TabsStyle {
             .with::<container::padding>(EdgeInsets::symmetric(8.0, 4.0))
             .with::<container::align>(AlignStyle::Center)
             .with::<container::justify>(JustifyStyle::Center)
-            .with::<container::font_size>(FontSizeToken::Md)
+            .with::<container::font_size>(font_size::MD)
             .with::<container::font_weight>(FontWeight::Medium)
             .with::<container::background>(Color::TRANSPARENT)
             .with::<container::border_color>(Color::TRANSPARENT)
             .with::<container::border_width>(1.0)
-            .with::<container::border_radius>(RadiusToken::Md);
+            .with::<container::border_radius>(radius::MD);
         let focused = |style: StyleOf<Container>| {
             style
-                .with::<container::border_color>(ColorToken::Ring)
+                .with::<container::border_color>(color::RING)
                 .with::<container::shadow>(
                     ShadowStyle::new()
-                        .color(ColorToken::Ring.alpha(0.5))
+                        .color(color::RING.alpha(0.5))
                         .blur(0.0)
                         .spread(3.0),
                 )
@@ -98,15 +99,15 @@ impl Default for TabsStyle {
                 .with::<container::height>(36.0)
                 .with::<container::padding>(EdgeInsets::all(3.0))
                 .with::<container::align>(AlignStyle::Center)
-                .with::<container::background>(ColorToken::Muted)
-                .with::<container::color>(ColorToken::MutedForeground)
-                .with::<container::border_radius>(RadiusToken::Lg),
+                .with::<container::background>(color::MUTED)
+                .with::<container::color>(color::MUTED_FOREGROUND)
+                .with::<container::border_radius>(radius::LG),
             tab: trigger
                 .clone()
-                .with::<container::color>(ColorToken::MutedForeground)
+                .with::<container::color>(color::MUTED_FOREGROUND)
                 .when_style(
                     WidgetStateMatcher::all(WidgetState::HOVERED),
-                    StyleOf::<Container>::new().with::<container::color>(ColorToken::Foreground),
+                    StyleOf::<Container>::new().with::<container::color>(color::FOREGROUND),
                 )
                 .when_style(
                     WidgetStateMatcher::all(WidgetState::FOCUS_VISIBLE),
@@ -114,8 +115,8 @@ impl Default for TabsStyle {
                 ),
             selected_tab: trigger
                 .clone()
-                .with::<container::background>(ColorToken::Background)
-                .with::<container::color>(ColorToken::Foreground)
+                .with::<container::background>(color::BACKGROUND)
+                .with::<container::color>(color::FOREGROUND)
                 .with::<container::shadow>(
                     ShadowStyle::new()
                         .color(Color::rgba(0.0, 0.0, 0.0, 0.1))
@@ -126,7 +127,7 @@ impl Default for TabsStyle {
                     WidgetStateMatcher::all(WidgetState::FOCUS_VISIBLE),
                     focused(StyleOf::new()),
                 ),
-            disabled_tab: trigger.with::<container::color>(ColorToken::MutedForeground.alpha(0.5)),
+            disabled_tab: trigger.with::<container::color>(color::MUTED_FOREGROUND.alpha(0.5)),
             panel: StyleOf::new().with::<container::width>(Sizing::fill()),
         }
     }

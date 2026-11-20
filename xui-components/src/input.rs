@@ -13,6 +13,7 @@
 use std::time::Duration;
 
 use xui_core::prelude::*;
+use xui_core::tokens::{color, font_size, radius};
 
 use xui_macros::component;
 
@@ -120,12 +121,12 @@ pub fn input(
             .with::<container::justify>(JustifyStyle::Center)
             // Opaque, not transparent: shadows paint beneath the whole box, so a
             // see-through fill would show the shadow tint.
-            .with::<container::background>(ColorToken::Background)
-            .with::<container::color>(ColorToken::Foreground)
-            .with::<container::border_color>(ColorToken::Input)
+            .with::<container::background>(color::BACKGROUND)
+            .with::<container::color>(color::FOREGROUND)
+            .with::<container::border_color>(color::INPUT)
             .with::<container::border_width>(1.0)
-            .with::<container::border_radius>(RadiusToken::Md)
-            .with::<container::font_size>(FontSizeToken::Md)
+            .with::<container::border_radius>(radius::MD)
+            .with::<container::font_size>(font_size::MD)
             .with::<container::shadow>(
                 ShadowStyle::new()
                     .color(Color::rgba(0.0, 0.0, 0.0, 0.05))
@@ -134,10 +135,10 @@ pub fn input(
             );
         if *focused {
             container_style = container_style
-                .with::<container::border_color>(ColorToken::Ring)
+                .with::<container::border_color>(color::RING)
                 .with::<container::shadow>(
                     ShadowStyle::new()
-                        .color(ColorToken::Ring.alpha(0.5))
+                        .color(color::RING.alpha(0.5))
                         .blur(0.0)
                         .spread(3.0),
                 );
@@ -174,11 +175,10 @@ pub fn input(
             style.with::<container::border_radius>(value)
         });
         if *invalid {
-            container_style =
-                container_style.with::<container::border_color>(ColorToken::Destructive);
+            container_style = container_style.with::<container::border_color>(color::DESTRUCTIVE);
         }
         if *disabled {
-            container_style = container_style.with::<container::color>(ColorToken::MutedForeground);
+            container_style = container_style.with::<container::color>(color::MUTED_FOREGROUND);
         }
         container_style.merge(style);
         container_style

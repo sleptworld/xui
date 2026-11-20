@@ -401,7 +401,8 @@ mod tests {
     use crate::property::{Access, CapScope, Capability, Has, Slot};
     use xui_interface::WidgetUpdateFlags;
     use xui_interface::core::Color;
-    use xui_interface::styles::units::{ColorToken, FilterQuality, SpacingToken};
+    use xui_interface::styles::units::FilterQuality;
+    use xui_interface::tokens::{color, spacing};
     use xui_interface::{ComputedColorStyle, ComputedStrokeStyle};
 
     fn parent(theme: &Theme) -> ComputedStyle {
@@ -465,7 +466,7 @@ mod tests {
         );
         FlexLayout::apply(
             &flex_layout::Storage {
-                gap: StyleValue::Value(LengthValue::Spacing(SpacingToken::Md)),
+                gap: StyleValue::Value(LengthValue::Token(spacing::MD)),
                 align: StyleValue::Value(AlignStyle::Center),
                 justify: StyleValue::Value(JustifyStyle::SpaceBetween),
             },
@@ -502,7 +503,7 @@ mod tests {
         assert_eq!(layout.max_height, initial.layout.max_height);
         assert_eq!(layout.margin, EdgeInsets::all(4.0));
         assert_eq!(layout.padding, EdgeInsets::symmetric(8.0, 2.0));
-        assert_eq!(layout.gap, theme.spacing(SpacingToken::Md));
+        assert_eq!(layout.gap, theme.get(spacing::MD));
         assert_eq!(layout.align, AlignStyle::Center);
         assert_eq!(layout.justify, JustifyStyle::SpaceBetween);
         assert_eq!(layout.position, PositionStyle::Absolute);
@@ -518,7 +519,7 @@ mod tests {
         let theme = Theme::default();
         let parent = parent(&theme);
         let storage = typography::Storage {
-            color: StyleValue::Value(ColorValue::Token(ColorToken::Primary)),
+            color: StyleValue::Value(ColorValue::from(color::PRIMARY)),
             font_family: StyleValue::Unset,
             font_size: StyleValue::Initial,
             font_weight: StyleValue::Inherit,
@@ -530,7 +531,7 @@ mod tests {
 
         let computed = new::<Typography>(&parent, &storage, &theme);
         let text = &computed.text;
-        assert_eq!(text.color, theme.color(ColorToken::Primary));
+        assert_eq!(text.color, theme.get(color::PRIMARY));
         assert_eq!(text.font_family, parent.text.font_family);
         assert_eq!(
             text.font_size,
@@ -548,7 +549,7 @@ mod tests {
         let theme = Theme::default();
         let parent = parent(&theme);
         let storage = typography::Storage {
-            color: StyleValue::Value(ColorValue::Color(Color::BLACK)),
+            color: StyleValue::Value(ColorValue::from(Color::BLACK)),
             ..Default::default()
         };
         let current = ComputedStyle::initial(&theme);
@@ -631,7 +632,7 @@ mod tests {
             let mut computed = parent.inherited_from(&theme);
             Background::apply(
                 &background::Storage {
-                    background: StyleValue::Value(ColorToken::Muted.into()),
+                    background: StyleValue::Value(color::MUTED.into()),
                 },
                 &mut computed,
                 &parent,
@@ -689,7 +690,7 @@ mod tests {
             let paint = &computed.paint;
             assert_eq!(
                 paint.background,
-                ComputedColorStyle::Solid(theme.color(ColorToken::Muted))
+                ComputedColorStyle::Solid(theme.get(color::MUTED))
             );
             assert_eq!(paint.border_radius, 6.0);
             assert_eq!(
@@ -720,7 +721,7 @@ mod tests {
             backdrop: StyleValue::Value(BackdropStyle::blur(LengthValue::Px(8.0))),
             effects: StyleValue::Value(Arc::from([Effect::Blur {
                 sigma_x: LengthValue::Px(2.0),
-                sigma_y: LengthValue::Spacing(SpacingToken::Sm),
+                sigma_y: LengthValue::Token(spacing::SM),
                 quality: FilterQuality::High,
             }])),
         };
@@ -728,7 +729,7 @@ mod tests {
             scroll_direction: StyleValue::Value(ScrollDirectionStyle::Vertical),
             scrollbar_width: StyleValue::Value(LengthValue::Px(6.0)),
             scrollbar_track_color: StyleValue::Unset,
-            scrollbar_thumb_color: StyleValue::Value(ColorToken::Border.into()),
+            scrollbar_thumb_color: StyleValue::Value(color::BORDER.into()),
             scrollbar_radius: StyleValue::Initial,
             scrollbar_visibility: StyleValue::Value(ScrollbarVisibilityStyle::Always),
         };
@@ -756,7 +757,7 @@ mod tests {
         assert_eq!(bar.track_color, initial.scroll.scrollbar.track_color);
         assert_eq!(
             bar.thumb_color,
-            ComputedColorStyle::Solid(theme.color(ColorToken::Border))
+            ComputedColorStyle::Solid(theme.get(color::BORDER))
         );
         assert_eq!(bar.radius, initial.scroll.scrollbar.radius);
         assert_eq!(bar.visibility, ScrollbarVisibilityStyle::Always);
@@ -837,17 +838,17 @@ mod tests {
         );
         // So is the declaration itself.
         assert!(width_slot.apply(&mut node, StyleValue::Inherit));
-        assert!(Slot::<color>::new().apply(&mut node, ColorToken::Primary));
-        assert!(Slot::<font_size>::new().apply(&mut node, SpacingToken::Lg));
+        assert!(Slot::<color>::new().apply(&mut node, xui_interface::tokens::color::PRIMARY));
+        assert!(Slot::<font_size>::new().apply(&mut node, spacing::LG));
 
         assert_eq!(node.size.width, StyleValue::Inherit);
         assert_eq!(
             node.text.color,
-            StyleValue::Value(ColorValue::Token(ColorToken::Primary))
+            StyleValue::Value(ColorValue::from(xui_interface::tokens::color::PRIMARY))
         );
         assert_eq!(
             node.text.font_size,
-            StyleValue::Value(LengthValue::Spacing(SpacingToken::Lg))
+            StyleValue::Value(LengthValue::Token(spacing::LG))
         );
 
         // A local named like a property still binds next to its import.

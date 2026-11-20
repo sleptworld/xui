@@ -132,13 +132,17 @@ an application-defined ID.
 
 ## Theme
 
-Component styles are written against semantic `ColorToken`s modeled on
-shadcn/ui (`Background`/`Foreground`, `Primary`, `Secondary`, `Muted`,
-`Accent`, `Destructive`, each with a `*Foreground`, plus `Border`, `Input`, and
-`Ring`), so they follow the runtime theme instead of hard-coding colors.
+Component styles are written against the built-in design tokens in
+`xui::tokens` (`color`, `spacing`, `radius`, `font_size`), modeled on
+shadcn/ui: `color::BACKGROUND` and four levels of text from
+`FOREGROUND_STRONG` to `FOREGROUND_FAINT`; `PRIMARY`, `SECONDARY`, `MUTED`,
+`ACCENT`, `DESTRUCTIVE`, `SELECTION`, each with a `*_FOREGROUND`; and `BORDER`,
+`INPUT`, `RING`. They follow the runtime theme instead of hard-coding colors.
 `Theme::light()` (the default) and `Theme::dark()` are the shadcn neutral
-palettes; switch with `App::set_theme`. `ColorToken::Primary.alpha(0.9)`
-expresses Tailwind-style `bg-primary/90` hover states.
+palettes; switch with `App::set_theme`. `color::PRIMARY.alpha(0.9)` expresses
+Tailwind-style `bg-primary/90` hover states, and `color::ACCENT.mix(color::PRIMARY, 0.2)`
+a derived color. An application declares its own tokens the same way and sets
+them with `Theme::with`; see [theme.md](theme.md).
 
 `cargo run -p xui-example-app`, the Component Gallery, shows the styled
 controls (`XUI_THEME=dark` for the dark palette).

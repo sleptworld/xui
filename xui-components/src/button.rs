@@ -13,6 +13,7 @@
 use std::time::Duration;
 
 use xui_core::prelude::*;
+use xui_core::tokens::{color, font_size, radius};
 
 use xui_macros::component;
 
@@ -54,21 +55,21 @@ fn size_style(size: ButtonSize) -> StyleOf<Container> {
             .with::<container::min_height>(32.0)
             .with::<container::padding>(EdgeInsets::symmetric(12.0, 6.0))
             .with::<container::gap>(6.0)
-            .with::<container::border_radius>(RadiusToken::Md),
+            .with::<container::border_radius>(radius::MD),
         ButtonSize::Medium => StyleOf::new()
             .with::<container::min_height>(36.0)
             .with::<container::padding>(EdgeInsets::symmetric(16.0, 8.0))
             .with::<container::gap>(8.0)
-            .with::<container::border_radius>(RadiusToken::Md),
+            .with::<container::border_radius>(radius::MD),
         ButtonSize::Large => StyleOf::new()
             .with::<container::min_height>(40.0)
             .with::<container::padding>(EdgeInsets::symmetric(24.0, 8.0))
             .with::<container::gap>(8.0)
-            .with::<container::border_radius>(RadiusToken::Md),
+            .with::<container::border_radius>(radius::MD),
         ButtonSize::Icon => StyleOf::new()
             .with::<container::size>(Size::fix(36.0, 36.0))
             .with::<container::min_width>(36.0)
-            .with::<container::border_radius>(RadiusToken::Md),
+            .with::<container::border_radius>(radius::MD),
     }
 }
 
@@ -83,7 +84,7 @@ fn shadow_xs() -> ShadowStyle {
 /// shadcn's `focus-visible:ring-[3px] ring-ring/50`.
 fn focus_ring() -> ShadowStyle {
     ShadowStyle::new()
-        .color(ColorToken::Ring.alpha(0.5))
+        .color(color::RING.alpha(0.5))
         .blur(0.0)
         .spread(3.0)
 }
@@ -91,33 +92,33 @@ fn focus_ring() -> ShadowStyle {
 fn variant_style(variant: ButtonVariant, interactive: bool) -> StyleOf<Container> {
     let (background, foreground, border): (ColorValue, ColorValue, ColorValue) = match variant {
         ButtonVariant::Primary => (
-            ColorToken::Primary.into(),
-            ColorToken::PrimaryForeground.into(),
+            color::PRIMARY.into(),
+            color::PRIMARY_FOREGROUND.into(),
             Color::TRANSPARENT.into(),
         ),
         ButtonVariant::Secondary => (
-            ColorToken::Secondary.into(),
-            ColorToken::SecondaryForeground.into(),
+            color::SECONDARY.into(),
+            color::SECONDARY_FOREGROUND.into(),
             Color::TRANSPARENT.into(),
         ),
         ButtonVariant::Outline => (
-            ColorToken::Background.into(),
-            ColorToken::Foreground.into(),
-            ColorToken::Border.into(),
+            color::BACKGROUND.into(),
+            color::FOREGROUND.into(),
+            color::BORDER.into(),
         ),
         ButtonVariant::Ghost => (
             Color::TRANSPARENT.into(),
-            ColorToken::Foreground.into(),
+            color::FOREGROUND.into(),
             Color::TRANSPARENT.into(),
         ),
         ButtonVariant::Danger => (
-            ColorToken::Destructive.into(),
-            ColorToken::DestructiveForeground.into(),
+            color::DESTRUCTIVE.into(),
+            color::DESTRUCTIVE_FOREGROUND.into(),
             Color::TRANSPARENT.into(),
         ),
         ButtonVariant::Link => (
             Color::TRANSPARENT.into(),
-            ColorToken::Primary.into(),
+            color::PRIMARY.into(),
             Color::TRANSPARENT.into(),
         ),
     };
@@ -135,11 +136,7 @@ fn variant_style(variant: ButtonVariant, interactive: bool) -> StyleOf<Container
     if !interactive {
         // shadcn dims a disabled button to 50% opacity; halving each paint
         // alpha gives the same result without an offscreen layer.
-        let dim = |value: ColorValue| match value {
-            ColorValue::Token(token) => token.alpha(0.5),
-            ColorValue::TokenAlpha(token, alpha) => token.alpha(alpha * 0.5),
-            ColorValue::Color(color) => color.alpha(color.a * 0.5).into(),
-        };
+        let dim = |value: ColorValue| value.alpha(0.5);
         return StyleOf::new()
             .with::<container::background>(dim(background))
             .with::<container::color>(dim(foreground))
@@ -151,47 +148,47 @@ fn variant_style(variant: ButtonVariant, interactive: bool) -> StyleOf<Container
             .when_style(
                 WidgetStateMatcher::all(WidgetState::HOVERED),
                 StyleOf::<Container>::new()
-                    .with::<container::background>(ColorToken::Primary.alpha(0.9)),
+                    .with::<container::background>(color::PRIMARY.alpha(0.9)),
             )
             .when_style(
                 WidgetStateMatcher::all(WidgetState::PRESSED),
                 StyleOf::<Container>::new()
-                    .with::<container::background>(ColorToken::Primary.alpha(0.8)),
+                    .with::<container::background>(color::PRIMARY.alpha(0.8)),
             ),
         ButtonVariant::Secondary => style
             .when_style(
                 WidgetStateMatcher::all(WidgetState::HOVERED),
                 StyleOf::<Container>::new()
-                    .with::<container::background>(ColorToken::Secondary.alpha(0.8)),
+                    .with::<container::background>(color::SECONDARY.alpha(0.8)),
             )
             .when_style(
                 WidgetStateMatcher::all(WidgetState::PRESSED),
                 StyleOf::<Container>::new()
-                    .with::<container::background>(ColorToken::Secondary.alpha(0.65)),
+                    .with::<container::background>(color::SECONDARY.alpha(0.65)),
             ),
         ButtonVariant::Outline | ButtonVariant::Ghost => style
             .when_style(
                 WidgetStateMatcher::all(WidgetState::HOVERED),
                 StyleOf::<Container>::new()
-                    .with::<container::background>(ColorToken::Accent)
-                    .with::<container::color>(ColorToken::AccentForeground),
+                    .with::<container::background>(color::ACCENT)
+                    .with::<container::color>(color::ACCENT_FOREGROUND),
             )
             .when_style(
                 WidgetStateMatcher::all(WidgetState::PRESSED),
                 StyleOf::<Container>::new()
-                    .with::<container::background>(ColorToken::Accent.alpha(0.8))
-                    .with::<container::color>(ColorToken::AccentForeground),
+                    .with::<container::background>(color::ACCENT.alpha(0.8))
+                    .with::<container::color>(color::ACCENT_FOREGROUND),
             ),
         ButtonVariant::Danger => style
             .when_style(
                 WidgetStateMatcher::all(WidgetState::HOVERED),
                 StyleOf::<Container>::new()
-                    .with::<container::background>(ColorToken::Destructive.alpha(0.9)),
+                    .with::<container::background>(color::DESTRUCTIVE.alpha(0.9)),
             )
             .when_style(
                 WidgetStateMatcher::all(WidgetState::PRESSED),
                 StyleOf::<Container>::new()
-                    .with::<container::background>(ColorToken::Destructive.alpha(0.8)),
+                    .with::<container::background>(color::DESTRUCTIVE.alpha(0.8)),
             ),
         ButtonVariant::Link => style.when_style(
             WidgetStateMatcher::all(WidgetState::HOVERED),
@@ -205,7 +202,7 @@ fn variant_style(variant: ButtonVariant, interactive: bool) -> StyleOf<Container
     style.when_style(
         WidgetStateMatcher::all(WidgetState::FOCUS_VISIBLE),
         StyleOf::<Container>::new()
-            .with::<container::border_color>(ColorToken::Ring)
+            .with::<container::border_color>(color::RING)
             .with::<container::shadow>(focus_ring()),
     )
 }
@@ -222,7 +219,7 @@ fn resolved_style(
         .with::<container::align>(AlignStyle::Center)
         .with::<container::justify>(JustifyStyle::Center)
         .with::<container::border_width>(1.0)
-        .with::<container::font_size>(FontSizeToken::Md)
+        .with::<container::font_size>(font_size::MD)
         .with::<container::font_weight>(FontWeight::Medium)
         .with::<container::line_height>(LineHeight::Normal);
     style.merge(&size_style(size));

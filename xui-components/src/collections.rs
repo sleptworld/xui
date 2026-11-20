@@ -21,6 +21,7 @@
 use std::collections::HashSet;
 
 use xui_core::prelude::*;
+use xui_core::tokens::{color, radius};
 use xui_macros::component;
 
 use crate::controls::commit;
@@ -194,7 +195,7 @@ pub fn accordion(
                     container(
                         style: StyleOf::new()
                             .with::<container::padding>(EdgeInsets::symmetric(12.0, 10.0))
-                            .with::<container::border_color>(ColorToken::Border)
+                            .with::<container::border_color>(color::BORDER)
                             .with::<container::border_width>(1.0)
                             .merged(&crate::layout::control_style(item.disabled))
                             .merged(trigger_style),
@@ -404,11 +405,11 @@ pub fn pagination(
                             .with::<container::align>(AlignStyle::Center)
                             .with::<container::justify>(JustifyStyle::Center)
                             .with::<container::background>(if *index == *current {
-                                ColorStyle::from(ColorToken::Primary)
+                                ColorStyle::from(color::PRIMARY)
                             } else {
                                 ColorStyle::from(Color::TRANSPARENT)
                             })
-                            .with::<container::border_radius>(RadiusToken::Sm),
+                            .with::<container::border_radius>(radius::SM),
                         focusable: true,
                         tab_index: 0,
                         accessibility_role: AccessibilityRole::Button,
@@ -554,7 +555,7 @@ pub fn data_table(
     );
     let line: StyleOf<Grid> = StyleOf::new()
         .with::<container::width>(Sizing::Fill)
-        .with::<container::border_color>(ColorToken::Border)
+        .with::<container::border_color>(color::BORDER)
         .with::<container::border_width>(1.0);
     let cell: StyleOf<Container> = StyleOf::new()
         .with::<container::padding>(EdgeInsets::all(10.0))
@@ -568,7 +569,7 @@ pub fn data_table(
         ) {
             if !headers.is_empty() {
                 grid(
-                    style: line.clone().with::<container::background>(ColorToken::MutedSurface).merged(header_style),
+                    style: line.clone().with::<container::background>(color::MUTED).merged(header_style),
                     columns: column_tracks.clone().unwrap_or_else(|| GridTracks::repeat(*columns, GridTrackSize::flexible())),
                     accessibility_role: AccessibilityRole::Row,
                 ) {
@@ -734,7 +735,7 @@ pub fn data_grid(
                     container(
                         style: StyleOf::new()
                             .with::<container::padding>(EdgeInsets::all(10.0))
-                            .with::<container::background>(ColorToken::MutedSurface)
+                            .with::<container::background>(color::MUTED)
                             .with::<container::font_weight>(FontWeight::Bold)
                             .merged(&crate::layout::control_style(!column.sortable))
                             .merged(header_style),
@@ -761,11 +762,11 @@ pub fn data_grid(
                 grid(
                     style: StyleOf::new()
                         .with::<container::background>(if selected_row.as_ref() == Some(&row.id) {
-                            ColorStyle::from(ColorToken::MutedSurface)
+                            ColorStyle::from(color::MUTED)
                         } else {
                             ColorStyle::from(Color::TRANSPARENT)
                         })
-                        .with::<container::border_color>(ColorToken::Border)
+                        .with::<container::border_color>(color::BORDER)
                         .with::<container::border_width>(1.0)
                         .merged(&crate::layout::control_style(row.disabled))
                         .merged(row_style),
@@ -972,13 +973,13 @@ pub fn tree_view(
                     style: crate::layout::control_style(node.disabled)
                         .with::<container::padding>(EdgeInsets::new(8.0 + node.depth as f32 * 16.0, 8.0, 6.0, 6.0))
                         .with::<container::background>(if selected_id.as_ref() == Some(&node.id) {
-                            ColorStyle::from(ColorToken::Accent)
+                            ColorStyle::from(color::ACCENT)
                         } else {
                             ColorStyle::from(Color::TRANSPARENT)
                         })
                         .when_style(
                             WidgetStateMatcher::all(WidgetState::HOVERED),
-                            StyleOf::<Container>::new().with::<container::background>(ColorToken::Muted),
+                            StyleOf::<Container>::new().with::<container::background>(color::MUTED),
                         )
                         .merged(item_style),
                     gap: 6.0,
