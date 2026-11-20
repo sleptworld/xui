@@ -298,7 +298,8 @@ pub fn button(
 ) {
     let interactive: bool = memo!(!*disabled && !*loading);
     let root_style: StyleOf<Container> = memo!({
-        let mut root_style = resolved_style(*variant, *size, *interactive, *full_width, &StyleOf::new());
+        let mut root_style =
+            resolved_style(*variant, *size, *interactive, *full_width, &StyleOf::new());
         root_style.merge(style);
         root_style
     });

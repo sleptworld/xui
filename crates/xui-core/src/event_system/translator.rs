@@ -1894,11 +1894,9 @@ fn scroll_acceleration_factor(magnitude: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     #[allow(unused_imports)]
     use crate::test_prelude::*;
-    use super::*;
-    
-    
 
     fn append(arena: &mut UiRuntime, widget: impl ErasedDraft + 'static) -> NodeId {
         let widget = widget;
@@ -1914,7 +1912,12 @@ mod tests {
         let second = append(&mut arena, container().with::<container::tab_index>(2));
         let first = append(&mut arena, container().with::<container::tab_index>(1));
         let negative = append(&mut arena, container().with::<container::tab_index>(-1));
-        let disabled = append(&mut arena, container().with::<container::focusable>(false).with::<container::tab_index>(0));
+        let disabled = append(
+            &mut arena,
+            container()
+                .with::<container::focusable>(false)
+                .with::<container::tab_index>(0),
+        );
 
         assert_eq!(focusable_nodes(&arena), vec![first, second, zero]);
         assert!(is_focusable(&arena, negative));
@@ -1967,15 +1970,37 @@ mod tests {
     /// content is 400 tall) followed by a 200x400 filler, so both levels have
     /// somewhere to scroll.
     fn nested_scroll_root() -> StaticTree {
-        container().with::<container::width>(200.0).with::<container::height>(200.0).with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical).into_tree(vec![
-                container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(100.0).with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical)).into_tree(vec![
+        container()
+            .with::<container::width>(200.0)
+            .with::<container::height>(200.0)
+            .with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical)
+            .into_tree(vec![
+                container()
+                    .with::<container::style>(
+                        StyleOf::<Container>::new()
+                            .with::<container::width>(200.0)
+                            .with::<container::height>(100.0)
+                            .with::<container::scroll_direction>(
+                                xui_interface::ScrollDirectionStyle::Vertical,
+                            ),
+                    )
+                    .into_tree(vec![
                         container()
                             .with::<container::style>(
-                                StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(400.0).with::<container::background>(Color::hex("#3b82f6")),
+                                StyleOf::<Container>::new()
+                                    .with::<container::width>(200.0)
+                                    .with::<container::height>(400.0)
+                                    .with::<container::background>(Color::hex("#3b82f6")),
                             )
                             .into_tree(Vec::new()),
                     ]),
-                container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(400.0)).into_tree(Vec::new()),
+                container()
+                    .with::<container::style>(
+                        StyleOf::<Container>::new()
+                            .with::<container::width>(200.0)
+                            .with::<container::height>(400.0),
+                    )
+                    .into_tree(Vec::new()),
             ])
     }
 
@@ -1987,16 +2012,26 @@ mod tests {
     }
 
     fn controlled_scroll_root() -> StaticTree {
-        
-
-        container().with::<container::width>(200.0).with::<container::height>(100.0).with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical).with::<container::scroll_controller>(SCROLL_CONTROLLER.with(Clone::clone)).with_on::<container::on_scroll, _>(|event, _| {
+        container()
+            .with::<container::width>(200.0)
+            .with::<container::height>(100.0)
+            .with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical)
+            .with::<container::scroll_controller>(SCROLL_CONTROLLER.with(Clone::clone))
+            .with_on::<container::on_scroll, _>(|event, _| {
                 if let Some(after) = event.offset_after {
                     SCROLL_SOURCES.with(|sources| {
                         sources.borrow_mut().push((event.source, after.y));
                     });
                 }
-            }).into_tree(vec![
-                container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(400.0)).into_tree(Vec::new()),
+            })
+            .into_tree(vec![
+                container()
+                    .with::<container::style>(
+                        StyleOf::<Container>::new()
+                            .with::<container::width>(200.0)
+                            .with::<container::height>(400.0),
+                    )
+                    .into_tree(Vec::new()),
             ])
     }
 
@@ -2036,18 +2071,31 @@ mod tests {
 
     /// A scroller as tall as the window over 400px of content.
     fn filling_scroll_root() -> StaticTree {
-        
-
-        container().with::<container::style>(
-                StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(xui_interface::core::Sizing::Fill).with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical),
-            ).with::<container::scroll_controller>(CLAMP_CONTROLLER.with(Clone::clone)).with_on::<container::on_scroll, _>(|event, _| {
+        container()
+            .with::<container::style>(
+                StyleOf::<Container>::new()
+                    .with::<container::width>(200.0)
+                    .with::<container::height>(xui_interface::core::Sizing::Fill)
+                    .with::<container::scroll_direction>(
+                        xui_interface::ScrollDirectionStyle::Vertical,
+                    ),
+            )
+            .with::<container::scroll_controller>(CLAMP_CONTROLLER.with(Clone::clone))
+            .with_on::<container::on_scroll, _>(|event, _| {
                 if let Some(after) = event.offset_after {
                     CLAMP_SCROLLS.with(|scrolls| {
                         scrolls.borrow_mut().push((event.source, after.y));
                     });
                 }
-            }).into_tree(vec![
-                container().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(200.0).with::<container::height>(400.0)).into_tree(Vec::new()),
+            })
+            .into_tree(vec![
+                container()
+                    .with::<container::style>(
+                        StyleOf::<Container>::new()
+                            .with::<container::width>(200.0)
+                            .with::<container::height>(400.0),
+                    )
+                    .into_tree(Vec::new()),
             ])
     }
 
@@ -2096,8 +2144,8 @@ mod tests {
     impl ScrollHarness {
         fn new() -> Self {
             let mut app = App::new(|app| {
-            app.mount_static(nested_scroll_root());
-        });
+                app.mount_static(nested_scroll_root());
+            });
             app.resize(Size::new(200.0, 200.0));
             let mut text = TextHost::new(ZeroTextBackend);
             let mut backend = NullBackend;

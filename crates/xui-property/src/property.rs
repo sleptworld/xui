@@ -1,8 +1,10 @@
 //! One typed protocol for widget-owned props, capability declarations and slots.
-use std::marker::PhantomData;
 use crate::core::Dirty;
+use std::marker::PhantomData;
 
-pub trait Scope { type Storage; }
+pub trait Scope {
+    type Storage;
+}
 
 pub trait Property {
     type Scope: Scope;
@@ -32,7 +34,10 @@ pub struct Slot<P: Property> {
 
 impl<P: Property> Slot<P> {
     pub const fn new(label: &'static str) -> Self {
-        Self { label, _property: PhantomData }
+        Self {
+            label,
+            _property: PhantomData,
+        }
     }
 }
 
@@ -57,10 +62,11 @@ pub trait ResolveAttr<Key> {
 /// The common, not-yet-implemented expansion layer can resolve the property
 /// type through the target's type, even when xui! cannot inspect Rust types.
 pub fn mapped_property<Key, Target>() -> PhantomData<<Target as ResolveAttr<Key>>::Property>
-where Target: ResolveAttr<Key> {
+where
+    Target: ResolveAttr<Key>,
+{
     PhantomData
 }
-
 
 /// Optional property extension: generated commit metadata explicitly registers
 /// only the Properties implementing this trait. Slot<P> never needs runtime

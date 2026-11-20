@@ -75,8 +75,9 @@ fn plain_rows() {
 #[component]
 fn virtual_rows() {
     let count: usize = ROWS.load(Ordering::Relaxed);
-    let render_item: VirtualItemRenderer =
-        VirtualItemRenderer::new(|index: usize| Children::component::<BenchRow>(BenchRowProps { index }));
+    let render_item: VirtualItemRenderer = VirtualItemRenderer::new(|index: usize| {
+        Children::component::<BenchRow>(BenchRowProps { index })
+    });
     view! {
         virtual_list(
             item_count: *count,
@@ -161,10 +162,7 @@ fn virtualized_versus_plain() {
 
     for rows in [100usize, 400, 1_600] {
         for (label, root) in [
-            (
-                "plain",
-                plain_list as AppRoot,
-            ),
+            ("plain", plain_list as AppRoot),
             ("virtual", virtual_list_root),
         ] {
             let (mut harness, mount) = Harness::mount(root, rows);

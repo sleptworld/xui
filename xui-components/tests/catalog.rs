@@ -1,11 +1,11 @@
 //! Exercise every exported component against the retained runtime, including
 //! live overlays, both themes, narrow layout, and extreme configuration values.
 use std::cell::Cell;
+use xui_components::image::{ImageSize, ImageSrc};
 use xui_components::*;
 use xui_core::prelude::*;
 use xui_core::text::TextHost;
 use xui_cosmic::CosmicEngine;
-use xui_components::image::{ImageSize, ImageSrc};
 use xui_macros::component;
 
 thread_local! { static CASE: Cell<usize> = const { Cell::new(0) }; }
@@ -51,7 +51,8 @@ const COMPONENTS: &[&str] = &[
 #[component]
 fn catalog() {
     let case: usize = CASE.get();
-    let render_item: VirtualItemRenderer = VirtualItemRenderer::new(|index: usize| index.to_string().into());
+    let render_item: VirtualItemRenderer =
+        VirtualItemRenderer::new(|index: usize| index.to_string().into());
     view! {
         column {
             match *case {

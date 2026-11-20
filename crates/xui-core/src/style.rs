@@ -7,13 +7,11 @@ pub use xui_interface::{
     ComputedLinearGradientStyle, ComputedMaskShape, ComputedPaintStyle,
     ComputedRadialGradientStyle, ComputedScrollStyle, ComputedScrollbarStyle, ComputedShadowStyle,
     ComputedStrokeStyle, ComputedStyle, ComputedTextStyle, CursorIcon, DisplayStyle, Effect,
-    
-    FilterQuality, FlexDirectionStyle, FontSizeToken, JustifyStyle,  LengthValue,
-    LinearGradientStyle, MaskShape,  PositionStyle, RadialGradientStyle,
-    RadiusToken, ScrollDirectionStyle,  ScrollbarStyle, 
-    ScrollbarVisibilityStyle, ShadowStyle, SpacingToken,  Stroke, StrokeLineStyle,
-    StrokeStyle,    StyleValue,  Theme, TransformStyle,
-     VisibilityStyle, WidgetState, WidgetStateMatcher,
+    FilterQuality, FlexDirectionStyle, FontSizeToken, JustifyStyle, LengthValue,
+    LinearGradientStyle, MaskShape, PositionStyle, RadialGradientStyle, RadiusToken,
+    ScrollDirectionStyle, ScrollbarStyle, ScrollbarVisibilityStyle, ShadowStyle, SpacingToken,
+    Stroke, StrokeLineStyle, StrokeStyle, StyleValue, Theme, TransformStyle, VisibilityStyle,
+    WidgetState, WidgetStateMatcher,
 };
 
 use crate::animation::{has_animatable_difference, interpolate_style};
@@ -118,7 +116,9 @@ mod tests {
         let initial = ComputedStyle::initial(&theme);
         let next = computed(
             &initial,
-            StyleOf::<Container>::new().with::<container::background>(Color::BLACK).with::<container::effects>(Arc::from([Effect::blur(6.0)])),
+            StyleOf::<Container>::new()
+                .with::<container::background>(Color::BLACK)
+                .with::<container::effects>(Arc::from([Effect::blur(6.0)])),
             &theme,
         );
         let mut style = XStyle::new(initial.clone())

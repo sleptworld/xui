@@ -316,29 +316,29 @@ impl FilterRenderer {
         });
         let make_pipeline = |format: wgpu::TextureFormat, blend: Option<wgpu::BlendState>| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("xui-vello filter"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
+                label: Some("xui-vello filter"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
             })
         };
         let pipeline_work = make_pipeline(WORK_FORMAT, None);
@@ -434,7 +434,9 @@ impl FilterRenderer {
             else {
                 break;
             };
-            bytes -= self.pool.entries[oldest].take().map_or(0, |entry| entry.bytes());
+            bytes -= self.pool.entries[oldest]
+                .take()
+                .map_or(0, |entry| entry.bytes());
         }
         self.masks.run_pending_tasks();
     }
@@ -485,7 +487,11 @@ impl FilterRenderer {
             wgpu::TexelCopyTextureInfo {
                 texture: &self.pool[dest.0].texture,
                 mip_level: 0,
-                origin: wgpu::Origin3d { x: at.0, y: at.1, z: 0 },
+                origin: wgpu::Origin3d {
+                    x: at.0,
+                    y: at.1,
+                    z: 0,
+                },
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::Extent3d {
@@ -806,13 +812,25 @@ impl FilterRenderer {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("xui-vello over"),
         });
-        let out = self.pass(device, &mut encoder, Params::op(24), front, Some(Input::Slot(back)), extent);
+        let out = self.pass(
+            device,
+            &mut encoder,
+            Params::op(24),
+            front,
+            Some(Input::Slot(back)),
+            extent,
+        );
         queue.submit([encoder.finish()]);
         out
     }
 
     /// A copy of `slot`, in a texture of its own.
-    pub(crate) fn duplicate(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, slot: Slot) -> Slot {
+    pub(crate) fn duplicate(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        slot: Slot,
+    ) -> Slot {
         let (extent, space) = (self.pool[slot.0].extent, self.pool[slot.0].space);
         let copy = self.acquire_in(device, extent, space);
         self.copy_into(device, queue, slot, copy, (0, 0));
@@ -865,8 +883,18 @@ impl FilterRenderer {
         // 8 bits writes it; anything else holds sRGB-encoded values already.
         let flags = (samples_linear(draw.texture.format()) as u32) | ((draw.nearest as u32) << 1);
         params.op[1] = flags;
-        params.tex0 = [draw.inverse[0], draw.inverse[1], draw.inverse[2], draw.inverse[3]];
-        params.tex1 = [draw.inverse[4], draw.inverse[5], draw.opacity, draw.clips.len() as f32];
+        params.tex0 = [
+            draw.inverse[0],
+            draw.inverse[1],
+            draw.inverse[2],
+            draw.inverse[3],
+        ];
+        params.tex1 = [
+            draw.inverse[4],
+            draw.inverse[5],
+            draw.opacity,
+            draw.clips.len() as f32,
+        ];
         params.tex2 = draw.bounds;
         graph::set_clips(&mut params, &draw.clips);
         params.tex1[2] = draw.opacity;
@@ -883,7 +911,12 @@ impl FilterRenderer {
             device,
             &mut encoder,
             params,
-            [Some(Input::Slot(below)), Some(Input::View(&view)), None, mask],
+            [
+                Some(Input::Slot(below)),
+                Some(Input::View(&view)),
+                None,
+                mask,
+            ],
             Target {
                 view: &self.pool[out.0].view,
                 space: Space::Work,

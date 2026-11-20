@@ -19,7 +19,9 @@
 //! since the next frame's damage only says what changed since this one.
 
 use rustc_hash::{FxHashMap, FxHashSet};
-use xui_core::render::{BuiltFrame, CachePolicy, LayerCacheId, RenderNodeId, damage::DamageTracker};
+use xui_core::render::{
+    BuiltFrame, CachePolicy, LayerCacheId, RenderNodeId, damage::DamageTracker,
+};
 use xui_render_graph::{PixelRect, ProgramFingerprint};
 
 use crate::filter::{FilterRenderer, Slot};
@@ -171,7 +173,10 @@ impl LayerCache {
         use_: FilterUse,
         filtered: Option<(Slot, (i32, i32))>,
     ) -> Slot {
-        let entry = self.entries.get_mut(&id).expect("the content is applied first");
+        let entry = self
+            .entries
+            .get_mut(&id)
+            .expect("the content is applied first");
         match (use_.update, filtered, &entry.filtered) {
             (CacheUpdate::Keep, _, Some(kept)) => {
                 self.counts.filtered_hits += 1;
@@ -180,7 +185,10 @@ impl LayerCache {
             (CacheUpdate::Patch, Some((patch, origin)), Some(kept)) => {
                 self.counts.filtered_hits += 1;
                 self.counts.filtered_patches += 1;
-                let at = ((origin.0 - kept.rect.x) as u32, (origin.1 - kept.rect.y) as u32);
+                let at = (
+                    (origin.0 - kept.rect.x) as u32,
+                    (origin.1 - kept.rect.y) as u32,
+                );
                 filters.copy_into(device, queue, patch, kept.slot, at);
                 filters.release(patch);
                 kept.slot
@@ -226,12 +234,19 @@ impl LayerCache {
             self.evict(id, filters);
         }
         loop {
-            let auto = || self.entries.iter().filter(|(_, entry)| entry.policy == CachePolicy::Auto);
+            let auto = || {
+                self.entries
+                    .iter()
+                    .filter(|(_, entry)| entry.policy == CachePolicy::Auto)
+            };
             let bytes: u64 = auto().map(|(_, entry)| entry_bytes(filters, entry)).sum();
             if bytes <= auto_budget {
                 break;
             }
-            let Some(oldest) = auto().min_by_key(|(_, entry)| entry.last_used).map(|(id, _)| *id) else {
+            let Some(oldest) = auto()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(id, _)| *id)
+            else {
                 break;
             };
             self.evict(oldest, filters);
@@ -254,7 +269,10 @@ impl LayerCache {
     pub(crate) fn size(&self, filters: &FilterRenderer) -> (usize, u64) {
         (
             self.entries.len(),
-            self.entries.values().map(|entry| entry_bytes(filters, entry)).sum(),
+            self.entries
+                .values()
+                .map(|entry| entry_bytes(filters, entry))
+                .sum(),
         )
     }
 

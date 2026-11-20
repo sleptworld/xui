@@ -11,9 +11,7 @@ use std::sync::OnceLock;
 
 use xui_core::{app::AppRoot, prelude::*, text::TextHost, widgets::CanvasController};
 use xui_cosmic::CosmicEngine;
-use xui_interface::{
-    Effect, ImageData, PathBuilder, PathFill, Point, Sampling, Sizing,
-};
+use xui_interface::{Effect, ImageData, PathBuilder, PathFill, Point, Sampling, Sizing};
 use xui_macros::component;
 use xui_vello::{ResourceStats, VelloBackend, VelloBackendOptions};
 
@@ -58,7 +56,10 @@ fn picture_box(key: &String, data: &ImageData) {
 }
 
 fn show_image(app: &mut App, key: &str, data: ImageData) {
-    app.mount::<PictureBox>(PictureBoxProps { key: key.to_string(), data });
+    app.mount::<PictureBox>(PictureBoxProps {
+        key: key.to_string(),
+        data,
+    });
 }
 
 static A: OnceLock<ImageData> = OnceLock::new();
@@ -96,7 +97,10 @@ fn an_image_keeps_its_upload_while_it_is_off_screen() {
         draw(&mut backend, show_nothing, 64.0);
     }
     let back = draw(&mut backend, show_a, 64.0);
-    assert_eq!(back.image_builds, 1, "the image was rebuilt after it came back");
+    assert_eq!(
+        back.image_builds, 1,
+        "the image was rebuilt after it came back"
+    );
     assert_eq!(back.image_entries, 1);
 }
 
@@ -154,7 +158,10 @@ fn filter_textures_are_released_once_nothing_uses_them() {
         return;
     };
     let busy = draw(&mut backend, blurred_layer, 64.0);
-    assert!(busy.filter_textures > 0, "the layer made no filter textures");
+    assert!(
+        busy.filter_textures > 0,
+        "the layer made no filter textures"
+    );
 
     // A pooled texture idle for a few frames goes.
     for _ in 0..12 {

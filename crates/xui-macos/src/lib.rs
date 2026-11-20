@@ -51,11 +51,11 @@ mod time;
 mod view;
 mod window;
 
-#[cfg(feature = "vello")]
-pub use app::{runner, runner_with_device};
 #[cfg(feature = "skia")]
 pub use app::skia_runner;
 pub use app::{MacBackendInitError, MacRunError, MacRunner, MacRunnerOptions};
+#[cfg(feature = "vello")]
+pub use app::{runner, runner_with_device};
 pub use window::MacWindow;
 pub use xui_shell::{MacOsWindowOptions, PhysicalSize, WindowOptions, WindowSize};
 

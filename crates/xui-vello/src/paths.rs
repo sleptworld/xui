@@ -25,7 +25,9 @@ impl PathCache {
             cache: Cache::builder()
                 .max_capacity(budget_segments)
                 .weigher(|_: &PathDataId, path: &Arc<BezPath>| {
-                    u32::try_from(path.elements().len()).unwrap_or(u32::MAX).max(1)
+                    u32::try_from(path.elements().len())
+                        .unwrap_or(u32::MAX)
+                        .max(1)
                 })
                 .build_with_hasher(FxBuildHasher),
         }
@@ -62,10 +64,15 @@ pub(crate) fn kurbo_path(path: &PathData) -> BezPath {
         match *segment {
             PathSegment::MoveTo(p) => out.move_to((p.x as f64, p.y as f64)),
             PathSegment::LineTo(p) => out.line_to((p.x as f64, p.y as f64)),
-            PathSegment::QuadraticTo { control, to } => {
-                out.quad_to((control.x as f64, control.y as f64), (to.x as f64, to.y as f64))
-            }
-            PathSegment::CubicTo { control1, control2, to } => out.curve_to(
+            PathSegment::QuadraticTo { control, to } => out.quad_to(
+                (control.x as f64, control.y as f64),
+                (to.x as f64, to.y as f64),
+            ),
+            PathSegment::CubicTo {
+                control1,
+                control2,
+                to,
+            } => out.curve_to(
                 (control1.x as f64, control1.y as f64),
                 (control2.x as f64, control2.y as f64),
                 (to.x as f64, to.y as f64),

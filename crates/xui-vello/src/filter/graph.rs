@@ -111,7 +111,9 @@ impl FilterRenderer {
                         extent: (rect.width, rect.height),
                     })
                 }
-                PlanResourceKind::External(kind) => self.bind_external(device, queue, kind, textures),
+                PlanResourceKind::External(kind) => {
+                    self.bind_external(device, queue, kind, textures)
+                }
             });
         }
         let resolve = |id: PlanResourceId| {
@@ -228,7 +230,9 @@ impl FilterRenderer {
             ExternalResourceKind::ParentDestination => Some(placed(textures.destination)),
             ExternalResourceKind::LayerContent => textures.layer_content.map(placed),
             ExternalResourceKind::Backdrop => textures.backdrop.map(placed),
-            ExternalResourceKind::BackdropMask => textures.backdrop_mask.map(|data| mask(self, data)),
+            ExternalResourceKind::BackdropMask => {
+                textures.backdrop_mask.map(|data| mask(self, data))
+            }
             ExternalResourceKind::LayerMask(ordinal) => textures
                 .layer_masks
                 .get(ordinal as usize)
@@ -357,7 +361,12 @@ pub(super) fn set_clips(params: &mut Params, clips: &[ClipSpec]) {
     params.tex1[3] = clips.len() as f32;
     for (index, clip) in clips.iter().enumerate() {
         let at = index * 4;
-        params.clips[at] = [clip.inverse[0], clip.inverse[1], clip.inverse[2], clip.inverse[3]];
+        params.clips[at] = [
+            clip.inverse[0],
+            clip.inverse[1],
+            clip.inverse[2],
+            clip.inverse[3],
+        ];
         params.clips[at + 1] = [clip.inverse[4], clip.inverse[5], 0.0, clip.radius];
         params.clips[at + 2] = clip.rect;
     }
@@ -420,11 +429,16 @@ fn scissor_in(
     origin: (i32, i32),
     pixels: (u32, u32),
 ) -> Option<[u32; 4]> {
-    let to_texels = |value: f32, origin: i32| f64::from(value) * f64::from(scale) - f64::from(origin);
+    let to_texels =
+        |value: f32, origin: i32| f64::from(value) * f64::from(scale) - f64::from(origin);
     let x0 = to_texels(bounds.min.x, origin.0).floor().max(0.0);
     let y0 = to_texels(bounds.min.y, origin.1).floor().max(0.0);
-    let x1 = to_texels(bounds.max.x, origin.0).ceil().min(f64::from(pixels.0));
-    let y1 = to_texels(bounds.max.y, origin.1).ceil().min(f64::from(pixels.1));
+    let x1 = to_texels(bounds.max.x, origin.0)
+        .ceil()
+        .min(f64::from(pixels.0));
+    let y1 = to_texels(bounds.max.y, origin.1)
+        .ceil()
+        .min(f64::from(pixels.1));
     (x1 > x0 && y1 > y0).then(|| [x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32])
 }
 
@@ -507,13 +521,18 @@ mod tests {
                 placed.slot,
                 Finish::Slot(out),
             );
-            crate::backend::read_texture(&self.context, self.filters.texture(out), extent)
-                .unwrap()
+            crate::backend::read_texture(&self.context, self.filters.texture(out), extent).unwrap()
         }
 
         fn run(&mut self, plan: &LayerRenderPlan, textures: &PlanTextures<'_>) {
             self.filters
-                .execute_plan(&self.context.device, &self.context.queue, plan, textures, 1.0)
+                .execute_plan(
+                    &self.context.device,
+                    &self.context.queue,
+                    plan,
+                    textures,
+                    1.0,
+                )
                 .unwrap();
         }
     }
@@ -591,7 +610,11 @@ mod tests {
             .unwrap()
             .instantiate(&ctx)
             .unwrap();
-        let content = gpu.upload((100, 0), (800, 1), |x, _| if x < 500 { WHITE } else { CLEAR });
+        let content = gpu.upload(
+            (100, 0),
+            (800, 1),
+            |x, _| if x < 500 { WHITE } else { CLEAR },
+        );
         let destination = gpu.upload((0, 0), (800, 1), |_, _| CLEAR);
         gpu.run(&plan, &textures(destination, Some(content)));
         let out = gpu.read(destination);
@@ -633,7 +656,11 @@ mod tests {
             // Narrower than the layer, wider than the clip by the blur's reach.
             assert!(demand.x > 0 && demand.x < clip.0 - 50, "{demand:?}");
             assert!(demand.width < 800, "{demand:?}");
-            let content = gpu.upload((demand.x, demand.y), (demand.width, demand.height), half_plane);
+            let content = gpu.upload(
+                (demand.x, demand.y),
+                (demand.width, demand.height),
+                half_plane,
+            );
             let destination = gpu.upload((0, 0), (800, 1), |_, _| RED);
             gpu.run(&plan, &textures(destination, Some(content)));
             gpu.read(destination)
@@ -642,7 +669,12 @@ mod tests {
             let got = &clipped[x * 4..x * 4 + 4];
             if (clip.0..clip.1).contains(&(x as i32)) {
                 let want = &whole[x * 4..x * 4 + 4];
-                let diff = got.iter().zip(want).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+                let diff = got
+                    .iter()
+                    .zip(want)
+                    .map(|(a, b)| a.abs_diff(*b))
+                    .max()
+                    .unwrap();
                 assert!(diff <= 1, "x = {x}: {got:?} against {want:?}");
             } else {
                 assert_eq!(got, RED, "x = {x} is outside the clip");
@@ -704,7 +736,11 @@ mod tests {
         assert_eq!(alpha(&out, 700), 255);
         assert_eq!(alpha(&out, 299), 0, "the shadow runs past 200px");
         assert_eq!(alpha(&out, 701), 0);
-        assert_eq!(&out[500 * 4..501 * 4], WHITE, "the layer is over its shadow");
+        assert_eq!(
+            &out[500 * 4..501 * 4],
+            WHITE,
+            "the layer is over its shadow"
+        );
     }
 
     /// The backdrop is the texture it is composited into. Inverted, it reads
@@ -783,7 +819,10 @@ mod tests {
         };
         let plan = compile_layer(&value)
             .unwrap()
-            .instantiate(&context(bounds(0.0, 0.0, 64.0, 64.0), bounds(16.0, 16.0, 32.0, 32.0)))
+            .instantiate(&context(
+                bounds(0.0, 0.0, 64.0, 64.0),
+                bounds(16.0, 16.0, 32.0, 32.0),
+            ))
             .unwrap();
         assert_eq!(plan.stats().transient_resource_count, 8);
         assert_eq!(plan.slots().len(), 2);
@@ -792,7 +831,11 @@ mod tests {
         let (before, _) = gpu.filters.pool_size();
         gpu.run(&plan, &textures(destination, Some(content)));
         let (after, _) = gpu.filters.pool_size();
-        assert!(after - before <= 2, "{} textures for two slots", after - before);
+        assert!(
+            after - before <= 2,
+            "{} textures for two slots",
+            after - before
+        );
         let out = gpu.read(destination);
         // Blurred: the middle is opaque, the corner of the parent untouched.
         assert_eq!(alpha(&out, 32 * 64 + 32), 255);
@@ -858,10 +901,7 @@ mod tests {
             let (x1, y1) = (domain.max.x.ceil() as i32, domain.max.y.ceil() as i32);
             let extent = ((x1 - x0) as u32, (y1 - y0) as u32);
             let filter_plan = program
-                .instantiate_entry(
-                    LayerProgramEntry::LayerOnly,
-                    &context(domain, content),
-                )
+                .instantiate_entry(LayerProgramEntry::LayerOnly, &context(domain, content))
                 .unwrap();
             let layer = gpu.upload((10, 10), (20, 20), square);
             let filtered = gpu.upload((x0, y0), extent, |_, _| CLEAR);
@@ -888,5 +928,4 @@ mod tests {
         // And the layer did reach the destination.
         assert_ne!(&whole[(20 * 64 + 20) * 4..][..4], &[160, 160, 160, 255]);
     }
-
 }

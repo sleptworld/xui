@@ -109,7 +109,11 @@ pub struct AccordionItem {
 }
 
 impl AccordionItem {
-    pub fn new(id: impl Into<String>, title: impl Into<Children>, content: impl Into<Children>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        title: impl Into<Children>,
+        content: impl Into<Children>,
+    ) -> Self {
         Self {
             id: id.into(),
             title: title.into(),
@@ -371,7 +375,10 @@ pub fn pagination(
     let current: usize = memo!((*page).min(page_count.saturating_sub(1)));
     let pages: Vec<usize> = memo!({
         let start = current.saturating_sub(*sibling_count);
-        let end = current.saturating_add(*sibling_count).saturating_add(1).min(*page_count);
+        let end = current
+            .saturating_add(*sibling_count)
+            .saturating_add(1)
+            .min(*page_count);
         (start..end).collect()
     });
     let last: usize = memo!(page_count.saturating_sub(1));
@@ -480,7 +487,10 @@ pub struct TableRow {
 }
 
 impl TableRow {
-    pub fn new(id: impl Into<String>, cells: impl IntoIterator<Item = impl Into<Children>>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        cells: impl IntoIterator<Item = impl Into<Children>>,
+    ) -> Self {
         Self {
             id: id.into(),
             cells: cells.into_iter().map(Into::into).collect(),
@@ -537,7 +547,11 @@ pub fn data_table(
     cell_style: &StyleOf<Container>,
     column_tracks: &Option<GridTracks>,
 ) {
-    let columns: usize = memo!(headers.len().max(rows.iter().map(|row| row.cells.len()).max().unwrap_or(1)));
+    let columns: usize = memo!(
+        headers
+            .len()
+            .max(rows.iter().map(|row| row.cells.len()).max().unwrap_or(1))
+    );
     let line: StyleOf<Grid> = StyleOf::new()
         .with::<container::width>(Sizing::Fill)
         .with::<container::border_color>(ColorToken::Border)
@@ -788,7 +802,11 @@ pub fn data_grid(
 
 /// The arrow after a column's label: which way it sorts, if it does.
 fn sort_indicator(sort: &Option<GridSort>, column: &str) -> &'static str {
-    match sort.as_ref().filter(|sort| sort.column_id == column).map(|sort| sort.direction) {
+    match sort
+        .as_ref()
+        .filter(|sort| sort.column_id == column)
+        .map(|sort| sort.direction)
+    {
         Some(SortDirection::Ascending) => " ↑",
         Some(SortDirection::Descending) => " ↓",
         None => "",
@@ -797,7 +815,10 @@ fn sort_indicator(sort: &Option<GridSort>, column: &str) -> &'static str {
 
 /// The sort a press on `column` asks for: ascending, or the reverse of its own.
 fn next_sort(sort: &Option<GridSort>, column: &str) -> GridSort {
-    let current = sort.as_ref().filter(|sort| sort.column_id == column).map(|sort| sort.direction);
+    let current = sort
+        .as_ref()
+        .filter(|sort| sort.column_id == column)
+        .map(|sort| sort.direction);
     GridSort {
         column_id: column.to_owned(),
         direction: match current {
@@ -858,7 +879,12 @@ struct VisibleNode {
 }
 
 /// The nodes shown, in order: every root, and the children of every expanded node.
-fn visible_nodes(nodes: &[TreeNode], expanded: &HashSet<String>, depth: usize, out: &mut Vec<VisibleNode>) {
+fn visible_nodes(
+    nodes: &[TreeNode],
+    expanded: &HashSet<String>,
+    depth: usize,
+    out: &mut Vec<VisibleNode>,
+) {
     for node in nodes {
         let is_expanded = expanded.contains(&node.id);
         out.push(VisibleNode {
@@ -932,7 +958,8 @@ pub fn tree_view(
     let own_expanded: Vec<String> = state!(default_expanded.clone());
     let own_selected: Option<String> = state!(default_selected.clone());
     let expanded_ids: Vec<String> = memo!(expanded.clone().unwrap_or_else(|| own_expanded.clone()));
-    let selected_id: Option<String> = memo!(selected.clone().unwrap_or_else(|| own_selected.clone()));
+    let selected_id: Option<String> =
+        memo!(selected.clone().unwrap_or_else(|| own_selected.clone()));
     let visible: Vec<VisibleNode> = memo!({
         let mut out = Vec::new();
         visible_nodes(nodes, &expanded_ids.iter().cloned().collect(), 0, &mut out);

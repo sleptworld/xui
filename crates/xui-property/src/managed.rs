@@ -14,20 +14,26 @@ pub struct ShortcutAbility;
 pub struct ShortcutConfig {
     pub shortcut: Option<ShortcutBinding>,
 }
-impl Capability for ShortcutAbility { type Config = ShortcutConfig; }
+impl Capability for ShortcutAbility {
+    type Config = ShortcutConfig;
+}
 
 pub struct GlobalShortcut;
 impl Property for GlobalShortcut {
     type Scope = CapScope<ShortcutAbility>;
     type Value = Option<ShortcutBinding>;
-    fn get(storage: &ShortcutConfig) -> &Self::Value { &storage.shortcut }
+    fn get(storage: &ShortcutConfig) -> &Self::Value {
+        &storage.shortcut
+    }
     fn replace(storage: &mut ShortcutConfig, value: Self::Value) {
         storage.shortcut = value;
     }
 }
 impl SlotProperty for GlobalShortcut {
     const HINT: Dirty = Dirty::EVENT;
-    fn same(a: &Self::Value, b: &Self::Value) -> bool { a == b }
+    fn same(a: &Self::Value, b: &Self::Value) -> bool {
+        a == b
+    }
 }
 
 /// Per-mounted-instance resource; no global registry handle in the shareable

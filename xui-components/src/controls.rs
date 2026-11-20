@@ -401,14 +401,34 @@ pub fn radio_group(
     indicator_style: &StyleOf<Container>,
 ) {
     let model: SelectionModel = memo!(SelectionModel::new(items.iter().map(|item| {
-        SelectionItem::new(item.id.clone(), item.accessibility_label.clone(), *disabled || item.disabled)
+        SelectionItem::new(
+            item.id.clone(),
+            item.accessibility_label.clone(),
+            *disabled || item.disabled,
+        )
     })));
     let own: usize = state!(*default_selected);
     let active: Option<usize> = memo!(model.normalize(selected.unwrap_or(*own)));
     let handles: Vec<FocusHandle> = memo!((0..items.len()).map(|_| FocusHandle::new()).collect());
     let shortcuts: Vec<ShortcutBinding> = [
-        (Shortcut::named(if *orientation == SelectionOrientation::Horizontal { NamedKey::ArrowLeft } else { NamedKey::ArrowUp }).allow_repeat(true), PREVIOUS),
-        (Shortcut::named(if *orientation == SelectionOrientation::Horizontal { NamedKey::ArrowRight } else { NamedKey::ArrowDown }).allow_repeat(true), NEXT),
+        (
+            Shortcut::named(if *orientation == SelectionOrientation::Horizontal {
+                NamedKey::ArrowLeft
+            } else {
+                NamedKey::ArrowUp
+            })
+            .allow_repeat(true),
+            PREVIOUS,
+        ),
+        (
+            Shortcut::named(if *orientation == SelectionOrientation::Horizontal {
+                NamedKey::ArrowRight
+            } else {
+                NamedKey::ArrowDown
+            })
+            .allow_repeat(true),
+            NEXT,
+        ),
         (Shortcut::named(NamedKey::Home), FIRST),
         (Shortcut::named(NamedKey::End), LAST),
     ]
@@ -586,7 +606,12 @@ pub fn slider(
         let (min, max, step) = slider_bounds(min.get(), max.get(), step.get());
         clamp_step(*default_value, min, max, step)
     });
-    let current: f32 = memo!(clamp_step(value.unwrap_or(*own), bounds.0, bounds.1, bounds.2));
+    let current: f32 = memo!(clamp_step(
+        value.unwrap_or(*own),
+        bounds.0,
+        bounds.1,
+        bounds.2
+    ));
     let ratio: f32 = memo!({
         let span = f64::from(bounds.1) - f64::from(bounds.0);
         if span <= f64::from(f32::EPSILON) {
@@ -728,8 +753,16 @@ pub fn progress(
     style: &StyleOf<Container>,
     indicator_style: &StyleOf<Container>,
 ) {
-    let limit: f32 = memo!(if max.is_finite() && *max > 0.0 { *max } else { 1.0 });
-    let amount: f32 = memo!(if value.is_finite() { value.clamp(0.0, *limit) } else { 0.0 });
+    let limit: f32 = memo!(if max.is_finite() && *max > 0.0 {
+        *max
+    } else {
+        1.0
+    });
+    let amount: f32 = memo!(if value.is_finite() {
+        value.clamp(0.0, *limit)
+    } else {
+        0.0
+    });
     view! {
         container(
             style: StyleOf::new()
@@ -851,7 +884,11 @@ pub enum BadgeVariant {
     style = StyleOf::new(),
     variant = BadgeVariant::Secondary,
 )]
-pub fn badge(#[source] text: &String, style: &StyleOf<Container>, #[source] variant: &BadgeVariant) {
+pub fn badge(
+    #[source] text: &String,
+    style: &StyleOf<Container>,
+    #[source] variant: &BadgeVariant,
+) {
     view! {
         container(
             style: match variant {
@@ -924,7 +961,11 @@ pub fn avatar(
     style: &StyleOf<Container>,
     fallback_style: &StyleOf<Text>,
 ) {
-    let side: f32 = memo!(if size.is_finite() { size.max(0.0) } else { 40.0 });
+    let side: f32 = memo!(if size.is_finite() {
+        size.max(0.0)
+    } else {
+        40.0
+    });
     view! {
         container(
             style: StyleOf::new()

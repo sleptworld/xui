@@ -245,8 +245,10 @@ pub fn image(
         let src = src.clone();
         async move { get_image(&src).await }
     });
-    let frame_style: StyleOf<Container> = memo!(height.apply_height(width.apply_width(style.clone())));
-    let resolved_style: ImageStyle = resolve_image_style(*image_style, *fit, *alignment, *repeat, *sampling);
+    let frame_style: StyleOf<Container> =
+        memo!(height.apply_height(width.apply_width(style.clone())));
+    let resolved_style: ImageStyle =
+        resolve_image_style(*image_style, *fit, *alignment, *repeat, *sampling);
     view! {
         container(style: frame_style.clone()) {
             if let Some(pixels) = pixels.ready().cloned() {
@@ -290,8 +292,6 @@ fn resolve_image_style(
     }
     image_style
 }
-
-
 
 async fn get_network_image(path: &str) -> Result<ImageData, ImageError> {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();

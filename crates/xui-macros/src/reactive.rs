@@ -5,13 +5,13 @@
 //! runtime to bind at mount. See `docs/reactive.md`.
 use std::collections::BTreeMap;
 
+use proc_macro2::TokenTree;
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
-use proc_macro2::TokenTree;
 use syn::{
-    BinOp, Error, Expr, ExprClosure, FnArg, GenericArgument, GenericParam, Ident, ItemFn, Local, LocalInit, Macro,
-    Meta, Pat, PathArguments, Result, ReturnType, Stmt, Type,
+    BinOp, Error, Expr, ExprClosure, FnArg, GenericArgument, GenericParam, Ident, ItemFn, Local,
+    LocalInit, Macro, Meta, Pat, PathArguments, Result, ReturnType, Stmt, Type,
 };
 
 use crate::analyze::{self, Found, Use, bindings, macro_name, rust};
@@ -129,7 +129,11 @@ type Uses = Vec<(Name, Use, Span)>;
 
 /// A binding depends on the sources it reads, except under `untrack!`.
 fn deps(uses: &Uses) -> Vec<u16> {
-    let mut deps: Vec<u16> = uses.iter().filter(|u| u.1 == Use::Read).filter_map(|u| u.0.source).collect();
+    let mut deps: Vec<u16> = uses
+        .iter()
+        .filter(|u| u.1 == Use::Read)
+        .filter_map(|u| u.0.source)
+        .collect();
     deps.sort();
     deps.dedup();
     deps
@@ -153,7 +157,10 @@ fn pascal_case(ident: &Ident) -> Ident {
         .split('_')
         .map(|part| {
             let mut chars = part.chars();
-            chars.next().map(|c| c.to_ascii_uppercase().to_string() + chars.as_str()).unwrap_or_default()
+            chars
+                .next()
+                .map(|c| c.to_ascii_uppercase().to_string() + chars.as_str())
+                .unwrap_or_default()
         })
         .collect();
     Ident::new(&name, ident.span())
@@ -170,7 +177,9 @@ fn handle_type(ty: &Type) -> Option<&'static str> {
         "ReadSignal" => "ReadSignal",
         _ => return None,
     };
-    let PathArguments::AngleBracketed(args) = &last.arguments else { return None };
+    let PathArguments::AngleBracketed(args) = &last.arguments else {
+        return None;
+    };
     matches!(args.args.first(), Some(GenericArgument::Type(_))).then_some(handle)
 }
 
@@ -189,7 +198,8 @@ fn cond_bindings(cond: &Expr, out: &mut Vec<Ident>) {
 
 /// `effect!(|cx| ..)`'s closure, which takes the `Cx` or nothing.
 fn effect_closure(mac: &Macro) -> Result<ExprClosure> {
-    const MESSAGE: &str = "`effect!` takes a closure of the `Cx`, or of nothing: `effect!(|cx| ..)`";
+    const MESSAGE: &str =
+        "`effect!` takes a closure of the `Cx`, or of nothing: `effect!(|cx| ..)`";
     match mac.parse_body::<Expr>() {
         Ok(Expr::Closure(closure)) if closure.inputs.len() <= 1 => Ok(closure),
         _ => Err(Error::new(mac.span(), MESSAGE)),
@@ -200,16 +210,25 @@ fn effect_closure(mac: &Macro) -> Result<ExprClosure> {
 /// suffixed one (`3usize`) has a type of its own, and converts like any value.
 fn is_numeric_literal(expr: &Expr) -> bool {
     match expr {
-        Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(int), .. }) => int.suffix().is_empty(),
-        Expr::Lit(syn::ExprLit { lit: syn::Lit::Float(float), .. }) => float.suffix().is_empty(),
-        Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Neg(_)) => is_numeric_literal(&unary.expr),
+        Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(int),
+            ..
+        }) => int.suffix().is_empty(),
+        Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Float(float),
+            ..
+        }) => float.suffix().is_empty(),
+        Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Neg(_)) => {
+            is_numeric_literal(&unary.expr)
+        }
         _ => false,
     }
 }
 
 /// `ticker!(|cx, frame| ..)`'s closure.
 fn ticker_closure(mac: &Macro) -> Result<ExprClosure> {
-    const MESSAGE: &str = "`ticker!` takes a closure of the `Cx` and the frame: `ticker!(|cx, frame| ..)`";
+    const MESSAGE: &str =
+        "`ticker!` takes a closure of the `Cx` and the frame: `ticker!(|cx, frame| ..)`";
     match mac.parse_body::<Expr>() {
         Ok(Expr::Closure(closure)) if closure.inputs.len() <= 2 => Ok(closure),
         _ => Err(Error::new(mac.span(), MESSAGE)),
@@ -226,7 +245,10 @@ fn closure_cx(closure: &ExprClosure) -> Option<Pat> {
 
 fn closure_params(closure: &ExprClosure) -> Vec<Ident> {
     let mut idents = Vec::new();
-    closure.inputs.iter().for_each(|pat| bindings(pat, &mut idents));
+    closure
+        .inputs
+        .iter()
+        .for_each(|pat| bindings(pat, &mut idents));
     idents
 }
 
@@ -251,7 +273,10 @@ enum Setup {
     /// `provide!(source_or_value);`
     Provide { expr: Expr },
     /// `ticker!(|cx, frame| ..)`, kept as field `name` when a `let` names it.
-    Ticker { closure: ExprClosure, name: Option<usize> },
+    Ticker {
+        closure: ExprClosure,
+        name: Option<usize>,
+    },
     /// `let name: Option<Size<f32>> = size!();`
     Size { name: usize },
     /// `let name: AsyncValue<T, E> = resource!(future);`
@@ -278,7 +303,10 @@ impl Scope {
     }
 
     fn ty(&self, k: &TokenStream) -> TokenStream {
-        (0..self.depth).fold(quote!(Self), |inner, _| quote!(#k::reactive::Row<#inner, _>))
+        (0..self.depth).fold(
+            quote!(Self),
+            |inner, _| quote!(#k::reactive::Row<#inner, _>),
+        )
     }
 
     /// `|scope, rest|`, typed so the rows' data types are inferred.
@@ -329,7 +357,12 @@ impl Gen<'_> {
                 .iter()
                 .rev()
                 .find(|n| n.ident == ident)
-                .or_else(|| self.names.iter().rev().find(|n| n.ident == ident && n.order < at));
+                .or_else(|| {
+                    self.names
+                        .iter()
+                        .rev()
+                        .find(|n| n.ident == ident && n.order < at)
+                });
             let Some(name) = name else {
                 let message = if self.names.iter().any(|n| n.ident == ident && n.order == at) {
                     format!("`{ident}` reads itself")
@@ -399,7 +432,15 @@ impl Gen<'_> {
         out
     }
 
-    fn effect(&self, out: &mut Out, label: String, lane: &str, deps: Vec<u16>, output: Option<u16>, run: TokenStream) {
+    fn effect(
+        &self,
+        out: &mut Out,
+        label: String,
+        lane: &str,
+        deps: Vec<u16>,
+        output: Option<u16>,
+        run: TokenStream,
+    ) {
         let k = &self.k;
         let lane = Ident::new(lane, Span::call_site());
         let output = option_u16(output);
@@ -471,7 +512,13 @@ impl Gen<'_> {
     /// handler — as `prelude`, the `Cx` bound to the user's pattern, and the body.
     /// The closure's body with its `Cx` (`__cx`) and argument (`__arg`)
     /// bound to its patterns; it evaluates to the body's value when `returns`.
-    fn with_cx(&self, scope: &Scope, at: usize, closure: &ExprClosure, returns: bool) -> Result<(Uses, TokenStream)> {
+    fn with_cx(
+        &self,
+        scope: &Scope,
+        at: usize,
+        closure: &ExprClosure,
+        returns: bool,
+    ) -> Result<(Uses, TokenStream)> {
         self.with_cx_ecx(scope, at, closure, returns, None)
     }
 
@@ -490,10 +537,24 @@ impl Gen<'_> {
         let prelude = self.prelude(scope, &uses, Mode::Handles);
         let (cx, arg) = (hidden("__cx"), hidden("__arg"));
         let bind_cx = closure_cx(closure).map(|pat| quote!(let #pat = #cx;));
-        let bind_arg = closure.inputs.iter().nth(1).map(|pat| quote!(let #pat = #arg;));
-        let bind_ecx = ecx.and_then(|ecx| closure.inputs.iter().nth(2).map(|pat| quote!(let #pat = #ecx;)));
+        let bind_arg = closure
+            .inputs
+            .iter()
+            .nth(1)
+            .map(|pat| quote!(let #pat = #arg;));
+        let bind_ecx = ecx.and_then(|ecx| {
+            closure
+                .inputs
+                .iter()
+                .nth(2)
+                .map(|pat| quote!(let #pat = #ecx;))
+        });
         let body = rust(closure.body.to_token_stream())?;
-        let body = if returns { quote!({ #body }) } else { quote!({ #body };) };
+        let body = if returns {
+            quote!({ #body })
+        } else {
+            quote!({ #body };)
+        };
         Ok((uses, quote!(#prelude #bind_cx #bind_arg #bind_ecx #body)))
     }
 
@@ -512,7 +573,14 @@ impl Gen<'_> {
                 #cx.__resource(&#this.#id, __future);
             })
         };
-        self.effect(out, format!("resource {id}"), "Effect", deps(&uses), None, run);
+        self.effect(
+            out,
+            format!("resource {id}"),
+            "Effect",
+            deps(&uses),
+            None,
+            run,
+        );
         Ok(())
     }
 
@@ -526,7 +594,14 @@ impl Gen<'_> {
                 #body
             })
         };
-        self.effect(out, format!("ticker {}", out.effects.len()), "Tick", Vec::new(), None, run);
+        self.effect(
+            out,
+            format!("ticker {}", out.effects.len()),
+            "Tick",
+            Vec::new(),
+            None,
+            run,
+        );
         Ok(())
     }
 
@@ -539,13 +614,29 @@ impl Gen<'_> {
         let cx = hidden("__cx");
         let header = scope.header(&k, quote!(#cx: &mut #k::reactive::Cx<'_>));
         let run = quote!(#k::reactive::Run::Cx(#header { #body }));
-        self.effect(out, format!("effect {index}"), "Effect", deps(&uses), None, run);
+        self.effect(
+            out,
+            format!("effect {index}"),
+            "Effect",
+            deps(&uses),
+            None,
+            run,
+        );
         Ok(())
     }
 
-    fn element(&mut self, scope: &Scope, out: &mut Out, element: &Element, parent: Option<u16>) -> Result<()> {
+    fn element(
+        &mut self,
+        scope: &Scope,
+        out: &mut Out,
+        element: &Element,
+        parent: Option<u16>,
+    ) -> Result<()> {
         if let Some(twice) = element.attrs.iter().enumerate().find_map(|(i, a)| {
-            element.attrs[..i].iter().any(|b| b.name == a.name).then_some(&a.name)
+            element.attrs[..i]
+                .iter()
+                .any(|b| b.name == a.name)
+                .then_some(&a.name)
         }) {
             return Err(Error::new(twice.span(), format!("`{twice}` is set twice")));
         }
@@ -564,12 +655,21 @@ impl Gen<'_> {
     /// `portal(z_index: 10, modal: true, on_dismiss: |cx, reason| ..) { .. }`:
     /// content mounted under the overlayer. Attributes are evaluated once, at
     /// mount, as `PortalSpec` builder calls.
-    fn portal(&mut self, scope: &Scope, out: &mut Out, element: &Element, parent: Option<u16>) -> Result<()> {
+    fn portal(
+        &mut self,
+        scope: &Scope,
+        out: &mut Out,
+        element: &Element,
+        parent: Option<u16>,
+    ) -> Result<()> {
         let k = self.k.clone();
         let index = out.nodes.len() as u16;
         out.nodes.push(TokenStream::new());
         let Body::Children(list) = &element.body else {
-            return Err(Error::new(element.tag.span(), "a portal's content is its children: `portal { .. }`"));
+            return Err(Error::new(
+                element.tag.span(),
+                "a portal's content is its children: `portal { .. }`",
+            ));
         };
         let inner = self.row_scope(scope, quote!(()), &[]);
         let template = self.row_template(&inner, list)?;
@@ -581,7 +681,10 @@ impl Gen<'_> {
             match (&expr, name == "on_dismiss") {
                 (Expr::Closure(closure), true) => {
                     if closure.inputs.len() > 2 {
-                        return Err(Error::new(closure.inputs.span(), "`on_dismiss` takes the `Cx` and the reason: `|cx, reason| ..`"));
+                        return Err(Error::new(
+                            closure.inputs.span(),
+                            "`on_dismiss` takes the `Cx` and the reason: `|cx, reason| ..`",
+                        ));
                     }
                     let (_, body) = self.with_cx(scope, VIEW, closure, false)?;
                     let (kept, cx, arg) = (hidden("__kept_scope"), hidden("__cx"), hidden("__arg"));
@@ -622,10 +725,19 @@ impl Gen<'_> {
 
     /// `slot(children)`: where content a parent passed is mounted. Its
     /// expression is read once, as the slot mounts, with sources as values.
-    fn slot(&mut self, scope: &Scope, out: &mut Out, element: &Element, parent: Option<u16>) -> Result<()> {
+    fn slot(
+        &mut self,
+        scope: &Scope,
+        out: &mut Out,
+        element: &Element,
+        parent: Option<u16>,
+    ) -> Result<()> {
         let k = self.k.clone();
         let (Body::Content(content), true) = (&element.body, element.attrs.is_empty()) else {
-            return Err(Error::new(element.tag.span(), "a slot takes the children it mounts: `slot(children)`"));
+            return Err(Error::new(
+                element.tag.span(),
+                "a slot takes the children it mounts: `slot(children)`",
+            ));
         };
         let uses = self.uses(scope, VIEW, &[(content, &[])])?;
         let prelude = self.prelude(scope, &uses, Mode::Tracked);
@@ -646,7 +758,14 @@ impl Gen<'_> {
 
     /// A host: a node whose draft its build function makes, and a render
     /// binding per attribute that reads a source.
-    fn host(&mut self, scope: &Scope, out: &mut Out, element: &Element, kind: HostKind, parent: Option<u16>) -> Result<()> {
+    fn host(
+        &mut self,
+        scope: &Scope,
+        out: &mut Out,
+        element: &Element,
+        kind: HostKind,
+        parent: Option<u16>,
+    ) -> Result<()> {
         let k = self.k.clone();
         let index = out.nodes.len() as u16;
         out.nodes.push(TokenStream::new());
@@ -661,7 +780,9 @@ impl Gen<'_> {
         let mut children: &[Child] = &[];
         match (&element.body, kind) {
             (Body::None, _) => {}
-            (Body::Content(content), HostKind::Text) => attrs.push((Ident::new("content", content.span()), content.clone())),
+            (Body::Content(content), HostKind::Text) => {
+                attrs.push((Ident::new("content", content.span()), content.clone()))
+            }
             (Body::Children(list), HostKind::Parent) => children = list,
             (Body::Content(content), HostKind::Parent) => {
                 return Err(Error::new(
@@ -676,7 +797,10 @@ impl Gen<'_> {
         let mut tracked: Vec<(&Expr, &[Ident])> = Vec::new();
         for (name, value) in &attrs {
             if name == "key" {
-                return Err(Error::new(name.span(), "`key` keys the rows of a `for`; it goes on an element of its body"));
+                return Err(Error::new(
+                    name.span(),
+                    "`key` keys the rows of a `for`; it goes on an element of its body",
+                ));
             }
             if name == "draft" {
                 // An escape hatch: `draft: |d| d.animate(..)`, any draft method,
@@ -689,7 +813,14 @@ impl Gen<'_> {
                 if !deps.is_empty() {
                     let header = scope.header(&k, quote!(__cx: &mut #k::reactive::Cx<'_>));
                     let run = quote!(#k::reactive::Run::Cx(#header { __cx.__rebuild(#index); }));
-                    self.effect(out, format!("{} {index}.draft", crate::element::path_name(tag)), "Render", deps, None, run);
+                    self.effect(
+                        out,
+                        format!("{} {index}.draft", crate::element::path_name(tag)),
+                        "Render",
+                        deps,
+                        None,
+                        run,
+                    );
                 }
                 continue;
             }
@@ -704,8 +835,12 @@ impl Gen<'_> {
                     let ecx = hidden("__ecx");
                     let (_, body) = self.with_cx_ecx(scope, VIEW, closure, true, Some(&ecx))?;
                     let param = scope.param();
-                    let (kept_scope, kept_notifier, cx, arg) =
-                        (hidden("__kept_scope"), hidden("__kept_notifier"), hidden("__cx"), hidden("__arg"));
+                    let (kept_scope, kept_notifier, cx, arg) = (
+                        hidden("__kept_scope"),
+                        hidden("__kept_notifier"),
+                        hidden("__cx"),
+                        hidden("__arg"),
+                    );
                     sets.push(quote! {
                         let #draft = {
                             let #kept_scope = ::std::rc::Rc::clone(#param);
@@ -720,12 +855,18 @@ impl Gen<'_> {
                         };
                     });
                 }
-                (Some(_), _) => return Err(Error::new(name.span(), format!("`{name}` takes a closure"))),
+                (Some(_), _) => {
+                    return Err(Error::new(name.span(), format!("`{name}` takes a closure")));
+                }
                 (None, Expr::Path(path))
                     if path.qself.is_none()
-                        && self.uses(scope, VIEW, &[(value, &[])])?.iter().any(|(n, ..)| {
-                            matches!(n.special, Some(Special::Size)) && path.path.is_ident(&n.ident)
-                        }) =>
+                        && self
+                            .uses(scope, VIEW, &[(value, &[])])?
+                            .iter()
+                            .any(|(n, ..)| {
+                                matches!(n.special, Some(Special::Size))
+                                    && path.path.is_ident(&n.ident)
+                            }) =>
                 {
                     // A `size!()` source binds the host: its layout writes it.
                     let uses = self.uses(scope, VIEW, &[(value, &[])])?;
@@ -755,7 +896,14 @@ impl Gen<'_> {
                             __cx.__attr(#index, #tag, |__table| __table.#name(), __value);
                         })
                     };
-                    self.effect(out, format!("{} {index}.{name}", crate::element::path_name(tag)), "Render", deps, None, run);
+                    self.effect(
+                        out,
+                        format!("{} {index}.{name}", crate::element::path_name(tag)),
+                        "Render",
+                        deps,
+                        None,
+                        run,
+                    );
                 }
             }
         }
@@ -783,15 +931,27 @@ impl Gen<'_> {
         self.children(scope, out, children, Some(index))
     }
 
-    fn children(&mut self, scope: &Scope, out: &mut Out, children: &[Child], parent: Option<u16>) -> Result<()> {
+    fn children(
+        &mut self,
+        scope: &Scope,
+        out: &mut Out,
+        children: &[Child],
+        parent: Option<u16>,
+    ) -> Result<()> {
         for child in children {
             match child {
                 Child::Element(element) => self.element(scope, out, element, parent)?,
                 Child::Expr(expr) => {
-                    return Err(Error::new(expr.span(), "a child is an element or a block; a component's own children are a `slot`"));
+                    return Err(Error::new(
+                        expr.span(),
+                        "a child is an element or a block; a component's own children are a `slot`",
+                    ));
                 }
                 Child::Let(stmt) => {
-                    return Err(Error::new(stmt.span(), "a `let` among children is not supported; use a `memo!`"));
+                    return Err(Error::new(
+                        stmt.span(),
+                        "a `let` among children is not supported; use a `memo!`",
+                    ));
                 }
                 Child::If(block) => self.if_block(scope, out, block, parent)?,
                 Child::For(block) => self.for_block(scope, out, block, parent)?,
@@ -805,7 +965,13 @@ impl Gen<'_> {
     /// table and mounts it: each prop takes `x` as its declaration says
     /// (see `xui_core::reactive::props`). A source passed by name is passed
     /// as its handle; anything else as an expression of this scope.
-    fn component(&mut self, scope: &Scope, out: &mut Out, element: &Element, parent: Option<u16>) -> Result<()> {
+    fn component(
+        &mut self,
+        scope: &Scope,
+        out: &mut Out,
+        element: &Element,
+        parent: Option<u16>,
+    ) -> Result<()> {
         let k = self.k.clone();
         let child = out.children.len() as u16;
         let parent = option_u16(parent);
@@ -827,7 +993,10 @@ impl Gen<'_> {
                 });
             }
             Body::Content(content) => {
-                return Err(Error::new(content.span(), "a component's children are elements: `tag { .. }`"));
+                return Err(Error::new(
+                    content.span(),
+                    "a component's children are elements: `tag { .. }`",
+                ));
             }
         }
         for attr in &element.attrs {
@@ -851,7 +1020,10 @@ impl Gen<'_> {
             if let Expr::Closure(closure) = &expr {
                 // A callback: the closure runs in this scope, with the `Cx` it is called with.
                 if closure.inputs.len() > 2 {
-                    return Err(Error::new(closure.inputs.span(), "a callback takes the `Cx` and its value: `|cx, value| ..`"));
+                    return Err(Error::new(
+                        closure.inputs.span(),
+                        "a callback takes the `Cx` and its value: `|cx, value| ..`",
+                    ));
                 }
                 let (_, body) = self.with_cx(scope, VIEW, closure, false)?;
                 let (kept, cx, arg) = (hidden("__kept_scope"), hidden("__cx"), hidden("__arg"));
@@ -871,9 +1043,9 @@ impl Gen<'_> {
             }
             let uses = self.uses(scope, VIEW, &[(&expr, &[])])?;
             let source = match &expr {
-                Expr::Path(path) if path.qself.is_none() && path.path.get_ident().is_some() => {
-                    uses.iter().find(|(n, ..)| n.handle.is_some() && path.path.is_ident(&n.ident))
-                }
+                Expr::Path(path) if path.qself.is_none() && path.path.get_ident().is_some() => uses
+                    .iter()
+                    .find(|(n, ..)| n.handle.is_some() && path.path.is_ident(&n.ident)),
                 _ => None,
             };
             let arg = match source {
@@ -888,7 +1060,9 @@ impl Gen<'_> {
                     // `(|v| ..)`: a closure as a value, not a callback. The
                     // parentheses said so; past here they would only be linted.
                     let value_expr = match &expr {
-                        Expr::Paren(paren) if matches!(&*paren.expr, Expr::Closure(_)) => &*paren.expr,
+                        Expr::Paren(paren) if matches!(&*paren.expr, Expr::Closure(_)) => {
+                            &*paren.expr
+                        }
                         other => other,
                     };
                     let code = rust(value_expr.to_token_stream())?;
@@ -973,7 +1147,11 @@ impl Gen<'_> {
         let mut out = Out::default();
         self.children(scope, &mut out, body, None)?;
         let level = self.sources + scope.depth as u16 - 1;
-        let Out { nodes, effects, children } = out;
+        let Out {
+            nodes,
+            effects,
+            children,
+        } = out;
         Ok(quote! {
             #k::reactive::RowTemplate {
                 level: #level,
@@ -1005,12 +1183,25 @@ impl Gen<'_> {
         let prelude = self.prelude(scope, &uses, Mode::Tracked);
         let header = scope.header(&k, quote!(__block: &mut #k::reactive::BlockCx<'_>));
         let run = quote!(#k::reactive::Run::Block(#node, #header { #prelude #control }));
-        self.effect(out, format!("{kind} {node}"), "Block", deps(&uses), None, run);
+        self.effect(
+            out,
+            format!("{kind} {node}"),
+            "Block",
+            deps(&uses),
+            None,
+            run,
+        );
         Ok(())
     }
 
     /// `__block.arm(scope, index, (bound,), template)` for one branch.
-    fn arm(&mut self, scope: &Scope, index: u16, idents: &[Ident], body: &[Child]) -> Result<TokenStream> {
+    fn arm(
+        &mut self,
+        scope: &Scope,
+        index: u16,
+        idents: &[Ident],
+        body: &[Child],
+    ) -> Result<TokenStream> {
         let data = quote!((#(#idents,)*));
         let inner = self.row_scope(scope, data.clone(), idents);
         let template = self.row_template(&inner, body)?;
@@ -1018,11 +1209,23 @@ impl Gen<'_> {
         Ok(quote!(__block.arm(#parent, #index, #data, #template)))
     }
 
-    fn if_block(&mut self, scope: &Scope, out: &mut Out, block: &IfChild, parent: Option<u16>) -> Result<()> {
+    fn if_block(
+        &mut self,
+        scope: &Scope,
+        out: &mut Out,
+        block: &IfChild,
+        parent: Option<u16>,
+    ) -> Result<()> {
         // Flatten `else if` chains into arms.
         let mut arms: Vec<(Option<&Expr>, &[Child])> = Vec::new();
         let mut next = Some(block);
-        while let Some(IfChild { cond, then, otherwise, .. }) = next {
+        while let Some(IfChild {
+            cond,
+            then,
+            otherwise,
+            ..
+        }) = next
+        {
             arms.push((Some(cond), then));
             next = match otherwise.as_deref() {
                 Some([Child::If(inner)]) => Some(inner),
@@ -1055,7 +1258,13 @@ impl Gen<'_> {
         self.block(scope, out, parent, "if", &parts, control)
     }
 
-    fn match_block(&mut self, scope: &Scope, out: &mut Out, block: &MatchChild, parent: Option<u16>) -> Result<()> {
+    fn match_block(
+        &mut self,
+        scope: &Scope,
+        out: &mut Out,
+        block: &MatchChild,
+        parent: Option<u16>,
+    ) -> Result<()> {
         let arm_idents: Vec<Vec<Ident>> = block
             .arms
             .iter()
@@ -1086,8 +1295,16 @@ impl Gen<'_> {
         self.block(scope, out, parent, "match", &parts, control)
     }
 
-    fn for_block(&mut self, scope: &Scope, out: &mut Out, block: &ForChild, parent: Option<u16>) -> Result<()> {
-        let ForChild { pat, iter, body, .. } = block;
+    fn for_block(
+        &mut self,
+        scope: &Scope,
+        out: &mut Out,
+        block: &ForChild,
+        parent: Option<u16>,
+    ) -> Result<()> {
+        let ForChild {
+            pat, iter, body, ..
+        } = block;
         // `.key(expr)` on an element of the body keys the rows.
         let mut body: Vec<Child> = body.iter().map(clone_child).collect();
         let mut key = None;
@@ -1135,7 +1352,10 @@ fn clone_child(child: &Child) -> Child {
             if_token: block.if_token,
             cond: block.cond.clone(),
             then: block.then.iter().map(clone_child).collect(),
-            otherwise: block.otherwise.as_ref().map(|o| o.iter().map(clone_child).collect()),
+            otherwise: block
+                .otherwise
+                .as_ref()
+                .map(|o| o.iter().map(clone_child).collect()),
         }),
         Child::For(block) => Child::For(ForChild {
             for_token: block.for_token,
@@ -1165,7 +1385,10 @@ fn clone_element(element: &Element) -> Element {
         attrs: element
             .attrs
             .iter()
-            .map(|a| crate::element::Attribute { name: a.name.clone(), value: a.value.clone() })
+            .map(|a| crate::element::Attribute {
+                name: a.name.clone(),
+                value: a.value.clone(),
+            })
             .collect(),
         body: match &element.body {
             Body::None => Body::None,
@@ -1190,11 +1413,22 @@ fn declare(
     if kind != Kind::Local && names.iter().any(|n| n.instance() && n.ident == *ident) {
         return Err(Error::new(
             ident.span(),
-            format!("`{ident}` is already kept on the instance; a prop, state, memo or typed `let` needs a name of its own"),
+            format!(
+                "`{ident}` is already kept on the instance; a prop, state, memo or typed `let` needs a name of its own"
+            ),
         ));
     }
     let source = handle.map(|_| names.iter().filter(|n| n.source.is_some()).count() as u16);
-    names.push(Name { ident: ident.clone(), kind, ty, handle, source, order, default: None, special: None });
+    names.push(Name {
+        ident: ident.clone(),
+        kind,
+        ty,
+        handle,
+        source,
+        order,
+        default: None,
+        special: None,
+    });
     Ok(names.len() - 1)
 }
 
@@ -1211,15 +1445,34 @@ fn statement_macro(stmt: &Stmt) -> Option<&Macro> {
 fn classify(stmt: Stmt, order: usize, names: &mut Vec<Name>) -> Result<Setup> {
     if let Some(mac) = statement_macro(&stmt) {
         match macro_name(mac).as_deref() {
-            Some("effect") => return Ok(Setup::Effect { closure: effect_closure(mac)? }),
-            Some("provide") => return Ok(Setup::Provide { expr: mac.parse_body()? }),
-            Some("ticker") => return Ok(Setup::Ticker { closure: ticker_closure(mac)?, name: None }),
+            Some("effect") => {
+                return Ok(Setup::Effect {
+                    closure: effect_closure(mac)?,
+                });
+            }
+            Some("provide") => {
+                return Ok(Setup::Provide {
+                    expr: mac.parse_body()?,
+                });
+            }
+            Some("ticker") => {
+                return Ok(Setup::Ticker {
+                    closure: ticker_closure(mac)?,
+                    name: None,
+                });
+            }
             _ => {}
         }
     }
-    let Stmt::Local(Local { pat, init, .. }) = &stmt else { return Ok(Setup::Verbatim(stmt)) };
+    let Stmt::Local(Local { pat, init, .. }) = &stmt else {
+        return Ok(Setup::Verbatim(stmt));
+    };
     let declaring = match init {
-        Some(LocalInit { expr, diverge: None, .. }) => match &**expr {
+        Some(LocalInit {
+            expr,
+            diverge: None,
+            ..
+        }) => match &**expr {
             Expr::Macro(mac) => match macro_name(&mac.mac).as_deref() {
                 Some("state") => Some(("state", &mac.mac)),
                 Some("memo") => Some(("memo", &mac.mac)),
@@ -1236,56 +1489,120 @@ fn classify(stmt: Stmt, order: usize, names: &mut Vec<Name>) -> Result<Setup> {
     if let Some((what, mac)) = declaring {
         let (ident, ty) = match pat {
             Pat::Type(typed) => match &*typed.pat {
-                Pat::Ident(ident) if ident.by_ref.is_none() && ident.mutability.is_none() && ident.subpat.is_none() => {
+                Pat::Ident(ident)
+                    if ident.by_ref.is_none()
+                        && ident.mutability.is_none()
+                        && ident.subpat.is_none() =>
+                {
                     (&ident.ident, (*typed.ty).clone())
                 }
-                pat => return Err(Error::new(pat.span(), format!("a `{what}!` is `let name: T = {what}!(..)`"))),
+                pat => {
+                    return Err(Error::new(
+                        pat.span(),
+                        format!("a `{what}!` is `let name: T = {what}!(..)`"),
+                    ));
+                }
             },
             Pat::Ident(ident) => {
                 return Err(Error::new(
                     ident.span(),
-                    format!("give `{0}` its value's type: `let {0}: T = {what}!(..)`", ident.ident),
+                    format!(
+                        "give `{0}` its value's type: `let {0}: T = {what}!(..)`",
+                        ident.ident
+                    ),
                 ));
             }
-            pat => return Err(Error::new(pat.span(), format!("a `{what}!` is `let name: T = {what}!(..)`"))),
+            pat => {
+                return Err(Error::new(
+                    pat.span(),
+                    format!("a `{what}!` is `let name: T = {what}!(..)`"),
+                ));
+            }
         };
         if handle_type(&ty).is_some() {
-            return Err(Error::new(ty.span(), format!("type `{ident}` by its value: `let {ident}: T = {what}!(..)`")));
+            return Err(Error::new(
+                ty.span(),
+                format!("type `{ident}` by its value: `let {ident}: T = {what}!(..)`"),
+            ));
         }
         return Ok(match what {
             "state" => {
                 let init = mac.parse_body()?;
-                let name = declare(names, ident, Kind::Field, Some(ty), Some(Handle::Signal), order)?;
+                let name = declare(
+                    names,
+                    ident,
+                    Kind::Field,
+                    Some(ty),
+                    Some(Handle::Signal),
+                    order,
+                )?;
                 Setup::State { name, init }
             }
             "memo" => {
                 let body = mac.parse_body()?;
-                let name = declare(names, ident, Kind::Field, Some(ty), Some(Handle::Memo), order)?;
+                let name = declare(
+                    names,
+                    ident,
+                    Kind::Field,
+                    Some(ty),
+                    Some(Handle::Memo),
+                    order,
+                )?;
                 Setup::Memo { name, body }
             }
             "ticker" => {
                 let closure = ticker_closure(mac)?;
                 let name = declare(names, ident, Kind::Field, Some(ty), None, order)?;
-                Setup::Ticker { closure, name: Some(name) }
+                Setup::Ticker {
+                    closure,
+                    name: Some(name),
+                }
             }
             "resource" => {
                 let future = mac.parse_body()?;
-                let name = declare(names, ident, Kind::Field, Some(ty), Some(Handle::Signal), order)?;
+                let name = declare(
+                    names,
+                    ident,
+                    Kind::Field,
+                    Some(ty),
+                    Some(Handle::Signal),
+                    order,
+                )?;
                 Setup::Resource { name, future }
             }
             "size" => {
                 if !mac.tokens.is_empty() {
-                    return Err(Error::new(mac.tokens.span(), "`size!()` takes nothing; pass it to a host's `size_observer`"));
+                    return Err(Error::new(
+                        mac.tokens.span(),
+                        "`size!()` takes nothing; pass it to a host's `size_observer`",
+                    ));
                 }
-                let name = declare(names, ident, Kind::Field, Some(ty), Some(Handle::Signal), order)?;
+                let name = declare(
+                    names,
+                    ident,
+                    Kind::Field,
+                    Some(ty),
+                    Some(Handle::Signal),
+                    order,
+                )?;
                 names[name].special = Some(Special::Size);
                 Setup::Size { name }
             }
             _ => {
                 if !mac.tokens.is_empty() {
-                    return Err(Error::new(mac.tokens.span(), "`context!()` takes nothing: its type is the `let`'s"));
+                    return Err(Error::new(
+                        mac.tokens.span(),
+                        "`context!()` takes nothing: its type is the `let`'s",
+                    ));
                 }
-                let name = declare(names, ident, Kind::Field, Some(ty), Some(Handle::ReadSignal), order)?;
+                let name = declare(
+                    names,
+                    ident,
+                    Kind::Field,
+                    Some(ty),
+                    Some(Handle::ReadSignal),
+                    order,
+                )?;
                 Setup::Context { name }
             }
         });
@@ -1293,16 +1610,29 @@ fn classify(stmt: Stmt, order: usize, names: &mut Vec<Name>) -> Result<Setup> {
     match pat {
         Pat::Type(typed) => {
             let Pat::Ident(ident) = &*typed.pat else {
-                return Err(Error::new(typed.pat.span(), "a typed `let` here names one field"));
+                return Err(Error::new(
+                    typed.pat.span(),
+                    "a typed `let` here names one field",
+                ));
             };
             if let Some(handle) = handle_type(&typed.ty) {
                 let what = if handle == "Memo" { "memo" } else { "state" };
                 return Err(Error::new(
                     typed.ty.span(),
-                    format!("declare it by its value's type: `let {}: T = {what}!(..)`", ident.ident),
+                    format!(
+                        "declare it by its value's type: `let {}: T = {what}!(..)`",
+                        ident.ident
+                    ),
                 ));
             }
-            declare(names, &ident.ident, Kind::Field, Some((*typed.ty).clone()), None, order)?;
+            declare(
+                names,
+                &ident.ident,
+                Kind::Field,
+                Some((*typed.ty).clone()),
+                None,
+                order,
+            )?;
         }
         pat => {
             let mut idents = Vec::new();
@@ -1332,10 +1662,18 @@ fn prop(input: &FnArg, names: &mut Vec<Name>, defaults: &mut Vec<(Ident, Expr)>)
         let marker = match &attr.meta {
             Meta::Path(path) if path.is_ident("source") => Handle::ReadSignal,
             Meta::Path(path) if path.is_ident("state") => Handle::Signal,
-            _ => return Err(Error::new(attr.span(), "a prop takes `#[source]` or `#[state]`")),
+            _ => {
+                return Err(Error::new(
+                    attr.span(),
+                    "a prop takes `#[source]` or `#[state]`",
+                ));
+            }
         };
         if handle.replace(marker).is_some() {
-            return Err(Error::new(attr.span(), "a prop takes one of `#[source]` and `#[state]`"));
+            return Err(Error::new(
+                attr.span(),
+                "a prop takes one of `#[source]` and `#[state]`",
+            ));
         }
     }
     let ty = (*reference.elem).clone();
@@ -1358,7 +1696,10 @@ fn prop(input: &FnArg, names: &mut Vec<Name>, defaults: &mut Vec<(Ident, Expr)>)
     }
     let special = special(&ty);
     if special.is_some() && handle.is_some() {
-        return Err(Error::new(typed.span(), "a callback or children prop is neither `#[source]` nor `#[state]`"));
+        return Err(Error::new(
+            typed.span(),
+            "a callback or children prop is neither `#[source]` nor `#[state]`",
+        ));
     }
     let index = declare(names, &ident.ident, Kind::Prop, Some(ty), handle, 0)?;
     names[index].special = special;
@@ -1387,7 +1728,8 @@ struct Generics {
 
 impl Generics {
     fn new(generics: &syn::Generics) -> Result<Self> {
-        let (mut decl, mut args, mut preds, mut carried) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut decl, mut args, mut preds, mut carried) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for param in &generics.params {
             match param {
                 GenericParam::Lifetime(lifetime) => {
@@ -1415,7 +1757,12 @@ impl Generics {
             preds.extend(clause.predicates.iter().map(ToTokens::to_token_stream));
         }
         let phantom = quote!(::core::marker::PhantomData<fn() -> (#(#carried,)*)>);
-        Ok(Self { decl, args, preds, phantom })
+        Ok(Self {
+            decl,
+            args,
+            preds,
+            phantom,
+        })
     }
 
     fn is_empty(&self) -> bool {
@@ -1489,7 +1836,10 @@ fn defaults(attrs: &[syn::Attribute]) -> Result<Vec<(Ident, Expr)>> {
             continue;
         }
         if !attr.path().is_ident("defaults") {
-            return Err(Error::new(attr.span(), "a component takes `#[defaults(..)]`, and docs"));
+            return Err(Error::new(
+                attr.span(),
+                "a component takes `#[defaults(..)]`, and docs",
+            ));
         }
         let entries = attr.parse_args_with(
             syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_terminated,
@@ -1515,7 +1865,13 @@ fn tail_view(stmt: Option<Stmt>) -> Result<Element> {
             return Err(Error::new(span, MESSAGE));
         }
     };
-    let view: Element = match mac.path.segments.last().map(|s| s.ident.to_string()).as_deref() {
+    let view: Element = match mac
+        .path
+        .segments
+        .last()
+        .map(|s| s.ident.to_string())
+        .as_deref()
+    {
         Some("xui") => syn::parse2(mac.tokens)?,
         Some("view") => syn::parse2::<crate::view::View>(mac.tokens)?.0,
         _ => return Err(Error::new(mac.path.span(), MESSAGE)),
@@ -1525,10 +1881,18 @@ fn tail_view(stmt: Option<Stmt>) -> Result<Element> {
 
 pub fn expand(function: ItemFn) -> Result<TokenStream> {
     let k = crate::krate::xui()?;
-    let ItemFn { attrs, vis, sig, block } = function;
+    let ItemFn {
+        attrs,
+        vis,
+        sig,
+        block,
+    } = function;
     let mut defaults = defaults(&attrs)?;
     if sig.asyncness.is_some() || !matches!(sig.output, ReturnType::Default) {
-        return Err(Error::new(sig.span(), "a component is a plain `fn name(prop: &T, ..)` returning nothing"));
+        return Err(Error::new(
+            sig.span(),
+            "a component is a plain `fn name(prop: &T, ..)` returning nothing",
+        ));
     }
     let mut generics = Generics::new(&sig.generics)?;
     // A component may share a host's name (`xui_components::image::image`):
@@ -1536,7 +1900,10 @@ pub fn expand(function: ItemFn) -> Result<TokenStream> {
     if sig.ident == "slot" || sig.ident == "portal" {
         return Err(Error::new(
             sig.ident.span(),
-            format!("`{}` is a built-in tag; a component needs a name of its own", sig.ident),
+            format!(
+                "`{}` is a built-in tag; a component needs a name of its own",
+                sig.ident
+            ),
         ));
     }
     let marker = pascal_case(&sig.ident);
@@ -1548,7 +1915,10 @@ pub fn expand(function: ItemFn) -> Result<TokenStream> {
         prop(input, &mut names, &mut defaults)?;
     }
     if let Some((name, _)) = defaults.first() {
-        return Err(Error::new(name.span(), format!("no prop is called `{name}`")));
+        return Err(Error::new(
+            name.span(),
+            format!("no prop is called `{name}`"),
+        ));
     }
 
     let mut stmts = block.stmts;
@@ -1564,7 +1934,10 @@ pub fn expand(function: ItemFn) -> Result<TokenStream> {
     let mut moves: BTreeMap<usize, Vec<&Ident>> = BTreeMap::new();
     let mut moved = Vec::new();
     for field in names.iter().filter(|n| n.kind == Kind::Field) {
-        if let Some(local) = names.iter().find(|n| n.kind == Kind::Local && n.ident == field.ident && n.order > field.order) {
+        if let Some(local) = names
+            .iter()
+            .find(|n| n.kind == Kind::Local && n.ident == field.ident && n.order > field.order)
+        {
             moves.entry(local.order).or_default().push(&field.ident);
             moved.push(field.ident.clone());
         }
@@ -1575,13 +1948,25 @@ pub fn expand(function: ItemFn) -> Result<TokenStream> {
     // values to tell whether it changed: implied, like `'static`, for a type
     // that names a parameter.
     for n in &names {
-        let compared = matches!((n.kind, n.handle), (Kind::Prop, Some(Handle::ReadSignal)) | (_, Some(Handle::Memo)));
-        if let Some(ty) = n.ty.as_ref().filter(|ty| compared && generics.mentioned_by(ty)) {
+        let compared = matches!(
+            (n.kind, n.handle),
+            (Kind::Prop, Some(Handle::ReadSignal)) | (_, Some(Handle::Memo))
+        );
+        if let Some(ty) =
+            n.ty.as_ref()
+                .filter(|ty| compared && generics.mentioned_by(ty))
+        {
             generics.preds.push(quote!(#ty: ::core::cmp::PartialEq));
         }
     }
     let sources = names.iter().filter(|n| n.source.is_some()).count() as u16;
-    let mut g = Gen { k: k.clone(), names: &names, sources, fns: Vec::new(), effect_blocks: 0 };
+    let mut g = Gen {
+        k: k.clone(),
+        names: &names,
+        sources,
+        fns: Vec::new(),
+        effect_blocks: 0,
+    };
     let mut out = Out::default();
     let mut create = Vec::new();
     let user_cx = Ident::new("cx", Span::call_site());
@@ -1614,7 +1999,9 @@ pub fn expand(function: ItemFn) -> Result<TokenStream> {
                 let n = &names[*name];
                 let (id, ty) = (&n.ident, n.field_ty(&k));
                 g.resource(&mut out, n, future)?;
-                create.push(quote!(let #id: #ty = #user_cx.signal(#k::reactive::AsyncValue::Pending);));
+                create.push(
+                    quote!(let #id: #ty = #user_cx.signal(#k::reactive::AsyncValue::Pending);),
+                );
             }
             Setup::Size { name } => {
                 let n = &names[*name];
@@ -1629,9 +2016,13 @@ pub fn expand(function: ItemFn) -> Result<TokenStream> {
             Setup::Provide { expr } => {
                 // A source by name is provided as itself, anything else as a constant.
                 let source = match expr {
-                    Expr::Path(path) if path.qself.is_none() => path.path.get_ident().and_then(|ident| {
-                        names.iter().rev().find(|n| n.ident == *ident && n.order < order && n.handle.is_some())
-                    }),
+                    Expr::Path(path) if path.qself.is_none() => {
+                        path.path.get_ident().and_then(|ident| {
+                            names.iter().rev().find(|n| {
+                                n.ident == *ident && n.order < order && n.handle.is_some()
+                            })
+                        })
+                    }
                     _ => None,
                 };
                 let code = rust(expr.to_token_stream())?;
@@ -1664,7 +2055,10 @@ pub fn expand(function: ItemFn) -> Result<TokenStream> {
             inits.push(quote!(#id));
         }
     }
-    let source_names = names.iter().filter(|n| n.source.is_some()).map(|n| n.ident.to_string());
+    let source_names = names
+        .iter()
+        .filter(|n| n.source.is_some())
+        .map(|n| n.ident.to_string());
     let source_arms = names.iter().filter_map(|n| {
         let (index, id) = (n.source?, &n.ident);
         Some(quote!(#index => #k::reactive::Source::id(&self.#id),))
@@ -1688,10 +2082,29 @@ pub fn expand(function: ItemFn) -> Result<TokenStream> {
         prop_fields.push(quote!(pub #phantom: #ty));
     }
     let fns = g.fns;
-    let Out { nodes, effects, children } = out;
+    let Out {
+        nodes,
+        effects,
+        children,
+    } = out;
     let docs: Vec<_> = attrs.iter().filter(|a| a.path().is_ident("doc")).collect();
-    let protocol = protocol(&k, &vis, &marker, &sig.ident, &props_name, &name, &names, &docs, &generics, props_phantom);
-    let (params, args, where_clause) = (generics.params(&[]), generics.args(), generics.where_clause(&[]));
+    let protocol = protocol(
+        &k,
+        &vis,
+        &marker,
+        &sig.ident,
+        &props_name,
+        &name,
+        &names,
+        &docs,
+        &generics,
+        props_phantom,
+    );
+    let (params, args, where_clause) = (
+        generics.params(&[]),
+        generics.args(),
+        generics.where_clause(&[]),
+    );
 
     Ok(quote! {
         #protocol
@@ -1759,7 +2172,11 @@ fn protocol(
     let property = |n: &Name| format_ident!("__xui_{}_{}", tag, n.ident);
     let requirements = format_ident!("{}Requirements", marker);
     let phantom = hidden("__phantom");
-    let (params, args, where_clause) = (generics.params(&[]), generics.args(), generics.where_clause(&[]));
+    let (params, args, where_clause) = (
+        generics.params(&[]),
+        generics.args(),
+        generics.where_clause(&[]),
+    );
     let generic = !generics.is_empty();
     let phantom_ty = &generics.phantom;
 
@@ -1794,9 +2211,15 @@ fn protocol(
         draft_defaults.push(quote!(#phantom: ::core::marker::PhantomData));
     }
 
-    let required: Vec<&&Name> = props.iter().filter(|n| n.default.is_none() && n.special.is_none()).collect();
+    let required: Vec<&&Name> = props
+        .iter()
+        .filter(|n| n.default.is_none() && n.special.is_none())
+        .collect();
     let state = |n: &Name, what: &str| format_ident!("{}{}{}", marker, pascal_case(&n.ident), what);
-    let states: Vec<Ident> = required.iter().map(|n| format_ident!("__{}State", pascal_case(&n.ident))).collect();
+    let states: Vec<Ident> = required
+        .iter()
+        .map(|n| format_ident!("__{}State", pascal_case(&n.ident)))
+        .collect();
 
     let value = Ident::new("__XuiValue", Span::call_site());
     let handle = Ident::new("__XuiHandle", Span::call_site());
@@ -1956,7 +2379,12 @@ fn protocol(
 
     // The requirement state: one `Missing`/`Set` parameter per required prop.
     let (requirements_def, initial, complete, state_bounds) = if required.is_empty() {
-        (quote!(), quote!(#k::property::Complete), quote!(#k::property::Complete), Vec::new())
+        (
+            quote!(),
+            quote!(#k::property::Complete),
+            quote!(#k::property::Complete),
+            Vec::new(),
+        )
     } else {
         let markers = required.iter().map(|n| {
             let (missing, set, is_set) = (state(n, "Missing"), state(n, "Set"), state(n, "IsSet"));
@@ -1975,7 +2403,13 @@ fn protocol(
         });
         let fulfils = required.iter().enumerate().map(|(i, n)| {
             let id = property(n);
-            let output = states.iter().enumerate().map(|(j, p)| if i == j { state(required[j], "Set") } else { p.clone() });
+            let output = states.iter().enumerate().map(|(j, p)| {
+                if i == j {
+                    state(required[j], "Set")
+                } else {
+                    p.clone()
+                }
+            });
             let (p, w) = (generics.params(&states), generics.where_clause(&[]));
             quote! {
                 impl #p #k::property::Fulfil<#id #args> for #requirements<#(#states),*> #w {
@@ -2004,13 +2438,17 @@ fn protocol(
             bounds,
         )
     };
-    let (mount_params, mount_where) = (generics.params(&states), generics.where_clause(&state_bounds));
+    let (mount_params, mount_where) = (
+        generics.params(&states),
+        generics.where_clause(&state_bounds),
+    );
 
     let mut resolve: Vec<TokenStream> = props
         .iter()
         .map(|n| {
             let id = &n.ident;
-            let missing = format!("required prop `{id}` was marked as set by the draft's requirement state");
+            let missing =
+                format!("required prop `{id}` was marked as set by the draft's requirement state");
             let value = match &n.default {
                 // Callbacks and children default to none.
                 None if n.special.is_some() => quote!(__draft.#id.unwrap_or_default()),
@@ -2018,7 +2456,10 @@ fn protocol(
                     // A numeric literal takes the prop's type; anything else converts into it.
                     let ty = &n.ty;
                     let value = match default {
-                        Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(_) | syn::Lit::Float(_), .. }) => {
+                        Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Int(_) | syn::Lit::Float(_),
+                            ..
+                        }) => {
                             quote!({ let __default: #ty = #default; __default })
                         }
                         _ => quote!(::core::convert::Into::<#ty>::into(#default)),
@@ -2042,7 +2483,11 @@ fn protocol(
     }
 
     let marker_doc = format!("The `{tag}` component.");
-    let marker_doc = if docs.is_empty() { quote!(#[doc = #marker_doc]) } else { quote!(#(#docs)*) };
+    let marker_doc = if docs.is_empty() {
+        quote!(#[doc = #marker_doc])
+    } else {
+        quote!(#(#docs)*)
+    };
     let (marker_def, table_def) = if generic {
         (
             quote!(#vis struct #marker #params (#phantom_ty) #where_clause;),

@@ -534,8 +534,8 @@ impl AssetFormat for SvgAsset {
 mod tests {
     use super::*;
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     };
 
     /// The runtime is process-global, so tests that install a manager take
@@ -780,7 +780,6 @@ mod tests {
 
         clear_asset_manager();
     }
-
 
     #[test]
     fn a_missing_external_package_is_named_in_the_error() {

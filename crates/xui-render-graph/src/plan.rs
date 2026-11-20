@@ -1372,9 +1372,7 @@ pub fn spread_chunks(radius_px: f32) -> Vec<u32> {
     let mut remaining = radius;
     (0..count)
         .map(|stage| {
-            let chunk = remaining
-                .div_ceil(count - stage)
-                .min(MAX_PASS_RADIUS_PX);
+            let chunk = remaining.div_ceil(count - stage).min(MAX_PASS_RADIUS_PX);
             remaining = remaining.saturating_sub(chunk);
             chunk
         })

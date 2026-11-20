@@ -15,7 +15,8 @@ use xui_core::{
 };
 use xui_cosmic::CosmicEngine;
 use xui_interface::{
-    ColorStyle, Effect, FilterQuality, FlexDirectionStyle, ImageData, ImageFit, Point, Sampling, ShadowStyle,
+    ColorStyle, Effect, FilterQuality, FlexDirectionStyle, ImageData, ImageFit, Point, Sampling,
+    ShadowStyle,
 };
 use xui_macros::component;
 use xui_vello::{Unsupported, VelloBackend, VelloBackendOptions};
@@ -25,7 +26,11 @@ fn a_filled_container_reaches_the_pixels() {
     let Some(frame) = render(solid_root) else {
         return;
     };
-    assert!(is_close(frame.at(50, 50), [255, 0, 0, 255]), "{:?}", frame.at(50, 50));
+    assert!(
+        is_close(frame.at(50, 50), [255, 0, 0, 255]),
+        "{:?}",
+        frame.at(50, 50)
+    );
     assert!(is_close(frame.at(2, 2), [255, 0, 0, 255]));
     assert!(is_close(frame.at(97, 97), [255, 0, 0, 255]));
 }
@@ -38,11 +43,22 @@ fn a_rounded_clip_cuts_the_corner_but_not_the_middle() {
     // The corner lies outside a 40px radius, so neither the parent's red nor
     // the child's blue is there: what shows is the app root's own surface.
     let corner = frame.at(1, 1);
-    assert!(!is_close(corner, [255, 0, 0, 255]) && !is_close(corner, [0, 0, 255, 255]), "{corner:?}");
+    assert!(
+        !is_close(corner, [255, 0, 0, 255]) && !is_close(corner, [0, 0, 255, 255]),
+        "{corner:?}"
+    );
     // The edge midpoints are inside the shape, so the cut is a curve, not a box.
-    assert!(is_close(frame.at(50, 1), [0, 0, 255, 255]), "{:?}", frame.at(50, 1));
+    assert!(
+        is_close(frame.at(50, 1), [0, 0, 255, 255]),
+        "{:?}",
+        frame.at(50, 1)
+    );
     // The middle shows the clipped child on top of its parent.
-    assert!(is_close(frame.at(50, 50), [0, 0, 255, 255]), "{:?}", frame.at(50, 50));
+    assert!(
+        is_close(frame.at(50, 50), [0, 0, 255, 255]),
+        "{:?}",
+        frame.at(50, 50)
+    );
 }
 
 #[test]
@@ -52,9 +68,16 @@ fn a_blur_effect_softens_the_layer_edge() {
     };
     // Box spans x 30..70. Its middle is untouched, and the pixel just outside
     // the left edge, pure white if nothing were blurred, picks up red.
-    assert!(is_close(frame.at(50, 50), [255, 0, 0, 255]), "{:?}", frame.at(50, 50));
+    assert!(
+        is_close(frame.at(50, 50), [255, 0, 0, 255]),
+        "{:?}",
+        frame.at(50, 50)
+    );
     let outside = frame.at(28, 50);
-    assert!(outside[1] < 235 && outside[1] > 60, "edge not softened: {outside:?}");
+    assert!(
+        outside[1] < 235 && outside[1] > 60,
+        "edge not softened: {outside:?}"
+    );
     assert!(is_close(frame.at(5, 5), [255, 255, 255, 255]));
     assert!(!frame.unsupported.layer_effect);
 }
@@ -64,7 +87,11 @@ fn a_colour_matrix_effect_swaps_channels() {
     let Some(frame) = render(swap_root) else {
         return;
     };
-    assert!(is_close(frame.at(50, 50), [0, 0, 255, 255]), "{:?}", frame.at(50, 50));
+    assert!(
+        is_close(frame.at(50, 50), [0, 0, 255, 255]),
+        "{:?}",
+        frame.at(50, 50)
+    );
     assert!(is_close(frame.at(5, 5), [255, 255, 255, 255]));
 }
 
@@ -79,7 +106,11 @@ fn a_drop_shadow_effect_falls_below_the_layer() {
     assert!(luma(below) < 3 * 120, "no shadow below: {below:?}");
     assert!(is_close(frame.at(50, 10), [255, 255, 255, 255]));
     // The box itself is still on top.
-    assert!(is_close(frame.at(50, 50), [255, 0, 0, 255]), "{:?}", frame.at(50, 50));
+    assert!(
+        is_close(frame.at(50, 50), [255, 0, 0, 255]),
+        "{:?}",
+        frame.at(50, 50)
+    );
 }
 
 #[test]
@@ -91,7 +122,10 @@ fn text_is_drawn_from_system_fonts() {
     // ignored: only fully inked pixels count.
     let ink = count(&frame, |p| is_close(p, [255, 0, 0, 255]));
     assert!(ink > 100, "expected glyph pixels, found {ink}");
-    assert!(!frame.unsupported.missing_font, "a run's font failed to load");
+    assert!(
+        !frame.unsupported.missing_font,
+        "a run's font failed to load"
+    );
     // 32px text sits in the top band of a 100px box, not the bottom.
     let bottom_ink: usize = (70..100)
         .flat_map(|y| (0..100).map(move |x| (x, y)))
@@ -105,10 +139,26 @@ fn an_image_is_stretched_over_its_box() {
     let Some(frame) = render(image_root) else {
         return;
     };
-    assert!(is_close(frame.at(25, 25), [255, 0, 0, 255]), "{:?}", frame.at(25, 25));
-    assert!(is_close(frame.at(75, 25), [0, 255, 0, 255]), "{:?}", frame.at(75, 25));
-    assert!(is_close(frame.at(25, 75), [0, 0, 255, 255]), "{:?}", frame.at(25, 75));
-    assert!(is_close(frame.at(75, 75), [255, 255, 255, 255]), "{:?}", frame.at(75, 75));
+    assert!(
+        is_close(frame.at(25, 25), [255, 0, 0, 255]),
+        "{:?}",
+        frame.at(25, 25)
+    );
+    assert!(
+        is_close(frame.at(75, 25), [0, 255, 0, 255]),
+        "{:?}",
+        frame.at(75, 25)
+    );
+    assert!(
+        is_close(frame.at(25, 75), [0, 0, 255, 255]),
+        "{:?}",
+        frame.at(25, 75)
+    );
+    assert!(
+        is_close(frame.at(75, 75), [255, 255, 255, 255]),
+        "{:?}",
+        frame.at(75, 75)
+    );
 }
 
 #[test]
@@ -117,9 +167,21 @@ fn contain_leaves_the_box_visible_beside_the_image() {
         return;
     };
     // Box is 100x50; the image is a centred 50x50, spanning x = 25..75.
-    assert!(is_close(frame.at(5, 25), [0, 0, 255, 255]), "{:?}", frame.at(5, 25));
-    assert!(is_close(frame.at(35, 12), [255, 0, 0, 255]), "{:?}", frame.at(35, 12));
-    assert!(is_close(frame.at(65, 12), [0, 255, 0, 255]), "{:?}", frame.at(65, 12));
+    assert!(
+        is_close(frame.at(5, 25), [0, 0, 255, 255]),
+        "{:?}",
+        frame.at(5, 25)
+    );
+    assert!(
+        is_close(frame.at(35, 12), [255, 0, 0, 255]),
+        "{:?}",
+        frame.at(35, 12)
+    );
+    assert!(
+        is_close(frame.at(65, 12), [0, 255, 0, 255]),
+        "{:?}",
+        frame.at(65, 12)
+    );
 }
 
 #[test]
@@ -137,7 +199,10 @@ fn a_shadow_is_blurred_and_offset() {
     // The edge is soft: the falloff passes through intermediate greys rather
     // than jumping from shadow to white.
     let ramp: Vec<u32> = (76..92).map(|y| luma(frame.at(40, y))).collect();
-    assert!(ramp.windows(2).all(|w| w[0] <= w[1]), "not monotonic: {ramp:?}");
+    assert!(
+        ramp.windows(2).all(|w| w[0] <= w[1]),
+        "not monotonic: {ramp:?}"
+    );
     assert!(
         ramp.iter().any(|v| *v > 3 * 40 && *v < 3 * 215),
         "edge is hard, not blurred: {ramp:?}"
@@ -152,8 +217,14 @@ fn a_linear_gradient_runs_from_one_stop_to_the_other() {
     let left = frame.at(2, 50);
     let middle = frame.at(50, 50);
     let right = frame.at(97, 50);
-    assert!(left[0] > 230 && left[2] < 25, "left should be red: {left:?}");
-    assert!(right[2] > 230 && right[0] < 25, "right should be blue: {right:?}");
+    assert!(
+        left[0] > 230 && left[2] < 25,
+        "left should be red: {left:?}"
+    );
+    assert!(
+        right[2] > 230 && right[0] < 25,
+        "right should be blue: {right:?}"
+    );
     // The midpoint is an even mix, not either end.
     assert!(
         (100..160).contains(&middle[0]) && (100..160).contains(&middle[2]),
@@ -170,9 +241,15 @@ fn a_radial_gradient_runs_from_the_centre_outwards() {
     };
     let centre = frame.at(50, 50);
     let corner = frame.at(2, 2);
-    assert!(centre[0] > 230 && centre[2] < 25, "centre should be red: {centre:?}");
+    assert!(
+        centre[0] > 230 && centre[2] < 25,
+        "centre should be red: {centre:?}"
+    );
     // The radius is half the short side, so the corner is past it and clamps.
-    assert!(corner[2] > 230 && corner[0] < 25, "corner should be blue: {corner:?}");
+    assert!(
+        corner[2] > 230 && corner[0] < 25,
+        "corner should be blue: {corner:?}"
+    );
 }
 
 #[test]
@@ -180,8 +257,16 @@ fn a_gpu_painter_canvas_is_composited() {
     let Some(frame) = render(gpu_canvas_root) else {
         return;
     };
-    assert!(is_close(frame.at(50, 50), [0, 0, 255, 255]), "{:?}", frame.at(50, 50));
-    assert!(is_close(frame.at(2, 2), [0, 0, 255, 255]), "{:?}", frame.at(2, 2));
+    assert!(
+        is_close(frame.at(50, 50), [0, 0, 255, 255]),
+        "{:?}",
+        frame.at(50, 50)
+    );
+    assert!(
+        is_close(frame.at(2, 2), [0, 0, 255, 255]),
+        "{:?}",
+        frame.at(2, 2)
+    );
 }
 
 #[test]
@@ -190,7 +275,11 @@ fn a_registered_texture_is_drawn_where_the_canvas_places_it() {
         let context = backend.wgpu_context();
         let texture = context.device().create_texture(&wgpu::TextureDescriptor {
             label: Some("registered"),
-            size: wgpu::Extent3d { width: 4, height: 4, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: 4,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -203,15 +292,28 @@ fn a_registered_texture_is_drawn_where_the_canvas_places_it() {
             context.device(),
             context.queue(),
             &view,
-            wgpu::Color { r: 0.0, g: 1.0, b: 0.0, a: 1.0 },
+            wgpu::Color {
+                r: 0.0,
+                g: 1.0,
+                b: 0.0,
+                a: 1.0,
+            },
         );
         backend.set_wgpu_texture(REGISTERED, &texture);
     }) else {
         return;
     };
-    assert!(is_close(frame.at(25, 50), [0, 255, 0, 255]), "{:?}", frame.at(25, 50));
+    assert!(
+        is_close(frame.at(25, 50), [0, 255, 0, 255]),
+        "{:?}",
+        frame.at(25, 50)
+    );
     // Right of the placed bounds the white root surface is untouched.
-    assert!(is_close(frame.at(75, 50), [255, 255, 255, 255]), "{:?}", frame.at(75, 50));
+    assert!(
+        is_close(frame.at(75, 50), [255, 255, 255, 255]),
+        "{:?}",
+        frame.at(75, 50)
+    );
 }
 
 #[test]
@@ -219,7 +321,11 @@ fn an_unregistered_texture_draws_nothing() {
     let Some(frame) = render(registered_texture_root) else {
         return;
     };
-    assert!(is_close(frame.at(25, 50), [255, 255, 255, 255]), "{:?}", frame.at(25, 50));
+    assert!(
+        is_close(frame.at(25, 50), [255, 255, 255, 255]),
+        "{:?}",
+        frame.at(25, 50)
+    );
 }
 
 #[test]
@@ -228,17 +334,34 @@ fn a_backdrop_blur_softens_what_is_behind_the_layer() {
         return;
     };
     // Outside the panel (x 25..75) nothing is touched.
-    assert!(is_close(frame.at(10, 50), [255, 0, 0, 255]), "{:?}", frame.at(10, 50));
-    assert!(is_close(frame.at(90, 50), [0, 0, 255, 255]), "{:?}", frame.at(90, 50));
+    assert!(
+        is_close(frame.at(10, 50), [255, 0, 0, 255]),
+        "{:?}",
+        frame.at(10, 50)
+    );
+    assert!(
+        is_close(frame.at(90, 50), [0, 0, 255, 255]),
+        "{:?}",
+        frame.at(90, 50)
+    );
     // Just inside it, five pixels from the seam, the two colours have mixed.
     // The blur works on the encoded values, as Skia's does: 27% blue there is
     // about 69.
     let near = frame.at(45, 50);
-    assert!(near[0] > 110 && near[0] < 240, "red should have faded: {near:?}");
-    assert!(near[2] > 20 && near[2] < 175, "blue should have bled in: {near:?}");
+    assert!(
+        near[0] > 110 && near[0] < 240,
+        "red should have faded: {near:?}"
+    );
+    assert!(
+        near[2] > 20 && near[2] < 175,
+        "blue should have bled in: {near:?}"
+    );
     // The same pixel is monotonic across the seam.
     let ramp: Vec<u8> = (30..70).map(|x| frame.at(x, 50)[0]).collect();
-    assert!(ramp.windows(2).all(|w| w[0] >= w[1]), "not monotonic: {ramp:?}");
+    assert!(
+        ramp.windows(2).all(|w| w[0] >= w[1]),
+        "not monotonic: {ramp:?}"
+    );
     // Deep inside the panel, far from the seam, the blur is nearly nothing: a
     // 0.3% blue tail, a value or two.
     let far = frame.at(28, 50);
@@ -252,12 +375,25 @@ fn what_a_glass_layer_draws_is_on_top_of_its_backdrop() {
         return;
     };
     // The pane's own child sits at its top-left corner, x 25..35, y 0..10.
-    assert!(is_close(frame.at(30, 5), [0, 255, 0, 255]), "{:?}", frame.at(30, 5));
+    assert!(
+        is_close(frame.at(30, 5), [0, 255, 0, 255]),
+        "{:?}",
+        frame.at(30, 5)
+    );
     // The backdrop around it is still the red behind the panel.
-    assert!(is_close(frame.at(60, 50), [255, 0, 0, 255]), "{:?}", frame.at(60, 50));
+    assert!(
+        is_close(frame.at(60, 50), [255, 0, 0, 255]),
+        "{:?}",
+        frame.at(60, 50)
+    );
 }
 
-const GREEN: wgpu::Color = wgpu::Color { r: 0.0, g: 1.0, b: 0.0, a: 1.0 };
+const GREEN: wgpu::Color = wgpu::Color {
+    r: 0.0,
+    g: 1.0,
+    b: 0.0,
+    a: 1.0,
+};
 
 /// Red everywhere; a green texture over the middle; a blue square over the
 /// texture. Paint order is red, texture, blue.
@@ -289,11 +425,23 @@ fn a_texture_sits_where_it_was_painted_in_the_order() {
         return;
     };
     // Below the texture: the red field.
-    assert!(is_close(frame.at(10, 10), [255, 0, 0, 255]), "{:?}", frame.at(10, 10));
+    assert!(
+        is_close(frame.at(10, 10), [255, 0, 0, 255]),
+        "{:?}",
+        frame.at(10, 10)
+    );
     // The texture itself.
-    assert!(is_close(frame.at(30, 30), [0, 255, 0, 255]), "{:?}", frame.at(30, 30));
+    assert!(
+        is_close(frame.at(30, 30), [0, 255, 0, 255]),
+        "{:?}",
+        frame.at(30, 30)
+    );
     // Above the texture: the blue square, not the texture through it.
-    assert!(is_close(frame.at(50, 50), [0, 0, 255, 255]), "{:?}", frame.at(50, 50));
+    assert!(
+        is_close(frame.at(50, 50), [0, 0, 255, 255]),
+        "{:?}",
+        frame.at(50, 50)
+    );
     assert_eq!(frame.unsupported, Default::default());
 }
 
@@ -332,13 +480,22 @@ fn an_srgb_texture_keeps_its_colour() {
         let texture = texture_of(
             backend,
             4,
-            wgpu::Color { r: 0.5, g: 0.5, b: 0.5, a: 1.0 },
+            wgpu::Color {
+                r: 0.5,
+                g: 0.5,
+                b: 0.5,
+                a: 1.0,
+            },
         );
         backend.set_wgpu_texture(REGISTERED, &texture);
     }) else {
         return;
     };
-    assert!(is_close(frame.at(25, 50), [188, 188, 188, 255]), "{:?}", frame.at(25, 50));
+    assert!(
+        is_close(frame.at(25, 50), [188, 188, 188, 255]),
+        "{:?}",
+        frame.at(25, 50)
+    );
 }
 
 fn clipped_texture(app: &mut App) {
@@ -369,12 +526,20 @@ fn a_texture_is_cut_by_a_rounded_clip() {
     }) else {
         return;
     };
-    assert!(is_close(frame.at(50, 50), [0, 255, 0, 255]), "{:?}", frame.at(50, 50));
+    assert!(
+        is_close(frame.at(50, 50), [0, 255, 0, 255]),
+        "{:?}",
+        frame.at(50, 50)
+    );
     // The corner is outside a 40px radius: the texture must not reach it.
     let corner = frame.at(1, 1);
     assert!(!is_close(corner, [0, 255, 0, 255]), "{corner:?}");
     // The edge midpoint is inside the shape.
-    assert!(is_close(frame.at(50, 1), [0, 255, 0, 255]), "{:?}", frame.at(50, 1));
+    assert!(
+        is_close(frame.at(50, 1), [0, 255, 0, 255]),
+        "{:?}",
+        frame.at(50, 1)
+    );
 }
 
 fn texture_in_a_blurred_layer(app: &mut App) {
@@ -407,7 +572,11 @@ fn a_texture_inside_a_filtered_layer_is_composed_there() {
     }) else {
         return;
     };
-    assert!(is_close(frame.at(30, 30), [0, 255, 0, 255]), "{:?}", frame.at(30, 30));
+    assert!(
+        is_close(frame.at(30, 30), [0, 255, 0, 255]),
+        "{:?}",
+        frame.at(30, 30)
+    );
     assert!(is_close(frame.at(90, 90), [255, 255, 255, 255]));
     assert_eq!(frame.unsupported, Default::default());
 }
@@ -442,17 +611,33 @@ fn a_texture_edge_is_clean_where_it_splits_a_pixel_quad() {
         // Every pixel on the texture's outline is fully green, none blended.
         for x in 11..52 {
             for y in [13usize, 49] {
-                assert!(is_close(frame.at(x, y), [0, 255, 0, 255]), "({x}, {y}) {:?}", frame.at(x, y));
+                assert!(
+                    is_close(frame.at(x, y), [0, 255, 0, 255]),
+                    "({x}, {y}) {:?}",
+                    frame.at(x, y)
+                );
             }
         }
         for y in 13..50 {
             for x in [11usize, 51] {
-                assert!(is_close(frame.at(x, y), [0, 255, 0, 255]), "({x}, {y}) {:?}", frame.at(x, y));
+                assert!(
+                    is_close(frame.at(x, y), [0, 255, 0, 255]),
+                    "({x}, {y}) {:?}",
+                    frame.at(x, y)
+                );
             }
         }
         // And just outside it nothing of the texture leaks.
-        assert!(is_close(frame.at(10, 30), [255, 0, 0, 255]), "{:?}", frame.at(10, 30));
-        assert!(is_close(frame.at(30, 12), [255, 0, 0, 255]), "{:?}", frame.at(30, 12));
+        assert!(
+            is_close(frame.at(10, 30), [255, 0, 0, 255]),
+            "{:?}",
+            frame.at(10, 30)
+        );
+        assert!(
+            is_close(frame.at(30, 12), [255, 0, 0, 255]),
+            "{:?}",
+            frame.at(30, 12)
+        );
     }
 }
 

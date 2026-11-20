@@ -89,7 +89,10 @@ const FULL: u64 = (SIZE as u64) * (SIZE as u64);
 
 /// Dock previews cover text and move without rebuilding the panes underneath.
 fn dock_preview(app: &mut App, step: &Signal<u32>) {
-    app.mount::<DockPreviewScene>(DockPreviewSceneProps { step: step.into(), moving: true });
+    app.mount::<DockPreviewScene>(DockPreviewSceneProps {
+        step: step.into(),
+        moving: true,
+    });
 }
 
 #[component]
@@ -128,7 +131,10 @@ fn moving_translucent_dock_preview_matches_fresh_render() {
 fn changing_under_dock_preview(app: &mut App, step: &Signal<u32>) {
     // Change a small item away from the title while the blue overlay stays put.
     // The overlay cuts the text band in a full frame; the patch culls the title.
-    app.mount::<DockPreviewScene>(DockPreviewSceneProps { step: step.into(), moving: false });
+    app.mount::<DockPreviewScene>(DockPreviewSceneProps {
+        step: step.into(),
+        moving: false,
+    });
 }
 
 #[test]
@@ -136,7 +142,10 @@ fn patch_under_translucent_dock_preview_matches_fresh_render() {
     let Some((patched, fresh, stats)) = patched_and_fresh(changing_under_dock_preview) else {
         return;
     };
-    assert!(stats.last_pixels > 0 && stats.last_pixels < FULL / 4, "{stats:?}");
+    assert!(
+        stats.last_pixels > 0 && stats.last_pixels < FULL / 4,
+        "{stats:?}"
+    );
     // A separate band quantizes the translucent source to RGBA8 before blending;
     // a single Vello band quantizes after blending. Allow that one-code rounding.
     let max_delta = patched
@@ -150,7 +159,11 @@ fn patch_under_translucent_dock_preview_matches_fresh_render() {
 
 /// Blue at step 0, green after.
 fn corner_color(step: u32) -> Color {
-    if step == 0 { Color::rgb(0.0, 0.0, 1.0) } else { Color::rgb(0.0, 0.8, 0.0) }
+    if step == 0 {
+        Color::rgb(0.0, 0.0, 1.0)
+    } else {
+        Color::rgb(0.0, 0.8, 0.0)
+    }
 }
 
 /// A static red field with a 20x20 box in the corner that changes colour.
@@ -255,7 +268,11 @@ fn under_glass(app: &mut App, step: &Signal<u32>) {
 
 #[component]
 fn under_glass_scene(#[source] step: &u32) {
-    let color: Color = memo!(if *step == 0 { Color::rgb(0.0, 0.0, 1.0) } else { Color::rgb(0.0, 1.0, 1.0) });
+    let color: Color = memo!(if *step == 0 {
+        Color::rgb(0.0, 0.0, 1.0)
+    } else {
+        Color::rgb(0.0, 1.0, 1.0)
+    });
     view! {
         container(width: SIZE, height: SIZE, flex_direction: FlexDirectionStyle::Row) {
             container(width: 50.0, height: SIZE, background: Color::rgb(1.0, 0.0, 0.0))
@@ -368,8 +385,18 @@ fn paint(backend: &VelloBackend<CosmicEngine>, texture: &wgpu::Texture, color: w
 
 #[test]
 fn redrawing_a_texture_repaints_only_where_it_is() {
-    let blue = wgpu::Color { r: 0.0, g: 0.0, b: 1.0, a: 1.0 };
-    let green = wgpu::Color { r: 0.0, g: 1.0, b: 0.0, a: 1.0 };
+    let blue = wgpu::Color {
+        r: 0.0,
+        g: 0.0,
+        b: 1.0,
+        a: 1.0,
+    };
+    let green = wgpu::Color {
+        r: 0.0,
+        g: 1.0,
+        b: 0.0,
+        a: 1.0,
+    };
     let Some(mut patched) = backend() else {
         return;
     };
@@ -395,5 +422,8 @@ fn redrawing_a_texture_repaints_only_where_it_is() {
     assert_same(&patched_pixels, &fresh.read_pixels_rgba8().expect("pixels"));
 
     // And it was a patch: the 40x40 texture, not the frame.
-    assert!(stats.last_pixels > 0 && stats.last_pixels < FULL / 2, "{stats:?}");
+    assert!(
+        stats.last_pixels > 0 && stats.last_pixels < FULL / 2,
+        "{stats:?}"
+    );
 }

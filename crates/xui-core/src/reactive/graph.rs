@@ -37,7 +37,11 @@ pub struct Graph {
 
 impl Graph {
     pub(crate) fn insert(&mut self) -> SourceId {
-        self.sources.insert(SourceRecord { subscribers: Vec::new(), version: 0, level: 0 })
+        self.sources.insert(SourceRecord {
+            subscribers: Vec::new(),
+            version: 0,
+            level: 0,
+        })
     }
 
     pub(crate) fn remove(&mut self, id: SourceId) {
@@ -47,7 +51,9 @@ impl Graph {
     /// Returns the source's level. A source the graph does not hold — a
     /// constant — never notifies, so there is nothing to record.
     pub(crate) fn subscribe(&mut self, id: SourceId, effect: EffectId) -> u32 {
-        let Some(record) = self.sources.get_mut(id) else { return 0 };
+        let Some(record) = self.sources.get_mut(id) else {
+            return 0;
+        };
         record.subscribers.push(effect);
         record.level
     }

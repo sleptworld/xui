@@ -115,72 +115,73 @@ pub fn input(
     let text_controller: TextController = controller.clone().unwrap_or_else(TextController::new);
     let focused: bool = state!(false);
     let container_style: StyleOf<Container> = memo!({
-    let mut container_style = StyleOf::new()
-        .with::<container::min_width>(0.0)
-        .with::<container::justify>(JustifyStyle::Center)
-        // Opaque, not transparent: shadows paint beneath the whole box, so a
-        // see-through fill would show the shadow tint.
-        .with::<container::background>(ColorToken::Background)
-        .with::<container::color>(ColorToken::Foreground)
-        .with::<container::border_color>(ColorToken::Input)
-        .with::<container::border_width>(1.0)
-        .with::<container::border_radius>(RadiusToken::Md)
-        .with::<container::font_size>(FontSizeToken::Md)
-        .with::<container::shadow>(
-            ShadowStyle::new()
-                .color(Color::rgba(0.0, 0.0, 0.0, 0.05))
-                .offset(Point::new(0.0, 1.0))
-                .blur(2.0),
-        );
-    if *focused {
-        container_style = container_style
-            .with::<container::border_color>(ColorToken::Ring)
+        let mut container_style = StyleOf::new()
+            .with::<container::min_width>(0.0)
+            .with::<container::justify>(JustifyStyle::Center)
+            // Opaque, not transparent: shadows paint beneath the whole box, so a
+            // see-through fill would show the shadow tint.
+            .with::<container::background>(ColorToken::Background)
+            .with::<container::color>(ColorToken::Foreground)
+            .with::<container::border_color>(ColorToken::Input)
+            .with::<container::border_width>(1.0)
+            .with::<container::border_radius>(RadiusToken::Md)
+            .with::<container::font_size>(FontSizeToken::Md)
             .with::<container::shadow>(
                 ShadowStyle::new()
-                    .color(ColorToken::Ring.alpha(0.5))
-                    .blur(0.0)
-                    .spread(3.0),
+                    .color(Color::rgba(0.0, 0.0, 0.0, 0.05))
+                    .offset(Point::new(0.0, 1.0))
+                    .blur(2.0),
             );
-    }
-    container_style = container_style.with::<container::line_height>(LineHeight::Normal);
-    container_style = width.apply(container_style, |style, value| {
-        style.with::<container::width>(value)
-    });
-    container_style = height.apply(container_style, |style, value| {
-        style.with::<container::height>(value)
-    });
-    container_style = min_width.apply(container_style, |style, value| {
-        style.with::<container::min_width>(value)
-    });
-    container_style = min_height.apply(container_style, |style, value| {
-        style.with::<container::min_height>(value)
-    });
-    container_style = max_width.apply(container_style, |style, value| {
-        style.with::<container::max_width>(value)
-    });
-    container_style = max_height.apply(container_style, |style, value| {
-        style.with::<container::max_height>(value)
-    });
-    container_style = background.apply(container_style, |style, value| {
-        style.with::<container::background>(value)
-    });
-    container_style = border_color.apply(container_style, |style, value| {
-        style.with::<container::border_color>(value)
-    });
-    container_style = border_width.apply(container_style, |style, value| {
-        style.with::<container::border_width>(value)
-    });
-    container_style = border_radius.apply(container_style, |style, value| {
-        style.with::<container::border_radius>(value)
-    });
-    if *invalid {
-        container_style = container_style.with::<container::border_color>(ColorToken::Destructive);
-    }
-    if *disabled {
-        container_style = container_style.with::<container::color>(ColorToken::MutedForeground);
-    }
-    container_style.merge(style);
-    container_style
+        if *focused {
+            container_style = container_style
+                .with::<container::border_color>(ColorToken::Ring)
+                .with::<container::shadow>(
+                    ShadowStyle::new()
+                        .color(ColorToken::Ring.alpha(0.5))
+                        .blur(0.0)
+                        .spread(3.0),
+                );
+        }
+        container_style = container_style.with::<container::line_height>(LineHeight::Normal);
+        container_style = width.apply(container_style, |style, value| {
+            style.with::<container::width>(value)
+        });
+        container_style = height.apply(container_style, |style, value| {
+            style.with::<container::height>(value)
+        });
+        container_style = min_width.apply(container_style, |style, value| {
+            style.with::<container::min_width>(value)
+        });
+        container_style = min_height.apply(container_style, |style, value| {
+            style.with::<container::min_height>(value)
+        });
+        container_style = max_width.apply(container_style, |style, value| {
+            style.with::<container::max_width>(value)
+        });
+        container_style = max_height.apply(container_style, |style, value| {
+            style.with::<container::max_height>(value)
+        });
+        container_style = background.apply(container_style, |style, value| {
+            style.with::<container::background>(value)
+        });
+        container_style = border_color.apply(container_style, |style, value| {
+            style.with::<container::border_color>(value)
+        });
+        container_style = border_width.apply(container_style, |style, value| {
+            style.with::<container::border_width>(value)
+        });
+        container_style = border_radius.apply(container_style, |style, value| {
+            style.with::<container::border_radius>(value)
+        });
+        if *invalid {
+            container_style =
+                container_style.with::<container::border_color>(ColorToken::Destructive);
+        }
+        if *disabled {
+            container_style = container_style.with::<container::color>(ColorToken::MutedForeground);
+        }
+        container_style.merge(style);
+        container_style
     });
 
     // The text input fills everything inside the border and carries the

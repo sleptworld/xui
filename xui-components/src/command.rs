@@ -112,13 +112,14 @@ pub fn command_palette(
 ) {
     let normalized_query: String = memo!(query.trim().to_lowercase());
     let handles: Vec<FocusHandle> = memo!((0..items.len()).map(|_| FocusHandle::new()).collect());
-    let model: crate::SelectionModel = memo!(crate::SelectionModel::new(items.iter().map(|item| {
-        crate::SelectionItem::new(
-            item.id.clone(),
-            item.label.clone(),
-            item.disabled || !command_matches(item, normalized_query),
-        )
-    })));
+    let model: crate::SelectionModel =
+        memo!(crate::SelectionModel::new(items.iter().map(|item| {
+            crate::SelectionItem::new(
+                item.id.clone(),
+                item.label.clone(),
+                item.disabled || !command_matches(item, normalized_query),
+            )
+        })));
     // The commands the query matches, with their index among all of them.
     let visible: Vec<(usize, CommandItem)> = memo!(
         items

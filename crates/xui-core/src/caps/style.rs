@@ -14,8 +14,8 @@ use xui_interface::styles::compute::resolve_field;
 use xui_interface::styles::computed::ComputedStrokeStyle;
 use xui_interface::styles::units::{
     AlignStyle, BackdropStyle, ColorStyle, ColorValue, DisplayStyle, Effect, JustifyStyle,
-    LengthValue, PositionStyle, ScrollDirectionStyle, ScrollbarVisibilityStyle, ShadowStyle,
-    ScrollbarStyle, StrokeLineStyle, StrokeStyle, StyleValue, TransformStyle, VisibilityStyle,
+    LengthValue, PositionStyle, ScrollDirectionStyle, ScrollbarStyle, ScrollbarVisibilityStyle,
+    ShadowStyle, StrokeLineStyle, StrokeStyle, StyleValue, TransformStyle, VisibilityStyle,
 };
 use xui_interface::{FontFamily, FontStyle, FontWeight, LineHeight, TextDecoration};
 
@@ -298,8 +298,8 @@ mod border_shorthands {
             });
         }
     }
-    impl<C: Into<ColorStyle>, W: Into<LengthValue>> crate::property::Accepts<(C, W, StrokeLineStyle)>
-        for stroke_style
+    impl<C: Into<ColorStyle>, W: Into<LengthValue>>
+        crate::property::Accepts<(C, W, StrokeLineStyle)> for stroke_style
     {
         fn accept(v: (C, W, StrokeLineStyle)) -> (ColorStyle, LengthValue, StrokeLineStyle) {
             (v.0.into(), v.1.into(), v.2)
@@ -532,7 +532,10 @@ mod tests {
         let text = &computed.text;
         assert_eq!(text.color, theme.color(ColorToken::Primary));
         assert_eq!(text.font_family, parent.text.font_family);
-        assert_eq!(text.font_size, ComputedStyle::initial(&theme).text.font_size);
+        assert_eq!(
+            text.font_size,
+            ComputedStyle::initial(&theme).text.font_size
+        );
         assert_eq!(text.font_weight, FontWeight::SemiBold);
         assert_eq!(text.font_style, FontStyle::Italic);
         assert_eq!(text.line_height, LineHeight::Px(30.0));
@@ -551,14 +554,18 @@ mod tests {
         let current = ComputedStyle::initial(&theme);
 
         // The parent's font size differs, and the size is left unset.
-        assert!(Typography::inherits_differently(&storage, &current, &parent));
+        assert!(Typography::inherits_differently(
+            &storage, &current, &parent
+        ));
         let mut synced = current.clone();
         Typography::inherit_unset(&storage, &mut synced, &parent);
         assert_eq!(synced.text.font_size, parent.text.font_size);
         assert_eq!(synced.text.font_weight, parent.text.font_weight);
         // The colour is the node's own, so the parent's does not reach it.
         assert_eq!(synced.text.color, current.text.color);
-        assert!(!Typography::inherits_differently(&storage, &synced, &parent));
+        assert!(!Typography::inherits_differently(
+            &storage, &synced, &parent
+        ));
         // A non-inherited capability never takes anything from the parent.
         assert!(!BoxSize::inherits_differently(
             &Default::default(),
@@ -685,7 +692,10 @@ mod tests {
                 ComputedColorStyle::Solid(theme.color(ColorToken::Muted))
             );
             assert_eq!(paint.border_radius, 6.0);
-            assert_eq!(paint.stroke, expected_stroke, "{border_color:?} {border_width:?}");
+            assert_eq!(
+                paint.stroke, expected_stroke,
+                "{border_color:?} {border_width:?}"
+            );
             let shadow = paint.shadow.as_ref().expect("a shadow");
             assert_eq!(shadow.blur, 4.0);
             assert!(paint.clip);

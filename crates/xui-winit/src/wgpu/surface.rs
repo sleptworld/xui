@@ -67,8 +67,8 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use xui_core::render::{
-        frame_builder::FrameBuilder, FrameProperties, LayerDescriptor, Primitive, RenderScene,
-        SceneCompiler, Shape, ShapePrimitive,
+        FrameProperties, LayerDescriptor, Primitive, RenderScene, SceneCompiler, Shape,
+        ShapePrimitive, frame_builder::FrameBuilder,
     };
     use xui_interface::{
         Affine, Color, ComputedBackdropMask, ComputedBackdropStyle, ComputedColorStyle, Rect,
@@ -190,9 +190,11 @@ mod tests {
         assert_eq!(demands.len(), 2);
         assert_eq!(demands[0].demand, Rect::new(12.0, 26.0, 6.0, 12.0));
         assert_eq!(demands[1].demand, Rect::new(1.0, 2.0, 3.0, 4.0));
-        assert!(frame
-            .layer_instances
-            .iter()
-            .any(|instance| instance.source == outer));
+        assert!(
+            frame
+                .layer_instances
+                .iter()
+                .any(|instance| instance.source == outer)
+        );
     }
 }

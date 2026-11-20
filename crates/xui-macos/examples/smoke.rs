@@ -30,14 +30,14 @@ use xui_core::render::{BuiltFrame, MockRenderBackend, RenderBackend};
 use xui_core::ticker::{Tick, Ticker};
 use xui_core::widgets::{TextController, TextSelection};
 use xui_f::FBackend;
+use xui_interface::events::ShortcutBinding;
 use xui_interface::events::{EventResult, PhysicalKey};
 use xui_interface::{
     ClipboardContent, ClipboardTarget, ContextMenuTrigger, PlatformCommand, PlatformReply,
     PlatformRequest, ShortcutModifiers, Size, WindowCommand, commands,
 };
-use xui_interface::events::ShortcutBinding;
-use xui_macros::component;
 use xui_macos::{MacRunner, MacRunnerOptions, MacWindow, WindowOptions, WindowSize};
+use xui_macros::component;
 use xui_shell::{PlatformWindow, SurfaceTarget};
 
 /// What the application inside the window saw.

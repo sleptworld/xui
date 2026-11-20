@@ -25,7 +25,11 @@ pub struct Row<P, D> {
 
 impl<P: Scope, D: 'static> Scope for Row<P, D> {
     fn source(&self, index: u16) -> SourceId {
-        if index == self.template.level { self.data.id() } else { self.parent.source(index) }
+        if index == self.template.level {
+            self.data.id()
+        } else {
+            self.parent.source(index)
+        }
     }
 }
 
@@ -99,7 +103,13 @@ impl BlockCx<'_> {
             }
             // While its state is out, a block has no rows: the row goes
             // before whatever follows the block.
-            let row = self.runtime.mount_row(self.ui, parent.clone(), data, Rc::new(template.to_parts()), self.row_owner());
+            let row = self.runtime.mount_row(
+                self.ui,
+                parent.clone(),
+                data,
+                Rc::new(template.to_parts()),
+                self.row_owner(),
+            );
             state.rows.push(row);
             state.arm = Some(arm);
         }
@@ -150,7 +160,11 @@ impl BlockCx<'_> {
             .take()
             .and_then(|p| p.downcast::<RowParts<Row<P, T>>>().ok())
             .unwrap_or_else(|| Rc::new(template.to_parts()));
-        let keys = state.keys.take().and_then(|k| k.downcast::<Vec<K>>().ok()).map_or_else(Vec::new, |k| *k);
+        let keys = state
+            .keys
+            .take()
+            .and_then(|k| k.downcast::<Vec<K>>().ok())
+            .map_or_else(Vec::new, |k| *k);
         let mut old: HashMap<K, InstanceId> = keys.into_iter().zip(state.rows.drain(..)).collect();
 
         let mut seen = HashSet::new();
@@ -165,7 +179,13 @@ impl BlockCx<'_> {
                     row
                 }
                 // Placed last among the block's hosts for now; ordered below.
-                None => self.runtime.mount_row(self.ui, parent.clone(), item, parts.clone(), self.row_owner()),
+                None => self.runtime.mount_row(
+                    self.ui,
+                    parent.clone(),
+                    item,
+                    parts.clone(),
+                    self.row_owner(),
+                ),
             };
             rows.push(row);
             keys.push(k);
@@ -173,7 +193,8 @@ impl BlockCx<'_> {
         for row in old.into_values() {
             self.runtime.unmount(self.ui, row);
         }
-        self.runtime.order_rows(self.ui, self.owner, self.node, &rows);
+        self.runtime
+            .order_rows(self.ui, self.owner, self.node, &rows);
         state.rows = rows;
         state.keys = Some(Box::new(keys));
         state.parts = Some(parts);
@@ -181,6 +202,9 @@ impl BlockCx<'_> {
     }
 
     fn row_owner(&self) -> Owner {
-        Owner::Row { instance: self.owner, node: self.node }
+        Owner::Row {
+            instance: self.owner,
+            node: self.node,
+        }
     }
 }

@@ -10,8 +10,8 @@
 //! | --- | --- |
 //! | [`virtual_list`](fn@self::virtual_list) | A fixed-row-height scrolling list that materializes only the visible window and overscan. |
 
-use xui_core::prelude::*;
 use std::rc::Rc;
+use xui_core::prelude::*;
 
 use xui_macros::component;
 
@@ -143,21 +143,33 @@ pub fn virtual_list(
     let scroll_top: f32 = state!(0.0);
     // The prop seeds layout; size observations also follow resizes without a wheel event.
     let size: Option<Size<f32>> = size!();
-    let viewport: f32 = memo!(size.map(|size| size.height).filter(|height| *height > 0.0).unwrap_or(*viewport_height));
-    let range: VirtualRange = memo!(visible_range(*scroll_top, *viewport, *item_height, *item_count, *overscan));
+    let viewport: f32 = memo!(
+        size.map(|size| size.height)
+            .filter(|height| *height > 0.0)
+            .unwrap_or(*viewport_height)
+    );
+    let range: VirtualRange = memo!(visible_range(
+        *scroll_top,
+        *viewport,
+        *item_height,
+        *item_count,
+        *overscan
+    ));
     let rows: Vec<usize> = memo!((range.start..range.end).collect());
     let total_height: f32 = memo!(if item_height.is_finite() && *item_height > 0.0 {
         (f64::from(*item_height) * *item_count as f64).min(f64::from(f32::MAX)) as f32
     } else {
         0.0
     });
-    let mut viewport_style: StyleOf<Container> = StyleOf::new().with::<container::height>(if viewport_height.is_finite() {
-        viewport_height.max(0.0)
-    } else {
-        0.0
-    });
+    let mut viewport_style: StyleOf<Container> =
+        StyleOf::new().with::<container::height>(if viewport_height.is_finite() {
+            viewport_height.max(0.0)
+        } else {
+            0.0
+        });
     viewport_style.merge(style);
-    viewport_style = viewport_style.with::<container::scroll_direction>(ScrollDirectionStyle::Vertical);
+    viewport_style =
+        viewport_style.with::<container::scroll_direction>(ScrollDirectionStyle::Vertical);
     view! {
         container(
             style: viewport_style.clone(),
@@ -294,9 +306,13 @@ mod tests {
             item_count: ReadSignal::constant(1_000),
             item_height: ReadSignal::constant(20.0),
             viewport_height: 200.0,
-            render_item: ReadSignal::constant(VirtualItemRenderer::new(|index: usize| index.to_string().into())),
+            render_item: ReadSignal::constant(VirtualItemRenderer::new(|index: usize| {
+                index.to_string().into()
+            })),
             overscan: ReadSignal::constant(3),
-            style: StyleOf::new().with::<container::width>(Sizing::Fill).with::<container::height>(200.0),
+            style: StyleOf::new()
+                .with::<container::width>(Sizing::Fill)
+                .with::<container::height>(200.0),
             item_style: StyleOf::new(),
         });
     }

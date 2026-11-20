@@ -267,7 +267,6 @@ pub(crate) fn grid_widget_to_taffy(style: &mut TaffyStyle, widget: &GridProps) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn converts_every_track_size_variant() {

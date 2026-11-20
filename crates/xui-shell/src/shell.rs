@@ -844,8 +844,8 @@ mod tests {
     use xui_core::render::MockRenderBackend;
     use xui_f::FBackend;
 
-    use xui_macros::component;
     use xui_interface::HostCapabilities;
+    use xui_macros::component;
 
     use crate::{
         FrameInfo, PhysicalSize, PlatformWindow, Shell, ShellControl, ShellEvent, ShellOptions,

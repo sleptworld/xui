@@ -8,18 +8,18 @@ use crate::translate::{
 };
 #[cfg(feature = "wgpu")]
 use crate::wgpu::{WGPUBackend, WgpuBackendInitError};
-use crate::window::{window_attributes, WinitWindow};
+use crate::window::{WinitWindow, window_attributes};
 use winit::application::ApplicationHandler;
 use winit::error::{EventLoopError, OsError};
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
+use xui_core::App;
 use xui_core::app::{AppRenderError, AppRoot};
 use xui_core::render::RenderBackend;
 use xui_core::runtime::GuiRuntime;
 use xui_core::text::TextHost;
-use xui_core::App;
 #[cfg(feature = "wgpu")]
 use xui_cosmic::{CosmicEngine, FontSet};
 use xui_f::FBackend;

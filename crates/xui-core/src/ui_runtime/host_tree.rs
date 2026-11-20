@@ -4,9 +4,9 @@ use slotmap::{SecondaryMap, SlotMap};
 use xui_interface::{NodeId, WidgetState};
 
 use crate::caps::CapMask;
-use xui_interface::Key;
 use crate::ui_runtime::state::HostWorkFlags;
 use crate::widgets::{WidgetI, WidgetType};
+use xui_interface::Key;
 
 /// Dense, high-frequency host data keyed by the topology's generational id.
 pub(crate) struct HostData {

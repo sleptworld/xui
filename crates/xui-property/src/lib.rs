@@ -30,14 +30,14 @@
 //! image.set::<GlobalShortcut>(None); // Image has no ShortcutAbility
 //! ```
 
-pub mod core;
-pub mod property;
-pub mod capability;
 pub mod abilities;
-pub mod interaction;
+pub mod capability;
 pub mod caps;
-pub mod nodes;
-pub mod template;
-pub mod runtime;
+pub mod core;
+pub mod interaction;
 pub mod managed;
+pub mod nodes;
+pub mod property;
+pub mod runtime;
+pub mod template;
 pub mod widget;

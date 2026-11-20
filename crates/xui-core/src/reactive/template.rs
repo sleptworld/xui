@@ -88,8 +88,13 @@ macro_rules! copy {
 }
 copy!(Run, EffectSpec, ChildSpec, StaticNode, NodeKind);
 
-pub type PendingMount =
-    Box<dyn FnOnce(&mut Runtime, &mut crate::ui_runtime::UiRuntime, super::runtime::Place) -> super::graph::InstanceId>;
+pub type PendingMount = Box<
+    dyn FnOnce(
+        &mut Runtime,
+        &mut crate::ui_runtime::UiRuntime,
+        super::runtime::Place,
+    ) -> super::graph::InstanceId,
+>;
 
 pub enum NodeKind<I> {
     /// A host widget.
@@ -170,7 +175,9 @@ impl MountCx<'_> {
     /// mounted and the ticker has its callback.
     #[doc(hidden)]
     pub fn __ticker(&mut self) -> crate::ticker::Ticker {
-        let handle = self.tickers.install(Box::new(|_| crate::ticker::Tick::Continue));
+        let handle = self
+            .tickers
+            .install(Box::new(|_| crate::ticker::Tick::Continue));
         let ticker = handle.handle();
         self.ticks.push(handle);
         ticker
@@ -179,12 +186,18 @@ impl MountCx<'_> {
     /// The nearest `T` an ancestor provides, else the app's, if there is one.
     pub fn try_context<T: 'static>(&self) -> Option<ReadSignal<T>> {
         let source = self.contexts.find(std::any::TypeId::of::<T>())?;
-        Some(source.downcast_ref::<ReadSignal<T>>().expect("context under another type's id").clone())
+        Some(
+            source
+                .downcast_ref::<ReadSignal<T>>()
+                .expect("context under another type's id")
+                .clone(),
+        )
     }
 
     /// `provide!(source)`: hands `source` to this component's descendants.
     pub fn provide<T: 'static>(&mut self, source: ReadSignal<T>) {
-        self.provided.push((std::any::TypeId::of::<T>(), Box::new(source)));
+        self.provided
+            .push((std::any::TypeId::of::<T>(), Box::new(source)));
     }
 
     /// `provide!(value)`: a value that never changes, as a source.

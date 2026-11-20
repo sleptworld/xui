@@ -10,17 +10,17 @@ use xui_interface::{Affine, Bounds, Color, ImageTransform, TextBackend};
 use xui_render_graph::{ExternalResourceKind, LayerProgramEntry};
 
 use super::{
+    SkiaBackend,
     convert::sk_matrix,
-    image::{image_bytes, make_image, CachedSourceImage, RasterImage},
+    image::{CachedSourceImage, RasterImage, image_bytes, make_image},
     paint::sk_color,
     surface::{configure_canvas, damage_region},
     vector::{apply_clip_shape, draw_shape, draw_vector},
-    SkiaBackend,
 };
 use crate::{
+    SkiaBackendError,
     cache::{Acquired, SurfaceLease},
     damage::DamageRegion,
-    SkiaBackendError,
 };
 
 /// What a single walk over the frame's items tells the drawing pass.

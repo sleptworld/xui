@@ -146,7 +146,11 @@ pub fn calendar(
     selected_day_style: &StyleOf<Container>,
 ) {
     let shown: CalendarMonth = memo!(CalendarMonth::new(month.year, month.month));
-    let title: String = memo!(format!("{} {}", MONTH_NAMES[usize::from(shown.month.saturating_sub(1))], shown.year));
+    let title: String = memo!(format!(
+        "{} {}",
+        MONTH_NAMES[usize::from(shown.month.saturating_sub(1))],
+        shown.year
+    ));
     // The six weeks the grid shows, Monday first: a date, or a blank.
     let days: Vec<Option<CalendarDate>> = memo!({
         let leading = weekday_monday_zero(shown.year, shown.month, 1) as i32;
@@ -154,7 +158,11 @@ pub fn calendar(
         (0..42)
             .map(|slot| {
                 let day = slot - leading + 1;
-                (1..=count).contains(&day).then_some(CalendarDate { year: shown.year, month: shown.month, day: day as u8 })
+                (1..=count).contains(&day).then_some(CalendarDate {
+                    year: shown.year,
+                    month: shown.month,
+                    day: day as u8,
+                })
             })
             .collect()
     });
@@ -264,7 +272,17 @@ pub fn calendar(
 }
 
 const MONTH_NAMES: [&str; 12] = [
-    "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
     "December",
 ];
 

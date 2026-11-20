@@ -196,8 +196,8 @@ mod tests {
     use xui_core::prelude::*;
     use xui_core::render::MockRenderBackend;
     use xui_f::FBackend;
-    use xui_macros::component;
     use xui_interface::WindowRegion;
+    use xui_macros::component;
 
     use super::*;
     use crate::{PhysicalSize, ShellOptions, SurfaceTarget};

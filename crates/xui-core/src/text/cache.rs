@@ -13,9 +13,8 @@ use slotmap::{SlotMap, new_key_type};
 use smallvec::SmallVec;
 use xui_interface::{
     Affinity, FontCollection, NodeId, NodeLifecycleEvent, ParagraphLayout, ParagraphMetrics, Point,
-    Rect, Shaper,
-    Size, TextBackend, TextLayoutConstraints, TextLayoutInput, TextLayoutKey, TextOffset,
-    TextOffsetUnit, TextPosition, TextRange,
+    Rect, Shaper, Size, TextBackend, TextLayoutConstraints, TextLayoutInput, TextLayoutKey,
+    TextOffset, TextOffsetUnit, TextPosition, TextRange,
 };
 
 use super::TextLayoutQuery;
@@ -357,11 +356,17 @@ impl<B: TextBackend> TextHost<B> {
 
     /// Records what measuring `unit` under `key` gave, forgetting what the
     /// unit's other content measured.
-    fn remember_measurement(&mut self, unit: TextUnitId, key: TextLayoutKey, metrics: ParagraphMetrics) {
+    fn remember_measurement(
+        &mut self,
+        unit: TextUnitId,
+        key: TextLayoutKey,
+        metrics: ParagraphMetrics,
+    ) {
         let Some(unit) = self.units.get_mut(unit) else {
             return;
         };
-        unit.measured.retain(|(measured, _)| same_content(measured, &key));
+        unit.measured
+            .retain(|(measured, _)| same_content(measured, &key));
         if unit.measured.len() == MEASURED_PER_UNIT {
             unit.measured.remove(0);
         }
@@ -704,7 +709,12 @@ impl<B: TextBackend> TextHost<B> {
         };
         let mut units: SmallVec<[TextUnitId; 4]> = cache.direct_slots.into_values().collect();
         for (_, document) in cache.documents {
-            units.extend(document.paragraphs.into_iter().map(|(_, paragraph)| paragraph.unit));
+            units.extend(
+                document
+                    .paragraphs
+                    .into_iter()
+                    .map(|(_, paragraph)| paragraph.unit),
+            );
         }
         units.into_iter().map(|unit| self.remove_unit(unit)).sum()
     }
@@ -842,7 +852,14 @@ impl<B: TextBackend> TextHost<B> {
     }
 
     pub fn document_len(&self, owner: NodeId, document: TextDocumentId) -> Option<usize> {
-        Some(self.owners.get(&owner)?.documents.get(document)?.sequence.len())
+        Some(
+            self.owners
+                .get(&owner)?
+                .documents
+                .get(document)?
+                .sequence
+                .len(),
+        )
     }
 
     pub fn document_height(&self, owner: NodeId, document: TextDocumentId) -> Option<f32> {
@@ -1198,7 +1215,10 @@ impl<B: TextBackend> TextHost<B> {
                     .copied()
                     .filter(|handle| Some(*handle) != active && !self.handle_is_pinned(*handle))
                     .map(|handle| {
-                        let access = self.entries.get(handle).map_or(0, |entry| entry.last_access.get());
+                        let access = self
+                            .entries
+                            .get(handle)
+                            .map_or(0, |entry| entry.last_access.get());
                         (access, handle)
                     })
                     .collect();
@@ -1370,13 +1390,8 @@ impl Lifecycle<LayoutCacheKey, LayoutResidency> for LayoutLifecycle {
     }
 }
 
-type GlobalLayoutCache = QuickCache<
-    LayoutCacheKey,
-    LayoutResidency,
-    LayoutWeighter,
-    FxBuildHasher,
-    LayoutLifecycle,
->;
+type GlobalLayoutCache =
+    QuickCache<LayoutCacheKey, LayoutResidency, LayoutWeighter, FxBuildHasher, LayoutLifecycle>;
 
 struct LayoutEntry<B: TextBackend> {
     cache_key: LayoutCacheKey,

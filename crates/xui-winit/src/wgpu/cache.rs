@@ -1,9 +1,8 @@
 use crate::wgpu::{
-    intersect_rect,
+    LayerSnapshot, TexturePool, TexturePoolError, intersect_rect,
     layer::diff_layer,
     snapshot::layer_snapshot,
     tex::{SurfaceGeometry, SurfaceKey, TileCoord, TiledSurface},
-    LayerSnapshot, TexturePool, TexturePoolError,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{HashMap, HashSet};

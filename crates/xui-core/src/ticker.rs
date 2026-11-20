@@ -306,7 +306,10 @@ mod tests {
         assert_eq!(runs.get(), 1);
         assert!(!orphan.is_running(), "and a handle left behind is inert");
         orphan.start();
-        assert!(!orphan.is_running(), "including one someone tries to revive");
+        assert!(
+            !orphan.is_running(),
+            "including one someone tries to revive"
+        );
     }
 
     #[test]

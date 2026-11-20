@@ -7,19 +7,19 @@ use crate::core::Size;
 use crate::event_system::translator::EventTranslator;
 use crate::event_system::{Flow, Handler};
 use crate::focus::FocusHandle;
+use crate::node::{Draft, StyleOf};
 use crate::text::TextHost;
 use crate::text::TextLayoutSlot;
 use crate::text::testing::ZeroTextBackend;
 use crate::ui_runtime::UiRuntime;
+use crate::widgets::CanvasController;
+use crate::widgets::ErasedDraft;
 use crate::widgets::OverlayEntryId;
 use crate::widgets::OverlayEntryOptions;
 use crate::widgets::WidgetType;
 use crate::widgets::Widgets;
-use crate::widgets::canvas_text_slot;
-use crate::node::{Draft, StyleOf};
-use crate::widgets::ErasedDraft;
-use crate::widgets::CanvasController;
 use crate::widgets::canvas::canvas;
+use crate::widgets::canvas_text_slot;
 use crate::widgets::container::{Container, center, container};
 use crate::widgets::text::{Text, text};
 use crate::widgets::text_input::{TextInput, text_input};
@@ -46,8 +46,8 @@ use xui_interface::events::{
 };
 use xui_interface::style::FlexDirectionStyle;
 use xui_interface::{
-    Affine, CanvasTextId, Color, ComputedColorStyle, EdgeInsets, PathBuilder, PathFill,
-    TextProps, VectorSceneBuilder, WidgetState,
+    Affine, CanvasTextId, Color, ComputedColorStyle, EdgeInsets, PathBuilder, PathFill, TextProps,
+    VectorSceneBuilder, WidgetState,
 };
 
 fn create_host(arena: &mut UiRuntime, draft: impl ErasedDraft + 'static) -> NodeId {
@@ -78,7 +78,10 @@ fn a_controller_edit_repaints_its_canvas_with_no_component_rebuild() {
     let controller = CanvasController::new();
     let id = create_host(
         &mut arena,
-        canvas().with::<canvas::controller>(controller.clone()).with::<canvas::width>(80.0).with::<canvas::height>(40.0),
+        canvas()
+            .with::<canvas::controller>(controller.clone())
+            .with::<canvas::width>(80.0)
+            .with::<canvas::height>(40.0),
     );
 
     arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
@@ -126,7 +129,9 @@ fn a_painter_is_re_run_against_the_size_layout_committed() {
     let mut measurer = TextHost::new(ZeroTextBackend);
     let id = create_host(
         &mut arena,
-        canvas().with::<canvas::controller>(controller.clone()).with::<canvas::size>(Size::fill()),
+        canvas()
+            .with::<canvas::controller>(controller.clone())
+            .with::<canvas::size>(Size::fill()),
     );
 
     arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
@@ -155,7 +160,10 @@ fn a_painter_that_draws_nothing_new_is_not_re_run_when_only_the_viewport_moves()
     let mut measurer = TextHost::new(ZeroTextBackend);
     create_host(
         &mut arena,
-        canvas().with::<canvas::controller>(controller).with::<canvas::width>(80.0).with::<canvas::height>(40.0),
+        canvas()
+            .with::<canvas::controller>(controller)
+            .with::<canvas::width>(80.0)
+            .with::<canvas::height>(40.0),
     );
 
     arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
@@ -184,7 +192,9 @@ fn text_a_painter_produces_is_shaped_before_the_canvas_paints() {
     let mut measurer = TextHost::new(ZeroTextBackend);
     let id = create_host(
         &mut arena,
-        canvas().with::<canvas::controller>(controller).with::<canvas::size>(Size::fill()),
+        canvas()
+            .with::<canvas::controller>(controller)
+            .with::<canvas::size>(Size::fill()),
     );
 
     arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
@@ -214,7 +224,10 @@ fn canvas_text_layout_is_measured_and_activated_in_the_same_compile() {
     let mut measurer = TextHost::new(ZeroTextBackend);
     let id = create_host(
         &mut arena,
-        canvas().with::<canvas::controller>(controller).with::<canvas::width>(120.0).with::<canvas::height>(40.0),
+        canvas()
+            .with::<canvas::controller>(controller)
+            .with::<canvas::width>(120.0)
+            .with::<canvas::height>(40.0),
     );
 
     arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
@@ -240,7 +253,10 @@ fn removing_a_canvas_stops_its_controller_from_marking_the_dead_node() {
     let controller = CanvasController::new();
     let id = create_host(
         &mut arena,
-        canvas().with::<canvas::controller>(controller.clone()).with::<canvas::width>(80.0).with::<canvas::height>(40.0),
+        canvas()
+            .with::<canvas::controller>(controller.clone())
+            .with::<canvas::width>(80.0)
+            .with::<canvas::height>(40.0),
     );
     arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
 
@@ -291,17 +307,26 @@ fn hit_test_tracks_scrolled_content_without_moving_the_scroll_viewport() {
     let mut arena = UiRuntime::new();
     let scroll = create_host(
         &mut arena,
-        container().with::<container::width>(100.0).with::<container::height>(100.0).with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical),
+        container()
+            .with::<container::width>(100.0)
+            .with::<container::height>(100.0)
+            .with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical),
     );
     let content = create_host(
         &mut arena,
-        container().with::<container::width>(20.0).with::<container::height>(200.0),
+        container()
+            .with::<container::width>(20.0)
+            .with::<container::height>(200.0),
     );
     let target = create_host(
         &mut arena,
         container().with::<container::style>(
-                StyleOf::<Container>::new().with::<container::position>(xui_interface::PositionStyle::Absolute).with::<container::inset>(xui_interface::EdgeInsets::new(0.0, 0.0, 80.0, 0.0)).with::<container::width>(20.0).with::<container::height>(20.0),
-            ),
+            StyleOf::<Container>::new()
+                .with::<container::position>(xui_interface::PositionStyle::Absolute)
+                .with::<container::inset>(xui_interface::EdgeInsets::new(0.0, 0.0, 80.0, 0.0))
+                .with::<container::width>(20.0)
+                .with::<container::height>(20.0),
+        ),
     );
     arena.place(scroll, content, None);
     arena.place(content, target, None);
@@ -324,19 +349,31 @@ fn hit_test_accumulates_nested_scroll_offsets() {
     let mut arena = UiRuntime::new();
     let outer = create_host(
         &mut arena,
-        container().with::<container::width>(120.0).with::<container::height>(100.0).with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical),
+        container()
+            .with::<container::width>(120.0)
+            .with::<container::height>(100.0)
+            .with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical),
     );
     let inner = create_host(
         &mut arena,
         container().with::<container::style>(
-                StyleOf::<Container>::new().with::<container::position>(xui_interface::PositionStyle::Absolute).with::<container::inset>(xui_interface::EdgeInsets::new(0.0, 0.0, 40.0, 0.0)).with::<container::width>(100.0).with::<container::height>(80.0).with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical),
-            ),
+            StyleOf::<Container>::new()
+                .with::<container::position>(xui_interface::PositionStyle::Absolute)
+                .with::<container::inset>(xui_interface::EdgeInsets::new(0.0, 0.0, 40.0, 0.0))
+                .with::<container::width>(100.0)
+                .with::<container::height>(80.0)
+                .with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical),
+        ),
     );
     let target = create_host(
         &mut arena,
         container().with::<container::style>(
-                StyleOf::<Container>::new().with::<container::position>(xui_interface::PositionStyle::Absolute).with::<container::inset>(xui_interface::EdgeInsets::new(0.0, 0.0, 50.0, 0.0)).with::<container::width>(20.0).with::<container::height>(20.0),
-            ),
+            StyleOf::<Container>::new()
+                .with::<container::position>(xui_interface::PositionStyle::Absolute)
+                .with::<container::inset>(xui_interface::EdgeInsets::new(0.0, 0.0, 50.0, 0.0))
+                .with::<container::width>(20.0)
+                .with::<container::height>(20.0),
+        ),
     );
     arena.place(outer, inner, None);
     arena.place(inner, target, None);
@@ -356,18 +393,26 @@ fn hit_test_allows_unclipped_overflow_and_respects_rounded_clips() {
     let mut arena = UiRuntime::new();
     let overflow_parent = create_host(
         &mut arena,
-        container().with::<container::width>(40.0).with::<container::height>(40.0),
+        container()
+            .with::<container::width>(40.0)
+            .with::<container::height>(40.0),
     );
     let overflow_child = create_host(
         &mut arena,
         container().with::<container::style>(
-                StyleOf::<Container>::new().with::<container::position>(xui_interface::PositionStyle::Absolute).with::<container::inset>(xui_interface::EdgeInsets::new(50.0, 0.0, 0.0, 0.0)).with::<container::width>(20.0).with::<container::height>(20.0),
-            ),
+            StyleOf::<Container>::new()
+                .with::<container::position>(xui_interface::PositionStyle::Absolute)
+                .with::<container::inset>(xui_interface::EdgeInsets::new(50.0, 0.0, 0.0, 0.0))
+                .with::<container::width>(20.0)
+                .with::<container::height>(20.0),
+        ),
     );
     arena.place(overflow_parent, overflow_child, None);
     let corner_child = create_host(
         &mut arena,
-        container().with::<container::width>(40.0).with::<container::height>(40.0),
+        container()
+            .with::<container::width>(40.0)
+            .with::<container::height>(40.0),
     );
     arena.place(overflow_parent, corner_child, None);
 
@@ -379,8 +424,12 @@ fn hit_test_allows_unclipped_overflow_and_respects_rounded_clips() {
         &mut arena,
         overflow_parent,
         container().with::<container::style>(
-                StyleOf::<Container>::new().with::<container::width>(40.0).with::<container::height>(40.0).with::<container::clip>(true).with::<container::border_radius>(20.0),
-            ),
+            StyleOf::<Container>::new()
+                .with::<container::width>(40.0)
+                .with::<container::height>(40.0)
+                .with::<container::clip>(true)
+                .with::<container::border_radius>(20.0),
+        ),
     );
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
     assert_eq!(arena.hit_test(Point::new(1.0, 1.0)), Some(arena.root()));
@@ -398,8 +447,12 @@ fn root_overlayer_honors_hit_test_and_modal_stacking() {
     let pass_through = create_host(
         &mut arena,
         container().with::<container::style>(
-                StyleOf::<Container>::new().with::<container::position>(xui_interface::PositionStyle::Absolute).with::<container::inset>(xui_interface::EdgeInsets::zero()).with::<container::width>(40.0).with::<container::height>(40.0),
-            ),
+            StyleOf::<Container>::new()
+                .with::<container::position>(xui_interface::PositionStyle::Absolute)
+                .with::<container::inset>(xui_interface::EdgeInsets::zero())
+                .with::<container::width>(40.0)
+                .with::<container::height>(40.0),
+        ),
     );
     let pass_through_entry = arena
         .mount_overlay_entry(
@@ -439,15 +492,21 @@ fn hit_test_uses_reverse_paint_order_for_overlapping_layers() {
     let mut arena = UiRuntime::new();
     let stack = create_host(
         &mut arena,
-        z_stack().with::<z_stack::width>(50.0).with::<z_stack::height>(50.0),
+        z_stack()
+            .with::<z_stack::width>(50.0)
+            .with::<z_stack::height>(50.0),
     );
     let back = create_host(
         &mut arena,
-        container().with::<container::width>(50.0).with::<container::height>(50.0),
+        container()
+            .with::<container::width>(50.0)
+            .with::<container::height>(50.0),
     );
     let front = create_host(
         &mut arena,
-        container().with::<container::width>(50.0).with::<container::height>(50.0),
+        container()
+            .with::<container::width>(50.0)
+            .with::<container::height>(50.0),
     );
     arena.place(stack, back, None);
     arena.place(stack, front, None);
@@ -507,7 +566,9 @@ fn pressing_a_non_focusable_area_clears_focus() {
     let mut arena = UiRuntime::new();
     let field = create_host(
         &mut arena,
-        container().with::<container::tab_index>(0).with::<container::size>(Size::fix(40.0, 40.0)),
+        container()
+            .with::<container::tab_index>(0)
+            .with::<container::size>(Size::fix(40.0, 40.0)),
     );
     let blank = create_host(
         &mut arena,
@@ -537,11 +598,15 @@ fn only_keyboard_focus_is_focus_visible() {
     let mut arena = UiRuntime::new();
     let first = create_host(
         &mut arena,
-        container().with::<container::tab_index>(0).with::<container::size>(Size::fix(40.0, 40.0)),
+        container()
+            .with::<container::tab_index>(0)
+            .with::<container::size>(Size::fix(40.0, 40.0)),
     );
     let second = create_host(
         &mut arena,
-        container().with::<container::tab_index>(0).with::<container::size>(Size::fix(40.0, 40.0)),
+        container()
+            .with::<container::tab_index>(0)
+            .with::<container::size>(Size::fix(40.0, 40.0)),
     );
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
@@ -587,11 +652,15 @@ fn one_handler_can_be_attached_to_two_widgets() {
     let mut arena = UiRuntime::new();
     let left = create_host(
         &mut arena,
-        container().with::<container::size>(Size::fix(40.0, 40.0)).with_on::<container::on_click, _>(handler.clone().into_fn()),
+        container()
+            .with::<container::size>(Size::fix(40.0, 40.0))
+            .with_on::<container::on_click, _>(handler.clone().into_fn()),
     );
     let right = create_host(
         &mut arena,
-        container().with::<container::size>(Size::fix(40.0, 40.0)).with_on::<container::on_click, _>(handler.clone().into_fn()),
+        container()
+            .with::<container::size>(Size::fix(40.0, 40.0))
+            .with_on::<container::on_click, _>(handler.clone().into_fn()),
     );
 
     let mut measurer = TextHost::new(ZeroTextBackend);
@@ -619,16 +688,20 @@ fn entering_a_leaf_reports_every_ancestor_that_gained_hover_once_each() {
     let outer_log = Rc::clone(&counts);
     let outer = create_host(
         &mut arena,
-        container().with::<container::size>(Size::fix(100.0, 100.0)).with_on::<container::on_hovered, _>(move |event, _| {
-                    outer_log.borrow_mut().push(("outer", event.hovered));
-                }),
+        container()
+            .with::<container::size>(Size::fix(100.0, 100.0))
+            .with_on::<container::on_hovered, _>(move |event, _| {
+                outer_log.borrow_mut().push(("outer", event.hovered));
+            }),
     );
 
     let nest = |arena: &mut UiRuntime, parent: NodeId, name: &'static str, size: f32| {
         let log = Rc::clone(&counts);
-        let widget = container().with::<container::size>(Size::fix(size, size)).with_on::<container::on_hovered, _>(move |event, _| {
-                    log.borrow_mut().push((name, event.hovered));
-                });
+        let widget = container()
+            .with::<container::size>(Size::fix(size, size))
+            .with_on::<container::on_hovered, _>(move |event, _| {
+            log.borrow_mut().push((name, event.hovered));
+        });
         let id = arena.create_node(Box::new(widget));
         arena.place(parent, id, None);
         id
@@ -675,32 +748,39 @@ fn pointer_move_is_typed_bubbles_and_maps_current_local_per_handler() {
     let bubble_seen = Rc::clone(&seen);
     let parent = create_host(
         &mut arena,
-        container().with::<container::style>(
-                    StyleOf::<Container>::new().with::<container::size>(Size::fix(100.0, 100.0)).with::<container::padding>(EdgeInsets::all(20.0)),
-                ).with_on::<container::on_pointer_move_capture, _>(move |event, _| {
-                    capture_seen.borrow_mut().push((
-                        event.meta.phase,
-                        event.pointer.coords.target_local,
-                        event.pointer.coords.current_local,
-                    ));
-                }).with_on::<container::on_pointer_move, _>(move |event, _| {
-                    bubble_seen.borrow_mut().push((
-                        event.meta.phase,
-                        event.pointer.coords.target_local,
-                        event.pointer.coords.current_local,
-                    ));
-                }),
+        container()
+            .with::<container::style>(
+                StyleOf::<Container>::new()
+                    .with::<container::size>(Size::fix(100.0, 100.0))
+                    .with::<container::padding>(EdgeInsets::all(20.0)),
+            )
+            .with_on::<container::on_pointer_move_capture, _>(move |event, _| {
+                capture_seen.borrow_mut().push((
+                    event.meta.phase,
+                    event.pointer.coords.target_local,
+                    event.pointer.coords.current_local,
+                ));
+            })
+            .with_on::<container::on_pointer_move, _>(move |event, _| {
+                bubble_seen.borrow_mut().push((
+                    event.meta.phase,
+                    event.pointer.coords.target_local,
+                    event.pointer.coords.current_local,
+                ));
+            }),
     );
 
     let target_seen = Rc::clone(&seen);
     let child = {
-        let widget = container().with::<container::size>(Size::fix(40.0, 40.0)).with_on::<container::on_pointer_move, _>(move |event, _| {
-                    target_seen.borrow_mut().push((
-                        event.meta.phase,
-                        event.pointer.coords.target_local,
-                        event.pointer.coords.current_local,
-                    ));
-                });
+        let widget = container()
+            .with::<container::size>(Size::fix(40.0, 40.0))
+            .with_on::<container::on_pointer_move, _>(move |event, _| {
+            target_seen.borrow_mut().push((
+                event.meta.phase,
+                event.pointer.coords.target_local,
+                event.pointer.coords.current_local,
+            ));
+        });
         let id = arena.create_node(Box::new(widget));
         arena.place(parent, id, None);
         id
@@ -747,29 +827,35 @@ fn pointer_enter_and_leave_are_direct_and_report_the_other_leaf() {
     let parent_leave = Rc::clone(&seen);
     let parent = create_host(
         &mut arena,
-        container().with::<container::size>(Size::fix(100.0, 100.0)).with_on::<container::on_pointer_enter, _>(move |event, _| {
-                    parent_enter
-                        .borrow_mut()
-                        .push(("parent", "enter", event.related_target));
-                }).with_on::<container::on_pointer_leave, _>(move |event, _| {
-                    parent_leave
-                        .borrow_mut()
-                        .push(("parent", "leave", event.related_target));
-                }),
+        container()
+            .with::<container::size>(Size::fix(100.0, 100.0))
+            .with_on::<container::on_pointer_enter, _>(move |event, _| {
+                parent_enter
+                    .borrow_mut()
+                    .push(("parent", "enter", event.related_target));
+            })
+            .with_on::<container::on_pointer_leave, _>(move |event, _| {
+                parent_leave
+                    .borrow_mut()
+                    .push(("parent", "leave", event.related_target));
+            }),
     );
 
     let add_child = |arena: &mut UiRuntime, name: &'static str| {
         let enter_seen = Rc::clone(&seen);
         let leave_seen = Rc::clone(&seen);
-        let widget = container().with::<container::size>(Size::fix(40.0, 40.0)).with_on::<container::on_pointer_enter, _>(move |event, _| {
-                    enter_seen
-                        .borrow_mut()
-                        .push((name, "enter", event.related_target));
-                }).with_on::<container::on_pointer_leave, _>(move |event, _| {
-                    leave_seen
-                        .borrow_mut()
-                        .push((name, "leave", event.related_target));
-                });
+        let widget = container()
+            .with::<container::size>(Size::fix(40.0, 40.0))
+            .with_on::<container::on_pointer_enter, _>(move |event, _| {
+                enter_seen
+                    .borrow_mut()
+                    .push((name, "enter", event.related_target));
+            })
+            .with_on::<container::on_pointer_leave, _>(move |event, _| {
+                leave_seen
+                    .borrow_mut()
+                    .push((name, "leave", event.related_target));
+            });
         let id = arena.create_node(Box::new(widget));
         arena.place(parent, id, None);
         id
@@ -817,7 +903,9 @@ fn an_ancestor_is_not_reported_twice_when_a_child_is_hovered() {
     let counter = Rc::clone(&outer_events);
     let outer = create_host(
         &mut arena,
-        container().with::<container::size>(Size::fix(100.0, 100.0)).with_on::<container::on_hovered, _>(move |_, _| counter.set(counter.get() + 1)),
+        container()
+            .with::<container::size>(Size::fix(100.0, 100.0))
+            .with_on::<container::on_hovered, _>(move |_, _| counter.set(counter.get() + 1)),
     );
     let child = {
         let widget = container().with::<container::size>(Size::fix(60.0, 60.0));
@@ -874,7 +962,9 @@ fn an_unspecified_cursor_resolves_from_the_nearest_ancestor() {
     let mut arena = UiRuntime::new();
     let outer = create_host(
         &mut arena,
-        container().with::<container::size>(Size::fix(100.0, 100.0)).with::<container::cursor>(CursorIcon::Pointer),
+        container()
+            .with::<container::size>(Size::fix(100.0, 100.0))
+            .with::<container::cursor>(CursorIcon::Pointer),
     );
     let inner = {
         let widget = container().with::<container::size>(Size::fix(50.0, 50.0));
@@ -927,17 +1017,25 @@ fn scrollbar_fixture(
     let presses = Rc::clone(presses);
     let scroll = create_host(
         arena,
-        container().with::<container::width>(100.0).with::<container::height>(100.0).with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical).with::<container::scroll_controller>(controller.clone()).with_on::<container::on_scroll, _>(move |event, _| {
-                    // A wheel also reports, and bubbles, a scroll for each
-                    // non-scrolling node on its chain; those carry no offset.
-                    if let Some(after) = event.offset_after {
-                        log.borrow_mut().push((event.source, event.phase, after.y));
-                    }
-                }),
+        container()
+            .with::<container::width>(100.0)
+            .with::<container::height>(100.0)
+            .with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical)
+            .with::<container::scroll_controller>(controller.clone())
+            .with_on::<container::on_scroll, _>(move |event, _| {
+                // A wheel also reports, and bubbles, a scroll for each
+                // non-scrolling node on its chain; those carry no offset.
+                if let Some(after) = event.offset_after {
+                    log.borrow_mut().push((event.source, event.phase, after.y));
+                }
+            }),
     );
     let content = create_host(
         arena,
-        container().with::<container::width>(100.0).with::<container::height>(400.0).with_on::<container::on_press_start, _>(move |_, _| presses.set(presses.get() + 1)),
+        container()
+            .with::<container::width>(100.0)
+            .with::<container::height>(400.0)
+            .with_on::<container::on_press_start, _>(move |_, _| presses.set(presses.get() + 1)),
     );
     arena.place(scroll, content, None);
     let mut measurer = TextHost::new(ZeroTextBackend);
@@ -1171,13 +1269,18 @@ fn a_captured_pointer_keeps_its_own_cursor() {
     let mut arena = UiRuntime::new();
     let grabber = create_host(
         &mut arena,
-        container().with::<container::size>(Size::fix(50.0, 50.0)).with::<container::cursor>(CursorIcon::Grabbing).with_on::<container::on_press_start, _>(|_, cx| {
-                    cx.capture_pointer();
-                }),
+        container()
+            .with::<container::size>(Size::fix(50.0, 50.0))
+            .with::<container::cursor>(CursorIcon::Grabbing)
+            .with_on::<container::on_press_start, _>(|_, cx| {
+                cx.capture_pointer();
+            }),
     );
     let elsewhere = create_host(
         &mut arena,
-        container().with::<container::size>(Size::fix(50.0, 50.0)).with::<container::cursor>(CursorIcon::Text),
+        container()
+            .with::<container::size>(Size::fix(50.0, 50.0))
+            .with::<container::cursor>(CursorIcon::Text),
     );
 
     let mut measurer = TextHost::new(ZeroTextBackend);
@@ -1238,8 +1341,10 @@ fn a_widget_default_cursor_applies_and_can_be_overridden() {
     let node = create_host(
         &mut overridden,
         text_input().with::<text_input::style>(
-                StyleOf::<TextInput>::new().with::<text_input::size>(Size::fix(80.0, 30.0)).with::<text_input::cursor>(CursorIcon::NotAllowed),
-            ),
+            StyleOf::<TextInput>::new()
+                .with::<text_input::size>(Size::fix(80.0, 30.0))
+                .with::<text_input::cursor>(CursorIcon::NotAllowed),
+        ),
     );
     overridden.update_tree(Size::new(200.0, 200.0), &mut measurer);
     let bounds = overridden.node(node).unwrap().layout;
@@ -1285,7 +1390,10 @@ fn wrapped_text_keeps_its_height_in_a_column_too_short_for_it() {
     let mut arena = UiRuntime::new();
     let column = create_host(
         &mut arena,
-        container().with::<container::flex_direction>(FlexDirectionStyle::Column).with::<container::width>(120.0).with::<container::height>(40.0),
+        container()
+            .with::<container::flex_direction>(FlexDirectionStyle::Column)
+            .with::<container::width>(120.0)
+            .with::<container::height>(40.0),
     );
     let texts: Vec<_> = (0..3)
         .map(|_| {
@@ -1324,12 +1432,16 @@ fn padded_text_wraps_at_its_content_width() {
     let mut arena = UiRuntime::new();
     let column = create_host(
         &mut arena,
-        container().with::<container::flex_direction>(FlexDirectionStyle::Column).with::<container::width>(120.0),
+        container()
+            .with::<container::flex_direction>(FlexDirectionStyle::Column)
+            .with::<container::width>(120.0),
     );
     let text = child_of(
         &mut arena,
         column,
-        text().with::<text::content>(WRAPPING_PARAGRAPH).with::<text::padding>(xui_interface::EdgeInsets::symmetric(16.0, 4.0)),
+        text()
+            .with::<text::content>(WRAPPING_PARAGRAPH)
+            .with::<text::padding>(xui_interface::EdgeInsets::symmetric(16.0, 4.0)),
     );
     let mut measurer = TextHost::new(xui_cosmic::CosmicEngine::new(1.0));
     arena.update_tree(Size::new(400.0, 400.0), &mut measurer);
@@ -1352,12 +1464,19 @@ fn build_two_pane_shell(scrollable: bool) -> (UiRuntime, NodeId, NodeId, NodeId)
 
     let outer = create_host(
         &mut arena,
-        vcol().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(Sizing::Fill).with::<container::height>(Sizing::Fill)),
+        vcol().with::<container::style>(
+            StyleOf::<Container>::new()
+                .with::<container::width>(Sizing::Fill)
+                .with::<container::height>(Sizing::Fill),
+        ),
     );
 
-    let mut top = StyleOf::<Container>::new().with::<container::width>(Sizing::Fill).with::<container::height>(Sizing::Fill);
+    let mut top = StyleOf::<Container>::new()
+        .with::<container::width>(Sizing::Fill)
+        .with::<container::height>(Sizing::Fill);
     if scrollable {
-        top = top.with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical);
+        top =
+            top.with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical);
     }
     let filling = child_of(&mut arena, outer, vcol().with::<container::style>(top));
     // 500 of content in a pane that can only be 240 tall.
@@ -1365,19 +1484,25 @@ fn build_two_pane_shell(scrollable: bool) -> (UiRuntime, NodeId, NodeId, NodeId)
         child_of(
             &mut arena,
             filling,
-            container().with::<container::width>(Sizing::Fill).with::<container::height>(100.0),
+            container()
+                .with::<container::width>(Sizing::Fill)
+                .with::<container::height>(100.0),
         );
     }
 
     let hugging = child_of(
         &mut arena,
         outer,
-        vcol().with::<container::style>(StyleOf::<Container>::new().with::<container::width>(Sizing::Fill)),
+        vcol().with::<container::style>(
+            StyleOf::<Container>::new().with::<container::width>(Sizing::Fill),
+        ),
     );
     child_of(
         &mut arena,
         hugging,
-        container().with::<container::width>(Sizing::Fill).with::<container::height>(60.0),
+        container()
+            .with::<container::width>(Sizing::Fill)
+            .with::<container::height>(60.0),
     );
 
     let mut measurer = TextHost::new(ZeroTextBackend);
@@ -1472,17 +1597,21 @@ fn a_captured_pointer_keeps_aiming_at_the_capturing_node() {
     let mut arena = UiRuntime::new();
     let grabber = create_host(
         &mut arena,
-        container().with::<container::size>(Size::fix(50.0, 50.0)).with_on::<container::on_press_start, _>(|_, cx| {
-                    cx.capture_pointer();
-                }),
+        container()
+            .with::<container::size>(Size::fix(50.0, 50.0))
+            .with_on::<container::on_press_start, _>(|_, cx| {
+                cx.capture_pointer();
+            }),
     );
     let sibling = create_host(
         &mut arena,
-        container().with::<container::size>(Size::fix(50.0, 50.0)).with_on::<container::on_hovered, _>(move |event, _| {
-                    if event.hovered {
-                        flag.set(true);
-                    }
-                }),
+        container()
+            .with::<container::size>(Size::fix(50.0, 50.0))
+            .with_on::<container::on_hovered, _>(move |event, _| {
+                if event.hovered {
+                    flag.set(true);
+                }
+            }),
     );
 
     let mut measurer = TextHost::new(ZeroTextBackend);
@@ -1529,7 +1658,11 @@ fn a_handler_may_return_unit_flow_or_the_old_event_result() {
     let mut arena = UiRuntime::new();
     let node = create_host(
         &mut arena,
-        container().with::<container::size>(Size::fix(40.0, 40.0)).with_on::<container::on_click, _>(|_, _| {}).with_on::<container::on_press_start, _>(|_, _| Flow::empty()).with_on::<container::on_hovered, _>(|_, _| EventResult::Ignored),
+        container()
+            .with::<container::size>(Size::fix(40.0, 40.0))
+            .with_on::<container::on_click, _>(|_, _| {})
+            .with_on::<container::on_press_start, _>(|_, _| Flow::empty())
+            .with_on::<container::on_hovered, _>(|_, _| EventResult::Ignored),
     );
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
@@ -1547,10 +1680,14 @@ fn stopping_propagation_hides_the_event_from_ancestors() {
     let parent_flag = Rc::clone(&seen_by_parent);
     let parent = create_host(
         &mut arena,
-        container().with::<container::size>(Size::fix(80.0, 80.0)).with_on::<container::on_click, _>(move |_, _| parent_flag.set(true)),
+        container()
+            .with::<container::size>(Size::fix(80.0, 80.0))
+            .with_on::<container::on_click, _>(move |_, _| parent_flag.set(true)),
     );
     let child = {
-        let widget = container().with::<container::size>(Size::fix(40.0, 40.0)).with_on::<container::on_click, _>(|_, _| Flow::STOP_PROPAGATION);
+        let widget = container()
+            .with::<container::size>(Size::fix(40.0, 40.0))
+            .with_on::<container::on_click, _>(|_, _| Flow::STOP_PROPAGATION);
         let id = arena.create_node(Box::new(widget));
         arena.place(parent, id, None);
         id
@@ -1583,7 +1720,15 @@ pub(crate) fn pointer_move(position: Point) -> RawEvent {
 fn host_metadata_binds_focus_handle_and_preserves_accessibility() {
     let mut arena = UiRuntime::new();
     let handle = FocusHandle::new();
-    let widget = container().with::<container::focusable>(true).with::<container::tab_index>(-1).with::<container::focus_handle>(handle.clone()).with::<container::accessibility_role>(xui_interface::AccessibilityRole::Tab).with::<container::accessibility_id>("settings-tab").with::<container::accessibility_label>("Settings").with::<container::accessibility_selected>(true).with::<container::accessibility_controls>("settings-panel");
+    let widget = container()
+        .with::<container::focusable>(true)
+        .with::<container::tab_index>(-1)
+        .with::<container::focus_handle>(handle.clone())
+        .with::<container::accessibility_role>(xui_interface::AccessibilityRole::Tab)
+        .with::<container::accessibility_id>("settings-tab")
+        .with::<container::accessibility_label>("Settings")
+        .with::<container::accessibility_selected>(true)
+        .with::<container::accessibility_controls>("settings-panel");
     let node = arena.create_node(Box::new(widget));
     arena.place(arena.root(), node, None);
 
@@ -1608,13 +1753,18 @@ fn subtree_removal_clears_all_subsystem_caches() {
     let mut arena = UiRuntime::new();
     let node = create_host(
         &mut arena,
-        container().with::<container::focusable>(true).with_on::<container::on_click, _>(|_, _| EventResult::Ignored),
+        container()
+            .with::<container::focusable>(true)
+            .with_on::<container::on_click, _>(|_, _| EventResult::Ignored),
     );
 
     assert!(arena.hosts.contains_key(node));
     assert!(arena.style_system.contains(node));
     assert!(arena.layout_tree.contains(node));
-    assert!(<crate::caps::behavior::Events as crate::caps::Registered>::get(&arena.columns, node).is_some());
+    assert!(
+        <crate::caps::behavior::Events as crate::caps::Registered>::get(&arena.columns, node)
+            .is_some()
+    );
     assert!(arena.render_system.has_binding(node));
 
     arena.remove_subtree(node);
@@ -1622,7 +1772,10 @@ fn subtree_removal_clears_all_subsystem_caches() {
     assert!(!arena.hosts.contains_key(node));
     assert!(!arena.style_system.contains(node));
     assert!(!arena.layout_tree.contains(node));
-    assert!(!<crate::caps::behavior::Events as crate::caps::Registered>::get(&arena.columns, node).is_some());
+    assert!(
+        !<crate::caps::behavior::Events as crate::caps::Registered>::get(&arena.columns, node)
+            .is_some()
+    );
     assert!(!arena.render_system.has_binding(node));
 }
 
@@ -1631,8 +1784,14 @@ fn interaction_cache_remains_sparse_for_default_widgets() {
     let mut arena = UiRuntime::new();
     let node = create_host(&mut arena, container());
 
-    assert!(!<crate::caps::behavior::Events as crate::caps::Registered>::get(&arena.columns, node).is_some());
-    assert!(!<crate::caps::behavior::Focus as crate::caps::Registered>::get(&arena.columns, node).is_some());
+    assert!(
+        !<crate::caps::behavior::Events as crate::caps::Registered>::get(&arena.columns, node)
+            .is_some()
+    );
+    assert!(
+        !<crate::caps::behavior::Focus as crate::caps::Registered>::get(&arena.columns, node)
+            .is_some()
+    );
 }
 
 #[test]
@@ -1644,7 +1803,9 @@ fn focus_handle_can_request_focus_for_another_node() {
     let source = arena.create_node(Box::new(source_widget));
     arena.place(arena.root(), source, None);
 
-    let target_widget = container().with::<container::focusable>(true).with::<container::focus_handle>(target_handle.clone());
+    let target_widget = container()
+        .with::<container::focusable>(true)
+        .with::<container::focus_handle>(target_handle.clone());
     let target = arena.create_node(Box::new(target_widget));
     arena.place(arena.root(), target, None);
 
@@ -1668,12 +1829,20 @@ fn focus_handle_can_request_focus_for_another_node() {
 fn host_metadata_and_focus_handle_update_with_reused_node() {
     let mut arena = UiRuntime::new();
     let old_handle = FocusHandle::new();
-    let initial = container().with::<container::tab_index>(0).with::<container::focus_handle>(old_handle.clone()).with::<container::accessibility_role>(xui_interface::AccessibilityRole::Tab).with::<container::accessibility_selected>(false);
+    let initial = container()
+        .with::<container::tab_index>(0)
+        .with::<container::focus_handle>(old_handle.clone())
+        .with::<container::accessibility_role>(xui_interface::AccessibilityRole::Tab)
+        .with::<container::accessibility_selected>(false);
     let node = arena.create_node(Box::new(initial));
     arena.place(arena.root(), node, None);
 
     let new_handle = FocusHandle::new();
-    let updated = container().with::<container::tab_index>(-1).with::<container::focus_handle>(new_handle.clone()).with::<container::accessibility_role>(xui_interface::AccessibilityRole::Tab).with::<container::accessibility_selected>(true);
+    let updated = container()
+        .with::<container::tab_index>(-1)
+        .with::<container::focus_handle>(new_handle.clone())
+        .with::<container::accessibility_role>(xui_interface::AccessibilityRole::Tab)
+        .with::<container::accessibility_selected>(true);
     arena.update_node(node, Box::new(updated));
 
     assert!(!old_handle.is_bound());
@@ -1687,7 +1856,9 @@ fn final_text_width_is_activated_after_layout_measurement() {
     let mut arena = UiRuntime::new();
     let node = create_host(
         &mut arena,
-        text().with::<text::content>("飞行监测").with::<text::width>(120.0),
+        text()
+            .with::<text::content>("飞行监测")
+            .with::<text::width>(120.0),
     );
     let mut measurer = TextHost::new(ZeroTextBackend);
 
@@ -1850,13 +2021,17 @@ fn new_text_in_an_unchanged_box_is_activated() {
     let style = || StyleOf::<Text>::new().with::<text::size>(Size::fix(120.0, 20.0));
     let node = create_host(
         &mut arena,
-        text().with::<text::content>("before").with::<text::style>(style()),
+        text()
+            .with::<text::content>("before")
+            .with::<text::style>(style()),
     );
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
     let before = measurer.active_slot(node, TextLayoutSlot::PRIMARY);
 
-    let updated = text().with::<text::content>("after").with::<text::style>(style());
+    let updated = text()
+        .with::<text::content>("after")
+        .with::<text::style>(style());
     arena.update_node(node, Box::new(updated));
     arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
 
@@ -1865,9 +2040,15 @@ fn new_text_in_an_unchanged_box_is_activated() {
 }
 
 /// Mounts `label` under a fill-size column whose style is `column_style`.
-fn font_fixture(column_style: StyleOf<Container>, label: Draft<Text>) -> (UiRuntime, NodeId, NodeId) {
+fn font_fixture(
+    column_style: StyleOf<Container>,
+    label: Draft<Text>,
+) -> (UiRuntime, NodeId, NodeId) {
     let mut arena = UiRuntime::new();
-    let column = create_host(&mut arena, container().with::<container::style>(column_style));
+    let column = create_host(
+        &mut arena,
+        container().with::<container::style>(column_style),
+    );
     let label = child_host(&mut arena, column, label);
     (arena, column, label)
 }
@@ -1881,7 +2062,9 @@ fn text_is_laid_out_again_when_its_font_size_changes() {
     let label_style = |size: f32| StyleOf::<Text>::new().with::<text::font_size>(size);
     let (mut arena, _, label) = font_fixture(
         StyleOf::<Container>::new().with::<container::size>(Size::fill()),
-        text().with::<text::content>("label text").with::<text::style>(label_style(12.0)),
+        text()
+            .with::<text::content>("label text")
+            .with::<text::style>(label_style(12.0)),
     );
     let mut measurer = TextHost::new(xui_cosmic::CosmicEngine::new(1.0));
     arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
@@ -1890,7 +2073,9 @@ fn text_is_laid_out_again_when_its_font_size_changes() {
     replace_widget(
         &mut arena,
         label,
-        text().with::<text::content>("label text").with::<text::style>(label_style(24.0)),
+        text()
+            .with::<text::content>("label text")
+            .with::<text::style>(label_style(24.0)),
     );
     arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
 
@@ -1904,9 +2089,15 @@ fn text_is_laid_out_again_when_its_font_size_changes() {
 
 #[test]
 fn text_is_laid_out_again_when_an_inherited_font_size_changes() {
-    let column_style = |size: f32| StyleOf::<Container>::new().with::<container::size>(Size::fill()).with::<container::font_size>(size);
-    let (mut arena, column, label) =
-        font_fixture(column_style(12.0), text().with::<text::content>("label text"));
+    let column_style = |size: f32| {
+        StyleOf::<Container>::new()
+            .with::<container::size>(Size::fill())
+            .with::<container::font_size>(size)
+    };
+    let (mut arena, column, label) = font_fixture(
+        column_style(12.0),
+        text().with::<text::content>("label text"),
+    );
     let mut measurer = TextHost::new(xui_cosmic::CosmicEngine::new(1.0));
     arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
     let before = arena.node(label).unwrap().layout;
@@ -1935,7 +2126,9 @@ fn a_text_color_change_lays_nothing_out() {
     let label_style = |color: Color| StyleOf::<Text>::new().with::<text::color>(color);
     let (mut arena, _, label) = font_fixture(
         StyleOf::<Container>::new().with::<container::size>(Size::fill()),
-        text().with::<text::content>("label").with::<text::style>(label_style(Color::WHITE)),
+        text()
+            .with::<text::content>("label")
+            .with::<text::style>(label_style(Color::WHITE)),
     );
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
@@ -1944,7 +2137,9 @@ fn a_text_color_change_lays_nothing_out() {
     replace_widget(
         &mut arena,
         label,
-        text().with::<text::content>("label").with::<text::style>(label_style(Color::BLACK)),
+        text()
+            .with::<text::content>("label")
+            .with::<text::style>(label_style(Color::BLACK)),
     );
     arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
 
@@ -1965,12 +2160,17 @@ fn a_resize_activates_only_the_text_whose_box_moved() {
     let stretched = child_host(
         &mut arena,
         column,
-        text().with::<text::content>("stretched").with::<text::width>(Sizing::fill()).with::<text::height>(20.0),
+        text()
+            .with::<text::content>("stretched")
+            .with::<text::width>(Sizing::fill())
+            .with::<text::height>(20.0),
     );
     let fixed = child_host(
         &mut arena,
         column,
-        text().with::<text::content>("fixed").with::<text::size>(Size::fix(80.0, 20.0)),
+        text()
+            .with::<text::content>("fixed")
+            .with::<text::size>(Size::fix(80.0, 20.0)),
     );
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
@@ -2047,15 +2247,19 @@ fn an_anchored_portal_follows_its_owner_across_a_resize() {
     // A centered 80x20 trigger: its x depends on the window width.
     let page = create_host(
         &mut arena,
-        container().with::<container::flex_direction>(xui_interface::FlexDirectionStyle::Row).with::<container::style>(
-                    StyleOf::<Container>::new().with::<container::size>(Size::fill()).with::<container::justify>(xui_interface::JustifyStyle::Center).with::<container::padding>(xui_interface::EdgeInsets::new(0.0, 0.0, 30.0, 0.0)),
-                ),
+        container()
+            .with::<container::flex_direction>(xui_interface::FlexDirectionStyle::Row)
+            .with::<container::style>(
+                StyleOf::<Container>::new()
+                    .with::<container::size>(Size::fill())
+                    .with::<container::justify>(xui_interface::JustifyStyle::Center)
+                    .with::<container::padding>(xui_interface::EdgeInsets::new(
+                        0.0, 0.0, 30.0, 0.0,
+                    )),
+            ),
     );
     let trigger = child_host(&mut arena, page, sized(80.0, 20.0));
-    let menu = detached_host(
-        &mut arena,
-        container().with::<container::height>(50.0),
-    );
+    let menu = detached_host(&mut arena, container().with::<container::height>(50.0));
     mount_portal(
         &mut arena,
         trigger,
@@ -2101,14 +2305,19 @@ fn an_anchored_portal_follows_a_scroll_without_laying_out() {
     let mut arena = UiRuntime::new();
     let scroll = create_host(
         &mut arena,
-        container().with::<container::size>(Size::fill()).with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical),
+        container()
+            .with::<container::size>(Size::fill())
+            .with::<container::scroll_direction>(xui_interface::ScrollDirectionStyle::Vertical),
     );
     let content = child_host(
         &mut arena,
         scroll,
         container().with::<container::style>(
-                StyleOf::<Container>::new().with::<container::width>(Sizing::fill()).with::<container::height>(900.0).with::<container::padding>(xui_interface::EdgeInsets::new(10.0, 0.0, 100.0, 0.0)),
-            ),
+            StyleOf::<Container>::new()
+                .with::<container::width>(Sizing::fill())
+                .with::<container::height>(900.0)
+                .with::<container::padding>(xui_interface::EdgeInsets::new(10.0, 0.0, 100.0, 0.0)),
+        ),
     );
     let trigger = child_host(&mut arena, content, sized(80.0, 20.0));
     let menu = detached_host(&mut arena, sized(60.0, 40.0));
@@ -2141,14 +2350,13 @@ fn a_chained_anchor_is_placed_after_the_portal_it_depends_on() {
     let page = create_host(
         &mut arena,
         container().with::<container::style>(
-                StyleOf::<Container>::new().with::<container::size>(Size::fill()).with::<container::padding>(xui_interface::EdgeInsets::new(20.0, 0.0, 40.0, 0.0)),
-            ),
+            StyleOf::<Container>::new()
+                .with::<container::size>(Size::fill())
+                .with::<container::padding>(xui_interface::EdgeInsets::new(20.0, 0.0, 40.0, 0.0)),
+        ),
     );
     let trigger = child_host(&mut arena, page, sized(80.0, 20.0));
-    let menu = detached_host(
-        &mut arena,
-        container().with::<container::width>(100.0),
-    );
+    let menu = detached_host(&mut arena, container().with::<container::width>(100.0));
     let item = child_host(&mut arena, menu, sized(100.0, 24.0));
     // Anchored roots are stored in hash order, so without dependency
     // ordering the submenu often reads the menu before it has moved.
@@ -2187,8 +2395,10 @@ fn an_anchored_portal_flips_above_a_trigger_near_the_bottom() {
     let page = create_host(
         &mut arena,
         container().with::<container::style>(
-                StyleOf::<Container>::new().with::<container::size>(Size::fill()).with::<container::padding>(xui_interface::EdgeInsets::new(10.0, 0.0, 260.0, 0.0)),
-            ),
+            StyleOf::<Container>::new()
+                .with::<container::size>(Size::fill())
+                .with::<container::padding>(xui_interface::EdgeInsets::new(10.0, 0.0, 260.0, 0.0)),
+        ),
     );
     let trigger = child_host(&mut arena, page, sized(80.0, 20.0));
     let menu = detached_host(&mut arena, sized(120.0, 100.0));
@@ -2215,8 +2425,10 @@ fn dropping_the_anchor_returns_the_portal_to_its_own_position() {
     let page = create_host(
         &mut arena,
         container().with::<container::style>(
-                StyleOf::<Container>::new().with::<container::size>(Size::fill()).with::<container::padding>(xui_interface::EdgeInsets::new(40.0, 0.0, 40.0, 0.0)),
-            ),
+            StyleOf::<Container>::new()
+                .with::<container::size>(Size::fill())
+                .with::<container::padding>(xui_interface::EdgeInsets::new(40.0, 0.0, 40.0, 0.0)),
+        ),
     );
     let trigger = child_host(&mut arena, page, sized(80.0, 20.0));
     let menu = detached_host(&mut arena, sized(60.0, 40.0));
@@ -2259,8 +2471,11 @@ fn dismissable_portal(
     let panel = detached_host(
         arena,
         container().with::<container::style>(
-                StyleOf::<Container>::new().with::<container::position>(xui_interface::PositionStyle::Absolute).with::<container::inset>(xui_interface::EdgeInsets::new(100.0, 0.0, 100.0, 0.0)).with::<container::size>(Size::fix(60.0, 40.0)),
-            ),
+            StyleOf::<Container>::new()
+                .with::<container::position>(xui_interface::PositionStyle::Absolute)
+                .with::<container::inset>(xui_interface::EdgeInsets::new(100.0, 0.0, 100.0, 0.0))
+                .with::<container::size>(Size::fix(60.0, 40.0)),
+        ),
     );
     let behavior = PortalBehavior {
         on_dismiss: Some(crate::widgets::DismissHandler::new({
@@ -2361,7 +2576,11 @@ fn a_wrapping_row_moves_overflow_to_a_new_line_spaced_by_gap() {
     let mut arena = UiRuntime::new();
     let row = create_host(
         &mut arena,
-        container().with::<container::flex_direction>(xui_interface::FlexDirectionStyle::Row).with::<container::flex_wrap>(true).with::<container::width>(100.0).with::<container::gap>(10.0),
+        container()
+            .with::<container::flex_direction>(xui_interface::FlexDirectionStyle::Row)
+            .with::<container::flex_wrap>(true)
+            .with::<container::width>(100.0)
+            .with::<container::gap>(10.0),
     );
     let items: Vec<NodeId> = (0..3)
         .map(|_| {
@@ -2390,7 +2609,10 @@ fn text_nodes_preserve_fractional_taffy_geometry() {
     let mut arena = UiRuntime::new();
     let node = create_host(
         &mut arena,
-        text().with::<text::content>("中文").with::<text::width>(45.5).with::<text::height>(20.0),
+        text()
+            .with::<text::content>("中文")
+            .with::<text::width>(45.5)
+            .with::<text::height>(20.0),
     );
     let mut measurer = TextHost::new(ZeroTextBackend);
 
@@ -2405,7 +2627,11 @@ fn text_nodes_preserve_fractional_taffy_geometry() {
 
 #[test]
 fn resizing_invalidates_intrinsic_text_layout_caches() {
-    fn create_child(arena: &mut UiRuntime, parent: NodeId, widget: impl ErasedDraft + 'static) -> NodeId {
+    fn create_child(
+        arena: &mut UiRuntime,
+        parent: NodeId,
+        widget: impl ErasedDraft + 'static,
+    ) -> NodeId {
         let child = create_host(arena, widget);
         arena.place(parent, child, None);
         child
@@ -2414,37 +2640,57 @@ fn resizing_invalidates_intrinsic_text_layout_caches() {
     let mut arena = UiRuntime::new();
     let outer = create_host(
         &mut arena,
-        container().with::<container::flex_direction>(xui_interface::FlexDirectionStyle::Row).with::<container::style>(
-                    StyleOf::<Container>::new().with::<container::size>(Size::fill()).with::<container::padding>(xui_interface::EdgeInsets::all(16.0)).with::<container::gap>(16.0),
-                ),
+        container()
+            .with::<container::flex_direction>(xui_interface::FlexDirectionStyle::Row)
+            .with::<container::style>(
+                StyleOf::<Container>::new()
+                    .with::<container::size>(Size::fill())
+                    .with::<container::padding>(xui_interface::EdgeInsets::all(16.0))
+                    .with::<container::gap>(16.0),
+            ),
     );
     create_child(
         &mut arena,
         outer,
         container().with::<container::style>(
-                StyleOf::<Container>::new().with::<container::width>(xui_interface::Sizing::percent(0.4)).with::<container::height>(xui_interface::Sizing::fill()),
-            ),
+            StyleOf::<Container>::new()
+                .with::<container::width>(xui_interface::Sizing::percent(0.4))
+                .with::<container::height>(xui_interface::Sizing::fill()),
+        ),
     );
     let analytics = create_child(
         &mut arena,
         outer,
-        container().with::<container::flex_direction>(xui_interface::FlexDirectionStyle::Column).with::<container::style>(
-                    StyleOf::<Container>::new().with::<container::size>(Size::fill()).with::<container::padding>(xui_interface::EdgeInsets::all(16.0)).with::<container::gap>(12.0),
-                ),
+        container()
+            .with::<container::flex_direction>(xui_interface::FlexDirectionStyle::Column)
+            .with::<container::style>(
+                StyleOf::<Container>::new()
+                    .with::<container::size>(Size::fill())
+                    .with::<container::padding>(xui_interface::EdgeInsets::all(16.0))
+                    .with::<container::gap>(12.0),
+            ),
     );
     let tabs = create_child(
         &mut arena,
         analytics,
-        container().with::<container::flex_direction>(xui_interface::FlexDirectionStyle::Row).with::<container::style>(
-                    StyleOf::<Container>::new().with::<container::gap>(3.0).with::<container::padding>(xui_interface::EdgeInsets::all(4.0)).with::<container::border_width>(1.0),
-                ),
+        container()
+            .with::<container::flex_direction>(xui_interface::FlexDirectionStyle::Row)
+            .with::<container::style>(
+                StyleOf::<Container>::new()
+                    .with::<container::gap>(3.0)
+                    .with::<container::padding>(xui_interface::EdgeInsets::all(4.0))
+                    .with::<container::border_width>(1.0),
+            ),
     );
     let tab = create_child(
         &mut arena,
         tabs,
         container().with::<container::style>(
-                StyleOf::<Container>::new().with::<container::padding>(xui_interface::EdgeInsets::symmetric(16.0, 6.0)).with::<container::font_size>(12.0).with::<container::border_width>(1.0),
-            ),
+            StyleOf::<Container>::new()
+                .with::<container::padding>(xui_interface::EdgeInsets::symmetric(16.0, 6.0))
+                .with::<container::font_size>(12.0)
+                .with::<container::border_width>(1.0),
+        ),
     );
     let label = create_child(&mut arena, tab, text().with::<text::content>("飞行监测"));
     create_child(
@@ -2493,19 +2739,27 @@ fn local_paint_style_update_skips_unrelated_branch_and_layout() {
     let mut arena = UiRuntime::new();
     let left = create_host(
         &mut arena,
-        container().with::<container::width>(100.0).with::<container::height>(100.0),
+        container()
+            .with::<container::width>(100.0)
+            .with::<container::height>(100.0),
     );
     let right = create_host(
         &mut arena,
-        container().with::<container::width>(100.0).with::<container::height>(100.0),
+        container()
+            .with::<container::width>(100.0)
+            .with::<container::height>(100.0),
     );
     let left_leaf = create_host(
         &mut arena,
-        container().with::<container::width>(20.0).with::<container::height>(20.0),
+        container()
+            .with::<container::width>(20.0)
+            .with::<container::height>(20.0),
     );
     let right_leaf = create_host(
         &mut arena,
-        container().with::<container::width>(20.0).with::<container::height>(20.0),
+        container()
+            .with::<container::width>(20.0)
+            .with::<container::height>(20.0),
     );
     arena.place(left, left_leaf, None);
     arena.place(right, right_leaf, None);
@@ -2519,8 +2773,11 @@ fn local_paint_style_update_skips_unrelated_branch_and_layout() {
         &mut arena,
         left_leaf,
         container().with::<container::style>(
-                StyleOf::<Container>::new().with::<container::width>(20.0).with::<container::height>(20.0).with::<container::background>(Color::BLACK),
-            ),
+            StyleOf::<Container>::new()
+                .with::<container::width>(20.0)
+                .with::<container::height>(20.0)
+                .with::<container::background>(Color::BLACK),
+        ),
     );
     arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
 
@@ -2534,8 +2791,25 @@ fn local_paint_style_update_skips_unrelated_branch_and_layout() {
 fn state_style_changes_use_transition_owned_by_style() {
     let mut arena = UiRuntime::new();
     let transition = Transition::new(Duration::from_millis(100)).ease(Easing::Linear);
-    let style = StyleOf::<Container>::new().with::<container::width>(20.0).with::<container::height>(20.0).with::<container::background>(Color::BLACK).when(crate::style::WidgetStateMatcher::new(WidgetState::HOVERED, crate::style::WidgetState::empty()), |l| { l.set::<container::background>(Color::WHITE); });
-    let node = create_host(&mut arena, container().with::<container::transition>(transition).with::<container::style>(style));
+    let style = StyleOf::<Container>::new()
+        .with::<container::width>(20.0)
+        .with::<container::height>(20.0)
+        .with::<container::background>(Color::BLACK)
+        .when(
+            crate::style::WidgetStateMatcher::new(
+                WidgetState::HOVERED,
+                crate::style::WidgetState::empty(),
+            ),
+            |l| {
+                l.set::<container::background>(Color::WHITE);
+            },
+        );
+    let node = create_host(
+        &mut arena,
+        container()
+            .with::<container::transition>(transition)
+            .with::<container::style>(style),
+    );
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
@@ -2552,7 +2826,19 @@ fn state_style_changes_use_transition_owned_by_style() {
     let layout_passes = arena.stats.layout_passes;
     let repaint_passes = arena.stats.repaint_passes;
 
-    let style_without_transition = StyleOf::<Container>::new().with::<container::width>(20.0).with::<container::height>(20.0).with::<container::background>(Color::BLACK).when(crate::style::WidgetStateMatcher::new(WidgetState::HOVERED, crate::style::WidgetState::empty()), |l| { l.set::<container::background>(Color::WHITE); });
+    let style_without_transition = StyleOf::<Container>::new()
+        .with::<container::width>(20.0)
+        .with::<container::height>(20.0)
+        .with::<container::background>(Color::BLACK)
+        .when(
+            crate::style::WidgetStateMatcher::new(
+                WidgetState::HOVERED,
+                crate::style::WidgetState::empty(),
+            ),
+            |l| {
+                l.set::<container::background>(Color::WHITE);
+            },
+        );
     update_host(
         &mut arena,
         node,
@@ -2576,14 +2862,28 @@ fn inherited_text_color_follows_parent_transition_sample_without_layout() {
     let transition = Transition::new(Duration::from_millis(100)).ease(Easing::Linear);
     let tab = create_host(
         &mut arena,
-        container().with::<container::transition>(transition).with::<container::style>(
-                StyleOf::<Container>::new().with::<container::color>(Color::BLACK).when(crate::style::WidgetStateMatcher::new(WidgetState::HOVERED, crate::style::WidgetState::empty()), |l| { l.set::<container::color>(Color::WHITE); }),
+        container()
+            .with::<container::transition>(transition)
+            .with::<container::style>(
+                StyleOf::<Container>::new()
+                    .with::<container::color>(Color::BLACK)
+                    .when(
+                        crate::style::WidgetStateMatcher::new(
+                            WidgetState::HOVERED,
+                            crate::style::WidgetState::empty(),
+                        ),
+                        |l| {
+                            l.set::<container::color>(Color::WHITE);
+                        },
+                    ),
             ),
     );
     let label = create_host(&mut arena, text().with::<text::content>("New member"));
     let explicit_label = create_host(
         &mut arena,
-        text().with::<text::content>("Pinned").with::<text::color>(Color::BLUE_500),
+        text()
+            .with::<text::content>("Pinned")
+            .with::<text::color>(Color::BLUE_500),
     );
     arena.place(tab, label, None);
     arena.place(tab, explicit_label, None);
@@ -2618,8 +2918,20 @@ fn starting_an_inherited_transition_updates_child_targets_immediately() {
     let transition = Transition::new(Duration::from_millis(100)).ease(Easing::Linear);
     let tab = create_host(
         &mut arena,
-        container().with::<container::transition>(transition).with::<container::style>(
-                StyleOf::<Container>::new().with::<container::color>(Color::BLACK).when(crate::style::WidgetStateMatcher::new(WidgetState::HOVERED, crate::style::WidgetState::empty()), |l| { l.set::<container::color>(Color::WHITE); }),
+        container()
+            .with::<container::transition>(transition)
+            .with::<container::style>(
+                StyleOf::<Container>::new()
+                    .with::<container::color>(Color::BLACK)
+                    .when(
+                        crate::style::WidgetStateMatcher::new(
+                            WidgetState::HOVERED,
+                            crate::style::WidgetState::empty(),
+                        ),
+                        |l| {
+                            l.set::<container::color>(Color::WHITE);
+                        },
+                    ),
             ),
     );
     let label = create_host(&mut arena, text().with::<text::content>("New member"));
@@ -2650,16 +2962,25 @@ fn inheritance_fixture(arena: &mut UiRuntime) -> [NodeId; 5] {
     let transition = Transition::new(Duration::from_millis(100)).ease(Easing::Linear);
     let tab = create_host(
         arena,
-        container().with::<container::transition>(transition).with::<container::style>(
-                StyleOf::<Container>::new().with::<container::color>(Color::BLACK).when(crate::style::WidgetStateMatcher::new(WidgetState::HOVERED, crate::style::WidgetState::empty()), |l| { l.set::<container::color>(Color::WHITE); }),
+        container()
+            .with::<container::transition>(transition)
+            .with::<container::style>(
+                StyleOf::<Container>::new()
+                    .with::<container::color>(Color::BLACK)
+                    .when(
+                        crate::style::WidgetStateMatcher::new(
+                            WidgetState::HOVERED,
+                            crate::style::WidgetState::empty(),
+                        ),
+                        |l| {
+                            l.set::<container::color>(Color::WHITE);
+                        },
+                    ),
             ),
     );
     let label = create_host(arena, container());
     let nested = create_host(arena, text().with::<text::content>("nested"));
-    let pinned = create_host(
-        arena,
-        container().with::<container::color>(Color::BLUE_500),
-    );
+    let pinned = create_host(arena, container().with::<container::color>(Color::BLUE_500));
     let under_pinned = create_host(arena, text().with::<text::content>("under pinned"));
     arena.place(tab, label, None);
     arena.place(label, nested, None);
@@ -2753,8 +3074,18 @@ fn a_cursor_only_state_change_updates_the_target_without_repainting() {
     let node = create_host(
         &mut arena,
         container().with::<container::style>(
-                StyleOf::<Container>::new().with::<container::size>(Size::fix(20.0, 20.0)).when(crate::style::WidgetStateMatcher::new(WidgetState::HOVERED, crate::style::WidgetState::empty()), |l| { l.set::<container::cursor>(CursorIcon::Pointer); }),
-            ),
+            StyleOf::<Container>::new()
+                .with::<container::size>(Size::fix(20.0, 20.0))
+                .when(
+                    crate::style::WidgetStateMatcher::new(
+                        WidgetState::HOVERED,
+                        crate::style::WidgetState::empty(),
+                    ),
+                    |l| {
+                        l.set::<container::cursor>(CursorIcon::Pointer);
+                    },
+                ),
+        ),
     );
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
@@ -2778,8 +3109,25 @@ fn hovered_cjk_tab_keeps_one_line_and_finishes_paint_transition() {
     let transition = Transition::new(Duration::from_millis(100)).ease(Easing::Linear);
     let tab = create_host(
         &mut arena,
-        container().with::<container::transition>(transition).with::<container::style>(
-                StyleOf::<Container>::new().with::<container::padding>(xui_interface::EdgeInsets::symmetric(16.0, 6.0)).with::<container::color>(Color::BLACK).with::<container::font_family>("PingFang SC").with::<container::font_size>(12.0).with::<container::border_width>(1.0).when(crate::style::WidgetStateMatcher::new(WidgetState::HOVERED, crate::style::WidgetState::empty()), |l| { l.set::<container::background>(Color::BLACK); l.set::<container::color>(Color::WHITE); }),
+        container()
+            .with::<container::transition>(transition)
+            .with::<container::style>(
+                StyleOf::<Container>::new()
+                    .with::<container::padding>(xui_interface::EdgeInsets::symmetric(16.0, 6.0))
+                    .with::<container::color>(Color::BLACK)
+                    .with::<container::font_family>("PingFang SC")
+                    .with::<container::font_size>(12.0)
+                    .with::<container::border_width>(1.0)
+                    .when(
+                        crate::style::WidgetStateMatcher::new(
+                            WidgetState::HOVERED,
+                            crate::style::WidgetState::empty(),
+                        ),
+                        |l| {
+                            l.set::<container::background>(Color::BLACK);
+                            l.set::<container::color>(Color::WHITE);
+                        },
+                    ),
             ),
     );
     let label = create_host(&mut arena, text().with::<text::content>("飞行监测"));
@@ -2851,7 +3199,10 @@ fn layout_transition_updates_effective_taffy_style_each_frame() {
     let transition = Transition::new(Duration::from_millis(100)).ease(Easing::Linear);
     let node = create_host(
         &mut arena,
-        container().with::<container::width>(20.0).with::<container::height>(20.0).with::<container::transition>(transition),
+        container()
+            .with::<container::width>(20.0)
+            .with::<container::height>(20.0)
+            .with::<container::transition>(transition),
     );
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(200.0, 100.0), &mut measurer);
@@ -2859,8 +3210,12 @@ fn layout_transition_updates_effective_taffy_style_each_frame() {
     update_host(
         &mut arena,
         node,
-        container().with::<container::transition>(transition).with::<container::style>(
-                StyleOf::<Container>::new().with::<container::width>(100.0).with::<container::height>(20.0),
+        container()
+            .with::<container::transition>(transition)
+            .with::<container::style>(
+                StyleOf::<Container>::new()
+                    .with::<container::width>(100.0)
+                    .with::<container::height>(20.0),
             ),
     );
     arena.update_tree(Size::new(200.0, 100.0), &mut measurer);
@@ -2884,8 +3239,13 @@ fn paint_only_transition_does_not_run_layout() {
     let transition = Transition::new(Duration::from_millis(100)).ease(Easing::Linear);
     let node = create_host(
         &mut arena,
-        container().with::<container::transition>(transition).with::<container::style>(
-                StyleOf::<Container>::new().with::<container::width>(20.0).with::<container::height>(20.0).with::<container::background>(Color::BLACK),
+        container()
+            .with::<container::transition>(transition)
+            .with::<container::style>(
+                StyleOf::<Container>::new()
+                    .with::<container::width>(20.0)
+                    .with::<container::height>(20.0)
+                    .with::<container::background>(Color::BLACK),
             ),
     );
     let mut measurer = TextHost::new(ZeroTextBackend);
@@ -2894,8 +3254,13 @@ fn paint_only_transition_does_not_run_layout() {
     update_host(
         &mut arena,
         node,
-        container().with::<container::transition>(transition).with::<container::style>(
-                StyleOf::<Container>::new().with::<container::width>(20.0).with::<container::height>(20.0).with::<container::background>(Color::WHITE),
+        container()
+            .with::<container::transition>(transition)
+            .with::<container::style>(
+                StyleOf::<Container>::new()
+                    .with::<container::width>(20.0)
+                    .with::<container::height>(20.0)
+                    .with::<container::background>(Color::WHITE),
             ),
     );
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
@@ -2911,8 +3276,24 @@ fn paint_only_transition_does_not_run_layout() {
 fn state_transform_transition_updates_only_frame_properties() {
     let mut arena = UiRuntime::new();
     let transition = Transition::new(Duration::from_millis(100)).ease(Easing::QuadIn);
-    let style = StyleOf::<Container>::new().with::<container::width>(20.0).with::<container::height>(20.0).when(crate::style::WidgetStateMatcher::new(WidgetState::PRESSED, crate::style::WidgetState::empty()), |l| { l.set::<container::translate_y>(4.0); });
-    let node = create_host(&mut arena, container().with::<container::transition>(transition).with::<container::style>(style));
+    let style = StyleOf::<Container>::new()
+        .with::<container::width>(20.0)
+        .with::<container::height>(20.0)
+        .when(
+            crate::style::WidgetStateMatcher::new(
+                WidgetState::PRESSED,
+                crate::style::WidgetState::empty(),
+            ),
+            |l| {
+                l.set::<container::translate_y>(4.0);
+            },
+        );
+    let node = create_host(
+        &mut arena,
+        container()
+            .with::<container::transition>(transition)
+            .with::<container::style>(style),
+    );
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
@@ -2942,7 +3323,9 @@ fn a_transform_is_derived_once_a_frame_from_the_settled_size() {
     let mut arena = UiRuntime::new();
     let node = create_host(
         &mut arena,
-        container().with::<container::width>(20.0).with::<container::height>(20.0),
+        container()
+            .with::<container::width>(20.0)
+            .with::<container::height>(20.0),
     );
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
@@ -2952,7 +3335,10 @@ fn a_transform_is_derived_once_a_frame_from_the_settled_size() {
     update_host(
         &mut arena,
         node,
-        container().with::<container::width>(40.0).with::<container::height>(20.0).with::<container::scale>(2.0),
+        container()
+            .with::<container::width>(40.0)
+            .with::<container::height>(20.0)
+            .with::<container::scale>(2.0),
     );
     let syncs = arena.stats.transform_syncs;
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
@@ -2971,7 +3357,9 @@ fn direct_transform_update_skips_layout_and_repaint() {
     let mut arena = UiRuntime::new();
     let node = create_host(
         &mut arena,
-        container().with::<container::width>(20.0).with::<container::height>(20.0),
+        container()
+            .with::<container::width>(20.0)
+            .with::<container::height>(20.0),
     );
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
@@ -2982,8 +3370,11 @@ fn direct_transform_update_skips_layout_and_repaint() {
         &mut arena,
         node,
         container().with::<container::style>(
-                StyleOf::<Container>::new().with::<container::width>(20.0).with::<container::height>(20.0).with::<container::translate>(Point::new(3.0, 5.0)),
-            ),
+            StyleOf::<Container>::new()
+                .with::<container::width>(20.0)
+                .with::<container::height>(20.0)
+                .with::<container::translate>(Point::new(3.0, 5.0)),
+        ),
     );
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
@@ -3041,7 +3432,29 @@ fn wrapper_chain(arena: &UiRuntime, node: NodeId) -> Vec<crate::render::RenderNo
 #[test]
 fn a_style_transform_is_a_frame_property_on_the_layout_root() {
     let mut arena = UiRuntime::new();
-    let style = StyleOf::<Container>::new().with::<container::width>(20.0).with::<container::height>(20.0).with::<container::margin>(EdgeInsets::all(10.0)).with::<container::backdrop_blur>(4.0).when(crate::style::WidgetStateMatcher::new(WidgetState::PRESSED, crate::style::WidgetState::empty()), |l| { l.set::<container::translate_y>(4.0); }).when(crate::style::WidgetStateMatcher::new(WidgetState::HOVERED, crate::style::WidgetState::empty()), |l| { l.set::<container::clip>(true); });
+    let style = StyleOf::<Container>::new()
+        .with::<container::width>(20.0)
+        .with::<container::height>(20.0)
+        .with::<container::margin>(EdgeInsets::all(10.0))
+        .with::<container::backdrop_blur>(4.0)
+        .when(
+            crate::style::WidgetStateMatcher::new(
+                WidgetState::PRESSED,
+                crate::style::WidgetState::empty(),
+            ),
+            |l| {
+                l.set::<container::translate_y>(4.0);
+            },
+        )
+        .when(
+            crate::style::WidgetStateMatcher::new(
+                WidgetState::HOVERED,
+                crate::style::WidgetState::empty(),
+            ),
+            |l| {
+                l.set::<container::clip>(true);
+            },
+        );
     let node = create_host(&mut arena, container().with::<container::style>(style));
     let mut measurer = TextHost::new(ZeroTextBackend);
     // Where the frame puts the host's layer, and what it chains through.
@@ -3161,7 +3574,9 @@ fn the_same_animation_keeps_its_place_and_a_different_one_starts_over() {
     update_host(
         &mut arena,
         node,
-        container().with::<container::width>(20.0).with::<container::height>(20.0),
+        container()
+            .with::<container::width>(20.0)
+            .with::<container::height>(20.0),
     );
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
     assert!(!arena.is_animating(), "a style that stops asking stops it");
@@ -3261,11 +3676,7 @@ fn a_transition_shows_through_on_properties_the_animation_does_not_name() {
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
-    update_host(
-        &mut arena,
-        node,
-        style(Color::WHITE),
-    );
+    update_host(&mut arena, node, style(Color::WHITE));
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
     assert_eq!(
         background(&arena, node),
@@ -3286,16 +3697,9 @@ fn a_transition_shows_through_on_properties_the_animation_does_not_name() {
     );
 
     let mut arena = UiRuntime::new();
-    let node = create_host(
-        &mut arena,
-        style(Color::BLACK),
-    );
+    let node = create_host(&mut arena, style(Color::BLACK));
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-    update_host(
-        &mut arena,
-        node,
-        style(Color::WHITE),
-    );
+    update_host(&mut arena, node, style(Color::WHITE));
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
     arena.tick_style_animations(Duration::from_millis(50));
     let halfway = background(&arena, node);
@@ -3320,16 +3724,16 @@ fn the_animation_wins_on_a_property_both_name_until_it_ends() {
             .with::<container::height>(20.0)
             .with::<container::background>(color)
             .with::<container::transition>(transition)
-            .animate(xui_interface::Animation::new(Duration::from_millis(100)), red, red)
+            .animate(
+                xui_interface::Animation::new(Duration::from_millis(100)),
+                red,
+                red,
+            )
     };
     let node = create_host(&mut arena, style(Color::BLACK));
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-    update_host(
-        &mut arena,
-        node,
-        style(Color::WHITE),
-    );
+    update_host(&mut arena, node, style(Color::WHITE));
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
     arena.tick_style_animations(Duration::from_millis(50));
@@ -3367,11 +3771,7 @@ fn a_transition_started_under_an_animation_does_not_unwind_it() {
     arena.tick_style_animations(Duration::from_millis(50));
     assert!((rotation(&arena, node) - std::f32::consts::PI).abs() < 1e-4);
 
-    update_host(
-        &mut arena,
-        node,
-        style(Color::WHITE),
-    );
+    update_host(&mut arena, node, style(Color::WHITE));
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
     arena.tick_style_animations(Duration::from_millis(60));
 
@@ -3400,18 +3800,10 @@ fn an_animating_child_follows_its_parents_transition() {
             .with::<container::transition>(transition)
     };
     let parent = create_host(&mut arena, parent_style(Color::BLACK));
-    let child = child_of(
-        &mut arena,
-        parent,
-        spinning(1000),
-    );
+    let child = child_of(&mut arena, parent, spinning(1000));
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
-    update_host(
-        &mut arena,
-        parent,
-        parent_style(Color::WHITE),
-    );
+    update_host(&mut arena, parent, parent_style(Color::WHITE));
     arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
 
     for frame in 1..=3 {
@@ -3434,7 +3826,9 @@ fn center_fills_its_parent_and_centers_its_child() {
     let child = child_of(
         &mut arena,
         center,
-        container().with::<container::width>(10.0).with::<container::height>(20.0),
+        container()
+            .with::<container::width>(10.0)
+            .with::<container::height>(20.0),
     );
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(400.0, 300.0), &mut measurer);
@@ -3451,15 +3845,14 @@ fn a_sized_center_keeps_its_size() {
     let mut arena = UiRuntime::new();
     let center = create_host(
         &mut arena,
-        center().with::<container::size>(Size::new(
-            Sizing::Hug,
-            Sizing::from(50.0),
-        )),
+        center().with::<container::size>(Size::new(Sizing::Hug, Sizing::from(50.0))),
     );
     child_of(
         &mut arena,
         center,
-        container().with::<container::width>(10.0).with::<container::height>(20.0),
+        container()
+            .with::<container::width>(10.0)
+            .with::<container::height>(20.0),
     );
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(400.0, 300.0), &mut measurer);
@@ -3477,7 +3870,9 @@ fn drawn(arena: &UiRuntime, node: NodeId) -> bool {
 
 /// A 40x40 container with `style` merged over its size.
 fn square(style: StyleOf<Container>) -> impl ErasedDraft + 'static {
-    container().with::<container::size>(Size::fix(40.0, 40.0)).with::<container::style>(style)
+    container()
+        .with::<container::size>(Size::fix(40.0, 40.0))
+        .with::<container::style>(style)
 }
 
 /// `visibility: hidden` keeps the node's space, draws nothing, and lets the
@@ -3487,7 +3882,13 @@ fn square(style: StyleOf<Container>) -> impl ErasedDraft + 'static {
 fn a_hidden_node_keeps_its_space_but_is_not_drawn_or_hit() {
     let mut arena = UiRuntime::new();
     let first = create_host(&mut arena, square(StyleOf::<Container>::new()));
-    let hidden = create_host(&mut arena, square(StyleOf::<Container>::new().with::<container::visibility>(xui_interface::VisibilityStyle::Hidden)));
+    let hidden = create_host(
+        &mut arena,
+        square(
+            StyleOf::<Container>::new()
+                .with::<container::visibility>(xui_interface::VisibilityStyle::Hidden),
+        ),
+    );
     let inner = child_of(
         &mut arena,
         hidden,
@@ -3520,7 +3921,13 @@ fn a_hidden_node_keeps_its_space_but_is_not_drawn_or_hit() {
 #[test]
 fn a_node_out_of_layout_takes_no_space_and_stays_mounted() {
     let mut arena = UiRuntime::new();
-    let gone = create_host(&mut arena, square(StyleOf::<Container>::new().with::<container::display>(xui_interface::DisplayStyle::None)));
+    let gone = create_host(
+        &mut arena,
+        square(
+            StyleOf::<Container>::new()
+                .with::<container::display>(xui_interface::DisplayStyle::None),
+        ),
+    );
     let after = create_host(&mut arena, square(StyleOf::<Container>::new()));
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
@@ -3550,17 +3957,33 @@ fn equal_styles_are_held_once() {
 
     let cells: Vec<_> = (0..50).map(|_| create_host(&mut arena, cell())).collect();
     arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
-    assert_eq!(arena.style_system.distinct_styles(), before + 1, "fifty equal cells, one style");
+    assert_eq!(
+        arena.style_system.distinct_styles(),
+        before + 1,
+        "fifty equal cells, one style"
+    );
 
-    update_host(&mut arena, cells[0], container().with::<container::size>(Size::fix(30.0, 20.0)));
+    update_host(
+        &mut arena,
+        cells[0],
+        container().with::<container::size>(Size::fix(30.0, 20.0)),
+    );
     arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
     assert_eq!(arena.style_system.distinct_styles(), before + 2);
     assert_eq!(arena.node(cells[0]).unwrap().layout.width(), 30.0);
-    assert_eq!(arena.node(cells[1]).unwrap().layout.width(), 20.0, "the others kept theirs");
+    assert_eq!(
+        arena.node(cells[1]).unwrap().layout.width(),
+        20.0,
+        "the others kept theirs"
+    );
 
     arena.remove_subtree(cells[0]);
     arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
-    assert_eq!(arena.style_system.distinct_styles(), before + 1, "the changed style went with its node");
+    assert_eq!(
+        arena.style_system.distinct_styles(),
+        before + 1,
+        "the changed style went with its node"
+    );
     for cell in &cells[1..] {
         arena.remove_subtree(*cell);
     }
@@ -3576,20 +3999,40 @@ fn what_changes_while_undisplayed_is_laid_out_once_shown() {
     let mut arena = UiRuntime::new();
     let hidden = || container().with::<container::display>(xui_interface::DisplayStyle::None);
     let parent = create_host(&mut arena, hidden());
-    let inner = child_of(&mut arena, parent, container().with::<container::size>(Size::fix(10.0, 10.0)));
+    let inner = child_of(
+        &mut arena,
+        parent,
+        container().with::<container::size>(Size::fix(10.0, 10.0)),
+    );
     let after = create_host(&mut arena, square(StyleOf::<Container>::new()));
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
 
-    update_host(&mut arena, inner, container().with::<container::size>(Size::fix(30.0, 30.0)));
+    update_host(
+        &mut arena,
+        inner,
+        container().with::<container::size>(Size::fix(30.0, 30.0)),
+    );
     arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
-    assert_eq!(arena.node(after).unwrap().layout.min.y, 0.0, "a hidden subtree takes no space");
+    assert_eq!(
+        arena.node(after).unwrap().layout.min.y,
+        0.0,
+        "a hidden subtree takes no space"
+    );
 
     update_host(&mut arena, parent, container());
     arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
     assert_eq!(arena.node(inner).unwrap().layout.width(), 30.0);
-    assert_eq!(arena.node(parent).unwrap().layout.height(), 30.0, "sized by what grew while hidden");
-    assert_eq!(arena.node(after).unwrap().layout.min.y, 30.0, "the sibling moved past it");
+    assert_eq!(
+        arena.node(parent).unwrap().layout.height(),
+        30.0,
+        "sized by what grew while hidden"
+    );
+    assert_eq!(
+        arena.node(after).unwrap().layout.min.y,
+        30.0,
+        "the sibling moved past it"
+    );
 }
 
 /// A focused node that is hidden gives its focus up, and a hidden node -- or
@@ -3599,7 +4042,9 @@ fn hiding_the_focused_node_gives_up_its_focus() {
     let mut arena = UiRuntime::new();
     let field = create_host(
         &mut arena,
-        container().with::<container::tab_index>(0).with::<container::size>(Size::fix(40.0, 40.0)),
+        container()
+            .with::<container::tab_index>(0)
+            .with::<container::size>(Size::fix(40.0, 40.0)),
     );
     let mut measurer = TextHost::new(ZeroTextBackend);
     arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
@@ -3609,7 +4054,10 @@ fn hiding_the_focused_node_gives_up_its_focus() {
     update_host(
         &mut arena,
         field,
-        container().with::<container::tab_index>(0).with::<container::size>(Size::fix(40.0, 40.0)).with::<container::visibility>(xui_interface::VisibilityStyle::Hidden),
+        container()
+            .with::<container::tab_index>(0)
+            .with::<container::size>(Size::fix(40.0, 40.0))
+            .with::<container::visibility>(xui_interface::VisibilityStyle::Hidden),
     );
     arena.update_tree(Size::new(200.0, 200.0), &mut measurer);
     assert!(!arena.is_focusable(field));
@@ -3617,14 +4065,24 @@ fn hiding_the_focused_node_gives_up_its_focus() {
     // widget.
     let mut translator =
         EventTranslator::new(crate::event_system::translator::EventTranslatorConfig::default());
-    arena.dispatch_event(&measurer, &mut translator, pointer_move(Point::new(150.0, 150.0)));
+    arena.dispatch_event(
+        &measurer,
+        &mut translator,
+        pointer_move(Point::new(150.0, 150.0)),
+    );
     assert_eq!(arena.focused_node(), None);
 }
 
 #[test]
 fn a_child_of_an_undisplayed_node_cannot_take_focus() {
     let mut arena = UiRuntime::new();
-    let parent = create_host(&mut arena, square(StyleOf::<Container>::new().with::<container::display>(xui_interface::DisplayStyle::None)));
+    let parent = create_host(
+        &mut arena,
+        square(
+            StyleOf::<Container>::new()
+                .with::<container::display>(xui_interface::DisplayStyle::None),
+        ),
+    );
     let field = child_of(
         &mut arena,
         parent,

@@ -140,16 +140,19 @@ mod template;
 pub use block::{BlockCx, Row, RowTemplate};
 pub use graph::{EffectId, Graph, InstanceId, Notifier, SourceId};
 pub use host::{HostPatcher, HostTag, PatchScope, host, patchable};
-pub use pass::{Callback, CallbackArg, Children, PortalSpec, __callback, __children, __size_observer};
+pub use pass::{
+    __callback, __children, __size_observer, Callback, CallbackArg, Children, PortalSpec,
+};
 pub use props::{
-    Component, Current, Expr, FromValue, MountDraft, PropCx, PropKind, SourceArg, Tracked, __convert, __expr, __pending_with,
+    __convert, __expr, __pending_with, Component, Current, Expr, FromValue, MountDraft, PropCx,
+    PropKind, SourceArg, Tracked,
 };
 pub use runtime::{Cx, FlushReport, Place, Runtime};
-pub use tasks::AsyncValue;
 pub use signal::{Memo, ReadSignal, Signal, Source};
+pub use tasks::AsyncValue;
 pub use template::{
-    BuildHost, ChildSpec, HostDraft, ComponentDef, EffectSpec, Lane, MountCx, NodeKind, PendingMount, Run, Scope, StaticNode,
-    Template, __apply, __host, __pending,
+    __apply, __host, __pending, BuildHost, ChildSpec, ComponentDef, EffectSpec, HostDraft, Lane,
+    MountCx, NodeKind, PendingMount, Run, Scope, StaticNode, Template,
 };
 
 #[cfg(test)]

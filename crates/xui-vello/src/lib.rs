@@ -119,9 +119,9 @@ mod text;
 mod texture;
 
 pub use backend::{DeviceNeeds, FrameStats, ResourceStats, VelloBackend, VelloBackendOptions};
-pub use xui_wgpu_text::AtlasOptions;
 pub use context::WgpuContext;
 pub use encode::Unsupported;
 pub use error::VelloBackendError;
 /// The `wgpu` the backend renders with, for canvas GPU painters on its device.
 pub use wgpu;
+pub use xui_wgpu_text::AtlasOptions;

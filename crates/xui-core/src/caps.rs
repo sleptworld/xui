@@ -557,10 +557,10 @@ mod tests {
     use xui_macros::widget;
 
     use super::*;
+    use crate::capability::StyleSet;
     use crate::focus::FocusHandle;
     use crate::node::{Draft, HostNode, Mounted, Node};
     use crate::scroll::{ScrollController, ScrollRequestQueue};
-    use crate::capability::StyleSet;
 
     fn ids(n: usize) -> Vec<NodeId> {
         let mut map = SlotMap::<NodeId, ()>::with_key();
@@ -746,7 +746,11 @@ mod tests {
         for state in states {
             let mut computed = parent.inherited_from(&theme);
             columns.apply_style(id, SWATCH, state, &mut computed, &parent, &initial, &theme);
-            assert_eq!(computed, draft.compute_style(state, &parent, &theme), "{state:?}");
+            assert_eq!(
+                computed,
+                draft.compute_style(state, &parent, &theme),
+                "{state:?}"
+            );
 
             assert_eq!(
                 columns.inherits_differently(id, SWATCH, state, &initial, &parent),
@@ -767,7 +771,10 @@ mod tests {
                 );
             }
         }
-        assert_eq!(columns.transition(id), draft.storage.behavior.motion.transition);
+        assert_eq!(
+            columns.transition(id),
+            draft.storage.behavior.motion.transition
+        );
     }
 
     #[test]

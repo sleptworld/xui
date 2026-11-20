@@ -23,12 +23,25 @@ fn markup(ui: &UiRuntime, id: NodeId) -> String {
 
 /// What `runtime` mounted under the root, as markup.
 fn shown(ui: &UiRuntime, runtime: &Runtime, id: super::InstanceId) -> String {
-    runtime.hosts(id).into_iter().map(|host| markup(ui, host)).collect()
+    runtime
+        .hosts(id)
+        .into_iter()
+        .map(|host| markup(ui, host))
+        .collect()
 }
 
 fn analysis<C: Component>() -> Vec<(&'static str, Lane, Vec<&'static str>)> {
     let t = &<C::Instance as ComponentDef>::TEMPLATE;
-    t.effects.iter().map(|e| (e.label, e.lane, e.deps.iter().map(|&d| t.sources[d as usize]).collect())).collect()
+    t.effects
+        .iter()
+        .map(|e| {
+            (
+                e.label,
+                e.lane,
+                e.deps.iter().map(|&d| t.sources[d as usize]).collect(),
+            )
+        })
+        .collect()
 }
 
 #[component]
@@ -66,7 +79,14 @@ fn mounts_into_the_host_tree_and_updates_what_changed() {
     let count = runtime.instance::<Counter>(id).unwrap().count.clone();
     let step = runtime.instance::<Counter>(id).unwrap().step;
     let report = runtime.batch(&mut ui, |cx| count.update(cx, |c| *c += step));
-    assert_eq!(report, FlushReport { memos: 1, renders: 2, ..Default::default() });
+    assert_eq!(
+        report,
+        FlushReport {
+            memos: 1,
+            renders: 2,
+            ..Default::default()
+        }
+    );
     assert_eq!(
         shown(&ui, &runtime, id),
         "<container><text>count 2</text><text>doubled 4</text><text>static</text></container>"
@@ -103,9 +123,20 @@ fn blocks_place_their_rows_between_their_siblings() {
     let mut runtime = Runtime::new();
     let (on, items) = (runtime.signal(false), runtime.signal(vec![1, 2]));
     let root = ui.root();
-    let id = runtime.mount::<Toggle>(&mut ui, root, ToggleProps { on: on.read_only(), items: items.read_only() });
-    let row = |inner: &str| format!("<container><text>first</text>{inner}<text>last</text></container>");
-    assert_eq!(shown(&ui, &runtime, id), row("<text>off</text><text>item 1</text><text>item 2</text>"));
+    let id = runtime.mount::<Toggle>(
+        &mut ui,
+        root,
+        ToggleProps {
+            on: on.read_only(),
+            items: items.read_only(),
+        },
+    );
+    let row =
+        |inner: &str| format!("<container><text>first</text>{inner}<text>last</text></container>");
+    assert_eq!(
+        shown(&ui, &runtime, id),
+        row("<text>off</text><text>item 1</text><text>item 2</text>")
+    );
 
     runtime.batch(&mut ui, |cx| on.set(cx, true));
     assert_eq!(
@@ -122,7 +153,9 @@ fn blocks_place_their_rows_between_their_siblings() {
     runtime.batch(&mut ui, |cx| items.set(cx, vec![2, 3, 1]));
     assert_eq!(
         shown(&ui, &runtime, id),
-        row("<text>on</text><text>and more</text><text>item 2</text><text>item 3</text><text>item 1</text>")
+        row(
+            "<text>on</text><text>and more</text><text>item 2</text><text>item 3</text><text>item 1</text>"
+        )
     );
 
     runtime.batch(&mut ui, |cx| on.set(cx, false));
@@ -139,17 +172,30 @@ fn rows_already_in_order_are_not_moved() {
     let mut runtime = Runtime::new();
     let (on, items) = (runtime.signal(false), runtime.signal(vec![1, 2, 3]));
     let root = ui.root();
-    let id = runtime.mount::<Toggle>(&mut ui, root, ToggleProps { on: on.read_only(), items: items.read_only() });
+    let id = runtime.mount::<Toggle>(
+        &mut ui,
+        root,
+        ToggleProps {
+            on: on.read_only(),
+            items: items.read_only(),
+        },
+    );
     let container = runtime.hosts(id)[0];
     ui.take_work(container);
 
     // The block reruns and keeps every row where it stands.
     let report = runtime.batch(&mut ui, |cx| items.set(cx, vec![1, 2, 3]));
     assert_eq!(report.blocks, 1);
-    assert!(!ui.take_work(container).intersects(HostWorkFlags::CHILDREN_CHANGED));
+    assert!(
+        !ui.take_work(container)
+            .intersects(HostWorkFlags::CHILDREN_CHANGED)
+    );
 
     runtime.batch(&mut ui, |cx| items.set(cx, vec![3, 1, 2]));
-    assert!(ui.take_work(container).intersects(HostWorkFlags::CHILDREN_CHANGED));
+    assert!(
+        ui.take_work(container)
+            .intersects(HostWorkFlags::CHILDREN_CHANGED)
+    );
 }
 
 #[component]
@@ -216,8 +262,17 @@ fn a_handler_writes_and_the_flush_shows_it() {
     crate::ui_runtime::tests::click(&mut ui, &measurer, button);
     // The handler only recorded the write.
     assert!(runtime.is_dirty());
-    assert_eq!(runtime.flush(&mut ui), FlushReport { renders: 1, ..Default::default() });
-    assert_eq!(shown(&ui, &runtime, id), "<container><container></container><text>clicks 1</text></container>");
+    assert_eq!(
+        runtime.flush(&mut ui),
+        FlushReport {
+            renders: 1,
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        shown(&ui, &runtime, id),
+        "<container><container></container><text>clicks 1</text></container>"
+    );
 }
 
 #[test]
@@ -240,9 +295,14 @@ fn an_app_flushes_what_its_handlers_wrote_before_the_next_frame() {
     let column = gui.app().reactive().hosts(id)[0];
     let button = ui.children(column).next().unwrap();
     let bounds = ui.node(button).unwrap().layout;
-    let point = Point::new((bounds.min.x + bounds.max.x) * 0.5, (bounds.min.y + bounds.max.y) * 0.5);
+    let point = Point::new(
+        (bounds.min.x + bounds.max.x) * 0.5,
+        (bounds.min.y + bounds.max.y) * 0.5,
+    );
     gui.handle_event(RuntimeEvent::Input(pointer_move(point)));
-    gui.handle_event(RuntimeEvent::Input(RawEvent::PointerDown(pointer_at(point))));
+    gui.handle_event(RuntimeEvent::Input(RawEvent::PointerDown(pointer_at(
+        point,
+    ))));
     gui.handle_event(RuntimeEvent::Input(RawEvent::PointerUp(pointer_at(point))));
     assert!(gui.app().is_dirty());
     gui.frame().unwrap();
@@ -285,7 +345,10 @@ fn props_are_delivered_as_the_child_declares() {
     let root = ui.root();
     let id = runtime.mount::<Dashboard>(&mut ui, root, DashboardProps {});
     let column = |inner: &str| format!("<container>{inner}<container></container></container>");
-    assert_eq!(shown(&ui, &runtime, id), column("<text>n at 1 10</text><text>p fixed 1</text>"));
+    assert_eq!(
+        shown(&ui, &runtime, id),
+        column("<text>n at 1 10</text><text>p fixed 1</text>")
+    );
     // `count` itself and the one source derived for `count * 10`; passed by
     // name, `count` is shared, not copied.
     assert_eq!(runtime.graph().len(), 2);
@@ -293,8 +356,18 @@ fn props_are_delivered_as_the_child_declares() {
     let count = runtime.instance::<Dashboard>(id).unwrap().count.clone();
     let report = runtime.batch(&mut ui, |cx| count.set(cx, 2));
     // The derived source, then both badges' texts. `label` was a snapshot.
-    assert_eq!(report, FlushReport { memos: 1, renders: 2, ..Default::default() });
-    assert_eq!(shown(&ui, &runtime, id), column("<text>n at 1 20</text><text>p fixed 2</text>"));
+    assert_eq!(
+        report,
+        FlushReport {
+            memos: 1,
+            renders: 2,
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        shown(&ui, &runtime, id),
+        column("<text>n at 1 20</text><text>p fixed 2</text>")
+    );
 
     runtime.unmount(&mut ui, id);
     assert!(runtime.graph().is_empty());
@@ -381,7 +454,13 @@ fn callbacks_and_children_run_in_the_parents_scope() {
     crate::ui_runtime::tests::click(&mut ui, &measurer, button);
     // The callback wrote `picked`; the slot's text, a binding of the page,
     // reruns, and nothing of the card does.
-    assert_eq!(runtime.flush(&mut ui), FlushReport { renders: 1, ..Default::default() });
+    assert_eq!(
+        runtime.flush(&mut ui),
+        FlushReport {
+            renders: 1,
+            ..Default::default()
+        }
+    );
     assert_eq!(shown(&ui, &runtime, id), page(1));
 
     runtime.unmount(&mut ui, id);
@@ -422,10 +501,16 @@ fn a_portal_mounts_its_content_under_the_overlayer() {
     let open = runtime.instance::<Popup>(id).unwrap().open.clone();
     runtime.batch(&mut ui, |cx| open.set(cx, true));
     // In the overlayer, not between the button and `below`.
-    assert_eq!(shown(&ui, &runtime, id), "<container><container></container><text>below</text></container>");
+    assert_eq!(
+        shown(&ui, &runtime, id),
+        "<container><container></container><text>below</text></container>"
+    );
     let layer: Vec<_> = ui.children(overlayer).collect();
     assert_eq!(layer.len(), 1);
-    assert_eq!(markup(&ui, layer[0]), "<container><text>dismissed 0</text></container>");
+    assert_eq!(
+        markup(&ui, layer[0]),
+        "<container><text>dismissed 0</text></container>"
+    );
 
     runtime.batch(&mut ui, |cx| open.set(cx, false));
     assert_eq!(ui.children(overlayer).count(), 0);
@@ -470,13 +555,19 @@ fn context_comes_from_the_nearest_provider_or_the_app() {
     runtime.provide_context(Accent("blue"));
     let root = ui.root();
     let id = runtime.mount::<Provider>(&mut ui, root, ProviderProps {});
-    assert_eq!(shown(&ui, &runtime, id), "<container><text>compact blue</text><container></container></container>");
+    assert_eq!(
+        shown(&ui, &runtime, id),
+        "<container><text>compact blue</text><container></container></container>"
+    );
 
     let density = runtime.instance::<Provider>(id).unwrap().density.clone();
     runtime.batch(&mut ui, |cx| density.set(cx, Density("cozy")));
     runtime.provide_context(Accent("red"));
     runtime.flush(&mut ui);
-    assert_eq!(shown(&ui, &runtime, id), "<container><text>cozy red</text><container></container></container>");
+    assert_eq!(
+        shown(&ui, &runtime, id),
+        "<container><text>cozy red</text><container></container></container>"
+    );
 
     // Without a provider in between, the app's.
     let alone = runtime.mount::<Themed>(&mut ui, root, ThemedProps {});
@@ -489,7 +580,11 @@ fn measured() {
     let frames: u32 = state!(0);
     let spin: crate::ticker::Ticker = ticker!(|cx, _frame| {
         frames.update(cx, |f| *f += 1);
-        if frames.get() >= 3 { crate::ticker::Tick::Stop } else { crate::ticker::Tick::Continue }
+        if frames.get() >= 3 {
+            crate::ticker::Tick::Stop
+        } else {
+            crate::ticker::Tick::Continue
+        }
     });
     view! {
         column {
@@ -543,7 +638,13 @@ fn fetched() {
     let n: i32 = state!(2);
     let doubled: super::AsyncValue<i32, String> = resource!({
         let n = *n;
-        async move { if n < 0 { Err("negative".to_string()) } else { Ok(n * 2) } }
+        async move {
+            if n < 0 {
+                Err("negative".to_string())
+            } else {
+                Ok(n * 2)
+            }
+        }
     });
     view! {
         text(match &*doubled {
@@ -593,7 +694,10 @@ fn a_resource_keeps_only_its_latest_result() {
     let started: Rc<RefCell<Vec<super::tasks::BoxFuture>>> = Rc::default();
     let (sender, finished) = std::sync::mpsc::channel();
     let queue = started.clone();
-    runtime.tasks_mut().connect(Box::new(move |future| queue.borrow_mut().push(future)), sender);
+    runtime.tasks_mut().connect(
+        Box::new(move |future| queue.borrow_mut().push(future)),
+        sender,
+    );
     let root = ui.root();
     let id = runtime.mount::<Fetched>(&mut ui, root, FetchedProps {});
     let n = runtime.instance::<Fetched>(id).unwrap().n.clone();
@@ -604,7 +708,12 @@ fn a_resource_keeps_only_its_latest_result() {
     let mut futures = std::mem::take(&mut *started.borrow_mut());
     assert_eq!(futures.len(), 2);
     for future in futures.iter_mut().rev() {
-        assert!(future.as_mut().poll(&mut Context::from_waker(Waker::noop())) == Poll::Ready(()));
+        assert!(
+            future
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                == Poll::Ready(())
+        );
     }
     while let Ok(result) = finished.try_recv() {
         runtime.finish_task(result);
@@ -642,7 +751,10 @@ fn a_children_prop_takes_elements_and_a_handler_its_event_context() {
     let root = ui.root();
     let id = runtime.mount::<UsesLabelled>(&mut ui, root, UsesLabelledProps {});
     let row = "<container><text>3</text><text>·</text><text>items</text></container>";
-    assert_eq!(shown(&ui, &runtime, id), format!("<container>{row}<container></container></container>"));
+    assert_eq!(
+        shown(&ui, &runtime, id),
+        format!("<container>{row}<container></container></container>")
+    );
 
     let mut measurer = TextHost::new(ZeroTextBackend);
     ui.update_tree(Size::new(200.0, 200.0), &mut measurer);
@@ -666,7 +778,11 @@ fn listing<T>(items: &Vec<T>, children: &Children)
 where
     T: std::fmt::Display,
 {
-    let joined: String = items.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
+    let joined: String = items
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
     view! {
         column {
             text(joined.clone())
@@ -781,9 +897,26 @@ fn a_generic_component_mounts_at_the_root_and_as_children() {
     let id = runtime.mount::<Labeled<f32>>(&mut ui, root, LabeledProps { value: 1.5 });
     assert_eq!(shown(&ui, &runtime, id), "<text>1.5</text>");
     // A parameter no prop names is carried by the props as phantom data.
-    let id = runtime.mount::<Typed<i64>>(&mut ui, root, TypedProps { label: "k".into(), __phantom: Default::default() });
+    let id = runtime.mount::<Typed<i64>>(
+        &mut ui,
+        root,
+        TypedProps {
+            label: "k".into(),
+            __phantom: Default::default(),
+        },
+    );
     assert_eq!(shown(&ui, &runtime, id), "<text>k=0</text>");
     let children = Children::component::<Labeled<char>>(LabeledProps { value: 'x' });
-    let id = runtime.mount::<Listing<u8>>(&mut ui, root, ListingProps { items: vec![7], children });
-    assert_eq!(shown(&ui, &runtime, id), "<container><text>7</text><text>x</text></container>");
+    let id = runtime.mount::<Listing<u8>>(
+        &mut ui,
+        root,
+        ListingProps {
+            items: vec![7],
+            children,
+        },
+    );
+    assert_eq!(
+        shown(&ui, &runtime, id),
+        "<container><text>7</text><text>x</text></container>"
+    );
 }

@@ -15,9 +15,8 @@ use xui_core::app::AppRoot;
 use xui_core::prelude::*;
 use xui_core::render::MockRenderBackend;
 use xui_core::ticker::{Tick, Ticker};
-use xui_interface::events::ShortcutBinding;
-use xui_macros::component;
 use xui_f::FBackend;
+use xui_interface::events::ShortcutBinding;
 use xui_interface::events::{EventResult, KeyState, NamedKey, PhysicalKey};
 use xui_interface::{
     Appearance, ClipboardContent, ClipboardTarget, ColorScheme, ContextMenuTrigger, DragEvent,
@@ -25,6 +24,7 @@ use xui_interface::{
     PlatformCommand, PlatformError, PlatformReply, PlatformRequest, PublishedSurface, RegionRect,
     RequestId, WindowRegion, WindowState,
 };
+use xui_macros::component;
 use xui_shell::{
     FrameInfo, KeyInput, Performed, PhysicalSize, PlatformWindow, Shell, ShellControl, ShellEvent,
     ShellOptions, SurfaceTarget, TouchPhase,
@@ -163,10 +163,7 @@ fn start(root: AppRoot) -> (TestShell, Arc<FakeWindow>) {
     start_with(root, |_| {})
 }
 
-fn start_with(
-    root: AppRoot,
-    configure: impl FnOnce(&FakeWindow),
-) -> (TestShell, Arc<FakeWindow>) {
+fn start_with(root: AppRoot, configure: impl FnOnce(&FakeWindow)) -> (TestShell, Arc<FakeWindow>) {
     let window = Arc::new(FakeWindow::new());
     configure(&window);
     let (shell, control) = Shell::new(

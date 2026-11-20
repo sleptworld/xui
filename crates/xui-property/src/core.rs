@@ -13,7 +13,9 @@ pub enum StyleValue<T> {
 }
 
 impl<T> Default for StyleValue<T> {
-    fn default() -> Self { Self::Unset }
+    fn default() -> Self {
+        Self::Unset
+    }
 }
 
 /// Layer composition ignores an absent declaration, unlike Property::replace.
@@ -27,26 +29,48 @@ pub fn overlay_value<T: Clone>(dest: &mut StyleValue<T>, from: &StyleValue<T>) {
 pub struct Color(pub u32); // 0xAARRGGBB; stand-in for XUI's actual Color
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ColorToken { Foreground, Primary, Accent }
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ColorValue { Literal(Color), Token(ColorToken) }
-
-impl From<Color> for ColorValue {
-    fn from(value: Color) -> Self { Self::Literal(value) }
+pub enum ColorToken {
+    Foreground,
+    Primary,
+    Accent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum SpacingToken { Small, Medium, Large }
+pub enum ColorValue {
+    Literal(Color),
+    Token(ColorToken),
+}
+
+impl From<Color> for ColorValue {
+    fn from(value: Color) -> Self {
+        Self::Literal(value)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum LengthValue { Px(f32), Spacing(SpacingToken) }
+pub enum SpacingToken {
+    Small,
+    Medium,
+    Large,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Sizing { Hug, Fill, Fixed(f32) }
+pub enum LengthValue {
+    Px(f32),
+    Spacing(SpacingToken),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Sizing {
+    Hug,
+    Fill,
+    Fixed(f32),
+}
 
 impl From<f32> for Sizing {
-    fn from(value: f32) -> Self { Self::Fixed(value) }
+    fn from(value: f32) -> Self {
+        Self::Fixed(value)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -111,7 +135,11 @@ impl ParentStyle {
     /// Start a child's environment. Non-inherited values must not leak through
     /// an intermediate host that doesn't expose that property.
     pub fn for_child(self) -> Self {
-        Self { width: None, background: None, ..self }
+        Self {
+            width: None,
+            background: None,
+            ..self
+        }
     }
 }
 
@@ -137,7 +165,9 @@ impl WidgetState {
     pub const HOVERED: u8 = 0b0000_0001;
     pub const PRESSED: u8 = 0b0000_0010;
     pub const DISABLED: u8 = 0b0000_0100;
-    pub const fn new(bits: u8) -> Self { Self(bits) }
+    pub const fn new(bits: u8) -> Self {
+        Self(bits)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,7 +178,10 @@ pub struct StateMatcher {
 
 impl StateMatcher {
     pub const fn hovered() -> Self {
-        Self { required: WidgetState::HOVERED, forbidden: 0 }
+        Self {
+            required: WidgetState::HOVERED,
+            forbidden: 0,
+        }
     }
     pub fn matches(&self, state: WidgetState) -> bool {
         state.0 & self.required == self.required && state.0 & self.forbidden == 0
@@ -169,14 +202,22 @@ impl Dirty {
     pub const INHERITED: Self = Self(1 << 6);
     pub const FOCUS: Self = Self(1 << 7);
 
-    pub fn contains(self, other: Self) -> bool { (self.0 & other.0) == other.0 }
-    pub fn is_empty(self) -> bool { self.0 == 0 }
+    pub fn contains(self, other: Self) -> bool {
+        (self.0 & other.0) == other.0
+    }
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
 }
 
 impl BitOr for Dirty {
     type Output = Self;
-    fn bitor(self, rhs: Self) -> Self { Self(self.0 | rhs.0) }
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
 }
 impl BitOrAssign for Dirty {
-    fn bitor_assign(&mut self, rhs: Self) { self.0 |= rhs.0; }
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
 }

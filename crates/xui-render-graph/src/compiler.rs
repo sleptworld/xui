@@ -638,7 +638,10 @@ impl LayerProgram {
             .rposition(|node| matches!(node.op, ProgramOp::BackdropComposite { .. }))
             .map_or(0, |index| index + 1);
         let composite = self.nodes.len() - 1;
-        debug_assert!(matches!(self.nodes[composite].op, ProgramOp::LayerComposite { .. }));
+        debug_assert!(matches!(
+            self.nodes[composite].op,
+            ProgramOp::LayerComposite { .. }
+        ));
         let kept_node = |index: usize| index < layer_start || index == composite;
 
         // Old resource index -> new id; only what the kept nodes produce or
@@ -649,14 +652,17 @@ impl LayerProgram {
             let keep = match resource.kind {
                 ProgramResourceKind::External(ExternalResourceKind::LayerMask(_)) => false,
                 ProgramResourceKind::External(_) => true,
-                ProgramResourceKind::Virtual => resource.producer.is_some_and(|node| kept_node(node.index())),
+                ProgramResourceKind::Virtual => resource
+                    .producer
+                    .is_some_and(|node| kept_node(node.index())),
             };
             if keep {
                 map[index] = Some(ProgramResourceId(resources.len() as u32));
                 resources.push(resource.clone());
             }
         }
-        let remap = |id: ProgramResourceId| map[id.index()].expect("a kept node reads a kept resource");
+        let remap =
+            |id: ProgramResourceId| map[id.index()].expect("a kept node reads a kept resource");
         let mut nodes = Vec::new();
         for (index, node) in self.nodes.iter().enumerate() {
             if !kept_node(index) {

@@ -6,12 +6,12 @@
 //! only puts found names in scope.
 use std::collections::BTreeMap;
 
-use proc_macro2::{Delimiter, Group, Span, Spacing, TokenStream, TokenTree};
+use proc_macro2::{Delimiter, Group, Spacing, Span, TokenStream, TokenTree};
 use syn::punctuated::Punctuated;
 use syn::visit::{self, Visit};
 use syn::{
-    Arm, Block, Error, Expr, ExprClosure, ExprForLoop, ExprIf, ExprLet, ExprLit, ExprPath, ExprWhile, Ident, Item, Lit,
-    LitStr, Local, Macro, Pat, Result, Token,
+    Arm, Block, Error, Expr, ExprClosure, ExprForLoop, ExprIf, ExprLet, ExprLit, ExprPath,
+    ExprWhile, Ident, Item, Lit, LitStr, Local, Macro, Pat, Result, Token,
 };
 
 /// How a name is used; a name used both ways counts as read.
@@ -29,7 +29,12 @@ pub type Found = BTreeMap<String, (Use, Span)>;
 /// names bound around `expr` — a match arm's pattern, for its guard.
 pub fn uses(expr: &Expr, shadow: &[Ident], known: &dyn Fn(&str) -> bool, out: &mut Found) {
     let scope = shadow.iter().map(Ident::to_string).collect();
-    let mut visitor = Visitor { known, scopes: vec![scope], untracked: 0, out };
+    let mut visitor = Visitor {
+        known,
+        scopes: vec![scope],
+        untracked: 0,
+        out,
+    };
     visitor.visit_expr(expr);
 }
 
@@ -77,14 +82,24 @@ impl Visitor<'_, '_> {
         if !(self.known)(&name) || self.scopes.iter().any(|scope| scope.contains(&name)) {
             return;
         }
-        let used = if self.untracked > 0 { Use::Untracked } else { Use::Read };
-        self.out.entry(name).and_modify(|(u, _)| *u = (*u).max(used)).or_insert((used, span));
+        let used = if self.untracked > 0 {
+            Use::Untracked
+        } else {
+            Use::Read
+        };
+        self.out
+            .entry(name)
+            .and_modify(|(u, _)| *u = (*u).max(used))
+            .or_insert((used, span));
     }
 
     fn bind(&mut self, pat: &Pat) {
         let mut names = Vec::new();
         bindings(pat, &mut names);
-        self.scopes.last_mut().expect("a scope").extend(names.iter().map(Ident::to_string));
+        self.scopes
+            .last_mut()
+            .expect("a scope")
+            .extend(names.iter().map(Ident::to_string));
     }
 
     fn scoped(&mut self, f: impl FnOnce(&mut Self)) {
@@ -112,7 +127,9 @@ impl Visitor<'_, '_> {
             Ok(args) => {
                 for arg in &args {
                     match arg {
-                        Expr::Lit(ExprLit { lit: Lit::Str(lit), .. }) => self.captures(lit),
+                        Expr::Lit(ExprLit {
+                            lit: Lit::Str(lit), ..
+                        }) => self.captures(lit),
                         arg => self.visit_expr(arg),
                     }
                 }
@@ -162,9 +179,13 @@ impl Visitor<'_, '_> {
                         self.tokens(group.stream());
                     }
                 }
-                TokenTree::Ident(ident) if !is_not_a_variable(&tokens, i) => self.mention(ident.to_string(), ident.span()),
+                TokenTree::Ident(ident) if !is_not_a_variable(&tokens, i) => {
+                    self.mention(ident.to_string(), ident.span())
+                }
                 TokenTree::Literal(literal) => {
-                    if let Ok(lit) = syn::parse2::<LitStr>(TokenTree::Literal(literal.clone()).into()) {
+                    if let Ok(lit) =
+                        syn::parse2::<LitStr>(TokenTree::Literal(literal.clone()).into())
+                    {
                         self.captures(&lit);
                     }
                 }
@@ -292,28 +313,32 @@ pub fn rust(tokens: TokenStream) -> Result<TokenStream> {
     let mut tokens = tokens.into_iter().peekable();
     while let Some(token) = tokens.next() {
         match token {
-            TokenTree::Ident(ident)
-                if matches!(tokens.peek(), Some(TokenTree::Punct(p)) if p.as_char() == '!' && p.spacing() == Spacing::Alone) =>
+            TokenTree::Ident(ident) if matches!(tokens.peek(), Some(TokenTree::Punct(p)) if p.as_char() == '!' && p.spacing() == Spacing::Alone) =>
             {
                 match ident.to_string().as_str() {
                     "untrack" => {
                         trim_path(&mut out);
                         tokens.next();
                         let Some(TokenTree::Group(group)) = tokens.next() else {
-                            return Err(Error::new(ident.span(), "`untrack!` takes an expression: `untrack!(x)`"));
+                            return Err(Error::new(
+                                ident.span(),
+                                "`untrack!` takes an expression: `untrack!(x)`",
+                            ));
                         };
                         let inner: Vec<TokenTree> = rust(group.stream())?.into_iter().collect();
                         match inner.as_slice() {
                             [TokenTree::Ident(name)] => out.push(TokenTree::Ident(name.clone())),
                             _ => {
                                 // Not the user's parentheses, so no `unused_parens` on them.
-                                let mut parens = Group::new(Delimiter::Parenthesis, inner.into_iter().collect());
+                                let mut parens =
+                                    Group::new(Delimiter::Parenthesis, inner.into_iter().collect());
                                 parens.set_span(Span::mixed_site());
                                 out.push(parens.into());
                             }
                         }
                     }
-                    "state" | "memo" | "effect" | "context" | "provide" | "ticker" | "size" | "resource" => {
+                    "state" | "memo" | "effect" | "context" | "provide" | "ticker" | "size"
+                    | "resource" => {
                         return Err(Error::new(
                             ident.span(),
                             format!(

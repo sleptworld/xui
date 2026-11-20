@@ -10,8 +10,8 @@ use xui_core::{
 };
 use xui_cosmic::CosmicEngine;
 use xui_interface::{
-    ColorStyle, Effect, FilterQuality, FlexDirectionStyle, ImageData, ImageFit, Point, PositionStyle,
-    Sampling, ShadowStyle,
+    ColorStyle, Effect, FilterQuality, FlexDirectionStyle, ImageData, ImageFit, Point,
+    PositionStyle, Sampling, ShadowStyle,
 };
 use xui_macros::component;
 use xui_vello::{Unsupported, VelloBackend, VelloBackendOptions};
@@ -94,7 +94,10 @@ pub fn render_options(
     let mut text = TextHost::new(CosmicEngine::new(scale));
     app.render(&mut backend, &mut text).expect("render");
     let (width, height) = backend.frame_size_px();
-    assert_eq!((width, height), ((SIZE * scale) as u32, (SIZE * scale) as u32));
+    assert_eq!(
+        (width, height),
+        ((SIZE * scale) as u32, (SIZE * scale) as u32)
+    );
     let pixels = backend.read_pixels_rgba8().expect("read pixels");
     assert_eq!(pixels.len(), width as usize * height as usize * 4);
     let frame = Frame {
@@ -313,7 +316,12 @@ fn radial_gradient() {
     }
 }
 
-pub fn clear(device: &wgpu::Device, queue: &wgpu::Queue, view: &wgpu::TextureView, color: wgpu::Color) {
+pub fn clear(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    view: &wgpu::TextureView,
+    color: wgpu::Color,
+) {
     let mut encoder = device.create_command_encoder(&Default::default());
     drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: None,
@@ -352,7 +360,12 @@ pub fn gpu_canvas_root(app: &mut App) {
             gpu.device(),
             gpu.queue(),
             gpu.target(),
-            wgpu::Color { r: 0.0, g: 0.0, b: 1.0, a: 1.0 },
+            wgpu::Color {
+                r: 0.0,
+                g: 0.0,
+                b: 1.0,
+                a: 1.0,
+            },
         );
     });
     mount_canvas(app, controller);
@@ -416,7 +429,6 @@ fn glass_with_content() {
         }
     }
 }
-
 
 /// A canvas-format texture on the backend's device, cleared to `color`.
 pub fn texture_of(

@@ -65,7 +65,11 @@ impl<A> PartialEq for Callback<A> {
 
 impl<A> std::fmt::Debug for Callback<A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(if self.is_set() { "Callback(..)" } else { "Callback(none)" })
+        f.write_str(if self.is_set() {
+            "Callback(..)"
+        } else {
+            "Callback(none)"
+        })
     }
 }
 
@@ -94,7 +98,11 @@ where
     P::Item: CallbackArg + Clone,
 {
     let callback = P::Item::from_fn(f);
-    super::props::__expr::<P>(crate::property::PropertyMarker::new(), Vec::new(), move || callback.clone())
+    super::props::__expr::<P>(
+        crate::property::PropertyMarker::new(),
+        Vec::new(),
+        move || callback.clone(),
+    )
 }
 
 type MountChildren = dyn Fn(&mut Runtime, &mut UiRuntime, Owner) -> InstanceId;
@@ -115,20 +123,29 @@ impl Children {
         self.0.is_none()
     }
 
-    pub(crate) fn mount(&self, runtime: &mut Runtime, ui: &mut UiRuntime, owner: Owner) -> Option<InstanceId> {
+    pub(crate) fn mount(
+        &self,
+        runtime: &mut Runtime,
+        ui: &mut UiRuntime,
+        owner: Owner,
+    ) -> Option<InstanceId> {
         self.0.as_ref().map(|mount| mount(runtime, ui, owner))
     }
 
     /// Component `C` with `props`, mounted wherever this is slotted, as
     /// many times as it is: content built away from any view, such as a
     /// tab's panel.
-    pub fn component<C: super::Component>(props: <C::Instance as super::ComponentDef>::Props) -> Self
+    pub fn component<C: super::Component>(
+        props: <C::Instance as super::ComponentDef>::Props,
+    ) -> Self
     where
         <C::Instance as super::ComponentDef>::Props: Clone,
     {
-        Self(Some(Rc::new(move |runtime: &mut Runtime, ui: &mut UiRuntime, owner| {
-            runtime.mount_into::<C::Instance>(ui, props.clone(), super::Place(owner))
-        })))
+        Self(Some(Rc::new(
+            move |runtime: &mut Runtime, ui: &mut UiRuntime, owner| {
+                runtime.mount_into::<C::Instance>(ui, props.clone(), super::Place(owner))
+            },
+        )))
     }
 }
 
@@ -145,7 +162,11 @@ impl PartialEq for Children {
 
 impl std::fmt::Debug for Children {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(if self.is_empty() { "Children(none)" } else { "Children(..)" })
+        f.write_str(if self.is_empty() {
+            "Children(none)"
+        } else {
+            "Children(..)"
+        })
     }
 }
 
@@ -180,9 +201,11 @@ fn text_content(value: &String) {
 #[doc(hidden)]
 pub fn __children<P: Scope>(parent: &Rc<P>, template: RowTemplate<'_, Row<P, ()>>) -> Children {
     let (parent, parts) = (parent.clone(), Rc::new(template.to_parts()));
-    Children(Some(Rc::new(move |runtime: &mut Runtime, ui: &mut UiRuntime, owner| {
-        runtime.mount_row(ui, parent.clone(), (), parts.clone(), owner)
-    })))
+    Children(Some(Rc::new(
+        move |runtime: &mut Runtime, ui: &mut UiRuntime, owner| {
+            runtime.mount_row(ui, parent.clone(), (), parts.clone(), owner)
+        },
+    )))
 }
 
 /// A `portal { .. }`: its content, mounted under the overlayer as an

@@ -178,7 +178,6 @@ impl PaintContent for WidgetInstance<Image> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     fn pixels(width: u32, height: u32, value: u8) -> ImageData {
         ImageData::rgba8(

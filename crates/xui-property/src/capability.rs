@@ -1,7 +1,7 @@
 //! Only the minimum is universal: a capability owns a configuration block.
 //! Style, event handling, focus management, etc. are opt-in extension traits.
-use std::marker::PhantomData;
 use crate::core::{Dirty, ParentStyle, StateMatcher, Theme, WidgetState};
+use std::marker::PhantomData;
 
 pub trait Capability {
     type Config: Default;
@@ -29,7 +29,8 @@ pub trait CapSet {
         _new: Option<&Self::Config>,
         _state: &mut Self::ManagedState,
         _ctx: &mut crate::runtime::CommitCtx<'_>,
-    ) {}
+    ) {
+    }
 }
 
 /// Per-capability runtime local state access; implementation exists only when
@@ -104,18 +105,25 @@ pub struct Style<C: StyleSet> {
 
 impl<C: StyleSet> Default for Style<C> {
     fn default() -> Self {
-        Self { rules: Vec::new(), _capset: PhantomData }
+        Self {
+            rules: Vec::new(),
+            _capset: PhantomData,
+        }
     }
 }
 
 impl<C: StyleSet> Style<C> {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn when(&mut self, matcher: StateMatcher, patch: C::Patch) {
         self.rules.push(StateRule { matcher, patch });
     }
 
-    pub fn rules(&self) -> &[StateRule<C::Patch>] { &self.rules }
+    pub fn rules(&self) -> &[StateRule<C::Patch>] {
+        &self.rules
+    }
 
     pub fn resolve(
         &self,
@@ -129,10 +137,13 @@ impl<C: StyleSet> Style<C> {
 }
 
 pub fn diff_resolved<C: StyleSet>(
-    before: &Resolved<C::Computed>, after: &Resolved<C::Computed>,
+    before: &Resolved<C::Computed>,
+    after: &Resolved<C::Computed>,
 ) -> Dirty {
     let mut flags = C::diff(&before.computed, &after.computed);
-    if before.child_inheritance_changed(after) { flags |= Dirty::INHERITED; }
+    if before.child_inheritance_changed(after) {
+        flags |= Dirty::INHERITED;
+    }
     flags
 }
 

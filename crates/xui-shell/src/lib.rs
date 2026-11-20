@@ -44,9 +44,9 @@ mod published;
 mod shell;
 mod window;
 
-pub use raw_window_handle;
 pub use handle::ShellHandle;
 pub use published::PublishedHandle;
+pub use raw_window_handle;
 pub use shell::{
     FrameInfo, KeyInput, Shell, ShellControl, ShellEvent, ShellOptions, ShellOutcome, TouchPhase,
 };

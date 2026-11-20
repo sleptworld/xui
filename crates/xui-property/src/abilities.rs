@@ -1,15 +1,16 @@
 //! Handwritten hypothetical #[capability(style)] expansion.
 //! StyleCapability is opt-in: Interaction and Focus are NOT StyleCapabilities.
-use std::marker::PhantomData;
 use crate::capability::{Capability, StyleCapability, StyleOverlay};
 use crate::core::{
-    Color, ColorValue, Dirty, LengthValue, ParentStyle, Sizing, StyleValue,
-    Theme, overlay_value,
+    Color, ColorValue, Dirty, LengthValue, ParentStyle, Sizing, StyleValue, Theme, overlay_value,
 };
 use crate::property::{Property, Scope, SlotProperty};
+use std::marker::PhantomData;
 
 pub struct CapScope<C>(PhantomData<fn() -> C>);
-impl<C: Capability> Scope for CapScope<C> { type Storage = C::Config; }
+impl<C: Capability> Scope for CapScope<C> {
+    type Storage = C::Config;
+}
 
 pub trait StyleProperty: Property {
     type Computed: Clone + PartialEq;
@@ -48,14 +49,19 @@ pub struct BoxLayoutConfig {
     pub height: StyleValue<Sizing>,
 }
 #[derive(Clone, Debug, PartialEq)]
-pub struct BoxLayoutComputed { pub width: Sizing, pub height: Sizing }
+pub struct BoxLayoutComputed {
+    pub width: Sizing,
+    pub height: Sizing,
+}
 impl StyleOverlay for BoxLayoutConfig {
     fn overlay(&mut self, from: &Self) {
         overlay_value(&mut self.width, &from.width);
         overlay_value(&mut self.height, &from.height);
     }
 }
-impl Capability for BoxLayout { type Config = BoxLayoutConfig; }
+impl Capability for BoxLayout {
+    type Config = BoxLayoutConfig;
+}
 impl StyleCapability for BoxLayout {
     type Computed = BoxLayoutComputed;
     fn resolve(d: &Self::Config, parent: &ParentStyle, theme: &Theme) -> Self::Computed {
@@ -76,14 +82,19 @@ pub struct TypographyConfig {
     pub font_size: StyleValue<LengthValue>,
 }
 #[derive(Clone, Debug, PartialEq)]
-pub struct TypographyComputed { pub color: Color, pub font_size: f32 }
+pub struct TypographyComputed {
+    pub color: Color,
+    pub font_size: f32,
+}
 impl StyleOverlay for TypographyConfig {
     fn overlay(&mut self, from: &Self) {
         overlay_value(&mut self.color, &from.color);
         overlay_value(&mut self.font_size, &from.font_size);
     }
 }
-impl Capability for Typography { type Config = TypographyConfig; }
+impl Capability for Typography {
+    type Config = TypographyConfig;
+}
 impl StyleCapability for Typography {
     type Computed = TypographyComputed;
     fn resolve(d: &Self::Config, parent: &ParentStyle, theme: &Theme) -> Self::Computed {
@@ -105,14 +116,19 @@ pub struct DecorationConfig {
     pub border_radius: StyleValue<LengthValue>,
 }
 #[derive(Clone, Debug, PartialEq)]
-pub struct DecorationComputed { pub background: Color, pub border_radius: f32 }
+pub struct DecorationComputed {
+    pub background: Color,
+    pub border_radius: f32,
+}
 impl StyleOverlay for DecorationConfig {
     fn overlay(&mut self, from: &Self) {
         overlay_value(&mut self.background, &from.background);
         overlay_value(&mut self.border_radius, &from.border_radius);
     }
 }
-impl Capability for Decoration { type Config = DecorationConfig; }
+impl Capability for Decoration {
+    type Config = DecorationConfig;
+}
 impl StyleCapability for Decoration {
     type Computed = DecorationComputed;
     fn resolve(d: &Self::Config, parent: &ParentStyle, theme: &Theme) -> Self::Computed {
@@ -130,12 +146,18 @@ pub struct Width;
 impl Property for Width {
     type Scope = CapScope<BoxLayout>;
     type Value = StyleValue<Sizing>;
-    fn get(d: &BoxLayoutConfig) -> &Self::Value { &d.width }
-    fn replace(d: &mut BoxLayoutConfig, v: Self::Value) { d.width = v; }
+    fn get(d: &BoxLayoutConfig) -> &Self::Value {
+        &d.width
+    }
+    fn replace(d: &mut BoxLayoutConfig, v: Self::Value) {
+        d.width = v;
+    }
 }
 impl SlotProperty for Width {
     const HINT: Dirty = Dirty::STYLE_INPUT;
-    fn same(a: &Self::Value, b: &Self::Value) -> bool { a == b }
+    fn same(a: &Self::Value, b: &Self::Value) -> bool {
+        a == b
+    }
 }
 impl StyleProperty for Width {
     type Computed = Sizing;
@@ -150,12 +172,18 @@ pub struct Height;
 impl Property for Height {
     type Scope = CapScope<BoxLayout>;
     type Value = StyleValue<Sizing>;
-    fn get(d: &BoxLayoutConfig) -> &Self::Value { &d.height }
-    fn replace(d: &mut BoxLayoutConfig, v: Self::Value) { d.height = v; }
+    fn get(d: &BoxLayoutConfig) -> &Self::Value {
+        &d.height
+    }
+    fn replace(d: &mut BoxLayoutConfig, v: Self::Value) {
+        d.height = v;
+    }
 }
 impl SlotProperty for Height {
     const HINT: Dirty = Dirty::STYLE_INPUT;
-    fn same(a: &Self::Value, b: &Self::Value) -> bool { a == b }
+    fn same(a: &Self::Value, b: &Self::Value) -> bool {
+        a == b
+    }
 }
 impl StyleProperty for Height {
     type Computed = Sizing;
@@ -170,12 +198,18 @@ pub struct TextColor;
 impl Property for TextColor {
     type Scope = CapScope<Typography>;
     type Value = StyleValue<ColorValue>;
-    fn get(d: &TypographyConfig) -> &Self::Value { &d.color }
-    fn replace(d: &mut TypographyConfig, v: Self::Value) { d.color = v; }
+    fn get(d: &TypographyConfig) -> &Self::Value {
+        &d.color
+    }
+    fn replace(d: &mut TypographyConfig, v: Self::Value) {
+        d.color = v;
+    }
 }
 impl SlotProperty for TextColor {
     const HINT: Dirty = Dirty::STYLE_INPUT;
-    fn same(a: &Self::Value, b: &Self::Value) -> bool { a == b }
+    fn same(a: &Self::Value, b: &Self::Value) -> bool {
+        a == b
+    }
 }
 impl StyleProperty for TextColor {
     type Computed = Color;
@@ -190,12 +224,18 @@ pub struct FontSize;
 impl Property for FontSize {
     type Scope = CapScope<Typography>;
     type Value = StyleValue<LengthValue>;
-    fn get(d: &TypographyConfig) -> &Self::Value { &d.font_size }
-    fn replace(d: &mut TypographyConfig, v: Self::Value) { d.font_size = v; }
+    fn get(d: &TypographyConfig) -> &Self::Value {
+        &d.font_size
+    }
+    fn replace(d: &mut TypographyConfig, v: Self::Value) {
+        d.font_size = v;
+    }
 }
 impl SlotProperty for FontSize {
     const HINT: Dirty = Dirty::STYLE_INPUT;
-    fn same(a: &Self::Value, b: &Self::Value) -> bool { a == b }
+    fn same(a: &Self::Value, b: &Self::Value) -> bool {
+        a == b
+    }
 }
 impl StyleProperty for FontSize {
     type Computed = f32;
@@ -210,12 +250,18 @@ pub struct Background;
 impl Property for Background {
     type Scope = CapScope<Decoration>;
     type Value = StyleValue<ColorValue>;
-    fn get(d: &DecorationConfig) -> &Self::Value { &d.background }
-    fn replace(d: &mut DecorationConfig, v: Self::Value) { d.background = v; }
+    fn get(d: &DecorationConfig) -> &Self::Value {
+        &d.background
+    }
+    fn replace(d: &mut DecorationConfig, v: Self::Value) {
+        d.background = v;
+    }
 }
 impl SlotProperty for Background {
     const HINT: Dirty = Dirty::STYLE_INPUT;
-    fn same(a: &Self::Value, b: &Self::Value) -> bool { a == b }
+    fn same(a: &Self::Value, b: &Self::Value) -> bool {
+        a == b
+    }
 }
 impl StyleProperty for Background {
     type Computed = Color;
@@ -230,12 +276,18 @@ pub struct BorderRadius;
 impl Property for BorderRadius {
     type Scope = CapScope<Decoration>;
     type Value = StyleValue<LengthValue>;
-    fn get(d: &DecorationConfig) -> &Self::Value { &d.border_radius }
-    fn replace(d: &mut DecorationConfig, v: Self::Value) { d.border_radius = v; }
+    fn get(d: &DecorationConfig) -> &Self::Value {
+        &d.border_radius
+    }
+    fn replace(d: &mut DecorationConfig, v: Self::Value) {
+        d.border_radius = v;
+    }
 }
 impl SlotProperty for BorderRadius {
     const HINT: Dirty = Dirty::STYLE_INPUT;
-    fn same(a: &Self::Value, b: &Self::Value) -> bool { a == b }
+    fn same(a: &Self::Value, b: &Self::Value) -> bool {
+        a == b
+    }
 }
 impl StyleProperty for BorderRadius {
     type Computed = f32;

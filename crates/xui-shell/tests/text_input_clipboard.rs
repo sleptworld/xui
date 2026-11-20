@@ -13,13 +13,13 @@ use raw_window_handle::{
 use xui_core::prelude::*;
 use xui_core::render::MockRenderBackend;
 use xui_core::widgets::TextController;
-use xui_macros::component;
 use xui_f::FBackend;
 use xui_interface::events::{KeyState, PhysicalKey};
 use xui_interface::{
     ClipboardContent, ClipboardTarget, Modifiers, PlatformCommand, PlatformReply, PlatformRequest,
     RequestId, commands,
 };
+use xui_macros::component;
 use xui_shell::{
     KeyInput, Performed, PhysicalSize, PlatformWindow, Shell, ShellEvent, ShellOptions,
     SurfaceTarget,
@@ -111,7 +111,8 @@ thread_local! {
 
 #[component]
 fn field() {
-    let controller: TextController = CONTROLLER.with(|slot| slot.borrow().clone().expect("controller is set"));
+    let controller: TextController =
+        CONTROLLER.with(|slot| slot.borrow().clone().expect("controller is set"));
     view! { text_input(controller: controller.clone(), width: 200.0, height: 24.0) }
 }
 

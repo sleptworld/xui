@@ -22,8 +22,6 @@ use xui_macros::component;
 
 use crate::controls::commit;
 
-
-
 fn overlay_panel_style() -> StyleOf<Container> {
     StyleOf::new()
         .with::<container::padding>(EdgeInsets::all(16.0))
@@ -580,9 +578,10 @@ pub fn menu(
     item_style: &StyleOf<Container>,
 ) {
     let handles: Vec<FocusHandle> = memo!((0..items.len()).map(|_| FocusHandle::new()).collect());
-    let model: crate::SelectionModel = memo!(crate::SelectionModel::new(
-        items.iter().map(|item| crate::SelectionItem::new(item.id.clone(), item.label.clone(), item.disabled))
-    ));
+    let model: crate::SelectionModel =
+        memo!(crate::SelectionModel::new(items.iter().map(|item| {
+            crate::SelectionItem::new(item.id.clone(), item.label.clone(), item.disabled)
+        })));
     let own: bool = state!(*default_open);
     let shown: bool = memo!(open.unwrap_or(*own));
     let mut content_style: StyleOf<Container> = StyleOf::new()
@@ -707,9 +706,10 @@ pub fn context_menu(
     item_style: &StyleOf<Container>,
 ) {
     let handles: Vec<FocusHandle> = memo!((0..items.len()).map(|_| FocusHandle::new()).collect());
-    let model: crate::SelectionModel = memo!(crate::SelectionModel::new(
-        items.iter().map(|item| crate::SelectionItem::new(item.id.clone(), item.label.clone(), item.disabled))
-    ));
+    let model: crate::SelectionModel =
+        memo!(crate::SelectionModel::new(items.iter().map(|item| {
+            crate::SelectionItem::new(item.id.clone(), item.label.clone(), item.disabled)
+        })));
     let own: bool = state!(*default_open);
     let shown: bool = memo!(open.unwrap_or(*own));
     let position: Point = state!(Point::new(0.0, 0.0));
@@ -717,7 +717,12 @@ pub fn context_menu(
         let mut panel_style = overlay_panel_style()
             .with::<container::min_width>(180.0)
             .with::<container::padding>(EdgeInsets::all(4.0))
-            .with::<container::margin>(EdgeInsets::new(position.x.max(0.0), 0.0, position.y.max(0.0), 0.0));
+            .with::<container::margin>(EdgeInsets::new(
+                position.x.max(0.0),
+                0.0,
+                position.y.max(0.0),
+                0.0,
+            ));
         panel_style.merge(style);
         panel_style
     });

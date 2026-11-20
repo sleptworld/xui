@@ -6,13 +6,14 @@ mod common;
 
 use std::sync::Arc;
 
+use xui_core::render::VectorPrimitive;
 use xui_core::render::{
-    BlendMode, CachePolicy, ClipShape, CompositeStyle, FrameBuilder, FrameProperties, LayerDescriptor,
-    Primitive, RenderBackend, RenderNodeId, RenderScene, SceneCompiler, Shape, ShapePrimitive,
+    BlendMode, CachePolicy, ClipShape, CompositeStyle, FrameBuilder, FrameProperties,
+    LayerDescriptor, Primitive, RenderBackend, RenderNodeId, RenderScene, SceneCompiler, Shape,
+    ShapePrimitive,
 };
 use xui_core::text::TextHost;
 use xui_cosmic::CosmicEngine;
-use xui_core::render::VectorPrimitive;
 use xui_interface::{
     Affine, Bounds, Color, ComputedBackdropFilter, ComputedBackdropMask, ComputedBackdropStyle,
     ComputedColorStyle, ComputedEffect, ExternalTextureId, FilterQuality, PathBuilder, Point,
@@ -69,7 +70,11 @@ fn draw_with(
         .compile(&source, &source.dirty_snapshot())
         .expect("compile");
     let frame = FrameBuilder::new()
-        .build(scene, rect(0.0, 0.0, SIZE, SIZE), &FrameProperties::default())
+        .build(
+            scene,
+            rect(0.0, 0.0, SIZE, SIZE),
+            &FrameProperties::default(),
+        )
         .expect("build");
     let mut text = TextHost::new(CosmicEngine::new(1.0));
     backend.begin_frame(Size::new(SIZE, SIZE)).unwrap();
@@ -97,7 +102,11 @@ fn fill(source: &mut RenderScene, parent: RenderNodeId, bounds: Bounds, color: C
 }
 
 /// A layer under `parent` whose content is a group, returned.
-fn layer(source: &mut RenderScene, parent: RenderNodeId, descriptor: LayerDescriptor) -> RenderNodeId {
+fn layer(
+    source: &mut RenderScene,
+    parent: RenderNodeId,
+    descriptor: LayerDescriptor,
+) -> RenderNodeId {
     let layer = source.insert_layer(descriptor);
     let content = source.insert_group();
     source.set_child(layer, Some(content)).unwrap();
@@ -161,7 +170,10 @@ fn an_opacity_group_is_composed_as_one() {
     // the group is made opaque first, then faded once.
     for x in [20, 50, 80] {
         let pixel = frame.at(x, 50);
-        assert!(close(pixel[0], HALF) && pixel[3] == 255, "x = {x}: {pixel:?}");
+        assert!(
+            close(pixel[0], HALF) && pixel[3] == 255,
+            "x = {x}: {pixel:?}"
+        );
     }
     assert_eq!(frame.unsupported, Default::default());
 }
@@ -204,8 +216,14 @@ fn a_backdrop_inside_a_clip_is_blurred_and_cut_by_it() {
     }) else {
         return;
     };
-    assert!(seam_is_soft(&frame, 25), "the glass does not blur inside the clip");
-    assert!(!seam_is_soft(&frame, 75), "the glass blurs outside its clip");
+    assert!(
+        seam_is_soft(&frame, 25),
+        "the glass does not blur inside the clip"
+    );
+    assert!(
+        !seam_is_soft(&frame, 75),
+        "the glass blurs outside its clip"
+    );
     assert_eq!(frame.unsupported, Default::default());
 }
 
@@ -265,7 +283,9 @@ fn glass_at_root() -> Option<Frame> {
 /// group places it, as if it were at the root.
 #[test]
 fn a_backdrop_inside_a_passthrough_layer_sees_beneath_it() {
-    let Some(reference) = glass_at_root() else { return };
+    let Some(reference) = glass_at_root() else {
+        return;
+    };
     let Some(frame) = draw(|source, root| {
         halves(source, root);
         // Isolated (moved), letting through; the glass is at 15..65 in it,
@@ -275,7 +295,10 @@ fn a_backdrop_inside_a_passthrough_layer_sees_beneath_it() {
     }) else {
         return;
     };
-    assert!(seam_is_soft(&frame, 50), "the glass does not see beneath its layer");
+    assert!(
+        seam_is_soft(&frame, 50),
+        "the glass does not see beneath its layer"
+    );
     let worst = max_difference(&frame, &reference);
     assert!(worst <= 1, "off by {worst} from the glass at the root");
 }
@@ -308,7 +331,9 @@ fn a_backdrop_in_a_clipped_passthrough_layer_sees_past_the_clip() {
 /// Through two passthrough layers, each moved: still as at the root.
 #[test]
 fn a_backdrop_sees_through_every_passthrough_layer_around_it() {
-    let Some(reference) = glass_at_root() else { return };
+    let Some(reference) = glass_at_root() else {
+        return;
+    };
     let Some(frame) = draw(|source, root| {
         halves(source, root);
         let outer = layer(source, root, moved(10.0, 0.0));
@@ -367,7 +392,10 @@ fn a_backdrop_inside_a_layer_that_isolates_sees_nothing_beneath_it() {
     }) else {
         return;
     };
-    assert!(!seam_is_soft(&frame, 50), "the glass read beneath the layer");
+    assert!(
+        !seam_is_soft(&frame, 50),
+        "the glass read beneath the layer"
+    );
     assert_eq!(frame.at(49, 50), [255, 0, 0, 255]);
     assert_eq!(frame.at(50, 50), [0, 0, 255, 255]);
 }
@@ -400,8 +428,16 @@ fn a_filtered_layer_is_cut_by_a_rounded_clip_around_it() {
         return;
     };
     assert_eq!(frame.at(50, 50), [255, 255, 255, 255]);
-    assert_eq!(frame.at(50, 1)[0], 255, "the edge midpoint is inside the clip");
-    assert_eq!(frame.at(1, 1), [0, 0, 0, 255], "the corner is outside the clip");
+    assert_eq!(
+        frame.at(50, 1)[0],
+        255,
+        "the edge midpoint is inside the clip"
+    );
+    assert_eq!(
+        frame.at(1, 1),
+        [0, 0, 0, 255],
+        "the corner is outside the clip"
+    );
     assert_eq!(frame.unsupported, Default::default());
 }
 
@@ -493,7 +529,10 @@ fn a_path_clip_on_a_layer_is_the_shape_vello_fills() {
             );
         }
     }
-    assert!(edge > 50, "the diagonal is antialiased: {edge} partial pixels");
+    assert!(
+        edge > 50,
+        "the diagonal is antialiased: {edge} partial pixels"
+    );
     assert_eq!(layered.unsupported, Default::default());
 }
 
@@ -520,7 +559,11 @@ fn every_clip_cuts_however_many_there_are() {
         return;
     };
     // The innermost clip starts at 30.
-    assert_eq!(frame.at(29, 50), [0, 0, 0, 255], "the sixth clip does not cut");
+    assert_eq!(
+        frame.at(29, 50),
+        [0, 0, 0, 255],
+        "the sixth clip does not cut"
+    );
     assert_eq!(frame.at(30, 50), [255, 255, 255, 255]);
     assert_eq!(frame.at(60, 50), [255, 255, 255, 255]);
 }
@@ -531,7 +574,12 @@ const TEXTURE: ExternalTextureId = ExternalTextureId(11);
 fn a_texture_is_cut_by_a_path_clip() {
     let Some(frame) = draw_with(
         |backend| {
-            let green = wgpu::Color { r: 0.0, g: 1.0, b: 0.0, a: 1.0 };
+            let green = wgpu::Color {
+                r: 0.0,
+                g: 1.0,
+                b: 0.0,
+                a: 1.0,
+            };
             let texture = common::texture_of(backend, 4, green);
             backend.set_wgpu_texture(TEXTURE, &texture);
         },
@@ -554,7 +602,11 @@ fn a_texture_is_cut_by_a_path_clip() {
         return;
     };
     assert_eq!(frame.at(10, 10), [0, 255, 0, 255], "inside the triangle");
-    assert_eq!(frame.at(80, 80), [0, 0, 0, 255], "inside its bounds, outside it");
+    assert_eq!(
+        frame.at(80, 80),
+        [0, 0, 0, 255],
+        "inside its bounds, outside it"
+    );
     assert_eq!(frame.at(60, 20), [0, 255, 0, 255]);
     assert_eq!(frame.at(20, 85), [0, 0, 0, 255]);
 }
@@ -589,9 +641,16 @@ impl Session {
 
     fn frame(&mut self) -> Vec<u8> {
         let snapshot = self.source.dirty_snapshot();
-        let scene = self.compiler.compile(&self.source, &snapshot).expect("compile");
+        let scene = self
+            .compiler
+            .compile(&self.source, &snapshot)
+            .expect("compile");
         let frame = FrameBuilder::new()
-            .build(scene, rect(0.0, 0.0, SIZE, SIZE), &FrameProperties::default())
+            .build(
+                scene,
+                rect(0.0, 0.0, SIZE, SIZE),
+                &FrameProperties::default(),
+            )
             .expect("build");
         self.source.acknowledge(&snapshot);
         self.backend.begin_frame(Size::new(SIZE, SIZE)).unwrap();
@@ -608,7 +667,11 @@ impl Session {
             .compile(&self.source, &self.source.dirty_snapshot())
             .expect("compile");
         let frame = FrameBuilder::new()
-            .build(scene, rect(0.0, 0.0, SIZE, SIZE), &FrameProperties::default())
+            .build(
+                scene,
+                rect(0.0, 0.0, SIZE, SIZE),
+                &FrameProperties::default(),
+            )
             .expect("build");
         other.backend.begin_frame(Size::new(SIZE, SIZE)).unwrap();
         other.backend.submit(&frame, &mut other.text).unwrap();
@@ -668,7 +731,9 @@ fn cached_page(session: &mut Session) -> (RenderNodeId, RenderNodeId, RenderNode
 
 #[test]
 fn a_cached_layer_is_drawn_once_while_it_does_not_change() {
-    let Some(mut session) = Session::new() else { return };
+    let Some(mut session) = Session::new() else {
+        return;
+    };
     let (_, _, bar) = cached_page(&mut session);
     session.assert_fresh("first frame");
     assert_eq!(session.stats().layer_cache_misses, 1);
@@ -678,32 +743,48 @@ fn a_cached_layer_is_drawn_once_while_it_does_not_change() {
     for shade in [0.5, 0.25] {
         session
             .source
-            .update_primitive(bar, square(rect(0.0, 45.0, SIZE, 10.0), Color::rgb(shade, shade, shade)))
+            .update_primitive(
+                bar,
+                square(rect(0.0, 45.0, SIZE, 10.0), Color::rgb(shade, shade, shade)),
+            )
             .unwrap();
         session.assert_fresh("the bar changed");
     }
     let stats = session.stats();
-    assert_eq!((stats.layer_cache_misses, stats.layer_cache_patches), (1, 0));
+    assert_eq!(
+        (stats.layer_cache_misses, stats.layer_cache_patches),
+        (1, 0)
+    );
     assert_eq!(stats.layer_cache_hits, 2);
 }
 
 #[test]
 fn a_change_inside_a_cached_layer_redraws_only_that() {
-    let Some(mut session) = Session::new() else { return };
+    let Some(mut session) = Session::new() else {
+        return;
+    };
     let (_, red, _) = cached_page(&mut session);
     session.frame();
     session
         .source
-        .update_primitive(red, square(rect(10.0, 10.0, 30.0, 30.0), Color::rgb(0.0, 1.0, 0.0)))
+        .update_primitive(
+            red,
+            square(rect(10.0, 10.0, 30.0, 30.0), Color::rgb(0.0, 1.0, 0.0)),
+        )
         .unwrap();
     session.assert_fresh("the red square turned green");
     let stats = session.stats();
-    assert_eq!((stats.layer_cache_misses, stats.layer_cache_patches), (1, 1));
+    assert_eq!(
+        (stats.layer_cache_misses, stats.layer_cache_patches),
+        (1, 1)
+    );
 }
 
 #[test]
 fn moving_a_cached_layer_composites_it_again_without_drawing_it() {
-    let Some(mut session) = Session::new() else { return };
+    let Some(mut session) = Session::new() else {
+        return;
+    };
     let (layer, _, _) = cached_page(&mut session);
     session.frame();
     for dy in [-7.0, -19.0] {
@@ -720,34 +801,50 @@ fn moving_a_cached_layer_composites_it_again_without_drawing_it() {
         session.assert_fresh("the layer scrolled");
     }
     let stats = session.stats();
-    assert_eq!((stats.layer_cache_misses, stats.layer_cache_patches), (1, 0));
+    assert_eq!(
+        (stats.layer_cache_misses, stats.layer_cache_patches),
+        (1, 0)
+    );
 }
 
 /// A cached layer that changes while it is not drawn cannot be patched next
 /// time: the damage then says only what changed since. It is drawn afresh.
 #[test]
 fn a_cached_layer_changed_off_screen_is_drawn_again() {
-    let Some(mut session) = Session::new() else { return };
+    let Some(mut session) = Session::new() else {
+        return;
+    };
     let (layer, red, _) = cached_page(&mut session);
     session.frame();
     let at = |dx| CompositeStyle {
         transform: Affine::translate(dx, 0.0),
         ..CompositeStyle::default()
     };
-    session.source.update_layer_composite(layer, at(500.0)).unwrap();
     session
         .source
-        .update_primitive(red, square(rect(10.0, 10.0, 30.0, 30.0), Color::rgb(0.0, 1.0, 0.0)))
+        .update_layer_composite(layer, at(500.0))
+        .unwrap();
+    session
+        .source
+        .update_primitive(
+            red,
+            square(rect(10.0, 10.0, 30.0, 30.0), Color::rgb(0.0, 1.0, 0.0)),
+        )
         .unwrap();
     session.frame();
-    session.source.update_layer_composite(layer, at(0.0)).unwrap();
+    session
+        .source
+        .update_layer_composite(layer, at(0.0))
+        .unwrap();
     session.assert_fresh("back on screen");
     assert_eq!(session.stats().layer_cache_misses, 2);
 }
 
 #[test]
 fn a_removed_cached_layer_gives_its_texture_back() {
-    let Some(mut session) = Session::new() else { return };
+    let Some(mut session) = Session::new() else {
+        return;
+    };
     let (layer, _, _) = cached_page(&mut session);
     session.frame();
     assert_eq!(session.stats().layer_cache_entries, 1);
@@ -812,14 +909,19 @@ fn filtered_counts(session: &Session) -> (u64, u64, u64) {
 
 #[test]
 fn a_cached_layers_effects_are_applied_once_while_it_does_not_change() {
-    let Some(mut session) = Session::new() else { return };
+    let Some(mut session) = Session::new() else {
+        return;
+    };
     let (_, _, bar) = filtered_page(&mut session);
     session.assert_fresh("first frame");
     assert_eq!(filtered_counts(&session), (1, 0, 0));
     for shade in [0.5, 0.25] {
         session
             .source
-            .update_primitive(bar, square(rect(0.0, 45.0, SIZE, 10.0), Color::rgb(shade, shade, shade)))
+            .update_primitive(
+                bar,
+                square(rect(0.0, 45.0, SIZE, 10.0), Color::rgb(shade, shade, shade)),
+            )
             .unwrap();
         session.assert_fresh("the bar over the layer changed");
     }
@@ -828,12 +930,17 @@ fn a_cached_layers_effects_are_applied_once_while_it_does_not_change() {
 
 #[test]
 fn a_change_inside_a_cached_layer_reapplies_its_effects_only_around_it() {
-    let Some(mut session) = Session::new() else { return };
+    let Some(mut session) = Session::new() else {
+        return;
+    };
     let (_, red, _) = filtered_page(&mut session);
     session.frame();
     // The square shrinks from its far corner and changes colour; its near
     // corner, an edge of the layer's content bounds, stays where it was.
-    for (side, color) in [(24.0, Color::rgb(0.0, 1.0, 0.0)), (18.0, Color::rgb(1.0, 0.0, 1.0))] {
+    for (side, color) in [
+        (24.0, Color::rgb(0.0, 1.0, 0.0)),
+        (18.0, Color::rgb(1.0, 0.0, 1.0)),
+    ] {
         session
             .source
             .update_primitive(red, square(rect(10.0, 10.0, side, side), color))
@@ -841,13 +948,18 @@ fn a_change_inside_a_cached_layer_reapplies_its_effects_only_around_it() {
         session.assert_fresh("a square inside shrank and changed colour");
     }
     let stats = session.stats();
-    assert_eq!((stats.layer_cache_misses, stats.layer_cache_patches), (1, 2));
+    assert_eq!(
+        (stats.layer_cache_misses, stats.layer_cache_patches),
+        (1, 2)
+    );
     assert_eq!(filtered_counts(&session), (1, 2, 2));
 }
 
 #[test]
 fn scrolling_a_cached_layer_with_effects_applies_none_of_them() {
-    let Some(mut session) = Session::new() else { return };
+    let Some(mut session) = Session::new() else {
+        return;
+    };
     let (layer, _, _) = filtered_page(&mut session);
     session.frame();
     for dy in [-7.0, -19.0] {
@@ -872,7 +984,9 @@ fn scrolling_a_cached_layer_with_effects_applies_none_of_them() {
 /// and only the effects are applied to it afresh.
 #[test]
 fn changing_a_cached_layers_effects_keeps_its_content() {
-    let Some(mut session) = Session::new() else { return };
+    let Some(mut session) = Session::new() else {
+        return;
+    };
     let (layer, _, _) = filtered_page(&mut session);
     session.frame();
     session
@@ -881,7 +995,10 @@ fn changing_a_cached_layers_effects_keeps_its_content() {
         .unwrap();
     session.assert_fresh("the blur grew");
     let stats = session.stats();
-    assert_eq!((stats.layer_cache_misses, stats.layer_cache_patches), (1, 0));
+    assert_eq!(
+        (stats.layer_cache_misses, stats.layer_cache_patches),
+        (1, 0)
+    );
     assert_eq!(filtered_counts(&session).0, 2);
     // Only the shadow's colour: the effects reach as far as before, so their
     // result covers the same pixels, and only the program says it is stale.
@@ -898,7 +1015,10 @@ fn changing_a_cached_layers_effects_keeps_its_content() {
     session.assert_fresh("the shadow changed colour");
     assert_eq!(filtered_counts(&session).0, 3);
     let stats = session.stats();
-    assert_eq!((stats.layer_cache_misses, stats.layer_cache_patches), (1, 0));
+    assert_eq!(
+        (stats.layer_cache_misses, stats.layer_cache_patches),
+        (1, 0)
+    );
 }
 
 // --- Many draws in the same clips ---------------------------------------------
@@ -934,12 +1054,21 @@ fn many_draws_in_the_same_clips_are_all_drawn() {
     }
     for index in 0..1600 {
         let (column, row) = ((index % 40) as f32, (index / 40) as f32);
-        fill(&mut source, parent, rect(column * 40.0, row * 25.0, 36.0, 21.0), RED);
+        fill(
+            &mut source,
+            parent,
+            rect(column * 40.0, row * 25.0, 36.0, 21.0),
+            RED,
+        );
     }
     let mut compiler = SceneCompiler::new();
     let scene = compiler.compile(&source, &source.dirty_snapshot()).unwrap();
     let frame = FrameBuilder::new()
-        .build(scene, rect(0.0, 0.0, WIDTH, HEIGHT), &FrameProperties::default())
+        .build(
+            scene,
+            rect(0.0, 0.0, WIDTH, HEIGHT),
+            &FrameProperties::default(),
+        )
         .unwrap();
     let mut text = TextHost::new(CosmicEngine::new(1.0));
     backend.begin_frame(Size::new(WIDTH, HEIGHT)).unwrap();
@@ -947,7 +1076,9 @@ fn many_draws_in_the_same_clips_are_all_drawn() {
     backend.end_frame().unwrap();
     let pixels = backend.read_pixels_rgba8().unwrap();
     let at = |x: usize, y: usize| -> [u8; 4] {
-        pixels[(y * WIDTH as usize + x) * 4..][..4].try_into().unwrap()
+        pixels[(y * WIDTH as usize + x) * 4..][..4]
+            .try_into()
+            .unwrap()
     };
     // A row well inside the clips, the gap between two rows, and a row cut
     // off by the outermost clip.
@@ -960,11 +1091,17 @@ fn many_draws_in_the_same_clips_are_all_drawn() {
 /// it shows changes with what is beneath it, which its damage does not track.
 #[test]
 fn a_cached_layer_that_lets_a_backdrop_see_beneath_it_is_drawn_every_frame() {
-    let Some(mut session) = Session::new() else { return };
+    let Some(mut session) = Session::new() else {
+        return;
+    };
     let root = session.source.root();
-    let red = session.source.insert_primitive(square(rect(0.0, 0.0, 50.0, SIZE), RED));
+    let red = session
+        .source
+        .insert_primitive(square(rect(0.0, 0.0, 50.0, SIZE), RED));
     session.source.append_child(root, red).unwrap();
-    let blue = session.source.insert_primitive(square(rect(50.0, 0.0, 50.0, SIZE), BLUE));
+    let blue = session
+        .source
+        .insert_primitive(square(rect(50.0, 0.0, 50.0, SIZE), BLUE));
     session.source.append_child(root, blue).unwrap();
     let page = layer(
         &mut session.source,
@@ -974,11 +1111,18 @@ fn a_cached_layer_that_lets_a_backdrop_see_beneath_it_is_drawn_every_frame() {
             ..LayerDescriptor::default()
         },
     );
-    layer(&mut session.source, page, glass(rect(25.0, 0.0, 50.0, SIZE)));
+    layer(
+        &mut session.source,
+        page,
+        glass(rect(25.0, 0.0, 50.0, SIZE)),
+    );
     session.assert_fresh("first frame");
     session
         .source
-        .update_primitive(red, square(rect(0.0, 0.0, 50.0, SIZE), Color::rgb(0.0, 1.0, 0.0)))
+        .update_primitive(
+            red,
+            square(rect(0.0, 0.0, 50.0, SIZE), Color::rgb(0.0, 1.0, 0.0)),
+        )
         .unwrap();
     session.assert_fresh("what is beneath the page changed");
     assert_eq!(session.stats().layer_cache_entries, 0);

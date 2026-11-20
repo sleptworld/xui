@@ -23,10 +23,10 @@ use xui_core::prelude::*;
 use xui_core::render::MockRenderBackend;
 use xui_f::FBackend;
 use xui_interface::Size;
-use xui_macros::component;
 use xui_macos::{
     MacOsWindowOptions, MacRunner, MacRunnerOptions, MacWindow, WindowOptions, WindowSize,
 };
+use xui_macros::component;
 use xui_shell::PlatformWindow;
 
 /// Where the close button's top-left corner should be, from the window's.

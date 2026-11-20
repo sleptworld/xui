@@ -168,8 +168,6 @@ fn check_icon() -> IconData {
     .clone()
 }
 
-
-
 fn normalized_selection(items: &[DropDownItem], requested: usize) -> Option<usize> {
     items
         .get(requested)
@@ -247,20 +245,29 @@ pub fn drop_down(
 ) {
     static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let id_base: String = if id_prefix.is_empty() {
-        format!("dropdown-{}", NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+        format!(
+            "dropdown-{}",
+            NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
     } else {
         id_prefix.clone()
     };
     let own: usize = state!(
-        normalized_selection(&items.read(), selected.get().unwrap_or(*default_selected)).unwrap_or(0)
+        normalized_selection(&items.read(), selected.get().unwrap_or(*default_selected))
+            .unwrap_or(0)
     );
     let own_open: bool = state!(*default_open);
     let shown: bool = memo!(!*disabled && open.unwrap_or(*own_open));
-    let model: SelectionModel = memo!(SelectionModel::new(
-        items.iter().map(|item| SelectionItem::new(item.id.clone(), item.label.clone(), item.disabled))
-    ));
+    let model: SelectionModel =
+        memo!(SelectionModel::new(items.iter().map(|item| {
+            SelectionItem::new(item.id.clone(), item.label.clone(), item.disabled)
+        })));
     let active: Option<usize> = memo!(normalized_selection(items, selected.unwrap_or(*own)));
-    let selected_label: Option<String> = memo!(active.and_then(|index| items.get(index)).map(|item| item.label.clone()));
+    let selected_label: Option<String> = memo!(
+        active
+            .and_then(|index| items.get(index))
+            .map(|item| item.label.clone())
+    );
     let trigger_style: StyleOf<Container> = memo!({
         let mut trigger_style = style.trigger.clone();
         if *disabled {

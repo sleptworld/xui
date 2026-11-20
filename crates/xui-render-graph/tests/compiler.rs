@@ -379,7 +379,9 @@ fn apply_clamped(matrix: &[f32; 20], colour: [f32; 4]) -> [f32; 4] {
     for row in 0..4 {
         let base = row * 5;
         let value = matrix[base + 4]
-            + (0..4).map(|column| matrix[base + column] * colour[column]).sum::<f32>();
+            + (0..4)
+                .map(|column| matrix[base + column] * colour[column])
+                .sum::<f32>();
         out[row] = value.clamp(0.0, 1.0);
     }
     out
@@ -387,7 +389,11 @@ fn apply_clamped(matrix: &[f32; 20], colour: [f32; 4]) -> [f32; 4] {
 
 fn compiled_matrices(effects: &[[f32; 20]]) -> Vec<[f32; 20]> {
     let mut value = descriptor();
-    value.effects = effects.iter().copied().map(LayerEffect::ColorMatrix).collect();
+    value.effects = effects
+        .iter()
+        .copied()
+        .map(LayerEffect::ColorMatrix)
+        .collect();
     compile_layer(&value)
         .unwrap()
         .nodes()
@@ -513,7 +519,10 @@ fn cutting_the_layer_branch_keeps_the_backdrop_and_composites_the_content() {
 
     let ops: Vec<_> = cut.nodes().iter().map(|node| &node.op).collect();
     assert!(matches!(ops[0], ProgramOp::Blur { .. }), "{ops:?}");
-    assert!(matches!(ops[1], ProgramOp::BackdropComposite { .. }), "{ops:?}");
+    assert!(
+        matches!(ops[1], ProgramOp::BackdropComposite { .. }),
+        "{ops:?}"
+    );
     assert!(
         matches!(
             ops[2],
@@ -541,13 +550,28 @@ fn cutting_the_layer_branch_keeps_the_backdrop_and_composites_the_content() {
         Some(*resource),
         cut.external_resource(ExternalResourceKind::BackdropMask)
     );
-    assert_eq!(cut.external_resource(ExternalResourceKind::LayerMask(0)), None);
+    assert_eq!(
+        cut.external_resource(ExternalResourceKind::LayerMask(0)),
+        None
+    );
     // Every resource's producer is the node that writes it.
     for (index, node) in cut.nodes().iter().enumerate() {
-        assert_eq!(cut.resources()[node.output.index()].producer.unwrap().index(), index);
+        assert_eq!(
+            cut.resources()[node.output.index()]
+                .producer
+                .unwrap()
+                .index(),
+            index
+        );
     }
-    assert_eq!(cut.backdrop_input_expansion(), program.backdrop_input_expansion());
-    assert_eq!(cut.layer_visual_expansion(), xui_render_graph::SampleExpansion::ZERO);
+    assert_eq!(
+        cut.backdrop_input_expansion(),
+        program.backdrop_input_expansion()
+    );
+    assert_eq!(
+        cut.layer_visual_expansion(),
+        xui_render_graph::SampleExpansion::ZERO
+    );
 }
 
 #[test]
@@ -567,5 +591,8 @@ fn programs_that_differ_only_in_layer_effects_cut_to_the_same_program() {
     );
     // A program with no layer branch is what it cuts to.
     assert!(!none.has_layer_effects());
-    assert_eq!(none.without_layer_effects().fingerprint(), none.fingerprint());
+    assert_eq!(
+        none.without_layer_effects().fingerprint(),
+        none.fingerprint()
+    );
 }

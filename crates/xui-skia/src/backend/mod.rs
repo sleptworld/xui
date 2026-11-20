@@ -53,18 +53,18 @@ use xui_shell::SurfaceTarget;
 
 use self::{
     convert::valid_scale,
-    image::{image_cache, source_image_cache, CachedImageKey, CachedSourceImage},
+    image::{CachedImageKey, CachedSourceImage, image_cache, source_image_cache},
     lru::LocalLru,
     paint::GradientKey,
-    surface::{copy_surface_damage, full_softbuffer_rect, physical_damage_rects, SurfacePool},
+    surface::{SurfacePool, copy_surface_damage, full_softbuffer_rect, physical_damage_rects},
     text::CachedTextBlob,
     vector::{CompiledVectorCommand, ExternalTextures},
 };
 use crate::{
+    SkiaBackendError, SkiaFrameStats, SkiaLayerCacheStats,
     cache::LayerSurfaceCache,
     damage::{DamageRegion, DamageTracker},
     present::{PresenterSetup, WindowPresenter},
-    SkiaBackendError, SkiaFrameStats, SkiaLayerCacheStats,
 };
 
 /// `XUI_DEBUG_FRAME=1` prints a per-frame damage summary. Read once: an env

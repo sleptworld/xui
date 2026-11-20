@@ -23,7 +23,10 @@ where
     N: crate::node::NodeDef,
 {
     fn into_tree(self, children: Vec<StaticTree>) -> StaticTree {
-        StaticTree { draft: Box::new(self), children }
+        StaticTree {
+            draft: Box::new(self),
+            children,
+        }
     }
 }
 

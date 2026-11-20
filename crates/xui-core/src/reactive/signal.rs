@@ -128,7 +128,10 @@ impl<T> ReadSignal<T> {
 
 impl<T> Signal<T> {
     pub(crate) fn new(id: SourceId, value: T) -> Self {
-        Self(Rc::new(SourceCell { id, value: RefCell::new(value) }))
+        Self(Rc::new(SourceCell {
+            id,
+            value: RefCell::new(value),
+        }))
     }
 
     /// Always notifies; there is no equality check on signals.
@@ -155,7 +158,10 @@ impl<T: PartialEq> Signal<T> {
 
 impl<T: PartialEq> Memo<T> {
     pub(crate) fn new(id: SourceId, value: T) -> Self {
-        Self(Rc::new(SourceCell { id, value: RefCell::new(value) }))
+        Self(Rc::new(SourceCell {
+            id,
+            value: RefCell::new(value),
+        }))
     }
 
     /// Called by the memo's generated computation. Unchanged values stop here.

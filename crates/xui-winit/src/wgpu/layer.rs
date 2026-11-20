@@ -1,7 +1,7 @@
 use crate::wgpu::{
+    LayerSnapshot,
     cache::BackendDirtyRegion,
     snapshot::{LayerItemKind, LayerItemSnapshot},
-    LayerSnapshot,
 };
 use std::collections::HashMap;
 use xui_core::render::{ContentVersion, PlacementVersion, RenderNodeId};
@@ -160,10 +160,10 @@ fn diff_item(
 mod tests {
     use super::*;
     use crate::wgpu::snapshot::{LayerItemKind, LayerItemSnapshot};
-    use xui_core::render::RenderScene;
     use xui_core::Affine;
+    use xui_core::render::RenderScene;
     use xui_interface::Rect;
-    use xui_render_graph::{compile_layer, LayerGraphDescriptor, SampleExpansion};
+    use xui_render_graph::{LayerGraphDescriptor, SampleExpansion, compile_layer};
 
     fn program_fingerprint() -> xui_render_graph::ProgramFingerprint {
         compile_layer(&LayerGraphDescriptor::default())

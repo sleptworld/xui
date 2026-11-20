@@ -1,10 +1,10 @@
 //! The Component Gallery: every `xui-components` control on the shadcn/ui-style
 //! theme, one page per component, behind a sidebar.
 
+use xui_components::image::ImageSrc;
 use xui_components::*;
 use xui_core::core::Bounds;
 use xui_core::prelude::*;
-use xui_components::image::ImageSrc;
 use xui_macros::component;
 
 /// A gallery page.
@@ -426,7 +426,8 @@ fn tabs_page() {
             "Account",
             Children::component::<FormTab>(FormTabProps {
                 title: "Account".into(),
-                description: "Make changes to your account here. Click save when you're done.".into(),
+                description: "Make changes to your account here. Click save when you're done."
+                    .into(),
                 action: "Save changes".into(),
                 first_label: "Name".into(),
                 first: TextController::with_text("Pedro Duarte"),
@@ -439,7 +440,8 @@ fn tabs_page() {
             "Password",
             Children::component::<FormTab>(FormTabProps {
                 title: "Password".into(),
-                description: "Change your password here. After saving, you'll be logged out.".into(),
+                description: "Change your password here. After saving, you'll be logged out."
+                    .into(),
                 action: "Save password".into(),
                 first_label: "Current password".into(),
                 first: TextController::new(),
@@ -540,8 +542,9 @@ fn list_item(index: &usize) {
 
 #[component]
 fn virtual_list_page() {
-    let render_item: VirtualItemRenderer =
-        VirtualItemRenderer::new(|index: usize| Children::component::<ListItem>(ListItemProps { index }));
+    let render_item: VirtualItemRenderer = VirtualItemRenderer::new(|index: usize| {
+        Children::component::<ListItem>(ListItemProps { index })
+    });
     view! {
         page_body {
             example(title: "10,000 rows") {
@@ -829,10 +832,15 @@ fn demo_editor() -> xui_editor::EditorHandle {
     let color = |r, g, b| TextRunStyle::new().color(Color::rgba(r, g, b, 1.0));
     let highlighter = KeywordHighlighter::new()
         .keywords(
-            ["pub", "fn", "let", "if", "else", "return", "mut", "for", "in", "while", "match"],
+            [
+                "pub", "fn", "let", "if", "else", "return", "mut", "for", "in", "while", "match",
+            ],
             color(0.62, 0.36, 0.86).font_weight(FontWeight::SemiBold),
         )
-        .keywords(["f32", "u32", "usize", "bool", "String"], color(0.18, 0.62, 0.72))
+        .keywords(
+            ["f32", "u32", "usize", "bool", "String"],
+            color(0.18, 0.62, 0.72),
+        )
         .strings(color(0.30, 0.62, 0.30))
         .numbers(color(0.86, 0.52, 0.18))
         .line_comment("//", color(0.55, 0.57, 0.62).font_style(FontStyle::Italic));
@@ -890,7 +898,9 @@ fn editor_page() {
 
 #[component]
 pub fn gallery() {
-    let initial: Page = cx.try_context::<InitialPage>().map_or(Page::Button, |page| page.get().0);
+    let initial: Page = cx
+        .try_context::<InitialPage>()
+        .map_or(Page::Button, |page| page.get().0);
     let active: Page = state!(initial);
     let nav_style: StyleOf<Container> = StyleOf::new()
         .with::<container::width>(Sizing::fill())

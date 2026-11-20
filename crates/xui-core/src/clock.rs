@@ -257,7 +257,11 @@ mod tests {
         assert!(clock.is_suspended());
         let after = clock.tick(at(start, 60_000));
 
-        assert_eq!(after.delta(), Duration::ZERO, "the idle is not a frame step");
+        assert_eq!(
+            after.delta(),
+            Duration::ZERO,
+            "the idle is not a frame step"
+        );
         assert_eq!(
             after.timestamp(),
             before.timestamp(),

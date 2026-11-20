@@ -332,9 +332,11 @@ pub fn dispatch_event_pipeline<B: TextBackend>(
     // Before the press reaches anything: the handler sees the tree the user
     // pressed on. The press itself still goes on to whatever it hit.
     let mut dismissed = match &event {
-        RawEvent::PointerDown(raw) => dismiss_overlay_if(arena, DismissReason::PointerOutside, |arena, root| {
-            !arena.overlay_contains_pointer(root, raw.position)
-        }),
+        RawEvent::PointerDown(raw) => {
+            dismiss_overlay_if(arena, DismissReason::PointerOutside, |arena, root| {
+                !arena.overlay_contains_pointer(root, raw.position)
+            })
+        }
         _ => None,
     };
     let raw = dispatcher::dispatch_raw(arena, host_text_cache, event.clone());

@@ -114,7 +114,11 @@ pub fn spinner(
     #[source] period: &Duration,
     #[source] paused: &bool,
 ) {
-    let side: f32 = memo!(if size.is_finite() { size.max(0.0) } else { 24.0 });
+    let side: f32 = memo!(if size.is_finite() {
+        size.max(0.0)
+    } else {
+        24.0
+    });
     let root_style: StyleOf<Container> = memo!({
         let mut root_style = StyleOf::new()
             .with::<container::size>(Size::fix(*side, *side))
@@ -209,8 +213,9 @@ pub fn callout(
     style: &StyleOf<Container>,
     title_style: &StyleOf<Text>,
 ) {
-    let heading_style: StyleOf<Text> =
-        StyleOf::new().with::<container::font_weight>(FontWeight::Bold).merged(title_style);
+    let heading_style: StyleOf<Text> = StyleOf::new()
+        .with::<container::font_weight>(FontWeight::Bold)
+        .merged(title_style);
     let root_style: StyleOf<Container> = memo!({
         let color = match tone {
             CalloutTone::Info => Color::hex("#1d4ed8"),

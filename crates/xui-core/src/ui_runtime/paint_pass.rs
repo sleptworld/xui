@@ -341,7 +341,9 @@ impl UiRuntime {
         let rect = Bounds::from_zero_size(layout.size());
         let style = self.style_system.effective(id).clone();
         let widget = self.hosts[id].widget.clone();
-        let decorates = self.hosts[id].caps.intersects(crate::caps::CapMask::DECORATION);
+        let decorates = self.hosts[id]
+            .caps
+            .intersects(crate::caps::CapMask::DECORATION);
         let paint = self.render_system.binding(id).paint;
         let mut writer = RenderTreeWriter::new(&mut self.render_system.scene, paint);
         if decorates {
@@ -442,7 +444,8 @@ impl UiRuntime {
         let text_boxes = widget.with_widgets_mut(|node| match node {
             Widgets::Canvas(canvas) => {
                 let mut measure_text = |text_id, props: &TextProps, constraints| {
-                    let input = TextLayoutInput::from_props(props.clone(), constraints, font_context);
+                    let input =
+                        TextLayoutInput::from_props(props.clone(), constraints, font_context);
                     let metrics =
                         measurer.measure_slot_metrics(id, canvas_text_slot(text_id), input);
                     crate::widgets::CanvasTextMetrics {

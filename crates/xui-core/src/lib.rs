@@ -44,8 +44,6 @@ pub mod transition;
 // pub mod event;
 pub mod event_system;
 pub mod focus;
-#[cfg(test)]
-mod test_tree;
 pub mod layout;
 pub mod node;
 pub mod platform;
@@ -57,6 +55,8 @@ pub mod scroll;
 pub mod shortcut;
 pub mod size;
 pub mod style;
+#[cfg(test)]
+mod test_tree;
 pub mod ticker;
 pub mod widgets;
 
@@ -100,10 +100,10 @@ pub use crate::prelude::*;
 /// diagnostics everywhere.
 #[doc(hidden)]
 pub mod __interface {
-    pub use xui_interface::{NodeId, Transition, WidgetUpdateFlags};
     pub use xui_interface::style::{ComputedStyle, Theme};
     pub use xui_interface::styles::compute::{leaves_to_parent, resolve_field};
     pub use xui_interface::styles::units::{IntoStyleValue, StyleValue, merge_value};
+    pub use xui_interface::{NodeId, Transition, WidgetUpdateFlags};
 }
 pub mod text;
 pub(crate) mod ui_runtime;

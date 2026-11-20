@@ -147,7 +147,9 @@ fn vbox(style: &StyleOf<Container>, children: &Children) {
 
 /// `gap` between children, centered on the cross axis.
 fn aligned(gap: f32) -> StyleOf<Container> {
-    StyleOf::new().with::<container::gap>(gap).with::<container::align>(AlignStyle::Center)
+    StyleOf::new()
+        .with::<container::gap>(gap)
+        .with::<container::align>(AlignStyle::Center)
 }
 
 /// A 1px horizontal rule.
@@ -689,8 +691,16 @@ pub fn flight_icing_dashboard() {
     let selected_tab: usize = state!(1);
     let selected_product: usize = state!(0);
     let items: Vec<TabItem> = vec![
-        TabItem::new("flight", "飞行监测", Children::component::<FlightMonitor>(FlightMonitorProps {})),
-        TabItem::new("icing", "积冰监测", Children::component::<IcingMonitor>(IcingMonitorProps {})),
+        TabItem::new(
+            "flight",
+            "飞行监测",
+            Children::component::<FlightMonitor>(FlightMonitorProps {}),
+        ),
+        TabItem::new(
+            "icing",
+            "积冰监测",
+            Children::component::<IcingMonitor>(IcingMonitorProps {}),
+        ),
     ];
     view! {
         vbox(
@@ -864,7 +874,8 @@ mod smoke_tests {
         let mut text = TextHost::new(CosmicEngine::new(1.0));
         for width in [1600.0, 1100.0, 1600.0] {
             app.resize(Size::new(width, 900.0));
-            app.render(&mut backend, &mut text).expect("dashboard scene");
+            app.render(&mut backend, &mut text)
+                .expect("dashboard scene");
             let tree = app.ui_runtime();
             let mut pending = vec![tree.root()];
             let mut count = 0;

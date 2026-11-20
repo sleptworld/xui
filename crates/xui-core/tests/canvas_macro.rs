@@ -10,10 +10,15 @@ fn drawing(controller: &CanvasController) {
 #[test]
 fn a_component_mounts_canvas_as_a_host_widget() {
     let mut app = App::new(|app| {
-        app.mount::<Drawing>(DrawingProps { controller: CanvasController::new() });
+        app.mount::<Drawing>(DrawingProps {
+            controller: CanvasController::new(),
+        });
     });
     let root = app.ui_runtime().root();
     let host = app.ui_runtime().children(root).next().unwrap();
-    assert_eq!(app.ui_runtime().node(host).unwrap().node_type, WidgetType::Canvas);
+    assert_eq!(
+        app.ui_runtime().node(host).unwrap().node_type,
+        WidgetType::Canvas
+    );
     let _ = &mut app;
 }

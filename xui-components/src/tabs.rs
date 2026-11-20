@@ -35,7 +35,11 @@ pub struct TabItem {
 
 impl TabItem {
     /// `content` is text, or a component: `Children::component::<Panel>(PanelProps { .. })`.
-    pub fn new(id: impl Into<String>, label: impl Into<Children>, content: impl Into<Children>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        label: impl Into<Children>,
+        content: impl Into<Children>,
+    ) -> Self {
         Self {
             id: id.into(),
             label: label.into(),
@@ -168,10 +172,6 @@ fn activate_tab(
     on_change.call(cx, index);
 }
 
-
-
-
-
 /// An accessible tab list with one mounted content panel and configurable keyboard
 /// activation.
 ///
@@ -231,12 +231,16 @@ pub fn tabs(
 ) {
     static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let id_base: String = if id_prefix.is_empty() {
-        format!("tabs-{}", NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+        format!(
+            "tabs-{}",
+            NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
     } else {
         id_prefix.clone()
     };
     let own: usize = state!(
-        normalized_selection(&items.read(), selected.get().unwrap_or(*default_selected)).unwrap_or(0)
+        normalized_selection(&items.read(), selected.get().unwrap_or(*default_selected))
+            .unwrap_or(0)
     );
     let active: Option<usize> = memo!(normalized_selection(items, selected.unwrap_or(*own)));
     let handles: Vec<FocusHandle> = memo!((0..items.len()).map(|_| FocusHandle::new()).collect());
@@ -244,8 +248,24 @@ pub fn tabs(
     let panel: Option<TabItem> = memo!(active.and_then(|index| items.get(index).cloned()));
     let horizontal: bool = *orientation == SelectionOrientation::Horizontal;
     let shortcuts: Vec<ShortcutBinding> = [
-        (Shortcut::named(if horizontal { NamedKey::ArrowLeft } else { NamedKey::ArrowUp }).allow_repeat(true), PREVIOUS_TAB),
-        (Shortcut::named(if horizontal { NamedKey::ArrowRight } else { NamedKey::ArrowDown }).allow_repeat(true), NEXT_TAB),
+        (
+            Shortcut::named(if horizontal {
+                NamedKey::ArrowLeft
+            } else {
+                NamedKey::ArrowUp
+            })
+            .allow_repeat(true),
+            PREVIOUS_TAB,
+        ),
+        (
+            Shortcut::named(if horizontal {
+                NamedKey::ArrowRight
+            } else {
+                NamedKey::ArrowDown
+            })
+            .allow_repeat(true),
+            NEXT_TAB,
+        ),
         (Shortcut::named(NamedKey::Home), FIRST_TAB),
         (Shortcut::named(NamedKey::End), LAST_TAB),
     ]

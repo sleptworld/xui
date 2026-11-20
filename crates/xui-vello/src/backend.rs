@@ -13,12 +13,12 @@ use xui_wgpu_text::{AtlasOptions, TextBatch, TextRenderer};
 use crate::{
     VelloBackendError, WgpuContext,
     encode::{BitmapText, ClipMask, Inherit, Surface, SurfaceOp, Unsupported, encode_frame},
-    filter::{ENCODED_FORMAT, Finish, FilterRenderer, WORK_FORMAT, Placed, PlanTextures, Slot},
-    layer_cache::{CacheUpdate, LayerCache},
-    texture::ExternalTextures,
+    filter::{ENCODED_FORMAT, FilterRenderer, Finish, Placed, PlanTextures, Slot, WORK_FORMAT},
     image::ImageCache,
+    layer_cache::{CacheUpdate, LayerCache},
     paths::PathCache,
     text::FontCache,
+    texture::ExternalTextures,
 };
 
 /// Where a target's last stage is drawn.
@@ -491,7 +491,11 @@ impl<T: TextBackend> VelloBackend<T> {
 
     fn ensure_target(&mut self) {
         let size = self.size_px;
-        if self.target.as_ref().is_some_and(|target| target.size == size) {
+        if self
+            .target
+            .as_ref()
+            .is_some_and(|target| target.size == size)
+        {
             return;
         }
         let device = &self.context.device;
@@ -612,9 +616,12 @@ impl<T: TextBackend> VelloBackend<T> {
         match dest {
             Dest::Root => {
                 let view = &self.target.as_ref().expect("target").view;
-                self.filters.finish(device, queue, composed, Finish::View(view));
+                self.filters
+                    .finish(device, queue, composed, Finish::View(view));
             }
-            Dest::Slot(slot) => self.filters.finish(device, queue, composed, Finish::Slot(slot)),
+            Dest::Slot(slot) => self
+                .filters
+                .finish(device, queue, composed, Finish::Slot(slot)),
         }
         Ok(())
     }
@@ -630,7 +637,10 @@ impl<T: TextBackend> VelloBackend<T> {
         let Some(renderer) = &self.text_renderer else {
             return;
         };
-        let mut batches = batches.into_iter().filter(|batch| !batch.is_empty()).peekable();
+        let mut batches = batches
+            .into_iter()
+            .filter(|batch| !batch.is_empty())
+            .peekable();
         if batches.peek().is_none() {
             return;
         }
@@ -699,7 +709,11 @@ impl<T: TextBackend> VelloBackend<T> {
                     let band = self.filters.acquire(device, extent);
                     // The first band starts the composition, so it carries the
                     // clear colour; the rest are on transparent.
-                    let base = if composed.is_none() { clear } else { Color::TRANSPARENT };
+                    let base = if composed.is_none() {
+                        clear
+                    } else {
+                        Color::TRANSPARENT
+                    };
                     self.renderer.render_to_texture(
                         device,
                         queue,
@@ -743,7 +757,13 @@ impl<T: TextBackend> VelloBackend<T> {
                     let reads_beneath = job.plan.backdrop().is_some() || job.inherit.is_some();
                     let seen = match inherited {
                         Some(beneath) if reads_beneath => Some(Placed {
-                            slot: self.filters.over(device, queue, destination.slot, beneath.slot, extent),
+                            slot: self.filters.over(
+                                device,
+                                queue,
+                                destination.slot,
+                                beneath.slot,
+                                extent,
+                            ),
                             origin: origin_px,
                         }),
                         _ => None,
@@ -787,52 +807,53 @@ impl<T: TextBackend> VelloBackend<T> {
                     // A cached layer with effects is composited from their
                     // kept result, brought up to date first where the
                     // encoder found it out of date.
-                    let (content, content_origin) = match (job.cache, job.cache.and_then(|use_| use_.filter)) {
-                        (Some(use_), Some(filter_use)) => {
-                            let filtered = match &job.filter {
-                                None => None,
-                                Some(filter) => {
-                                    let region = filter.region;
-                                    let origin = (region.x, region.y);
-                                    let slot = self.filters.clear(
-                                        &self.context.device,
-                                        &self.context.queue,
-                                        (region.width, region.height),
-                                        [0.0; 4],
-                                    );
-                                    self.filters.execute_plan(
-                                        &self.context.device,
-                                        &self.context.queue,
-                                        &filter.plan,
-                                        &PlanTextures {
-                                            destination: Placed { slot, origin },
-                                            layer_content: Some(Placed {
-                                                slot: content,
-                                                origin: content_origin,
-                                            }),
-                                            backdrop: None,
-                                            backdrop_mask: None,
-                                            layer_masks: &job.layer_masks,
-                                            clips: &[],
-                                            clip_mask: None,
-                                        },
-                                        self.scale_factor,
-                                    )?;
-                                    Some((slot, origin))
-                                }
-                            };
-                            let slot = self.layer_cache.apply_filtered(
-                                &self.context.device,
-                                &self.context.queue,
-                                &mut self.filters,
-                                use_.id,
-                                filter_use,
-                                filtered,
-                            );
-                            (slot, (filter_use.rect.x, filter_use.rect.y))
-                        }
-                        _ => (content, content_origin),
-                    };
+                    let (content, content_origin) =
+                        match (job.cache, job.cache.and_then(|use_| use_.filter)) {
+                            (Some(use_), Some(filter_use)) => {
+                                let filtered = match &job.filter {
+                                    None => None,
+                                    Some(filter) => {
+                                        let region = filter.region;
+                                        let origin = (region.x, region.y);
+                                        let slot = self.filters.clear(
+                                            &self.context.device,
+                                            &self.context.queue,
+                                            (region.width, region.height),
+                                            [0.0; 4],
+                                        );
+                                        self.filters.execute_plan(
+                                            &self.context.device,
+                                            &self.context.queue,
+                                            &filter.plan,
+                                            &PlanTextures {
+                                                destination: Placed { slot, origin },
+                                                layer_content: Some(Placed {
+                                                    slot: content,
+                                                    origin: content_origin,
+                                                }),
+                                                backdrop: None,
+                                                backdrop_mask: None,
+                                                layer_masks: &job.layer_masks,
+                                                clips: &[],
+                                                clip_mask: None,
+                                            },
+                                            self.scale_factor,
+                                        )?;
+                                        Some((slot, origin))
+                                    }
+                                };
+                                let slot = self.layer_cache.apply_filtered(
+                                    &self.context.device,
+                                    &self.context.queue,
+                                    &mut self.filters,
+                                    use_.id,
+                                    filter_use,
+                                    filtered,
+                                );
+                                (slot, (filter_use.rect.x, filter_use.rect.y))
+                            }
+                            _ => (content, content_origin),
+                        };
                     let clip_mask = self.render_clip_mask(job.clip_mask)?;
                     let result = self.filters.execute_plan(
                         &self.context.device,
@@ -969,7 +990,11 @@ impl<T: TextBackend> VelloBackend<T> {
     /// is, never copied; an sRGB format is read as such. Redrawing into the same
     /// texture needs no call here: bump the command's `revision`. Call again
     /// with the same id only when the texture object changes, as on a resize.
-    pub fn set_wgpu_texture(&mut self, id: xui_interface::ExternalTextureId, texture: &wgpu::Texture) {
+    pub fn set_wgpu_texture(
+        &mut self,
+        id: xui_interface::ExternalTextureId,
+        texture: &wgpu::Texture,
+    ) {
         self.textures.set(id, texture);
     }
 
@@ -1057,7 +1082,9 @@ impl<T: TextBackend> VelloBackend<T> {
         let mut crops = Vec::new();
         for item in &frame.layers[frame.root_layer.0].items {
             let BuiltItem::Layer(id) = item else { continue };
-            let Some((instance, program)) = program(*id) else { continue };
+            let Some((instance, program)) = program(*id) else {
+                continue;
+            };
             if program.backdrop().is_none() {
                 continue;
             }
@@ -1080,12 +1107,12 @@ impl<T: TextBackend> VelloBackend<T> {
     /// Copies a freshly drawn region into the persistent frame.
     fn copy_into_target(&self, slot: Slot, extent: (u32, u32), at: (i32, i32)) {
         let target = self.target.as_ref().expect("target");
-        let mut encoder = self
-            .context
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("xui-vello damage copy"),
-            });
+        let mut encoder =
+            self.context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("xui-vello damage copy"),
+                });
         encoder.copy_texture_to_texture(
             self.filters.texture(slot).as_image_copy(),
             wgpu::TexelCopyTextureInfo {
@@ -1144,7 +1171,11 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for VelloBackend<T> {
     fn submit(&mut self, frame: &BuiltFrame, text: &mut TextHost<T>) -> Result<(), Self::Error> {
         self.filters.begin_frame();
         self.layer_cache.begin_frame();
-        let size = self.target.as_ref().expect("begin_frame ensures a target").size;
+        let size = self
+            .target
+            .as_ref()
+            .expect("begin_frame ensures a target")
+            .size;
 
         // Fonts are not part of the scene: a different set shapes differently.
         let font_epoch = Some(text.font_epoch());
@@ -1209,7 +1240,10 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for VelloBackend<T> {
         }
 
         let clear = self.options.clear_color;
-        let extent = ((region[2] - region[0]) as u32, (region[3] - region[1]) as u32);
+        let extent = (
+            (region[2] - region[0]) as u32,
+            (region[3] - region[1]) as u32,
+        );
         if region == [0, 0, size.0 as i32, size.1 as i32] {
             self.render_surface(surface, Dest::Root, clear)?;
         } else {
@@ -1247,12 +1281,12 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for VelloBackend<T> {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .context
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("xui-vello blit"),
-            });
+        let mut encoder =
+            self.context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("xui-vello blit"),
+                });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("xui-vello blit"),
@@ -1425,9 +1459,11 @@ pub(crate) fn read_texture(
     context.queue.submit([encoder.finish()]);
 
     let (sender, receiver) = std::sync::mpsc::channel();
-    buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
-        let _ = sender.send(result);
-    });
+    buffer
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
     device
         .poll(wgpu::PollType::Wait {
             submission_index: None,

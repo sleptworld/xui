@@ -26,7 +26,12 @@ impl<'a, 'cx, N: WidgetT> HostPatcher<'a, 'cx, N> {
         columns: &'a mut Columns,
         cx: &'a mut CommitCx<'cx>,
     ) -> Self {
-        Self { instance, id, columns, cx }
+        Self {
+            instance,
+            id,
+            columns,
+            cx,
+        }
     }
 
     /// The host's property table, as the element macros look attributes up.
@@ -37,7 +42,11 @@ impl<'a, 'cx, N: WidgetT> HostPatcher<'a, 'cx, N> {
 
     /// Writes `value` as property `P`; returns what that dirtied.
     #[inline]
-    pub fn __patch<P: Property>(&mut self, _: PropertyMarker<P>, value: P::Value) -> WidgetUpdateFlags
+    pub fn __patch<P: Property>(
+        &mut self,
+        _: PropertyMarker<P>,
+        value: P::Value,
+    ) -> WidgetUpdateFlags
     where
         P::Scope: PatchScope<N>,
     {
@@ -96,7 +105,8 @@ where
         let instance = &mut *target.instance;
         let old = instance.props.clone();
         P::set(&mut instance.props, value);
-        N::props_dirty(&old, &instance.props) | N::update(&old, &instance.props, &mut instance.state)
+        N::props_dirty(&old, &instance.props)
+            | N::update(&old, &instance.props, &mut instance.state)
     }
 }
 
@@ -112,7 +122,6 @@ impl<N: WidgetT> PatchScope<N> for WholeNode<N> {
         unreachable!("a host with a `style` attribute is rebuilt, never patched")
     }
 }
-
 
 /// Whether attribute `property` of a host of `tag`'s type can be patched.
 #[doc(hidden)]
@@ -147,4 +156,3 @@ where
 {
     tag
 }
-

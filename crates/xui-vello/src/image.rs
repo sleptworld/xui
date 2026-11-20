@@ -17,14 +17,13 @@ use vello::{
     Scene,
     kurbo::{Affine as KurboAffine, Rect as KurboRect},
     peniko::{
-        Blob, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat,
-        ImageQuality,
+        Blob, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat, ImageQuality,
     },
 };
 use xui_core::render::ImagePrimitive;
 use xui_interface::{
-    Alignment, Bounds, ImageData, ImageFit, ImageRepeat, ImageRotation, ImageStyle,
-    ImageTransform, Sampling, Size,
+    Alignment, Bounds, ImageData, ImageFit, ImageRepeat, ImageRotation, ImageStyle, ImageTransform,
+    Sampling, Size,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -156,7 +155,10 @@ pub(crate) fn quality(sampling: Sampling) -> ImageQuality {
 
 /// The rectangle one copy of the image occupies inside `container`.
 fn fitted_rect(container: Bounds, image: Size<u32>, style: ImageStyle) -> Option<Bounds> {
-    if container.width() <= 0.0 || container.height() <= 0.0 || image.width == 0 || image.height == 0
+    if container.width() <= 0.0
+        || container.height() <= 0.0
+        || image.width == 0
+        || image.height == 0
     {
         return None;
     }
@@ -205,15 +207,28 @@ fn tiles(container: Bounds, tile: Bounds, repeat: ImageRepeat) -> Vec<Bounds> {
     };
     let start_x = start(repeat_x, container.x(), tile.x(), tile.width());
     let start_y = start(repeat_y, container.y(), tile.y(), tile.height());
-    let end_x = end(repeat_x, container.x(), container.width(), tile.x() + tile.width());
-    let end_y = end(repeat_y, container.y(), container.height(), tile.y() + tile.height());
+    let end_x = end(
+        repeat_x,
+        container.x(),
+        container.width(),
+        tile.x() + tile.width(),
+    );
+    let end_y = end(
+        repeat_y,
+        container.y(),
+        container.height(),
+        tile.y() + tile.height(),
+    );
 
     let mut result = Vec::new();
     let mut y = start_y;
     while y < end_y {
         let mut x = start_x;
         while x < end_x {
-            result.push(Bounds::from_origin_size((x, y), (tile.width(), tile.height())));
+            result.push(Bounds::from_origin_size(
+                (x, y),
+                (tile.width(), tile.height()),
+            ));
             if !repeat_x {
                 break;
             }

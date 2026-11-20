@@ -20,8 +20,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use xui_interface::{
-    Appearance, DropTarget, HostCapabilities, MenuBar, NodeId, PlatformCommand, PlatformReply, PlatformRequest,
-    PublishedSurface, RequestId, WindowState,
+    Appearance, DropTarget, HostCapabilities, MenuBar, NodeId, PlatformCommand, PlatformReply,
+    PlatformRequest, PublishedSurface, RequestId, WindowState,
 };
 
 type ReplyCallback = Box<dyn FnOnce(PlatformReply)>;

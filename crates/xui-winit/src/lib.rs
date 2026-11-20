@@ -30,13 +30,13 @@ pub(crate) mod renders;
 #[cfg(feature = "wgpu")]
 mod wgpu;
 
-#[cfg(feature = "vello")]
-pub use runner::{runner, runner_with_device};
 #[cfg(feature = "skia")]
 pub use runner::skia_runner;
 #[cfg(feature = "wgpu")]
 pub use runner::wgpu_runner;
 pub use runner::{WinitBackendInitError, WinitRunError, WinitRunner, WinitRunnerOptions};
+#[cfg(feature = "vello")]
+pub use runner::{runner, runner_with_device};
 pub use sdf::UI_SHADER_WGSL;
 pub use translate::{
     translate_mouse_button, translate_mouse_wheel, translate_named_key, translate_physical_key,

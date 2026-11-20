@@ -15,12 +15,15 @@ use xui_interface::{NodeId, WidgetUpdateFlags};
 
 use super::block::{BlockCx, BlockState, Row, RowParts};
 use super::graph::{EffectId, Graph, InstanceId, Notifier, SourceId};
+use super::host::{HostPatcher, PatchScope};
 use super::props::{Component, Derived, PropCx};
 use super::signal::Signal;
-use super::template::{ChildSpec, Context, HostDraft, ComponentDef, EffectSpec, Lane, MountCx, NodeKind, PendingMount, Run, Scope, StaticNode};
+use super::template::{
+    ChildSpec, ComponentDef, Context, EffectSpec, HostDraft, Lane, MountCx, NodeKind, PendingMount,
+    Run, Scope, StaticNode,
+};
 use crate::node::Draft;
 use crate::property::{IntoProp, Property, PropertyMarker};
-use super::host::{HostPatcher, PatchScope};
 use crate::ui_runtime::UiRuntime;
 use crate::widgets::WidgetVariant;
 
@@ -42,7 +45,10 @@ struct HostCx<'a> {
 impl<'a> Cx<'a> {
     /// The `Cx` of a handler: writes, and nothing else.
     pub(crate) fn handler(notifier: &'a Notifier) -> Self {
-        Self { notifier, host: None }
+        Self {
+            notifier,
+            host: None,
+        }
     }
 
     #[doc(hidden)]
@@ -165,14 +171,22 @@ pub(crate) trait HasParts: Scope + Sized {
 impl<C: ComponentDef> HasParts for C {
     fn parts(&self) -> Parts<'_, Self> {
         let t = &C::TEMPLATE;
-        Parts { nodes: t.nodes, effects: t.effects, children: t.children }
+        Parts {
+            nodes: t.nodes,
+            effects: t.effects,
+            children: t.children,
+        }
     }
 }
 
 impl<P: Scope, D: 'static> HasParts for Row<P, D> {
     fn parts(&self) -> Parts<'_, Self> {
         let t: &RowParts<Self> = &self.template;
-        Parts { nodes: &t.nodes, effects: &t.effects, children: &t.children }
+        Parts {
+            nodes: &t.nodes,
+            effects: &t.effects,
+            children: &t.children,
+        }
     }
 }
 
@@ -200,7 +214,12 @@ pub(crate) trait AnyInstance {
     fn source(&self, index: u16) -> SourceId;
     fn run(self: Rc<Self>, slot: u16, cx: &mut Cx<'_>);
     fn run_block(self: Rc<Self>, slot: u16, cx: &mut BlockCx<'_>);
-    fn tick(self: Rc<Self>, slot: u16, cx: &mut Cx<'_>, frame: crate::clock::FrameTime) -> crate::ticker::Tick;
+    fn tick(
+        self: Rc<Self>,
+        slot: u16,
+        cx: &mut Cx<'_>,
+        frame: crate::clock::FrameTime,
+    ) -> crate::ticker::Tick;
     fn prepare_children(self: Rc<Self>) -> Vec<Option<PendingMount>>;
     /// What slot `index` mounts; `None` for a block.
     fn slot(self: Rc<Self>, index: u16) -> Option<super::Children>;
@@ -261,14 +280,23 @@ impl<T: HasParts> AnyInstance for T {
             Run::Cx(_) | Run::Tick(_) => unreachable!("not a block"),
         }
     }
-    fn tick(self: Rc<Self>, slot: u16, cx: &mut Cx<'_>, frame: crate::clock::FrameTime) -> crate::ticker::Tick {
+    fn tick(
+        self: Rc<Self>,
+        slot: u16,
+        cx: &mut Cx<'_>,
+        frame: crate::clock::FrameTime,
+    ) -> crate::ticker::Tick {
         match self.parts().effects[usize::from(slot)].run {
             Run::Tick(tick) => tick(&self, cx, frame),
             _ => unreachable!("not a ticker"),
         }
     }
     fn prepare_children(self: Rc<Self>) -> Vec<Option<PendingMount>> {
-        self.parts().children.iter().map(|child| Some((child.prepare)(&self))).collect()
+        self.parts()
+            .children
+            .iter()
+            .map(|child| Some((child.prepare)(&self)))
+            .collect()
     }
     fn slot(self: Rc<Self>, index: u16) -> Option<super::Children> {
         match self.parts().nodes[usize::from(index)].kind {
@@ -332,7 +360,10 @@ impl Contexts<'_> {
     /// The `ReadSignal` provided under `ty`.
     pub(crate) fn find(&self, ty: std::any::TypeId) -> Option<&dyn Any> {
         let mut owner = self.owner;
-        while let Owner::Child { instance, .. } | Owner::Row { instance, .. } | Owner::Portal { instance, .. } = owner {
+        while let Owner::Child { instance, .. }
+        | Owner::Row { instance, .. }
+        | Owner::Portal { instance, .. } = owner
+        {
             let mounted = &self.instances[instance];
             if let Some((_, source)) = mounted.provided.iter().find(|(t, _)| *t == ty) {
                 return Some(&**source);
@@ -416,7 +447,12 @@ impl Runtime {
     }
 
     #[doc(hidden)]
-    pub fn mount_into<C: ComponentDef>(&mut self, ui: &mut UiRuntime, props: C::Props, place: Place) -> InstanceId {
+    pub fn mount_into<C: ComponentDef>(
+        &mut self,
+        ui: &mut UiRuntime,
+        props: C::Props,
+        place: Place,
+    ) -> InstanceId {
         self.mount_with::<C>(ui, |_| props, place)
     }
 
@@ -428,13 +464,21 @@ impl Runtime {
         props: impl FnOnce(&mut PropCx<'_>) -> C::Props,
         place: Place,
     ) -> InstanceId {
-        let mut prop_cx = PropCx { graph: &mut self.graph, owned: Vec::new(), derived: Vec::new() };
+        let mut prop_cx = PropCx {
+            graph: &mut self.graph,
+            owned: Vec::new(),
+            derived: Vec::new(),
+        };
         let props = props(&mut prop_cx);
         let (mut owned, derived) = (prop_cx.owned, prop_cx.derived);
         let mut mount_cx = MountCx {
             graph: &mut self.graph,
             owned: Vec::new(),
-            contexts: Contexts { instances: &self.instances, app: &self.contexts, owner: place.0 },
+            contexts: Contexts {
+                instances: &self.instances,
+                app: &self.contexts,
+                owner: place.0,
+            },
             provided: Vec::new(),
             tickers: ui.tickers(),
             ticks: Vec::new(),
@@ -444,11 +488,14 @@ impl Runtime {
         let (provided, ticks) = (mount_cx.provided, mount_cx.ticks);
         let instance: Rc<dyn AnyInstance> = Rc::new(instance);
         // Each `ticker!` gets its callback: the instance's, given a `Cx`.
-        let tick_slots = (0..instance.effect_count() as u16).filter(|&slot| instance.lane(slot) == Lane::Tick);
+        let tick_slots =
+            (0..instance.effect_count() as u16).filter(|&slot| instance.lane(slot) == Lane::Tick);
         for (handle, slot) in ticks.iter().zip(tick_slots) {
             let (instance, notifier) = (instance.clone(), self.notifier.clone());
             handle.set_callback(Box::new(move |frame| {
-                instance.clone().tick(slot, &mut Cx::handler(&notifier), frame)
+                instance
+                    .clone()
+                    .tick(slot, &mut Cx::handler(&notifier), frame)
             }));
         }
         let id = self.mount_instance(ui, instance, owned, derived, provided, place.0);
@@ -461,14 +508,17 @@ impl Runtime {
     pub fn provide_context<T: PartialEq + 'static>(&mut self, value: T) {
         let id = std::any::TypeId::of::<T>();
         if let Some((_, write)) = self.contexts.get(&id) {
-            let signal = write.downcast_ref::<Signal<T>>().expect("context of another type");
+            let signal = write
+                .downcast_ref::<Signal<T>>()
+                .expect("context of another type");
             if *signal.read() != value {
                 signal.set(&mut Cx::handler(&self.notifier), value);
             }
             return;
         }
         let signal = self.signal(value);
-        self.contexts.insert(id, (Box::new(signal.read_only()), Box::new(signal)));
+        self.contexts
+            .insert(id, (Box::new(signal.read_only()), Box::new(signal)));
     }
 
     pub(crate) fn mount_row<P: Scope, D: 'static>(
@@ -480,8 +530,19 @@ impl Runtime {
         owner: Owner,
     ) -> InstanceId {
         let source = self.graph.insert();
-        let row = Row { parent, data: Signal::new(source, data), template };
-        self.mount_instance(ui, Rc::new(row), vec![source], Vec::new(), Vec::new(), owner)
+        let row = Row {
+            parent,
+            data: Signal::new(source, data),
+            template,
+        };
+        self.mount_instance(
+            ui,
+            Rc::new(row),
+            vec![source],
+            Vec::new(),
+            Vec::new(),
+            owner,
+        )
     }
 
     /// Binds the scope's effects to its sources, builds its hosts (mounting
@@ -529,7 +590,10 @@ impl Runtime {
             }
         }
         for (i, derived) in self.instances[id].derived.iter().enumerate() {
-            let effect = EffectId { instance: id, slot: (effects + i) as u16 };
+            let effect = EffectId {
+                instance: id,
+                slot: (effects + i) as u16,
+            };
             let mut level = 0;
             for &dep in &derived.deps {
                 level = level.max(self.graph.subscribe(dep, effect));
@@ -542,19 +606,36 @@ impl Runtime {
                 NodeTag::Host => {
                     let draft = instance.clone().build_host(index, &self.notifier);
                     let host = ui.create_node(draft.0);
-                    let (parent, before) = (self.parent_host(id, index), self.host_after(id, index));
+                    let (parent, before) =
+                        (self.parent_host(id, index), self.host_after(id, index));
                     ui.place(parent, host, before);
                     self.instances[id].hosts[usize::from(index)] = Some(host);
                 }
                 NodeTag::Component(child) => {
-                    let mount = pending[usize::from(child)].take().expect("child mounted twice");
-                    let child = mount(self, ui, Place(Owner::Child { instance: id, node: index }));
+                    let mount = pending[usize::from(child)]
+                        .take()
+                        .expect("child mounted twice");
+                    let child = mount(
+                        self,
+                        ui,
+                        Place(Owner::Child {
+                            instance: id,
+                            node: index,
+                        }),
+                    );
                     self.instances[id].children[usize::from(index)] = Some(child);
                 }
                 NodeTag::Block => {
                     // A slot mounts its content now, in order; a block when it runs.
                     if let Some(children) = instance.clone().slot(index) {
-                        let row = children.mount(self, ui, Owner::Row { instance: id, node: index });
+                        let row = children.mount(
+                            self,
+                            ui,
+                            Owner::Row {
+                                instance: id,
+                                node: index,
+                            },
+                        );
                         let mut state = BlockState::default();
                         state.rows.extend(row);
                         self.put_block(id, index, state);
@@ -579,13 +660,25 @@ impl Runtime {
     /// Mounts portal `node`'s content under the overlayer and makes its first
     /// host an overlay entry.
     fn mount_portal(&mut self, ui: &mut UiRuntime, id: InstanceId, node: u16) {
-        let spec = self.instances[id].instance.clone().portal(node, &self.notifier);
+        let spec = self.instances[id]
+            .instance
+            .clone()
+            .portal(node, &self.notifier);
         let layer = ui.root_overlayer();
-        let row = spec.content.mount(self, ui, Owner::Portal { instance: id, layer });
+        let row = spec.content.mount(
+            self,
+            ui,
+            Owner::Portal {
+                instance: id,
+                layer,
+            },
+        );
         let mut state = BlockState::default();
         state.rows.extend(row);
         self.put_block(id, node, state);
-        let Some(visual_root) = row.and_then(|row| self.first_top_host(row)) else { return };
+        let Some(visual_root) = row.and_then(|row| self.first_top_host(row)) else {
+            return;
+        };
         let entry = ui
             .mount_overlay_entry(visual_root, spec.scope, spec.options)
             .expect("portal entry could not be mounted");
@@ -594,20 +687,30 @@ impl Runtime {
         // Directly under the root there is no host to follow.
         let owner = self.parent_host(id, node);
         let target = (owner != ui.root() && owner != layer).then_some(owner);
-        ui.set_anchor(visual_root, spec.anchor.map(|placement| (target, placement)));
-        self.instances[id].portals.push(MountedPortal { node, entry, visual_root });
+        ui.set_anchor(
+            visual_root,
+            spec.anchor.map(|placement| (target, placement)),
+        );
+        self.instances[id].portals.push(MountedPortal {
+            node,
+            entry,
+            visual_root,
+        });
     }
 
     /// The host a node's hosts go under.
     fn parent_host(&self, id: InstanceId, node: u16) -> NodeId {
         let mounted = &self.instances[id];
         if let Some(parent) = mounted.instance.node(node).1 {
-            return mounted.hosts[usize::from(parent)].expect("a parent is mounted before its children");
+            return mounted.hosts[usize::from(parent)]
+                .expect("a parent is mounted before its children");
         }
         match mounted.owner {
             Owner::Root(host) => host,
             Owner::Portal { layer, .. } => layer,
-            Owner::Child { instance, node } | Owner::Row { instance, node } => self.parent_host(instance, node),
+            Owner::Child { instance, node } | Owner::Row { instance, node } => {
+                self.parent_host(instance, node)
+            }
         }
     }
 
@@ -633,13 +736,20 @@ impl Runtime {
                 let rows = self.block(instance, node).map_or(&[][..], |b| &b.rows[..]);
                 let at = rows.iter().position(|row| *row == id);
                 let later = at.map_or(&[][..], |at| &rows[at + 1..]);
-                later.iter().find_map(|row| self.first_top_host(*row)).or_else(|| self.host_after(instance, node))
+                later
+                    .iter()
+                    .find_map(|row| self.first_top_host(*row))
+                    .or_else(|| self.host_after(instance, node))
             }
         }
     }
 
     fn block(&self, id: InstanceId, node: u16) -> Option<&BlockState> {
-        self.instances[id].blocks.iter().find(|(n, _)| *n == node).map(|(_, b)| b)
+        self.instances[id]
+            .blocks
+            .iter()
+            .find(|(n, _)| *n == node)
+            .map(|(_, b)| b)
     }
 
     /// The first host node `node` stands for, if it has any yet.
@@ -647,8 +757,14 @@ impl Runtime {
         let mounted = &self.instances[id];
         match mounted.instance.node(node).0 {
             NodeTag::Host => mounted.hosts[usize::from(node)],
-            NodeTag::Component(_) => mounted.children[usize::from(node)].and_then(|child| self.first_top_host(child)),
-            NodeTag::Block => self.block(id, node)?.rows.iter().find_map(|row| self.first_top_host(*row)),
+            NodeTag::Component(_) => {
+                mounted.children[usize::from(node)].and_then(|child| self.first_top_host(child))
+            }
+            NodeTag::Block => self
+                .block(id, node)?
+                .rows
+                .iter()
+                .find_map(|row| self.first_top_host(*row)),
             NodeTag::Portal => None,
         }
     }
@@ -701,7 +817,8 @@ impl Runtime {
         }
         for (portal, hosts) in portals {
             // Taking the entry off the overlayer detaches its root, not removes it.
-            ui.unmount_overlay_entry(portal.entry).expect("portal entry missing");
+            ui.unmount_overlay_entry(portal.entry)
+                .expect("portal entry missing");
             ui.set_anchor(portal.visual_root, None);
             for host in hosts {
                 ui.remove_subtree(host);
@@ -718,19 +835,38 @@ impl Runtime {
             for &row in self.block(id, portal.node).map_or(&[][..], |b| &b.rows[..]) {
                 self.top_hosts(row, &mut hosts);
             }
-            let MountedPortal { node, entry, visual_root } = *portal;
-            out.push((MountedPortal { node, entry, visual_root }, hosts));
+            let MountedPortal {
+                node,
+                entry,
+                visual_root,
+            } = *portal;
+            out.push((
+                MountedPortal {
+                    node,
+                    entry,
+                    visual_root,
+                },
+                hosts,
+            ));
         }
-        let rows = mounted.blocks.iter().flat_map(|(_, block)| block.rows.iter());
+        let rows = mounted
+            .blocks
+            .iter()
+            .flat_map(|(_, block)| block.rows.iter());
         for &inner in mounted.children.iter().flatten().chain(rows) {
             self.portals_within(inner, out);
         }
     }
 
     fn release(&mut self, id: InstanceId) {
-        let Some(mounted) = self.instances.remove(id) else { return };
+        let Some(mounted) = self.instances.remove(id) else {
+            return;
+        };
         // Inner scopes first: they may be bound to this one's sources.
-        let rows = mounted.blocks.iter().flat_map(|(_, block)| block.rows.iter());
+        let rows = mounted
+            .blocks
+            .iter()
+            .flat_map(|(_, block)| block.rows.iter());
         for &inner in mounted.children.iter().flatten().chain(rows) {
             self.release(inner);
         }
@@ -738,12 +874,19 @@ impl Runtime {
         let effects = instance.effect_count();
         for slot in 0..effects as u16 {
             for &dep in instance.deps(slot) {
-                self.graph.unsubscribe(instance.source(dep), EffectId { instance: id, slot });
+                self.graph
+                    .unsubscribe(instance.source(dep), EffectId { instance: id, slot });
             }
         }
         for (i, derived) in mounted.derived.iter().enumerate() {
             for &dep in &derived.deps {
-                self.graph.unsubscribe(dep, EffectId { instance: id, slot: (effects + i) as u16 });
+                self.graph.unsubscribe(
+                    dep,
+                    EffectId {
+                        instance: id,
+                        slot: (effects + i) as u16,
+                    },
+                );
             }
         }
         for source in mounted.owned {
@@ -753,7 +896,11 @@ impl Runtime {
 
     pub(crate) fn take_block(&mut self, owner: InstanceId, node: u16) -> BlockState {
         let blocks = &mut self.instances[owner].blocks;
-        blocks.iter().position(|(n, _)| *n == node).map(|at| blocks.swap_remove(at).1).unwrap_or_default()
+        blocks
+            .iter()
+            .position(|(n, _)| *n == node)
+            .map(|at| blocks.swap_remove(at).1)
+            .unwrap_or_default()
     }
 
     pub(crate) fn put_block(&mut self, owner: InstanceId, node: u16, state: BlockState) {
@@ -761,15 +908,29 @@ impl Runtime {
     }
 
     /// Writes a kept row's data; its bindings rerun only if it changed.
-    pub(crate) fn replace_row_data<P: Scope, D: PartialEq + 'static>(&mut self, row: InstanceId, data: D) {
-        let row = self.instances[row].instance.as_any().downcast_ref::<Row<P, D>>().expect("row of another type");
+    pub(crate) fn replace_row_data<P: Scope, D: PartialEq + 'static>(
+        &mut self,
+        row: InstanceId,
+        data: D,
+    ) {
+        let row = self.instances[row]
+            .instance
+            .as_any()
+            .downcast_ref::<Row<P, D>>()
+            .expect("row of another type");
         row.data.replace_if_changed(&mut self.graph, data);
     }
 
     /// Places the rows' hosts in the rows' order, where the block stands.
     /// Last first, each before the one after it: a host already there
     /// stays, so rows in order move nothing.
-    pub(crate) fn order_rows(&mut self, ui: &mut UiRuntime, owner: InstanceId, node: u16, rows: &[InstanceId]) {
+    pub(crate) fn order_rows(
+        &mut self,
+        ui: &mut UiRuntime,
+        owner: InstanceId,
+        node: u16,
+        rows: &[InstanceId],
+    ) {
         let (parent, mut before) = (self.parent_host(owner, node), self.host_after(owner, node));
         let mut hosts = Vec::new();
         for &row in rows {
@@ -800,7 +961,10 @@ impl Runtime {
                 return report;
             };
             *count += 1;
-            assert!(report.total() < MAX_RUNS, "flush did not settle after {MAX_RUNS} runs; an effect probably feeds itself");
+            assert!(
+                report.total() < MAX_RUNS,
+                "flush did not settle after {MAX_RUNS} runs; an effect probably feeds itself"
+            );
             self.run(ui, effect);
         }
     }
@@ -812,7 +976,9 @@ impl Runtime {
         self.graph.drain(&self.notifier);
         for effect in std::mem::take(&mut self.graph.pending) {
             // Ids from unmounted scopes are dropped here, once.
-            let Some(mounted) = self.instances.get_mut(effect.instance) else { continue };
+            let Some(mounted) = self.instances.get_mut(effect.instance) else {
+                continue;
+            };
             let scheduled = &mut mounted.scheduled[usize::from(effect.slot)];
             if *scheduled {
                 continue;
@@ -820,14 +986,19 @@ impl Runtime {
             *scheduled = true;
             let instance = &mounted.instance;
             let effects = instance.effect_count();
-            if let Some(derived) = usize::from(effect.slot).checked_sub(effects).map(|i| &mounted.derived[i]) {
-                self.memos.push(Reverse((self.graph.level(derived.output), effect)));
+            if let Some(derived) = usize::from(effect.slot)
+                .checked_sub(effects)
+                .map(|i| &mounted.derived[i])
+            {
+                self.memos
+                    .push(Reverse((self.graph.level(derived.output), effect)));
                 continue;
             }
             match instance.lane(effect.slot) {
                 Lane::Memo => {
                     let output = instance.output(effect.slot).expect("memo without output");
-                    self.memos.push(Reverse((self.graph.level(instance.source(output)), effect)));
+                    self.memos
+                        .push(Reverse((self.graph.level(instance.source(output)), effect)));
                 }
                 Lane::Block => self.blocks.push(Reverse((mounted.seq, effect))),
                 Lane::Render => self.renders.push(effect),
@@ -839,7 +1010,9 @@ impl Runtime {
 
     fn run(&mut self, ui: &mut UiRuntime, effect: EffectId) {
         // A block may have unmounted this scope since it was scheduled.
-        let Some(mounted) = self.instances.get_mut(effect.instance) else { return };
+        let Some(mounted) = self.instances.get_mut(effect.instance) else {
+            return;
+        };
         mounted.scheduled[usize::from(effect.slot)] = false;
         let instance = mounted.instance.clone();
         if let Some(i) = usize::from(effect.slot).checked_sub(instance.effect_count()) {
@@ -849,15 +1022,31 @@ impl Runtime {
         match instance.lane(effect.slot) {
             Lane::Block => {
                 let node = instance.block_node(effect.slot);
-                let mut cx = BlockCx { runtime: self, ui, owner: effect.instance, node };
+                let mut cx = BlockCx {
+                    runtime: self,
+                    ui,
+                    owner: effect.instance,
+                    node,
+                };
                 instance.run_block(effect.slot, &mut cx);
             }
             Lane::Effect => instance.run(effect.slot, &mut Cx::handler(&self.notifier)),
             Lane::Tick => unreachable!("a ticker is run by the frame loop"),
             Lane::Memo | Lane::Render => {
-                let Self { instances, notifier, .. } = self;
+                let Self {
+                    instances,
+                    notifier,
+                    ..
+                } = self;
                 let hosts = &instances[effect.instance].hosts;
-                let mut cx = Cx { notifier, host: Some(HostCx { ui, hosts, instance: &instance }) };
+                let mut cx = Cx {
+                    notifier,
+                    host: Some(HostCx {
+                        ui,
+                        hosts,
+                        instance: &instance,
+                    }),
+                };
                 instance.clone().run(effect.slot, &mut cx);
             }
         }

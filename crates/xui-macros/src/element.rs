@@ -14,7 +14,6 @@ use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::{Error, Expr, Ident, LitStr, Pat, Path, Result, Stmt, Token, braced};
 
-
 pub struct Element {
     pub tag: Path,
     pub attrs: Vec<Attribute>,

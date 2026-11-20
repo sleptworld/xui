@@ -78,7 +78,11 @@ pub(crate) struct Tasks {
 
 impl Tasks {
     /// Where futures run, and where their results go.
-    pub(crate) fn connect(&mut self, spawn: Box<dyn Fn(BoxFuture)>, sender: mpsc::Sender<Finished>) {
+    pub(crate) fn connect(
+        &mut self,
+        spawn: Box<dyn Fn(BoxFuture)>,
+        sender: mpsc::Sender<Finished>,
+    ) {
         self.spawn = Some(spawn);
         self.sender = Some(sender);
     }
@@ -90,7 +94,14 @@ impl Tasks {
 
     /// Starts `spawn`'s future; its result is written with its `apply` on
     /// the main thread, unless another is started for the same source first.
-    pub(crate) fn start(&mut self, Spawn { target, future, apply }: Spawn) {
+    pub(crate) fn start(
+        &mut self,
+        Spawn {
+            target,
+            future,
+            apply,
+        }: Spawn,
+    ) {
         let (Some(spawn), Some(sender)) = (&self.spawn, &self.sender) else {
             panic!("`resource!` needs an app's async runtime: mount the component in an `App`");
         };
@@ -139,7 +150,9 @@ impl Cx<'_> {
             target: value.id(),
             future: Box::pin(async move { Box::new(future.await) as Box<dyn Any + Send> }),
             apply: Box::new(move |result, cx| {
-                let result = *result.downcast::<Result<T, E>>().expect("a ticket's result has its future's type");
+                let result = *result
+                    .downcast::<Result<T, E>>()
+                    .expect("a ticket's result has its future's type");
                 target.set(cx, result.into());
             }),
         });

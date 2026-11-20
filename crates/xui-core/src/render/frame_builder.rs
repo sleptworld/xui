@@ -1274,7 +1274,10 @@ mod tests {
         let content = Arc::new(BatchContent::new(vec![
             BatchItem::new(shape(item, Color::BLACK)),
             BatchItem::clipped(
-                shape(Bounds::from_origin_size((20.0, 0.0), (40.0, 10.0)), Color::WHITE),
+                shape(
+                    Bounds::from_origin_size((20.0, 0.0), (40.0, 10.0)),
+                    Color::WHITE,
+                ),
                 Bounds::from_origin_size((20.0, 0.0), (5.0, 10.0)),
             ),
             // Far outside the viewport: culled on its own, not with the batch.
@@ -1327,7 +1330,10 @@ mod tests {
         use crate::render::{BatchContent, BatchItem, BatchPrimitive};
 
         let square = |x: f32, color| {
-            BatchItem::new(shape(Bounds::from_origin_size((x, 0.0), (10.0, 10.0)), color))
+            BatchItem::new(shape(
+                Bounds::from_origin_size((x, 0.0), (10.0, 10.0)),
+                color,
+            ))
         };
         let batch = |second: Color, origin: Point| {
             Primitive::Batch(BatchPrimitive::new(
@@ -1378,7 +1384,10 @@ mod tests {
             .unwrap();
         let moved = versions(&mut source);
         assert!(
-            moved.iter().zip(&edited).all(|(moved, edited)| moved != edited),
+            moved
+                .iter()
+                .zip(&edited)
+                .all(|(moved, edited)| moved != edited),
             "moving the batch moves every item"
         );
     }

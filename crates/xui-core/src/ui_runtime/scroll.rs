@@ -76,8 +76,8 @@ impl UiRuntime {
     }
 
     fn publish_scroll_metrics(&self, id: NodeId) {
-        if let Some(controller) = ScrollBinding::get(&self.columns, id)
-            .and_then(|row| row.scroll_controller.as_ref())
+        if let Some(controller) =
+            ScrollBinding::get(&self.columns, id).and_then(|row| row.scroll_controller.as_ref())
         {
             // A controller on a widget that does not scroll reads as empty
             // rather than keeping whatever it last saw.

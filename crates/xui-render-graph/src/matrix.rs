@@ -39,7 +39,9 @@ pub(crate) fn preserves_unit_cube(matrix: &ColorMatrix) -> bool {
         (0..4).all(|row| {
             let base = row * 5;
             let output = matrix[base + 4]
-                + (0..4).map(|column| matrix[base + column] * input[column]).sum::<f32>();
+                + (0..4)
+                    .map(|column| matrix[base + column] * input[column])
+                    .sum::<f32>();
             (-EPSILON..=1.0 + EPSILON).contains(&output)
         })
     })

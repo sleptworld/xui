@@ -25,16 +25,16 @@
 mod analyze;
 mod animatable;
 mod element;
+mod hosts;
 mod krate;
 mod main_fn;
 mod reactive;
 mod style;
-mod hosts;
 mod view;
 mod widget;
 
 use proc_macro::TokenStream;
-use syn::{parse_macro_input, DeriveInput};
+use syn::{DeriveInput, parse_macro_input};
 
 use crate::main_fn::MainFunction;
 use crate::style::StyleInput;
@@ -80,12 +80,17 @@ pub fn style(input: TokenStream) -> TokenStream {
 pub fn component(attrs: TokenStream, item: TokenStream) -> TokenStream {
     if !attrs.is_empty() {
         let attrs = proc_macro2::TokenStream::from(attrs);
-        return syn::Error::new_spanned(attrs, "`#[component]` takes no options; defaults go in `#[defaults(..)]`")
-            .into_compile_error()
-            .into();
+        return syn::Error::new_spanned(
+            attrs,
+            "`#[component]` takes no options; defaults go in `#[defaults(..)]`",
+        )
+        .into_compile_error()
+        .into();
     }
     let function = parse_macro_input!(item as syn::ItemFn);
-    reactive::expand(function).unwrap_or_else(syn::Error::into_compile_error).into()
+    reactive::expand(function)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
 }
 
 /// Consumed by `#[component]`: `#[defaults(prop = value, ..)]` makes those

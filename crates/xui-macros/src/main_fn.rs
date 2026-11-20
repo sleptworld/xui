@@ -31,8 +31,7 @@ impl Parse for MainFunction {
             }
             sig_tokens.extend(std::iter::once(token));
         }
-        let body =
-            body.ok_or_else(|| Error::new(input.span(), "`main` requires a body"))?;
+        let body = body.ok_or_else(|| Error::new(input.span(), "`main` requires a body"))?;
         let sig = syn::parse2::<Signature>(sig_tokens)?;
         Ok(Self {
             attrs,

@@ -687,7 +687,10 @@ fn a_gaussian_is_cut_so_no_pass_reads_more_than_the_limit() {
         );
         // ...and together they are the blur asked for: variances add.
         let total = (stages as f32 * stage_sigma * stage_sigma).sqrt();
-        assert!((total - sigma).abs() < sigma * 1e-4, "sigma {sigma} became {total}");
+        assert!(
+            (total - sigma).abs() < sigma * 1e-4,
+            "sigma {sigma} became {total}"
+        );
     }
     // A blur that fits is one pass, untouched.
     assert_eq!(gaussian_stages(10.0, 3.0), (1, 10.0));
@@ -700,7 +703,11 @@ fn a_spread_is_cut_into_chunks_that_add_up() {
         let chunks = spread_chunks(radius);
         assert!(!chunks.is_empty());
         assert!(chunks.iter().all(|c| *c <= MAX_PASS_RADIUS_PX));
-        assert_eq!(chunks.iter().sum::<u32>(), radius.ceil() as u32, "radius {radius}");
+        assert_eq!(
+            chunks.iter().sum::<u32>(),
+            radius.ceil() as u32,
+            "radius {radius}"
+        );
     }
 }
 
@@ -743,7 +750,10 @@ fn refraction_bends_around_the_layer_however_its_output_is_cropped() {
     assert_eq!(whole, Point::new(40.0, 45.0));
     assert_eq!(left, whole);
     // The backdrop is in parent space, so the layer's placement moves it.
-    let moved = center_with(rect_bounds(0.0, 0.0, 200.0, 150.0), Affine::translate(30.0, 5.0));
+    let moved = center_with(
+        rect_bounds(0.0, 0.0, 200.0, 150.0),
+        Affine::translate(30.0, 5.0),
+    );
     assert_eq!(moved, Point::new(70.0, 50.0));
 }
 
@@ -811,7 +821,12 @@ fn a_filtered_aliased_backdrop_needs_no_copy() {
             ..context()
         })
         .unwrap();
-    assert!(!plan.passes().iter().any(|pass| matches!(pass.op, PassOp::Copy)));
+    assert!(
+        !plan
+            .passes()
+            .iter()
+            .any(|pass| matches!(pass.op, PassOp::Copy))
+    );
     // Every read of the backdrop happens before the destination is written.
     let backdrop = plan.backdrop().unwrap();
     let first_write = plan

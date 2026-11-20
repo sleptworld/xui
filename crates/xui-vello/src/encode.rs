@@ -24,26 +24,26 @@ use std::sync::{Arc, OnceLock};
 use vello::{
     Scene,
     kurbo::{
-        Affine as KurboAffine, Cap, Circle, Ellipse, Join, Line, Rect as KurboRect,
-        RoundedRect, Shape as _, Stroke,
+        Affine as KurboAffine, Cap, Circle, Ellipse, Join, Line, Rect as KurboRect, RoundedRect,
+        Shape as _, Stroke,
     },
     peniko::{
         Brush, Fill, Gradient, InterpolationAlphaSpace,
         color::{AlphaColor, Srgb},
     },
 };
+use xui_core::render::render_graph::ImageResource;
 use xui_core::render::{
     BuiltClipChainId, BuiltDraw, BuiltFrame, BuiltItem, BuiltLayerId, BuiltLayerInstance,
     ClipShape, ShapePrimitive, VectorPrimitive,
 };
-use xui_core::render::render_graph::ImageResource;
 use xui_core::text::TextHost;
 use xui_interface::{ImageData, TextBackend};
-use xui_wgpu_text::{TextBatch, TextRenderer, TextTarget};
 use xui_render_graph::{
-    CompositeInstance, ExternalAliasing, ExternalResourceKind, LayerPlanContext,
-    LayerProgramEntry, LayerRenderPlan, PlanLimits, TextureClass,
+    CompositeInstance, ExternalAliasing, ExternalResourceKind, LayerPlanContext, LayerProgramEntry,
+    LayerRenderPlan, PlanLimits, TextureClass,
 };
+use xui_wgpu_text::{TextBatch, TextRenderer, TextTarget};
 
 use rustc_hash::FxHashSet;
 use xui_core::render::{
@@ -53,13 +53,13 @@ use xui_render_graph::PixelRect;
 
 use crate::{
     filter::{ClipSpec, TextureDraw},
-    layer_cache::{CacheUpdate, CacheUse, FilterUse, LayerCache},
     image::{ImageCache, encode_image},
+    layer_cache::{CacheUpdate, CacheUse, FilterUse, LayerCache},
+    paths::PathCache,
     text::{
         FontCache, MAX_BITMAP_PPEM, bitmap_parts, encode_selection, encode_text, has_selection,
         paragraph,
     },
-    paths::PathCache,
     texture::ExternalTextures,
 };
 use xui_interface::{
@@ -205,7 +205,10 @@ pub(crate) fn encode_frame<T: TextBackend>(
     };
     let mut target = Builder::new(
         (region[0], region[1]),
-        ((region[2] - region[0]) as u32, (region[3] - region[1]) as u32),
+        (
+            (region[2] - region[0]) as u32,
+            (region[3] - region[1]) as u32,
+        ),
         scale_factor,
     );
     encoder.layer(&mut target, frame.root_layer);
@@ -314,7 +317,10 @@ impl Builder {
     fn overlaps(&self, bounds: Bounds) -> bool {
         let rect = self.base.transform_rect_bbox(kurbo_bounds(bounds));
         let viewport = self.viewport();
-        rect.x0 < viewport.x1 && rect.x1 > viewport.x0 && rect.y0 < viewport.y1 && rect.y1 > viewport.y0
+        rect.x0 < viewport.x1
+            && rect.x1 > viewport.x0
+            && rect.y0 < viewport.y1
+            && rect.y1 > viewport.y0
     }
 
     /// Closes the band: what is drawn in it so far is one op, and the text
@@ -466,7 +472,11 @@ impl<T: TextBackend> Encoder<'_, T> {
             && self.reads_beneath[instance.layer.0];
         // Decided before planning: a layer whose filtered result is kept is
         // composited from it, by its program with the layer branch cut out.
-        let mut cache = if inherits { None } else { self.cache_use(layer) };
+        let mut cache = if inherits {
+            None
+        } else {
+            self.cache_use(layer)
+        };
         let filter = cache.as_mut().and_then(|(use_, _)| {
             let filter = self.filter_use(layer, program, use_)?;
             use_.filter = Some(filter.0);
@@ -482,7 +492,9 @@ impl<T: TextBackend> Encoder<'_, T> {
         };
 
         let destination = target.logical_bounds(self.scale);
-        let composite_clip = clips.bounds.map(|rect| target.px_to_logical(rect, self.scale));
+        let composite_clip = clips
+            .bounds
+            .map(|rect| target.px_to_logical(rect, self.scale));
         let placed = instance.world_bounds;
         let context = LayerPlanContext {
             backdrop_source_bounds: destination,
@@ -517,9 +529,12 @@ impl<T: TextBackend> Encoder<'_, T> {
         // transparent: whatever the blend and the operator, that is the result.
         let filter = match filter {
             Some((use_, region, _)) if use_.update != CacheUpdate::Keep => {
-                let region_bounds =
-                    Builder::new((region.x, region.y), (region.width, region.height), self.scale)
-                        .logical_bounds(self.scale);
+                let region_bounds = Builder::new(
+                    (region.x, region.y),
+                    (region.width, region.height),
+                    self.scale,
+                )
+                .logical_bounds(self.scale);
                 let context = LayerPlanContext {
                     backdrop_source_bounds: region_bounds,
                     parent_destination_bounds: region_bounds,
@@ -859,7 +874,12 @@ impl<T: TextBackend> Encoder<'_, T> {
         let specs = rect
             .map(|rect| ClipSpec {
                 inverse: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-                rect: [rect.x0 as f32, rect.y0 as f32, rect.x1 as f32, rect.y1 as f32],
+                rect: [
+                    rect.x0 as f32,
+                    rect.y0 as f32,
+                    rect.x1 as f32,
+                    rect.y1 as f32,
+                ],
                 radius: 0.0,
             })
             .into_iter()
@@ -877,10 +897,16 @@ impl<T: TextBackend> Encoder<'_, T> {
         // whole pixels.
         let mut area = rect.map_or(target.viewport(), |rect| rect.intersect(target.viewport()));
         for (node, to_px) in &masked {
-            area = area.intersect(to_px.transform_rect_bbox(kurbo_bounds(node.clip.local_bounds())));
+            area =
+                area.intersect(to_px.transform_rect_bbox(kurbo_bounds(node.clip.local_bounds())));
         }
-        let area = KurboRect::new(area.x0.floor(), area.y0.floor(), area.x1.ceil(), area.y1.ceil())
-            .intersect(target.viewport());
+        let area = KurboRect::new(
+            area.x0.floor(),
+            area.y0.floor(),
+            area.x1.ceil(),
+            area.y1.ceil(),
+        )
+        .intersect(target.viewport());
         if !(area.width() > 0.0 && area.height() > 0.0) {
             return None;
         }
@@ -958,7 +984,12 @@ impl<T: TextBackend> Encoder<'_, T> {
             primitive,
             self.text,
             &paragraph,
-            [clip.x0 as f32, clip.y0 as f32, clip.x1 as f32, clip.y1 as f32],
+            [
+                clip.x0 as f32,
+                clip.y0 as f32,
+                clip.x1 as f32,
+                clip.y1 as f32,
+            ],
         );
         let bitmap = self.bitmap.as_mut().expect("checked above");
         let batch = bitmap.renderer.prepare(
@@ -1050,7 +1081,11 @@ impl<T: TextBackend> Encoder<'_, T> {
         if commands.is_empty() {
             return;
         }
-        target.clear_of(target.base.transform_rect_bbox(kurbo_bounds(common.world_bounds)));
+        target.clear_of(
+            target
+                .base
+                .transform_rect_bbox(kurbo_bounds(common.world_bounds)),
+        );
         self.clip_to(target, common.clip_chain);
         encode_vector(&mut target.scene, world, commands, self.paths);
         target.drawn = true;
@@ -1136,13 +1171,20 @@ fn intersect_px(a: PixelRect, b: PixelRect) -> Option<PixelRect> {
 fn opaque_mask() -> &'static ImageData {
     static MASK: OnceLock<ImageData> = OnceLock::new();
     MASK.get_or_init(|| {
-        ImageData::rgba8(xui_interface::Size::new(1, 1), Arc::<[u8]>::from([255u8; 4]))
+        ImageData::rgba8(
+            xui_interface::Size::new(1, 1),
+            Arc::<[u8]>::from([255u8; 4]),
+        )
     })
 }
 
 /// The nodes of `chain` into `nodes`, outermost first. The chain is stored
 /// child-to-parent.
-fn chain_nodes(frame: &BuiltFrame, chain: Option<BuiltClipChainId>, nodes: &mut Vec<BuiltClipChainId>) {
+fn chain_nodes(
+    frame: &BuiltFrame,
+    chain: Option<BuiltClipChainId>,
+    nodes: &mut Vec<BuiltClipChainId>,
+) {
     nodes.clear();
     let mut next = chain;
     while let Some(id) = next {
@@ -1155,7 +1197,9 @@ fn chain_nodes(frame: &BuiltFrame, chain: Option<BuiltClipChainId>, nodes: &mut 
 /// Clips to one shape, placed by `transform`.
 fn push_clip_shape(scene: &mut Scene, paths: &PathCache, clip: &ClipShape, transform: KurboAffine) {
     match clip {
-        ClipShape::Rect(rect) => scene.push_clip_layer(Fill::NonZero, transform, &kurbo_bounds(*rect)),
+        ClipShape::Rect(rect) => {
+            scene.push_clip_layer(Fill::NonZero, transform, &kurbo_bounds(*rect))
+        }
         ClipShape::RoundedRect { rect, radius } => scene.push_clip_layer(
             Fill::NonZero,
             transform,
@@ -1206,7 +1250,12 @@ pub(crate) fn blend_index(mode: xui_interface::BlendMode) -> u32 {
 ///
 /// An ellipse has no closed form here, so it gets the stadium of the same
 /// short side, which matches a circle exactly and drifts for flat ellipses.
-fn encode_shadow(scene: &mut Scene, world: KurboAffine, shape: &ShapePrimitive, shadow: ComputedShadowStyle) {
+fn encode_shadow(
+    scene: &mut Scene,
+    world: KurboAffine,
+    shape: &ShapePrimitive,
+    shadow: ComputedShadowStyle,
+) {
     let rect = shape.bounds.expand(shadow.spread).translate(shadow.offset);
     let (rect, radius) = match shape.shape {
         Shape::Rect => (rect, 0.0),
@@ -1216,7 +1265,10 @@ fn encode_shadow(scene: &mut Scene, world: KurboAffine, shape: &ShapePrimitive, 
     };
     let rect = if matches!(shape.shape, Shape::Circle) {
         let side = rect.width().min(rect.height());
-        let center = ((rect.min.x + rect.max.x) * 0.5, (rect.min.y + rect.max.y) * 0.5);
+        let center = (
+            (rect.min.x + rect.max.x) * 0.5,
+            (rect.min.y + rect.max.y) * 0.5,
+        );
         Bounds::new(
             xui_interface::Point::new(center.0 - side * 0.5, center.1 - side * 0.5),
             xui_interface::Point::new(center.0 + side * 0.5, center.1 + side * 0.5),
@@ -1278,7 +1330,13 @@ fn encode_shape(scene: &mut Scene, world: KurboAffine, shape: &ShapePrimitive) {
     if !matches!(shape.shape, Shape::Line { .. })
         && let Some(fill) = shape.fill
     {
-        scene.fill(Fill::NonZero, world, &brush(fill, shape.bounds), None, &path);
+        scene.fill(
+            Fill::NonZero,
+            world,
+            &brush(fill, shape.bounds),
+            None,
+            &path,
+        );
     }
     if let Some(stroke) = shape.stroke
         && stroke.width > 0.0
@@ -1304,14 +1362,28 @@ fn encode_vector(
 ) {
     for command in commands {
         match command {
-            VectorCommand::FillPath { path, transform, fill } => {
+            VectorCommand::FillPath {
+                path,
+                transform,
+                fill,
+            } => {
                 let rule = match fill.rule {
                     FillRule::NonZero => Fill::NonZero,
                     FillRule::EvenOdd => Fill::EvenOdd,
                 };
-                scene.fill(rule, world * kurbo_affine(*transform), color(fill.color, 1.0), None, paths.get(path).as_ref());
+                scene.fill(
+                    rule,
+                    world * kurbo_affine(*transform),
+                    color(fill.color, 1.0),
+                    None,
+                    paths.get(path).as_ref(),
+                );
             }
-            VectorCommand::StrokePath { path, transform, stroke } if stroke.width > 0.0 => {
+            VectorCommand::StrokePath {
+                path,
+                transform,
+                stroke,
+            } if stroke.width > 0.0 => {
                 let mut style = Stroke::new(stroke.width as f64)
                     .with_caps(match stroke.cap {
                         LineCap::Butt => Cap::Butt,
@@ -1324,9 +1396,18 @@ fn encode_vector(
                         LineJoin::Round => Join::Round,
                     });
                 if let Some(dash) = stroke.effective_dash() {
-                    style = style.with_dashes(dash.offset as f64, dash.intervals().iter().map(|v| *v as f64));
+                    style = style.with_dashes(
+                        dash.offset as f64,
+                        dash.intervals().iter().map(|v| *v as f64),
+                    );
                 }
-                scene.stroke(&style, world * kurbo_affine(*transform), color(stroke.color, 1.0), None, paths.get(path).as_ref());
+                scene.stroke(
+                    &style,
+                    world * kurbo_affine(*transform),
+                    color(stroke.color, 1.0),
+                    None,
+                    paths.get(path).as_ref(),
+                );
             }
             VectorCommand::StrokePath { .. } => {}
             VectorCommand::Shape { .. } => {}
@@ -1359,7 +1440,8 @@ fn brush(style: ComputedColorStyle, bounds: Bounds) -> Brush {
     let mut gradient = match style {
         ComputedColorStyle::Solid(value) => return Brush::Solid(color(value, 1.0)),
         ComputedColorStyle::LinearGradient(value) => {
-            Gradient::new_linear(at(value.start), at(value.end)).with_stops(stops(value.from, value.to))
+            Gradient::new_linear(at(value.start), at(value.end))
+                .with_stops(stops(value.from, value.to))
         }
         ComputedColorStyle::RadialGradient(value) => {
             let radius = (value.radius * bounds.width().min(bounds.height())).max(0.001);
@@ -1386,7 +1468,14 @@ impl InverseChecked for KurboAffine {
             return None;
         }
         let c = self.inverse().as_coeffs();
-        Some([c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32, c[4] as f32, c[5] as f32])
+        Some([
+            c[0] as f32,
+            c[1] as f32,
+            c[2] as f32,
+            c[3] as f32,
+            c[4] as f32,
+            c[5] as f32,
+        ])
     }
 }
 
@@ -1409,8 +1498,6 @@ fn kurbo_affine(value: Affine) -> KurboAffine {
         value.dy as f64,
     ])
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -1461,7 +1548,11 @@ mod tests {
         let mut compiler = SceneCompiler::new();
         let scene = compiler.compile(&source, &source.dirty_snapshot()).unwrap();
         FrameBuilder::new()
-            .build(scene, rect(0.0, 0.0, 100.0, 100.0), &FrameProperties::default())
+            .build(
+                scene,
+                rect(0.0, 0.0, 100.0, 100.0),
+                &FrameProperties::default(),
+            )
             .unwrap()
     }
 
@@ -1571,7 +1662,11 @@ mod tests {
         let mut compiler = SceneCompiler::new();
         let scene = compiler.compile(&source, &source.dirty_snapshot()).unwrap();
         let frame = FrameBuilder::new()
-            .build(scene, rect(0.0, 0.0, 100.0, 100.0), &FrameProperties::default())
+            .build(
+                scene,
+                rect(0.0, 0.0, 100.0, 100.0),
+                &FrameProperties::default(),
+            )
             .unwrap();
         assert_eq!(pushed(&frame), vec![2]);
     }

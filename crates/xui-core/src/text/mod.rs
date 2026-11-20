@@ -47,10 +47,18 @@ pub trait TextUnitLookup {
     fn active_query(&self, owner: NodeId, unit: TextUnitRef) -> Option<&dyn TextLayoutQuery>;
     fn document_len(&self, owner: NodeId, document: TextDocumentId) -> Option<usize>;
     fn document_height(&self, owner: NodeId, document: TextDocumentId) -> Option<f32>;
-    fn paragraph_at(&self, owner: NodeId, document: TextDocumentId, index: usize)
-    -> Option<ParagraphId>;
-    fn paragraph_at_y(&self, owner: NodeId, document: TextDocumentId, y: f32)
-    -> Option<ParagraphId>;
+    fn paragraph_at(
+        &self,
+        owner: NodeId,
+        document: TextDocumentId,
+        index: usize,
+    ) -> Option<ParagraphId>;
+    fn paragraph_at_y(
+        &self,
+        owner: NodeId,
+        document: TextDocumentId,
+        y: f32,
+    ) -> Option<ParagraphId>;
     fn paragraph_index(
         &self,
         owner: NodeId,
@@ -353,7 +361,11 @@ mod tests {
         assert_eq!(host.backend().layout_calls, 3);
 
         host.activate_slot(owner, slot, input(TextLayoutConstraints::max_width(80.0)));
-        assert_eq!(host.backend().layout_calls, 3, "painting shaped the final width again");
+        assert_eq!(
+            host.backend().layout_calls,
+            3,
+            "painting shaped the final width again"
+        );
         assert_eq!(host.stats().layouts, 1, "only the painted layout stays");
 
         for constraints in probes {
@@ -393,7 +405,8 @@ mod tests {
             )
         };
 
-        let active = host.activate_slot(owner, slot, input(TextLayoutConstraints::max_width(120.0)));
+        let active =
+            host.activate_slot(owner, slot, input(TextLayoutConstraints::max_width(120.0)));
         host.measure_slot(owner, slot, input(TextLayoutConstraints::UNBOUNDED));
         host.measure_slot(owner, slot, input(TextLayoutConstraints::UNBOUNDED));
         assert_eq!(host.backend().layout_calls, 2, "a measured variant is kept");
@@ -447,10 +460,16 @@ mod tests {
         host.handle_node_lifecycle(&NodeLifecycleEvent::Removed(gone));
 
         for unit in gone_slots.into_iter().chain([gone_paragraph]) {
-            assert!(host.unit_location(unit).is_none(), "a unit of the removed owner is left");
+            assert!(
+                host.unit_location(unit).is_none(),
+                "a unit of the removed owner is left"
+            );
         }
         for unit in [kept_slot, kept_paragraph] {
-            assert!(host.unit_location(unit).is_some(), "another owner's unit was removed");
+            assert!(
+                host.unit_location(unit).is_some(),
+                "another owner's unit was removed"
+            );
         }
     }
 

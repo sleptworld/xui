@@ -846,9 +846,7 @@ fn rgba(from: Color, to: Color, progress: f32) -> Color {
     if a <= f32::EPSILON {
         return Color { a: 0.0, ..to };
     }
-    let channel = |from_c: f32, to_c: f32| {
-        lerp(from_c * from.a, to_c * to.a, progress) / a
-    };
+    let channel = |from_c: f32, to_c: f32| lerp(from_c * from.a, to_c * to.a, progress) / a;
     Color {
         r: channel(from.r, to.r),
         g: channel(from.g, to.g),
@@ -869,7 +867,7 @@ fn lerp(from: f32, to: f32, progress: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::test_prelude::*;
-    use xui_interface::{Theme};
+    use xui_interface::Theme;
 
     fn near(actual: f32, expected: f32) {
         assert!((actual - expected).abs() < 0.0001, "{actual} != {expected}");
@@ -882,7 +880,13 @@ mod tests {
         from.layout.width = Sizing::from(100.0);
         let to = computed(
             &from,
-            StyleOf::<Container>::new().with::<container::color>(Color::WHITE).with::<container::font_size>(24.0).with::<container::width>(200.0).with::<container::padding>(EdgeInsets::all(20.0)).with::<container::background>(Color::WHITE).with::<container::scrollbar_width>(16.0),
+            StyleOf::<Container>::new()
+                .with::<container::color>(Color::WHITE)
+                .with::<container::font_size>(24.0)
+                .with::<container::width>(200.0)
+                .with::<container::padding>(EdgeInsets::all(20.0))
+                .with::<container::background>(Color::WHITE)
+                .with::<container::scrollbar_width>(16.0),
             &theme,
         );
         let sampled = interpolate_style(&from, &to, 0.5);
@@ -923,7 +927,10 @@ mod tests {
         let sampled = rgba(Color::TRANSPARENT, Color::rgb(0.96, 0.96, 0.96), 0.5);
         assert!((sampled.r - 0.96).abs() < 1e-4, "{sampled:?}");
         assert!((sampled.a - 0.5).abs() < 1e-4);
-        assert_eq!(rgba(Color::BLACK, Color::WHITE, 0.5), Color::rgb(0.5, 0.5, 0.5));
+        assert_eq!(
+            rgba(Color::BLACK, Color::WHITE, 0.5),
+            Color::rgb(0.5, 0.5, 0.5)
+        );
     }
 
     #[test]

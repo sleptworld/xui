@@ -434,10 +434,10 @@ fn clamp_unit(value: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xui_macros::Animatable;
     use xui_interface::{
         ColorToken, FontSizeToken, ScrollbarVisibilityStyle, SpacingToken, StrokeLineStyle,
     };
+    use xui_macros::Animatable;
 
     fn assert_near(actual: f32, expected: f32) {
         assert!(

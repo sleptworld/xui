@@ -12,7 +12,11 @@ pub struct ShortcutBinding {
     pub chord: String,
 }
 impl ShortcutBinding {
-    pub fn new(chord: impl Into<String>) -> Self { Self { chord: chord.into() } }
+    pub fn new(chord: impl Into<String>) -> Self {
+        Self {
+            chord: chord.into(),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -31,12 +35,20 @@ impl ShortcutRegistry {
         id
     }
     pub fn unregister(&mut self, id: RegistrationId) {
-        if self.records.remove(&id).is_some() { self.unregistrations += 1; }
+        if self.records.remove(&id).is_some() {
+            self.unregistrations += 1;
+        }
     }
-    pub fn len(&self) -> usize { self.records.len() }
-    pub fn is_empty(&self) -> bool { self.records.is_empty() }
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
     pub fn has(&self, owner: NodeId, chord: &str) -> bool {
-        self.records.values().any(|(o, b)| *o == owner && b.chord == chord)
+        self.records
+            .values()
+            .any(|(o, b)| *o == owner && b.chord == chord)
     }
 }
 
@@ -52,7 +64,9 @@ impl AccessibilityRegistry {
         self.writes += 1;
     }
     pub fn remove_label(&mut self, owner: NodeId) {
-        if self.labels.remove(&owner).is_some() { self.removals += 1; }
+        if self.labels.remove(&owner).is_some() {
+            self.removals += 1;
+        }
     }
     pub fn label(&self, owner: NodeId) -> Option<&str> {
         self.labels.get(&owner).map(String::as_str)

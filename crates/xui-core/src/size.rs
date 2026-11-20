@@ -15,7 +15,6 @@ use std::rc::Rc;
 
 use xui_interface::{NodeId, Size};
 
-
 struct SizeState {
     node: Cell<Option<NodeId>>,
     size: Cell<Option<Size<f32>>>,

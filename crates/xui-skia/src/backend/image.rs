@@ -3,8 +3,8 @@
 
 use moka::sync::Cache;
 use skia_safe::{
-    images, AlphaType, Canvas, ClipOp, ColorSpace, ColorType, Data, Image, ImageInfo, Paint,
-    SamplingOptions,
+    AlphaType, Canvas, ClipOp, ColorSpace, ColorType, Data, Image, ImageInfo, Paint,
+    SamplingOptions, images,
 };
 use xui_interface::{
     Affine, Alignment, Bounds, ImageData, ImageFit, ImageKey, ImageRepeat, ImageRotation,
@@ -12,9 +12,9 @@ use xui_interface::{
 };
 
 use super::{
+    SkiaBackend,
     convert::{sk_bounds, sk_matrix},
     surface::configure_canvas,
-    SkiaBackend,
 };
 use crate::SkiaBackendError;
 

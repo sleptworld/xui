@@ -2,7 +2,7 @@ use super::atlas::Atlas;
 use crate::wgpu::SCENE_FORMAT;
 use glam::{Vec2, Vec3};
 use std::ops::Range;
-use wgpu::{util::DeviceExt, wgc::device, BindGroup, BindGroupLayout};
+use wgpu::{BindGroup, BindGroupLayout, util::DeviceExt, wgc::device};
 use xui_core::{Color, Rect};
 use xui_interface::RasterizedGlyphFormat;
 

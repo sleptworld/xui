@@ -15,8 +15,8 @@ use crate::scroll::ScrollController;
 use crate::size::SizeObserver;
 use xui_interface::{
     AccessibilityChecked, AccessibilityLiveRegion, AccessibilityOrientation, AccessibilityPopup,
-    AccessibilityProperties, AccessibilityRole, DropAccepts, DropEffect, FocusProperties,
-    Focusability, NodeId, OrderedFloat, ShortcutBinding, Transition, Animation,
+    AccessibilityProperties, AccessibilityRole, Animation, DropAccepts, DropEffect,
+    FocusProperties, Focusability, NodeId, OrderedFloat, ShortcutBinding, Transition,
 };
 
 behavior_capability! {

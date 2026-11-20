@@ -23,12 +23,12 @@ use std::marker::PhantomData;
 use crate::capability::{CommitCx, StyleSet};
 use crate::caps::behavior::{Motion, motion};
 use crate::caps::{CapMask, Columns, Registered};
-use xui_interface::Key;
 use crate::event_system::{EventContext, Flow, Handler, HandlerValue};
+use crate::property::HostProperty;
 use crate::property::{
     Access, CapScope, Capability, Complete, Fulfil, IntoProp, Property, PropertyMarker, Scope,
 };
-use crate::property::HostProperty;
+use xui_interface::Key;
 use xui_interface::style::{ComputedStyle, Theme, WidgetStateMatcher};
 use xui_interface::{Animation, NodeId, WidgetState, WidgetUpdateFlags};
 
@@ -498,7 +498,13 @@ impl<N: NodeDef, R> Draft<N, R> {
         parent: &ComputedStyle,
         theme: &Theme,
     ) -> ComputedStyle {
-        compute_style(&self.storage.style, &self.storage.rules, state, parent, theme)
+        compute_style(
+            &self.storage.style,
+            &self.storage.rules,
+            state,
+            parent,
+            theme,
+        )
     }
 
     /// The node's property table; see [`NodeDef::Properties`].
@@ -609,7 +615,11 @@ pub trait WidgetT: HostNode {
     /// Called after a commit replaced the props `old` with `new`, so the state
     /// can follow them. Returns what the state's own change dirties, beyond
     /// what the props' [`HostNode::props_dirty`] already says.
-    fn update(_old: &Self::Props, _new: &Self::Props, _state: &mut Self::State) -> WidgetUpdateFlags {
+    fn update(
+        _old: &Self::Props,
+        _new: &Self::Props,
+        _state: &mut Self::State,
+    ) -> WidgetUpdateFlags {
         WidgetUpdateFlags::empty()
     }
 }

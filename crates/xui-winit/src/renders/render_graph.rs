@@ -17,8 +17,8 @@ use xui_render_graph::{
 use crate::{
     renders::image::{CachedImageTexture, ImageRender},
     wgpu::{
+        SCENE_FORMAT, SCENE_SAMPLE_COUNT, WgpuBackendError,
         texture_pool::{TextureLease, TexturePool, TextureRequest},
-        WgpuBackendError, SCENE_FORMAT, SCENE_SAMPLE_COUNT,
     },
 };
 
@@ -851,11 +851,7 @@ fn set_inverse(uniform: &mut PassUniform, transform: Affine) {
 }
 
 const fn attachment_shader_mode(transformed_source: bool) -> u32 {
-    if transformed_source {
-        3
-    } else {
-        2
-    }
+    if transformed_source { 3 } else { 2 }
 }
 
 fn mask_kind(mask: &PlanMask) -> u32 {

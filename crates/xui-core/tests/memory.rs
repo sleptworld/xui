@@ -79,8 +79,18 @@ fn trace(size: usize) {
         .map(|line| line.split_once(": ").map_or(line, |(_, name)| name))
         .filter(|name| {
             const SKIP: [&str; 12] = [
-                "alloc::", "<alloc::", "core::", "<core::", "std::", "<std::", "__rustc",
-                "hashbrown", "<hashbrown", "memory::", "backtrace", "smallvec",
+                "alloc::",
+                "<alloc::",
+                "core::",
+                "<core::",
+                "std::",
+                "<std::",
+                "__rustc",
+                "hashbrown",
+                "<hashbrown",
+                "memory::",
+                "backtrace",
+                "smallvec",
             ];
             !SKIP.iter().any(|skip| name.starts_with(skip))
         })
@@ -347,7 +357,10 @@ fn allocations_per_render() {
     }
     renders.sort_unstable();
     let calls = renders[renders.len() / 2];
-    println!("allocations per render: {calls}, per row: {:.1}", calls as f64 / rows as f64);
+    println!(
+        "allocations per render: {calls}, per row: {:.1}",
+        calls as f64 / rows as f64
+    );
 
     // `XUI_TRACE_ALLOC=1`: one more render, every allocation attributed.
     if std::env::var("XUI_TRACE_ALLOC").is_ok() {
@@ -393,6 +406,9 @@ fn frame_time_with_real_text() {
             samples.push(started.elapsed());
         }
         samples.sort_unstable();
-        println!("{rows},{:.3}", samples[samples.len() / 2].as_secs_f64() * 1000.0);
+        println!(
+            "{rows},{:.3}",
+            samples[samples.len() / 2].as_secs_f64() * 1000.0
+        );
     }
 }

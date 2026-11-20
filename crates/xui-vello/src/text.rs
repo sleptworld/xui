@@ -14,16 +14,19 @@
 
 use std::{hash::Hash, sync::Arc};
 
+use crate::lru::ByteLru;
 use vello::{
     Glyph, Scene,
     kurbo::{Affine as KurboAffine, Line, Rect as KurboRect, Stroke},
-    peniko::{Blob, Fill, FontData, color::{AlphaColor, Srgb}},
+    peniko::{
+        Blob, Fill, FontData,
+        color::{AlphaColor, Srgb},
+    },
 };
 use xui_core::{
     render::TextPrimitive,
     text::{TextHost, TextLayoutHandle},
 };
-use crate::lru::ByteLru;
 use xui_interface::{
     Color, FontCollection, FontData as XuiFontData, ParagraphLayout, Point, Rect, TextBackend,
     TextVerticalAlign,
@@ -274,8 +277,14 @@ pub(crate) fn bitmap_parts<T: TextBackend>(
         .map(|stroke| {
             // A stroke along an axis is a rectangle `width` across it.
             let half = stroke.width * 0.5;
-            let (x0, x1) = (stroke.from.0.min(stroke.to.0), stroke.from.0.max(stroke.to.0));
-            let (y0, y1) = (stroke.from.1.min(stroke.to.1), stroke.from.1.max(stroke.to.1));
+            let (x0, x1) = (
+                stroke.from.0.min(stroke.to.0),
+                stroke.from.0.max(stroke.to.0),
+            );
+            let (y0, y1) = (
+                stroke.from.1.min(stroke.to.1),
+                stroke.from.1.max(stroke.to.1),
+            );
             let [x0, y0, x1, y1] = if y0 == y1 {
                 [x0, y0 - half, x1, y1 + half]
             } else {
@@ -335,7 +344,14 @@ pub(crate) fn encode_text<T: TextBackend>(
             .draw(Fill::NonZero, glyphs);
     }
     for stroke in foreground(primitive, text, &paragraph) {
-        stroke_line(scene, world, stroke.from, stroke.to, stroke.width, stroke.ink);
+        stroke_line(
+            scene,
+            world,
+            stroke.from,
+            stroke.to,
+            stroke.width,
+            stroke.ink,
+        );
     }
 
     scene.pop_layer();
