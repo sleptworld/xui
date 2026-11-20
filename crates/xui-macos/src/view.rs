@@ -10,9 +10,10 @@ use objc2::{
     define_class, msg_send, sel,
 };
 use objc2_app_kit::{
-    NSCursor, NSDragOperation, NSDraggingInfo, NSEvent, NSEventModifierFlags, NSEventPhase,
-    NSEventType, NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypeString, NSResponder,
-    NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSCursor,
+    NSDragOperation, NSDraggingInfo, NSEvent, NSEventModifierFlags, NSEventPhase, NSEventType,
+    NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypeString, NSResponder, NSTextInputClient,
+    NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSNotFound, NSObject, NSObjectProtocol,
@@ -22,9 +23,9 @@ use objc2_foundation::{
 use objc2_quartz_core::CADisplayLink;
 use xui_interface::events::{KeyState, KeyText, RawIme, TextPayload};
 use xui_interface::{
-    ContextMenuTrigger, CursorIcon, DragEvent, DragPayload, DropAccepts, DropEffect, Modifiers,
-    Point, PointerButton, Rect, ScrollDelta, TextOffset, TextRange, Translation, WindowRegion,
-    commands,
+    Appearance, ColorScheme, ContextMenuTrigger, CursorIcon, DragEvent, DragPayload, DropAccepts,
+    DropEffect, Modifiers, Point, PointerButton, Rect, ScrollDelta, TextOffset, TextRange,
+    Translation, WindowRegion, commands,
 };
 use xui_shell::{FrameInfo, KeyInput, PublishedHandle, ShellEvent, ShellOutcome};
 
@@ -373,6 +374,14 @@ define_class!(
             self.end_drag();
         }
 
+        /// The system switched between light and dark, or the window's
+        /// appearance was changed.
+        #[unsafe(method(viewDidChangeEffectiveAppearance))]
+        fn view_did_change_effective_appearance(&self) {
+            unsafe { msg_send![super(self), viewDidChangeEffectiveAppearance] }
+            self.send(ShellEvent::AppearanceChanged(self.appearance()));
+        }
+
         #[unsafe(method(viewDidMoveToWindow))]
         fn view_did_move_to_window(&self) {
             unsafe { msg_send![super(self), viewDidMoveToWindow] }
@@ -645,6 +654,24 @@ impl XuiView {
     pub(crate) fn invalidate_display_link(&self) {
         if let Some(link) = self.ivars().display_link.take() {
             link.invalidate();
+        }
+    }
+
+    /// The appearance this view is drawn in. Only the color scheme is read;
+    /// the accessibility preferences and the accent stay at their defaults.
+    pub(crate) fn appearance(&self) -> Appearance {
+        // SAFETY: AppKit's appearance names are immutable statics.
+        let (aqua, dark) = unsafe { (NSAppearanceNameAqua, NSAppearanceNameDarkAqua) };
+        let best = self
+            .effectiveAppearance()
+            .bestMatchFromAppearancesWithNames(&NSArray::from_slice(&[aqua, dark]));
+        let color_scheme = match best {
+            Some(name) if name.isEqualToString(dark) => ColorScheme::Dark,
+            _ => ColorScheme::Light,
+        };
+        Appearance {
+            color_scheme,
+            ..Appearance::default()
         }
     }
 

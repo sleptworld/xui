@@ -21,7 +21,9 @@ use raw_window_handle::{
     AppKitWindowHandle, DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle,
     RawWindowHandle, WindowHandle,
 };
-use xui_interface::{CursorIcon, HostCapabilities, MenuBar, PlatformCommand, Rect, WindowState};
+use xui_interface::{
+    Appearance, CursorIcon, HostCapabilities, MenuBar, PlatformCommand, Rect, WindowState,
+};
 use xui_shell::{
     Performed, PhysicalSize, PlatformWindow, PublishedHandle, ShellEvent, SurfaceTarget,
     WindowOptions, WindowSize,
@@ -329,7 +331,14 @@ impl PlatformWindow for MacWindow {
             | HostCapabilities::DRAG_DROP
             | HostCapabilities::NATIVE_MENU_BAR
             | HostCapabilities::OPEN_URL
+            | HostCapabilities::SYSTEM_APPEARANCE
             | HostCapabilities::TIMED_REDRAW
+    }
+
+    fn appearance(&self) -> Appearance {
+        MainThreadMarker::new()
+            .map(|mtm| self.view.get(mtm).appearance())
+            .unwrap_or_default()
     }
 
     fn request_redraw_at(&self, at: Instant) {

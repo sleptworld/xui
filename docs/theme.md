@@ -267,7 +267,7 @@ background = "#0d0e0f"
 
 1. **数据模型**：`Token<T>`、内置 token、新 `Theme`、`ColorRef` / `ColorValue` / `LengthValue`、`Color::from_rgb_u32`；
    迁移 `xui-components` 与示例应用；token 动画插值。此步之后外观与现在一致。
-2. **运行时**：`Themes`、`ThemeMode`、`ThemeHandle` 与 `Appearance` 两个 context；当前主题的选择；画布失效。
+2. **运行时**：`Themes`、`ThemeMode`、`ThemeHandle` 与 `Appearance` 两个 context；当前主题的选择；画布失效；macOS 上报外观。
 3. **主题文件**：`Theme::parse` 与资源包加载。
 
 ## 9. 限制
@@ -278,6 +278,7 @@ background = "#0d0e0f"
 - 组件不能响应式地读当前主题。要按深浅选不同资源（如一套图标）时，先用 token 着色；确有需要再提供当前 `ColorScheme`
   的 context。`Appearance` 是系统外观，模式选定亮或暗时与当前主题不一致，不能替代。
 - 主题切换本身没有过渡动画；以后可由 `Theme` 的逐项插值实现。
-- 还没有宿主上报系统外观：`PlatformWindow::appearance` 在各宿主都是默认值，`ShellEvent::AppearanceChanged` 无人发出，
-  因此 `ThemeMode::System` 目前总是亮色。
+- 只有 macOS 宿主上报系统外观，且只报深浅：内容视图在 `viewDidChangeEffectiveAppearance` 中发出
+  `ShellEvent::AppearanceChanged`，`MacWindow::appearance` 给出启动时的外观（`cargo run -p xui-macos --example appearance`
+  检查这条链路）。winit 与 Windows 宿主仍返回默认值，那里的 `ThemeMode::System` 总是亮色。
 - `Appearance` 的 `accent`、`high_contrast` 暂不使用；以后可分别映射到 `color::PRIMARY` / `color::RING` 与一套高对比主题。

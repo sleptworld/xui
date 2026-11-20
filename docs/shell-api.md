@@ -326,8 +326,8 @@ window:
 - **Capabilities and window state are stored, not reactive.** A component
   reading them is not re-rendered when they change. `Appearance` is reactive:
   the app provides it as a context and `ThemeMode::System` follows it (see
-  `theme.md`), but no host reports it yet, so every `appearance()` is the
-  default.
+  `theme.md`). The macOS host reports the color scheme (and declares
+  `SYSTEM_APPEARANCE`); the other hosts still answer the default.
 - **`WindowOptions` is unchanged.** Max size, position, always-on-top,
   fullscreen and icon wait for hosts that honour them; an option that silently
   does nothing is worse than none.
