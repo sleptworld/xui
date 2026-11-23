@@ -58,6 +58,16 @@ impl EventDispatcher {
             return DispatchReport::default();
         }
 
+        // Scrollbar presses belong to the translator. In particular, a text
+        // surface must not capture this pointer for a selection first.
+        if let RawEvent::PointerDown(pointer) = &event
+            && pointer.button == xui_interface::events::PointerButton::Primary
+            && arena.pointer_capture_node().is_none()
+            && arena.scrollbar_hit(pointer.position).is_some()
+        {
+            return DispatchReport::default();
+        }
+
         let Some(target) = resolve_raw_target(arena, &event) else {
             return DispatchReport::default();
         };

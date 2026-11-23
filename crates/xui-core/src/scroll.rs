@@ -119,6 +119,7 @@ struct ScrollControllerState {
     node: Option<NodeId>,
     queue: Option<ScrollRequestQueue>,
     metrics: ScrollMetrics,
+    on_change: Option<Rc<dyn Fn(ScrollMetrics)>>,
 }
 
 /// A handle for reading and driving a scroll container's position.
@@ -140,6 +141,15 @@ pub struct ScrollController {
 impl ScrollController {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Observes changed offsets and extents, including changes from layout.
+    /// Called after the metrics are published. Scroll requests from the
+    /// callback are queued for the next flush.
+    pub fn with_on_change(notify: impl Fn(ScrollMetrics) + 'static) -> Self {
+        let controller = Self::new();
+        controller.inner.borrow_mut().on_change = Some(Rc::new(notify));
+        controller
     }
 
     pub fn node_id(&self) -> Option<NodeId> {
@@ -225,8 +235,14 @@ impl ScrollController {
 
     pub(crate) fn publish(&self, node: NodeId, metrics: ScrollMetrics) {
         let mut state = self.inner.borrow_mut();
-        if state.node == Some(node) {
-            state.metrics = metrics;
+        if state.node != Some(node) || state.metrics == metrics {
+            return;
+        }
+        state.metrics = metrics;
+        let notify = state.on_change.clone();
+        drop(state);
+        if let Some(notify) = notify {
+            notify(metrics);
         }
     }
 }

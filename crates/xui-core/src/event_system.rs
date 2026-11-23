@@ -354,7 +354,32 @@ pub fn dispatch_event_pipeline<B: TextBackend>(
     // A widget that consumed a wheel scrolled itself (a text surface does):
     // the containers around it do not scroll as well.
     let scrolled_itself = matches!(event, RawEvent::Wheel(_)) && raw.result.is_consumed();
-    if !scrolled_itself {
+    if scrolled_itself {
+        if let RawEvent::Wheel(wheel) = &event
+            && let Some(step) = raw.steps.last()
+            && let Some(scroll) = arena.take_surface_scroll(step.node)
+        {
+            use xui_interface::events::{ScrollPhase, ScrollSource};
+            let phase = if wheel.is_inertial {
+                ScrollPhase::Momentum
+            } else {
+                ScrollPhase::Move
+            };
+            let mut event = translator.scroll_offset_event(
+                scroll,
+                ScrollSource::Wheel,
+                phase,
+                timestamp,
+                modifiers,
+                None,
+            );
+            if let xui_interface::events::SemanticEvent::Scroll(event) = &mut event {
+                event.delta = wheel.delta;
+                event.is_inertial = wheel.is_inertial;
+            }
+            semantic.push(dispatcher::dispatch_semantic(arena, host_text_cache, event));
+        }
+    } else {
         for event in translator.translate_raw_event(&event, arena) {
             semantic.push(dispatcher::dispatch_semantic(arena, host_text_cache, event));
         }

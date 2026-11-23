@@ -566,3 +566,146 @@ fn sync_cost_per_scroll_and_per_edit() {
     eprintln!("text surface, 100k blocks: {scroll:?} per scrolled frame, {edit:?} per edit");
     assert!(fixture.state(|state| state.resident_count()) < 200);
 }
+
+#[test]
+fn scroll_controller_drives_both_axes_and_tracks_shrinking_content() {
+    use crate::scroll::ScrollController;
+    let Some(mut f) = fixture(200, SurfaceWrap::None) else {
+        return;
+    };
+    f.model.borrow_mut().insert(0, &"wide ".repeat(200));
+    let observed = Rc::new(RefCell::new(Vec::new()));
+    let log = observed.clone();
+    let controller =
+        ScrollController::with_on_change(move |metrics| log.borrow_mut().push(metrics));
+    f.arena.update_node(
+        f.surface,
+        Box::new(
+            text_surface()
+                .with::<text_surface::model>(f.handle.clone())
+                .with::<text_surface::size>(Size::fix(VIEWPORT.width, VIEWPORT.height))
+                .with::<text_surface::wrap>(SurfaceWrap::None)
+                .with::<text_surface::scroll_controller>(controller.clone()),
+        ),
+    );
+    f.handle.invalidate();
+    f.frame();
+    assert!(controller.metrics().can_scroll_x() && controller.metrics().can_scroll_y());
+    let horizontal = crate::scroll::ScrollbarAxis::Horizontal;
+    let track = f
+        .arena
+        .scrollbar_part(f.surface, horizontal)
+        .expect("horizontal bar")
+        .track;
+    f.dispatch(RawEvent::PointerDown(pointer(Point::new(
+        track.x() + track.width() * 0.75,
+        track.y() + 1.0,
+    ))));
+    assert!(controller.offset().x > 0.0);
+    assert!(f.model.borrow().pointers.is_empty());
+    assert!(controller.scroll_to((150.0, 300.0)));
+    assert_eq!(f.arena.apply_scroll_requests().len(), 1);
+    f.frame();
+    assert_eq!(controller.metrics().offset, Point::new(150.0, 300.0));
+    f.model.borrow_mut().remove(0);
+    f.handle.invalidate();
+    f.frame();
+    assert_eq!(controller.metrics().max_offset.x, 0.0);
+    assert_eq!(controller.offset().x, 0.0);
+    assert_eq!(observed.borrow().last(), Some(&controller.metrics()));
+    let count = observed.borrow().len();
+    f.frame();
+    assert_eq!(observed.borrow().len(), count);
+}
+
+#[test]
+fn surface_scrollbar_drag_does_not_start_a_selection() {
+    use crate::scroll::ScrollbarAxis;
+    let Some(mut f) = fixture(200, SurfaceWrap::Width) else {
+        return;
+    };
+    let bar = f
+        .arena
+        .scrollbar_part(f.surface, ScrollbarAxis::Vertical)
+        .expect("vertical bar");
+    let thumb = bar.thumb.unwrap();
+    let point = Point::new(thumb.x() + 1.0, thumb.y() + 1.0);
+    let mut translator = EventTranslator::default();
+    for event in [
+        RawEvent::PointerDown(pointer(point)),
+        crate::ui_runtime::tests::pointer_move(Point::new(point.x, point.y + 80.0)),
+        RawEvent::PointerUp(pointer(Point::new(point.x, point.y + 80.0))),
+    ] {
+        f.arena.dispatch_event(&f.text, &mut translator, event);
+    }
+    f.frame();
+    assert!(f.state(|s| s.scroll.y) > 100.0);
+    assert!(f.model.borrow().pointers.is_empty());
+    assert_eq!(f.arena.pointer_capture_node(), None);
+}
+
+#[test]
+fn gutter_uses_visual_lines_and_keeps_text_hit_testing_and_ime_aligned() {
+    struct Marks(Rc<RefCell<Vec<GutterPress>>>);
+    impl GutterRenderer for Marks {
+        fn draw(&self, line: GutterLine, items: &mut Vec<GutterItem>) {
+            items.push(GutterItem::Label {
+                x: 0.0,
+                baseline: line.baseline,
+                text: "1".into(),
+                color: Color::BLACK,
+            });
+        }
+        fn press(&self, press: GutterPress) {
+            self.0.borrow_mut().push(press);
+        }
+    }
+    let Some(mut f) = fixture(10, SurfaceWrap::Width) else {
+        return;
+    };
+    let block = f.model.borrow_mut().insert(0, &"abcdefgh ".repeat(40));
+    f.model.borrow_mut().caret = Some(SurfacePosition::new(block, 0));
+    let presses = Rc::new(RefCell::new(Vec::new()));
+    let gutter = SurfaceGutter::new(50.0, Marks(presses.clone()));
+    let configure = |f: &mut Fixture, width, wrap| {
+        f.arena.update_node(
+            f.surface,
+            Box::new(
+                text_surface()
+                    .with::<text_surface::model>(f.handle.clone())
+                    .with::<text_surface::size>(Size::fix(width, VIEWPORT.height))
+                    .with::<text_surface::wrap>(wrap)
+                    .with::<text_surface::gutter>(Some(gutter.clone())),
+            ),
+        );
+        f.frame();
+    };
+    configure(&mut f, 200.0, SurfaceWrap::Width);
+    let row = f.state(|s| s.gutter_lines[1]);
+    assert_eq!((row.block, row.block_index, row.visual_line), (block, 0, 1));
+    assert_eq!(row.rect.width, 50.0);
+    assert!(row.baseline >= row.rect.y && row.baseline <= row.rect.y + row.rect.height);
+    let y = row.rect.y + row.rect.height * 0.5;
+    f.dispatch(RawEvent::PointerDown(pointer(Point::new(10.0, y))));
+    assert_eq!(presses.borrow()[0].line, row);
+    assert!(f.model.borrow().pointers.is_empty());
+    let ime = f
+        .arena
+        .node_view(f.surface)
+        .widget
+        .platform_text_input_session(Bounds::from_origin_size((0.0, 0.0), VIEWPORT), None)
+        .unwrap();
+    assert!((ime.cursor_area.x - 50.0).abs() < 1.0);
+    configure(&mut f, 250.0, SurfaceWrap::None);
+    f.edit_state(|s| s.apply_scroll(Point::new(120.0, 0.0)));
+    f.frame();
+    let first = f.state(|s| s.gutter_lines[0]);
+    assert_eq!(first.rect.x, 0.0);
+    assert_eq!(first.block, block);
+    assert_eq!(f.state(|s| s.viewport.width), 200.0);
+    let y = first.rect.y + first.rect.height * 0.5;
+    f.dispatch(RawEvent::PointerDown(pointer(Point::new(51.0, y))));
+    let p = f.model.borrow().pointers[0];
+    assert_eq!(p.point.x, 121.0);
+    assert!(p.at.unwrap().offset > 0);
+}

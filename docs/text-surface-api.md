@@ -1,7 +1,6 @@
 # Text surface: an extension point for editors
 
-Status: **phases 0 to 3 are implemented; their tests are written but have not
-been run yet.** This is what `xui` itself provides so that a rich-text or code
+Status: **phases 0 to 3 are implemented.** This is what `xui` itself provides so that a rich-text or code
 editor can live in a crate of its own, `crates/xui-editor`, the way
 `xui-table` sits on top of `xui`. Where the code differs from the sketches
 below, see [What was built](#what-was-built).
@@ -393,19 +392,37 @@ Where the implementation went another way than the sketches above:
 - Columns, floats and other page layout. Blocks stack vertically.
 - Collaborative editing. That belongs to the model and does not touch the surface.
 
+## Scrolling and gutters
+
+Each mounted view can bind its own `ScrollController` with `scroll_controller`.
+`metrics()` gives the offset, the body viewport (excluding padding and the
+gutter), content size and maximum offset. `scroll_to((x, y))` and `scroll_by`
+apply through the runtime queue. Models can also use `SurfaceCx::scroll_to_point`
+during input. Wrapped text scrolls vertically; `SurfaceWrap::None` enables
+horizontal overflow. Horizontal extent uses the widest measured, unchanged
+block. An edit or removal retracts its old width; visiting a wider block
+extends the range. Unmeasured block heights use the model's estimates.
+
+The built-in overlay scrollbars accept the same width, radius, colors and
+visibility as a container and support thumb dragging and track paging.
+For custom bars use `scrollbar_visibility: ScrollbarVisibilityStyle::Hidden`,
+bind a controller and use `ScrollController::with_on_change` to observe both
+offset and extent changes. Callbacks run when the runtime publishes metrics;
+keep drawing in the widget paint path.
+
+`gutter: Some(SurfaceGutter::line_numbers(52.0, color))` displays one label
+on the first visual line of each block. For custom gutters implement
+`GutterRenderer` and pass it to `SurfaceGutter::new(width, renderer)`.
+`draw` receives visible visual lines, including partial lines, with their
+stable block id, zero-based block and visual-line indices, gutter-local rect
+and baseline. Emit fills, vector graphics or text labels. Gutter coordinates
+already include vertical scrolling and stay fixed horizontally. In `press`
+use the same line and local coordinates to toggle a marker. A gutter press
+schedules a repaint; to update markers from outside the surface, invalidate
+its model handle.
+
 ## Open questions
 
-- **Horizontal scroll without wrap.** For code, the surface needs `scroll_x` and
-  the widest resident line. Tracking the widest line over the whole document
-  either needs every block shaped once or settles for a running maximum. The
-  proposal is the running maximum, as most editors do.
-- **The gutter.** A second surface keeps the surface simple but needs two
-  surfaces to share a scroll. A `Gutter` decoration kind keeps one surface but
-  puts layout policy in the core. Leaning towards the second surface, with a
-  `scroll_link` prop.
-- **Scrollbars.** The surface can reuse `scrollbar_parts` from `ui_runtime/scroll.rs`
-  with its own extent. It is not a runtime scroll container, so how the two
-  share hit-testing and styling is unsettled.
 - **Where the model lives on threads.** The trait as written is `!Send` and runs
   on the UI thread. A background highlighter hands results back through the
   async channel. Whether anything must be `Send` is left to the editor crate.

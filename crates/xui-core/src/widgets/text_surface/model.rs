@@ -368,7 +368,7 @@ impl Default for TextSurfaceHandle {
 /// once the event returns.
 #[derive(Debug, Default)]
 pub(crate) struct SurfaceRequests {
-    pub scroll_to: Option<f32>,
+    pub scroll_to: Option<Point>,
     pub reveal: Option<(SurfacePosition, f32)>,
     pub changed: bool,
 }
@@ -528,7 +528,12 @@ impl<'a, 'e> SurfaceCx<'a, 'e> {
     }
 
     pub fn scroll_to(&mut self, y: f32) {
-        self.requests.scroll_to = Some(y);
+        self.scroll_to_point(Point::new(self.geometry.scroll.x, y));
+    }
+
+    /// Moves both axes in document coordinates, clamped during the next sync.
+    pub fn scroll_to_point(&mut self, offset: Point) {
+        self.requests.scroll_to = Some(offset);
     }
 
     /// Scrolls just enough to show `at` with `margin` around it, once it is

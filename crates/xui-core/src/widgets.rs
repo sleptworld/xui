@@ -94,9 +94,10 @@ pub(crate) use text_input::text_input_content_box;
 pub use text_input::value::TextSelection;
 pub use text_input::{TextController, TextInputChange};
 pub use text_surface::{
-    BlockChange, BlockId, DecorKind, DecorLayer, SurfaceBlock, SurfaceChanges, SurfaceCx,
-    SurfaceDecor, SurfaceInput, SurfacePointer, SurfacePointerKind, SurfacePosition, SurfaceRange,
-    SurfaceWrap, TextSurfaceHandle, TextSurfaceModel, UnderlineStyle, WeakTextSurfaceHandle,
+    BlockChange, BlockId, DecorKind, DecorLayer, GutterItem, GutterLine, GutterPress,
+    GutterRenderer, SurfaceBlock, SurfaceChanges, SurfaceCx, SurfaceDecor, SurfaceGutter,
+    SurfaceInput, SurfacePointer, SurfacePointerKind, SurfacePosition, SurfaceRange, SurfaceWrap,
+    TextSurfaceHandle, TextSurfaceModel, UnderlineStyle, WeakTextSurfaceHandle,
 };
 
 use canvas::Canvas;

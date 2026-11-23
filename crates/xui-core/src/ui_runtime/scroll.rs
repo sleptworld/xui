@@ -6,8 +6,9 @@ use crate::core::{Point, Size};
 use crate::scroll::{
     AppliedScroll, ScrollMetrics, ScrollRequestQueue, ScrollbarAxis, ScrollbarHit, ScrollbarPart,
 };
-use crate::ui_runtime::UiRuntime;
 use crate::ui_runtime::state::HostWorkFlags;
+use crate::ui_runtime::{NodeView, UiRuntime};
+use crate::widgets::{WidgetType, Widgets};
 use xui_interface::{
     Bounds, ComputedScrollStyle, ComputedScrollbarStyle, NodeId, ScrollbarVisibilityStyle,
 };
@@ -16,6 +17,23 @@ impl UiRuntime {
     /// # Preconditions
     /// - `id` is live.
     pub(crate) fn set_scroll_offset(&mut self, id: NodeId, offset: Point) -> bool {
+        if self.hosts[id].node_type == WidgetType::TextSurface {
+            let changed = self.hosts[id].widget.with_widgets_mut(|widget| {
+                let Widgets::TextSurface(surface) = widget else {
+                    unreachable!()
+                };
+                if surface.state.metrics().offset == offset {
+                    return false;
+                }
+                surface.state.apply_scroll(offset);
+                true
+            });
+            if changed {
+                self.mark_work(id, HostWorkFlags::SHAPE_CHANGE);
+                self.publish_scroll_metrics(id);
+            }
+            return changed;
+        }
         let layout = self.layout_tree.node_mut(id);
         if layout.scroll_offset == offset {
             return false;
@@ -31,6 +49,12 @@ impl UiRuntime {
     /// # Preconditions
     /// - `id` is live.
     pub(crate) fn scroll_metrics(&self, id: NodeId) -> Option<ScrollMetrics> {
+        if self.hosts[id].node_type == WidgetType::TextSurface {
+            return self.hosts[id].widget.with_widgets(|widget| match widget {
+                Widgets::TextSurface(surface) => Some(surface.state.metrics()),
+                _ => unreachable!(),
+            });
+        }
         let direction = self.style_system.computed(id).scroll.direction;
         if !direction.is_scrollable() {
             return None;
@@ -71,6 +95,24 @@ impl UiRuntime {
         Some(AppliedScroll {
             node: id,
             before: metrics.offset,
+            after,
+        })
+    }
+
+    pub(crate) fn take_surface_scroll(&self, id: NodeId) -> Option<AppliedScroll> {
+        if self.hosts[id].node_type != WidgetType::TextSurface {
+            return None;
+        }
+        let (before, after) = self.hosts[id].widget.with_widgets_mut(|widget| {
+            let Widgets::TextSurface(surface) = widget else {
+                unreachable!()
+            };
+            surface.state.take_scroll_change()
+        })?;
+        self.publish_scroll_metrics(id);
+        Some(AppliedScroll {
+            node: id,
+            before,
             after,
         })
     }
@@ -139,18 +181,12 @@ impl UiRuntime {
     }
 
     fn scrollbar_parts(&self, id: NodeId) -> Option<[Option<ScrollbarPart>; 2]> {
-        let scroll = self.style_system.effective(id).scroll;
-        if !scroll.direction.is_scrollable() {
+        let node = self.node_view(id);
+        if node.node_type != WidgetType::TextSurface && !node.effective_style.scroll.is_scrollable()
+        {
             return None;
         }
-        let layout = self.layout_tree.node(id);
-        let rect = self.visual_layout(id);
-        Some(scrollbar_parts(
-            rect,
-            scroll,
-            layout.content_size,
-            layout.scroll_offset,
-        ))
+        Some(node_scrollbar_parts(node, self.visual_layout(id)))
     }
 
     /// The scrollbar under `point`, if any.
@@ -174,6 +210,27 @@ impl UiRuntime {
                 })
         })
     }
+}
+
+pub(super) fn node_scrollbar_parts(node: NodeView<'_>, rect: Bounds) -> [Option<ScrollbarPart>; 2] {
+    let mut scroll = node.effective_style.scroll;
+    if node.node_type == WidgetType::TextSurface {
+        return node.widget.with_widgets(|widget| {
+            let Widgets::TextSurface(surface) = widget else {
+                unreachable!()
+            };
+            let metrics = surface.state.metrics();
+            let content =
+                crate::widgets::text_input_content_box(rect, node.effective_style.layout.padding);
+            let body = surface.state.body_box(content);
+            scroll.direction = match surface.props.wrap {
+                crate::widgets::SurfaceWrap::Width => xui_interface::ScrollDirectionStyle::Vertical,
+                crate::widgets::SurfaceWrap::None => xui_interface::ScrollDirectionStyle::Both,
+            };
+            scrollbar_parts(body, scroll, metrics.content_size, metrics.offset)
+        });
+    }
+    scrollbar_parts(rect, scroll, node.content_size, node.scroll_offset)
 }
 
 /// The scrollbars a container with viewport `rect` paints, vertical first.

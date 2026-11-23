@@ -12,6 +12,8 @@
 //! resolved to text positions, and a [`SurfaceCx`] for geometry and the
 //! platform. See `docs/text-surface-api.md`.
 
+mod gutter;
+pub use gutter::{GutterItem, GutterLine, GutterPress, GutterRenderer, SurfaceGutter};
 pub mod model;
 #[cfg(test)]
 mod tests;
@@ -70,7 +72,7 @@ pub enum SurfaceWrap {
 #[widget(
     style(
         box_size, margin, padding, position, display, typography, visibility, transform, effects,
-        cursor
+        cursor, scrollbar
     ),
     behavior(
         focus,
@@ -78,6 +80,7 @@ pub enum SurfaceWrap {
         shortcuts,
         motion,
         focus_binding,
+        scroll_binding,
         size_observation,
         events
     )
@@ -101,6 +104,10 @@ pub struct TextSurface {
     #[default(1.0)]
     #[dirty(TEXT_SHAPE)]
     pub overscan: f32,
+    /// An optional fixed margin to the left of the text viewport.
+    #[default]
+    #[dirty(TEXT_SHAPE | PAINT_OUTPUT)]
+    pub gutter: Option<SurfaceGutter>,
 }
 
 impl WidgetT for TextSurface {
@@ -179,6 +186,15 @@ pub struct TextSurfaceState {
     overscan: f32,
     /// Set when the next sync must read the whole model again.
     needs_reset: bool,
+    gutter: Option<SurfaceGutter>,
+    gutter_width: f32,
+    gutter_lines: Vec<GutterLine>,
+    gutter_paint: Vec<Primitive>,
+    reported_offset: Point,
+    // Finite nonnegative f32 widths sort by their IEEE bits. Keeping both indices
+    // lets an edit retract a previous maximum without walking the document.
+    measured_widths: FxHashMap<BlockId, u32>,
+    widths: std::collections::BTreeSet<(u32, BlockId)>,
 
     document: Option<TextDocumentId>,
     paragraphs: FxHashMap<BlockId, ParagraphId>,
@@ -193,7 +209,7 @@ pub struct TextSurfaceState {
     anchor: Option<(ParagraphId, f32)>,
     reveal: Option<(SurfacePosition, f32)>,
     viewport: Size<f32>,
-    /// The widest block laid out so far, for scrolling sideways.
+    /// Widest current measured block, for horizontal scrolling.
     content_width: f32,
     document_height: f32,
     painted: Vec<PaintedBlock>,
@@ -236,6 +252,13 @@ impl TextSurfaceState {
             wrap: props.wrap,
             overscan: props.overscan,
             needs_reset: true,
+            gutter: props.gutter.clone(),
+            gutter_width: 0.0,
+            gutter_lines: Vec::new(),
+            gutter_paint: Vec::new(),
+            reported_offset: Point::zero(),
+            measured_widths: Default::default(),
+            widths: Default::default(),
             document: None,
             paragraphs: FxHashMap::default(),
             blocks: FxHashMap::default(),
@@ -272,6 +295,7 @@ impl TextSurfaceState {
     fn follow(&mut self, next: &TextSurfaceProps) {
         self.disabled = next.disabled;
         self.wrap = next.wrap;
+        self.gutter = next.gutter.clone();
         self.overscan = next.overscan;
         if self.handle.same_handle(&next.model) {
             return;
@@ -333,13 +357,18 @@ impl TextSurfaceState {
             style,
             measurer,
         } = frame;
+        self.gutter_width = self
+            .gutter
+            .as_ref()
+            .map_or(0.0, |g| g.width.max(0.0).min(viewport.width));
+        let viewport = Size::new(viewport.width - self.gutter_width, viewport.height);
         self.viewport = viewport;
         let model_rc = self.handle.model();
         let mut model = model_rc.borrow_mut();
         let changes = model.take_changes();
 
-        let text_style = style.text.clone();
-        let line_height = line_height_px(&text_style);
+        let text_style = &style.text;
+        let line_height = line_height_px(text_style);
         let constraints = match self.wrap {
             SurfaceWrap::Width => TextLayoutConstraints::max_width(viewport.width.max(0.0)),
             SurfaceWrap::None => TextLayoutConstraints::UNBOUNDED,
@@ -368,6 +397,8 @@ impl TextSurfaceState {
                 measurer.update_paragraph_estimate(owner, document, paragraph, estimate);
                 measurer.update_paragraph_height(owner, document, paragraph, None);
             }
+            self.widths.clear();
+            self.measured_widths.clear();
             self.content_width = 0.0;
             self.basis = Some(basis);
         }
@@ -429,7 +460,14 @@ impl TextSurfaceState {
                     measurer.update_paragraph_height(owner, document, paragraph, Some(measured));
                     settled = false;
                 }
-                self.content_width = self.content_width.max(size.width);
+                if self.wrap == SurfaceWrap::None {
+                    let bits = size.width.max(0.0).to_bits();
+                    if self.measured_widths.get(&block_id) != Some(&bits) {
+                        self.forget_width(block_id);
+                        self.measured_widths.insert(block_id, bits);
+                        self.widths.insert((bits, block_id));
+                    }
+                }
                 shaped.insert(paragraph, (handle, block));
             }
 
@@ -462,6 +500,10 @@ impl TextSurfaceState {
         }
         self.reveal = None;
 
+        self.content_width = self
+            .widths
+            .last()
+            .map_or(0.0, |(bits, _)| f32::from_bits(*bits));
         let max_x = match self.wrap {
             SurfaceWrap::Width => 0.0,
             SurfaceWrap::None => (self.content_width - viewport.width).max(0.0),
@@ -483,6 +525,8 @@ impl TextSurfaceState {
         self.resident = resident;
 
         self.painted.clear();
+        self.gutter_lines.clear();
+        let mut gutter_items = Vec::new();
         let view_top = self.scroll.y;
         let view_bottom = self.scroll.y + viewport.height;
         let paint_style = TextPaintStyle::from_computed(&text_style);
@@ -503,6 +547,30 @@ impl TextSurfaceState {
             if top + height < view_top || top > view_bottom {
                 continue;
             }
+            if let Some(gutter) = &self.gutter
+                && self.gutter_width > 0.0
+                && let Some(layout) = measurer.layout(*handle)
+                && let Some(block_index) = measurer.paragraph_index(owner, document, paragraph)
+            {
+                let first = layout
+                    .lines
+                    .partition_point(|line| top + line.y + line.height <= view_top);
+                for (visual_line, line) in layout.lines.iter().enumerate().skip(first) {
+                    let y = top - view_top + line.y;
+                    if y >= viewport.height {
+                        break;
+                    }
+                    let row = GutterLine {
+                        block: self.blocks[&paragraph],
+                        block_index,
+                        visual_line,
+                        rect: Rect::new(0.0, y, self.gutter_width, line.height),
+                        baseline: top - view_top + line.baseline,
+                    };
+                    self.gutter_lines.push(row);
+                    gutter.renderer.draw(row, &mut gutter_items);
+                }
+            }
             let (_, paint_runs) = block.runs.split(&text_style);
             self.painted.push(PaintedBlock {
                 document,
@@ -516,6 +584,13 @@ impl TextSurfaceState {
             });
         }
 
+        gutter::prepare_paint(
+            owner,
+            measurer,
+            &text_style,
+            gutter_items,
+            &mut self.gutter_paint,
+        );
         let visible: Vec<BlockId> = self
             .painted
             .iter()
@@ -531,6 +606,46 @@ impl TextSurfaceState {
         self.ime_caret = model
             .primary_caret()
             .and_then(|at| self.geometry(owner, &*measurer).caret_rect(at));
+    }
+
+    fn forget_width(&mut self, id: BlockId) {
+        if let Some(bits) = self.measured_widths.remove(&id) {
+            self.widths.remove(&(bits, id));
+        }
+    }
+
+    pub(crate) fn metrics(&self) -> crate::scroll::ScrollMetrics {
+        let content_size = Size::new(
+            self.content_width.max(self.viewport.width),
+            self.document_height.max(self.viewport.height),
+        );
+        crate::scroll::ScrollMetrics {
+            offset: self.scroll,
+            viewport_size: self.viewport,
+            content_size,
+            max_offset: Point::new(
+                content_size.width - self.viewport.width,
+                content_size.height - self.viewport.height,
+            ),
+        }
+    }
+
+    pub(crate) fn apply_scroll(&mut self, offset: Point) {
+        self.scroll = offset;
+        self.anchor = None;
+        self.reported_offset = offset;
+    }
+
+    pub(crate) fn take_scroll_change(&mut self) -> Option<(Point, Point)> {
+        let before = std::mem::replace(&mut self.reported_offset, self.scroll);
+        (before != self.scroll).then_some((before, self.scroll))
+    }
+
+    pub(crate) fn body_box(&self, content: Bounds) -> Bounds {
+        Bounds::from_origin_size(
+            (content.x() + self.gutter_width, content.y()),
+            self.viewport,
+        )
     }
 
     /// The anchor before this sync moved anything, when it is still in the
@@ -570,6 +685,8 @@ impl TextSurfaceState {
         self.blocks.clear();
         self.resident.clear();
         self.anchor = None;
+        self.widths.clear();
+        self.measured_widths.clear();
         self.content_width = 0.0;
         self.needs_reset = false;
         let document = measurer.create_document(owner);
@@ -622,6 +739,7 @@ impl TextSurfaceState {
                     self.insert_block(owner, model, measurer, index, id, line_height);
                 }
                 BlockChange::Removed { id } => {
+                    self.forget_width(id);
                     if let Some(paragraph) = self.paragraphs.remove(&id) {
                         self.blocks.remove(&paragraph);
                         self.resident.retain(|resident| *resident != paragraph);
@@ -632,6 +750,7 @@ impl TextSurfaceState {
                     }
                 }
                 BlockChange::Text { id } => {
+                    self.forget_width(id);
                     if let Some(&paragraph) = self.paragraphs.get(&id) {
                         // Measured again if it is on screen; guessed until then.
                         let estimate = model.estimated_lines(id).max(1) as f32 * line_height;
@@ -800,7 +919,7 @@ impl TextSurfaceState {
     fn content_point(&self, cx: &EventContext<'_>, position: Point) -> Point {
         let content = content_box(cx);
         Point::new(
-            position.x - content.x() + self.scroll.x,
+            position.x - content.x() - self.gutter_width + self.scroll.x,
             position.y - content.y() + self.scroll.y,
         )
     }
@@ -827,8 +946,13 @@ impl TextSurfaceState {
             model_rc.borrow_mut().handle_input(input, &mut surface_cx)
         };
         let mut sync = requests.changed;
-        if let Some(y) = requests.scroll_to {
-            self.scroll.y = y.max(0.0);
+        if let Some(target) = requests.scroll_to {
+            if !target.x.is_nan() {
+                self.scroll.x = target.x.max(0.0);
+            }
+            if !target.y.is_nan() {
+                self.scroll.y = target.y.max(0.0);
+            }
             self.anchor = None;
             sync = true;
         }
@@ -846,15 +970,9 @@ impl TextSurfaceState {
     /// Scrolls by `delta` content pixels, as far as the content allows.
     /// Whether anything moved.
     fn scroll_by(&mut self, dx: f32, dy: f32, cx: &mut EventContext<'_>) -> bool {
-        let max_y = (self.document_height - self.viewport.height).max(0.0);
-        let max_x = match self.wrap {
-            SurfaceWrap::Width => 0.0,
-            SurfaceWrap::None => (self.content_width - self.viewport.width).max(0.0),
-        };
-        let next = Point::new(
-            (self.scroll.x + dx).clamp(0.0, max_x),
-            (self.scroll.y + dy).clamp(0.0, max_y),
-        );
+        let next = self
+            .metrics()
+            .clamp(Point::new(self.scroll.x + dx, self.scroll.y + dy));
         if next == self.scroll {
             return false;
         }
@@ -923,6 +1041,29 @@ impl TextSurfaceState {
         }
         match event {
             EventRef::Raw(RawEvent::PointerDown(pointer)) => {
+                let content = content_box(cx);
+                let local = Point::new(
+                    pointer.position.x - content.x(),
+                    pointer.position.y - content.y(),
+                );
+                if let Some(gutter) = &self.gutter
+                    && (0.0..self.gutter_width).contains(&local.x)
+                    && (0.0..self.viewport.height).contains(&local.y)
+                {
+                    if let Some(&line) = self.gutter_lines.iter().find(|line| {
+                        (line.rect.y..line.rect.y + line.rect.height).contains(&local.y)
+                    }) {
+                        gutter.renderer.press(GutterPress {
+                            line,
+                            point: local,
+                            button: pointer.button,
+                            modifiers: pointer.modifiers,
+                        });
+                        cx.mark_needs_text_shape();
+                        cx.mark_needs_paint();
+                    }
+                    return EventResult::Consumed;
+                }
                 let point = self.content_point(cx, pointer.position);
                 let count = self.click_count(pointer.timestamp, point);
                 if pointer.button == PointerButton::Primary {
@@ -1158,6 +1299,22 @@ impl PaintContent for TextSurfaceState {
             }
             Ok(())
         };
+        if self.gutter_width > 0.0 {
+            let bounds =
+                Bounds::from_origin_size(content.origin(), (self.gutter_width, content.height()));
+            writer
+                .clip(ClipShape::Rect(bounds), |writer| {
+                    writer.transform(Affine::translate(content.x(), content.y()), |writer| {
+                        for primitive in &self.gutter_paint {
+                            writer.primitive(primitive.clone())?;
+                        }
+                        Ok(())
+                    })?;
+                    Ok(())
+                })
+                .expect("valid gutter paint");
+        }
+        let content = self.body_box(content);
         writer
             .clip(ClipShape::Rect(content), |writer| {
                 let origin =
@@ -1202,7 +1359,7 @@ impl PlatformTextInput for TextSurfaceState {
             .unwrap_or_else(|| Rect::new(self.scroll.x, self.scroll.y, 1.0, 16.0));
         Some(TextInputSession {
             cursor_area: Rect::new(
-                content_rect.x() + caret.x - self.scroll.x,
+                content_rect.x() + self.gutter_width + caret.x - self.scroll.x,
                 content_rect.y() + caret.y - self.scroll.y,
                 caret.width.max(1.0),
                 caret.height.max(1.0),

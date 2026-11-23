@@ -812,8 +812,7 @@ fn demo_editor() -> xui_editor::EditorHandle {
     use xui_editor::{BufferHandle, EditorHandle, EditorStyle, KeywordHighlighter};
 
     let mut text = String::from(
-        "// A generated file: scroll it, select across lines, Option-click for\n\
-         // another caret, type with an IME, undo with Cmd-Z.\n\n",
+        "// A generated file: scroll it, select across lines, Option-click for another caret, type with an IME, undo with Cmd-Z.\n\n",
     );
     for index in 0..EDITOR_SAMPLE_FUNCTIONS {
         text.push_str(&format!(
@@ -880,7 +879,9 @@ fn editor_page() {
                 ) {
                     text_surface(
                         model: editor.surface(),
+                        gutter: Some(SurfaceGutter::line_numbers(52.0, Color::rgba(0.48, 0.51, 0.55, 1.0))),
                         wrap: SurfaceWrap::None,
+                        scrollbar_thumb_color: color::MUTED_FOREGROUND,
                         width: Sizing::fill(),
                         height: 460.0,
                         padding: EdgeInsets::all(12.0),

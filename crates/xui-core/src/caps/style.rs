@@ -170,6 +170,17 @@ style_capability! {
     extra(scroll_shorthands { scrollbar_style })
 }
 
+/// Scrollbar appearance for widgets which own their scrolling policy.
+pub mod scrollbar {
+    pub use super::scroll::{Properties, Scroll as Scrollbar, Storage};
+    pub mod props {
+        pub use super::super::scroll::props::{
+            scrollbar_radius, scrollbar_style, scrollbar_thumb_color, scrollbar_track_color,
+            scrollbar_visibility, scrollbar_width,
+        };
+    }
+}
+
 style_capability! {
     /// The pointer shown over the node. Changing it dirties nothing.
     pub mod cursor: Cursor {

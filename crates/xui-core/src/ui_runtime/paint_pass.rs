@@ -6,13 +6,13 @@ use crate::render::{
     SceneError, Shape, ShapePrimitive,
 };
 use crate::text::TextHost;
-use crate::ui_runtime::scroll::{scrollbar_parts, should_paint_scrollbar};
+use crate::ui_runtime::scroll::node_scrollbar_parts;
 use crate::ui_runtime::state::HostWorkFlags;
 use crate::ui_runtime::{NodeView, UiRuntime};
 use crate::widgets::{Widgets, canvas_text_slot};
 use xui_interface::{
-    Affine, Bounds, ComputedColorStyle, ComputedStyle, DisplayStyle, NodeId,
-    ScrollbarVisibilityStyle, TextBackend, TextLayoutInput, TextProps, VisibilityStyle,
+    Affine, Bounds, ComputedColorStyle, ComputedStyle, DisplayStyle, NodeId, TextBackend,
+    TextLayoutInput, TextProps, VisibilityStyle,
 };
 
 impl UiRuntime {
@@ -89,7 +89,9 @@ impl UiRuntime {
                 layout.scroll_offset,
                 host_children,
                 needs_scroll,
-                needs_scrollbar_overlay(node),
+                node_scrollbar_parts(node, viewport)
+                    .iter()
+                    .any(Option::is_some),
                 clip_shape,
                 layer_descriptor_from_style(node.effective_style, viewport),
                 is_drawn(node.effective_style),
@@ -427,6 +429,10 @@ impl UiRuntime {
                     });
             }
         });
+        if let Some(change) = self.take_surface_scroll(id) {
+            self.interaction_system
+                .record_clamped_scroll(id, change.before, change.after);
+        }
         self.mark_work(id, HostWorkFlags::REBUILD_PAINT);
     }
 
@@ -508,26 +514,10 @@ fn layer_descriptor_from_style(style: &ComputedStyle, bounds: Bounds) -> Option<
     descriptor.requires_isolation().then_some(descriptor)
 }
 
-fn needs_scrollbar_overlay(node: NodeView<'_>) -> bool {
-    let direction = node.effective_style.scroll.direction;
-    let scrollbar = node.effective_style.scroll.scrollbar;
-    if scrollbar.visibility == ScrollbarVisibilityStyle::Hidden
-        || scrollbar.width <= 0.0
-        || !scrollbar.thumb_color.is_visible()
-    {
-        return false;
-    }
-
-    let max_x = (node.content_size.width - node.layout.width()).max(0.0);
-    let max_y = (node.content_size.height - node.layout.height()).max(0.0);
-    (direction.allows_vertical() && should_paint_scrollbar(scrollbar, max_y))
-        || (direction.allows_horizontal() && should_paint_scrollbar(scrollbar, max_x))
-}
-
 fn render_scrollbars_in_rect(node: NodeView<'_>, rect: Bounds, writer: &mut RenderTreeWriter<'_>) {
     let scroll = node.effective_style.scroll;
     let scrollbar = scroll.scrollbar;
-    let parts = scrollbar_parts(rect, scroll, node.content_size, node.scroll_offset);
+    let parts = node_scrollbar_parts(node, rect);
     for part in parts.into_iter().flatten() {
         render_scrollbar_part(part.track, scrollbar.track_color, scrollbar.radius, writer);
         if let Some(thumb) = part.thumb {

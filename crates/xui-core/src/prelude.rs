@@ -44,9 +44,10 @@ pub use crate::theme::ThemeHandle;
 pub use crate::ticker::{Tick, Ticker};
 pub use crate::ui_runtime::{NodeView, RenderFrameError, UiRuntime};
 pub use crate::widgets::{
-    BlockChange, BlockId, DecorKind, DecorLayer, SurfaceBlock, SurfaceChanges, SurfaceCx,
-    SurfaceDecor, SurfaceInput, SurfacePointer, SurfacePointerKind, SurfacePosition, SurfaceRange,
-    SurfaceWrap, TextSurfaceHandle, TextSurfaceModel, UnderlineStyle, WeakTextSurfaceHandle,
+    BlockChange, BlockId, DecorKind, DecorLayer, GutterItem, GutterLine, GutterPress,
+    GutterRenderer, SurfaceBlock, SurfaceChanges, SurfaceCx, SurfaceDecor, SurfaceGutter,
+    SurfaceInput, SurfacePointer, SurfacePointerKind, SurfacePosition, SurfaceRange, SurfaceWrap,
+    TextSurfaceHandle, TextSurfaceModel, UnderlineStyle, WeakTextSurfaceHandle,
 };
 pub use crate::widgets::{
     CanvasContent, CanvasController, CanvasPainter, CanvasPick, CanvasPickTag, CanvasTextLayout,
