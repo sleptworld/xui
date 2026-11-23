@@ -5,6 +5,7 @@ use crate::event_system::translator::EventTranslator;
 use crate::platform::PlatformHandle;
 use crate::render::RenderBackend;
 use crate::scroll::AppliedScroll;
+use crate::shortcut::ShortcutManager;
 use crate::style::Theme;
 use crate::text::TextHost;
 use crate::theme::ThemeHandle;
@@ -57,6 +58,7 @@ pub struct App {
     finished: std::sync::mpsc::Receiver<(u64, Box<dyn std::any::Any + Send>)>,
     platform: PlatformHandle,
     theme: ThemeHandle,
+    shortcuts: ShortcutManager,
 }
 
 impl App {
@@ -159,11 +161,29 @@ impl App {
         result
     }
 
-    pub(crate) fn resolve_local_shortcut(
+    /// The app's own shortcuts: keys that mean a command wherever focus is.
+    /// A key resolves here only after the focused widget and the shortcuts
+    /// on its ancestors have passed, and its command goes to the command
+    /// root, the root component's first node.
+    pub fn shortcuts(&self) -> &ShortcutManager {
+        &self.shortcuts
+    }
+
+    pub fn shortcuts_mut(&mut self) -> &mut ShortcutManager {
+        &mut self.shortcuts
+    }
+
+    /// The command a key means and the node it goes to: a shortcut on the
+    /// focus path first, then one of the app's own.
+    pub(crate) fn resolve_shortcut(
         &self,
         event: &xui_interface::RawKeyboard,
     ) -> Option<(xui_interface::NodeId, xui_interface::ShortcutBinding)> {
-        self.ui_runtime.resolve_local_shortcut(event)
+        self.ui_runtime.resolve_local_shortcut(event).or_else(|| {
+            self.shortcuts
+                .resolve(event)
+                .map(|binding| (self.command_root(), binding))
+        })
     }
 
     pub(crate) fn command_root(&self) -> xui_interface::NodeId {
@@ -217,6 +237,7 @@ impl App {
             finished,
             platform,
             theme,
+            shortcuts: ShortcutManager::default(),
         };
         root(&mut app);
         app

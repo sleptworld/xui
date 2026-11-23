@@ -1,7 +1,6 @@
 use crate::clock::{FrameClock, FrameTime};
 use crate::core::Size;
 use crate::render::RenderBackend;
-use crate::shortcut::ShortcutManager;
 use crate::{
     app::{App, AppRenderError},
     text::{TextHost, TextLayoutSlot},
@@ -90,7 +89,6 @@ pub struct GuiRuntime<B: RenderBackend<TextHost<T>>, T: TextBackendI> {
     control_flow: ControlFlow,
     text_backend: TextHost<T>,
     frame_clock: FrameClock,
-    shortcuts: ShortcutManager,
     platform_output: PlatformOutput,
 }
 
@@ -102,20 +100,12 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
             control_flow: ControlFlow::Poll,
             text_backend: TextHost::new(text_backend),
             frame_clock: FrameClock::new(),
-            shortcuts: ShortcutManager::default(),
             platform_output: PlatformOutput::default(),
         }
     }
 
     pub fn app(&self) -> &App {
         &self.app
-    }
-
-    pub fn shortcuts(&self) -> &ShortcutManager {
-        &self.shortcuts
-    }
-    pub fn shortcuts_mut(&mut self) -> &mut ShortcutManager {
-        &mut self.shortcuts
     }
 
     pub fn app_mut(&mut self) -> &mut App {
@@ -244,12 +234,7 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
                 if !result.is_consumed()
                     && let Some(raw) = keyboard
                 {
-                    let resolved = self.app.resolve_local_shortcut(&raw).or_else(|| {
-                        self.shortcuts
-                            .resolve(&raw)
-                            .map(|binding| (self.app.command_root(), binding))
-                    });
-                    if let Some((target, binding)) = resolved {
+                    if let Some((target, binding)) = self.app.resolve_shortcut(&raw) {
                         result = self.app.dispatch_command(
                             target,
                             binding,
@@ -610,6 +595,85 @@ mod tests {
             assert!(
                 offsets().is_empty(),
                 "End reached the shortcut and still scrolled"
+            );
+        }
+    }
+
+    mod app_shortcuts {
+        use super::*;
+
+        use xui_interface::events::{
+            EventResult, KeyState, Modifiers, NamedKey, PhysicalKey, RawKeyboard,
+        };
+        use xui_interface::{CommandId, Shortcut};
+
+        thread_local! {
+            static RECEIVED: RefCell<Vec<(&'static str, CommandId)>> = const { RefCell::new(Vec::new()) };
+        }
+
+        fn received() -> Vec<(&'static str, CommandId)> {
+            RECEIVED.with(|r| r.borrow().clone())
+        }
+
+        /// A command root over a focusable child that claims End itself.
+        fn root() -> StaticTree {
+            container()
+                .with_on::<container::on_command, _>(|event, _| {
+                    RECEIVED.with(|r| r.borrow_mut().push(("root", event.command)));
+                    EventResult::Consumed
+                })
+                .into_tree(vec![
+                    container()
+                        .with::<container::width>(20.0)
+                        .with::<container::height>(20.0)
+                        .with::<container::tab_index>(0)
+                        .with::<container::shortcuts>([xui_interface::ShortcutBinding {
+                            shortcut: Shortcut::named(NamedKey::End),
+                            command: CommandId("child.end"),
+                        }])
+                        .with_on::<container::on_command, _>(|event, _| {
+                            RECEIVED.with(|r| r.borrow_mut().push(("child", event.command)));
+                            EventResult::Consumed
+                        })
+                        .into_tree(Vec::new()),
+                ])
+        }
+
+        fn key(named: NamedKey) -> RuntimeEvent {
+            RuntimeEvent::Input(RawEvent::Keyboard(RawKeyboard {
+                physical_key: PhysicalKey::Unidentified,
+                named_key: Some(named),
+                state: KeyState::Down,
+                text: None,
+                modifiers: Modifiers::default(),
+                timestamp: Instant::now(),
+                is_repeat: false,
+            }))
+        }
+
+        #[test]
+        fn an_app_shortcut_reaches_the_command_root_and_a_local_one_wins() {
+            let mut runtime = runtime_with(|app| {
+                app.mount_static(root());
+                app.shortcuts_mut()
+                    .register(Shortcut::named(NamedKey::Home), CommandId("app.home"));
+                app.shortcuts_mut()
+                    .register(Shortcut::named(NamedKey::End), CommandId("app.end"));
+            });
+            runtime.frame().unwrap();
+
+            runtime.handle_event(key(NamedKey::Home));
+            runtime.handle_event(key(NamedKey::Tab));
+            runtime.handle_event(key(NamedKey::End));
+            runtime.handle_event(key(NamedKey::Home));
+
+            assert_eq!(
+                received(),
+                vec![
+                    ("root", CommandId("app.home")),
+                    ("child", CommandId("child.end")),
+                    ("root", CommandId("app.home")),
+                ]
             );
         }
     }
