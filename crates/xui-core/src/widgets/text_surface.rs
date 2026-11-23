@@ -96,6 +96,10 @@ pub struct TextSurface {
     #[default]
     #[dirty(PAINT_OUTPUT)]
     pub disabled: bool,
+    /// Paint model carets in the surface's resolved text color.
+    #[default]
+    #[dirty(PAINT_OUTPUT)]
+    pub caret_uses_text_color: bool,
     #[default]
     #[dirty(PAINT_OUTPUT | TEXT_SHAPE)]
     pub wrap: SurfaceWrap,
@@ -182,6 +186,7 @@ pub struct TextSurfaceState {
     handle: TextSurfaceHandle,
     binding: Option<(NodeId, CanvasInvalidator)>,
     disabled: bool,
+    caret_uses_text_color: bool,
     wrap: SurfaceWrap,
     overscan: f32,
     /// Set when the next sync must read the whole model again.
@@ -249,6 +254,7 @@ impl TextSurfaceState {
             handle: props.model.clone(),
             binding: None,
             disabled: props.disabled,
+            caret_uses_text_color: props.caret_uses_text_color,
             wrap: props.wrap,
             overscan: props.overscan,
             needs_reset: true,
@@ -294,6 +300,7 @@ impl TextSurfaceState {
     /// Takes on `next`'s props, moving the binding to a new model.
     fn follow(&mut self, next: &TextSurfaceProps) {
         self.disabled = next.disabled;
+        self.caret_uses_text_color = next.caret_uses_text_color;
         self.wrap = next.wrap;
         self.gutter = next.gutter.clone();
         self.overscan = next.overscan;
@@ -1331,6 +1338,11 @@ impl PaintContent for TextSurfaceState {
                             paint: if show_carets && !block.carets.is_empty() {
                                 let mut paint = block.paint.clone();
                                 paint.carets.clone_from(&block.carets);
+                                if self.caret_uses_text_color {
+                                    for caret in &mut paint.carets {
+                                        caret.color = style.text.color;
+                                    }
+                                }
                                 paint
                             } else {
                                 block.paint.clone()

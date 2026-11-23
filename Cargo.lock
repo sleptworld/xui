@@ -5358,6 +5358,7 @@ dependencies = [
  "tokio",
  "xui-core",
  "xui-cosmic",
+ "xui-editor",
  "xui-interface",
  "xui-macros",
  "zune-core",

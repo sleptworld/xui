@@ -9,6 +9,7 @@ use xui_macros::component;
 thread_local! {
     static CASE: Cell<usize> = const { Cell::new(0) };
     static VALUES: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
+    static NOTES: TextareaBuffer = TextareaBuffer::new("");
     static CONTROLLER: TextController = TextController::with_text("initial");
 }
 fn record(value: f32) {
@@ -54,6 +55,9 @@ fn interaction() {
                     render_item: VirtualItemRenderer::new(|index: usize| index.to_string().into()),
                     style: StyleOf::new().with::<container::height>(Sizing::Fill),
                 ),
+                11 => textarea(buffer: Some(NOTES.with(Clone::clone))),
+                12 => textarea(buffer: Some(NOTES.with(Clone::clone)), read_only: true),
+                13 => textarea(buffer: Some(NOTES.with(Clone::clone)), disabled: true),
                 _ => container(),
             }
         }
@@ -229,4 +233,49 @@ fn virtual_list_follows_viewport_resize_without_a_wheel_event() {
         "resizing did not extend the visible window: {before} -> {after}"
     );
     assert!(after < 30, "resizing mounted too many rows: {after}");
+}
+
+#[test]
+fn textarea_edits_multiline_buffer_and_respects_input_modes() {
+    for case in [11, 12, 13] {
+        NOTES.with(|buffer| buffer.set_text(""));
+        let mut h = Harness::new(case);
+        h.key(NamedKey::Tab);
+        h.event(keyboard(None, Some("a")));
+        h.key(NamedKey::Enter);
+        h.event(keyboard(None, Some("b")));
+        assert_eq!(
+            NOTES.with(TextareaBuffer::text),
+            if case == 11 { "a\nb" } else { "" }
+        );
+    }
+}
+
+#[test]
+fn focused_textarea_caret_follows_the_text_color_when_the_theme_changes() {
+    use xui_core::render::{BuiltDraw, BuiltItem};
+
+    let mut h = Harness::new(11);
+    h.key(NamedKey::Tab);
+    let mut colors = Vec::new();
+    for mode in [ThemeMode::Light, ThemeMode::Dark] {
+        h.runtime.app_mut().set_theme_mode(mode);
+        h.render();
+        let frame = h.runtime.backend().last_frame.as_ref().unwrap();
+        let paint = frame
+            .layers
+            .iter()
+            .flat_map(|layer| &layer.items)
+            .find_map(|item| {
+                if let BuiltItem::Draw(BuiltDraw::Text(text)) = item {
+                    return Some(&text.primitive.paint);
+                }
+                None
+            })
+            .expect("focused empty textarea has a text primitive");
+        assert_eq!(paint.carets.len(), 1);
+        assert_eq!(paint.carets[0].color, paint.style.color);
+        colors.push(paint.style.color);
+    }
+    assert_ne!(colors[0], colors[1]);
 }

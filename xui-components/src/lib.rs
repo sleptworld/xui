@@ -62,6 +62,7 @@
 //! | [`forms`](mod@crate::forms) | [`form_field`](fn@crate::forms::form_field) | A labeled form-control wrapper with description and validation feedback. |
 //! | [`image`](mod@crate::image) | [`image`](fn@crate::image::image) | An asynchronous image loaded from a packaged asset, URL, or local path. |
 //! | [`input`](mod@crate::input) | [`input`](fn@crate::input::input) | A single-line text field with IME, validation styling, and durable editing state. |
+//! | [`input`](mod@crate::input) | [`textarea`](fn@crate::input::textarea) | A wrapping multiline editor with a shareable text buffer. |
 //! | [`overlays`](mod@crate::overlays) | [`context_menu`](fn@crate::overlays::context_menu) | A menu opened by semantic context-menu events at a pointer or keyboard-requested position. |
 //! | [`overlays`](mod@crate::overlays) | [`dialog`](fn@crate::overlays::dialog) | A modal portal containing a titled dialog panel and backdrop. |
 //! | [`overlays`](mod@crate::overlays) | [`drawer`](fn@crate::overlays::drawer) | An edge-mounted modal sheet with a configurable side and backdrop. |

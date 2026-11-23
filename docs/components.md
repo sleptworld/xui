@@ -13,7 +13,7 @@ value, a `default_*` value for uncontrolled use, and an `on_*` callback.
 | Area | Components |
 | --- | --- |
 | Actions | `button` with six variants and four sizes |
-| Text and choice inputs | `input`, `checkbox`, `radio_group`, `switch`, `slider`, `drop_down` (`select` and `combo_box` aliases) |
+| Text and choice inputs | `input`, `textarea`, `checkbox`, `radio_group`, `switch`, `slider`, `drop_down` (`select` and `combo_box` aliases) |
 | Overlay and transient UI | `dialog`, `drawer` (`sheet` alias), `popover`, `tooltip`, `menu`, `context_menu`, `toast`, `command_palette` |
 | Navigation and disclosure | `tabs`, `collapsible`, `accordion`, `breadcrumb`, `pagination` |
 | Date | `calendar`, `date_picker`, `CalendarDate`, `CalendarMonth` |
@@ -86,6 +86,7 @@ The image component also accepts `style`, separate from pixel fitting via
 | Components | Configuration and customization |
 | --- | --- |
 | `button` | Variant, size, loading, disabled, full width, leading/trailing/loading elements, label style, transition duration, accessibility label |
+| `textarea` | Soft-wrapped multiline editing on `text_surface`, optional shared `TextareaBuffer`, initial text, disabled/read-only modes, accessibility label, frame and surface styles |
 | `input` | Optional durable controller, disabled, read-only, invalid/required, accessibility label, root/input styles, padding, dimensions and bounds, border/background |
 | `drop_down`, `select`, `combo_box` | Controlled/default selection and open state, open/change callbacks, disabled options, placeholder, placement/collision behavior, z-index, independent style slots, custom ID prefix |
 | `tabs` | Controlled/default selection, horizontal/vertical orientation, automatic/manual activation, wrapping, disabled items, list/tab/panel styles, custom ID prefix |

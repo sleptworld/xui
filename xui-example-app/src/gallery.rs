@@ -53,7 +53,7 @@ impl Page {
         match self {
             Page::Button => "Displays a button or a component that looks like a button.",
             Page::Spinner => "An indeterminate progress indicator that turns on its own.",
-            Page::Input => "A single-line text field with IME support.",
+            Page::Input => "Single-line and multiline text fields with IME support.",
             Page::Select => "A list of options for the user to pick from, shown in a portal.",
             Page::Tabs => "Layered sections of content, displayed one at a time.",
             Page::Image => "Loads images from assets, files, or URLs, with fit modes.",
@@ -329,6 +329,9 @@ fn input_page() {
                 container(style: StyleOf::new().with::<container::width>(320.0)) {
                     input(controller: Some(email.clone()))
                 }
+            }
+            example(title: "Multiline") {
+                textarea(default_value: "First line\nSecond line".to_owned(), accessibility_label: Some("Notes".to_owned()))
             }
             example(title: "With label") {
                 field(label: "Email", hint: Some("Click to focus; click the empty area around it to blur.".to_string())) {
