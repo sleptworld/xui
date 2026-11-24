@@ -171,6 +171,26 @@ impl MountCx<'_> {
         })
     }
 
+    /// `context!(K)`: the app's value under the key `K`.
+    ///
+    /// Takes the `let`'s type as `V` so a mismatch is reported against the
+    /// key, as `K::Value` not being `V`.
+    pub fn context_of<K: super::ContextKey<Value = V>, V: PartialEq + 'static>(
+        &mut self,
+    ) -> ReadSignal<V> {
+        self.contexts
+            .find(std::any::TypeId::of::<K>())
+            .unwrap_or_else(|| {
+                panic!(
+                    "no context under `{}`: only the system's keys (`xui_core::system`) are provided",
+                    std::any::type_name::<K>()
+                )
+            })
+            .downcast_ref::<ReadSignal<V>>()
+            .expect("context under another type's id")
+            .clone()
+    }
+
     /// `ticker!(..)`'s handle: registered now, running once the instance is
     /// mounted and the ticker has its callback.
     #[doc(hidden)]

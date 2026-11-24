@@ -98,6 +98,7 @@ the notifier (an `Rc<RefCell<Vec<SourceId>>>`); async code gets a
 | `use_callback`              | a `&Callback<A>` prop, set by the parent with a closure `|cx, value| ..`; the child calls `on_x.call(cx, v)` |
 | `use_ref`                   | a typed `let` (a field, not tracked); `Cell`/`RefCell` inside for mutation |
 | `use_context`               | `let t: T = context!();` — nearest ancestor's `provide!(source_or_value)`, else `App::provide_context` |
+| `MediaQuery.sizeOf` etc.    | `let m: bool = context!(window::Maximized);` — one system field per `ContextKey` (`xui_core::system::{window, viewport}`), subscribed alone |
 | `use_size`                  | `let s: Option<Size<f32>> = size!();` passed by name to a host's `size_observer` |
 | `use_ticker`                | `let t: Ticker = ticker!(|cx, frame| -> Tick { .. });` (or as a statement) |
 | `use_resource`, `use_task`  | `resource!(deps => async ..)`: a `Signal<AsyncValue<T>>` written from the async channel |

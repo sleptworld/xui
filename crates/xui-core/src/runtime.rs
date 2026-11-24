@@ -180,6 +180,13 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
         self.app.set_window_visible(visible);
     }
 
+    /// Tells the runtime whether the window is minimized, which components
+    /// read as [`crate::system::window::Minimized`]. Best-effort, like
+    /// [`Self::set_window_visible`]: a host that cannot tell never calls it.
+    pub fn set_window_minimized(&mut self, minimized: bool) {
+        self.app.set_window_minimized(minimized);
+    }
+
     pub fn platform_output(&self) -> &PlatformOutput {
         &self.platform_output
     }
@@ -284,7 +291,7 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
                 Vec::new()
             }
             RuntimeEvent::WindowState(state) => {
-                self.app.platform().set_window_state(state);
+                self.app.set_window_state(state);
                 Vec::new()
             }
             RuntimeEvent::Drag(drag) => {
@@ -1103,6 +1110,42 @@ mod tests {
             assert_eq!(handle.capabilities(), capabilities);
             assert_eq!(handle.appearance(), appearance);
             assert_eq!(handle.window_state(), state);
+        }
+
+        #[test]
+        fn what_the_host_reports_is_written_under_the_system_keys() {
+            use crate::system::{viewport, window};
+            let mut runtime = runtime();
+            assert!(runtime.app().system::<window::Focused>());
+            assert!(runtime.app().system::<window::Visible>());
+            assert!(!runtime.app().system::<window::Fullscreen>());
+
+            runtime.handle_event(RuntimeEvent::WindowState(xui_interface::WindowState {
+                fullscreen: true,
+                maximized: true,
+            }));
+            runtime.handle_event(RuntimeEvent::Resize(Size::new(1024.0, 768.0)));
+            runtime.handle_event(RuntimeEvent::Input(RawEvent::WindowBlur(
+                xui_interface::events::RawWindowEvent {
+                    timestamp: Instant::now(),
+                    modifiers: Default::default(),
+                },
+            )));
+            runtime.set_window_minimized(true);
+            runtime.set_window_visible(false);
+            runtime.app_mut().set_scale_factor(2.0);
+
+            let app = runtime.app();
+            assert!(app.system::<window::Fullscreen>());
+            assert!(app.system::<window::Maximized>());
+            assert!(app.system::<window::Minimized>());
+            assert!(!app.system::<window::Focused>());
+            assert!(!app.system::<window::Visible>());
+            assert_eq!(
+                app.system::<viewport::LogicalSize>(),
+                Size::new(1024.0, 768.0)
+            );
+            assert_eq!(app.system::<viewport::ScaleFactor>(), 2.0);
         }
 
         fn leaving_root() -> StaticTree {

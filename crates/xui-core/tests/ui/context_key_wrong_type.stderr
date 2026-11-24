@@ -1,0 +1,11 @@
+error[E0271]: type mismatch resolving `<Maximized as ContextKey>::Value == f32`
+  --> tests/ui/context_key_wrong_type.rs:10:35
+   |
+10 |     let maximized: f32 = context!(window::Maximized);
+   |                                   ^^^^^^^^^^^^^^^^^ expected `f32`, found `bool`
+   |
+note: required by a bound in `MountCx::<'_>::context_of`
+  --> src/reactive/template.rs
+   |
+   |     pub fn context_of<K: super::ContextKey<Value = V>, V: PartialEq + 'static>(
+   |                                            ^^^^^^^^^ required by this bound in `MountCx::<'_>::context_of`

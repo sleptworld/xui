@@ -148,7 +148,7 @@ pub use props::{
     PropKind, SourceArg, Tracked,
 };
 pub use runtime::{Cx, FlushReport, Place, Runtime};
-pub use signal::{Memo, ReadSignal, Signal, Source};
+pub use signal::{ContextKey, Memo, ReadSignal, Signal, Source};
 pub use tasks::AsyncValue;
 pub use template::{
     __apply, __host, __pending, BuildHost, ChildSpec, ComponentDef, EffectSpec, HostDraft, Lane,

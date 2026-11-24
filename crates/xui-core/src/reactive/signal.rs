@@ -12,6 +12,22 @@ struct SourceCell<T> {
     value: RefCell<T>,
 }
 
+/// A context looked up by a key type rather than by its value's type, so
+/// one value type can be provided under many keys: `context!(K)` reads the
+/// `K::Value` provided under `K`, and subscribes to that alone.
+///
+/// The system's state is provided this way, one key per field
+/// ([`crate::system`]), so a component reading whether the window is
+/// maximized does not rerun when the window is resized.
+///
+/// Only the runtime provides under a key, so the keys there are are the
+/// system's. Each is an uninhabited `enum`: a value of the key's own type
+/// can then never be provided with `provide_context`/`provide!` and take
+/// its slot.
+pub trait ContextKey: 'static {
+    type Value: PartialEq + 'static;
+}
+
 /// Anything the runtime can subscribe an effect to.
 pub trait Source {
     fn id(&self) -> SourceId;

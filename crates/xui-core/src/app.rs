@@ -7,6 +7,7 @@ use crate::render::RenderBackend;
 use crate::scroll::AppliedScroll;
 use crate::shortcut::ShortcutManager;
 use crate::style::Theme;
+use crate::system;
 use crate::text::TextHost;
 use crate::theme::ThemeHandle;
 use crate::ui_runtime::{ExternalDrag, RenderFrameError, UiRuntime};
@@ -227,6 +228,7 @@ impl App {
         let theme = ThemeHandle::new(appearance.color_scheme);
         reactive.provide_context(theme.clone());
         reactive.provide_context(appearance);
+        provide_system_defaults(&mut reactive);
         ui_runtime.set_theme(theme.current());
         let mut app = Self {
             ui_runtime,
@@ -383,6 +385,8 @@ impl App {
 
     pub fn set_scale_factor(&mut self, scale_factor: f32) {
         self.ui_runtime.set_scale_factor(scale_factor);
+        self.reactive
+            .provide_keyed::<system::viewport::ScaleFactor>(scale_factor);
     }
 
     /// Writes the results of the `resource!` futures that finished since
@@ -401,6 +405,8 @@ impl App {
             self.size = size;
             self.ui_runtime
                 .mark_subtree_layout_dirty(self.ui_runtime.root());
+            self.reactive
+                .provide_keyed::<system::viewport::LogicalSize>(size);
         }
     }
 
@@ -409,6 +415,11 @@ impl App {
         event: RawEvent,
         text: &mut TextHost<T>,
     ) -> EventResult {
+        match &event {
+            RawEvent::WindowFocus(_) => self.reactive.provide_keyed::<system::window::Focused>(true),
+            RawEvent::WindowBlur(_) => self.reactive.provide_keyed::<system::window::Focused>(false),
+            _ => {}
+        }
         self.rebuild_sync_if_needed();
         self.ui_runtime.update_tree(self.size, text);
         // Before the input: a clamp that layout just made happened first.
@@ -605,6 +616,34 @@ impl App {
     #[inline(always)]
     pub(crate) fn set_window_visible(&mut self, visible: bool) {
         self.ui_runtime.set_window_visible(visible);
+        self.reactive
+            .provide_keyed::<system::window::Visible>(visible);
+    }
+
+    /// What a component reading `context!(K)` would see now.
+    #[cfg(test)]
+    pub(crate) fn system<K: crate::reactive::ContextKey>(&self) -> K::Value
+    where
+        K::Value: Clone,
+    {
+        self.reactive.keyed::<K>()
+    }
+
+    /// Records whether the window is minimized, for `window::Minimized`.
+    pub(crate) fn set_window_minimized(&mut self, minimized: bool) {
+        self.reactive
+            .provide_keyed::<system::window::Minimized>(minimized);
+    }
+
+    /// Records the fullscreen and maximized state someone other than the
+    /// runtime set, on the platform handle and as `window::Fullscreen` and
+    /// `window::Maximized`.
+    pub(crate) fn set_window_state(&mut self, state: xui_interface::WindowState) {
+        self.platform.set_window_state(state);
+        self.reactive
+            .provide_keyed::<system::window::Fullscreen>(state.fullscreen);
+        self.reactive
+            .provide_keyed::<system::window::Maximized>(state.maximized);
     }
 
     #[inline(always)]
@@ -825,4 +864,16 @@ impl App {
             backend.handle_node_lifecycle(&event);
         }
     }
+}
+
+/// What [`crate::system`]'s keys read before the host reports anything.
+fn provide_system_defaults(reactive: &mut crate::reactive::Runtime) {
+    use system::{viewport, window};
+    reactive.provide_keyed::<window::Fullscreen>(false);
+    reactive.provide_keyed::<window::Maximized>(false);
+    reactive.provide_keyed::<window::Minimized>(false);
+    reactive.provide_keyed::<window::Focused>(true);
+    reactive.provide_keyed::<window::Visible>(true);
+    reactive.provide_keyed::<viewport::LogicalSize>(Size::<f32>::ZERO);
+    reactive.provide_keyed::<viewport::ScaleFactor>(1.0);
 }

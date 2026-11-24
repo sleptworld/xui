@@ -732,8 +732,12 @@ where
     /// window permanently visible.
     fn refresh_window_visibility(&mut self) {
         let size = self.window.surface_size();
+        let minimized = self.window.is_minimized();
+        if let Some(minimized) = minimized {
+            self.runtime.set_window_minimized(minimized);
+        }
         let visible = !self.occluded
-            && !self.window.is_minimized().unwrap_or(false)
+            && !minimized.unwrap_or(false)
             && size.width > 0
             && size.height > 0;
 

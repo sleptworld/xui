@@ -575,6 +575,108 @@ fn context_comes_from_the_nearest_provider_or_the_app() {
 }
 
 #[component]
+fn title_bar() {
+    let maximized: bool = context!(crate::system::window::Maximized);
+    let size: crate::core::Size<f32> = context!(crate::system::viewport::LogicalSize);
+    let wide: bool = memo!(size.width >= 800.0);
+    view! {
+        column {
+            text(if *maximized { "max" } else { "normal" })
+            text(if *wide { "wide" } else { "narrow" })
+        }
+    }
+}
+
+#[test]
+fn a_context_key_subscribes_to_its_field_alone() {
+    use crate::core::Size;
+    use crate::system::{viewport::LogicalSize, window::Maximized};
+
+    let mut ui = UiRuntime::new();
+    let mut runtime = Runtime::new();
+    runtime.provide_keyed::<Maximized>(false);
+    runtime.provide_keyed::<LogicalSize>(Size::new(600.0, 400.0));
+    let root = ui.root();
+    let id = runtime.mount::<TitleBar>(&mut ui, root, TitleBarProps {});
+    assert_eq!(
+        shown(&ui, &runtime, id),
+        "<container><text>normal</text><text>narrow</text></container>"
+    );
+
+    // A resize reruns the breakpoint and nothing else; staying narrow, no text.
+    runtime.provide_keyed::<LogicalSize>(Size::new(700.0, 400.0));
+    assert_eq!(
+        runtime.flush(&mut ui),
+        FlushReport {
+            memos: 1,
+            ..Default::default()
+        }
+    );
+
+    // Crossing it updates the one text that reads it.
+    runtime.provide_keyed::<LogicalSize>(Size::new(900.0, 400.0));
+    assert_eq!(
+        runtime.flush(&mut ui),
+        FlushReport {
+            memos: 1,
+            renders: 1,
+            ..Default::default()
+        }
+    );
+
+    // Maximizing touches neither the memo nor the breakpoint's text.
+    runtime.provide_keyed::<Maximized>(true);
+    assert_eq!(
+        runtime.flush(&mut ui),
+        FlushReport {
+            renders: 1,
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        shown(&ui, &runtime, id),
+        "<container><text>max</text><text>wide</text></container>"
+    );
+
+    // Providing what is already there notifies nobody.
+    runtime.provide_keyed::<Maximized>(true);
+    assert_eq!(runtime.flush(&mut ui), FlushReport::default());
+}
+
+#[component]
+fn window_summary() {
+    let maximized: bool = context!(crate::system::window::Maximized);
+    let size: crate::core::Size<f32> = context!(crate::system::viewport::LogicalSize);
+    view! { text(format!("{} {}", maximized, size.width)) }
+}
+
+#[test]
+fn fields_changed_together_are_read_together() {
+    use crate::core::Size;
+    use crate::system::{viewport::LogicalSize, window::Maximized};
+
+    let mut ui = UiRuntime::new();
+    let mut runtime = Runtime::new();
+    runtime.provide_keyed::<Maximized>(false);
+    runtime.provide_keyed::<LogicalSize>(Size::new(600.0, 400.0));
+    let root = ui.root();
+    let id = runtime.mount::<WindowSummary>(&mut ui, root, WindowSummaryProps {});
+    assert_eq!(shown(&ui, &runtime, id), "<text>false 600</text>");
+
+    // One host event, two fields: the binding reading both runs once, after both.
+    runtime.provide_keyed::<Maximized>(true);
+    runtime.provide_keyed::<LogicalSize>(Size::new(1440.0, 900.0));
+    assert_eq!(
+        runtime.flush(&mut ui),
+        FlushReport {
+            renders: 1,
+            ..Default::default()
+        }
+    );
+    assert_eq!(shown(&ui, &runtime, id), "<text>true 1440</text>");
+}
+
+#[component]
 fn measured() {
     let size: Option<crate::core::Size<f32>> = size!();
     let frames: u32 = state!(0);

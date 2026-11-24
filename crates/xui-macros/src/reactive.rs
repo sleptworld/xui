@@ -268,8 +268,12 @@ enum Setup {
     Memo { name: usize, body: Expr },
     /// `effect!(|cx| ..);`
     Effect { closure: ExprClosure },
-    /// `let name: T = context!();`
-    Context { name: usize },
+    /// `let name: T = context!();`, or `context!(Key)` for the value under
+    /// a `ContextKey`.
+    Context {
+        name: usize,
+        key: Option<syn::Type>,
+    },
     /// `provide!(source_or_value);`
     Provide { expr: Expr },
     /// `ticker!(|cx, frame| ..)`, kept as field `name` when a `let` names it.
@@ -1589,12 +1593,16 @@ fn classify(stmt: Stmt, order: usize, names: &mut Vec<Name>) -> Result<Setup> {
                 Setup::Size { name }
             }
             _ => {
-                if !mac.tokens.is_empty() {
-                    return Err(Error::new(
-                        mac.tokens.span(),
-                        "`context!()` takes nothing: its type is the `let`'s",
-                    ));
-                }
+                let key = if mac.tokens.is_empty() {
+                    None
+                } else {
+                    Some(syn::parse2::<syn::Type>(mac.tokens.clone()).map_err(|_| {
+                        Error::new(
+                            mac.tokens.span(),
+                            "`context!()` reads the context of the `let`'s type, `context!(Key)` the one under a `ContextKey`",
+                        )
+                    })?)
+                };
                 let name = declare(
                     names,
                     ident,
@@ -1603,7 +1611,7 @@ fn classify(stmt: Stmt, order: usize, names: &mut Vec<Name>) -> Result<Setup> {
                     Some(Handle::ReadSignal),
                     order,
                 )?;
-                Setup::Context { name }
+                Setup::Context { name, key }
             }
         });
     }
@@ -2008,10 +2016,15 @@ pub fn expand(function: ItemFn) -> Result<TokenStream> {
                 let (id, ty) = (&n.ident, n.field_ty(&k));
                 create.push(quote!(let #id: #ty = #user_cx.signal(::core::option::Option::None);));
             }
-            Setup::Context { name } => {
+            Setup::Context { name, key } => {
                 let n = &names[*name];
                 let (id, ty, value) = (&n.ident, n.field_ty(&k), &n.ty);
-                create.push(quote!(let #id: #ty = #user_cx.context::<#value>();));
+                create.push(match key {
+                    None => quote!(let #id: #ty = #user_cx.context::<#value>();),
+                    Some(key) => quote_spanned! {key.span()=>
+                        let #id: #ty = #user_cx.context_of::<#key, #value>();
+                    },
+                });
             }
             Setup::Provide { expr } => {
                 // A source by name is provided as itself, anything else as a constant.

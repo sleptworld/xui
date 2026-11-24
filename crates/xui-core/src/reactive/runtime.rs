@@ -17,7 +17,7 @@ use super::block::{BlockCx, BlockState, Row, RowParts};
 use super::graph::{EffectId, Graph, InstanceId, Notifier, SourceId};
 use super::host::{HostPatcher, PatchScope};
 use super::props::{Component, Derived, PropCx};
-use super::signal::Signal;
+use super::signal::{ContextKey, Signal};
 use super::template::{
     ChildSpec, ComponentDef, Context, EffectSpec, HostDraft, Lane, MountCx, NodeKind, PendingMount,
     Run, Scope, StaticNode,
@@ -506,14 +506,38 @@ impl Runtime {
     /// Sets the app's context of type `T`, which scopes without an ancestor
     /// providing one read; a scope reading it reruns when it changes.
     pub fn provide_context<T: PartialEq + 'static>(&mut self, value: T) {
-        let id = std::any::TypeId::of::<T>();
+        self.provide_under(std::any::TypeId::of::<T>(), value);
+    }
+
+    /// Sets the app's context under the key `K`, which `context!(K)` reads.
+    /// Crate-private: the keys there are, the system's, are the host's to write.
+    pub(crate) fn provide_keyed<K: ContextKey>(&mut self, value: K::Value) {
+        self.provide_under(std::any::TypeId::of::<K>(), value);
+    }
+
+    /// The app's value under the key `K`, read without subscribing.
+    #[cfg(test)]
+    pub(crate) fn keyed<K: ContextKey>(&self) -> K::Value
+    where
+        K::Value: Clone,
+    {
+        let (read, _) = &self.contexts[&std::any::TypeId::of::<K>()];
+        read.downcast_ref::<super::ReadSignal<K::Value>>()
+            .expect("context under another type's id")
+            .get()
+    }
+
+    /// Writes the app's context under `id` if `value` is new, and notifies
+    /// its readers; creates it on first use.
+    fn provide_under<T: PartialEq + 'static>(&mut self, id: std::any::TypeId, value: T) {
         if let Some((_, write)) = self.contexts.get(&id) {
             let signal = write
                 .downcast_ref::<Signal<T>>()
                 .expect("context of another type");
-            if *signal.read() != value {
-                signal.set(&mut Cx::handler(&self.notifier), value);
-            }
+            // Through the graph rather than the notifier: only a context
+            // someone reads leaves work behind, so the system's keys can be
+            // written on every host event without asking for frames.
+            signal.replace_if_changed(&mut self.graph, value);
             return;
         }
         let signal = self.signal(value);
