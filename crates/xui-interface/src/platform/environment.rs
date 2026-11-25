@@ -28,6 +28,10 @@ impl HostCapabilities {
     /// as soon as possible. Without it nothing that waits on a deadline -- a
     /// blinking caret -- gets its frame, so such UI holds still instead.
     pub const TIMED_REDRAW: Self = Self(1 << 14);
+    /// The host opens and closes windows the runtime asks for
+    /// ([`PlatformCommand::OpenWindow`](super::PlatformCommand::OpenWindow)),
+    /// beside the one it starts with.
+    pub const MULTI_WINDOW: Self = Self(1 << 15);
 
     /// Whether every capability in `other` is present.
     pub const fn contains(self, other: Self) -> bool {

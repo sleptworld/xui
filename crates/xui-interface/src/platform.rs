@@ -7,6 +7,7 @@ mod command;
 mod environment;
 mod menu;
 mod surface;
+mod window;
 
 pub use command::{
     ClipboardContent, ClipboardTarget, FileDialog, FileFilter, MessageBox, MessageLevel,
@@ -14,11 +15,12 @@ pub use command::{
     WindowCommand,
 };
 pub use environment::{Appearance, ColorScheme, HostCapabilities, WindowGeometry, WindowState};
-pub use menu::{Menu, MenuBar, MenuEntry, MenuItem, MenuRole, commands};
+pub use menu::{Menu, MenuBar, MenuEntry, MenuItem, MenuRole, WindowMenu, commands};
 pub use surface::{
     DragEvent, DragPayload, DropAccepts, DropEffect, DropTarget, PublishedSurface, RegionRect,
     TextDocument, WindowRegion,
 };
+pub use window::{MacOsWindowOptions, PhysicalSize, WindowId, WindowOptions, WindowSize};
 
 /// Platform-facing state desired by the UI runtime.
 ///

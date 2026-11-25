@@ -19,7 +19,8 @@ use xui_interface::{
 };
 
 use crate::published::PublishedHandle;
-use crate::window::{Performed, PhysicalSize, PlatformWindow};
+use crate::window::{Performed, PlatformWindow};
+use xui_interface::PhysicalSize;
 
 /// A platform event, already translated out of the host's vocabulary.
 ///

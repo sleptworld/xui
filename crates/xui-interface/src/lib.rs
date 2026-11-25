@@ -45,11 +45,12 @@ pub use events::{
 };
 pub use platform::{
     Appearance, ClipboardContent, ClipboardTarget, ColorScheme, DragEvent, DragPayload,
-    DropAccepts, DropEffect, DropTarget, FileDialog, FileFilter, HostCapabilities, Menu, MenuBar,
-    MenuEntry, MenuItem, MenuRole, MessageBox, MessageLevel, PlatformCommand, PlatformError,
-    PlatformOutput, PlatformReply, PlatformRequest, PublishedSurface, RegionRect, RequestId,
-    ResizeEdge, TextDocument, TextInputPurpose, TextInputSession, WindowCommand, WindowGeometry,
-    WindowRegion, WindowState, commands,
+    DropAccepts, DropEffect, DropTarget, FileDialog, FileFilter, HostCapabilities,
+    MacOsWindowOptions, Menu, MenuBar, MenuEntry, MenuItem, MenuRole, MessageBox, MessageLevel,
+    PhysicalSize, PlatformCommand, PlatformError, PlatformOutput, PlatformReply, PlatformRequest,
+    PublishedSurface, RegionRect, RequestId, ResizeEdge, TextDocument, TextInputPurpose,
+    TextInputSession, WindowCommand, WindowGeometry, WindowId, WindowMenu, WindowOptions,
+    WindowRegion, WindowSize, WindowState, commands,
 };
 pub use render::*;
 pub use runtime::EventSource;

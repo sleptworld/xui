@@ -50,7 +50,7 @@ pub use raw_window_handle;
 pub use shell::{
     FrameInfo, KeyInput, Shell, ShellControl, ShellEvent, ShellOptions, ShellOutcome, TouchPhase,
 };
-pub use window::{
-    MacOsWindowOptions, Performed, PhysicalSize, PlatformWindow, SurfaceTarget, WindowOptions,
-    WindowSize,
-};
+pub use window::{Performed, PlatformWindow, SurfaceTarget};
+// Defined in `xui-interface`, where the runtime can name them too; re-exported
+// so hosts keep finding them here.
+pub use xui_interface::{MacOsWindowOptions, PhysicalSize, WindowOptions, WindowSize};

@@ -45,6 +45,26 @@ impl MenuItem {
     }
 }
 
+/// The menu bar that applies while one window is active, beside the
+/// application's own [`MenuBar`], which is the default and what a platform
+/// shows with no window at all.
+///
+/// Where it is drawn is the host's business: macOS shows the active window's
+/// in the screen's menu bar, Windows attaches each window's to that window.
+/// `Hidden` cannot empty a macOS menu bar, so there it is `Inherit`; on
+/// Windows only the main window shows an inherited menu, so a secondary window
+/// does not carry the whole application menu unless it asks to.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum WindowMenu {
+    /// The application's menu bar.
+    #[default]
+    Inherit,
+    /// No menu for this window.
+    Hidden,
+    /// A menu bar of the window's own.
+    Own(MenuBar),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MenuRole {

@@ -11,6 +11,7 @@ use std::sync::Arc;
 use crate::{Point, Size};
 
 use super::menu::Menu;
+use super::window::{WindowId, WindowOptions};
 
 /// Correlates a [`PlatformRequest`] with its [`PlatformReply`]. Allocated by
 /// the runtime; a host only echoes it back.
@@ -40,6 +41,17 @@ pub enum PlatformCommand {
     /// The caller no longer wants the answer, because its component unmounted.
     /// A host dismisses what it can; a reply that still arrives is dropped.
     Cancel(RequestId),
+    /// Create a window for `window`, hidden until its first frame. Only a host
+    /// with [`HostCapabilities::MULTI_WINDOW`](super::HostCapabilities::MULTI_WINDOW)
+    /// does; the application's first window is the host's own, made at startup.
+    OpenWindow {
+        window: WindowId,
+        options: WindowOptions,
+    },
+    /// Destroy the window opened for `window`. Sent once the runtime has let go
+    /// of everything in it; a user's close button sends a close request instead,
+    /// and the application decides.
+    CloseWindow(WindowId),
 }
 
 #[derive(Debug, Clone, PartialEq)]
