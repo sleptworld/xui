@@ -5,9 +5,16 @@ use std::path::{Path, PathBuf};
 
 use object::write::{Object as WriteObject, StandardSection, Symbol, SymbolSection};
 use object::{
-    Architecture, BinaryFormat, Endianness, Object, ObjectSection, ObjectSymbol, SymbolFlags,
-    SymbolKind, SymbolScope,
+    Architecture, BinaryFormat, Endianness, Object, ObjectSection, ObjectSymbol, SectionKind,
+    SymbolFlags, SymbolKind, SymbolScope,
 };
+
+use crate::protocol::Mirror;
+
+/// The symbol a patch's mirror starts at, as `dlsym` names it.
+pub const MIRROR_SYMBOL: &str = "xui_hot_mirror";
+/// The page size of arm64 macOS: what the mirror is aligned to.
+const PAGE: u64 = 16 * 1024;
 use subsecond_types::{AddressMap, JumpTable};
 
 use anyhow::{Context, Result, bail};
@@ -21,6 +28,10 @@ struct Cached {
     weak: bool,
     size: u64,
     macho_desc: Option<u16>,
+    /// For a static in writable data (`__DATA,__data`, `__bss`,
+    /// `__common`), where its section ends: how far it can reach, as the
+    /// symbol table gives no size.
+    writable_end: Option<u64>,
 }
 
 /// The app's binary, read once after the fat build.
@@ -44,13 +55,35 @@ fn main_sentinel(format: BinaryFormat) -> &'static str {
 }
 
 impl SymbolCache {
+    pub fn architecture(&self) -> Architecture {
+        self.architecture
+    }
+
+    /// Whether `name` is a static of the app in writable data: one a patch
+    /// shares rather than copies ([`crate::alias`]).
+    pub fn is_shared_static(&self, name: &str) -> bool {
+        self.symbols
+            .get(name)
+            .is_some_and(|symbol| !symbol.undefined && symbol.writable_end.is_some())
+    }
+
     pub fn load(binary: &Path) -> Result<Self> {
         let bytes =
             std::fs::read(binary).with_context(|| format!("reading {}", binary.display()))?;
         let file = object::File::parse(bytes.as_slice())?;
         let mut symbols: HashMap<String, Cached> = HashMap::new();
+        let writable: HashMap<object::SectionIndex, u64> = file
+            .sections()
+            .filter(|section| {
+                is_writable_data(section.segment_name().ok().flatten(), section.name().ok())
+            })
+            .map(|section| (section.index(), section.address() + section.size()))
+            .collect();
         for symbol in file.symbols() {
             let Ok(name) = symbol.name() else { continue };
+            let writable_end = symbol
+                .section_index()
+                .and_then(|index| writable.get(&index).copied());
             let cached = Cached {
                 address: symbol.address(),
                 kind: symbol.kind(),
@@ -61,6 +94,7 @@ impl SymbolCache {
                     SymbolFlags::MachO { n_desc } => Some(n_desc),
                     _ => None,
                 },
+                writable_end,
             };
             // A definition wins over an import of the same name.
             match symbols.get(name) {
@@ -126,8 +160,18 @@ impl SymbolCache {
 /// cannot reach the app's thread-local storage; the app's binary crate's
 /// thread-locals start over in a patch).
 ///
+/// The binary crate's statics in `shared` ([`crate::alias`] took them out
+/// of the objects) are defined in the mirror, a zero-fill section at their
+/// offsets in the app's pages, which the app maps over it as it loads the
+/// patch: the pages are returned with the stub.
+///
 /// `aslr_reference` is where the app's `main` is loaded.
-pub fn stub(cache: &SymbolCache, objects: &[PathBuf], aslr_reference: u64) -> Result<Vec<u8>> {
+pub fn stub(
+    cache: &SymbolCache,
+    objects: &[PathBuf],
+    aslr_reference: u64,
+    shared: &[String],
+) -> Result<(Vec<u8>, Option<Mirror>)> {
     if cache.format != BinaryFormat::MachO {
         bail!("hot patching supports macOS only for now");
     }
@@ -161,12 +205,26 @@ pub fn stub(cache: &SymbolCache, objects: &[PathBuf], aslr_reference: u64) -> Re
         version
     });
     let text = obj.section_id(StandardSection::Text);
+    let mirror = mirror(cache, &mut obj, shared, slide)?;
     let mut names: Vec<&String> = undefined.difference(&defined).collect();
     names.sort();
     for name in names {
         let Some(symbol) = cache.symbols.get(name.as_str()) else {
             continue;
         };
+        if let Some((section, start, _)) = mirror.as_ref().filter(|_| shared.contains(name)) {
+            obj.add_symbol(Symbol {
+                name: name.strip_prefix('_').unwrap_or(name).as_bytes().to_vec(),
+                value: symbol.address - start,
+                size: 0,
+                scope: SymbolScope::Linkage,
+                kind: SymbolKind::Data,
+                weak: false,
+                section: SymbolSection::Section(*section),
+                flags: SymbolFlags::None,
+            });
+            continue;
+        }
         if symbol.undefined {
             // The app imports it too (from a system library): the dynamic
             // linker finds it for the patch as it did for the app.
@@ -237,7 +295,60 @@ pub fn stub(cache: &SymbolCache, objects: &[PathBuf], aslr_reference: u64) -> Re
             }
         }
     }
-    Ok(obj.write()?)
+    Ok((obj.write()?, mirror.map(|(_, _, pages)| pages)))
+}
+
+/// Adds the mirror of the app's pages `shared` is in: its section, where
+/// those pages start on disk, and where they are in the app.
+fn mirror(
+    cache: &SymbolCache,
+    obj: &mut WriteObject<'_>,
+    shared: &[String],
+    slide: u64,
+) -> Result<Option<(object::write::SectionId, u64, Mirror)>> {
+    let mut extents = shared.iter().filter_map(|name| {
+        let symbol = cache.symbols.get(name)?;
+        Some((symbol.address, symbol.writable_end?))
+    });
+    let Some(first) = extents.next() else {
+        return Ok(None);
+    };
+    let (start, end) = extents.fold(first, |(start, end), (a, e)| (start.min(a), end.max(e)));
+    if cache.architecture != Architecture::Aarch64 {
+        bail!("statics are shared with the app on arm64 only");
+    }
+    let start = start / PAGE * PAGE;
+    let len = end.div_ceil(PAGE) * PAGE - start;
+    let section = obj.add_section(
+        b"__DATA".to_vec(),
+        b"__xui_mirror".to_vec(),
+        SectionKind::UninitializedData,
+    );
+    obj.append_section_bss(section, len, PAGE);
+    obj.add_symbol(Symbol {
+        name: MIRROR_SYMBOL.as_bytes().to_vec(),
+        value: 0,
+        size: 0,
+        // Exported: the app looks it up.
+        scope: SymbolScope::Dynamic,
+        kind: SymbolKind::Data,
+        weak: false,
+        section: SymbolSection::Section(section),
+        flags: SymbolFlags::None,
+    });
+    Ok(Some((
+        section,
+        start,
+        Mirror {
+            address: start + slide,
+            len,
+        },
+    )))
+}
+
+/// Whether a Mach-O section is writable data a static lives in.
+pub(crate) fn is_writable_data(segment: Option<&str>, section: Option<&str>) -> bool {
+    segment == Some("__DATA") && matches!(section, Some("__data" | "__bss" | "__common"))
 }
 
 /// Machine code that jumps to `address`.

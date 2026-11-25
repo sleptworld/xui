@@ -5,7 +5,7 @@
 //! they were made with: a struct given a field, read by the new code, is
 //! read wrong. The runtime mounts a changed component again, so what a
 //! component keeps is safe; a type defined outside one is not, nor is a
-//! static (the patch has a copy of its own), a trait's method list (the
+//! static's type or initial value (the app's is the one in use), a trait's method list (the
 //! vtables of trait objects the app made), or a `const` a type's size
 //! depends on (`[u8; N]`).
 //!
@@ -53,8 +53,8 @@ struct Shapes {
     code: BTreeMap<String, Code>,
     /// Each component, by function name: the identifiers its code uses.
     components: BTreeMap<String, HashSet<String>>,
-    /// The statics that hold state: a patch has fresh copies of its own.
-    mutable_statics: Vec<String>,
+    /// The statics that hold state, and whether each is a thread-local.
+    mutable_statics: Vec<(String, bool)>,
 }
 
 /// A function, method, const, static or macro.
@@ -240,12 +240,13 @@ impl Snapshot {
         remount
     }
 
-    /// The binary crate's statics that hold state, by name and file: each
-    /// patch has fresh copies of its own, which the code it brings uses,
-    /// while the code it keeps (a kept component's handlers) goes on with
-    /// the app's.
-    pub fn mutable_statics(&self) -> Vec<(String, PathBuf)> {
-        let mut statics: Vec<(String, PathBuf)> = self
+    /// The binary crate's statics that hold state: by name, file, and
+    /// whether a thread-local. A patch shares the others with the app on
+    /// arm64 ([`crate::alias`]); elsewhere, and a thread-local anywhere,
+    /// each patch has a fresh copy of its own, which the code it brings
+    /// uses, while the code it keeps goes on with the app's.
+    pub fn mutable_statics(&self) -> Vec<(String, PathBuf, bool)> {
+        let mut statics: Vec<(String, PathBuf, bool)> = self
             .files
             .iter()
             .filter_map(|(path, (_, shapes))| Some((path, shapes.as_ref()?)))
@@ -253,7 +254,7 @@ impl Snapshot {
                 shapes
                     .mutable_statics
                     .iter()
-                    .map(move |name| (name.clone(), path.clone()))
+                    .map(move |(name, local)| (name.clone(), path.clone(), *local))
             })
             .collect();
         statics.sort();
@@ -401,7 +402,9 @@ impl<'ast> Visit<'ast> for Collector {
         if matches!(item.mutability, syn::StaticMutability::Mut(_))
             || used.iter().any(|ident| holds_state(ident))
         {
-            self.shapes.mutable_statics.push(self.name(&item.ident));
+            self.shapes
+                .mutable_statics
+                .push((self.name(&item.ident), false));
         }
         let tokens = normalize(item.to_token_stream());
         self.code(
@@ -455,7 +458,8 @@ impl<'ast> Visit<'ast> for Collector {
         let whole = normalize(item.to_token_stream());
         for ident in statics {
             let name = self.name(&ident);
-            self.shapes.mutable_statics.push(name.clone());
+            let local = macro_name.as_deref() == Some("thread_local");
+            self.shapes.mutable_statics.push((name.clone(), local));
             self.code(name.clone(), &whole, vec![vec![ident.to_string()]]);
             self.shapes.items.insert(
                 name,
@@ -858,9 +862,9 @@ mod tests {
         let names: Vec<String> = Snapshot::take([&file])
             .mutable_statics()
             .into_iter()
-            .map(|(name, _)| name)
+            .map(|(name, _, local)| format!("{name}{}", if local { " (local)" } else { "" }))
             .collect();
-        assert_eq!(names, ["CACHE", "HITS", "LOCAL", "RAW"]);
+        assert_eq!(names, ["CACHE", "HITS", "LOCAL (local)", "RAW"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

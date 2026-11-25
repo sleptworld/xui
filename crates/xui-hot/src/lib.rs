@@ -20,7 +20,9 @@
 //! 3. **Stub.** What those objects use but do not define is in the running
 //!    app: the stub object defines each such symbol at its address there
 //!    (functions as a jump to it, statics as the address itself), slid by
-//!    where the app's `main` is loaded ([`symbols::stub`]).
+//!    where the app's `main` is loaded ([`symbols::stub`]). The binary
+//!    crate's own statics, which its objects define again, are first taken
+//!    out of them and defined in the stub's mirror instead ([`alias`]).
 //! 4. **Patch.** The objects and the stub link into a dynamic library
 //!    ([`link::thin`]); its symbols, matched by name with the app's, are the
 //!    jump table ([`symbols::jump_table`]).
@@ -41,11 +43,15 @@
 //! again with the patch ([`shapes`] finds it by name): props that read no
 //! signal and handlers hold the code they were built with.
 //!
-//! The binary crate's statics that hold state start over in each patch
-//! (it has copies of its own); `dev` warns when the crate has any.
+//! The binary crate's statics are the app's in every patch: on arm64, the
+//! patch's references to them are taken out of its objects and resolved
+//! in a section the app maps its own pages over ([`alias`]). Thread-locals
+//! (and, on x86_64, every static) start over in each patch, which `dev`
+//! warns about.
 //!
 //! Supported: macOS (aarch64, x86_64).
 
+pub mod alias;
 pub mod build;
 pub mod keys;
 pub mod link;

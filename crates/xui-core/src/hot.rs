@@ -224,6 +224,18 @@ fn receive(line: &str) {
             serde_json::from_value::<subsecond::JumpTable>(table).map_err(|e| e.to_string())
         });
     let parsed = started.elapsed();
+    // The binary crate's statics: this process's pages, before any of the
+    // patch's code can run.
+    let table = table.and_then(|table| match patch.get("mirror") {
+        Some(mirror) if !mirror.is_null() => {
+            let field = |name| mirror.get(name).and_then(serde_json::Value::as_u64);
+            let (Some(address), Some(len)) = (field("address"), field("len")) else {
+                return Err("a mirror without its pages".to_owned());
+            };
+            map_mirror(&table.lib, address, len).map(|()| table)
+        }
+        _ => Ok(table),
+    });
     // Safety: `cargo xui dev` linked the patch against this process,
     // which said hello on this connection.
     let error = table
@@ -239,6 +251,110 @@ fn receive(line: &str) {
         log::error!("xui hotpatch: patch {id}: {error}");
     }
     send(serde_json::json!({ "applied": { "id": id, "error": error } }));
+}
+
+/// Maps this process's pages `[address, address + len)`, shared, over the
+/// mirror of the patch library `lib`: the zero-fill section it exports as
+/// `xui_hot_mirror`, where its code finds the binary crate's statics. Both
+/// addresses are then the same memory, and the patch's code reads and
+/// writes the statics the app has.
+///
+/// The library is opened here first (and kept open); subsecond opening it
+/// again gets the same image.
+#[cfg(target_os = "macos")]
+fn map_mirror(lib: &std::path::Path, address: u64, len: u64) -> Result<(), String> {
+    use std::ffi::{CStr, CString, c_char, c_int, c_void};
+    use std::os::unix::ffi::OsStrExt;
+
+    unsafe extern "C" {
+        fn dlopen(path: *const c_char, mode: c_int) -> *mut c_void;
+        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+        fn dlerror() -> *const c_char;
+        static mach_task_self_: u32;
+        fn mach_vm_remap(
+            target_task: u32,
+            target_address: *mut u64,
+            size: u64,
+            mask: u64,
+            flags: c_int,
+            src_task: u32,
+            src_address: u64,
+            copy: c_int,
+            cur_protection: *mut c_int,
+            max_protection: *mut c_int,
+            inheritance: u32,
+        ) -> c_int;
+    }
+    const RTLD_NOW: c_int = 0x2;
+    const VM_FLAGS_FIXED: c_int = 0x0;
+    const VM_FLAGS_OVERWRITE: c_int = 0x4000;
+    const VM_INHERIT_COPY: u32 = 1;
+    const PAGE: u64 = 16 * 1024;
+
+    let dl_error = || {
+        // Safety: dlerror returns null or a C string valid until the next
+        // dl call on this thread.
+        let message = unsafe { dlerror() };
+        if message.is_null() {
+            "unknown error".to_owned()
+        } else {
+            unsafe { CStr::from_ptr(message) }
+                .to_string_lossy()
+                .into_owned()
+        }
+    };
+    let path = CString::new(lib.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
+    // Safety: a path; the library is the patch, whose loading runs no code
+    // of its own (Rust has no life before main).
+    let handle = unsafe { dlopen(path.as_ptr(), RTLD_NOW) };
+    if handle.is_null() {
+        return Err(format!("opening {}: {}", lib.display(), dl_error()));
+    }
+    // Safety: a symbol name, on a handle just opened.
+    let mirror = unsafe { dlsym(handle, c"xui_hot_mirror".as_ptr()) };
+    if mirror.is_null() {
+        return Err(format!("no mirror in {}: {}", lib.display(), dl_error()));
+    }
+    let mut target = mirror as u64;
+    if !(target.is_multiple_of(PAGE) && address.is_multiple_of(PAGE) && len.is_multiple_of(PAGE)) {
+        return Err(format!(
+            "the mirror at {target:#x} or the pages {address:#x}+{len:#x} are not page-aligned"
+        ));
+    }
+    let (mut current, mut max) = (0, 0);
+    // Safety: the target is the patch's own zero-fill section, which no
+    // code has used yet, `len` long (the stub made it so); the source is
+    // this process's data pages, shared rather than copied.
+    let result = unsafe {
+        mach_vm_remap(
+            mach_task_self_,
+            &mut target,
+            len,
+            0,
+            VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE,
+            mach_task_self_,
+            address,
+            0,
+            &mut current,
+            &mut max,
+            VM_INHERIT_COPY,
+        )
+    };
+    if result != 0 {
+        return Err(format!("mapping the statics' pages: kern_return {result}"));
+    }
+    if debug() {
+        eprintln!(
+            "xui hotpatch: statics' pages {address:#x}+{len:#x} mapped over the mirror at {:#x}",
+            mirror as u64
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn map_mirror(_lib: &std::path::Path, _address: u64, _len: u64) -> Result<(), String> {
+    Err("sharing statics with a patch needs macOS".to_owned())
 }
 
 /// Tells `cargo xui dev` what a reload did.

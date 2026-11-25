@@ -112,7 +112,8 @@ pub fn dev(options: DevOptions) -> Result<()> {
         let snapshot = Snapshot::take(&sources.bin);
         let statics = snapshot.mutable_statics();
         if !statics.is_empty() && statics != statics_told {
-            tell_statics(&target, &statics);
+            let arm64 = cache.architecture() == object::Architecture::Aarch64;
+            tell_statics(&target, &statics, arm64);
         }
         statics_told = statics;
         let build = format!("{run}-{}", std::process::id());
@@ -192,31 +193,38 @@ fn wait_for_change(inbox: &Receiver<Event>) -> Next {
     }
 }
 
-/// Warns that the binary crate's statics that hold state do not survive a
-/// patch.
-fn tell_statics(target: &Target, statics: &[(String, PathBuf)]) {
+/// Warns of the binary crate's statics that hold state and a patch does
+/// not share with the app: each patch starts them over. On arm64, only
+/// thread-locals ([`crate::alias`] shares the rest).
+fn tell_statics(target: &Target, statics: &[(String, PathBuf, bool)], arm64: bool) {
     const SHOWN: usize = 4;
-    let mut names: Vec<String> = statics
+    let fresh: Vec<&(String, PathBuf, bool)> = statics
+        .iter()
+        .filter(|(_, _, local)| *local || !arm64)
+        .collect();
+    if fresh.is_empty() {
+        return;
+    }
+    let mut names: Vec<String> = fresh
         .iter()
         .take(SHOWN)
-        .map(|(name, file)| format!("`{name}` ({})", target.show(file)))
+        .map(|(name, file, _)| format!("`{name}` ({})", target.show(file)))
         .collect();
-    if statics.len() > SHOWN {
-        names.push(format!("{} more", statics.len() - SHOWN));
+    if fresh.len() > SHOWN {
+        names.push(format!("{} more", fresh.len() - SHOWN));
     }
+    let what = match (fresh.len(), arm64) {
+        (1, true) => "a thread-local",
+        (_, true) => "the thread-locals",
+        (1, false) => "a static",
+        (_, false) => "the statics",
+    };
     term::warn(format!(
-        "each patch starts {} of `{}` over: {}",
-        if statics.len() == 1 {
-            "a static"
-        } else {
-            "the statics"
-        },
+        "each patch starts {what} of `{}` over: {}",
         target.bin,
         names.join(", ")
     ));
-    term::help(
-        "keep state that must outlive a patch in a component, or in a static of another crate",
-    );
+    term::help("keep state that must outlive a patch in a component, or in another crate");
 }
 
 /// The keys that do the same whatever is running.
@@ -491,7 +499,8 @@ impl Running<'_> {
     ) -> Result<(u64, Duration)> {
         let started = Instant::now();
         spinner.set_message(spinner.message().replace("compiling", "linking"));
-        let stub = symbols::stub(&self.cache, &thin.objects, aslr_reference)?;
+        let (linked_objects, shared) = self.share_statics(&thin.objects)?;
+        let (stub, mirror) = symbols::stub(&self.cache, &linked_objects, aslr_reference, &shared)?;
         let stub_path = self.dir.join("stub.o");
         std::fs::write(&stub_path, stub)?;
         let id = self.next_patch;
@@ -500,7 +509,7 @@ impl Running<'_> {
             .dir
             .join("patches")
             .join(format!("libpatch-{id}.dylib"));
-        let mut objects = thin.objects.clone();
+        let mut objects = linked_objects;
         objects.push(stub_path);
         let linked = crate::link::thin(&objects, &thin.link, &library);
         for object in &thin.objects {
@@ -509,8 +518,45 @@ impl Running<'_> {
         linked?;
         let table = symbols::jump_table(&self.cache, &library)?;
         let link = started.elapsed();
-        self.send(&ToApp::Patch { id, table, remount })?;
+        self.send(&ToApp::Patch {
+            id,
+            table,
+            remount,
+            mirror,
+        })?;
         Ok((id, link))
+    }
+
+    /// Takes the binary crate's statics the app has out of `objects`, so
+    /// that the patch shares them ([`crate::alias`]): the objects to link,
+    /// and the statics' names.
+    ///
+    /// A rewritten object is a copy in the dev directory: rustc's are hard
+    /// links into its incremental cache, which the next build reuses.
+    fn share_statics(&self, objects: &[PathBuf]) -> Result<(Vec<PathBuf>, Vec<String>)> {
+        if self.cache.architecture() != object::Architecture::Aarch64 {
+            return Ok((objects.to_vec(), Vec::new()));
+        }
+        let dir = self.dir.join("shared");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        let mut linked = Vec::with_capacity(objects.len());
+        let mut shared = Vec::new();
+        for path in objects {
+            let bytes = std::fs::read(path)?;
+            let rewritten = crate::alias::rewrite(&bytes, |name| self.cache.is_shared_static(name))
+                .with_context(|| format!("sharing the statics of {}", path.display()))?;
+            match rewritten {
+                Some(rewritten) => {
+                    let copy = dir.join(path.file_name().context("an object without a name")?);
+                    std::fs::write(&copy, rewritten.bytes)?;
+                    linked.push(copy);
+                    shared.extend(rewritten.statics);
+                }
+                None => linked.push(path.clone()),
+            }
+        }
+        Ok((linked, shared))
     }
 
     /// Prints how the pending patch went: with the app's report, or

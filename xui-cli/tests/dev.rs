@@ -58,7 +58,7 @@ fn counter() {
 /// A helper a prop calls: the prop reads no signal.
 fn label() -> String {
     let note = model::Note { text: "label v1" };
-    println!("xui-e2e label {}", note.text);
+    println!("xui-e2e label {} hits {}", note.text, HITS.load(Ordering::Relaxed));
     note.text.to_owned()
 }
 
@@ -116,12 +116,10 @@ fn dev_patches_what_it_can_and_restarts_for_the_rest() {
 
     let mut dev = Dev::start(&app, &workspace.join("target/xui-dev-e2e"));
 
-    // Launch: the static warned about, every component mounted.
+    // Launch: every component mounted. The static is shared with each
+    // patch, so not warned about.
     let at = dev.mark();
     dev.expect(at, BUILD, "connected", |l| l.contains("Connected"));
-    dev.expect(at, PATCH, "the statics warning", |l| {
-        l.contains("each patch starts a static of `hello` over: `HITS`")
-    });
     dev.expect(at, PATCH, "the label", |l| {
         l.contains("xui-e2e label label v1")
     });
@@ -130,6 +128,7 @@ fn dev_patches_what_it_can_and_restarts_for_the_rest() {
     });
     // Cargo rewrote the lockfile it was given as it built: no change.
     dev.absent(at, "a restart at launch", |l| l.contains("Restarting"));
+    dev.absent(at, "a statics warning", |l| l.contains("each patch starts"));
 
     // A helper a kept component calls: that component, and only it, again.
     let at = dev.mark();
@@ -139,8 +138,10 @@ fn dev_patches_what_it_can_and_restarts_for_the_rest() {
         outcome.contains("1 component mounted again (1 for code it calls)"),
         "{outcome}"
     );
-    dev.expect(at, PATCH, "the new label", |l| {
-        l.contains("xui-e2e label label v2")
+    // The patch's code counts on from the app's: greeting and counter
+    // mounted, then greeting again.
+    dev.expect(at, PATCH, "the new label, the count shared", |l| {
+        l.contains("xui-e2e label label v2 hits 3")
     });
     dev.settle();
     dev.absent(at, "counter mounted again", |l| {

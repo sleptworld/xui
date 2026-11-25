@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! app → dev   {"hello":   {"pid": 123, "aslr_reference": 4295000000, "build": "…"}}
-//! dev → app   {"patch":   {"id": 1, "table": <subsecond JumpTable>, "remount": ["greeting"]}}
+//! dev → app   {"patch":   {"id": 1, "table": <subsecond JumpTable>, "remount": ["greeting"], "mirror": {"address": 4295000064, "len": 16384}}}
 //! app → dev   {"applied": {"id": 1, "error": null}}
 //! app → dev   {"reloaded":{"changed": 1, "called": 1, "renamed": 0, "remounted": 1, "kept": 6, "micros": 1800, "full": false}}
 //! ```
@@ -65,7 +65,20 @@ pub enum ToApp {
         table: subsecond_types::JumpTable,
         /// Components to mount again for code they call, by function name.
         remount: Vec<String>,
+        /// The app's pages to map over the patch's mirror before it runs.
+        mirror: Option<Mirror>,
     },
+}
+
+/// The app's pages that hold the binary crate's statics, which a patch
+/// shares: the app maps them, shared, over the zero-fill section the
+/// patch exports as `xui_hot_mirror`, before any of the patch's code runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mirror {
+    /// In the running app (slid), page-aligned.
+    pub address: u64,
+    /// A whole number of pages.
+    pub len: u64,
 }
 
 #[cfg(test)]
@@ -115,10 +128,16 @@ mod tests {
                 ifunc_count: 0,
             },
             remount: vec!["greeting".into()],
+            mirror: Some(Mirror {
+                address: 0x10_0000_4000,
+                len: 0x8000,
+            }),
         })
         .unwrap();
         assert_eq!(line["patch"]["id"], 4);
         assert_eq!(line["patch"]["remount"][0], "greeting");
+        assert_eq!(line["patch"]["mirror"]["address"], 0x10_0000_4000_u64);
+        assert_eq!(line["patch"]["mirror"]["len"], 0x8000);
         let table: subsecond_types::JumpTable =
             serde_json::from_value(line["patch"]["table"].clone()).unwrap();
         assert_eq!(table.map.get(&0x1000), Some(&0x2000));
