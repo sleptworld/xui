@@ -121,6 +121,23 @@ impl<'a> Cx<'a> {
     }
 }
 
+/// What a hot reload did.
+#[cfg(feature = "hotpatch")]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HotReport {
+    /// Scopes whose component's code changed, or code it calls.
+    pub changed: usize,
+    /// Of those, the ones for code they call (`cargo xui dev` named them).
+    pub called: usize,
+    /// Scopes mounted again although unchanged, because the patch renamed
+    /// some of their functions.
+    pub stale: usize,
+    /// Of those, the outermost, mounted again.
+    pub remounted: usize,
+    /// Scopes kept, with their state.
+    pub kept: usize,
+}
+
 /// How many effects of each lane one flush ran.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FlushReport {
@@ -166,6 +183,12 @@ pub(crate) struct Parts<'a, I> {
 
 pub(crate) trait HasParts: Scope + Sized {
     fn parts(&self) -> Parts<'_, Self>;
+    #[cfg(feature = "hotpatch")]
+    /// A component's `__hot_fingerprint`; a row has none.
+    fn fingerprint_fn() -> Option<fn() -> u64>;
+    #[cfg(feature = "hotpatch")]
+    /// A component's function name; a row has none.
+    fn hot_name() -> Option<&'static str>;
 }
 
 impl<C: ComponentDef> HasParts for C {
@@ -176,6 +199,14 @@ impl<C: ComponentDef> HasParts for C {
             effects: t.effects,
             children: t.children,
         }
+    }
+    #[cfg(feature = "hotpatch")]
+    fn fingerprint_fn() -> Option<fn() -> u64> {
+        Some(C::__hot_fingerprint)
+    }
+    #[cfg(feature = "hotpatch")]
+    fn hot_name() -> Option<&'static str> {
+        Some(C::__HOT_NAME)
     }
 }
 
@@ -188,6 +219,14 @@ impl<P: Scope, D: 'static> HasParts for Row<P, D> {
             children: &t.children,
         }
     }
+    #[cfg(feature = "hotpatch")]
+    fn fingerprint_fn() -> Option<fn() -> u64> {
+        None
+    }
+    #[cfg(feature = "hotpatch")]
+    fn hot_name() -> Option<&'static str> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -199,6 +238,16 @@ pub(crate) enum NodeTag {
     /// A portal: a row too, whose hosts are under the overlayer, outside
     /// the flow of the scope's other hosts.
     Portal,
+}
+
+/// The newest version of a template's function pointer: under `hotpatch`,
+/// what the last patch put in its place; `f` otherwise.
+#[inline(always)]
+fn hot<F: Copy>(f: F) -> F {
+    #[cfg(feature = "hotpatch")]
+    return crate::hot::resolve(f);
+    #[cfg(not(feature = "hotpatch"))]
+    f
 }
 
 /// The type-erased face of a mounted scope.
@@ -221,6 +270,20 @@ pub(crate) trait AnyInstance {
         frame: crate::clock::FrameTime,
     ) -> crate::ticker::Tick;
     fn prepare_children(self: Rc<Self>) -> Vec<Option<PendingMount>>;
+    /// Child `child`'s mount, prepared again by the newest code.
+    #[cfg(feature = "hotpatch")]
+    fn prepare_child(self: Rc<Self>, child: u16) -> PendingMount;
+    /// The component's fingerprint as the code that mounted it computes
+    /// it, and as the newest code does; `None` for a row.
+    #[cfg(feature = "hotpatch")]
+    fn fingerprints(&self) -> Option<(u64, u64)>;
+    /// Whether the newest patch has every function of the scope's template:
+    /// if not, the scope would go on running the code that mounted it.
+    #[cfg(feature = "hotpatch")]
+    fn resolves(&self) -> bool;
+    /// The component's function name; `None` for a row.
+    #[cfg(feature = "hotpatch")]
+    fn hot_name(&self) -> Option<&'static str>;
     /// What slot `index` mounts; `None` for a block.
     fn slot(self: Rc<Self>, index: u16) -> Option<super::Children>;
     fn portal(self: Rc<Self>, index: u16, notifier: &Notifier) -> super::PortalSpec;
@@ -243,7 +306,7 @@ impl<T: HasParts> AnyInstance for T {
     }
     fn build_host(self: Rc<Self>, index: u16, notifier: &Notifier) -> HostDraft {
         match self.parts().nodes[usize::from(index)].kind {
-            NodeKind::Host(build) => build(&self, notifier),
+            NodeKind::Host(build) => hot(build)(&self, notifier),
             _ => unreachable!("not a host"),
         }
     }
@@ -270,13 +333,13 @@ impl<T: HasParts> AnyInstance for T {
     }
     fn run(self: Rc<Self>, slot: u16, cx: &mut Cx<'_>) {
         match self.parts().effects[usize::from(slot)].run {
-            Run::Cx(run) => run(&self, cx),
+            Run::Cx(run) => hot(run)(&self, cx),
             Run::Block(..) | Run::Tick(_) => unreachable!("not run by a flush"),
         }
     }
     fn run_block(self: Rc<Self>, slot: u16, cx: &mut BlockCx<'_>) {
         match self.parts().effects[usize::from(slot)].run {
-            Run::Block(_, run) => run(&self, cx),
+            Run::Block(_, run) => hot(run)(&self, cx),
             Run::Cx(_) | Run::Tick(_) => unreachable!("not a block"),
         }
     }
@@ -287,7 +350,7 @@ impl<T: HasParts> AnyInstance for T {
         frame: crate::clock::FrameTime,
     ) -> crate::ticker::Tick {
         match self.parts().effects[usize::from(slot)].run {
-            Run::Tick(tick) => tick(&self, cx, frame),
+            Run::Tick(tick) => hot(tick)(&self, cx, frame),
             _ => unreachable!("not a ticker"),
         }
     }
@@ -295,18 +358,49 @@ impl<T: HasParts> AnyInstance for T {
         self.parts()
             .children
             .iter()
-            .map(|child| Some((child.prepare)(&self)))
+            .map(|child| Some(hot(child.prepare)(&self)))
             .collect()
+    }
+    #[cfg(feature = "hotpatch")]
+    fn prepare_child(self: Rc<Self>, child: u16) -> PendingMount {
+        hot(self.parts().children[usize::from(child)].prepare)(&self)
+    }
+    #[cfg(feature = "hotpatch")]
+    fn fingerprints(&self) -> Option<(u64, u64)> {
+        let fingerprint = T::fingerprint_fn()?;
+        Some((fingerprint(), hot(fingerprint)()))
+    }
+    #[cfg(feature = "hotpatch")]
+    fn hot_name(&self) -> Option<&'static str> {
+        T::hot_name()
+    }
+    #[cfg(feature = "hotpatch")]
+    fn resolves(&self) -> bool {
+        use crate::hot::resolves;
+        let parts = self.parts();
+        T::fingerprint_fn().is_none_or(resolves)
+            && parts.nodes.iter().all(|node| match node.kind {
+                NodeKind::Host(build) => resolves(build),
+                NodeKind::Outlet(children) => resolves(children),
+                NodeKind::Portal(spec) => resolves(spec),
+                NodeKind::Component(_) | NodeKind::Block => true,
+            })
+            && parts.effects.iter().all(|effect| match effect.run {
+                Run::Cx(run) => resolves(run),
+                Run::Block(_, run) => resolves(run),
+                Run::Tick(tick) => resolves(tick),
+            })
+            && parts.children.iter().all(|child| resolves(child.prepare))
     }
     fn slot(self: Rc<Self>, index: u16) -> Option<super::Children> {
         match self.parts().nodes[usize::from(index)].kind {
-            NodeKind::Outlet(children) => Some(children(&self)),
+            NodeKind::Outlet(children) => Some(hot(children)(&self)),
             _ => None,
         }
     }
     fn portal(self: Rc<Self>, index: u16, notifier: &Notifier) -> super::PortalSpec {
         match self.parts().nodes[usize::from(index)].kind {
-            NodeKind::Portal(spec) => spec(&self, notifier),
+            NodeKind::Portal(spec) => hot(spec)(&self, notifier),
             _ => unreachable!("not a portal"),
         }
     }
@@ -1078,6 +1172,116 @@ impl Runtime {
 
     pub fn graph(&self) -> &Graph {
         &self.graph
+    }
+
+    /// After a hot patch: mounts again, in place, each component whose code
+    /// changed (and with it what it mounted), keeping every other scope and
+    /// its state, then reruns every binding so the kept scopes show what the
+    /// new code computes. `Err` when a root changed: the app mounts again.
+    #[cfg(feature = "hotpatch")]
+    pub(crate) fn hot_reload(&mut self, ui: &mut UiRuntime) -> Result<HotReport, ()> {
+        use rustc_hash::FxHashSet;
+        let remount = crate::hot::take_remount();
+        let mut stale = 0;
+        let mut called = 0;
+        let mut changed: FxHashSet<InstanceId> = FxHashSet::default();
+        for (id, mounted) in &self.instances {
+            let edited = mounted
+                .instance
+                .fingerprints()
+                .is_some_and(|(old, new)| old != new);
+            // Its code is the same, but what it calls is not: a prop that
+            // reads no source, or a handler, holds the old.
+            let calls = !edited
+                && mounted
+                    .instance
+                    .hot_name()
+                    .is_some_and(|name| remount.contains(name));
+            let renamed = !edited && !calls && !mounted.instance.resolves();
+            if !edited && !calls && !renamed {
+                continue;
+            }
+            stale += usize::from(renamed);
+            called += usize::from(calls);
+            // A row has no code of its own: its component's is what changed.
+            let mut id = id;
+            while self.instances[id].instance.fingerprints().is_none() {
+                match self.instances[id].owner {
+                    Owner::Child { instance, .. }
+                    | Owner::Row { instance, .. }
+                    | Owner::Portal { instance, .. } => id = instance,
+                    Owner::Root(_) => return Err(()),
+                }
+            }
+            changed.insert(id);
+        }
+        // Only the outermost: what is inside one is mounted again with it.
+        let outermost: Vec<(InstanceId, Owner)> = changed
+            .iter()
+            .filter(|&&id| {
+                let mut owner = self.instances[id].owner;
+                while let Owner::Child { instance, .. }
+                | Owner::Row { instance, .. }
+                | Owner::Portal { instance, .. } = owner
+                {
+                    if changed.contains(&instance) {
+                        return false;
+                    }
+                    owner = self.instances[instance].owner;
+                }
+                true
+            })
+            .map(|&id| (id, self.instances[id].owner))
+            .collect();
+        let mut report = HotReport {
+            changed: changed.len() - stale.min(changed.len()),
+            called,
+            stale,
+            remounted: outermost.len(),
+            kept: self.instances.len() - changed.len(),
+        };
+        for &(id, owner) in &outermost {
+            let Owner::Child {
+                instance: parent,
+                node,
+            } = owner
+            else {
+                // A root, mounted by the app (rows were replaced by their
+                // component above).
+                return Err(());
+            };
+            let NodeTag::Component(child) = self.instances[parent].instance.node(node).0 else {
+                unreachable!("a child stands at a component node");
+            };
+            let mount = self.instances[parent].instance.clone().prepare_child(child);
+            self.unmount(ui, id);
+            self.instances[parent].children[usize::from(node)] = None;
+            let new = mount(
+                self,
+                ui,
+                Place(Owner::Child {
+                    instance: parent,
+                    node,
+                }),
+            );
+            self.instances[parent].children[usize::from(node)] = Some(new);
+        }
+        // Every binding of every scope again (not `effect!`s: they act).
+        // Code a kept scope calls may have changed without the scope.
+        for (id, mounted) in &self.instances {
+            let effects = mounted.instance.effect_count();
+            for slot in 0..(effects + mounted.derived.len()) as u16 {
+                if usize::from(slot) < effects
+                    && matches!(mounted.instance.lane(slot), Lane::Effect | Lane::Tick)
+                {
+                    continue;
+                }
+                self.graph.pending.push(EffectId { instance: id, slot });
+            }
+        }
+        report.kept = report.kept.min(self.instances.len());
+        self.flush(ui);
+        Ok(report)
     }
 
     /// A mounted component's instance, for tests and tools.

@@ -60,6 +60,15 @@ pub struct App {
     platform: PlatformHandle,
     theme: ThemeHandle,
     shortcuts: ShortcutManager,
+    #[cfg(feature = "hotpatch")]
+    hot: HotRoot,
+}
+
+/// What the app's root mounted, to mount again when a hot patch changes a root.
+#[cfg(feature = "hotpatch")]
+struct HotRoot {
+    root: AppRoot,
+    mounted: Vec<crate::reactive::InstanceId>,
 }
 
 impl App {
@@ -240,7 +249,18 @@ impl App {
             platform,
             theme,
             shortcuts: ShortcutManager::default(),
+            #[cfg(feature = "hotpatch")]
+            hot: HotRoot {
+                root,
+                mounted: Vec::new(),
+            },
         };
+        #[cfg(feature = "hotpatch")]
+        {
+            crate::hot::register();
+            subsecond::HotFn::current(root).call((&mut app,));
+        }
+        #[cfg(not(feature = "hotpatch"))]
         root(&mut app);
         app
     }
@@ -263,7 +283,52 @@ impl App {
         props: <C::Instance as crate::reactive::ComponentDef>::Props,
     ) -> crate::reactive::InstanceId {
         let root = self.ui_runtime.root();
-        self.reactive.mount::<C>(&mut self.ui_runtime, root, props)
+        let id = self.reactive.mount::<C>(&mut self.ui_runtime, root, props);
+        #[cfg(feature = "hotpatch")]
+        self.hot.mounted.push(id);
+        id
+    }
+
+    /// After a hot patch: mounts again what changed, keeping the rest; all
+    /// of it when a root changed, or with `XUI_HOTPATCH=full`.
+    #[cfg(feature = "hotpatch")]
+    fn hot_remount(&mut self) {
+        let start = std::time::Instant::now();
+        let full = std::env::var("XUI_HOTPATCH").as_deref() == Ok("full");
+        let outcome = if full {
+            Err(())
+        } else {
+            self.reactive.hot_reload(&mut self.ui_runtime)
+        };
+        match outcome {
+            Ok(report) => crate::hot::report_reload(
+                report.changed,
+                report.called,
+                report.stale,
+                report.remounted,
+                report.kept,
+                start.elapsed().as_micros() as u64,
+                false,
+            ),
+            Err(()) => {
+                let count = self.hot.mounted.len();
+                for id in std::mem::take(&mut self.hot.mounted) {
+                    self.reactive.unmount(&mut self.ui_runtime, id);
+                }
+                let root = self.hot.root;
+                subsecond::HotFn::current(root).call((self,));
+                crate::hot::report_reload(
+                    count,
+                    0,
+                    0,
+                    count,
+                    0,
+                    start.elapsed().as_micros() as u64,
+                    true,
+                );
+            }
+        }
+        self.mark_needs_rebuild();
     }
 
     /// A signal the application owns rather than a component: state to hand
@@ -285,6 +350,8 @@ impl App {
 
     /// Unmounts a component [`mount`](Self::mount) mounted.
     pub fn unmount(&mut self, id: crate::reactive::InstanceId) {
+        #[cfg(feature = "hotpatch")]
+        self.hot.mounted.retain(|mounted| *mounted != id);
         self.reactive.unmount(&mut self.ui_runtime, id);
     }
 
@@ -361,6 +428,8 @@ impl App {
         // ride in on, so it wakes the loop through the same channel async state
         // updates do.
         let wake = std::sync::Arc::new(wake);
+        #[cfg(feature = "hotpatch")]
+        crate::hot::set_wake(wake.clone());
         let canvas_wake = wake.clone();
         self.ui_runtime
             .canvas_invalidator()
@@ -393,6 +462,11 @@ impl App {
     /// the last call; whether there were any.
     pub fn drain_async_messages(&mut self) -> bool {
         let mut any = false;
+        #[cfg(feature = "hotpatch")]
+        if crate::hot::take_patched() {
+            self.hot_remount();
+            any = true;
+        }
         while let Ok(finished) = self.finished.try_recv() {
             self.reactive.finish_task(finished);
             any = true;
@@ -416,8 +490,12 @@ impl App {
         text: &mut TextHost<T>,
     ) -> EventResult {
         match &event {
-            RawEvent::WindowFocus(_) => self.reactive.provide_keyed::<system::window::Focused>(true),
-            RawEvent::WindowBlur(_) => self.reactive.provide_keyed::<system::window::Focused>(false),
+            RawEvent::WindowFocus(_) => {
+                self.reactive.provide_keyed::<system::window::Focused>(true)
+            }
+            RawEvent::WindowBlur(_) => self
+                .reactive
+                .provide_keyed::<system::window::Focused>(false),
             _ => {}
         }
         self.rebuild_sync_if_needed();

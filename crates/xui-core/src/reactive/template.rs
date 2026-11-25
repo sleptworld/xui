@@ -142,6 +142,18 @@ pub trait ComponentDef: Scope + Sized {
 
     /// Runs the component's setup: creates its signals, computes its memos.
     fn create(props: Self::Props, cx: &mut MountCx<'_>) -> Self;
+
+    /// Changes when the component's code or layout does: what a hot patch
+    /// compares, old code against new, to know what to mount again.
+    #[doc(hidden)]
+    fn __hot_fingerprint() -> u64 {
+        0
+    }
+
+    /// The component function's name, by which `cargo xui dev` asks for it
+    /// to be mounted again when code it calls changed.
+    #[doc(hidden)]
+    const __HOT_NAME: &'static str = "";
 }
 
 pub struct MountCx<'a> {

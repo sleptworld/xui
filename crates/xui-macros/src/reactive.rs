@@ -270,10 +270,7 @@ enum Setup {
     Effect { closure: ExprClosure },
     /// `let name: T = context!();`, or `context!(Key)` for the value under
     /// a `ContextKey`.
-    Context {
-        name: usize,
-        key: Option<syn::Type>,
-    },
+    Context { name: usize, key: Option<syn::Type> },
     /// `provide!(source_or_value);`
     Provide { expr: Expr },
     /// `ticker!(|cx, frame| ..)`, kept as field `name` when a `let` names it.
@@ -1889,6 +1886,14 @@ fn tail_view(stmt: Option<Stmt>) -> Result<Element> {
 
 pub fn expand(function: ItemFn) -> Result<TokenStream> {
     let k = crate::krate::xui()?;
+    // What a hot patch compares to tell whether this component changed:
+    // its tokens (not their spans, so reformatting is not a change).
+    let source_hash = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        quote!(#function).to_string().hash(&mut hasher);
+        hasher.finish()
+    };
     let ItemFn {
         attrs,
         vis,
@@ -1915,6 +1920,7 @@ pub fn expand(function: ItemFn) -> Result<TokenStream> {
         ));
     }
     let marker = pascal_case(&sig.ident);
+    let hot_name = sig.ident.to_string();
     let name = format_ident!("__{}Instance", marker);
     let props_name = format_ident!("{}Props", marker);
 
@@ -2150,6 +2156,17 @@ pub fn expand(function: ItemFn) -> Result<TokenStream> {
                 effects: &[#(#effects),*],
                 children: &[#(#children),*],
             };
+
+            const __HOT_NAME: &'static str = #hot_name;
+
+            fn __hot_fingerprint() -> u64 {
+                // The layouts too: a type the component stores may have
+                // changed without the component's own tokens changing.
+                #source_hash
+                    ^ (::core::mem::size_of::<Self>() as u64).rotate_left(40)
+                    ^ (::core::mem::align_of::<Self>() as u64).rotate_left(32)
+                    ^ (::core::mem::size_of::<Self::Props>() as u64).rotate_left(16)
+            }
 
             #[allow(unused_variables)]
             fn create(#props: Self::Props, #user_cx: &mut #k::reactive::MountCx<'_>) -> Self {

@@ -12,6 +12,8 @@ strict-invariants = []
 # `CanvasController::with_gpu_painter`. Enabled through `xui-winit`'s
 # `skia-wgpu`.
 wgpu = ["dep:wgpu"]
+# Take hot patches from `cargo xui dev` (debug builds): see `src/hot.rs`.
+hotpatch = ["dep:subsecond", "dep:serde_json"]
 
 [dependencies]
 # wgpu = { version = "29.0.3", optional = true }
@@ -43,6 +45,8 @@ xui-render-graph = { path = "../xui-render-graph" }
 serde = { workspace = true }
 toml = "0.8"
 wgpu = {workspace=true, optional=true}
+subsecond = { version = "0.7.10", optional = true }
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 pollster = {workspace=true}

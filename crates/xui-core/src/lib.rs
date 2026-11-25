@@ -44,6 +44,8 @@ pub mod transition;
 // pub mod event;
 pub mod event_system;
 pub mod focus;
+#[cfg(feature = "hotpatch")]
+mod hot;
 pub mod layout;
 pub mod node;
 pub mod platform;

@@ -20,3 +20,5 @@ vello = ["xui-macos/vello"]
 skia = ["xui-macos/skia"]
 # Skia on a wgpu-owned device, so a canvas GPU painter can composite.
 skia-wgpu = ["xui-macos/skia-wgpu"]
+# Take hot patches from `cargo xui dev`, which turns this on itself.
+hotpatch = ["xui-core/hotpatch"]
