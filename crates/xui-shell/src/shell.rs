@@ -736,10 +736,8 @@ where
         if let Some(minimized) = minimized {
             self.runtime.set_window_minimized(minimized);
         }
-        let visible = !self.occluded
-            && !minimized.unwrap_or(false)
-            && size.width > 0
-            && size.height > 0;
+        let visible =
+            !self.occluded && !minimized.unwrap_or(false) && size.width > 0 && size.height > 0;
 
         if self.runtime.window_visible() == visible {
             return;
