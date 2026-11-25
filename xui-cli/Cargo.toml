@@ -8,12 +8,19 @@ name = "cargo-xui"
 path = "src/main.rs"
 
 [dependencies]
+anstream = "1.0.0"
+anstyle = "1.0.14"
+anyhow = "1.0.102"
+cargo_metadata = "0.23.1"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4.6.3"
+# Cargo's look for the help text.
+clap-cargo = "0.19.1"
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
 xui-pak = { path = "../crates/xui-pak" }
 xui-build = { path = "../crates/xui-build" }
+xui-hot = { path = "../crates/xui-hot" }
 
 [dev-dependencies]
 tempfile = "3"

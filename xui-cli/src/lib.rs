@@ -22,56 +22,60 @@ use std::{
     borrow::Cow,
     env,
     ffi::{OsStr, OsString},
-    fmt, fs,
-    io::{self, IsTerminal},
+    fmt::Write as _,
+    fs,
+    io::{self, Write as _},
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, ExitCode, ExitStatus},
     time::SystemTime,
 };
 
-use clap::{Args, Parser, Subcommand};
-use serde::Deserialize;
-use thiserror::Error;
+use anstyle::Style;
+use anyhow::{Context, Result, bail};
+use cargo_metadata::{DependencyKind, Metadata, MetadataCommand};
+use clap::builder::StyledStr;
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_cargo::style::{HEADER, LITERAL};
 use xui_build::{
     AssetsConfig, BOOTSTRAP_ENV, BuildOutput, BundleMode, CONFIG_FILE, DIR_ENV, Fallbacks, Layout,
     PAK_ENV,
 };
-use xui_pak::{Compression, PakSource};
+use xui_hot::term::{self, count};
+use xui_pak::{AssetMetadata, Compression, PakSource};
 
 /// The name the build-dependency goes by, as `cargo metadata` reports it.
 const BUILD_CRATE: &str = "xui-build";
 
-#[derive(Debug, Error)]
+/// Why `cargo xui` failed, and so what it exits with.
+#[derive(Debug)]
 pub enum CliError {
-    #[error(transparent)]
-    Args(#[from] clap::Error),
-    #[error("{0}")]
-    Usage(String),
-    #[error("I/O error: {0}")]
-    Io(#[from] io::Error),
-    #[error("{}: {source}", path.display())]
-    File {
-        path: PathBuf,
-        #[source]
-        source: io::Error,
-    },
-    #[error(transparent)]
-    Assets(#[from] xui_build::Error),
-    #[error("{}: {source}", path.display())]
-    Pak {
-        path: PathBuf,
-        #[source]
-        source: xui_pak::AssetError,
-    },
-    #[error("{0}")]
-    Metadata(String),
-    #[error("could not read `cargo metadata` output: {0}")]
-    MetadataJson(#[from] serde_json::Error),
-    #[error("could not run cargo: {0}")]
-    Spawn(#[source] io::Error),
+    /// Bad arguments, `--help` or `--version`: clap prints and exits.
+    Args(clap::Error),
     /// Cargo has already said why, so this one prints nothing.
-    #[error("cargo exited with {0}")]
     CargoFailed(ExitStatus),
+    Failed(anyhow::Error),
+}
+
+impl From<anyhow::Error> for CliError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::Failed(error)
+    }
+}
+
+impl From<clap::Error> for CliError {
+    fn from(error: clap::Error) -> Self {
+        Self::Args(error)
+    }
+}
+
+impl std::fmt::Display for CliError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Args(error) => error.fmt(f),
+            Self::CargoFailed(status) => write!(f, "cargo exited with {status}"),
+            Self::Failed(error) => write!(f, "{error:#}"),
+        }
+    }
 }
 
 impl CliError {
@@ -81,10 +85,7 @@ impl CliError {
                 let _ = error.print();
             }
             Self::CargoFailed(_) => {}
-            error => {
-                let label = paint(color_stderr(None), "1;31", "error:");
-                eprintln!("{label} {error}");
-            }
+            Self::Failed(error) => term::error_chain(error),
         }
     }
 
@@ -95,7 +96,7 @@ impl CliError {
         let code = match self {
             Self::Args(error) => error.exit_code(),
             Self::CargoFailed(status) => status.code().unwrap_or(1),
-            _ => 1,
+            Self::Failed(_) => 1,
         };
         u8::try_from(code)
             .map(ExitCode::from)
@@ -103,11 +104,42 @@ impl CliError {
     }
 }
 
-fn file_error(path: &Path) -> impl FnOnce(io::Error) -> CliError + '_ {
-    move |source| CliError::File {
-        path: path.to_owned(),
-        source,
+/// An `Examples:` section, styled as clap styles its own headings.
+fn examples(examples: &[(&str, &str)]) -> StyledStr {
+    let paint = |style: Style, text: &str| format!("{style}{text}{style:#}");
+    let mut out = paint(HEADER, "Examples:");
+    for (command, what) in examples {
+        let _ = write!(out, "\n  {}", paint(LITERAL, command));
+        if !what.is_empty() {
+            let _ = write!(out, "\n          {what}");
+        }
     }
+    StyledStr::from(out)
+}
+
+fn top_level_help() -> StyledStr {
+    let mut help = examples(&[
+        ("cargo xui init", "Set the current package up for assets"),
+        (
+            "cargo xui run --release",
+            "Run it, with assets/ mounted live",
+        ),
+        ("cargo xui dev", "Run it, hot patching it on every save"),
+        (
+            "cargo xui assets list --sort size",
+            "What its asset package holds, largest first",
+        ),
+    ]);
+    let note = format!(
+        "\n\nEvery other Cargo subcommand ({lit}doc{lit:#}, {lit}bench{lit:#}, \
+         {lit}nextest{lit:#}, ...) is forwarded the same\nway, its arguments passed through \
+         unchanged.\n\nThe package is found the way Cargo finds it: from the current directory\n\
+         upwards, or through {lit}--manifest-path{lit:#} and {lit}-p{lit:#}. At a workspace root, \
+         the member\nset up for XUI assets is used.",
+        lit = LITERAL
+    );
+    help = StyledStr::from(format!("{help}{note}"));
+    help
 }
 
 #[derive(Debug, Parser)]
@@ -115,43 +147,111 @@ fn file_error(path: &Path) -> impl FnOnce(io::Error) -> CliError + '_ {
     name = "cargo-xui",
     bin_name = "cargo xui",
     version,
-    about = "XUI's companion to Cargo: set up assets, run with them mounted, inspect packages.",
-    after_help = AFTER_HELP,
+    about = "XUI's companion to Cargo: set up assets, run with them mounted, hot patch, inspect packages.",
+    after_help = top_level_help(),
     arg_required_else_help = true,
-    disable_help_subcommand = true
+    disable_help_subcommand = true,
+    styles = clap_cargo::style::CLAP_STYLING
 )]
 struct Cli {
+    /// Coloring, for `cargo xui` and the Cargo it runs.
+    #[arg(long, value_enum, value_name = "WHEN")]
+    color: Option<ColorWhen>,
     #[command(subcommand)]
     command: CliCommand,
 }
 
-const AFTER_HELP: &str = "\
-Every other Cargo subcommand (doc, bench, nextest, ...) is forwarded the same
-way, with its arguments passed through unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ColorWhen {
+    Auto,
+    Always,
+    Never,
+}
 
-The package is found the way Cargo finds it: from the current directory
-upwards, or through --manifest-path and -p. At a workspace root, the member
-set up for XUI assets is used.";
+impl ColorWhen {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Always => "always",
+            Self::Never => "never",
+        }
+    }
+}
 
 #[derive(Debug, Subcommand)]
 enum CliCommand {
     /// Build the package, with its assets prepared.
+    #[command(after_help = forwarded_help("build"))]
     Build(CargoArgs),
     /// Run a binary, with the development directory mounted.
+    #[command(after_help = forwarded_help("run"))]
     Run(CargoArgs),
+    /// Run a binary, hot patching it as its sources change.
+    ///
+    /// A debug build with every dependency linked whole; each save of the
+    /// binary's crate compiles it alone and patches the running app, which
+    /// mounts again only the components that changed. A change to
+    /// Cargo.toml builds and starts it again. macOS only for now.
+    ///
+    /// Keys while it runs: r restart · c clear · h help · q quit (or Ctrl-C).
+    #[command(after_long_help = examples(&[
+        ("cargo xui dev", "The current package's binary"),
+        ("cargo xui dev -p gallery --bin icing", "A binary of another workspace member"),
+        ("cargo xui dev -F skia -- --theme dark", "With a feature, and arguments for the app"),
+        ("XUI_HOTPATCH=full cargo xui dev", "Mount the whole tree again on each patch"),
+    ]))]
+    Dev(DevArgs),
     /// Check the package, with its assets prepared.
+    #[command(after_help = forwarded_help("check"))]
     Check(CargoArgs),
     /// Test the package, with its assets prepared.
+    #[command(after_help = forwarded_help("test"))]
     Test(CargoArgs),
     /// Run Clippy, with the package's assets prepared.
+    #[command(after_help = forwarded_help("clippy"))]
     Clippy(CargoArgs),
-    /// Set a package up for XUI assets: xui.toml, assets/, build.rs and the
-    /// xui-build build-dependency. Safe to rerun.
-    Init(ProjectArgs),
+    /// Create a new XUI app: a binary package with a window, assets set up.
+    ///
+    /// `cargo new`, then the `xui` dependency, a `src/main.rs` with a small
+    /// counter, and what `init` sets up. xui comes from the checkout this
+    /// `cargo xui` was built from unless --xui-path or --git says otherwise.
+    #[command(after_long_help = examples(&[
+        ("cargo xui new hello", "In ./hello, xui from this tool's checkout"),
+        ("cargo xui new apps/viewer --name image-viewer", "Another directory and package name"),
+        ("cargo xui new hello --git https://example.com/xui.git --branch main", "xui from a git repository"),
+    ]))]
+    New(NewArgs),
+    /// Set a package up for XUI assets.
+    ///
+    /// Creates what is missing of xui.toml, the assets directory, build.rs
+    /// and the xui-build build-dependency, and leaves the rest alone: safe to
+    /// rerun, and it migrates a package that predates build scripts.
+    #[command(after_long_help = examples(&[
+        ("cargo xui init", "The package in the current directory"),
+        ("cargo xui init -p gallery", "A workspace member"),
+    ]))]
+    Init(InitArgs),
     /// Build, inspect, or validate an asset package.
     Assets(AssetsCommand),
+    /// Print a shell completion script for `cargo-xui`.
+    #[command(after_long_help = examples(&[
+        ("cargo xui completions zsh > ~/.zfunc/_cargo-xui", ""),
+        ("cargo xui completions fish > ~/.config/fish/completions/cargo-xui.fish", ""),
+        ("source <(cargo xui completions bash)", ""),
+    ]))]
+    Completions {
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
     #[command(external_subcommand)]
     External(Vec<OsString>),
+}
+
+fn forwarded_help(subcommand: &str) -> StyledStr {
+    StyledStr::from(format!(
+        "Every option is Cargo's: see {lit}cargo {subcommand} --help{lit:#}.",
+        lit = LITERAL
+    ))
 }
 
 #[derive(Debug, Args)]
@@ -162,11 +262,20 @@ struct AssetsCommand {
 
 #[derive(Debug, Subcommand)]
 enum AssetAction {
-    /// Build the asset package.
+    /// Build the asset package, as the build would.
     Pack(PackArgs),
     /// List the entries of an asset package.
-    List(InspectArgs),
+    #[command(after_long_help = examples(&[
+        ("cargo xui assets list", "The package this project builds"),
+        ("cargo xui assets list --sort size", "Largest first"),
+        ("cargo xui assets list dist/assets.xpak --json", "A shipped package, for a script"),
+    ]))]
+    List(ListArgs),
     /// Check every entry of an asset package against its content hash.
+    #[command(after_long_help = examples(&[
+        ("cargo xui assets verify", "The package this project last built"),
+        ("cargo xui assets verify dist/assets.xpak", "A shipped package"),
+    ]))]
     Verify(InspectArgs),
 }
 
@@ -184,6 +293,34 @@ struct CargoArgs {
     args: Vec<OsString>,
 }
 
+/// What `cargo xui`'s own commands print.
+#[derive(Debug, Clone, Default, Args)]
+struct Output {
+    /// Print nothing but errors.
+    #[arg(short, long)]
+    quiet: bool,
+    /// Coloring.
+    #[arg(long, value_enum, value_name = "WHEN")]
+    color: Option<ColorWhen>,
+}
+
+#[derive(Debug, Args)]
+struct DevArgs {
+    #[command(flatten)]
+    project: ProjectArgs,
+    /// The binary to run, when the package has several.
+    #[arg(long, value_name = "NAME")]
+    bin: Option<String>,
+    #[command(flatten)]
+    features: clap_cargo::Features,
+    /// Coloring.
+    #[arg(long, value_enum, value_name = "WHEN")]
+    color: Option<ColorWhen>,
+    /// Arguments for the app.
+    #[arg(last = true, value_name = "ARGS")]
+    app_args: Vec<String>,
+}
+
 #[derive(Debug, Clone, Default, Args)]
 struct ProjectArgs {
     /// Path to the package's Cargo.toml.
@@ -192,6 +329,41 @@ struct ProjectArgs {
     /// The package to use, when run from a workspace.
     #[arg(short, long, value_name = "SPEC")]
     package: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct NewArgs {
+    /// Directory to create the package in.
+    #[arg(value_name = "PATH")]
+    path: PathBuf,
+    /// The package's name; the directory's by default.
+    #[arg(long, value_name = "NAME")]
+    name: Option<String>,
+    /// The xui checkout to depend on, by path.
+    #[arg(long, value_name = "DIR", conflicts_with = "git")]
+    xui_path: Option<PathBuf>,
+    /// The git repository to take xui from.
+    #[arg(long, value_name = "URL")]
+    git: Option<String>,
+    /// The branch of --git.
+    #[arg(long, value_name = "BRANCH", requires = "git")]
+    branch: Option<String>,
+    /// Version control for the package, as Cargo's --vcs (git, none, ...).
+    #[arg(long, value_name = "VCS")]
+    vcs: Option<String>,
+    /// Resolve dependencies without the network, as Cargo's --offline.
+    #[arg(long)]
+    offline: bool,
+    #[command(flatten)]
+    output: Output,
+}
+
+#[derive(Debug, Clone, Default, Args)]
+struct InitArgs {
+    #[command(flatten)]
+    project: ProjectArgs,
+    #[command(flatten)]
+    output: Output,
 }
 
 #[derive(Debug, Clone, Default, Args)]
@@ -207,6 +379,8 @@ struct PackArgs {
     /// Directory for generated files, as Cargo's --target-dir.
     #[arg(long, value_name = "DIR")]
     target_dir: Option<PathBuf>,
+    #[command(flatten)]
+    output: Output,
 }
 
 #[derive(Debug, Args)]
@@ -216,6 +390,28 @@ struct InspectArgs {
     pak: Option<PathBuf>,
     #[command(flatten)]
     pack: PackArgs,
+}
+
+#[derive(Debug, Args)]
+struct ListArgs {
+    #[command(flatten)]
+    inspect: InspectArgs,
+    /// Order of the entries.
+    #[arg(long, value_enum, default_value_t = SortKey::Path, value_name = "KEY")]
+    sort: SortKey,
+    /// The entries as a JSON array, for scripts, instead of the table.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SortKey {
+    /// By path.
+    Path,
+    /// Largest first, by size before packing.
+    Size,
+    /// Largest first, by size in the package.
+    Stored,
 }
 
 impl PackArgs {
@@ -235,20 +431,93 @@ impl PackArgs {
 
 pub fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), CliError> {
     let cli = Cli::try_parse_from(normalize_args(args))?;
+    let top_color = cli.color;
+    let own_color =
+        |color: Option<ColorWhen>| term::init(color.or(top_color).map(ColorWhen::as_str));
 
     match cli.command {
-        CliCommand::Build(args) => run_cargo(OsStr::new("build"), args.args),
-        CliCommand::Run(args) => run_cargo(OsStr::new("run"), args.args),
-        CliCommand::Check(args) => run_cargo(OsStr::new("check"), args.args),
-        CliCommand::Test(args) => run_cargo(OsStr::new("test"), args.args),
-        CliCommand::Clippy(args) => run_cargo(OsStr::new("clippy"), args.args),
+        CliCommand::Build(args) => run_cargo(OsStr::new("build"), args.args, top_color),
+        CliCommand::Run(args) => run_cargo(OsStr::new("run"), args.args, top_color),
+        CliCommand::Check(args) => run_cargo(OsStr::new("check"), args.args, top_color),
+        CliCommand::Test(args) => run_cargo(OsStr::new("test"), args.args, top_color),
+        CliCommand::Clippy(args) => run_cargo(OsStr::new("clippy"), args.args, top_color),
         CliCommand::External(mut args) => {
             let subcommand = args.remove(0);
-            run_cargo(&subcommand, args)
+            run_cargo(&subcommand, args, top_color)
         }
-        CliCommand::Init(args) => run_init(&args),
-        CliCommand::Assets(command) => run_assets(command),
+        CliCommand::Dev(args) => {
+            own_color(args.color);
+            Ok(run_dev(args)?)
+        }
+        CliCommand::New(args) => {
+            own_color(args.output.color);
+            Ok(run_new(&args)?)
+        }
+        CliCommand::Init(args) => {
+            own_color(args.output.color);
+            Ok(run_init(&args)?)
+        }
+        CliCommand::Assets(command) => {
+            let output = match &command.action {
+                AssetAction::Pack(args) => &args.output,
+                AssetAction::List(args) => &args.inspect.pack.output,
+                AssetAction::Verify(args) => &args.pack.output,
+            };
+            own_color(output.color);
+            Ok(run_assets(command)?)
+        }
+        CliCommand::Completions { shell } => {
+            let mut command = Cli::command();
+            clap_complete::generate(shell, &mut command, "cargo-xui", &mut io::stdout());
+            Ok(())
+        }
     }
+}
+
+fn run_dev(args: DevArgs) -> Result<()> {
+    let mut cargo_args = Vec::new();
+    let features = &args.features;
+    if features.all_features {
+        cargo_args.push("--all-features".to_owned());
+    }
+    if features.no_default_features {
+        cargo_args.push("--no-default-features".to_owned());
+    }
+    if !features.features.is_empty() {
+        cargo_args.extend(["--features".to_owned(), features.features.join(",")]);
+    }
+    // The assets, as `cargo xui run` prepares them: the bootstrap for the
+    // build, the development directory and an external package for the app.
+    let mut envs: Vec<(OsString, OsString)> = Vec::new();
+    let packages: Vec<String> = args.project.package.iter().cloned().collect();
+    if let Resolution::Package(project) =
+        resolve_project(args.project.manifest_path.as_deref(), &packages, false)?
+        && (project.uses_build_script || project.dir.join(CONFIG_FILE).is_file())
+    {
+        let options = CargoOptions {
+            manifest_path: args.project.manifest_path.clone(),
+            packages: packages.clone(),
+            ..CargoOptions::default()
+        };
+        let prepared = prepare(&project, &options)?;
+        if let Some(bootstrap) = prepared.bootstrap {
+            envs.push((BOOTSTRAP_ENV.into(), bootstrap.into()));
+        }
+        if let Some(directory) = prepared.dev_directory {
+            envs.push((DIR_ENV.into(), directory.into()));
+        }
+        if prepared.external.is_some() {
+            envs.push((PAK_ENV.into(), prepared.layout.pak.into()));
+        }
+    }
+    xui_hot::dev(xui_hot::DevOptions {
+        manifest_path: args.project.manifest_path,
+        package: args.project.package,
+        bin: args.bin,
+        cargo_args,
+        envs,
+        app_args: args.app_args,
+    })
 }
 
 fn normalize_args(args: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
@@ -263,8 +532,20 @@ fn normalize_args(args: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
     args
 }
 
-fn run_cargo(subcommand: &OsStr, args: Vec<OsString>) -> Result<(), CliError> {
-    let options = CargoOptions::parse(&args);
+fn run_cargo(
+    subcommand: &OsStr,
+    mut args: Vec<OsString>,
+    color: Option<ColorWhen>,
+) -> Result<(), CliError> {
+    let mut options = CargoOptions::parse(&args);
+    // `cargo xui --color never build`: Cargo is told too.
+    if let Some(color) = color
+        && options.color.is_none()
+    {
+        args.splice(0..0, [OsString::from("--color"), color.as_str().into()]);
+        options.color = Some(color.as_str().to_owned());
+    }
+    term::init(options.color.as_deref());
     let mut cargo = ProcessCommand::new(cargo_executable());
     cargo.arg(subcommand).args(&args);
     // Help needs nothing built, and has to work in a project that would fail
@@ -298,11 +579,14 @@ fn exec(mut cargo: ProcessCommand) -> Result<(), CliError> {
     {
         use std::os::unix::process::CommandExt;
         // Only returns if Cargo could not be started.
-        Err(CliError::Spawn(cargo.exec()))
+        let error = cargo.exec();
+        Err(anyhow::Error::new(error)
+            .context("could not run cargo")
+            .into())
     }
     #[cfg(not(unix))]
     {
-        let status = cargo.status().map_err(CliError::Spawn)?;
+        let status = cargo.status().context("could not run cargo")?;
         if status.success() {
             Ok(())
         } else {
@@ -314,23 +598,119 @@ fn exec(mut cargo: ProcessCommand) -> Result<(), CliError> {
 /// Sets a package up, creating whatever part of the setup is missing and
 /// leaving the rest alone -- so it also migrates a package that predates
 /// build scripts.
-fn run_init(args: &ProjectArgs) -> Result<(), CliError> {
+fn run_init(args: &InitArgs) -> Result<()> {
     let project = resolve_project(
-        args.manifest_path.as_deref(),
-        args.package.as_slice(),
+        args.project.manifest_path.as_deref(),
+        args.project.package.as_slice(),
         false,
     )?
     .into_package()?;
-    println!("Setting up XUI assets in {}", project.dir.display());
-    let report = |done: bool, what: &str| {
-        let verb = if done { "created" } else { "kept" };
-        println!("  {verb:<8} {what}");
+    let quiet = args.output.quiet;
+    if !quiet {
+        term::status_in(
+            term::NOTE,
+            "Setting up",
+            format_args!(
+                "XUI assets for `{}`{}",
+                project.name,
+                match shown(&project.dir) {
+                    here if here.is_empty() => String::new(),
+                    there => format!(" in {there}"),
+                }
+            ),
+        );
+    }
+    let source = project.xui_build_path.clone().map(Source::Path);
+    let assets = set_up(&project, quiet, source.as_ref(), false)?;
+    if !quiet {
+        term::note(format_args!(
+            "files under {assets}/ are named by constants in `xui_assets::refs`, in a crate \
+             that uses `#[xui::main]`; plain `cargo` builds it from here on"
+        ));
+    }
+    Ok(())
+}
+
+/// Where a crate of xui comes from, for `cargo add`.
+#[derive(Debug, Clone)]
+enum Source {
+    /// The crate's own directory.
+    Path(PathBuf),
+    Git {
+        url: String,
+        branch: Option<String>,
+    },
+}
+
+impl Source {
+    fn cargo_add_args(&self) -> Vec<OsString> {
+        match self {
+            Self::Path(path) => vec!["--path".into(), path.into()],
+            Self::Git { url, branch } => {
+                let mut args: Vec<OsString> = vec!["--git".into(), url.into()];
+                if let Some(branch) = branch {
+                    args.extend(["--branch".into(), branch.into()]);
+                }
+                args
+            }
+        }
+    }
+
+    fn describe(&self, from: &Path) -> String {
+        match self {
+            Self::Path(path) => {
+                let relative = pathdiff(path, from);
+                format!("path {}", relative.display())
+            }
+            Self::Git {
+                url,
+                branch: Some(branch),
+            } => format!("git {url}, branch {branch}"),
+            Self::Git { url, .. } => format!("git {url}"),
+        }
+    }
+}
+
+/// `path` relative to the directory `from`, both made absolute first.
+fn pathdiff(path: &Path, from: &Path) -> PathBuf {
+    let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_owned());
+    let (path, from) = (canonical(path), canonical(from));
+    let common = path
+        .components()
+        .zip(from.components())
+        .take_while(|(a, b)| a == b)
+        .count();
+    // Sharing only the root, the path itself reads better.
+    if common <= 1 {
+        return path;
+    }
+    let mut relative: PathBuf = from.components().skip(common).map(|_| "..").collect();
+    relative.extend(path.components().skip(common));
+    relative
+}
+
+/// The setup `init` and `new` share: xui.toml, the assets directory,
+/// build.rs, and `xui-build` as a build-dependency from `build_source`.
+/// Returns the assets directory, as configured.
+fn set_up(
+    project: &Project,
+    quiet: bool,
+    build_source: Option<&Source>,
+    offline: bool,
+) -> Result<String> {
+    let report = |created: bool, what: &str| {
+        if quiet {
+        } else if created {
+            term::status("Created", what);
+        } else {
+            term::status_in(term::DIM, "Unchanged", what);
+        }
     };
 
     let config = project.dir.join(CONFIG_FILE);
     let created_config = !config.exists();
     if created_config {
-        fs::write(&config, INIT_CONFIG).map_err(file_error(&config))?;
+        fs::write(&config, INIT_CONFIG).with_context(|| format!("writing {}", config.display()))?;
     }
     report(created_config, CONFIG_FILE);
 
@@ -340,17 +720,18 @@ fn run_init(args: &ProjectArgs) -> Result<(), CliError> {
     let assets = project.dir.join(assets_config.source().as_std_path());
     let created_assets = !assets.exists();
     if created_assets {
-        fs::create_dir_all(&assets).map_err(file_error(&assets))?;
+        fs::create_dir_all(&assets).with_context(|| format!("creating {}", assets.display()))?;
     }
     report(created_assets, &format!("{}/", assets_config.source()));
 
     let build_script = project.dir.join("build.rs");
-    let mut notes = Vec::new();
+    let mut todo = Vec::new();
     if !build_script.exists() {
-        fs::write(&build_script, INIT_BUILD_SCRIPT).map_err(file_error(&build_script))?;
+        fs::write(&build_script, INIT_BUILD_SCRIPT)
+            .with_context(|| format!("writing {}", build_script.display()))?;
         report(true, "build.rs");
     } else if fs::read_to_string(&build_script)
-        .map_err(file_error(&build_script))?
+        .with_context(|| format!("reading {}", build_script.display()))?
         .contains("xui_build::assets")
     {
         // Cargo does not watch an `xui.toml` that did not exist when the
@@ -360,61 +741,233 @@ fn run_init(args: &ProjectArgs) -> Result<(), CliError> {
         }
         report(false, "build.rs");
     } else {
-        notes.push("build.rs already exists: add `xui_build::assets();` to its `main`.".to_owned());
+        todo.push("build.rs already exists: add `xui_build::assets();` to its `main`".to_owned());
     }
 
+    let dependency = format!("{BUILD_CRATE} in [build-dependencies]");
     if project.uses_build_script {
-        report(false, &format!("{BUILD_CRATE} in [build-dependencies]"));
+        report(false, &dependency);
     } else {
-        match &project.xui_build_path {
-            Some(path) => {
-                add_build_dependency(&project.manifest, path)?;
-                report(true, &format!("{BUILD_CRATE} in [build-dependencies]"));
+        match build_source {
+            Some(source) => {
+                cargo_add(&project.manifest, BUILD_CRATE, true, source, offline)?;
+                if !quiet {
+                    term::status("Adding", &dependency);
+                }
             }
-            None => notes.push(format!(
+            None => todo.push(format!(
                 "add {BUILD_CRATE} to [build-dependencies], from wherever the `xui` \
-                 dependency comes from."
+                 dependency comes from"
             )),
         }
     }
 
-    for note in notes {
-        println!("\nnote: {note}");
+    // Left to do by hand: a warning even under --quiet.
+    for item in &todo {
+        term::warn(item);
     }
-    println!(
-        "\nFiles under {}/ are named by constants in `xui_assets::refs`, in a crate that \
-         uses `#[xui::main]`. Plain `cargo` builds it from here on.",
-        assets_config.source()
-    );
+    Ok(assets_config.source().to_string())
+}
+
+/// Creates a package with `cargo new`, then makes it an XUI app.
+fn run_new(args: &NewArgs) -> Result<()> {
+    let quiet = args.output.quiet;
+    let source = match (&args.xui_path, &args.git) {
+        (_, Some(url)) => Source::Git {
+            url: url.clone(),
+            branch: args.branch.clone(),
+        },
+        (Some(root), None) => Source::Path(
+            checkout_crate(root, "xui")
+                .with_context(|| format!("{} is not an xui checkout", root.display()))?,
+        ),
+        (None, None) => Source::Path(this_checkout().context(
+            "the xui checkout this `cargo xui` was built from is gone; \
+             pass --xui-path <DIR> or --git <URL>",
+        )?),
+    };
+    let build_source = match &source {
+        Source::Path(xui) => Source::Path(
+            xui.parent()
+                .and_then(|root| checkout_crate(root, BUILD_CRATE))
+                .with_context(|| format!("no {BUILD_CRATE} beside {}", xui.display()))?,
+        ),
+        git => git.clone(),
+    };
+
+    let mut cargo = ProcessCommand::new(cargo_executable());
+    cargo.args(["new", "--bin", "--quiet"]).arg(&args.path);
+    if let Some(name) = &args.name {
+        cargo.args(["--name", name]);
+    }
+    if let Some(vcs) = &args.vcs {
+        cargo.args(["--vcs", vcs]);
+    }
+    let output = cargo.output().context("could not run cargo")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if args.path.exists() {
+            bail!(
+                "{} already exists; `cargo xui init` sets up an existing package",
+                args.path.display()
+            );
+        }
+        let reason = stderr.trim().trim_start_matches("error:").trim();
+        bail!("could not create {}: {reason}", args.path.display());
+    }
+    let manifest = args.path.join("Cargo.toml");
+    let project = resolve_project(Some(&manifest), &[], false)?.into_package()?;
+    if !quiet {
+        term::status(
+            "Creating",
+            format_args!("XUI app `{}` in {}", project.name, shown(&project.dir)),
+        );
+    }
+
+    cargo_add(&project.manifest, "xui", false, &source, args.offline)?;
+    if !quiet {
+        term::status(
+            "Adding",
+            format_args!("xui ({})", source.describe(&project.dir)),
+        );
+    }
+    let main = project.dir.join("src/main.rs");
+    fs::write(&main, NEW_MAIN.replace("{{name}}", &project.name))
+        .with_context(|| format!("writing {}", main.display()))?;
+    if !quiet {
+        term::status("Created", "src/main.rs");
+    }
+    // Read again: it has `xui` now.
+    let project = resolve_project(Some(&manifest), &[], false)?.into_package()?;
+    set_up(&project, quiet, Some(&build_source), args.offline)?;
+
+    if !quiet {
+        let dir = shown(&project.dir);
+        let cd = if dir.is_empty() {
+            String::new()
+        } else {
+            format!("cd {dir} && ")
+        };
+        term::help(format_args!(
+            "run it with `{cd}cargo xui run`, or `{cd}cargo xui dev` to hot patch it as you edit"
+        ));
+    }
     Ok(())
 }
 
-fn touch(path: &Path) -> Result<(), CliError> {
+/// The `name` crate of an xui checkout at `root`: beside `xui/`, or under
+/// `crates/`.
+fn checkout_crate(root: &Path, name: &str) -> Option<PathBuf> {
+    [root.join(name), root.join("crates").join(name)]
+        .into_iter()
+        .find(|path| path.join("Cargo.toml").is_file())
+}
+
+/// The `xui` crate of the checkout this tool was built from, if still there.
+fn this_checkout() -> Option<PathBuf> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent()?;
+    checkout_crate(root, "xui")
+}
+
+const NEW_MAIN: &str = r#"//! {{name}}: an XUI app.
+//!
+//! `cargo xui run` runs it; `cargo xui dev` runs it and patches it as you
+//! edit, keeping the state of every component you did not touch.
+
+use xui::prelude::*;
+use xui::tokens::color;
+use xui::{MacRunnerOptions, PhysicalSize, WindowOptions};
+
+#[component]
+fn home() {
+    view! {
+        column(padding: EdgeInsets::all(24.0), gap: 12.0) {
+            greeting()
+            counter()
+        }
+    }
+}
+
+/// Edit this text under `cargo xui dev`: the count below stays.
+#[component]
+fn greeting() {
+    view! { text("Hello from {{name}}") }
+}
+
+#[component]
+fn counter() {
+    let count: i32 = state!(0);
+    view! {
+        row(gap: 12.0, align: AlignStyle::Center) {
+            container(
+                padding: EdgeInsets::all(8.0),
+                border_radius: 6.0,
+                background: color::PRIMARY,
+                color: color::PRIMARY_FOREGROUND,
+                on_click: |cx| count.update(cx, |count| *count += 1),
+            ) {
+                text("Click me")
+            }
+            text(format!("Clicked {count} times"))
+        }
+    }
+}
+
+fn root(app: &mut App) {
+    app.mount::<Home>(HomeProps {});
+}
+
+#[xui::main]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let options = MacRunnerOptions {
+        window: WindowOptions::default()
+            .with_title("{{name}}")
+            .with_inner_size(PhysicalSize::new(640, 400)),
+        ..Default::default()
+    };
+    xui::runner(root, Some(options)).run()?;
+    Ok(())
+}
+"#;
+
+fn touch(path: &Path) -> Result<()> {
     fs::File::options()
         .write(true)
         .open(path)
         .and_then(|file| file.set_modified(SystemTime::now()))
-        .map_err(file_error(path))
+        .with_context(|| format!("touching {}", path.display()))
 }
 
-/// `cargo add --build`, so the manifest keeps its formatting and gets a path
+/// `cargo add`, so the manifest keeps its formatting and gets a path
 /// relative to itself, the way Cargo writes one.
-fn add_build_dependency(manifest: &Path, crate_path: &Path) -> Result<(), CliError> {
-    let output = ProcessCommand::new(cargo_executable())
-        .args(["add", "--quiet", "--build", BUILD_CRATE, "--path"])
-        .arg(crate_path)
+fn cargo_add(
+    manifest: &Path,
+    krate: &str,
+    build: bool,
+    source: &Source,
+    offline: bool,
+) -> Result<()> {
+    let mut cargo = ProcessCommand::new(cargo_executable());
+    cargo.args(["add", "--quiet", krate]);
+    if build {
+        cargo.arg("--build");
+    }
+    if offline {
+        cargo.arg("--offline");
+    }
+    let output = cargo
+        .args(source.cargo_add_args())
         .arg("--manifest-path")
         .arg(manifest)
         .output()
-        .map_err(CliError::Spawn)?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(CliError::Usage(format!(
-            "`cargo add --build {BUILD_CRATE}` failed: {}",
+        .context("could not run cargo")?;
+    if !output.status.success() {
+        bail!(
+            "`cargo add {krate}` failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
-        )))
+        );
     }
+    Ok(())
 }
 
 const INIT_BUILD_SCRIPT: &str = "fn main() {\n    xui_build::assets();\n}\n";
@@ -445,67 +998,99 @@ const INIT_CONFIG: &str = r#"# XUI asset settings. Every key is optional; the va
 # alignment = 16
 "#;
 
-fn run_assets(command: AssetsCommand) -> Result<(), CliError> {
+fn run_assets(command: AssetsCommand) -> Result<()> {
     match command.action {
         AssetAction::Pack(args) => {
-            let (layout, build) = pack(&args)?;
-            println!(
-                "packed {} ({}) into {}",
-                count(build.asset_count, "asset"),
-                human_size(build.source_bytes),
-                layout.pak.display()
-            );
+            let spinner = (!args.output.quiet).then(|| term::spinner("Packing", "assets"));
+            let packed = pack(&args);
+            if let Some(spinner) = spinner {
+                spinner.finish_and_clear();
+            }
+            let (layout, build) = packed?;
+            if !args.output.quiet {
+                term::status(
+                    "Packed",
+                    format_args!(
+                        "{} ({}) into {}",
+                        count(build.asset_count, "asset"),
+                        human_size(build.source_bytes),
+                        shown(&layout.pak)
+                    ),
+                );
+            }
         }
         AssetAction::List(args) => {
-            let path = match args.pak {
+            let path = match args.inspect.pak {
                 Some(path) => path,
-                None => pack(&args.pack)?.0.pak,
+                None => pack(&args.inspect.pack)?.0.pak,
             };
-            print!("{}", listing(&open_pak(&path)?));
+            let pak = open_pak(&path)?;
+            let entries = sorted(&pak, args.sort);
+            let mut stdout = anstream::stdout().lock();
+            let written = if args.json {
+                json_listing(&entries).and_then(|json| Ok(writeln!(stdout, "{json}")?))
+            } else {
+                Ok(write!(stdout, "{}", listing(&entries, true))?)
+            };
+            // A closed pipe (`| head`) is not an error.
+            if let Err(error) = written
+                && error.downcast_ref::<io::Error>().map(io::Error::kind)
+                    != Some(io::ErrorKind::BrokenPipe)
+            {
+                return Err(error);
+            }
         }
         AssetAction::Verify(args) => {
             // The package on disk, not a fresh one: checking a file this
             // command had just written would prove nothing.
             let path = match args.pak {
                 Some(path) => path,
-                None => {
-                    let options = args.pack.options();
-                    let project = resolve_project(
-                        options.manifest_path.as_deref(),
-                        &options.packages,
-                        false,
-                    )?
-                    .into_package()?;
-                    let config = xui_build::load_config(&project.dir)?
-                        .unwrap_or_default()
-                        .assets;
-                    let generated_dir = generated_dir(&project, &options)?;
-                    let pak = Layout::new(&project.dir, &generated_dir, &config).pak;
-                    if !pak.is_file() {
-                        return Err(CliError::Usage(format!(
-                            "no asset package at {} yet; build one with `cargo xui assets pack`",
-                            pak.display()
-                        )));
-                    }
-                    pak
-                }
+                None => built_pak(&args.pack)?,
             };
             let pak = open_pak(&path)?;
-            pak.verify_all().map_err(|source| CliError::Pak {
-                path: path.clone(),
-                source,
-            })?;
-            println!(
-                "verified {} in {}",
-                count(pak.entries().count(), "asset"),
-                path.display()
-            );
+            let spinner =
+                (!args.pack.output.quiet).then(|| term::spinner("Verifying", shown(&path)));
+            let verified = pak.verify_all();
+            if let Some(spinner) = spinner {
+                spinner.finish_and_clear();
+            }
+            verified.with_context(|| format!("{} is damaged", shown(&path)))?;
+            if !args.pack.output.quiet {
+                term::status(
+                    "Verified",
+                    format_args!(
+                        "{} in {}",
+                        count(pak.entries().count(), "asset"),
+                        shown(&path)
+                    ),
+                );
+            }
         }
     }
     Ok(())
 }
 
-fn pack(args: &PackArgs) -> Result<(Layout, BuildOutput), CliError> {
+/// Where the project's build left its package; an error if it has not yet.
+fn built_pak(args: &PackArgs) -> Result<PathBuf> {
+    let options = args.options();
+    let project = resolve_project(options.manifest_path.as_deref(), &options.packages, false)?
+        .into_package()?;
+    let config = xui_build::load_config(&project.dir)?
+        .unwrap_or_default()
+        .assets;
+    let generated_dir = generated_dir(&project, &options)?;
+    let pak = Layout::new(&project.dir, &generated_dir, &config).pak;
+    if !pak.is_file() {
+        bail!(
+            "no asset package at {} yet; build one with `cargo xui assets pack{}`",
+            shown(&pak),
+            if options.release { " --release" } else { "" }
+        );
+    }
+    Ok(pak)
+}
+
+fn pack(args: &PackArgs) -> Result<(Layout, BuildOutput)> {
     let options = args.options();
     let project = resolve_project(options.manifest_path.as_deref(), &options.packages, false)?
         .into_package()?;
@@ -521,27 +1106,60 @@ fn pack(args: &PackArgs) -> Result<(Layout, BuildOutput), CliError> {
     )?)
 }
 
-fn open_pak(path: &Path) -> Result<PakSource, CliError> {
-    PakSource::open(path).map_err(|source| CliError::Pak {
-        path: path.to_owned(),
-        source,
-    })
+/// `path` as Cargo shows one: relative to the current directory when inside
+/// it (empty for the directory itself), else as it is.
+fn shown(path: &Path) -> String {
+    let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_owned());
+    let full = canonical(path);
+    match env::current_dir().map(|cwd| canonical(&cwd)) {
+        Ok(cwd) if full.starts_with(&cwd) => full.strip_prefix(&cwd).unwrap().display().to_string(),
+        _ => path.display().to_string(),
+    }
 }
 
-/// A table of the entries, sorted by path, and a line of totals.
-fn listing(pak: &PakSource) -> String {
+fn open_pak(path: &Path) -> Result<PakSource> {
+    PakSource::open(path).with_context(|| format!("could not open {}", shown(path)))
+}
+
+fn sorted(pak: &PakSource, key: SortKey) -> Vec<AssetMetadata> {
     let mut entries: Vec<_> = pak.entries().collect();
-    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    match key {
+        SortKey::Path => entries.sort_by(|a, b| a.path.cmp(&b.path)),
+        SortKey::Size => entries.sort_by(|a, b| {
+            b.original_len
+                .cmp(&a.original_len)
+                .then(a.path.cmp(&b.path))
+        }),
+        SortKey::Stored => {
+            entries.sort_by(|a, b| b.stored_len.cmp(&a.stored_len).then(a.path.cmp(&b.path)))
+        }
+    }
+    entries
+}
+
+fn compression_name(compression: Compression) -> &'static str {
+    match compression {
+        Compression::None => "none",
+        Compression::Zstd => "zstd",
+    }
+}
+
+/// A table of the entries and a line of totals; `styled` for a terminal.
+fn listing(entries: &[AssetMetadata], styled: bool) -> String {
+    let paint = |style: Style, text: String| {
+        if styled {
+            format!("{style}{text}{style:#}")
+        } else {
+            text
+        }
+    };
     let rows: Vec<[String; 4]> = entries
         .iter()
         .map(|entry| {
             [
                 human_size(entry.original_len),
                 human_size(entry.stored_len),
-                match entry.compression {
-                    Compression::None => "none".into(),
-                    Compression::Zstd => "zstd".into(),
-                },
+                compression_name(entry.compression).into(),
                 entry.path.to_string(),
             ]
         })
@@ -555,22 +1173,49 @@ fn listing(pak: &PakSource) -> String {
             .unwrap_or(0)
     };
     let (size, stored, compression) = (width(0), width(1), width(2));
-    let mut output = String::new();
-    for row in std::iter::once(header.map(String::from)).chain(rows) {
-        output.push_str(&format!(
-            "{:>size$}  {:>stored$}  {:<compression$}  {}\n",
+    let line = |row: &[String; 4]| {
+        format!(
+            "{:>size$}  {:>stored$}  {:<compression$}  {}",
             row[0], row[1], row[2], row[3]
-        ));
+        )
+    };
+    let mut output = paint(term::BOLD, line(&header.map(String::from)));
+    output.push('\n');
+    for row in &rows {
+        output.push_str(&line(row));
+        output.push('\n');
     }
     let original: u64 = entries.iter().map(|entry| entry.original_len).sum();
     let packed: u64 = entries.iter().map(|entry| entry.stored_len).sum();
-    output.push_str(&format!(
-        "{}, {} ({} stored)\n",
-        count(entries.len(), "asset"),
-        human_size(original),
-        human_size(packed)
+    output.push_str(&paint(
+        term::DIM,
+        format!(
+            "{}, {} ({} stored)",
+            count(entries.len(), "asset"),
+            human_size(original),
+            human_size(packed)
+        ),
     ));
+    output.push('\n');
     output
+}
+
+/// The entries as a JSON array, sizes in bytes.
+fn json_listing(entries: &[AssetMetadata]) -> Result<String> {
+    let entries: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "path": entry.path.as_str(),
+                "size": entry.original_len,
+                "stored": entry.stored_len,
+                "compression": compression_name(entry.compression),
+                "alignment": entry.alignment,
+                "hash": entry.content_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+            })
+        })
+        .collect();
+    Ok(serde_json::to_string_pretty(&entries)?)
 }
 
 /// What `cargo xui` needs from Cargo's arguments.
@@ -698,10 +1343,10 @@ enum Resolution {
 }
 
 impl Resolution {
-    fn into_package(self) -> Result<Project, CliError> {
+    fn into_package(self) -> Result<Project> {
         match self {
             Self::Package(project) => Ok(project),
-            Self::Unresolved(reason) => Err(CliError::Usage(reason)),
+            Self::Unresolved(reason) => Err(anyhow::anyhow!(reason)),
         }
     }
 }
@@ -729,22 +1374,22 @@ fn resolve_project(
     manifest_path: Option<&Path>,
     packages: &[String],
     workspace: bool,
-) -> Result<Resolution, CliError> {
+) -> Result<Resolution> {
     let manifest = match manifest_path {
         Some(path) => path.to_owned(),
         None => find_manifest(&env::current_dir()?)?,
     };
-    let manifest = manifest.canonicalize().map_err(file_error(&manifest))?;
+    let manifest = manifest
+        .canonicalize()
+        .with_context(|| format!("could not find {}", manifest.display()))?;
     let metadata = cargo_metadata(&manifest)?;
     let mut own = None;
     let mut members = Vec::with_capacity(metadata.packages.len());
     for package in metadata.packages {
         // Canonical on both sides: a temporary directory behind a symlink
         // would otherwise never match.
-        let package_manifest = package
-            .manifest_path
-            .canonicalize()
-            .unwrap_or(package.manifest_path);
+        let package_manifest: PathBuf = package.manifest_path.into();
+        let package_manifest = package_manifest.canonicalize().unwrap_or(package_manifest);
         let dir = package_manifest
             .parent()
             .expect("a manifest path has a parent")
@@ -753,18 +1398,17 @@ fn resolve_project(
             own = Some(members.len());
         }
         let uses_build_script = package.dependencies.iter().any(|dependency| {
-            dependency.name == BUILD_CRATE && dependency.kind.as_deref() == Some("build")
+            dependency.name == BUILD_CRATE && dependency.kind == DependencyKind::Build
         });
         let xui_build_path = package
             .dependencies
             .iter()
             .find(|dependency| dependency.name == "xui")
             .and_then(|dependency| dependency.path.as_deref()?.parent())
-            .map(|parent| parent.join(BUILD_CRATE))
-            .filter(|path| path.join("Cargo.toml").is_file());
+            .and_then(|root| checkout_crate(root.as_std_path(), BUILD_CRATE));
         members.push(Member {
             has_config: dir.join(CONFIG_FILE).is_file(),
-            name: package.name,
+            name: package.name.to_string(),
             dir,
             manifest: package_manifest,
             uses_build_script,
@@ -797,7 +1441,7 @@ fn resolve_project(
             name: member.name.clone(),
             dir: member.dir.clone(),
             manifest: member.manifest.clone(),
-            target_directory: metadata.target_directory,
+            target_directory: metadata.target_directory.into(),
             uses_build_script: member.uses_build_script,
             xui_build_path: member.xui_build_path.clone(),
         }),
@@ -817,7 +1461,7 @@ fn resolve_project(
 ///
 /// Among several candidates, the one set up for XUI assets is it. A lone
 /// candidate needs no setup.
-fn select<'a>(candidates: &[&'a Member]) -> Result<Option<&'a Member>, CliError> {
+fn select<'a>(candidates: &[&'a Member]) -> Result<Option<&'a Member>> {
     let apps: Vec<&Member> = candidates
         .iter()
         .copied()
@@ -826,7 +1470,7 @@ fn select<'a>(candidates: &[&'a Member]) -> Result<Option<&'a Member>, CliError>
     match (apps.as_slice(), candidates) {
         ([member], _) | ([], [member]) => Ok(Some(member)),
         ([], _) => Ok(None),
-        (several, _) => Err(CliError::Usage(format!(
+        (several, _) => Err(anyhow::anyhow!(
             "{} packages are set up for XUI assets ({}); pick one with -p",
             several.len(),
             several
@@ -834,7 +1478,7 @@ fn select<'a>(candidates: &[&'a Member]) -> Result<Option<&'a Member>, CliError>
                 .map(|member| member.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")
-        ))),
+        )),
     }
 }
 
@@ -845,20 +1489,20 @@ fn package_name(spec: &str) -> &str {
     spec.split('@').next().unwrap_or(spec)
 }
 
-fn find_manifest(start: &Path) -> Result<PathBuf, CliError> {
+fn find_manifest(start: &Path) -> Result<PathBuf> {
     start
         .ancestors()
         .map(|directory| directory.join("Cargo.toml"))
         .find(|manifest| manifest.is_file())
         .ok_or_else(|| {
-            CliError::Usage(format!(
+            anyhow::anyhow!(
                 "could not find Cargo.toml in {} or any parent directory",
                 start.display()
-            ))
+            )
         })
 }
 
-fn target_directory(project: &Project, options: &CargoOptions) -> Result<PathBuf, CliError> {
+fn target_directory(project: &Project, options: &CargoOptions) -> Result<PathBuf> {
     Ok(match &options.target_dir {
         Some(directory) if directory.is_absolute() => directory.clone(),
         Some(directory) => env::current_dir()?.join(directory),
@@ -868,7 +1512,7 @@ fn target_directory(project: &Project, options: &CargoOptions) -> Result<PathBuf
 
 /// Per package: two applications in one workspace share a target directory,
 /// and must not overwrite each other's bundle.
-fn generated_dir(project: &Project, options: &CargoOptions) -> Result<PathBuf, CliError> {
+fn generated_dir(project: &Project, options: &CargoOptions) -> Result<PathBuf> {
     Ok(target_directory(project, options)?
         .join("xui")
         .join(options.profile_dir())
@@ -895,7 +1539,7 @@ struct External {
 /// A package whose build script packs its assets needs nothing generated
 /// here, unless its package is external: then a copy is packed to put
 /// beside the executable, which a build script cannot reach.
-fn prepare(project: &Project, options: &CargoOptions) -> Result<Prepared, CliError> {
+fn prepare(project: &Project, options: &CargoOptions) -> Result<Prepared> {
     let config = xui_build::load_config(&project.dir)?
         .unwrap_or_default()
         .assets;
@@ -905,8 +1549,7 @@ fn prepare(project: &Project, options: &CargoOptions) -> Result<Prepared, CliErr
         let (layout, build) =
             xui_build::generate(&project.dir, &generated_dir, &config, Fallbacks::None)?;
         if build.written && !options.quiet {
-            status(
-                color_stderr(options.color.as_deref()),
+            term::status(
                 "Packing",
                 format_args!(
                     "{} ({}) for {}",
@@ -943,95 +1586,24 @@ fn dev_directory(config: &AssetsConfig, layout: &Layout) -> Option<PathBuf> {
     (config.dev_directory && layout.source.is_dir()).then(|| layout.source.clone())
 }
 
-fn copy_if_changed(from: &Path, to: &Path) -> Result<(), CliError> {
-    let contents = fs::read(from).map_err(file_error(from))?;
-    xui_build::write_if_changed(to, contents).map_err(file_error(to))?;
+fn copy_if_changed(from: &Path, to: &Path) -> Result<()> {
+    let contents = fs::read(from).with_context(|| format!("reading {}", from.display()))?;
+    xui_build::write_if_changed(to, contents)
+        .with_context(|| format!("writing {}", to.display()))?;
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct CargoMetadata {
-    packages: Vec<MetadataPackage>,
-    target_directory: PathBuf,
-}
-
-#[derive(Deserialize)]
-struct MetadataPackage {
-    name: String,
-    manifest_path: PathBuf,
-    #[serde(default)]
-    dependencies: Vec<MetadataDependency>,
-}
-
-#[derive(Deserialize)]
-struct MetadataDependency {
-    name: String,
-    /// `None` for a normal dependency, `"build"` or `"dev"` otherwise.
-    kind: Option<String>,
-    /// Set for a path dependency.
-    #[serde(default)]
-    path: Option<PathBuf>,
-}
-
-fn cargo_metadata(manifest: &Path) -> Result<CargoMetadata, CliError> {
-    let output = ProcessCommand::new(cargo_executable())
-        .args([
-            "metadata",
-            "--format-version",
-            "1",
-            "--no-deps",
-            "--manifest-path",
-        ])
-        .arg(manifest)
-        .output()
-        .map_err(CliError::Spawn)?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stderr = stderr.trim();
-        let stderr = stderr.strip_prefix("error: ").unwrap_or(stderr);
-        return Err(CliError::Metadata(format!(
-            "`cargo metadata` failed for {}: {stderr}",
-            manifest.display()
-        )));
-    }
-    Ok(serde_json::from_slice(&output.stdout)?)
+fn cargo_metadata(manifest: &Path) -> Result<Metadata> {
+    MetadataCommand::new()
+        .cargo_path(cargo_executable())
+        .no_deps()
+        .manifest_path(manifest)
+        .exec()
+        .with_context(|| format!("`cargo metadata` failed for {}", manifest.display()))
 }
 
 fn cargo_executable() -> OsString {
     env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
-}
-
-/// Whether to colour stderr, following the same switches Cargo does.
-fn color_stderr(choice: Option<&str>) -> bool {
-    let choice = choice
-        .map(str::to_owned)
-        .or_else(|| env::var("CARGO_TERM_COLOR").ok());
-    match choice.as_deref() {
-        Some("always") => true,
-        Some("never") => false,
-        _ => io::stderr().is_terminal() && env::var_os("NO_COLOR").is_none(),
-    }
-}
-
-fn paint(color: bool, code: &str, text: &str) -> String {
-    if color {
-        format!("\x1b[{code}m{text}\x1b[0m")
-    } else {
-        text.to_owned()
-    }
-}
-
-/// A status line in Cargo's format, so it reads as part of Cargo's output.
-fn status(color: bool, verb: &str, message: impl fmt::Display) {
-    eprintln!("{} {message}", paint(color, "1;32", &format!("{verb:>12}")));
-}
-
-fn count(n: usize, noun: &str) -> String {
-    if n == 1 {
-        format!("1 {noun}")
-    } else {
-        format!("{n} {noun}s")
-    }
 }
 
 fn human_size(bytes: u64) -> String {
@@ -1315,7 +1887,8 @@ mod tests {
         fs::write(temp.path().join("assets/b.png"), vec![0; 2048]).unwrap();
         fs::write(temp.path().join("assets/a.txt"), b"hello").unwrap();
         let prepared = prepare(&project(temp.path()), &quiet()).unwrap();
-        let listing = listing(&PakSource::open(&prepared.layout.pak).unwrap());
+        let pak = PakSource::open(&prepared.layout.pak).unwrap();
+        let listing = listing(&sorted(&pak, SortKey::Path), false);
         let lines: Vec<&str> = listing.lines().collect();
         assert!(
             lines[0].contains("SIZE") && lines[0].ends_with("PATH"),
@@ -1330,6 +1903,16 @@ mod tests {
             "{listing}"
         );
         assert_eq!(lines[3], "2 assets, 2.0 KiB (2.0 KiB stored)");
+
+        // Largest first, and the same entries for a script.
+        let by_size = sorted(&pak, SortKey::Size);
+        assert_eq!(by_size[0].path.as_str(), "b.png");
+        let json: serde_json::Value =
+            serde_json::from_str(&json_listing(&by_size).unwrap()).unwrap();
+        assert_eq!(json[0]["path"], "b.png");
+        assert_eq!(json[0]["size"], 2048);
+        assert_eq!(json[0]["compression"], "none");
+        assert_eq!(json[1]["hash"].as_str().unwrap().len(), 64);
     }
 
     #[test]
@@ -1382,11 +1965,129 @@ mod tests {
         else {
             panic!("expected assets list");
         };
-        assert_eq!(args.pak, None);
-        assert!(args.pack.release);
+        assert_eq!(args.inspect.pak, None);
+        assert!(args.inspect.pack.release);
+        assert_eq!(args.sort, SortKey::Path);
         assert_eq!(
-            args.pack.project.manifest_path,
+            args.inspect.pack.project.manifest_path,
             Some(PathBuf::from("app/Cargo.toml"))
         );
+    }
+
+    #[test]
+    fn the_command_line_is_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn options_are_checked_values() {
+        let CliCommand::Assets(AssetsCommand {
+            action: AssetAction::List(args),
+        }) = parse(&[
+            "assets", "list", "--sort", "stored", "--json", "--color", "never",
+        ])
+        else {
+            panic!("expected assets list");
+        };
+        assert_eq!(args.sort, SortKey::Stored);
+        assert!(args.json);
+        assert_eq!(args.inspect.pack.output.color, Some(ColorWhen::Never));
+
+        let mut full = os(&["cargo-xui", "assets", "list", "--sort", "biggest"]);
+        let error = Cli::try_parse_from(std::mem::take(&mut full)).unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn dev_takes_cargo_feature_flags() {
+        let CliCommand::Dev(args) = parse(&[
+            "dev",
+            "-F",
+            "a b",
+            "--features",
+            "c",
+            "--no-default-features",
+            "--",
+            "--x",
+        ]) else {
+            panic!("expected dev");
+        };
+        assert_eq!(args.features.features, ["a", "b", "c"]);
+        assert!(args.features.no_default_features);
+        assert_eq!(args.app_args, ["--x"]);
+    }
+
+    #[test]
+    fn a_leading_color_is_parsed_before_a_forwarded_command() {
+        let cli =
+            Cli::try_parse_from(os(&["cargo-xui", "--color", "always", "build", "-r"])).unwrap();
+        assert_eq!(cli.color, Some(ColorWhen::Always));
+        let CliCommand::Build(CargoArgs { args }) = cli.command else {
+            panic!("expected build");
+        };
+        assert_eq!(args, os(&["-r"]));
+    }
+
+    #[test]
+    fn new_takes_one_source_of_xui() {
+        let CliCommand::New(args) = parse(&[
+            "new",
+            "hello",
+            "--git",
+            "https://x/xui.git",
+            "--branch",
+            "main",
+        ]) else {
+            panic!("expected new");
+        };
+        assert_eq!(args.path, PathBuf::from("hello"));
+        assert_eq!(args.branch.as_deref(), Some("main"));
+        let both = Cli::try_parse_from(os(&[
+            "cargo-xui",
+            "new",
+            "a",
+            "--git",
+            "u",
+            "--xui-path",
+            "p",
+        ]));
+        assert_eq!(
+            both.unwrap_err().kind(),
+            clap::error::ErrorKind::ArgumentConflict
+        );
+        let branch_alone = Cli::try_parse_from(os(&["cargo-xui", "new", "a", "--branch", "main"]));
+        assert_eq!(
+            branch_alone.unwrap_err().kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn this_checkout_has_both_crates() {
+        let xui = this_checkout().expect("built from a checkout");
+        assert!(checkout_crate(xui.parent().unwrap(), BUILD_CRATE).is_some());
+    }
+
+    #[test]
+    fn relative_paths_climb_only_as_far_as_needed() {
+        let temp = tempfile::tempdir().unwrap();
+        let (a, b) = (
+            temp.path().join("work/app"),
+            temp.path().join("xui/crates/xui-build"),
+        );
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        assert_eq!(
+            pathdiff(&b, &a),
+            PathBuf::from("../../xui/crates/xui-build")
+        );
+        assert_eq!(pathdiff(&a, &a), PathBuf::new());
+    }
+
+    #[test]
+    fn the_new_app_is_named_after_its_package() {
+        let main = NEW_MAIN.replace("{{name}}", "hello");
+        assert!(main.contains("#[xui::main]") && main.contains(r#".with_title("hello")"#));
+        assert!(!main.contains("{{"));
     }
 }

@@ -25,6 +25,7 @@ members = [
     "crates/xui-wgpu-text",
     "crates/xui-editor",
     "crates/xui-shell",
+    "crates/xui-hot",
     "crates/xui-macos",
     "crates/xui-windows", "xui", "crates/xui-property",
 ]
@@ -55,6 +56,7 @@ default-members = [
     "crates/xui-wgpu-text",
     "crates/xui-editor",
     "crates/xui-shell",
+    "crates/xui-hot",
     "crates/xui-macos",
     "crates/xui-windows",
     "xui-example-app",

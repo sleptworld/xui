@@ -1,0 +1,31 @@
+[package]
+name = "xui-hot"
+version = "0.1.0"
+edition = "2024"
+description = "Builds hot patches of a running xui app: the toolchain side of `cargo xui dev`."
+
+[dependencies]
+anyhow = "1.0.102"
+anstream = "1.0.0"
+anstyle = "1.0.14"
+# Which package and binary, and cargo's and rustc's JSON messages.
+cargo_metadata = "0.23.1"
+ctrlc = "3.5.3"
+indicatif = "0.18.6"
+notify-debouncer-full = "0.8.0"
+# Parsing the app's symbols, writing the stub object a patch links with.
+object = { version = "0.37", default-features = false, features = ["std", "read", "write", "macho", "elf", "coff", "archive"] }
+# Collecting the dependencies' objects into the archive the app links whole.
+ar = "0.9"
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Telling a change a patch carries from one that reshapes the app's data.
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "visit"] }
+# The jump table subsecond applies in the app.
+subsecond-types = "0.7.10"
+
+[target.'cfg(unix)'.dependencies]
+# Single-key commands: the terminal without line buffering or echo.
+rustix = { version = "1.1.4", features = ["termios", "stdio"] }

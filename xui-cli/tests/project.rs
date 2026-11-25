@@ -66,3 +66,50 @@ fn main() {
         assert!(status.success(), "{mode:?} from {directory} failed");
     }
 }
+
+/// `cargo xui new`: a package that depends on this checkout's `xui` and
+/// `xui-build`, with the asset setup and an app to start from.
+#[test]
+fn new_creates_an_app_on_this_checkout() {
+    let temp = tempfile::tempdir().unwrap();
+    let status = Command::new(env!("CARGO_BIN_EXE_cargo-xui"))
+        .current_dir(temp.path())
+        .args([
+            "xui",
+            "new",
+            "hello",
+            "--vcs",
+            "none",
+            "--offline",
+            "--quiet",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let app = temp.path().join("hello");
+    let manifest = fs::read_to_string(app.join("Cargo.toml")).unwrap();
+    assert!(manifest.contains("[dependencies]\nxui = "), "{manifest}");
+    assert!(
+        manifest.contains("[build-dependencies]\nxui-build = "),
+        "{manifest}"
+    );
+    for file in ["xui.toml", "build.rs", "src/main.rs"] {
+        assert!(app.join(file).is_file(), "{file}");
+    }
+    assert!(app.join("assets").is_dir());
+    let main = fs::read_to_string(app.join("src/main.rs")).unwrap();
+    assert!(main.contains("Hello from hello"));
+
+    // A second time: the directory is there, and `init` is the way on.
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-xui"))
+        .current_dir(temp.path())
+        .args(["xui", "--color", "never", "new", "hello"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("already exists") && stderr.contains("cargo xui init"),
+        "{stderr}"
+    );
+}
