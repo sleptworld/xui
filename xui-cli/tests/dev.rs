@@ -22,6 +22,10 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
 use std::{fs, thread};
 
+/// The value of a variable of the session dev runs in, which nothing it
+/// writes may hold.
+const SECRET: &str = "xui-e2e-not-to-be-written-down";
+
 const BUILD: Duration = Duration::from_secs(30 * 60);
 const REBUILD: Duration = Duration::from_secs(5 * 60);
 const PATCH: Duration = Duration::from_secs(2 * 60);
@@ -76,8 +80,22 @@ fn clicked(count: i32) {
 /// A helper a prop calls: the prop reads no signal.
 fn label() -> String {
     let note = model::Note { text: "label v1" };
-    println!("xui-e2e label {} hits {}", note.text, HITS.load(Ordering::Relaxed));
+    let grid = Grid { cells: [0; CELLS] };
+    println!(
+        "xui-e2e label {} hits {} cells {}",
+        note.text,
+        HITS.load(Ordering::Relaxed),
+        grid.cells.len()
+    );
     note.text.to_owned()
+}
+
+const BASE: usize = 2;
+const CELLS: usize = BASE * 2;
+
+/// A type whose size a const decides, through another.
+struct Grid {
+    cells: [u8; CELLS],
 }
 
 fn mounted(name: &str) -> u8 {
@@ -194,7 +212,8 @@ fn dev_patches_what_it_can_and_restarts_for_the_rest() {
     let clicks = temp.path().join("clicks");
     fs::create_dir_all(&clicks).unwrap();
 
-    let mut dev = Dev::start(&app, &workspace.join("target/xui-dev-e2e"), &clicks);
+    let target_dir = workspace.join("target/xui-dev-e2e");
+    let mut dev = Dev::start(&app, &target_dir, &clicks);
 
     // Launch: every component mounted. The static is shared with each
     // patch, so not warned about.
@@ -211,6 +230,22 @@ fn dev_patches_what_it_can_and_restarts_for_the_rest() {
     dev.absent(at, "a statics warning", |l| l.contains("each patch starts"));
     // A click: the handler runs, the count goes up.
     dev.click("click c1 count 1");
+    // What dev records of each rustc call has what cargo set, not the
+    // session's environment.
+    for entry in fs::read_dir(target_dir.join("xui-hot/hello")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "json") {
+            let text = fs::read_to_string(&path).unwrap();
+            assert!(
+                !text.contains(SECRET),
+                "the session's secret in {}",
+                path.display()
+            );
+            if path.file_name().unwrap() == "rustc-hello-bin.json" {
+                assert!(text.contains("CARGO_PKG_NAME"), "cargo's variables kept");
+            }
+        }
+    }
 
     // A helper a kept component calls: that component, and only it, again.
     let at = dev.mark();
@@ -287,6 +322,15 @@ fn dev_patches_what_it_can_and_restarts_for_the_rest() {
             l.contains(&format!("xui-e2e label label v{version}"))
         });
     }
+
+    // A const a type's size depends on, through another: rebuilt.
+    let at = dev.mark();
+    edit(&main, "BASE: usize = 2", "BASE: usize = 3");
+    dev.expect(at, PATCH, "a restart for the const", |l| {
+        l.contains("Restarting") && l.contains("const `BASE` (src/main.rs) changed shape")
+    });
+    dev.expect(at, REBUILD, "connected again", |l| l.contains("Connected"));
+    dev.expect(at, PATCH, "the new size", |l| l.contains("cells 6"));
 
     // A type the app holds values of: rebuilt, not patched.
     let at = dev.mark();
@@ -367,6 +411,7 @@ impl Dev {
             .env("CARGO_NET_OFFLINE", "true")
             // Through dev to the app it starts.
             .env("XUI_E2E_DIR", clicks)
+            .env("XUI_E2E_TOKEN", SECRET)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

@@ -58,10 +58,6 @@ impl Sources {
                 }
             }
         }
-        // A file both read (`include!`d by each): the patch has it.
-        for file in &sources.bin {
-            sources.others.remove(file);
-        }
         sources
     }
 
@@ -102,6 +98,14 @@ pub fn classify(
     let mut patch = Vec::new();
     for path in paths {
         let path = canonical(path);
+        // Another crate's first, even if the binary crate reads it too
+        // (`include!`d by both): a patch would leave that crate as it was.
+        if let Some(krate) = sources.others.get(&path) {
+            return Change::Restart(format!(
+                "{} is in `{krate}`; a patch carries only `{bin}`",
+                show(&path)
+            ));
+        }
         if sources.bin.contains(&path) {
             patch.push(path);
             continue;
@@ -116,12 +120,6 @@ pub fn classify(
                 continue;
             }
             return Change::Restart(format!("{} changed", show(&path)));
-        }
-        if let Some(krate) = sources.others.get(&path) {
-            return Change::Restart(format!(
-                "{} is in `{krate}`; a patch carries only `{bin}`",
-                show(&path)
-            ));
         }
         // A Rust file no crate read: in this package, most likely a module
         // not declared yet (declaring it patches); in another package, one
@@ -279,9 +277,15 @@ src/my\\ ui.rs:
         );
         let package = canonical(&package);
         std::fs::write(package.join("Cargo.lock"), "# v1").unwrap();
+        let shared = canonical(&package.join("src/shared.rs"));
+        std::fs::write(&shared, "").unwrap();
         let mut sources = Sources {
-            bin: [main.clone()].into(),
-            others: [(lib.clone(), "widgets".to_owned())].into(),
+            bin: [main.clone(), shared.clone()].into(),
+            others: [
+                (lib.clone(), "widgets".to_owned()),
+                (shared.clone(), "widgets".to_owned()),
+            ]
+            .into(),
             built: HashMap::new(),
         };
         sources.remember_build_files(&[&package]);
@@ -299,6 +303,11 @@ src/my\\ ui.rs:
             Change::Restart("lib.rs is in `widgets`; a patch carries only `app`".into())
         );
         assert!(matches!(classify(&[stray]), Change::Restart(_)));
+        // Read by the binary crate and another: that one needs building.
+        assert_eq!(
+            classify(&[shared]),
+            Change::Restart("shared.rs is in `widgets`; a patch carries only `app`".into())
+        );
         assert_eq!(
             classify(&[package.join("Cargo.toml")]),
             Change::Restart("Cargo.toml changed".into())

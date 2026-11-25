@@ -62,6 +62,7 @@ pub fn dev(options: DevOptions) -> Result<()> {
     )?;
     let dir = target.target_dir.join("xui-hot").join(&target.bin);
     std::fs::create_dir_all(dir.join("patches"))?;
+    shim::scrub_records(&dir);
 
     let (events, inbox) = channel();
     let _watcher = watch(&target, events.clone())?;

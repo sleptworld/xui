@@ -12,7 +12,7 @@ use cargo_metadata::{DependencyKind, Message, MetadataCommand, TargetKind};
 use serde::Deserialize;
 
 use crate::link::TARGET_DIR_ENV;
-use crate::shim::{self, DIR_ENV, LINK_ENV, LinkCall, RustcCall};
+use crate::shim::{self, DIR_ENV, INHERITED_ENV, LINK_ENV, LinkCall, RustcCall};
 use crate::term;
 
 /// The binary being developed.
@@ -214,6 +214,8 @@ pub fn fat(
         .env("RUSTC_WORKSPACE_WRAPPER", tool)
         .env(DIR_ENV, dir)
         .env(LINK_ENV, "fat")
+        // What the recorded calls leave out: the session's environment.
+        .env(INHERITED_ENV, shim::inherited_env())
         .env(TARGET_DIR_ENV, &target.target_dir)
         .envs(envs.iter().cloned())
         .stdout(Stdio::piped())
@@ -313,16 +315,19 @@ pub fn thin(target: &Target, dir: &Path) -> Result<Thin> {
     let record = shim::rustc_record(dir, &target.crate_name(), "bin");
     let call: RustcCall = read_json(&record)
         .with_context(|| format!("no recorded rustc call for `{}`", target.bin))?;
+    // The session's environment, as cargo had it, and what cargo set.
     let mut child = Command::new(&call.rustc)
         .args(&call.args)
-        .env_clear()
-        // Cargo's jobserver was the fat build's; this rustc has none.
         .envs(
             call.envs
                 .iter()
                 .filter(|(key, _)| !key.ends_with("MAKEFLAGS"))
                 .cloned(),
         )
+        // Cargo's jobserver was the fat build's; this rustc has none.
+        .env_remove("CARGO_MAKEFLAGS")
+        .env_remove("MAKEFLAGS")
+        .env_remove("MFLAGS")
         .env(DIR_ENV, dir)
         .env(LINK_ENV, "thin")
         .current_dir(&call.cwd)

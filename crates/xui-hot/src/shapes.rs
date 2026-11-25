@@ -7,7 +7,9 @@
 //! component keeps is safe; a type defined outside one is not, nor is a
 //! static's type or initial value (the app's is the one in use), a trait's method list (the
 //! vtables of trait objects the app made), or a `const` a type's size
-//! depends on (`[u8; N]`).
+//! depends on (`[u8; N]`), directly or through other consts and const
+//! functions (`N = BASE * 2`, `[u8; size()]`): whatever is evaluated in
+//! a type's definition.
 //!
 //! So each source's *shapes* — those items, as tokens — are compared with
 //! the running version's; a change to one is reported, and the app is
@@ -45,8 +47,6 @@ struct Shape {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Shapes {
     items: BTreeMap<String, Shape>,
-    /// `const`s, apart: one matters only if a type names it.
-    consts: BTreeMap<String, String>,
     /// Every identifier the file's type definitions use.
     type_idents: HashSet<String>,
     /// Code a component may call, by the item's path.
@@ -66,6 +66,9 @@ struct Code {
     known_as: Vec<Vec<String>>,
     /// The identifiers it uses.
     refs: HashSet<String>,
+    /// What it is, if a type's definition can evaluate it: `const`,
+    /// `const fn`, `macro`.
+    evaluated: Option<&'static str>,
 }
 
 /// What a change to the sources takes.
@@ -131,14 +134,37 @@ impl Snapshot {
             now.insert(path.clone(), new.clone());
             candidate.push((path.clone(), new_text, new));
         }
-        // A const matters if a type anywhere names it, before or after.
-        let mut type_idents: HashSet<&str> = HashSet::new();
-        for (path, (_, old)) in &self.files {
-            for shapes in [old.as_ref(), now.get(path).and_then(Option::as_ref)]
-                .into_iter()
-                .flatten()
-            {
-                type_idents.extend(shapes.type_idents.iter().map(String::as_str));
+        // What a type's layout can depend on, before or after: the
+        // identifiers its definition uses, and through them every const,
+        // const fn and macro they name, and what those name.
+        let versions: Vec<&Shapes> = self
+            .files
+            .iter()
+            .flat_map(|(path, (_, old))| [old.as_ref(), now.get(path).and_then(Option::as_ref)])
+            .flatten()
+            .collect();
+        let mut layout: HashSet<&str> = versions
+            .iter()
+            .flat_map(|shapes| shapes.type_idents.iter().map(String::as_str))
+            .collect();
+        let evaluated = |code: &Code, layout: &HashSet<&str>| {
+            code.evaluated.is_some()
+                && code
+                    .known_as
+                    .iter()
+                    .any(|name| name.iter().all(|ident| layout.contains(ident.as_str())))
+        };
+        loop {
+            let before = layout.len();
+            for shapes in &versions {
+                for code in shapes.code.values() {
+                    if evaluated(code, &layout) {
+                        layout.extend(code.refs.iter().map(String::as_str));
+                    }
+                }
+            }
+            if layout.len() == before {
+                break;
             }
         }
         for (path, new) in &now {
@@ -154,13 +180,15 @@ impl Snapshot {
                     });
                 }
             }
-            for (name, tokens) in &old.consts {
-                let ident = name.rsplit("::").next().unwrap_or(name);
-                if new.consts.get(name).is_some_and(|now| now != tokens)
-                    && type_idents.contains(ident)
+            for (name, code) in &new.code {
+                if old
+                    .code
+                    .get(name)
+                    .is_some_and(|old| old.tokens != code.tokens)
+                    && evaluated(code, &layout)
                 {
                     reshaped.push(Reshaped {
-                        kind: "const",
+                        kind: code.evaluated.expect("evaluated"),
                         name: name.clone(),
                         file: path.clone(),
                     });
@@ -347,7 +375,13 @@ impl Collector {
         );
     }
 
-    fn code(&mut self, key: String, tokens: &TokenStream, known_as: Vec<Vec<String>>) {
+    fn code(
+        &mut self,
+        key: String,
+        tokens: &TokenStream,
+        known_as: Vec<Vec<String>>,
+        evaluated: Option<&'static str>,
+    ) {
         let mut refs = HashSet::new();
         idents(tokens, &mut refs);
         // `Self::helper()` names the type.
@@ -360,6 +394,7 @@ impl Collector {
                 tokens: tokens.to_string(),
                 known_as,
                 refs,
+                evaluated,
             },
         );
     }
@@ -411,13 +446,18 @@ impl<'ast> Visit<'ast> for Collector {
             self.name(&item.ident),
             &tokens,
             vec![vec![item.ident.to_string()]],
+            None,
         );
     }
     fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
         let name = self.name(&item.ident);
         let tokens = normalize(item.to_token_stream());
-        self.shapes.consts.insert(name.clone(), tokens.to_string());
-        self.code(name, &tokens, vec![vec![item.ident.to_string()]]);
+        self.code(
+            name,
+            &tokens,
+            vec![vec![item.ident.to_string()]],
+            Some("const"),
+        );
     }
     fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
         if let Some(ident) = &item.ident {
@@ -427,6 +467,7 @@ impl<'ast> Visit<'ast> for Collector {
                 format!("{}!", self.name(ident)),
                 &tokens,
                 vec![vec![ident.to_string()]],
+                Some("macro"),
             );
             return;
         }
@@ -460,7 +501,7 @@ impl<'ast> Visit<'ast> for Collector {
             let name = self.name(&ident);
             let local = macro_name.as_deref() == Some("thread_local");
             self.shapes.mutable_statics.push((name.clone(), local));
-            self.code(name.clone(), &whole, vec![vec![ident.to_string()]]);
+            self.code(name.clone(), &whole, vec![vec![ident.to_string()]], None);
             self.shapes.items.insert(
                 name,
                 Shape {
@@ -494,10 +535,12 @@ impl<'ast> Visit<'ast> for Collector {
             return;
         }
         let ident = item.sig.ident.to_string();
+        let evaluated = item.sig.constness.is_some().then_some("const fn");
         self.code(
             self.name(&item.sig.ident),
             &tokens,
             vec![vec![ident.clone()]],
+            evaluated,
         );
         self.nested(ident, |this| {
             syn::visit::visit_item_fn(this, item);
@@ -520,6 +563,17 @@ impl<'ast> Visit<'ast> for Collector {
         syn::visit::visit_item_impl(self, item);
         self.impls.pop();
     }
+    fn visit_impl_item_const(&mut self, item: &'ast syn::ImplItemConst) {
+        // `[u8; Grid::CELLS]` names the type and the const.
+        let (ty, of_trait) = self.impls.last().cloned().unwrap_or_default();
+        let name = item.ident.to_string();
+        let key = match &of_trait {
+            Some(of) => format!("impl {of} for {ty}::{name}"),
+            None => format!("impl {ty}::{name}"),
+        };
+        let tokens = normalize(item.to_token_stream());
+        self.code(key, &tokens, vec![vec![ty, name]], Some("const"));
+    }
     fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
         let method = item.sig.ident.to_string();
         let (ty, of_trait) = self.impls.last().cloned().unwrap_or_default();
@@ -538,7 +592,8 @@ impl<'ast> Visit<'ast> for Collector {
             None => format!("impl {ty}::{method}"),
         };
         let tokens = normalize(item.to_token_stream());
-        self.code(key, &tokens, known_as);
+        let evaluated = item.sig.constness.is_some().then_some("const fn");
+        self.code(key, &tokens, known_as, evaluated);
         self.nested(method, |this| {
             syn::visit::visit_impl_item_fn(this, item);
         });
@@ -866,5 +921,39 @@ mod tests {
             .collect();
         assert_eq!(names, ["CACHE", "HITS", "LOCAL (local)", "RAW"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_const_a_type_needs_through_others_changes_shape() {
+        let app = "
+            const BASE: usize = 4;
+            const CELLS: usize = BASE * 2;
+            const fn width() -> usize { 3 }
+            const GAP: f32 = 8.0;
+            const fn unused() -> usize { 1 }
+            struct Grid { cells: [u8; CELLS], row: [u8; width()], label: String }
+            struct Board { tiles: [u8; Board::TILES] }
+            impl Board { const TILES: usize = 9; }
+            fn label() -> String { String::new() }
+        ";
+        let reshaped_by = |from: &str, to: &str| {
+            assert!(app.contains(from), "{from}");
+            reshaped(app, &app.replace(from, to))
+        };
+        assert_eq!(
+            reshaped_by("BASE: usize = 4", "BASE: usize = 8"),
+            ["const BASE"]
+        );
+        assert_eq!(reshaped_by("{ 3 }", "{ 4 }"), ["const fn width"]);
+        assert_eq!(
+            reshaped_by("TILES: usize = 9", "TILES: usize = 16"),
+            ["const impl Board::TILES"]
+        );
+        // What no type evaluates: code, which a patch carries.
+        assert!(reshaped_by("GAP: f32 = 8.0", "GAP: f32 = 9.0").is_empty());
+        assert!(reshaped_by("{ 1 }", "{ 2 }").is_empty());
+        // A function named as a field is: no type evaluates a function
+        // that is not `const`.
+        assert!(reshaped_by("{ String::new() }", "{ \"x\".into() }").is_empty());
     }
 }
