@@ -1,7 +1,9 @@
+use std::cell::RefCell;
 use std::ops::{Index, IndexMut};
+use std::rc::Rc;
 
 use slotmap::{SecondaryMap, SlotMap};
-use xui_interface::{NodeId, WidgetState};
+use xui_interface::{NodeId, WidgetState, WindowId};
 
 use crate::caps::CapMask;
 use crate::ui_runtime::state::HostWorkFlags;
@@ -53,7 +55,7 @@ pub(crate) struct HostNode {
 }
 
 impl HostNode {
-    fn new(_: NodeId) -> Self {
+    fn new() -> Self {
         Self {
             parent: None,
             first_child: None,
@@ -65,28 +67,73 @@ impl HostNode {
     }
 }
 
+/// Where every [`NodeId`] of an application comes from, whichever window's
+/// tree the node is in, and which window that is.
+///
+/// One allocator for all the trees keeps an id meaning one node app-wide, so
+/// what is keyed by `NodeId` outside a tree -- the text host's layouts, a
+/// backend's per-node resources, a platform reply on its way back to a node --
+/// needs no window beside it. Trees that share nothing still work, each with an
+/// allocator of its own: that is [`HostTree::new`].
+///
+/// See `docs/multi-window.md` (D3).
+#[derive(Clone, Default)]
+pub(crate) struct NodeIds(Rc<RefCell<SlotMap<NodeId, WindowId>>>);
+
+impl NodeIds {
+    fn insert(&self, window: WindowId) -> NodeId {
+        self.0.borrow_mut().insert(window)
+    }
+
+    fn remove(&self, id: NodeId) {
+        self.0.borrow_mut().remove(id);
+    }
+
+    /// The window whose tree `id` is in; `None` once it is removed.
+    #[cfg(test)]
+    pub(crate) fn window_of(&self, id: NodeId) -> Option<WindowId> {
+        self.0.borrow().get(id).copied()
+    }
+}
+
 /// Generational host identity/topology plus a secondary core-data cache.
+///
+/// The ids come from a [`NodeIds`] that other trees may share; the tree hands
+/// back the ones it still holds when it is dropped.
 ///
 /// # Preconditions
 ///
 /// Every method taking a `NodeId` requires it to be live -- present in the
 /// tree -- and panics otherwise, except the one that exists to ask:
-/// [`Self::contains_key`].
+/// [`Self::contains_key`]. An id live in another tree sharing the allocator is
+/// not live in this one.
 pub(crate) struct HostTree<D> {
-    nodes: SlotMap<NodeId, HostNode>,
+    ids: NodeIds,
+    window: WindowId,
+    nodes: Links,
     data: SecondaryMap<NodeId, D>,
 }
 
 impl<D> HostTree<D> {
+    /// A tree with an allocator of its own.
+    #[cfg(test)]
     pub fn new() -> Self {
+        Self::with_ids(NodeIds::default(), WindowId::default())
+    }
+
+    /// A tree for `window`, taking its ids from `ids`.
+    pub fn with_ids(ids: NodeIds, window: WindowId) -> Self {
         Self {
-            nodes: SlotMap::with_key(),
+            ids,
+            window,
+            nodes: SecondaryMap::new(),
             data: SecondaryMap::new(),
         }
     }
 
     pub fn insert_with_key(&mut self, make_data: impl FnOnce(NodeId) -> D) -> NodeId {
-        let id = self.nodes.insert_with_key(HostNode::new);
+        let id = self.ids.insert(self.window);
+        self.nodes.insert(id, HostNode::new());
         self.data.insert(id, make_data(id));
         id
     }
@@ -200,13 +247,19 @@ impl<D> HostTree<D> {
         );
         self.detach(id);
         self.nodes.remove(id);
+        self.ids.remove(id);
         self.data.remove(id).expect("host data is dense")
     }
 }
 
-impl<D> Default for HostTree<D> {
-    fn default() -> Self {
-        Self::new()
+impl<D> Drop for HostTree<D> {
+    /// Hands the ids still in the tree back, so a closed window's do not stay
+    /// taken in an allocator the others go on using.
+    fn drop(&mut self) {
+        let mut ids = self.ids.0.borrow_mut();
+        for (id, _) in self.nodes.iter() {
+            ids.remove(id);
+        }
     }
 }
 
@@ -226,7 +279,7 @@ impl<D> IndexMut<NodeId> for HostTree<D> {
     }
 }
 
-type Links = SlotMap<NodeId, HostNode>;
+type Links = SecondaryMap<NodeId, HostNode>;
 
 pub struct Children<'a> {
     links: &'a Links,
@@ -335,6 +388,34 @@ mod tests {
         let (tree, root, a, b, c) = fixture();
         assert_eq!(tree.subtree(root).collect::<Vec<_>>(), vec![root, a, c, b]);
         assert_eq!(tree.ancestors(c).collect::<Vec<_>>(), vec![c, a, root]);
+    }
+
+    #[test]
+    fn trees_sharing_an_allocator_never_hand_out_the_same_id() {
+        let ids = NodeIds::default();
+        let mut windows = SlotMap::<WindowId, ()>::with_key();
+        let (first, second) = (windows.insert(()), windows.insert(()));
+        let mut a = HostTree::with_ids(ids.clone(), first);
+        let mut b = HostTree::with_ids(ids.clone(), second);
+        let in_a: Vec<_> = (0..8).map(|_| a.insert_with_key(|_| ())).collect();
+        let in_b: Vec<_> = (0..8).map(|_| b.insert_with_key(|_| ())).collect();
+
+        assert!(in_a.iter().all(|id| !in_b.contains(id)));
+        assert!(
+            in_a.iter()
+                .all(|id| a.contains_key(*id) && !b.contains_key(*id))
+        );
+        assert_eq!(ids.window_of(in_a[0]), Some(first));
+        assert_eq!(ids.window_of(in_b[0]), Some(second));
+
+        // A removed id is free again in the allocator, not only in its tree.
+        a.remove(in_a[7]);
+        assert_eq!(ids.window_of(in_a[7]), None);
+
+        // Dropping a tree frees every id it still held.
+        drop(b);
+        assert!(in_b.iter().all(|id| ids.window_of(*id).is_none()));
+        assert_eq!(ids.window_of(in_a[0]), Some(first));
     }
 
     #[test]
