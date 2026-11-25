@@ -448,8 +448,11 @@ Still open:
 - **Per-menu extension.** Is "replace the whole bar" enough, or must an app be
   able to add to the host's default menus?
 - **Caption regions in the widget layer.** How an application declares one.
-- **Multi-window.** Kept out: one `Shell` per window, one window per run. When it
-  arrives, `perform` needs to know which window; adding that is mechanical.
+- **Multi-window.** One window per run today. The design is in
+  [`multi-window.md`](multi-window.md): one `App` with a `UiRuntime` per window,
+  and `Shell` split into an application half and a per-window half. Its
+  vocabulary (`WindowId`, `OpenWindow`/`CloseWindow`, `MULTI_WINDOW`,
+  `WindowMenu`) is in `xui-interface`; nothing sends or handles it yet.
 
 ## External drag and drop
 

@@ -1,7 +1,6 @@
 use crate::clock::FrameTime;
 use crate::core::Size;
 use crate::event_system::dispatcher;
-use crate::event_system::translator::EventTranslator;
 use crate::platform::PlatformHandle;
 use crate::render::RenderBackend;
 use crate::scroll::AppliedScroll;
@@ -11,6 +10,7 @@ use crate::system;
 use crate::text::TextHost;
 use crate::theme::ThemeHandle;
 use crate::ui_runtime::{ExternalDrag, RenderFrameError, UiRuntime};
+use crate::windows::Windows;
 use std::future::Future;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -50,10 +50,9 @@ thread_local! {
 }
 
 pub struct App {
-    ui_runtime: UiRuntime,
+    /// Each window's tree, translator and size; only the main one for now.
+    windows: Windows,
     reactive: crate::reactive::Runtime,
-    event_translator: EventTranslator,
-    size: Size<f32>,
     tokio_runtime: TokioRuntime,
     /// Results of `resource!` futures, waiting for the main thread.
     finished: std::sync::mpsc::Receiver<(u64, Box<dyn std::any::Any + Send>)>,
@@ -89,19 +88,28 @@ impl App {
         text: &mut TextHost<T>,
     ) -> EventResult {
         let target = self
-            .ui_runtime
+            .windows
+            .main_mut()
+            .ui
             .focus_manager()
             .focused()
             .unwrap_or_else(|| self.command_root());
-        let event = self.event_translator.platform_command_event(
-            target,
-            command,
-            timestamp,
-            xui_interface::Modifiers::default(),
-        );
-        let result =
-            crate::event_system::dispatcher::dispatch_semantic(&mut self.ui_runtime, text, event)
-                .result;
+        let event = self
+            .windows
+            .main_mut()
+            .event_translator
+            .platform_command_event(
+                target,
+                command,
+                timestamp,
+                xui_interface::Modifiers::default(),
+            );
+        let result = crate::event_system::dispatcher::dispatch_semantic(
+            &mut self.windows.main_mut().ui,
+            text,
+            event,
+        )
+        .result;
         result
     }
 
@@ -124,20 +132,28 @@ impl App {
         now: std::time::Instant,
         text: &mut TextHost<T>,
     ) {
-        let due = self.ui_runtime.take_due_wakes(now);
+        let due = self.windows.main_mut().ui.take_due_wakes(now);
         if due.is_empty() {
             return;
         }
         for (node, deadline) in due {
-            let event = self.event_translator.wake_event(node, deadline, now);
-            crate::event_system::dispatcher::dispatch_semantic(&mut self.ui_runtime, text, event);
+            let event = self
+                .windows
+                .main_mut()
+                .event_translator
+                .wake_event(node, deadline, now);
+            crate::event_system::dispatcher::dispatch_semantic(
+                &mut self.windows.main_mut().ui,
+                text,
+                event,
+            );
         }
     }
 
     /// When the next frame is owed to a wake, if one is. See
     /// [`crate::runtime::GuiRuntime::next_wake`].
     pub fn next_wake(&self) -> Option<std::time::Instant> {
-        self.ui_runtime.next_wake()
+        self.windows.main().ui.next_wake()
     }
 
     /// Hands each answer to a request a node made to that node, as an event.
@@ -153,14 +169,13 @@ impl App {
     ) -> EventResult {
         let mut result = EventResult::Ignored;
         for reply in self.platform.take_node_replies() {
-            let event = self.event_translator.platform_reply_event(
-                reply.node,
-                reply.request,
-                reply.reply,
-                timestamp,
-            );
+            let event = self
+                .windows
+                .main_mut()
+                .event_translator
+                .platform_reply_event(reply.node, reply.request, reply.reply, timestamp);
             let report = crate::event_system::dispatcher::dispatch_semantic(
-                &mut self.ui_runtime,
+                &mut self.windows.main_mut().ui,
                 text,
                 event,
             );
@@ -189,18 +204,22 @@ impl App {
         &self,
         event: &xui_interface::RawKeyboard,
     ) -> Option<(xui_interface::NodeId, xui_interface::ShortcutBinding)> {
-        self.ui_runtime.resolve_local_shortcut(event).or_else(|| {
-            self.shortcuts
-                .resolve(event)
-                .map(|binding| (self.command_root(), binding))
-        })
+        self.windows
+            .main()
+            .ui
+            .resolve_local_shortcut(event)
+            .or_else(|| {
+                self.shortcuts
+                    .resolve(event)
+                    .map(|binding| (self.command_root(), binding))
+            })
     }
 
     pub(crate) fn command_root(&self) -> xui_interface::NodeId {
-        self.ui_runtime
-            .children(self.ui_runtime.root())
-            .find(|child| *child != self.ui_runtime.root_overlayer())
-            .unwrap_or(self.ui_runtime.root())
+        let ui = &self.windows.main().ui;
+        ui.children(ui.root())
+            .find(|child| *child != ui.root_overlayer())
+            .unwrap_or(ui.root())
     }
 
     pub(crate) fn dispatch_command<T: TextBackend>(
@@ -210,17 +229,24 @@ impl App {
         raw: &xui_interface::RawKeyboard,
         text: &mut TextHost<T>,
     ) -> EventResult {
-        let event =
-            self.event_translator
-                .command_event(target, binding.command, binding.shortcut, raw);
-        let result =
-            crate::event_system::dispatcher::dispatch_semantic(&mut self.ui_runtime, text, event)
-                .result;
+        let event = self.windows.main_mut().event_translator.command_event(
+            target,
+            binding.command,
+            binding.shortcut,
+            raw,
+        );
+        let result = crate::event_system::dispatcher::dispatch_semantic(
+            &mut self.windows.main_mut().ui,
+            text,
+            event,
+        )
+        .result;
         result
     }
     /// An app set up by `root`, which mounts what it shows.
     pub fn new(root: AppRoot) -> Self {
-        let mut ui_runtime = UiRuntime::new();
+        let mut windows = Windows::new();
+        let ui_runtime = &mut windows.main_mut().ui;
         let platform = PlatformHandle::default();
         ui_runtime.set_platform(platform.clone());
         let tokio_runtime = Self::create_tokio_runtime();
@@ -240,10 +266,8 @@ impl App {
         provide_system_defaults(&mut reactive);
         ui_runtime.set_theme(theme.current());
         let mut app = Self {
-            ui_runtime,
+            windows,
             reactive,
-            event_translator: EventTranslator::default(),
-            size: Size::<f32>::ZERO,
             tokio_runtime,
             finished,
             platform,
@@ -274,7 +298,7 @@ impl App {
     }
 
     pub fn ui_runtime(&self) -> &UiRuntime {
-        &self.ui_runtime
+        &self.windows.main().ui
     }
 
     /// Mounts reactive component `C` at the root, and runs its first effects.
@@ -282,8 +306,10 @@ impl App {
         &mut self,
         props: <C::Instance as crate::reactive::ComponentDef>::Props,
     ) -> crate::reactive::InstanceId {
-        let root = self.ui_runtime.root();
-        let id = self.reactive.mount::<C>(&mut self.ui_runtime, root, props);
+        let root = self.windows.main_mut().ui.root();
+        let id = self
+            .reactive
+            .mount::<C>(&mut self.windows.main_mut().ui, root, props);
         #[cfg(feature = "hotpatch")]
         self.hot.mounted.push(id);
         id
@@ -298,7 +324,7 @@ impl App {
         let outcome = if full {
             Err(())
         } else {
-            self.reactive.hot_reload(&mut self.ui_runtime)
+            self.reactive.hot_reload(&mut self.windows.main_mut().ui)
         };
         match outcome {
             Ok(report) => crate::hot::report_reload(
@@ -313,7 +339,7 @@ impl App {
             Err(()) => {
                 let count = self.hot.mounted.len();
                 for id in std::mem::take(&mut self.hot.mounted) {
-                    self.reactive.unmount(&mut self.ui_runtime, id);
+                    self.reactive.unmount(&mut self.windows.main_mut().ui, id);
                 }
                 let root = self.hot.root;
                 subsecond::HotFn::current(root).call((self,));
@@ -352,12 +378,12 @@ impl App {
     pub fn unmount(&mut self, id: crate::reactive::InstanceId) {
         #[cfg(feature = "hotpatch")]
         self.hot.mounted.retain(|mounted| *mounted != id);
-        self.reactive.unmount(&mut self.ui_runtime, id);
+        self.reactive.unmount(&mut self.windows.main_mut().ui, id);
     }
 
     #[cfg(test)]
     pub(crate) fn ui_runtime_mut(&mut self) -> &mut UiRuntime {
-        &mut self.ui_runtime
+        &mut self.windows.main_mut().ui
     }
 
     /// The theme in use.
@@ -397,7 +423,7 @@ impl App {
     fn apply_theme(&mut self) {
         let system = self.platform.appearance().color_scheme;
         if let Some(theme) = self.theme.apply(system) {
-            self.ui_runtime.set_theme(theme);
+            self.windows.main_mut().ui.set_theme(theme);
         }
     }
 
@@ -431,11 +457,15 @@ impl App {
         #[cfg(feature = "hotpatch")]
         crate::hot::set_wake(wake.clone());
         let canvas_wake = wake.clone();
-        self.ui_runtime
+        self.windows
+            .main()
+            .ui
             .canvas_invalidator()
             .set_wake(std::rc::Rc::new(move || canvas_wake()));
         let scroll_wake = wake.clone();
-        self.ui_runtime
+        self.windows
+            .main()
+            .ui
             .scroll_request_queue()
             .set_wake(std::rc::Rc::new(move || scroll_wake()));
         self.reactive.tasks().set_wake(wake);
@@ -449,11 +479,11 @@ impl App {
     /// Called once by the renderer at startup. Until it is, a GPU painter
     /// draws nothing rather than failing.
     pub fn set_gpu_context(&mut self, context: crate::widgets::CanvasGpuContext) {
-        self.ui_runtime.set_gpu_context(context);
+        self.windows.main_mut().ui.set_gpu_context(context);
     }
 
     pub fn set_scale_factor(&mut self, scale_factor: f32) {
-        self.ui_runtime.set_scale_factor(scale_factor);
+        self.windows.main_mut().ui.set_scale_factor(scale_factor);
         self.reactive
             .provide_keyed::<system::viewport::ScaleFactor>(scale_factor);
     }
@@ -475,10 +505,10 @@ impl App {
     }
 
     pub fn resize(&mut self, size: Size<f32>) {
-        if self.size != size {
-            self.size = size;
-            self.ui_runtime
-                .mark_subtree_layout_dirty(self.ui_runtime.root());
+        if self.windows.main().size != size {
+            let window = self.windows.main_mut();
+            window.size = size;
+            window.ui.mark_subtree_layout_dirty(window.ui.root());
             self.reactive
                 .provide_keyed::<system::viewport::LogicalSize>(size);
         }
@@ -499,11 +529,16 @@ impl App {
             _ => {}
         }
         self.rebuild_sync_if_needed();
-        self.ui_runtime.update_tree(self.size, text);
+        {
+            let window = self.windows.main_mut();
+            window.ui.update_tree(window.size, text);
+        }
         // Before the input: a clamp that layout just made happened first.
         self.dispatch_clamped_scrolls(text);
-        self.ui_runtime
-            .dispatch_event(text, &mut self.event_translator, event)
+        let window = self.windows.main_mut();
+        window
+            .ui
+            .dispatch_event(text, &mut window.event_translator, event)
     }
 
     /// A drag from outside the window, offered to the drop target under it.
@@ -519,13 +554,16 @@ impl App {
         use xui_interface::DragEvent as Native;
 
         self.rebuild_sync_if_needed();
-        self.ui_runtime.update_tree(self.size, text);
+        {
+            let window = self.windows.main_mut();
+            window.ui.update_tree(window.size, text);
+        }
         let now = std::time::Instant::now();
         match event {
             Native::Enter { payload, position } => {
                 // An enter with a drag still on record: the host lost a leave.
                 self.end_external_drag(now, text);
-                *self.ui_runtime.external_drag_mut() = Some(ExternalDrag {
+                *self.windows.main_mut().ui.external_drag_mut() = Some(ExternalDrag {
                     payload: Arc::new(payload),
                     position,
                     target: None,
@@ -541,7 +579,7 @@ impl App {
                 // The payload as of the drop, which is what the source
                 // promised; an enter the host never sent is no reason to lose it.
                 let payload = Arc::new(payload);
-                let drag = self.ui_runtime.external_drag_mut();
+                let drag = self.windows.main_mut().ui.external_drag_mut();
                 match drag {
                     Some(drag) => drag.payload = payload,
                     None => {
@@ -553,14 +591,14 @@ impl App {
                     }
                 }
                 self.move_external_drag(position, now, text);
-                let Some(drag) = self.ui_runtime.external_drag_mut().take() else {
+                let Some(drag) = self.windows.main_mut().ui.external_drag_mut().take() else {
                     return EventResult::Ignored;
                 };
                 let Some((target, effect)) = drag.target else {
                     return EventResult::Ignored;
                 };
-                let local = self.ui_runtime.to_local(target, position);
-                let event = self.event_translator.drop_event(
+                let local = self.windows.main_mut().ui.to_local(target, position);
+                let event = self.windows.main_mut().event_translator.drop_event(
                     SemanticEvent::Drop,
                     target,
                     position,
@@ -569,7 +607,7 @@ impl App {
                     effect,
                     now,
                 );
-                dispatcher::dispatch_semantic(&mut self.ui_runtime, text, event).result
+                dispatcher::dispatch_semantic(&mut self.windows.main_mut().ui, text, event).result
             }
         }
     }
@@ -582,21 +620,25 @@ impl App {
         now: std::time::Instant,
         text: &mut TextHost<T>,
     ) -> EventResult {
-        let Some(drag) = self.ui_runtime.external_drag_mut().as_mut() else {
+        let Some(drag) = self.windows.main_mut().ui.external_drag_mut().as_mut() else {
             return EventResult::Ignored;
         };
         drag.position = position;
 
         let payload = Arc::clone(&drag.payload);
         let previous = drag.target;
-        let next = self.ui_runtime.drop_target_at(position, payload.kinds());
+        let next = self
+            .windows
+            .main_mut()
+            .ui
+            .drop_target_at(position, payload.kinds());
         let node = |target: Option<(NodeId, DropEffect)>| target.map(|(node, _)| node);
 
         let mut result = EventResult::Ignored;
 
         let mut send = |app: &mut Self, kind: fn(DropEvent) -> SemanticEvent, (node, effect)| {
-            let local = app.ui_runtime.to_local(node, position);
-            let event = app.event_translator.drop_event(
+            let local = app.windows.main_mut().ui.to_local(node, position);
+            let event = app.windows.main_mut().event_translator.drop_event(
                 kind,
                 node,
                 position,
@@ -605,7 +647,7 @@ impl App {
                 effect,
                 now,
             );
-            if dispatcher::dispatch_semantic(&mut app.ui_runtime, text, event)
+            if dispatcher::dispatch_semantic(&mut app.windows.main_mut().ui, text, event)
                 .result
                 .is_consumed()
             {
@@ -625,7 +667,7 @@ impl App {
         }
         // Recorded before the enter is sent: a handler that removes the
         // target clears it through the commit, like any other removal.
-        if let Some(drag) = self.ui_runtime.external_drag_mut() {
+        if let Some(drag) = self.windows.main_mut().ui.external_drag_mut() {
             drag.target = next;
         }
         if let Some(target) = next {
@@ -640,14 +682,14 @@ impl App {
         now: std::time::Instant,
         text: &mut TextHost<T>,
     ) {
-        let Some(drag) = self.ui_runtime.external_drag_mut().take() else {
+        let Some(drag) = self.windows.main_mut().ui.external_drag_mut().take() else {
             return;
         };
         let Some((node, effect)) = drag.target else {
             return;
         };
-        let local = self.ui_runtime.to_local(node, drag.position);
-        let event = self.event_translator.drop_event(
+        let local = self.windows.main_mut().ui.to_local(node, drag.position);
+        let event = self.windows.main_mut().event_translator.drop_event(
             SemanticEvent::DropLeave,
             node,
             drag.position,
@@ -656,7 +698,7 @@ impl App {
             effect,
             now,
         );
-        dispatcher::dispatch_semantic(&mut self.ui_runtime, text, event);
+        dispatcher::dispatch_semantic(&mut self.windows.main_mut().ui, text, event);
     }
 
     /// Publishes the frame's time, before anything in it is stepped or drawn.
@@ -669,18 +711,18 @@ impl App {
     /// alone and gets [`FrameTime::ZERO`] throughout.
     #[inline(always)]
     pub fn begin_frame(&mut self, frame: FrameTime) {
-        self.ui_runtime.begin_frame(frame);
+        self.windows.main_mut().ui.begin_frame(frame);
     }
 
     /// The time published by the last [`Self::begin_frame`].
     #[inline(always)]
     pub fn frame_time(&self) -> FrameTime {
-        self.ui_runtime.frame_time()
+        self.windows.main().ui.frame_time()
     }
 
     #[inline(always)]
     pub fn tick_style_animations(&mut self, delta: Duration) -> bool {
-        self.ui_runtime.tick_style_animations(delta)
+        self.windows.main_mut().ui.tick_style_animations(delta)
     }
 
     /// Tells the runtime whether the window is on screen, which stops the
@@ -693,7 +735,7 @@ impl App {
     /// [`crate::runtime::GuiRuntime::set_window_visible`].
     #[inline(always)]
     pub(crate) fn set_window_visible(&mut self, visible: bool) {
-        self.ui_runtime.set_window_visible(visible);
+        self.windows.main_mut().ui.set_window_visible(visible);
         self.reactive
             .provide_keyed::<system::window::Visible>(visible);
     }
@@ -726,7 +768,7 @@ impl App {
 
     #[inline(always)]
     pub fn window_visible(&self) -> bool {
-        self.ui_runtime.window_visible()
+        self.windows.main().ui.window_visible()
     }
 
     /// Marks every canvas that asked to animate dirty for this frame.
@@ -735,7 +777,7 @@ impl App {
     /// reason: the work is scheduled by being dirty, and something has to
     /// re-dirty it each frame for the loop to continue.
     pub fn tick_animating_canvases(&mut self) {
-        self.ui_runtime.tick_animating_canvases();
+        self.windows.main_mut().ui.tick_animating_canvases();
     }
 
     /// Runs the callbacks installed by
@@ -746,11 +788,11 @@ impl App {
     /// Runs before the tree is rebuilt, so anything a ticker invalidates is
     /// part of this frame rather than the one after it.
     pub fn tick_tickers(&mut self, frame: FrameTime) {
-        self.ui_runtime.tick_tickers(frame);
+        self.windows.main_mut().ui.tick_tickers(frame);
     }
 
     pub fn has_running_style_animations(&self) -> bool {
-        self.ui_runtime.has_running_style_animations()
+        self.windows.main().ui.has_running_style_animations()
     }
 
     pub fn render<B: RenderBackend<TextHost<T>>, T: TextBackend>(
@@ -790,14 +832,17 @@ impl App {
     /// list mounting the rows it jumped to -- gets that change committed in
     /// this same frame instead of showing the gap for one.
     fn flush_scroll_requests<T: TextBackend>(&mut self, text: &mut TextHost<T>) {
-        if !self.ui_runtime.has_pending_scroll_requests() {
+        if !self.windows.main_mut().ui.has_pending_scroll_requests() {
             return;
         }
         // Requests resolve against layout, so bring it up to date first: a
         // `scroll_to_end` after adding content has to see that content.
-        self.ui_runtime.update_tree(self.size, text);
+        {
+            let window = self.windows.main_mut();
+            window.ui.update_tree(window.size, text);
+        }
         self.dispatch_clamped_scrolls(text);
-        let applied = self.ui_runtime.apply_scroll_requests();
+        let applied = self.windows.main_mut().ui.apply_scroll_requests();
         self.dispatch_applied_scrolls(applied, ScrollSource::Programmatic, text);
     }
 
@@ -808,7 +853,7 @@ impl App {
     /// Called after every `update_tree` the app runs, which is every place a
     /// layout can have clamped something.
     fn dispatch_clamped_scrolls<T: TextBackend>(&mut self, text: &TextHost<T>) {
-        let clamped = self.ui_runtime.take_clamped_scrolls();
+        let clamped = self.windows.main_mut().ui.take_clamped_scrolls();
         self.dispatch_applied_scrolls(clamped, ScrollSource::Layout, text);
     }
 
@@ -822,8 +867,8 @@ impl App {
             return;
         }
         let now = std::time::Instant::now();
-        let ui_runtime = &mut self.ui_runtime;
-        let translator = &mut self.event_translator;
+        let window = self.windows.main_mut();
+        let (ui_runtime, translator) = (&mut window.ui, &mut window.event_translator);
         for scroll in scrolls {
             let event = translator.scroll_offset_event(
                 scroll,
@@ -851,13 +896,14 @@ impl App {
         raw: &xui_interface::RawKeyboard,
         text: &mut TextHost<T>,
     ) -> EventResult {
-        let events = self
+        let window = self.windows.main_mut();
+        let events = window
             .event_translator
-            .translate_keyboard_scroll(raw, &mut self.ui_runtime);
+            .translate_keyboard_scroll(raw, &mut window.ui);
         if events.is_empty() {
             return EventResult::Ignored;
         }
-        let ui_runtime = &mut self.ui_runtime;
+        let ui_runtime = &mut self.windows.main_mut().ui;
         for event in events {
             dispatcher::dispatch_semantic(ui_runtime, text, event);
         }
@@ -883,13 +929,18 @@ impl App {
         backend: &mut B,
         text: &mut TextHost<T>,
     ) -> Result<(), AppRenderError<B::Error>> {
-        self.ui_runtime.update_tree(self.size, text);
+        {
+            let window = self.windows.main_mut();
+            window.ui.update_tree(window.size, text);
+        }
         // Against the layout just settled, which is what this frame shows.
         self.platform
-            .set_drop_targets(self.ui_runtime.drop_targets());
+            .set_drop_targets(self.windows.main_mut().ui.drop_targets());
 
         let Some(frame) = self
-            .ui_runtime
+            .windows
+            .main_mut()
+            .ui
             .build_render_frame()
             .map_err(AppRenderError::Frame)?
         else {
@@ -897,34 +948,34 @@ impl App {
         };
 
         backend
-            .begin_frame(self.size)
+            .begin_frame(self.windows.main().size)
             .map_err(AppRenderError::Backend)?;
         backend
             .submit(&frame.built, text)
             .map_err(AppRenderError::Backend)?;
         backend.end_frame().map_err(AppRenderError::Backend)?;
         if backend.did_present() {
-            self.ui_runtime.finish_render_frame(&frame);
+            self.windows.main_mut().ui.finish_render_frame(&frame);
         }
         Ok(())
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.reactive.is_dirty() || self.ui_runtime.is_dirty() || self.theme.is_requested()
+        self.reactive.is_dirty() || self.windows.main().ui.is_dirty() || self.theme.is_requested()
     }
 
     /// Asks for a frame that lays out and paints everything again: after a
     /// change the runtime cannot see, such as the scale factor.
     pub fn mark_needs_rebuild(&mut self) {
-        self.ui_runtime
-            .mark_subtree_layout_dirty(self.ui_runtime.root());
+        let ui = &mut self.windows.main_mut().ui;
+        ui.mark_subtree_layout_dirty(ui.root());
     }
 
     #[inline]
     fn rebuild_sync_if_needed(&mut self) {
         // What handlers wrote since the last flush.
         if self.reactive.is_dirty() {
-            self.reactive.flush(&mut self.ui_runtime);
+            self.reactive.flush(&mut self.windows.main_mut().ui);
         }
         // After the flush, so a theme an effect switched restyles this frame.
         if self.theme.is_requested() {
@@ -937,7 +988,7 @@ impl App {
         backend: &mut B,
         text: &mut TextHost<T>,
     ) {
-        for event in self.ui_runtime.drain_node_lifecycle_events() {
+        for event in self.windows.main_mut().ui.drain_node_lifecycle_events() {
             text.handle_node_lifecycle(&event);
             backend.handle_node_lifecycle(&event);
         }

@@ -111,6 +111,7 @@ pub mod __interface {
 }
 pub mod text;
 pub(crate) mod ui_runtime;
+pub(crate) mod windows;
 
 /// Includes the asset bootstrap module generated for this crate.
 ///
