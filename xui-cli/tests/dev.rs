@@ -9,8 +9,10 @@
 //! cargo test -p xui-cli --test dev -- --ignored --nocapture
 //! ```
 //!
-//! The app opens a window; it runs with the screen off too. Event handlers
-//! are not covered: nothing here can click.
+//! The app opens a window; it runs with the screen off too. It clicks its
+//! own window when asked (a file in `XUI_E2E_DIR`), sending the mouse
+//! events straight to its view as `xui-macos`'s smoke test does, so its
+//! handlers run through the host as a user's click would.
 #![cfg(target_os = "macos")]
 
 use std::io::{BufRead, BufReader, Write};
@@ -48,11 +50,27 @@ fn greeting() {
     view! { text(label()) }
 }
 
+/// The window's lower part, all of it a click target.
 #[component]
 fn counter() {
     let seen: u8 = mounted("counter");
     let count: i32 = state!(0);
-    view! { text(format!("{count}")) }
+    view! {
+        container(
+            size: Size::fix(4000.0, 4000.0),
+            on_click: |cx| count.update(cx, |count| {
+                *count += 1;
+                clicked(*count);
+            }),
+        ) {
+            text(format!("{count}"))
+        }
+    }
+}
+
+/// A helper the handler calls.
+fn clicked(count: i32) {
+    println!("xui-e2e click c1 count {count}");
 }
 
 /// A helper a prop calls: the prop reads no signal.
@@ -70,12 +88,59 @@ fn mounted(name: &str) -> u8 {
 
 static HITS: AtomicUsize = AtomicUsize::new(0);
 
+/// Clicks the window each time the test asks: when a file named `click`
+/// appears in `XUI_E2E_DIR`.
+fn clicker() {
+    let Some(dir) = std::env::var_os("XUI_E2E_DIR") else { return };
+    let trigger = std::path::PathBuf::from(dir).join("click");
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        if std::fs::remove_file(&trigger).is_ok() {
+            let trigger = trigger.clone();
+            dispatch2::DispatchQueue::main().exec_async(move || click(&trigger));
+        }
+    });
+}
+
+/// A left click near the window's bottom-left corner: in the counter.
+/// Before the window is up, the trigger goes back, to try again.
+fn click(trigger: &std::path::Path) {
+    use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType};
+    let mtm = objc2::MainThreadMarker::new().expect("the main thread");
+    let Some(window) = NSApplication::sharedApplication(mtm).windows().firstObject() else {
+        let _ = std::fs::write(trigger, b"");
+        return;
+    };
+    let Some(view) = window.contentView() else { return };
+    let stamp = objc2_foundation::NSProcessInfo::processInfo().systemUptime();
+    for kind in [NSEventType::LeftMouseDown, NSEventType::LeftMouseUp] {
+        let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+            kind,
+            objc2_foundation::NSPoint::new(20.0, 20.0),
+            NSEventModifierFlags::empty(),
+            stamp,
+            window.windowNumber(),
+            None,
+            0,
+            1,
+            1.0,
+        )
+        .expect("a mouse event");
+        if kind == NSEventType::LeftMouseDown {
+            view.mouseDown(&event);
+        } else {
+            view.mouseUp(&event);
+        }
+    }
+}
+
 fn root(app: &mut App) {
     app.mount::<Home>(HomeProps {});
 }
 
 #[xui::main]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    clicker();
     let options = MacRunnerOptions {
         window: WindowOptions::default()
             .with_title("xui-e2e")
@@ -88,6 +153,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 "#;
 
 const MODEL: &str = "pub struct Note {\n    pub text: &'static str,\n}\n";
+
+/// What the app clicks its window with: the crates `xui-macos` uses, at
+/// its versions, so the workspace's lockfile has them.
+const CLICK_DEPENDENCIES: &str = r#"
+[target.'cfg(target_os = "macos")'.dependencies]
+dispatch2 = "0.3.1"
+objc2 = "0.6.4"
+objc2-app-kit = "0.3.2"
+objc2-foundation = "0.3.2"
+"#;
 
 #[test]
 #[ignore = "builds a whole app; run with --ignored"]
@@ -112,9 +187,14 @@ fn dev_patches_what_it_can_and_restarts_for_the_rest() {
     fs::copy(workspace.join("Cargo.lock"), app.join("Cargo.lock")).unwrap();
     fs::write(app.join("src/main.rs"), MAIN).unwrap();
     fs::write(app.join("src/model.rs"), MODEL).unwrap();
+    let manifest = app.join("Cargo.toml");
+    let text = fs::read_to_string(&manifest).unwrap();
+    fs::write(&manifest, text + CLICK_DEPENDENCIES).unwrap();
     let main = app.join("src/main.rs");
+    let clicks = temp.path().join("clicks");
+    fs::create_dir_all(&clicks).unwrap();
 
-    let mut dev = Dev::start(&app, &workspace.join("target/xui-dev-e2e"));
+    let mut dev = Dev::start(&app, &workspace.join("target/xui-dev-e2e"), &clicks);
 
     // Launch: every component mounted. The static is shared with each
     // patch, so not warned about.
@@ -129,6 +209,8 @@ fn dev_patches_what_it_can_and_restarts_for_the_rest() {
     // Cargo rewrote the lockfile it was given as it built: no change.
     dev.absent(at, "a restart at launch", |l| l.contains("Restarting"));
     dev.absent(at, "a statics warning", |l| l.contains("each patch starts"));
+    // A click: the handler runs, the count goes up.
+    dev.click("click c1 count 1");
 
     // A helper a kept component calls: that component, and only it, again.
     let at = dev.mark();
@@ -147,6 +229,22 @@ fn dev_patches_what_it_can_and_restarts_for_the_rest() {
     dev.absent(at, "counter mounted again", |l| {
         l.contains("xui-e2e mounted counter")
     });
+    // The counter was kept: its handler still runs, its count goes on.
+    dev.click("click c1 count 2");
+
+    // A helper the handler calls: the counter again, its handler the new
+    // code, its count from the start.
+    let at = dev.mark();
+    edit(&main, "click c1", "click c2");
+    let outcome = dev.reload(at);
+    assert!(
+        outcome.contains("1 component mounted again (1 for code it calls)"),
+        "{outcome}"
+    );
+    dev.expect(at, PATCH, "counter mounted again", |l| {
+        l.contains("xui-e2e mounted counter")
+    });
+    dev.click("click c2 count 1");
 
     // A component's own code.
     let at = dev.mark();
@@ -224,6 +322,8 @@ fn dev_patches_what_it_can_and_restarts_for_the_rest() {
     dev.expect(at, PATCH, "the label", |l| {
         l.contains("xui-e2e label label v8")
     });
+    // Clicks still reach the handler after a restart and a patch.
+    dev.click("click c2 count 1");
 
     dev.quit();
 }
@@ -254,15 +354,19 @@ struct Dev {
     stdin: Option<ChildStdin>,
     lines: Receiver<String>,
     log: Vec<String>,
+    /// Where a `click` file asks the app to click.
+    clicks: PathBuf,
 }
 
 impl Dev {
-    fn start(app: &Path, target_dir: &Path) -> Self {
+    fn start(app: &Path, target_dir: &Path, clicks: &Path) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-xui"))
             .current_dir(app)
             .args(["xui", "dev", "--color", "never"])
             .env("CARGO_TARGET_DIR", target_dir)
             .env("CARGO_NET_OFFLINE", "true")
+            // Through dev to the app it starts.
+            .env("XUI_E2E_DIR", clicks)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -291,7 +395,19 @@ impl Dev {
             child,
             lines,
             log: Vec::new(),
+            clicks: clicks.to_owned(),
         }
+    }
+
+    /// Has the app click its window, and waits for the handler to say
+    /// `said` (after `xui-e2e `).
+    fn click(&mut self, said: &str) {
+        let at = self.mark();
+        fs::write(self.clicks.join("click"), b"").unwrap();
+        let said = format!("xui-e2e {said}");
+        self.expect(at, PATCH, &format!("`{said}` from the handler"), |l| {
+            l.contains(&said)
+        });
     }
 
     /// Where the next step's lines start.
