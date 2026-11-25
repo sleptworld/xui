@@ -105,7 +105,10 @@ pub fn dev(options: DevOptions) -> Result<()> {
         };
         let cache = SymbolCache::load(&exe)?;
         let bin_record = shim::rustc_record(&dir, &target.crate_name(), "bin");
-        let sources = Sources::load(&dir, &bin_record);
+        let mut sources = Sources::load(&dir, &bin_record);
+        let mut roots: Vec<&Path> = target.local_roots.iter().map(PathBuf::as_path).collect();
+        roots.push(&target.workspace_root);
+        sources.remember_build_files(&roots);
         let snapshot = Snapshot::take(&sources.bin);
         let statics = snapshot.mutable_statics();
         if !statics.is_empty() && statics != statics_told {
@@ -432,7 +435,9 @@ impl Running<'_> {
                 spinner.set_message(format!("{files} — loading"));
                 self.snapshot.commit(candidate);
                 // A module declared since is the binary crate's now.
+                let built = std::mem::take(&mut self.sources.built);
                 self.sources = Sources::load(self.dir, &self.bin_record);
+                self.sources.built = built;
                 self.snapshot.track(&self.sources.bin);
                 self.pending = Some(Pending {
                     id,

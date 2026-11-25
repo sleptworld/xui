@@ -17,6 +17,15 @@ pub struct Sources {
     pub bin: HashSet<PathBuf>,
     /// Every other recorded crate's, to its name.
     pub others: HashMap<PathBuf, String>,
+    /// The manifests, lockfiles and build scripts as the build found
+    /// them: a write that leaves one as it was (cargo rewrites the
+    /// lockfile as it builds) is no change.
+    pub built: HashMap<PathBuf, Vec<u8>>,
+}
+
+/// Whether `name` is a file cargo reads to plan a build.
+fn is_build_file(name: &str) -> bool {
+    matches!(name, "Cargo.toml" | "Cargo.lock" | "build.rs")
 }
 
 impl Sources {
@@ -55,6 +64,19 @@ impl Sources {
         }
         sources
     }
+
+    /// Records the build files of `roots` (package and workspace
+    /// directories) as they are now: what the build just read.
+    pub fn remember_build_files(&mut self, roots: &[&Path]) {
+        for root in roots {
+            for name in ["Cargo.toml", "Cargo.lock", "build.rs"] {
+                let path = canonical(&root.join(name));
+                if let Ok(bytes) = std::fs::read(&path) {
+                    self.built.insert(path, bytes);
+                }
+            }
+        }
+    }
 }
 
 /// What a change is.
@@ -85,7 +107,14 @@ pub fn classify(
             continue;
         }
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if matches!(name, "Cargo.toml" | "Cargo.lock" | "build.rs") {
+        if is_build_file(name) {
+            let same = sources
+                .built
+                .get(&path)
+                .is_some_and(|built| std::fs::read(&path).is_ok_and(|now| &now == built));
+            if same {
+                continue;
+            }
             return Change::Restart(format!("{} changed", show(&path)));
         }
         if let Some(krate) = sources.others.get(&path) {
@@ -124,9 +153,16 @@ pub fn is_source(path: &Path) -> bool {
         && path.exists()
 }
 
-/// `path` with symbolic links resolved, as the file watcher reports it.
+/// `path` with symbolic links resolved, as the file watcher reports it;
+/// for a path that does not exist (yet), its nearest existing ancestor's.
 pub fn canonical(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned())
+    if let Ok(resolved) = std::fs::canonicalize(path) {
+        return resolved;
+    }
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) if parent != path => canonical(parent).join(name),
+        _ => path.to_owned(),
+    }
 }
 
 /// The files a recorded rustc call read, from the dep-info it wrote.
@@ -212,6 +248,15 @@ src/my\\ ui.rs:
     }
 
     #[test]
+    fn resolves_links_of_paths_not_made_yet() {
+        let dir = canonical(&std::env::temp_dir());
+        assert_eq!(
+            canonical(&std::env::temp_dir().join("xui-hot-none/target/debug")),
+            dir.join("xui-hot-none/target/debug")
+        );
+    }
+
+    #[test]
     fn tells_what_a_change_takes() {
         let dir = std::env::temp_dir().join(format!("xui-hot-sources-{}", std::process::id()));
         let package = dir.join("app");
@@ -233,10 +278,14 @@ src/my\\ ui.rs:
             canonical(&stray),
         );
         let package = canonical(&package);
-        let sources = Sources {
+        std::fs::write(package.join("Cargo.lock"), "# v1").unwrap();
+        let mut sources = Sources {
             bin: [main.clone()].into(),
             others: [(lib.clone(), "widgets".to_owned())].into(),
+            built: HashMap::new(),
         };
+        sources.remember_build_files(&[&package]);
+        let sources = sources;
         let show = |p: &Path| p.file_name().unwrap().to_string_lossy().into_owned();
         let classify = |paths: &[PathBuf]| classify(paths, &sources, &package, "app", show);
 
@@ -255,6 +304,15 @@ src/my\\ ui.rs:
             Change::Restart("Cargo.toml changed".into())
         );
         assert_eq!(classify(&[package.join("assets/logo.png")]), Change::Ignore);
+        // Written as the build found it: no change.
+        let lock = package.join("Cargo.lock");
+        std::fs::write(&lock, "# v1").unwrap();
+        assert_eq!(classify(std::slice::from_ref(&lock)), Change::Ignore);
+        std::fs::write(&lock, "# v2").unwrap();
+        assert_eq!(
+            classify(&[lock]),
+            Change::Restart("Cargo.lock changed".into())
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -114,19 +114,27 @@ pub fn resolve(
     } else {
         bail!("`{}` depends on neither `xui` nor `xui-core`", package.name)
     };
-    let local_roots = local_roots(&metadata, package);
+    // As the file watcher reports paths: with symbolic links resolved
+    // (`/tmp` is `/private/tmp` on macOS).
+    let canonical = |path: PathBuf| crate::sources::canonical(&path);
+    let local_roots = local_roots(&metadata, package)
+        .into_iter()
+        .map(canonical)
+        .collect();
     let manifest_path = PathBuf::from(package.manifest_path.clone());
     Ok(Target {
         local_roots,
         package: package.name.to_string(),
-        root: manifest_path
-            .parent()
-            .context("a manifest without a directory")?
-            .to_owned(),
+        root: canonical(
+            manifest_path
+                .parent()
+                .context("a manifest without a directory")?
+                .to_owned(),
+        ),
         manifest_path,
-        workspace_root: metadata.workspace_root.into(),
+        workspace_root: canonical(metadata.workspace_root.into()),
         bin,
-        target_dir: metadata.target_directory.into(),
+        target_dir: canonical(metadata.target_directory.into()),
         feature: feature.to_owned(),
     })
 }
