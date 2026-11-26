@@ -1,8 +1,8 @@
-error[E0599]: the method `update` exists for struct `Slot<count>`, but its trait bounds were not satisfied
+error[E0599]: the method `update` exists for struct `xui_core::Slot<count>`, but its trait bounds were not satisfied
   --> tests/ui/node_component_has_no_host_dirt.rs:10:43
    |
 10 |     Slot::<common::counter::count>::new().update(&mut node, 1);
-   |                                           ^^^^^^ method cannot be called on `Slot<count>` due to unsatisfied trait bounds
+   |                                           ^^^^^^ method cannot be called on `xui_core::Slot<count>` due to unsatisfied trait bounds
    |
   ::: tests/ui/../node_fixture/mod.rs
    |
