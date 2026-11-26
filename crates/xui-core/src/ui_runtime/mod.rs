@@ -101,8 +101,9 @@ pub struct UiRuntime {
     /// [`UiRuntime::begin_frame`]. Read, never sampled: it is the reason two
     /// animations stepped in the same frame step by the same amount.
     pub(super) frame_time: crate::clock::FrameTime,
-    /// Repaints requested by a `CanvasController` outside of any rebuild.
-    pub(super) canvas_invalidations: crate::widgets::CanvasInvalidator,
+    /// Repaints requested by a `CanvasController` or a `TextSurfaceHandle`
+    /// outside of any rebuild.
+    pub(super) repaint_queue: crate::widgets::RepaintQueue,
     /// Callbacks installed by `use_ticker`, run once per frame. Held here
     /// rather than in the component runtime so that the one place deciding
     /// whether animation asks for frames -- `is_animating` -- can see them.

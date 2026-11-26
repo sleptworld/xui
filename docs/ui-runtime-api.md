@@ -24,7 +24,7 @@
 | reconciler 持有的宿主 id（`create_node` 返回值） | 否（reconciler 负责在删除后不再使用） | `debug_assert!` |
 | `EventState` 的 hover / capture、`FocusManager` 的 focus | 否：`remove_subtree` → `InteractionSystem::remove` 已清空 | 不检查（删掉 `dispatcher.rs` 中的 `.filter(contains)`） |
 | 帧内脏队列（state/shape/style/subtree/inheritance/canvas） | **是**：删除节点时不清队列 | **排空时过滤一次** |
-| `CanvasInvalidator`、`ScrollRequestQueue`、clamped scrolls | **是**：外部句柄异步写入 | 排空时过滤一次 |
+| `RepaintQueue`、`ScrollRequestQueue`、clamped scrolls | **是**：外部句柄异步写入 | 排空时过滤一次 |
 | 事件回调发出的 `EventRequest::Focus/CapturePointer(node)` | **是**：用户可持有旧 id | 处理请求时检查一次 |
 | 公开查询 `node(id)` 等 | 是 | 返回 `Option`，一次检查 |
 
@@ -284,7 +284,7 @@ fn take_clamped_scrolls(&mut self) -> Vec<AppliedScroll>;
 fn is_dirty(&self) -> bool;
 fn has_running_style_animations(&self) -> bool;
 fn tickers(&self) -> &TickerRegistry;
-fn canvas_invalidator(&self) -> CanvasInvalidator;
+fn repaint_queue(&self) -> RepaintQueue;
 fn mark_subtree_layout_dirty(&mut self, id: NodeId);
 ```
 

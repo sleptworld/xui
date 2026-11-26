@@ -709,3 +709,44 @@ fn gutter_uses_visual_lines_and_keeps_text_hit_testing_and_ime_aligned() {
     assert_eq!(p.point.x, 121.0);
     assert!(p.at.unwrap().offset > 0);
 }
+
+/// Every window drains its own queue, so a handle shown in two windows has to
+/// send each surface to its own: one queue for both drops the other window's.
+#[test]
+fn a_handle_shown_in_two_windows_invalidates_both() {
+    let backend = FBackend::new();
+    if backend.face_count() == 0 {
+        return;
+    }
+    let mut text = TextHost::new(backend);
+    let handle = TextSurfaceHandle::new(Rc::new(RefCell::new(Lines::new(3))));
+    let mut windows = [UiRuntime::new(), UiRuntime::new()];
+    let mut surfaces = Vec::new();
+    for arena in &mut windows {
+        let surface = arena.create_node(Box::new(
+            text_surface()
+                .with::<text_surface::model>(handle.clone())
+                .with::<text_surface::size>(Size::fix(VIEWPORT.width, VIEWPORT.height)),
+        ));
+        let root = arena.root();
+        arena.place(root, surface, None);
+        arena.update_tree(Size::new(800.0, 600.0), &mut text);
+        surfaces.push(surface);
+    }
+
+    handle.invalidate();
+    for arena in &mut windows {
+        assert!(
+            arena.has_queued_repaints(),
+            "each window hears about its own surface"
+        );
+        arena.update_tree(Size::new(800.0, 600.0), &mut text);
+        assert!(!arena.has_queued_repaints());
+    }
+
+    // Leaving one window leaves the other bound.
+    windows[0].remove_subtree(surfaces[0]);
+    handle.invalidate();
+    assert!(!windows[0].has_queued_repaints());
+    assert!(windows[1].has_queued_repaints());
+}

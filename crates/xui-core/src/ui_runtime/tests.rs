@@ -87,7 +87,7 @@ fn a_controller_edit_repaints_its_canvas_with_no_component_rebuild() {
     arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
     let before = canvas_generation(&arena, id);
     assert!(before > 0, "a mounted canvas is compiled before it paints");
-    assert!(arena.canvas_invalidations.is_empty());
+    assert!(arena.repaint_queue.is_empty());
 
     let mut path = PathBuilder::new();
     path.move_to(Point::new(0.0, 0.0))
@@ -97,7 +97,7 @@ fn a_controller_edit_repaints_its_canvas_with_no_component_rebuild() {
     controller.set_scene(scene.build());
 
     assert!(
-        !arena.canvas_invalidations.is_empty(),
+        !arena.repaint_queue.is_empty(),
         "the edit must reach the host directly"
     );
     assert!(
@@ -108,7 +108,7 @@ fn a_controller_edit_repaints_its_canvas_with_no_component_rebuild() {
     let visits_before = arena.stats.update_visits;
     arena.update_tree(Size::new(400.0, 200.0), &mut measurer);
     assert!(canvas_generation(&arena, id) > before);
-    assert!(arena.canvas_invalidations.is_empty());
+    assert!(arena.repaint_queue.is_empty());
     let _ = visits_before;
 }
 
@@ -263,7 +263,7 @@ fn removing_a_canvas_stops_its_controller_from_marking_the_dead_node() {
     arena.remove_subtree(id);
     controller.invalidate();
     assert!(
-        arena.canvas_invalidations.is_empty(),
+        arena.repaint_queue.is_empty(),
         "an unmounted canvas must not keep a queue entry alive"
     );
 }
@@ -4269,7 +4269,7 @@ fn a_controller_drawn_in_two_windows_repaints_both() {
     // Leaving one window leaves the other bound.
     first.remove_subtree(in_first);
     controller.invalidate();
-    assert!(first.canvas_invalidations.is_empty());
+    assert!(first.repaint_queue.is_empty());
     second.update_tree(Size::new(100.0, 100.0), &mut measurer);
     assert_eq!(runs.get(), 5);
 }

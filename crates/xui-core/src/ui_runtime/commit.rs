@@ -82,7 +82,7 @@ impl UiRuntime {
             drawn_set_moved: false,
             window_visible: true,
             frame_time: crate::clock::FrameTime::ZERO,
-            canvas_invalidations: crate::widgets::CanvasInvalidator::default(),
+            repaint_queue: crate::widgets::RepaintQueue::default(),
             surface_nodes: Default::default(),
             tickers: crate::ticker::TickerRegistry::default(),
             wakes: slotmap::SparseSecondaryMap::new(),
@@ -482,7 +482,7 @@ impl UiRuntime {
     }
 
     fn bind_canvas_controller(&mut self, id: NodeId) {
-        let invalidator = self.canvas_invalidator();
+        let invalidator = self.repaint_queue();
         self.hosts[id].widget.with_widgets_mut(|widget| {
             if let Widgets::Canvas(canvas) = widget {
                 canvas.state.bind(id, invalidator);
@@ -491,7 +491,7 @@ impl UiRuntime {
     }
 
     fn bind_surface_handle(&mut self, id: NodeId) {
-        let invalidator = self.canvas_invalidator();
+        let invalidator = self.repaint_queue();
         self.hosts[id].widget.with_widgets_mut(|widget| {
             if let Widgets::TextSurface(surface) = widget {
                 surface.state.bind(id, invalidator);

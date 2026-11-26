@@ -31,7 +31,7 @@ use xui_interface::{
 };
 use xui_macros::widget;
 
-use super::CanvasInvalidator;
+use super::RepaintQueue;
 use super::roles::{DefaultFocus, HandleEvent, PaintContent, PlatformTextInput};
 use crate::event_system::EventContext;
 use crate::node::{Draft, WidgetT};
@@ -184,7 +184,7 @@ struct DecorRect {
 /// what it paints, and its input state.
 pub struct TextSurfaceState {
     handle: TextSurfaceHandle,
-    binding: Option<(NodeId, CanvasInvalidator)>,
+    binding: Option<(NodeId, RepaintQueue)>,
     disabled: bool,
     caret_uses_text_color: bool,
     wrap: SurfaceWrap,
@@ -286,14 +286,14 @@ impl TextSurfaceState {
         }
     }
 
-    pub(crate) fn bind(&mut self, id: NodeId, invalidator: CanvasInvalidator) {
+    pub(crate) fn bind(&mut self, id: NodeId, invalidator: RepaintQueue) {
         self.handle.bind(id, invalidator.clone());
         self.binding = Some((id, invalidator));
     }
 
     pub(crate) fn unbind(&mut self) {
-        if let Some((id, _)) = self.binding.take() {
-            self.handle.unbind(id);
+        if let Some((id, invalidator)) = self.binding.take() {
+            self.handle.unbind(id, &invalidator);
         }
     }
 
@@ -308,7 +308,7 @@ impl TextSurfaceState {
             return;
         }
         if let Some((id, invalidator)) = self.binding.clone() {
-            self.handle.unbind(id);
+            self.handle.unbind(id, &invalidator);
             next.model.bind(id, invalidator);
         }
         self.handle = next.model.clone();

@@ -16,7 +16,7 @@ use xui_interface::{
 
 use crate::event_system::EventContext;
 use crate::text::{ParagraphId, TextDocumentId, TextUnitLookup, TextUnitRef};
-use crate::widgets::CanvasInvalidator;
+use crate::widgets::{RepaintBindings, RepaintQueue};
 
 /// A block's identity, chosen by the model and stable across edits: an
 /// insertion above a block does not change its id, so what is on screen is
@@ -253,8 +253,7 @@ pub struct TextSurfaceHandle {
 
 struct HandleInner {
     model: Rc<RefCell<dyn TextSurfaceModel>>,
-    bindings: RefCell<Vec<NodeId>>,
-    invalidator: RefCell<Option<CanvasInvalidator>>,
+    bindings: RefCell<RepaintBindings>,
 }
 
 impl TextSurfaceHandle {
@@ -263,8 +262,7 @@ impl TextSurfaceHandle {
         Self {
             inner: Rc::new(HandleInner {
                 model,
-                bindings: RefCell::new(Vec::new()),
-                invalidator: RefCell::new(None),
+                bindings: RefCell::new(RepaintBindings::default()),
             }),
         }
     }
@@ -276,16 +274,8 @@ impl TextSurfaceHandle {
 
     /// Syncs every surface showing the model on the next frame.
     pub fn invalidate(&self) {
-        let invalidator = self.inner.invalidator.borrow().clone();
-        let Some(invalidator) = invalidator else {
-            return;
-        };
-        for id in self.inner.bindings.borrow().iter() {
-            invalidator.push(
-                *id,
-                WidgetUpdateFlags::PAINT_OUTPUT | WidgetUpdateFlags::TEXT_SHAPE,
-            );
-        }
+        let bindings = self.inner.bindings.borrow().clone();
+        bindings.push_all(WidgetUpdateFlags::PAINT_OUTPUT | WidgetUpdateFlags::TEXT_SHAPE);
     }
 
     /// A handle that does not keep the model alive, for whatever the model
@@ -304,20 +294,12 @@ impl TextSurfaceHandle {
         self.inner.model.clone()
     }
 
-    pub(crate) fn bind(&self, id: NodeId, invalidator: CanvasInvalidator) {
-        let mut bindings = self.inner.bindings.borrow_mut();
-        if !bindings.contains(&id) {
-            bindings.push(id);
-        }
-        *self.inner.invalidator.borrow_mut() = Some(invalidator);
+    pub(crate) fn bind(&self, id: NodeId, invalidator: RepaintQueue) {
+        self.inner.bindings.borrow_mut().bind(id, invalidator);
     }
 
-    pub(crate) fn unbind(&self, id: NodeId) {
-        let mut bindings = self.inner.bindings.borrow_mut();
-        bindings.retain(|bound| *bound != id);
-        if bindings.is_empty() {
-            *self.inner.invalidator.borrow_mut() = None;
-        }
+    pub(crate) fn unbind(&self, id: NodeId, invalidator: &RepaintQueue) {
+        self.inner.bindings.borrow_mut().unbind(id, invalidator);
     }
 }
 

@@ -65,6 +65,7 @@ pub(crate) mod container;
 pub(crate) mod grid;
 pub(crate) mod icon;
 pub(crate) mod image;
+pub(crate) mod invalidation;
 pub(crate) mod overlay;
 pub(crate) mod roles;
 pub(crate) mod root;
@@ -73,7 +74,6 @@ pub(crate) mod text_input;
 pub(crate) mod text_surface;
 pub(crate) mod z_stack;
 
-pub(crate) use canvas::CanvasInvalidator;
 #[cfg(feature = "wgpu")]
 pub use canvas::{CANVAS_GPU_FORMAT, CANVAS_GPU_USAGES, CanvasGpuPainter, GpuPainter};
 pub use canvas::{
@@ -84,6 +84,7 @@ pub(crate) use canvas::{CanvasFrame, canvas_text_slot};
 pub(crate) use grid::grid_widget_to_taffy;
 pub use grid::{GridFlow, GridTrackSize, GridTracks};
 pub use icon::{IconData, IconLayer, IconStroke, SvgIconError};
+pub(crate) use invalidation::{RepaintBindings, RepaintQueue};
 pub use overlay::{
     DismissHandler, DismissReason, OverlayChild, OverlayEntry, OverlayEntryId, OverlayEntryOptions,
     OverlayModelError, OverlayScope, OverlayScopeId,

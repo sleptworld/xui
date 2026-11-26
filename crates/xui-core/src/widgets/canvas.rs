@@ -13,7 +13,7 @@
 //!
 //! **How a change reaches the screen.** A canvas is a leaf: its content changes
 //! nothing about layout or the component tree. So [`CanvasController`] marks its
-//! host nodes directly through [`CanvasInvalidator`], and the runtime reports
+//! host nodes directly through [`RepaintQueue`], and the runtime reports
 //! that pending work from `is_dirty`. No component rebuilds, and the content
 //! revision stays out of `props_hash` for the same reason.
 //!
@@ -26,6 +26,7 @@
 //! the backend has cached.
 
 use super::roles::PaintContent;
+use super::{RepaintBindings, RepaintQueue};
 use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc, sync::Arc};
 
 use crate::clock::FrameTime;
@@ -988,55 +989,12 @@ fn compile_commands(
     batches
 }
 
-/// The queue a [`CanvasController`] drops invalidations into.
-///
-/// A canvas is a leaf: its content changes nothing about layout or the
-/// component tree, so repainting one through a component rebuild -- the only
-/// route a controller used to have -- pays for a full reconcile to move some
-/// pixels. This channel marks the host node directly instead, and the runtime
-/// reports the pending work through `is_dirty`, which is what gets the frame
-/// scheduled.
-#[derive(Clone, Default)]
-pub(crate) struct CanvasInvalidator {
-    pending: Rc<RefCell<Vec<(NodeId, WidgetUpdateFlags)>>>,
-    wake: Rc<RefCell<Option<Rc<dyn Fn()>>>>,
-}
-
-impl CanvasInvalidator {
-    /// Whether the two are the same queue, which is to say the same window.
-    pub(crate) fn same_queue(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.pending, &other.pending)
-    }
-
-    pub(crate) fn set_wake(&self, wake: Rc<dyn Fn()>) {
-        *self.wake.borrow_mut() = Some(wake);
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.pending.borrow().is_empty()
-    }
-
-    pub(crate) fn drain(&self) -> Vec<(NodeId, WidgetUpdateFlags)> {
-        std::mem::take(&mut *self.pending.borrow_mut())
-    }
-
-    pub(crate) fn push(&self, id: NodeId, flags: WidgetUpdateFlags) {
-        self.pending.borrow_mut().push((id, flags));
-        let wake = self.wake.borrow().clone();
-        if let Some(wake) = wake {
-            wake();
-        }
-    }
-}
-
 struct CanvasControllerState {
     content: CanvasContent,
     revision: u64,
-    /// Every mounted node drawing this controller, each with the queue of the
-    /// window it is in. Usually one; a controller shared by two canvases
-    /// invalidates both. A node id alone does not name a canvas: every window
-    /// has its own tree, and their ids collide.
-    bindings: Vec<(NodeId, CanvasInvalidator)>,
+    /// Every mounted node drawing this controller. Usually one; a controller
+    /// shared by two canvases invalidates both.
+    bindings: RepaintBindings,
     /// What the canvas that compiled last published. See
     /// [`CanvasController::pick`].
     picks: Vec<CanvasPick>,
@@ -1140,7 +1098,7 @@ impl CanvasController {
             inner: Rc::new(RefCell::new(CanvasControllerState {
                 content,
                 revision: 1,
-                bindings: Vec::new(),
+                bindings: RepaintBindings::default(),
                 picks: Vec::new(),
                 size: Size::new(0.0, 0.0),
             })),
@@ -1216,12 +1174,7 @@ impl CanvasController {
             state.revision = state.revision.wrapping_add(1);
             state.bindings.clone()
         };
-        for (id, invalidator) in bindings {
-            invalidator.push(
-                id,
-                WidgetUpdateFlags::PAINT_OUTPUT | WidgetUpdateFlags::TEXT_SHAPE,
-            );
-        }
+        bindings.push_all(WidgetUpdateFlags::PAINT_OUTPUT | WidgetUpdateFlags::TEXT_SHAPE);
     }
 
     /// The size the drawing was last compiled for.
@@ -1256,22 +1209,12 @@ impl CanvasController {
             .map(|pick| pick.tag)
     }
 
-    pub(crate) fn bind(&self, id: NodeId, invalidator: CanvasInvalidator) {
-        let mut state = self.inner.borrow_mut();
-        let bound = state
-            .bindings
-            .iter()
-            .any(|(node, queue)| *node == id && queue.same_queue(&invalidator));
-        if !bound {
-            state.bindings.push((id, invalidator));
-        }
+    pub(crate) fn bind(&self, id: NodeId, invalidator: RepaintQueue) {
+        self.inner.borrow_mut().bindings.bind(id, invalidator);
     }
 
-    pub(crate) fn unbind(&self, id: NodeId, invalidator: &CanvasInvalidator) {
-        self.inner
-            .borrow_mut()
-            .bindings
-            .retain(|(node, queue)| !(*node == id && queue.same_queue(invalidator)));
+    pub(crate) fn unbind(&self, id: NodeId, invalidator: &RepaintQueue) {
+        self.inner.borrow_mut().bindings.unbind(id, invalidator);
     }
 
     fn publish_compiled(&self, size: Size<f32>, picks: Option<Vec<CanvasPick>>) {
@@ -1364,7 +1307,7 @@ pub struct CanvasState {
     /// The host node this widget is mounted on, and the channel its controller
     /// invalidates through. Held here so that swapping the controller can move
     /// the binding without the pipeline having to know it happened.
-    binding: Option<(NodeId, CanvasInvalidator)>,
+    binding: Option<(NodeId, RepaintQueue)>,
 }
 
 /// Everything a painter's drawing is a function of, besides the frame's time,
@@ -1672,7 +1615,7 @@ impl CanvasState {
         self.gpu_target.as_ref().map(|target| &target.texture)
     }
 
-    pub(crate) fn bind(&mut self, id: NodeId, invalidator: CanvasInvalidator) {
+    pub(crate) fn bind(&mut self, id: NodeId, invalidator: RepaintQueue) {
         self.controller.bind(id, invalidator.clone());
         self.binding = Some((id, invalidator));
     }
@@ -2146,7 +2089,7 @@ mod tests {
 
     #[test]
     fn swapping_the_controller_moves_the_host_binding_with_it() {
-        let invalidator = CanvasInvalidator::default();
+        let invalidator = RepaintQueue::default();
         let node = xui_interface::NodeId::null();
 
         let first = CanvasController::new();

@@ -1114,9 +1114,9 @@ impl App {
 /// canvas invalidated from a timer or a worker has no other signal to ride
 /// in on, so it wakes the loop through the same channel async state updates do.
 fn connect_wake(ui: &UiRuntime, wake: &Wake) {
-    let canvas_wake = wake.clone();
-    ui.canvas_invalidator()
-        .set_wake(std::rc::Rc::new(move || canvas_wake()));
+    let repaint_wake = wake.clone();
+    ui.repaint_queue()
+        .set_wake(std::rc::Rc::new(move || repaint_wake()));
     let scroll_wake = wake.clone();
     ui.scroll_request_queue()
         .set_wake(std::rc::Rc::new(move || scroll_wake()));

@@ -88,7 +88,7 @@ impl UiRuntime {
     ) {
         self.stats.update_visits = 0;
         self.stats.inheritance_visits = 0;
-        self.apply_canvas_invalidations();
+        self.apply_repaint_queue();
         // Every queue below may name nodes removed after they were queued;
         // `live` drops those, and nothing past it checks again.
         let state_dirty = self.ui_state.drain_state_change_dirty_list();
@@ -216,7 +216,7 @@ impl UiRuntime {
     }
 
     pub(crate) fn is_dirty(&self) -> bool {
-        !self.canvas_invalidations.is_empty()
+        !self.repaint_queue.is_empty()
             || self.has_pending_scroll_requests()
             || !self.ui_state.canvas_dirty_list.is_empty()
             || self.render_system.scene.is_dirty()
@@ -300,21 +300,29 @@ impl UiRuntime {
         self.mark_work(id, HostWorkFlags::REBUILD_PAINT);
     }
 
-    pub(crate) fn canvas_invalidator(&self) -> crate::widgets::CanvasInvalidator {
-        self.canvas_invalidations.clone()
+    /// Whether a controller or a handle queued a repaint this window has not
+    /// taken yet.
+    #[cfg(test)]
+    pub(crate) fn has_queued_repaints(&self) -> bool {
+        !self.repaint_queue.is_empty()
     }
 
-    /// Turns repaints requested by a controller into host work.
+    pub(crate) fn repaint_queue(&self) -> crate::widgets::RepaintQueue {
+        self.repaint_queue.clone()
+    }
+
+    /// Turns repaints requested by a controller or a handle into host work.
     ///
-    /// This is the whole of the direct channel: a `CanvasController` names the
-    /// nodes drawing it and the flags they need, and the frame that follows
-    /// picks them up without any component ever rebuilding.
-    fn apply_canvas_invalidations(&mut self) {
-        if self.canvas_invalidations.is_empty() {
+    /// This is the whole of the direct channel: a `CanvasController` or a
+    /// `TextSurfaceHandle` names the nodes showing it and the flags they need,
+    /// and the frame that follows picks them up without any component ever
+    /// rebuilding.
+    fn apply_repaint_queue(&mut self) {
+        if self.repaint_queue.is_empty() {
             return;
         }
-        for (id, flags) in self.canvas_invalidations.drain() {
-            // Queued by a controller, which can outlive the node it names.
+        for (id, flags) in self.repaint_queue.drain() {
+            // Queued by a handle, which can outlive the node it names.
             if self.hosts.contains_key(id) {
                 self.request_update(id, flags);
             }
