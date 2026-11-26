@@ -204,9 +204,16 @@ portal 挂在**它所在窗口**的 `root_overlayer` 下：`mount_portal` 里的
 
 `window::*` 和 `viewport::*` 七个 key 从应用级改为窗口级：
 
-- `WindowState.contexts` 存这七个 key 的 signal，由 `App` 在对应窗口的事件里写（原来写 `provide_keyed` 的地方改为写窗口的）。
-- `Contexts::find`（`reactive/runtime.rs:452`）沿 owner 链向上，走到 `Owner::Root { window, .. }` 或
-  `Owner::Window { window, .. }` 时，先查该窗口的 `contexts`，再查应用级。
+**已实施**（2026-11-26）：
+
+- 这七个 key 的 signal 存在 reactive `Runtime::window_contexts: HashMap<WindowId, AppContexts>` 里——
+  signal 是 runtime 依赖图的节点，放在 runtime 里而不是 `WindowState`。`provide_keyed::<K>(window, value)`
+  写某个窗口的；它原来写应用级，现在只有窗口级这一种（有 key 的 context 全是系统的，而系统的都按窗口）。
+  `App` 在对应窗口的事件里写，主窗口的默认值在 `App::new` 时写。
+- `Contexts::find` 先沿 owner 链查祖先提供的，再查 scope 所在窗口的（`Mounted.window`，挂载时已知），
+  最后查应用级。
+- 测试 `each_window_reads_its_own_system_keys`：两个窗口各读各的 `LogicalSize`，一个窗口变化只重跑它自己的绑定。
+- 窗口关闭时释放它的那组 signal，随 `mount_window` / 卸载一起做。
 - 其他 context（主题、`Appearance`、`app.provide_context` 提供的）保持应用级，所有窗口看到同一份。
 - `Appearance` 暂按应用级处理（系统外观）；macOS 允许单窗口覆盖外观，需要时再把它挪进窗口级。
 

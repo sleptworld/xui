@@ -56,7 +56,6 @@ impl Windows {
     /// The window the host made at startup, which [`App::mount`] mounts into.
     ///
     /// [`App::mount`]: crate::app::App::mount
-    #[cfg(test)]
     pub(crate) fn main_id(&self) -> WindowId {
         self.main
     }
@@ -69,6 +68,15 @@ impl Windows {
     #[inline]
     pub(crate) fn main_mut(&mut self) -> &mut WindowState {
         &mut self.map[self.main]
+    }
+
+    /// A window beside the main one, with a tree of its own on the shared
+    /// node ids.
+    #[cfg(test)]
+    pub(crate) fn open(&mut self) -> WindowId {
+        let ids = self.ids.clone();
+        self.map
+            .insert_with_key(|id| WindowState::new(UiRuntime::with_node_ids(ids, id)))
     }
 
     /// Window `id`'s tree.

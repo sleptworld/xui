@@ -22,7 +22,9 @@ use tokio::task::JoinHandle;
 use xui_interface::TextBackend;
 use xui_interface::events::SemanticEvent;
 use xui_interface::events::{EventResult, RawEvent, ScrollPhase, ScrollSource};
-use xui_interface::{Appearance, DropEffect, DropEvent, NodeId, Point, ThemeMode, Themes};
+use xui_interface::{
+    Appearance, DropEffect, DropEvent, NodeId, Point, ThemeMode, Themes, WindowId,
+};
 
 /// What an app starts with: typically mounts its root component,
 /// `|app| { app.mount::<Gallery>(GalleryProps {}); }`.
@@ -246,6 +248,7 @@ impl App {
     /// An app set up by `root`, which mounts what it shows.
     pub fn new(root: AppRoot) -> Self {
         let mut windows = Windows::new();
+        let main = windows.main_id();
         let ui_runtime = &mut windows.main_mut().ui;
         let platform = PlatformHandle::default();
         ui_runtime.set_platform(platform.clone());
@@ -263,7 +266,7 @@ impl App {
         let theme = ThemeHandle::new(appearance.color_scheme);
         reactive.provide_context(theme.clone());
         reactive.provide_context(appearance);
-        provide_system_defaults(&mut reactive);
+        provide_system_defaults(&mut reactive, main);
         ui_runtime.set_theme(theme.current());
         let mut app = Self {
             windows,
@@ -483,7 +486,7 @@ impl App {
     pub fn set_scale_factor(&mut self, scale_factor: f32) {
         self.windows.main_mut().ui.set_scale_factor(scale_factor);
         self.reactive
-            .provide_keyed::<system::viewport::ScaleFactor>(scale_factor);
+            .provide_keyed::<system::viewport::ScaleFactor>(self.windows.main_id(), scale_factor);
     }
 
     /// Writes the results of the `resource!` futures that finished since
@@ -508,7 +511,7 @@ impl App {
             window.size = size;
             window.ui.mark_subtree_layout_dirty(window.ui.root());
             self.reactive
-                .provide_keyed::<system::viewport::LogicalSize>(size);
+                .provide_keyed::<system::viewport::LogicalSize>(self.windows.main_id(), size);
         }
     }
 
@@ -518,12 +521,12 @@ impl App {
         text: &mut TextHost<T>,
     ) -> EventResult {
         match &event {
-            RawEvent::WindowFocus(_) => {
-                self.reactive.provide_keyed::<system::window::Focused>(true)
-            }
+            RawEvent::WindowFocus(_) => self
+                .reactive
+                .provide_keyed::<system::window::Focused>(self.windows.main_id(), true),
             RawEvent::WindowBlur(_) => self
                 .reactive
-                .provide_keyed::<system::window::Focused>(false),
+                .provide_keyed::<system::window::Focused>(self.windows.main_id(), false),
             _ => {}
         }
         self.rebuild_sync_if_needed();
@@ -735,7 +738,7 @@ impl App {
     pub(crate) fn set_window_visible(&mut self, visible: bool) {
         self.windows.main_mut().ui.set_window_visible(visible);
         self.reactive
-            .provide_keyed::<system::window::Visible>(visible);
+            .provide_keyed::<system::window::Visible>(self.windows.main_id(), visible);
     }
 
     /// What a component reading `context!(K)` would see now.
@@ -744,13 +747,13 @@ impl App {
     where
         K::Value: Clone,
     {
-        self.reactive.keyed::<K>()
+        self.reactive.keyed::<K>(self.windows.main_id())
     }
 
     /// Records whether the window is minimized, for `window::Minimized`.
     pub(crate) fn set_window_minimized(&mut self, minimized: bool) {
         self.reactive
-            .provide_keyed::<system::window::Minimized>(minimized);
+            .provide_keyed::<system::window::Minimized>(self.windows.main_id(), minimized);
     }
 
     /// Records the fullscreen and maximized state someone other than the
@@ -759,9 +762,9 @@ impl App {
     pub(crate) fn set_window_state(&mut self, state: xui_interface::WindowState) {
         self.platform.set_window_state(state);
         self.reactive
-            .provide_keyed::<system::window::Fullscreen>(state.fullscreen);
+            .provide_keyed::<system::window::Fullscreen>(self.windows.main_id(), state.fullscreen);
         self.reactive
-            .provide_keyed::<system::window::Maximized>(state.maximized);
+            .provide_keyed::<system::window::Maximized>(self.windows.main_id(), state.maximized);
     }
 
     #[inline(always)]
@@ -994,13 +997,13 @@ impl App {
 }
 
 /// What [`crate::system`]'s keys read before the host reports anything.
-fn provide_system_defaults(reactive: &mut crate::reactive::Runtime) {
+fn provide_system_defaults(reactive: &mut crate::reactive::Runtime, window: WindowId) {
     use system::{viewport, window};
-    reactive.provide_keyed::<window::Fullscreen>(false);
-    reactive.provide_keyed::<window::Maximized>(false);
-    reactive.provide_keyed::<window::Minimized>(false);
-    reactive.provide_keyed::<window::Focused>(true);
-    reactive.provide_keyed::<window::Visible>(true);
-    reactive.provide_keyed::<viewport::LogicalSize>(Size::<f32>::ZERO);
-    reactive.provide_keyed::<viewport::ScaleFactor>(1.0);
+    reactive.provide_keyed::<window::Fullscreen>(window, false);
+    reactive.provide_keyed::<window::Maximized>(window, false);
+    reactive.provide_keyed::<window::Minimized>(window, false);
+    reactive.provide_keyed::<window::Focused>(window, true);
+    reactive.provide_keyed::<window::Visible>(window, true);
+    reactive.provide_keyed::<viewport::LogicalSize>(window, Size::<f32>::ZERO);
+    reactive.provide_keyed::<viewport::ScaleFactor>(window, 1.0);
 }

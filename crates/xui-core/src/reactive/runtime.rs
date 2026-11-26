@@ -445,10 +445,34 @@ struct Mounted {
 
 type AppContexts = std::collections::HashMap<std::any::TypeId, (Box<dyn Any>, Box<dyn Any>)>;
 
+/// Writes the context under `id` in `contexts` if `value` is new, and
+/// notifies its readers; creates it on first use.
+fn provide_under<T: PartialEq + 'static>(
+    graph: &mut Graph,
+    contexts: &mut AppContexts,
+    id: std::any::TypeId,
+    value: T,
+) {
+    if let Some((_, write)) = contexts.get(&id) {
+        let signal = write
+            .downcast_ref::<Signal<T>>()
+            .expect("context of another type");
+        // Through the graph rather than the notifier: only a context
+        // someone reads leaves work behind, so the system's keys can be
+        // written on every host event without asking for frames.
+        signal.replace_if_changed(graph, value);
+        return;
+    }
+    let signal = Signal::new(graph.insert(), value);
+    contexts.insert(id, (Box::new(signal.read_only()), Box::new(signal)));
+}
+
 /// The contexts a scope mounted at `owner` sees, looked up on demand: its
-/// ancestors', nearest first, then the app's.
+/// ancestors', nearest first, then its window's, then the app's.
 pub(crate) struct Contexts<'a> {
     instances: &'a SlotMap<InstanceId, Mounted>,
+    /// The system's contexts of the window the scope is in.
+    window: Option<&'a AppContexts>,
     app: &'a AppContexts,
     owner: Owner,
 }
@@ -467,7 +491,10 @@ impl Contexts<'_> {
             }
             owner = mounted.owner;
         }
-        self.app.get(&ty).map(|(read, _)| &**read)
+        self.window
+            .and_then(|window| window.get(&ty))
+            .or_else(|| self.app.get(&ty))
+            .map(|(read, _)| &**read)
     }
 }
 
@@ -485,6 +512,9 @@ pub struct Runtime {
     /// The app's contexts: under each type id, the `ReadSignal<T>` scopes
     /// read and the `Signal<T>` the app writes.
     contexts: AppContexts,
+    /// Each window's contexts under the system's keys (`system::window`,
+    /// `system::viewport`): what a scope in that window reads for them.
+    window_contexts: std::collections::HashMap<WindowId, AppContexts>,
 }
 
 impl Runtime {
@@ -574,6 +604,7 @@ impl Runtime {
             owned: Vec::new(),
             contexts: Contexts {
                 instances: &self.instances,
+                window: self.window_contexts.get(&window),
                 app: &self.contexts,
                 owner: place.0,
             },
@@ -604,43 +635,36 @@ impl Runtime {
     /// Sets the app's context of type `T`, which scopes without an ancestor
     /// providing one read; a scope reading it reruns when it changes.
     pub fn provide_context<T: PartialEq + 'static>(&mut self, value: T) {
-        self.provide_under(std::any::TypeId::of::<T>(), value);
+        provide_under(
+            &mut self.graph,
+            &mut self.contexts,
+            std::any::TypeId::of::<T>(),
+            value,
+        );
     }
 
-    /// Sets the app's context under the key `K`, which `context!(K)` reads.
-    /// Crate-private: the keys there are, the system's, are the host's to write.
-    pub(crate) fn provide_keyed<K: ContextKey>(&mut self, value: K::Value) {
-        self.provide_under(std::any::TypeId::of::<K>(), value);
+    /// Sets window `window`'s context under the key `K`, which `context!(K)`
+    /// reads in the scopes in that window. Crate-private: the keys there are,
+    /// the system's, are the host's to write, and each window has its own.
+    pub(crate) fn provide_keyed<K: ContextKey>(&mut self, window: WindowId, value: K::Value) {
+        provide_under(
+            &mut self.graph,
+            self.window_contexts.entry(window).or_default(),
+            std::any::TypeId::of::<K>(),
+            value,
+        );
     }
 
-    /// The app's value under the key `K`, read without subscribing.
+    /// Window `window`'s value under the key `K`, read without subscribing.
     #[cfg(test)]
-    pub(crate) fn keyed<K: ContextKey>(&self) -> K::Value
+    pub(crate) fn keyed<K: ContextKey>(&self, window: WindowId) -> K::Value
     where
         K::Value: Clone,
     {
-        let (read, _) = &self.contexts[&std::any::TypeId::of::<K>()];
+        let (read, _) = &self.window_contexts[&window][&std::any::TypeId::of::<K>()];
         read.downcast_ref::<super::ReadSignal<K::Value>>()
             .expect("context under another type's id")
             .get()
-    }
-
-    /// Writes the app's context under `id` if `value` is new, and notifies
-    /// its readers; creates it on first use.
-    fn provide_under<T: PartialEq + 'static>(&mut self, id: std::any::TypeId, value: T) {
-        if let Some((_, write)) = self.contexts.get(&id) {
-            let signal = write
-                .downcast_ref::<Signal<T>>()
-                .expect("context of another type");
-            // Through the graph rather than the notifier: only a context
-            // someone reads leaves work behind, so the system's keys can be
-            // written on every host event without asking for frames.
-            signal.replace_if_changed(&mut self.graph, value);
-            return;
-        }
-        let signal = self.signal(value);
-        self.contexts
-            .insert(id, (Box::new(signal.read_only()), Box::new(signal)));
     }
 
     pub(crate) fn mount_row<P: Scope, D: 'static>(

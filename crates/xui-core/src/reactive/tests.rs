@@ -624,8 +624,8 @@ fn a_context_key_subscribes_to_its_field_alone() {
 
     let mut windows = Windows::new();
     let mut runtime = Runtime::new();
-    runtime.provide_keyed::<Maximized>(false);
-    runtime.provide_keyed::<LogicalSize>(Size::new(600.0, 400.0));
+    runtime.provide_keyed::<Maximized>(windows.main_id(), false);
+    runtime.provide_keyed::<LogicalSize>(windows.main_id(), Size::new(600.0, 400.0));
     let root = windows.main().ui.root();
     let id = runtime.mount::<TitleBar>(&mut windows, root, TitleBarProps {});
     assert_eq!(
@@ -634,7 +634,7 @@ fn a_context_key_subscribes_to_its_field_alone() {
     );
 
     // A resize reruns the breakpoint and nothing else; staying narrow, no text.
-    runtime.provide_keyed::<LogicalSize>(Size::new(700.0, 400.0));
+    runtime.provide_keyed::<LogicalSize>(windows.main_id(), Size::new(700.0, 400.0));
     assert_eq!(
         runtime.flush(&mut windows),
         FlushReport {
@@ -644,7 +644,7 @@ fn a_context_key_subscribes_to_its_field_alone() {
     );
 
     // Crossing it updates the one text that reads it.
-    runtime.provide_keyed::<LogicalSize>(Size::new(900.0, 400.0));
+    runtime.provide_keyed::<LogicalSize>(windows.main_id(), Size::new(900.0, 400.0));
     assert_eq!(
         runtime.flush(&mut windows),
         FlushReport {
@@ -655,7 +655,7 @@ fn a_context_key_subscribes_to_its_field_alone() {
     );
 
     // Maximizing touches neither the memo nor the breakpoint's text.
-    runtime.provide_keyed::<Maximized>(true);
+    runtime.provide_keyed::<Maximized>(windows.main_id(), true);
     assert_eq!(
         runtime.flush(&mut windows),
         FlushReport {
@@ -669,7 +669,7 @@ fn a_context_key_subscribes_to_its_field_alone() {
     );
 
     // Providing what is already there notifies nobody.
-    runtime.provide_keyed::<Maximized>(true);
+    runtime.provide_keyed::<Maximized>(windows.main_id(), true);
     assert_eq!(runtime.flush(&mut windows), FlushReport::default());
 }
 
@@ -687,8 +687,8 @@ fn fields_changed_together_are_read_together() {
 
     let mut windows = Windows::new();
     let mut runtime = Runtime::new();
-    runtime.provide_keyed::<Maximized>(false);
-    runtime.provide_keyed::<LogicalSize>(Size::new(600.0, 400.0));
+    runtime.provide_keyed::<Maximized>(windows.main_id(), false);
+    runtime.provide_keyed::<LogicalSize>(windows.main_id(), Size::new(600.0, 400.0));
     let root = windows.main().ui.root();
     let id = runtime.mount::<WindowSummary>(&mut windows, root, WindowSummaryProps {});
     assert_eq!(
@@ -697,8 +697,8 @@ fn fields_changed_together_are_read_together() {
     );
 
     // One host event, two fields: the binding reading both runs once, after both.
-    runtime.provide_keyed::<Maximized>(true);
-    runtime.provide_keyed::<LogicalSize>(Size::new(1440.0, 900.0));
+    runtime.provide_keyed::<Maximized>(windows.main_id(), true);
+    runtime.provide_keyed::<LogicalSize>(windows.main_id(), Size::new(1440.0, 900.0));
     assert_eq!(
         runtime.flush(&mut windows),
         FlushReport {
@@ -1077,5 +1077,49 @@ fn a_generic_component_mounts_at_the_root_and_as_children() {
     assert_eq!(
         shown(&windows.main().ui, &runtime, id),
         "<container><text>7</text><text>x</text></container>"
+    );
+}
+
+#[test]
+fn each_window_reads_its_own_system_keys() {
+    use crate::core::Size;
+    use crate::system::{viewport::LogicalSize, window::Maximized};
+
+    let mut windows = Windows::new();
+    let (main, second) = (windows.main_id(), windows.open());
+    let mut runtime = Runtime::new();
+    for (window, width) in [(main, 600.0), (second, 300.0)] {
+        runtime.provide_keyed::<Maximized>(window, false);
+        runtime.provide_keyed::<LogicalSize>(window, Size::new(width, 200.0));
+    }
+    let (main_root, second_root) = (windows.ui(main).root(), windows.ui(second).root());
+    let in_main = runtime.mount::<WindowSummary>(&mut windows, main_root, WindowSummaryProps {});
+    let in_second =
+        runtime.mount::<WindowSummary>(&mut windows, second_root, WindowSummaryProps {});
+    assert_eq!(
+        shown(windows.ui(main), &runtime, in_main),
+        "<text>false 600</text>"
+    );
+    assert_eq!(
+        shown(windows.ui(second), &runtime, in_second),
+        "<text>false 300</text>"
+    );
+
+    // One window's resize reruns the binding in that window alone.
+    runtime.provide_keyed::<LogicalSize>(second, Size::new(320.0, 200.0));
+    assert_eq!(
+        runtime.flush(&mut windows),
+        FlushReport {
+            renders: 1,
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        shown(windows.ui(main), &runtime, in_main),
+        "<text>false 600</text>"
+    );
+    assert_eq!(
+        shown(windows.ui(second), &runtime, in_second),
+        "<text>false 320</text>"
     );
 }
