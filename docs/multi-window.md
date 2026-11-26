@@ -162,6 +162,12 @@ xui! {
 
 ### 4.2 reactive runtime 改动
 
+**部分实施**（2026-11-25）：`flush` / `run` / `mount*` / `unmount` / `order_rows` / `hot_reload`、
+`BlockCx`、`Children` 与 `PendingMount` 的闭包都已改为接 `&mut Windows`；`Mounted.window` 在挂载时由
+`window_at(owner)` 得出（`Owner::Root(host)` 经共享分配器查 host 所在的窗口，其余继承所在 scope 的），
+用到树的地方按它取 `windows.ui_mut(window)`。`Owner::Root` 保持 `Root(NodeId)`——窗口可由 host 查得，
+不必另存。`Owner::Window`、`mount_window` 与 `window` 块尚未做（需要 `xui!` 支持新的节点种类）。
+
 ```rust
 pub(crate) enum Owner {
     Root { window: WindowId, host: NodeId },          // 原 Root(NodeId)

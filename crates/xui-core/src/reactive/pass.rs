@@ -6,7 +6,7 @@ use super::block::{Row, RowTemplate};
 use super::graph::InstanceId;
 use super::runtime::{Cx, Owner, Runtime};
 use super::template::Scope;
-use crate::ui_runtime::UiRuntime;
+use crate::windows::Windows;
 
 /// A function of the parent's a child calls, with the `Cx` it was given: a
 /// prop typed `&Callback<A>`, which a parent sets with a closure
@@ -105,7 +105,7 @@ where
     )
 }
 
-type MountChildren = dyn Fn(&mut Runtime, &mut UiRuntime, Owner) -> InstanceId;
+type MountChildren = dyn Fn(&mut Runtime, &mut Windows, Owner) -> InstanceId;
 
 /// A parent's content, given to a child as its `children` prop and mounted
 /// where the child writes `slot(children)`. Its bindings belong to the
@@ -126,10 +126,10 @@ impl Children {
     pub(crate) fn mount(
         &self,
         runtime: &mut Runtime,
-        ui: &mut UiRuntime,
+        windows: &mut Windows,
         owner: Owner,
     ) -> Option<InstanceId> {
-        self.0.as_ref().map(|mount| mount(runtime, ui, owner))
+        self.0.as_ref().map(|mount| mount(runtime, windows, owner))
     }
 
     /// Component `C` with `props`, mounted wherever this is slotted, as
@@ -142,8 +142,8 @@ impl Children {
         <C::Instance as super::ComponentDef>::Props: Clone,
     {
         Self(Some(Rc::new(
-            move |runtime: &mut Runtime, ui: &mut UiRuntime, owner| {
-                runtime.mount_into::<C::Instance>(ui, props.clone(), super::Place(owner))
+            move |runtime: &mut Runtime, windows: &mut Windows, owner| {
+                runtime.mount_into::<C::Instance>(windows, props.clone(), super::Place(owner))
             },
         )))
     }
@@ -202,8 +202,8 @@ fn text_content(value: &String) {
 pub fn __children<P: Scope>(parent: &Rc<P>, template: RowTemplate<'_, Row<P, ()>>) -> Children {
     let (parent, parts) = (parent.clone(), Rc::new(template.to_parts()));
     Children(Some(Rc::new(
-        move |runtime: &mut Runtime, ui: &mut UiRuntime, owner| {
-            runtime.mount_row(ui, parent.clone(), (), parts.clone(), owner)
+        move |runtime: &mut Runtime, windows: &mut Windows, owner| {
+            runtime.mount_row(windows, parent.clone(), (), parts.clone(), owner)
         },
     )))
 }

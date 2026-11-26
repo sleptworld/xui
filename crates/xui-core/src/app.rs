@@ -306,10 +306,8 @@ impl App {
         &mut self,
         props: <C::Instance as crate::reactive::ComponentDef>::Props,
     ) -> crate::reactive::InstanceId {
-        let root = self.windows.main_mut().ui.root();
-        let id = self
-            .reactive
-            .mount::<C>(&mut self.windows.main_mut().ui, root, props);
+        let root = self.windows.main().ui.root();
+        let id = self.reactive.mount::<C>(&mut self.windows, root, props);
         #[cfg(feature = "hotpatch")]
         self.hot.mounted.push(id);
         id
@@ -324,7 +322,7 @@ impl App {
         let outcome = if full {
             Err(())
         } else {
-            self.reactive.hot_reload(&mut self.windows.main_mut().ui)
+            self.reactive.hot_reload(&mut self.windows)
         };
         match outcome {
             Ok(report) => crate::hot::report_reload(
@@ -339,7 +337,7 @@ impl App {
             Err(()) => {
                 let count = self.hot.mounted.len();
                 for id in std::mem::take(&mut self.hot.mounted) {
-                    self.reactive.unmount(&mut self.windows.main_mut().ui, id);
+                    self.reactive.unmount(&mut self.windows, id);
                 }
                 let root = self.hot.root;
                 subsecond::HotFn::current(root).call((self,));
@@ -378,7 +376,7 @@ impl App {
     pub fn unmount(&mut self, id: crate::reactive::InstanceId) {
         #[cfg(feature = "hotpatch")]
         self.hot.mounted.retain(|mounted| *mounted != id);
-        self.reactive.unmount(&mut self.windows.main_mut().ui, id);
+        self.reactive.unmount(&mut self.windows, id);
     }
 
     #[cfg(test)]
@@ -975,7 +973,7 @@ impl App {
     fn rebuild_sync_if_needed(&mut self) {
         // What handlers wrote since the last flush.
         if self.reactive.is_dirty() {
-            self.reactive.flush(&mut self.windows.main_mut().ui);
+            self.reactive.flush(&mut self.windows);
         }
         // After the flush, so a theme an effect switched restyles this frame.
         if self.theme.is_requested() {

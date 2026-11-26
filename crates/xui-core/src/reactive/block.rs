@@ -15,7 +15,7 @@ use super::graph::{InstanceId, SourceId};
 use super::runtime::{Owner, Runtime};
 use super::signal::{Signal, Source};
 use super::template::{ChildSpec, EffectSpec, Scope, StaticNode};
-use crate::ui_runtime::UiRuntime;
+use crate::windows::Windows;
 
 pub struct Row<P, D> {
     pub parent: Rc<P>,
@@ -78,7 +78,7 @@ pub(crate) struct BlockState {
 /// Given to a running block.
 pub struct BlockCx<'a> {
     pub(crate) runtime: &'a mut Runtime,
-    pub(crate) ui: &'a mut UiRuntime,
+    pub(crate) windows: &'a mut Windows,
     pub(crate) owner: InstanceId,
     /// The template node the block stands at.
     pub(crate) node: u16,
@@ -99,12 +99,12 @@ impl BlockCx<'_> {
             self.runtime.replace_row_data::<P, D>(state.rows[0], data);
         } else {
             for row in state.rows.drain(..) {
-                self.runtime.unmount(self.ui, row);
+                self.runtime.unmount(self.windows, row);
             }
             // While its state is out, a block has no rows: the row goes
             // before whatever follows the block.
             let row = self.runtime.mount_row(
-                self.ui,
+                self.windows,
                 parent.clone(),
                 data,
                 Rc::new(template.to_parts()),
@@ -120,7 +120,7 @@ impl BlockCx<'_> {
     pub fn none(&mut self) {
         let mut state = self.runtime.take_block(self.owner, self.node);
         for row in state.rows.drain(..) {
-            self.runtime.unmount(self.ui, row);
+            self.runtime.unmount(self.windows, row);
         }
         state.arm = None;
         self.runtime.put_block(self.owner, self.node, state);
@@ -180,7 +180,7 @@ impl BlockCx<'_> {
                 }
                 // Placed last among the block's hosts for now; ordered below.
                 None => self.runtime.mount_row(
-                    self.ui,
+                    self.windows,
                     parent.clone(),
                     item,
                     parts.clone(),
@@ -191,10 +191,10 @@ impl BlockCx<'_> {
             keys.push(k);
         }
         for row in old.into_values() {
-            self.runtime.unmount(self.ui, row);
+            self.runtime.unmount(self.windows, row);
         }
         self.runtime
-            .order_rows(self.ui, self.owner, self.node, &rows);
+            .order_rows(self.windows, self.owner, self.node, &rows);
         state.rows = rows;
         state.keys = Some(Box::new(keys));
         state.parts = Some(parts);

@@ -7,6 +7,7 @@ use crate::ui_runtime::UiRuntime;
 use crate::widgets::WidgetType;
 use crate::widgets::container::{column, container, row};
 use crate::widgets::text::text;
+use crate::windows::Windows;
 
 /// The hosts under `id`, as markup: `<text>` with its content, anything
 /// else by its widget type.
@@ -67,18 +68,18 @@ fn mounts_into_the_host_tree_and_updates_what_changed() {
             ("text 2.content", Lane::Render, vec!["doubled"]),
         ]
     );
-    let mut ui = UiRuntime::new();
+    let mut windows = Windows::new();
     let mut runtime = Runtime::new();
-    let root = ui.root();
-    let id = runtime.mount::<Counter>(&mut ui, root, CounterProps { step: 2 });
+    let root = windows.main().ui.root();
+    let id = runtime.mount::<Counter>(&mut windows, root, CounterProps { step: 2 });
     assert_eq!(
-        shown(&ui, &runtime, id),
+        shown(&windows.main().ui, &runtime, id),
         "<container><text>count 0</text><text>doubled 0</text><text>static</text></container>"
     );
 
     let count = runtime.instance::<Counter>(id).unwrap().count.clone();
     let step = runtime.instance::<Counter>(id).unwrap().step;
-    let report = runtime.batch(&mut ui, |cx| count.update(cx, |c| *c += step));
+    let report = runtime.batch(&mut windows, |cx| count.update(cx, |c| *c += step));
     assert_eq!(
         report,
         FlushReport {
@@ -88,13 +89,17 @@ fn mounts_into_the_host_tree_and_updates_what_changed() {
         }
     );
     assert_eq!(
-        shown(&ui, &runtime, id),
+        shown(&windows.main().ui, &runtime, id),
         "<container><text>count 2</text><text>doubled 4</text><text>static</text></container>"
     );
 
-    runtime.unmount(&mut ui, id);
+    runtime.unmount(&mut windows, id);
     assert!(runtime.hosts(id).is_empty());
-    assert_eq!(ui.children(root).count(), 1, "only the overlayer is left");
+    assert_eq!(
+        windows.main().ui.children(root).count(),
+        1,
+        "only the overlayer is left"
+    );
     assert!(runtime.graph().is_empty());
 }
 
@@ -119,12 +124,12 @@ fn toggle(#[source] on: &bool, #[source] items: &Vec<u32>) {
 
 #[test]
 fn blocks_place_their_rows_between_their_siblings() {
-    let mut ui = UiRuntime::new();
+    let mut windows = Windows::new();
     let mut runtime = Runtime::new();
     let (on, items) = (runtime.signal(false), runtime.signal(vec![1, 2]));
-    let root = ui.root();
+    let root = windows.main().ui.root();
     let id = runtime.mount::<Toggle>(
-        &mut ui,
+        &mut windows,
         root,
         ToggleProps {
             on: on.read_only(),
@@ -134,33 +139,33 @@ fn blocks_place_their_rows_between_their_siblings() {
     let row =
         |inner: &str| format!("<container><text>first</text>{inner}<text>last</text></container>");
     assert_eq!(
-        shown(&ui, &runtime, id),
+        shown(&windows.main().ui, &runtime, id),
         row("<text>off</text><text>item 1</text><text>item 2</text>")
     );
 
-    runtime.batch(&mut ui, |cx| on.set(cx, true));
+    runtime.batch(&mut windows, |cx| on.set(cx, true));
     assert_eq!(
-        shown(&ui, &runtime, id),
+        shown(&windows.main().ui, &runtime, id),
         row("<text>on</text><text>and more</text><text>item 1</text><text>item 2</text>")
     );
 
     // Reordered, inserted and removed rows land between the `if` and `last`.
-    runtime.batch(&mut ui, |cx| items.set(cx, vec![3, 2]));
+    runtime.batch(&mut windows, |cx| items.set(cx, vec![3, 2]));
     assert_eq!(
-        shown(&ui, &runtime, id),
+        shown(&windows.main().ui, &runtime, id),
         row("<text>on</text><text>and more</text><text>item 3</text><text>item 2</text>")
     );
-    runtime.batch(&mut ui, |cx| items.set(cx, vec![2, 3, 1]));
+    runtime.batch(&mut windows, |cx| items.set(cx, vec![2, 3, 1]));
     assert_eq!(
-        shown(&ui, &runtime, id),
+        shown(&windows.main().ui, &runtime, id),
         row(
             "<text>on</text><text>and more</text><text>item 2</text><text>item 3</text><text>item 1</text>"
         )
     );
 
-    runtime.batch(&mut ui, |cx| on.set(cx, false));
+    runtime.batch(&mut windows, |cx| on.set(cx, false));
     assert_eq!(
-        shown(&ui, &runtime, id),
+        shown(&windows.main().ui, &runtime, id),
         row("<text>off</text><text>item 2</text><text>item 3</text><text>item 1</text>")
     );
 }
@@ -168,12 +173,12 @@ fn blocks_place_their_rows_between_their_siblings() {
 #[test]
 fn rows_already_in_order_are_not_moved() {
     use crate::ui_runtime::state::HostWorkFlags;
-    let mut ui = UiRuntime::new();
+    let mut windows = Windows::new();
     let mut runtime = Runtime::new();
     let (on, items) = (runtime.signal(false), runtime.signal(vec![1, 2, 3]));
-    let root = ui.root();
+    let root = windows.main().ui.root();
     let id = runtime.mount::<Toggle>(
-        &mut ui,
+        &mut windows,
         root,
         ToggleProps {
             on: on.read_only(),
@@ -181,19 +186,25 @@ fn rows_already_in_order_are_not_moved() {
         },
     );
     let container = runtime.hosts(id)[0];
-    ui.take_work(container);
+    windows.main_mut().ui.take_work(container);
 
     // The block reruns and keeps every row where it stands.
-    let report = runtime.batch(&mut ui, |cx| items.set(cx, vec![1, 2, 3]));
+    let report = runtime.batch(&mut windows, |cx| items.set(cx, vec![1, 2, 3]));
     assert_eq!(report.blocks, 1);
     assert!(
-        !ui.take_work(container)
+        !windows
+            .main_mut()
+            .ui
+            .take_work(container)
             .intersects(HostWorkFlags::CHILDREN_CHANGED)
     );
 
-    runtime.batch(&mut ui, |cx| items.set(cx, vec![3, 1, 2]));
+    runtime.batch(&mut windows, |cx| items.set(cx, vec![3, 1, 2]));
     assert!(
-        ui.take_work(container)
+        windows
+            .main_mut()
+            .ui
+            .take_work(container)
             .intersects(HostWorkFlags::CHILDREN_CHANGED)
     );
 }
@@ -223,12 +234,12 @@ fn a_child_component_places_its_hosts_where_it_stands() {
             }
         }
     }
-    let mut ui = UiRuntime::new();
+    let mut windows = Windows::new();
     let mut runtime = Runtime::new();
-    let root = ui.root();
-    let id = runtime.mount::<Outer>(&mut ui, root, OuterProps {});
+    let root = windows.main().ui.root();
+    let id = runtime.mount::<Outer>(&mut windows, root, OuterProps {});
     assert_eq!(
-        shown(&ui, &runtime, id),
+        shown(&windows.main().ui, &runtime, id),
         "<container><text>before</text><container><container><text>+</text></container>\
          <text>clicks 0</text></container><text>after</text></container>"
     );
@@ -250,27 +261,30 @@ fn a_handler_writes_and_the_flush_shows_it() {
     use crate::core::Size;
     use crate::text::{TextHost, testing::ZeroTextBackend};
 
-    let mut ui = UiRuntime::new();
+    let mut windows = Windows::new();
     let mut runtime = Runtime::new();
-    let root = ui.root();
-    let id = runtime.mount::<Clicker>(&mut ui, root, ClickerProps {});
+    let root = windows.main().ui.root();
+    let id = runtime.mount::<Clicker>(&mut windows, root, ClickerProps {});
     let mut measurer = TextHost::new(ZeroTextBackend);
-    ui.update_tree(Size::new(200.0, 200.0), &mut measurer);
+    windows
+        .main_mut()
+        .ui
+        .update_tree(Size::new(200.0, 200.0), &mut measurer);
 
     let column = runtime.hosts(id)[0];
-    let button = ui.children(column).next().unwrap();
-    crate::ui_runtime::tests::click(&mut ui, &measurer, button);
+    let button = windows.main().ui.children(column).next().unwrap();
+    crate::ui_runtime::tests::click(&mut windows.main_mut().ui, &measurer, button);
     // The handler only recorded the write.
     assert!(runtime.is_dirty());
     assert_eq!(
-        runtime.flush(&mut ui),
+        runtime.flush(&mut windows),
         FlushReport {
             renders: 1,
             ..Default::default()
         }
     );
     assert_eq!(
-        shown(&ui, &runtime, id),
+        shown(&windows.main().ui, &runtime, id),
         "<container><container></container><text>clicks 1</text></container>"
     );
 }
@@ -340,13 +354,13 @@ fn dashboard() {
 
 #[test]
 fn props_are_delivered_as_the_child_declares() {
-    let mut ui = UiRuntime::new();
+    let mut windows = Windows::new();
     let mut runtime = Runtime::new();
-    let root = ui.root();
-    let id = runtime.mount::<Dashboard>(&mut ui, root, DashboardProps {});
+    let root = windows.main().ui.root();
+    let id = runtime.mount::<Dashboard>(&mut windows, root, DashboardProps {});
     let column = |inner: &str| format!("<container>{inner}<container></container></container>");
     assert_eq!(
-        shown(&ui, &runtime, id),
+        shown(&windows.main().ui, &runtime, id),
         column("<text>n at 1 10</text><text>p fixed 1</text>")
     );
     // `count` itself and the one source derived for `count * 10`; passed by
@@ -354,7 +368,7 @@ fn props_are_delivered_as_the_child_declares() {
     assert_eq!(runtime.graph().len(), 2);
 
     let count = runtime.instance::<Dashboard>(id).unwrap().count.clone();
-    let report = runtime.batch(&mut ui, |cx| count.set(cx, 2));
+    let report = runtime.batch(&mut windows, |cx| count.set(cx, 2));
     // The derived source, then both badges' texts. `label` was a snapshot.
     assert_eq!(
         report,
@@ -365,11 +379,11 @@ fn props_are_delivered_as_the_child_declares() {
         }
     );
     assert_eq!(
-        shown(&ui, &runtime, id),
+        shown(&windows.main().ui, &runtime, id),
         column("<text>n at 1 20</text><text>p fixed 2</text>")
     );
 
-    runtime.unmount(&mut ui, id);
+    runtime.unmount(&mut windows, id);
     assert!(runtime.graph().is_empty());
 }
 
@@ -378,18 +392,21 @@ fn a_state_prop_writes_the_parents_signal() {
     use crate::core::Size;
     use crate::text::{TextHost, testing::ZeroTextBackend};
 
-    let mut ui = UiRuntime::new();
+    let mut windows = Windows::new();
     let mut runtime = Runtime::new();
-    let root = ui.root();
-    let id = runtime.mount::<Dashboard>(&mut ui, root, DashboardProps {});
+    let root = windows.main().ui.root();
+    let id = runtime.mount::<Dashboard>(&mut windows, root, DashboardProps {});
     let mut measurer = TextHost::new(ZeroTextBackend);
-    ui.update_tree(Size::new(200.0, 200.0), &mut measurer);
+    windows
+        .main_mut()
+        .ui
+        .update_tree(Size::new(200.0, 200.0), &mut measurer);
     let column = runtime.hosts(id)[0];
-    let button = ui.children(column).nth(2).unwrap();
-    crate::ui_runtime::tests::click(&mut ui, &measurer, button);
-    runtime.flush(&mut ui);
+    let button = windows.main().ui.children(column).nth(2).unwrap();
+    crate::ui_runtime::tests::click(&mut windows.main_mut().ui, &measurer, button);
+    runtime.flush(&mut windows);
     assert_eq!(runtime.instance::<Dashboard>(id).unwrap().count.get(), 2);
-    assert!(shown(&ui, &runtime, id).contains("<text>p fixed 2</text>"));
+    assert!(shown(&windows.main().ui, &runtime, id).contains("<text>p fixed 2</text>"));
 }
 
 #[component]
@@ -435,35 +452,38 @@ fn callbacks_and_children_run_in_the_parents_scope() {
     use crate::core::Size;
     use crate::text::{TextHost, testing::ZeroTextBackend};
 
-    let mut ui = UiRuntime::new();
+    let mut windows = Windows::new();
     let mut runtime = Runtime::new();
-    let root = ui.root();
-    let id = runtime.mount::<Page>(&mut ui, root, PageProps {});
+    let root = windows.main().ui.root();
+    let id = runtime.mount::<Page>(&mut windows, root, PageProps {});
     let page = |picked: i32| {
         format!(
             "<container><container></container><container><text>Card</text>\
              <text>picked {picked}</text><text>second</text><text>end</text></container></container>"
         )
     };
-    assert_eq!(shown(&ui, &runtime, id), page(0));
+    assert_eq!(shown(&windows.main().ui, &runtime, id), page(0));
 
     let mut measurer = TextHost::new(ZeroTextBackend);
-    ui.update_tree(Size::new(200.0, 200.0), &mut measurer);
+    windows
+        .main_mut()
+        .ui
+        .update_tree(Size::new(200.0, 200.0), &mut measurer);
     let column = runtime.hosts(id)[0];
-    let button = ui.children(column).next().unwrap();
-    crate::ui_runtime::tests::click(&mut ui, &measurer, button);
+    let button = windows.main().ui.children(column).next().unwrap();
+    crate::ui_runtime::tests::click(&mut windows.main_mut().ui, &measurer, button);
     // The callback wrote `picked`; the slot's text, a binding of the page,
     // reruns, and nothing of the card does.
     assert_eq!(
-        runtime.flush(&mut ui),
+        runtime.flush(&mut windows),
         FlushReport {
             renders: 1,
             ..Default::default()
         }
     );
-    assert_eq!(shown(&ui, &runtime, id), page(1));
+    assert_eq!(shown(&windows.main().ui, &runtime, id), page(1));
 
-    runtime.unmount(&mut ui, id);
+    runtime.unmount(&mut windows, id);
     assert!(runtime.graph().is_empty());
 }
 
@@ -491,35 +511,42 @@ fn popup() {
 
 #[test]
 fn a_portal_mounts_its_content_under_the_overlayer() {
-    let mut ui = UiRuntime::new();
+    let mut windows = Windows::new();
     let mut runtime = Runtime::new();
-    let root = ui.root();
-    let overlayer = ui.root_overlayer();
-    let id = runtime.mount::<Popup>(&mut ui, root, PopupProps {});
-    assert_eq!(ui.children(overlayer).count(), 0);
+    let root = windows.main().ui.root();
+    let overlayer = windows.main().ui.root_overlayer();
+    let id = runtime.mount::<Popup>(&mut windows, root, PopupProps {});
+    assert_eq!(windows.main().ui.children(overlayer).count(), 0);
 
     let open = runtime.instance::<Popup>(id).unwrap().open.clone();
-    runtime.batch(&mut ui, |cx| open.set(cx, true));
+    runtime.batch(&mut windows, |cx| open.set(cx, true));
     // In the overlayer, not between the button and `below`.
     assert_eq!(
-        shown(&ui, &runtime, id),
+        shown(&windows.main().ui, &runtime, id),
         "<container><container></container><text>below</text></container>"
     );
-    let layer: Vec<_> = ui.children(overlayer).collect();
+    let layer: Vec<_> = windows.main().ui.children(overlayer).collect();
     assert_eq!(layer.len(), 1);
     assert_eq!(
-        markup(&ui, layer[0]),
+        markup(&windows.main().ui, layer[0]),
         "<container><text>dismissed 0</text></container>"
     );
 
-    runtime.batch(&mut ui, |cx| open.set(cx, false));
-    assert_eq!(ui.children(overlayer).count(), 0);
-    assert!(!ui.contains(layer[0]), "the content went with the portal");
+    runtime.batch(&mut windows, |cx| open.set(cx, false));
+    assert_eq!(windows.main().ui.children(overlayer).count(), 0);
+    assert!(
+        !windows.main().ui.contains(layer[0]),
+        "the content went with the portal"
+    );
 
-    runtime.batch(&mut ui, |cx| open.set(cx, true));
-    runtime.unmount(&mut ui, id);
-    assert_eq!(ui.children(overlayer).count(), 0);
-    assert_eq!(ui.children(root).count(), 1, "only the overlayer is left");
+    runtime.batch(&mut windows, |cx| open.set(cx, true));
+    runtime.unmount(&mut windows, id);
+    assert_eq!(windows.main().ui.children(overlayer).count(), 0);
+    assert_eq!(
+        windows.main().ui.children(root).count(),
+        1,
+        "only the overlayer is left"
+    );
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -549,29 +576,32 @@ fn provider() {
 
 #[test]
 fn context_comes_from_the_nearest_provider_or_the_app() {
-    let mut ui = UiRuntime::new();
+    let mut windows = Windows::new();
     let mut runtime = Runtime::new();
     runtime.provide_context(Density("app"));
     runtime.provide_context(Accent("blue"));
-    let root = ui.root();
-    let id = runtime.mount::<Provider>(&mut ui, root, ProviderProps {});
+    let root = windows.main().ui.root();
+    let id = runtime.mount::<Provider>(&mut windows, root, ProviderProps {});
     assert_eq!(
-        shown(&ui, &runtime, id),
+        shown(&windows.main().ui, &runtime, id),
         "<container><text>compact blue</text><container></container></container>"
     );
 
     let density = runtime.instance::<Provider>(id).unwrap().density.clone();
-    runtime.batch(&mut ui, |cx| density.set(cx, Density("cozy")));
+    runtime.batch(&mut windows, |cx| density.set(cx, Density("cozy")));
     runtime.provide_context(Accent("red"));
-    runtime.flush(&mut ui);
+    runtime.flush(&mut windows);
     assert_eq!(
-        shown(&ui, &runtime, id),
+        shown(&windows.main().ui, &runtime, id),
         "<container><text>cozy red</text><container></container></container>"
     );
 
     // Without a provider in between, the app's.
-    let alone = runtime.mount::<Themed>(&mut ui, root, ThemedProps {});
-    assert_eq!(shown(&ui, &runtime, alone), "<text>app red</text>");
+    let alone = runtime.mount::<Themed>(&mut windows, root, ThemedProps {});
+    assert_eq!(
+        shown(&windows.main().ui, &runtime, alone),
+        "<text>app red</text>"
+    );
 }
 
 #[component]
@@ -592,21 +622,21 @@ fn a_context_key_subscribes_to_its_field_alone() {
     use crate::core::Size;
     use crate::system::{viewport::LogicalSize, window::Maximized};
 
-    let mut ui = UiRuntime::new();
+    let mut windows = Windows::new();
     let mut runtime = Runtime::new();
     runtime.provide_keyed::<Maximized>(false);
     runtime.provide_keyed::<LogicalSize>(Size::new(600.0, 400.0));
-    let root = ui.root();
-    let id = runtime.mount::<TitleBar>(&mut ui, root, TitleBarProps {});
+    let root = windows.main().ui.root();
+    let id = runtime.mount::<TitleBar>(&mut windows, root, TitleBarProps {});
     assert_eq!(
-        shown(&ui, &runtime, id),
+        shown(&windows.main().ui, &runtime, id),
         "<container><text>normal</text><text>narrow</text></container>"
     );
 
     // A resize reruns the breakpoint and nothing else; staying narrow, no text.
     runtime.provide_keyed::<LogicalSize>(Size::new(700.0, 400.0));
     assert_eq!(
-        runtime.flush(&mut ui),
+        runtime.flush(&mut windows),
         FlushReport {
             memos: 1,
             ..Default::default()
@@ -616,7 +646,7 @@ fn a_context_key_subscribes_to_its_field_alone() {
     // Crossing it updates the one text that reads it.
     runtime.provide_keyed::<LogicalSize>(Size::new(900.0, 400.0));
     assert_eq!(
-        runtime.flush(&mut ui),
+        runtime.flush(&mut windows),
         FlushReport {
             memos: 1,
             renders: 1,
@@ -627,20 +657,20 @@ fn a_context_key_subscribes_to_its_field_alone() {
     // Maximizing touches neither the memo nor the breakpoint's text.
     runtime.provide_keyed::<Maximized>(true);
     assert_eq!(
-        runtime.flush(&mut ui),
+        runtime.flush(&mut windows),
         FlushReport {
             renders: 1,
             ..Default::default()
         }
     );
     assert_eq!(
-        shown(&ui, &runtime, id),
+        shown(&windows.main().ui, &runtime, id),
         "<container><text>max</text><text>wide</text></container>"
     );
 
     // Providing what is already there notifies nobody.
     runtime.provide_keyed::<Maximized>(true);
-    assert_eq!(runtime.flush(&mut ui), FlushReport::default());
+    assert_eq!(runtime.flush(&mut windows), FlushReport::default());
 }
 
 #[component]
@@ -655,25 +685,31 @@ fn fields_changed_together_are_read_together() {
     use crate::core::Size;
     use crate::system::{viewport::LogicalSize, window::Maximized};
 
-    let mut ui = UiRuntime::new();
+    let mut windows = Windows::new();
     let mut runtime = Runtime::new();
     runtime.provide_keyed::<Maximized>(false);
     runtime.provide_keyed::<LogicalSize>(Size::new(600.0, 400.0));
-    let root = ui.root();
-    let id = runtime.mount::<WindowSummary>(&mut ui, root, WindowSummaryProps {});
-    assert_eq!(shown(&ui, &runtime, id), "<text>false 600</text>");
+    let root = windows.main().ui.root();
+    let id = runtime.mount::<WindowSummary>(&mut windows, root, WindowSummaryProps {});
+    assert_eq!(
+        shown(&windows.main().ui, &runtime, id),
+        "<text>false 600</text>"
+    );
 
     // One host event, two fields: the binding reading both runs once, after both.
     runtime.provide_keyed::<Maximized>(true);
     runtime.provide_keyed::<LogicalSize>(Size::new(1440.0, 900.0));
     assert_eq!(
-        runtime.flush(&mut ui),
+        runtime.flush(&mut windows),
         FlushReport {
             renders: 1,
             ..Default::default()
         }
     );
-    assert_eq!(shown(&ui, &runtime, id), "<text>true 1440</text>");
+    assert_eq!(
+        shown(&windows.main().ui, &runtime, id),
+        "<text>true 1440</text>"
+    );
 }
 
 #[component]
@@ -702,36 +738,48 @@ fn layout_writes_size_and_tickers_run_per_frame() {
     use crate::core::Size;
     use crate::text::{TextHost, testing::ZeroTextBackend};
 
-    let mut ui = UiRuntime::new();
+    let mut windows = Windows::new();
     let mut runtime = Runtime::new();
-    let root = ui.root();
-    let id = runtime.mount::<Measured>(&mut ui, root, MeasuredProps {});
+    let root = windows.main().ui.root();
+    let id = runtime.mount::<Measured>(&mut windows, root, MeasuredProps {});
     let text = |ui: &UiRuntime, runtime: &Runtime| {
         let column = runtime.hosts(id)[0];
         markup(ui, ui.children(column).nth(1).unwrap())
     };
-    assert_eq!(text(&ui, &runtime), "<text>None 0</text>");
+    assert_eq!(text(&windows.main().ui, &runtime), "<text>None 0</text>");
 
     let mut measurer = TextHost::new(ZeroTextBackend);
-    ui.update_tree(Size::new(200.0, 200.0), &mut measurer);
+    windows
+        .main_mut()
+        .ui
+        .update_tree(Size::new(200.0, 200.0), &mut measurer);
     assert!(runtime.is_dirty(), "layout wrote the size");
-    runtime.flush(&mut ui);
-    assert_eq!(text(&ui, &runtime), "<text>Some(30.0) 0</text>");
+    runtime.flush(&mut windows);
+    assert_eq!(
+        text(&windows.main().ui, &runtime),
+        "<text>Some(30.0) 0</text>"
+    );
 
-    let tickers = ui.tickers();
+    let tickers = windows.main().ui.tickers();
     for _ in 0..5 {
         tickers.tick(FrameTime::ZERO);
-        runtime.flush(&mut ui);
+        runtime.flush(&mut windows);
     }
     // It stopped itself after three frames.
-    assert_eq!(text(&ui, &runtime), "<text>Some(30.0) 3</text>");
+    assert_eq!(
+        text(&windows.main().ui, &runtime),
+        "<text>Some(30.0) 3</text>"
+    );
     assert!(!runtime.instance::<Measured>(id).unwrap().spin.is_running());
     runtime.instance::<Measured>(id).unwrap().spin.start();
     tickers.tick(FrameTime::ZERO);
-    runtime.flush(&mut ui);
-    assert_eq!(text(&ui, &runtime), "<text>Some(30.0) 4</text>");
+    runtime.flush(&mut windows);
+    assert_eq!(
+        text(&windows.main().ui, &runtime),
+        "<text>Some(30.0) 4</text>"
+    );
 
-    runtime.unmount(&mut ui, id);
+    runtime.unmount(&mut windows, id);
     assert!(!tickers.is_running(), "unmounting unregisters it");
 }
 
@@ -791,7 +839,7 @@ fn a_resource_keeps_only_its_latest_result() {
     use std::rc::Rc;
     use std::task::{Context, Poll, Waker};
 
-    let mut ui = UiRuntime::new();
+    let mut windows = Windows::new();
     let mut runtime = Runtime::new();
     let started: Rc<RefCell<Vec<super::tasks::BoxFuture>>> = Rc::default();
     let (sender, finished) = std::sync::mpsc::channel();
@@ -800,10 +848,10 @@ fn a_resource_keeps_only_its_latest_result() {
         Box::new(move |future| queue.borrow_mut().push(future)),
         sender,
     );
-    let root = ui.root();
-    let id = runtime.mount::<Fetched>(&mut ui, root, FetchedProps {});
+    let root = windows.main().ui.root();
+    let id = runtime.mount::<Fetched>(&mut windows, root, FetchedProps {});
     let n = runtime.instance::<Fetched>(id).unwrap().n.clone();
-    runtime.batch(&mut ui, |cx| n.set(cx, 5));
+    runtime.batch(&mut windows, |cx| n.set(cx, 5));
 
     // The newer future finishes first; the older one's result comes last
     // and must not overwrite it.
@@ -820,8 +868,11 @@ fn a_resource_keeps_only_its_latest_result() {
     while let Ok(result) = finished.try_recv() {
         runtime.finish_task(result);
     }
-    runtime.flush(&mut ui);
-    assert_eq!(shown(&ui, &runtime, id), "<text>ready 10</text>");
+    runtime.flush(&mut windows);
+    assert_eq!(
+        shown(&windows.main().ui, &runtime, id),
+        "<text>ready 10</text>"
+    );
 }
 
 #[component]
@@ -848,23 +899,26 @@ fn a_children_prop_takes_elements_and_a_handler_its_event_context() {
     use crate::core::Size;
     use crate::text::{TextHost, testing::ZeroTextBackend};
 
-    let mut ui = UiRuntime::new();
+    let mut windows = Windows::new();
     let mut runtime = Runtime::new();
-    let root = ui.root();
-    let id = runtime.mount::<UsesLabelled>(&mut ui, root, UsesLabelledProps {});
+    let root = windows.main().ui.root();
+    let id = runtime.mount::<UsesLabelled>(&mut windows, root, UsesLabelledProps {});
     let row = "<container><text>3</text><text>·</text><text>items</text></container>";
     assert_eq!(
-        shown(&ui, &runtime, id),
+        shown(&windows.main().ui, &runtime, id),
         format!("<container>{row}<container></container></container>")
     );
 
     let mut measurer = TextHost::new(ZeroTextBackend);
-    ui.update_tree(Size::new(200.0, 200.0), &mut measurer);
+    windows
+        .main_mut()
+        .ui
+        .update_tree(Size::new(200.0, 200.0), &mut measurer);
     let column = runtime.hosts(id)[0];
-    let button = ui.children(column).nth(1).unwrap();
-    crate::ui_runtime::tests::click(&mut ui, &measurer, button);
-    runtime.flush(&mut ui);
-    assert!(shown(&ui, &runtime, id).contains("<text>4</text>"));
+    let button = windows.main().ui.children(column).nth(1).unwrap();
+    crate::ui_runtime::tests::click(&mut windows.main_mut().ui, &measurer, button);
+    runtime.flush(&mut windows);
+    assert!(shown(&windows.main().ui, &runtime, id).contains("<text>4</text>"));
 }
 
 // ---- generic components ----------------------------------------------------
@@ -961,10 +1015,10 @@ fn a_generic_component_infers_its_parameters_from_its_props() {
     use crate::core::Size;
     use crate::text::{TextHost, testing::ZeroTextBackend};
 
-    let mut ui = UiRuntime::new();
+    let mut windows = Windows::new();
     let mut runtime = Runtime::new();
-    let root = ui.root();
-    let id = runtime.mount::<GenericUses>(&mut ui, root, GenericUsesProps {});
+    let root = windows.main().ui.root();
+    let id = runtime.mount::<GenericUses>(&mut windows, root, GenericUsesProps {});
     // `labeled` and `rendered` take snapshots, made at mount; `echo` reads
     // its prop as a source.
     let expected = |count: i32, picked: &str| {
@@ -976,41 +1030,44 @@ fn a_generic_component_infers_its_parameters_from_its_props() {
              <text>{count} from 1</text><container></container><text>picked {picked}</text></container>"
         )
     };
-    assert_eq!(shown(&ui, &runtime, id), expected(1, ""));
+    assert_eq!(shown(&windows.main().ui, &runtime, id), expected(1, ""));
 
     let count = runtime.instance::<GenericUses>(id).unwrap().count.clone();
-    runtime.batch(&mut ui, |cx| count.set(cx, 5));
-    assert_eq!(shown(&ui, &runtime, id), expected(5, ""));
+    runtime.batch(&mut windows, |cx| count.set(cx, 5));
+    assert_eq!(shown(&windows.main().ui, &runtime, id), expected(5, ""));
 
     let mut measurer = TextHost::new(ZeroTextBackend);
-    ui.update_tree(Size::new(200.0, 400.0), &mut measurer);
+    windows
+        .main_mut()
+        .ui
+        .update_tree(Size::new(200.0, 400.0), &mut measurer);
     let column = runtime.hosts(id)[0];
-    let picker = ui.children(column).nth(10).unwrap();
-    crate::ui_runtime::tests::click(&mut ui, &measurer, picker);
-    runtime.flush(&mut ui);
-    assert_eq!(shown(&ui, &runtime, id), expected(5, "a"));
+    let picker = windows.main().ui.children(column).nth(10).unwrap();
+    crate::ui_runtime::tests::click(&mut windows.main_mut().ui, &measurer, picker);
+    runtime.flush(&mut windows);
+    assert_eq!(shown(&windows.main().ui, &runtime, id), expected(5, "a"));
 }
 
 #[test]
 fn a_generic_component_mounts_at_the_root_and_as_children() {
-    let mut ui = UiRuntime::new();
+    let mut windows = Windows::new();
     let mut runtime = Runtime::new();
-    let root = ui.root();
-    let id = runtime.mount::<Labeled<f32>>(&mut ui, root, LabeledProps { value: 1.5 });
-    assert_eq!(shown(&ui, &runtime, id), "<text>1.5</text>");
+    let root = windows.main().ui.root();
+    let id = runtime.mount::<Labeled<f32>>(&mut windows, root, LabeledProps { value: 1.5 });
+    assert_eq!(shown(&windows.main().ui, &runtime, id), "<text>1.5</text>");
     // A parameter no prop names is carried by the props as phantom data.
     let id = runtime.mount::<Typed<i64>>(
-        &mut ui,
+        &mut windows,
         root,
         TypedProps {
             label: "k".into(),
             __phantom: Default::default(),
         },
     );
-    assert_eq!(shown(&ui, &runtime, id), "<text>k=0</text>");
+    assert_eq!(shown(&windows.main().ui, &runtime, id), "<text>k=0</text>");
     let children = Children::component::<Labeled<char>>(LabeledProps { value: 'x' });
     let id = runtime.mount::<Listing<u8>>(
-        &mut ui,
+        &mut windows,
         root,
         ListingProps {
             items: vec![7],
@@ -1018,7 +1075,7 @@ fn a_generic_component_mounts_at_the_root_and_as_children() {
         },
     );
     assert_eq!(
-        shown(&ui, &runtime, id),
+        shown(&windows.main().ui, &runtime, id),
         "<container><text>7</text><text>x</text></container>"
     );
 }

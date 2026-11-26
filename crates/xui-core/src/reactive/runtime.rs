@@ -11,7 +11,7 @@ use std::collections::{BinaryHeap, VecDeque};
 use std::rc::Rc;
 
 use slotmap::SlotMap;
-use xui_interface::{NodeId, WidgetUpdateFlags};
+use xui_interface::{NodeId, WidgetUpdateFlags, WindowId};
 
 use super::block::{BlockCx, BlockState, Row, RowParts};
 use super::graph::{EffectId, Graph, InstanceId, Notifier, SourceId};
@@ -26,6 +26,7 @@ use crate::node::Draft;
 use crate::property::{IntoProp, Property, PropertyMarker};
 use crate::ui_runtime::UiRuntime;
 use crate::widgets::WidgetVariant;
+use crate::windows::Windows;
 
 /// What a running effect or handler gets. Writes go through it: only code
 /// given a `Cx` can set a signal.
@@ -419,6 +420,8 @@ struct MountedPortal {
 struct Mounted {
     instance: Rc<dyn AnyInstance>,
     owner: Owner,
+    /// The window whose tree its hosts are in.
+    window: WindowId,
     /// The host each template node is; `None` for components and blocks.
     hosts: Vec<Option<NodeId>>,
     /// The child component each template node is.
@@ -496,9 +499,9 @@ impl Runtime {
     }
 
     /// Runs `f`, which may write signals, as a handler would, and flushes.
-    pub fn batch(&mut self, ui: &mut UiRuntime, f: impl FnOnce(&mut Cx<'_>)) -> FlushReport {
+    pub fn batch(&mut self, windows: &mut Windows, f: impl FnOnce(&mut Cx<'_>)) -> FlushReport {
         f(&mut Cx::handler(&self.notifier));
-        self.flush(ui)
+        self.flush(windows)
     }
 
     /// What every handler writes through.
@@ -531,30 +534,30 @@ impl Runtime {
     /// Mounts component `C` under `parent` and runs its first effects.
     pub fn mount<C: Component>(
         &mut self,
-        ui: &mut UiRuntime,
+        windows: &mut Windows,
         parent: NodeId,
         props: <C::Instance as ComponentDef>::Props,
     ) -> InstanceId {
-        let id = self.mount_into::<C::Instance>(ui, props, Place(Owner::Root(parent)));
-        self.flush(ui);
+        let id = self.mount_into::<C::Instance>(windows, props, Place(Owner::Root(parent)));
+        self.flush(windows);
         id
     }
 
     #[doc(hidden)]
     pub fn mount_into<C: ComponentDef>(
         &mut self,
-        ui: &mut UiRuntime,
+        windows: &mut Windows,
         props: C::Props,
         place: Place,
     ) -> InstanceId {
-        self.mount_with::<C>(ui, |_| props, place)
+        self.mount_with::<C>(windows, |_| props, place)
     }
 
     /// Mounts `C` with the props `props` resolves, which may derive sources
     /// of its own from its parent's.
     pub(crate) fn mount_with<C: ComponentDef>(
         &mut self,
-        ui: &mut UiRuntime,
+        windows: &mut Windows,
         props: impl FnOnce(&mut PropCx<'_>) -> C::Props,
         place: Place,
     ) -> InstanceId {
@@ -565,6 +568,7 @@ impl Runtime {
         };
         let props = props(&mut prop_cx);
         let (mut owned, derived) = (prop_cx.owned, prop_cx.derived);
+        let window = self.window_at(windows, place.0);
         let mut mount_cx = MountCx {
             graph: &mut self.graph,
             owned: Vec::new(),
@@ -574,7 +578,7 @@ impl Runtime {
                 owner: place.0,
             },
             provided: Vec::new(),
-            tickers: ui.tickers(),
+            tickers: windows.ui(window).tickers(),
             ticks: Vec::new(),
         };
         let instance = C::create(props, &mut mount_cx);
@@ -592,7 +596,7 @@ impl Runtime {
                     .tick(slot, &mut Cx::handler(&notifier), frame)
             }));
         }
-        let id = self.mount_instance(ui, instance, owned, derived, provided, place.0);
+        let id = self.mount_instance(windows, instance, owned, derived, provided, place.0);
         self.instances[id].ticks = ticks;
         id
     }
@@ -641,7 +645,7 @@ impl Runtime {
 
     pub(crate) fn mount_row<P: Scope, D: 'static>(
         &mut self,
-        ui: &mut UiRuntime,
+        windows: &mut Windows,
         parent: Rc<P>,
         data: D,
         template: Rc<RowParts<Row<P, D>>>,
@@ -654,7 +658,7 @@ impl Runtime {
             template,
         };
         self.mount_instance(
-            ui,
+            windows,
             Rc::new(row),
             vec![source],
             Vec::new(),
@@ -668,7 +672,7 @@ impl Runtime {
     /// blocks. Its `effect!`s wait for the next flush.
     fn mount_instance(
         &mut self,
-        ui: &mut UiRuntime,
+        windows: &mut Windows,
         instance: Rc<dyn AnyInstance>,
         owned: Vec<SourceId>,
         derived: Vec<Derived>,
@@ -678,10 +682,12 @@ impl Runtime {
         let mut pending = instance.clone().prepare_children();
         let effects = instance.effect_count();
         let count = instance.node_count();
+        let window = self.window_at(windows, owner);
         self.next_seq += 1;
         let id = self.instances.insert(Mounted {
             instance: instance.clone(),
             owner,
+            window,
             hosts: vec![None; count],
             children: vec![None; count],
             scheduled: vec![false; effects + derived.len()],
@@ -723,6 +729,7 @@ impl Runtime {
             match instance.node(index).0 {
                 NodeTag::Host => {
                     let draft = instance.clone().build_host(index, &self.notifier);
+                    let ui = windows.ui_mut(window);
                     let host = ui.create_node(draft.0);
                     let (parent, before) =
                         (self.parent_host(id, index), self.host_after(id, index));
@@ -735,7 +742,7 @@ impl Runtime {
                         .expect("child mounted twice");
                     let child = mount(
                         self,
-                        ui,
+                        windows,
                         Place(Owner::Child {
                             instance: id,
                             node: index,
@@ -748,7 +755,7 @@ impl Runtime {
                     if let Some(children) = instance.clone().slot(index) {
                         let row = children.mount(
                             self,
-                            ui,
+                            windows,
                             Owner::Row {
                                 instance: id,
                                 node: index,
@@ -759,7 +766,7 @@ impl Runtime {
                         self.put_block(id, index, state);
                     }
                 }
-                NodeTag::Portal => self.mount_portal(ui, id, index),
+                NodeTag::Portal => self.mount_portal(windows, id, index),
             }
         }
 
@@ -767,7 +774,7 @@ impl Runtime {
             let effect = EffectId { instance: id, slot };
             match instance.lane(slot) {
                 Lane::Memo => {}
-                Lane::Block | Lane::Render => self.run(ui, effect),
+                Lane::Block | Lane::Render => self.run(windows, effect),
                 Lane::Effect => self.graph.pending.push(effect),
                 Lane::Tick => {}
             }
@@ -777,15 +784,16 @@ impl Runtime {
 
     /// Mounts portal `node`'s content under the overlayer and makes its first
     /// host an overlay entry.
-    fn mount_portal(&mut self, ui: &mut UiRuntime, id: InstanceId, node: u16) {
+    fn mount_portal(&mut self, windows: &mut Windows, id: InstanceId, node: u16) {
         let spec = self.instances[id]
             .instance
             .clone()
             .portal(node, &self.notifier);
-        let layer = ui.root_overlayer();
+        let window = self.instances[id].window;
+        let layer = windows.ui(window).root_overlayer();
         let row = spec.content.mount(
             self,
-            ui,
+            windows,
             Owner::Portal {
                 instance: id,
                 layer,
@@ -797,6 +805,7 @@ impl Runtime {
         let Some(visual_root) = row.and_then(|row| self.first_top_host(row)) else {
             return;
         };
+        let ui = windows.ui_mut(window);
         let entry = ui
             .mount_overlay_entry(visual_root, spec.scope, spec.options)
             .expect("portal entry could not be mounted");
@@ -814,6 +823,17 @@ impl Runtime {
             entry,
             visual_root,
         });
+    }
+
+    /// The window a scope mounted at `owner` is in: a root's is its host's,
+    /// anything else's the scope it is mounted in.
+    fn window_at(&self, windows: &Windows, owner: Owner) -> WindowId {
+        match owner {
+            Owner::Root(host) => windows.window_of(host),
+            Owner::Child { instance, .. }
+            | Owner::Row { instance, .. }
+            | Owner::Portal { instance, .. } => self.instances[instance].window,
+        }
     }
 
     /// The host a node's hosts go under.
@@ -921,7 +941,7 @@ impl Runtime {
 
     /// Unmounts `id` and everything mounted in it, dropping their
     /// subscriptions, sources and hosts.
-    pub fn unmount(&mut self, ui: &mut UiRuntime, id: InstanceId) {
+    pub fn unmount(&mut self, windows: &mut Windows, id: InstanceId) {
         if !self.instances.contains_key(id) {
             return;
         }
@@ -929,7 +949,9 @@ impl Runtime {
         self.top_hosts(id, &mut hosts);
         let mut portals = Vec::new();
         self.portals_within(id, &mut portals);
+        let window = self.instances[id].window;
         self.release(id);
+        let ui = windows.ui_mut(window);
         for host in hosts {
             ui.remove_subtree(host);
         }
@@ -1044,7 +1066,7 @@ impl Runtime {
     /// stays, so rows in order move nothing.
     pub(crate) fn order_rows(
         &mut self,
-        ui: &mut UiRuntime,
+        windows: &mut Windows,
         owner: InstanceId,
         node: u16,
         rows: &[InstanceId],
@@ -1054,6 +1076,7 @@ impl Runtime {
         for &row in rows {
             self.top_hosts(row, &mut hosts);
         }
+        let ui = windows.ui_mut(self.instances[owner].window);
         for host in hosts.into_iter().rev() {
             ui.place(parent, host, before);
             before = Some(host);
@@ -1063,7 +1086,7 @@ impl Runtime {
     /// Settles every pending write: memos by level, then blocks outermost
     /// first, then render bindings, then effects; an effect's writes start
     /// the next round.
-    pub fn flush(&mut self, ui: &mut UiRuntime) -> FlushReport {
+    pub fn flush(&mut self, windows: &mut Windows) -> FlushReport {
         let mut report = FlushReport::default();
         loop {
             self.schedule_pending();
@@ -1083,7 +1106,7 @@ impl Runtime {
                 report.total() < MAX_RUNS,
                 "flush did not settle after {MAX_RUNS} runs; an effect probably feeds itself"
             );
-            self.run(ui, effect);
+            self.run(windows, effect);
         }
     }
 
@@ -1126,7 +1149,7 @@ impl Runtime {
         }
     }
 
-    fn run(&mut self, ui: &mut UiRuntime, effect: EffectId) {
+    fn run(&mut self, windows: &mut Windows, effect: EffectId) {
         // A block may have unmounted this scope since it was scheduled.
         let Some(mounted) = self.instances.get_mut(effect.instance) else {
             return;
@@ -1142,7 +1165,7 @@ impl Runtime {
                 let node = instance.block_node(effect.slot);
                 let mut cx = BlockCx {
                     runtime: self,
-                    ui,
+                    windows,
                     owner: effect.instance,
                     node,
                 };
@@ -1156,12 +1179,12 @@ impl Runtime {
                     notifier,
                     ..
                 } = self;
-                let hosts = &instances[effect.instance].hosts;
+                let mounted = &instances[effect.instance];
                 let mut cx = Cx {
                     notifier,
                     host: Some(HostCx {
-                        ui,
-                        hosts,
+                        ui: windows.ui_mut(mounted.window),
+                        hosts: &mounted.hosts,
                         instance: &instance,
                     }),
                 };
@@ -1179,7 +1202,7 @@ impl Runtime {
     /// its state, then reruns every binding so the kept scopes show what the
     /// new code computes. `Err` when a root changed: the app mounts again.
     #[cfg(feature = "hotpatch")]
-    pub(crate) fn hot_reload(&mut self, ui: &mut UiRuntime) -> Result<HotReport, ()> {
+    pub(crate) fn hot_reload(&mut self, windows: &mut Windows) -> Result<HotReport, ()> {
         use rustc_hash::FxHashSet;
         let remount = crate::hot::take_remount();
         let mut stale = 0;
@@ -1254,11 +1277,11 @@ impl Runtime {
                 unreachable!("a child stands at a component node");
             };
             let mount = self.instances[parent].instance.clone().prepare_child(child);
-            self.unmount(ui, id);
+            self.unmount(windows, id);
             self.instances[parent].children[usize::from(node)] = None;
             let new = mount(
                 self,
-                ui,
+                windows,
                 Place(Owner::Child {
                     instance: parent,
                     node,
@@ -1280,7 +1303,7 @@ impl Runtime {
             }
         }
         report.kept = report.kept.min(self.instances.len());
-        self.flush(ui);
+        self.flush(windows);
         Ok(report)
     }
 

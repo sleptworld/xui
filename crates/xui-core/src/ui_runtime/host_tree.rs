@@ -90,7 +90,6 @@ impl NodeIds {
     }
 
     /// The window whose tree `id` is in; `None` once it is removed.
-    #[cfg(test)]
     pub(crate) fn window_of(&self, id: NodeId) -> Option<WindowId> {
         self.0.borrow().get(id).copied()
     }

@@ -91,7 +91,7 @@ copy!(Run, EffectSpec, ChildSpec, StaticNode, NodeKind);
 pub type PendingMount = Box<
     dyn FnOnce(
         &mut Runtime,
-        &mut crate::ui_runtime::UiRuntime,
+        &mut crate::windows::Windows,
         super::runtime::Place,
     ) -> super::graph::InstanceId,
 >;

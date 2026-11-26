@@ -11,7 +11,7 @@
 //! nothing yet opens another. See `docs/multi-window.md`.
 
 use slotmap::SlotMap;
-use xui_interface::WindowId;
+use xui_interface::{NodeId, WindowId};
 
 use crate::core::Size;
 use crate::event_system::translator::EventTranslator;
@@ -37,9 +37,7 @@ impl WindowState {
     }
 }
 
-pub(crate) struct Windows {
-    /// Read once a window other than the main one opens.
-    #[cfg_attr(not(test), allow(dead_code))]
+pub struct Windows {
     ids: NodeIds,
     map: SlotMap<WindowId, WindowState>,
     main: WindowId,
@@ -71,6 +69,25 @@ impl Windows {
     #[inline]
     pub(crate) fn main_mut(&mut self) -> &mut WindowState {
         &mut self.map[self.main]
+    }
+
+    /// Window `id`'s tree.
+    #[inline]
+    pub(crate) fn ui(&self, id: WindowId) -> &UiRuntime {
+        &self.map[id].ui
+    }
+
+    /// Window `id`'s tree, to change.
+    #[inline]
+    pub(crate) fn ui_mut(&mut self, id: WindowId) -> &mut UiRuntime {
+        &mut self.map[id].ui
+    }
+
+    /// The window whose tree `node` is in. `node` must be live.
+    pub(crate) fn window_of(&self, node: NodeId) -> WindowId {
+        self.ids
+            .window_of(node)
+            .expect("a live node is in some window's tree")
     }
 
     /// The allocator every window's tree takes its node ids from.
