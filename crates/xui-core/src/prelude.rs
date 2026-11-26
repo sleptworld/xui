@@ -28,6 +28,7 @@ pub use crate::runtime::{ControlFlow, FrameReport, GuiRuntime, QueueEventSource,
 pub use crate::scroll::{ScrollController, ScrollMetrics};
 pub use crate::shortcut::{ShortcutManager, ShortcutRegistrationId};
 pub use crate::size::SizeObserver;
+pub use crate::virtualize::{ItemSize, ScrollAlign, VirtualRange, Virtualizer, VirtualizerSignal};
 pub use crate::style::{
     AlignStyle, BackdropFilter, BackdropMask, BackdropStyle, BlendMode, ColorMatrix, ColorRef,
     ColorStyle, ColorValue, ComputedBackdropFilter, ComputedBackdropMask, ComputedBackdropStyle,

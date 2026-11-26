@@ -223,7 +223,8 @@ strokes, scrollbars. Discrete variant switches are snap-at-end.
 
 Built-in widgets built on top of `xui`: `button`, `input` (wraps
 `text_input`), `dropdown`, `tabs`, `image`, `icon` (SVG/path icons),
-`virtual_list`, and shared layout helpers (`ComponentLength`, `ComponentSizing`,
+`virtual_list` (on `xui_core::virtualize::Virtualizer`, the headless window
+logic any component can use), and shared layout helpers (`ComponentLength`, `ComponentSizing`,
 `ComponentInsets`, `ComponentColor`).
 
 ## Per-frame data flow

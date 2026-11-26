@@ -41,6 +41,7 @@ pub mod core;
 mod diagnostics;
 pub mod render;
 pub mod transition;
+pub mod virtualize;
 // pub mod event;
 pub mod event_system;
 pub mod focus;

@@ -1,14 +1,18 @@
-//! Viewport-bounded rendering for fixed-height collections.
+//! Viewport-bounded rendering for long collections.
 //!
-//! [`virtual_list`](fn@self::virtual_list) uses [`VirtualItemRenderer`] to build only a
-//! visible window plus overscan. [`VirtualRange`] describes a half-open row range. Layout
-//! size observations keep the window current after resizes.
+//! [`virtual_list`](fn@self::virtual_list) builds only the rows near the viewport,
+//! through a [`VirtualItemRenderer`]. Rows are all one [`ItemSize::Fixed`] size, or
+//! start from an [`ItemSize::Estimated`] one and are measured once laid out. The
+//! window logic is `xui_core::virtualize`'s [`Virtualizer`], so a component with
+//! its own layout can virtualize the same way, measuring its rows with
+//! [`virtual_item`](fn@self::virtual_item).
 //!
 //! # Components
 //!
 //! | Component | Purpose |
 //! | --- | --- |
-//! | [`virtual_list`](fn@self::virtual_list) | A fixed-row-height scrolling list that materializes only the visible window and overscan. |
+//! | [`virtual_list`](fn@self::virtual_list) | A scrolling list that materializes only the visible window and overscan. |
+//! | [`virtual_item`](fn@self::virtual_item) | A row that reports its laid-out size to a [`Virtualizer`]. |
 
 use std::rc::Rc;
 use xui_core::prelude::*;
@@ -37,73 +41,53 @@ impl PartialEq for VirtualItemRenderer {
     }
 }
 
-/// The half-open range of rows a `virtual_list` currently materializes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct VirtualRange {
-    pub start: usize,
-    pub end: usize,
-}
-
-impl VirtualRange {
-    pub fn len(self) -> usize {
-        self.end.saturating_sub(self.start)
-    }
-
-    pub fn is_empty(self) -> bool {
-        self.end <= self.start
-    }
-}
-
-/// Rows within `overscan` of the viewport are kept mounted so a scroll does not
-/// have to build anything before the new rows can be painted.
-fn visible_range(
-    scroll_top: f32,
-    viewport_height: f32,
-    item_height: f32,
-    item_count: usize,
-    overscan: usize,
-) -> VirtualRange {
-    if item_count == 0
-        || !item_height.is_finite()
-        || item_height <= 0.0
-        || !viewport_height.is_finite()
-        || viewport_height <= 0.0
-    {
-        return VirtualRange { start: 0, end: 0 };
-    }
-    let max_scroll =
-        (item_count as f64 * f64::from(item_height) - f64::from(viewport_height)).max(0.0);
-    let offset = f64::from(scroll_top.max(0.0)).min(max_scroll);
-    let first_visible = (offset / f64::from(item_height)).floor() as usize;
-    // `+ 1` covers the row straddling the bottom edge, and a second row is
-    // needed when the first one is only partly scrolled past the top.
-    let span = ((viewport_height / item_height).ceil() as usize).saturating_add(2);
-    let start = first_visible.saturating_sub(overscan);
-    let end = first_visible
-        .saturating_add(span)
-        .saturating_add(overscan)
-        .min(item_count);
-    VirtualRange {
-        start: start.min(end),
-        end,
-    }
-}
-
-/// A fixed-row-height scrolling list that materializes only the visible window and
-/// overscan.
+/// A row of a virtualized collection that reports its laid-out size to `list`,
+/// whose [`Virtualizer::measure`] then places the rows after it. The parent
+/// keys it by `index` and lays it out; it adds no layout of its own beyond
+/// `style`.
 ///
-/// `render_item` maps an index near the viewport to the row's content. `viewport_height` seeds layout;
-/// subsequent size observations follow resizes without requiring a wheel event. A row
-/// mounts when its index enters the window and stays mounted while it remains there.
-/// The component owns row position, width, and height; `item_style` customizes
-/// decoration. Variable row heights are not supported.
+/// # Props
+///
+/// | Prop | Type | Default |
+/// | --- | --- | --- |
+/// | `list` | `Virtualizer` (`#[state]`) | **Required** |
+/// | `index` | `usize` | **Required** |
+/// | `style` | `StyleOf<Container>` | `StyleOf::new()` |
+/// | `children` | `Children` | none |
+#[component]
+#[defaults(style = StyleOf::new())]
+pub fn virtual_item(
+    #[state] list: &Virtualizer,
+    index: &usize,
+    style: &StyleOf<Container>,
+    children: &Children,
+) {
+    let size: Option<Size<f32>> = size!();
+    effect!(|cx| untrack!(list).measure(cx, *index, size.get()));
+    view! {
+        container(style: style.clone(), size_observer: size) {
+            slot(children)
+        }
+    }
+}
+
+/// A scrolling list that materializes only the visible window and overscan.
+///
+/// `render_item` maps an index near the viewport to the row's content. With
+/// [`ItemSize::Fixed`] every row is that tall; with [`ItemSize::Estimated`] a row
+/// is as tall as its content, and rows not yet laid out count as the estimate
+/// toward the scrollbar. `viewport_height` seeds the first window; later size
+/// observations follow resizes without requiring a wheel event. A row mounts
+/// when its index enters the window and stays mounted while it remains there.
+/// The component owns row position and width (and height, when fixed);
+/// `item_style` customizes decoration.
 ///
 /// # Props
 ///
 /// | Prop | Type | Default |
 /// | --- | --- | --- |
 /// | `item_count` | `usize` | **Required** |
-/// | `item_height` | `f32` | **Required** |
+/// | `item_size` | `ItemSize` | **Required** |
 /// | `viewport_height` | `f32` | **Required** |
 /// | `render_item` | `VirtualItemRenderer` | **Required** |
 /// | `overscan` | `usize` | `3` |
@@ -121,7 +105,7 @@ fn visible_range(
 /// fn example_list() {
 ///     let render_item: VirtualItemRenderer = VirtualItemRenderer::new(|index: usize| index.to_string().into());
 ///     view! {
-///         virtual_list(item_count: 100_000, item_height: 24.0, viewport_height: 240.0, render_item: render_item.clone())
+///         virtual_list(item_count: 100_000, item_size: ItemSize::Fixed(24.0), viewport_height: 240.0, render_item: render_item.clone())
 ///     }
 /// }
 /// ```
@@ -133,33 +117,25 @@ fn visible_range(
 )]
 pub fn virtual_list(
     #[source] item_count: &usize,
-    #[source] item_height: &f32,
+    #[source] item_size: &ItemSize,
     viewport_height: &f32,
     #[source] render_item: &VirtualItemRenderer,
     #[source] overscan: &usize,
     style: &StyleOf<Container>,
     item_style: &StyleOf<Container>,
 ) {
-    let scroll_top: f32 = state!(0.0);
-    // The prop seeds layout; size observations also follow resizes without a wheel event.
-    let size: Option<Size<f32>> = size!();
-    let viewport: f32 = memo!(
-        size.map(|size| size.height)
-            .filter(|height| *height > 0.0)
-            .unwrap_or(*viewport_height)
+    let list: Virtualizer = state!(
+        Virtualizer::new(item_count.get(), item_size.get(), overscan.get())
+            .with_viewport(*viewport_height)
     );
-    let range: VirtualRange = memo!(visible_range(
-        *scroll_top,
-        *viewport,
-        *item_height,
-        *item_count,
-        *overscan
-    ));
-    let rows: Vec<usize> = memo!((range.start..range.end).collect());
-    let total_height: f32 = memo!(if item_height.is_finite() && *item_height > 0.0 {
-        (f64::from(*item_height) * *item_count as f64).min(f64::from(f32::MAX)) as f32
-    } else {
-        0.0
+    effect!(|cx| untrack!(list).sync(cx, item_count.get(), item_size.get(), overscan.get()));
+    // The prop seeds the window; size observations also follow resizes
+    // without a wheel event.
+    let size: Option<Size<f32>> = size!();
+    effect!(|cx| {
+        if let Some(size) = size.get().filter(|size| size.height > 0.0) {
+            untrack!(list).set_viewport(cx, size.height);
+        }
     });
     let mut viewport_style: StyleOf<Container> =
         StyleOf::new().with::<container::height>(if viewport_height.is_finite() {
@@ -170,50 +146,33 @@ pub fn virtual_list(
     viewport_style.merge(style);
     viewport_style =
         viewport_style.with::<container::scroll_direction>(ScrollDirectionStyle::Vertical);
+    let row_style: StyleOf<Container> = memo!({
+        let mut row_style = item_style.clone();
+        row_style = row_style.with::<container::width>(Sizing::Fill);
+        if let Some(height) = item_size.fixed() {
+            row_style = row_style.with::<container::height>(height);
+        }
+        row_style
+    });
     view! {
         container(
             style: viewport_style.clone(),
             size_observer: size,
-            on_scroll: |cx, event, event_cx| {
-                // The translator emits a `Scroll` for every node on the wheel's
-                // path, and those for the rows beneath bubble through here with
-                // no offsets. Only the one describing this container matters.
-                if event.scroll_target != event_cx.node_id() {
-                    return EventResult::Ignored;
-                }
-                let Some(offset_after) = event.offset_after else {
-                    return EventResult::Ignored;
-                };
-                let offset = offset_after.y;
-                let layout_height = event_cx.node_ref.layout.height();
-                let viewport = if layout_height > 0.0 { layout_height } else { viewport.get() };
-                // The runtime has already applied the scroll and moved the
-                // content, so the offset is only worth writing when different
-                // rows are needed.
-                let next = visible_range(offset, viewport, item_height.get(), item_count.get(), overscan.get());
-                if next != range.get() {
-                    scroll_top.set(cx, offset);
-                }
-                EventResult::Ignored
-            },
+            scroll_controller: list.controller(),
+            on_scroll: |cx, event, event_cx| list.on_scroll(cx, event, event_cx),
         ) {
-            // The spacer carries the full scrollable height even though almost
-            // none of it is occupied, which is what keeps the scrollbar honest.
+            // The content carries the full scrollable height even though
+            // almost none of it is occupied, which keeps the scrollbar honest.
+            // Rows stack in normal flow below a leading inset, so a measured
+            // row pushes the ones after it within the same layout.
             container(
                 style: StyleOf::new()
-                    .with::<container::position>(PositionStyle::Relative)
                     .with::<container::width>(Sizing::Fill)
-                    .with::<container::height>(*total_height),
+                    .with::<container::height>(list.total_size())
+                    .with::<container::padding>(EdgeInsets::new(0.0, 0.0, list.offset_of(list.range().start), 0.0)),
             ) {
-                for index in rows.clone() {
-                    container(
-                        style: item_style
-                            .clone()
-                            .with::<container::position>(PositionStyle::Absolute)
-                            .with::<container::inset>(EdgeInsets::new(0.0, 0.0, *index as f32 * *item_height, 0.0))
-                            .with::<container::width>(Sizing::Fill)
-                            .with::<container::height>(*item_height),
-                    ) {
+                for index in list.range().iter() {
+                    virtual_item(list: list, index: *index, style: row_style.clone()) {
                         slot(render_item.call(*index))
                     }
                     .key(*index)
@@ -227,73 +186,6 @@ pub fn virtual_list(
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_empty_or_unmeasured_list_materializes_nothing() {
-        assert_eq!(
-            visible_range(0.0, 200.0, 20.0, 0, 3),
-            VirtualRange { start: 0, end: 0 }
-        );
-        // Before the first layout the viewport is unknown; rendering a guess
-        // would only have to be thrown away.
-        assert_eq!(
-            visible_range(0.0, 0.0, 20.0, 100, 3),
-            VirtualRange { start: 0, end: 0 }
-        );
-        assert_eq!(
-            visible_range(0.0, 200.0, 0.0, 100, 3),
-            VirtualRange { start: 0, end: 0 }
-        );
-    }
-
-    #[test]
-    fn the_range_covers_the_viewport_plus_overscan() {
-        // 200pt of viewport over 20pt rows is 10 rows, plus the two partial
-        // edge rows, plus overscan on the trailing side only at the top.
-        let range = visible_range(0.0, 200.0, 20.0, 1_000, 3);
-        assert_eq!(range.start, 0);
-        assert_eq!(range.end, 15);
-
-        // Scrolled to row 50: overscan now applies on both sides.
-        let range = visible_range(1_000.0, 200.0, 20.0, 1_000, 3);
-        assert_eq!(range.start, 47);
-        assert_eq!(range.end, 65);
-    }
-
-    #[test]
-    fn the_range_stays_inside_the_list_at_both_ends() {
-        let range = visible_range(-500.0, 200.0, 20.0, 1_000, 3);
-        assert_eq!(range.start, 0);
-
-        // Scrolled past the end: the range clamps instead of running off.
-        let range = visible_range(1_000_000.0, 200.0, 20.0, 1_000, 3);
-        assert_eq!(range.end, 1_000);
-        assert!(range.start <= range.end);
-    }
-
-    #[test]
-    fn a_row_straddling_the_top_edge_is_still_included() {
-        // Half of row 5 is above the fold, so the range must start at 5, not 6.
-        let range = visible_range(110.0, 200.0, 20.0, 1_000, 0);
-        assert_eq!(range.start, 5);
-        assert!(range.end >= 16, "the bottom edge row is missing: {range:?}");
-    }
-
-    #[test]
-    fn the_rendered_row_count_never_scales_with_the_list_length() {
-        let short = visible_range(0.0, 200.0, 20.0, 100, 3).len();
-        let long = visible_range(0.0, 200.0, 20.0, 1_000_000, 3).len();
-        assert_eq!(short, long);
-    }
-
-    #[test]
-    fn invalid_dimensions_and_shrunk_sources_have_safe_ranges() {
-        assert!(visible_range(0.0, 200.0, f32::NAN, 100, 3).is_empty());
-        assert!(visible_range(0.0, f32::INFINITY, 20.0, 100, 3).is_empty());
-        let range = visible_range(1_000_000.0, 200.0, 20.0, 20, 0);
-        assert_eq!(range, VirtualRange { start: 10, end: 20 });
-        assert_eq!(visible_range(0.0, 200.0, 20.0, 20, usize::MAX).end, 20);
-    }
-
     // ---- wheel dispatch ---------------------------------------------------
 
     use std::time::Instant;
@@ -304,7 +196,7 @@ mod tests {
     fn list_root(app: &mut App) {
         app.mount::<VirtualList>(VirtualListProps {
             item_count: ReadSignal::constant(1_000),
-            item_height: ReadSignal::constant(20.0),
+            item_size: ReadSignal::constant(ItemSize::Fixed(20.0)),
             viewport_height: 200.0,
             render_item: ReadSignal::constant(VirtualItemRenderer::new(|index: usize| {
                 index.to_string().into()

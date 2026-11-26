@@ -20,10 +20,11 @@ pub enum Page {
     VirtualList,
     Canvas,
     Editor,
+    Windows,
 }
 
 impl Page {
-    pub const ALL: [Page; 9] = [
+    pub const ALL: [Page; 10] = [
         Page::Button,
         Page::Spinner,
         Page::Input,
@@ -33,6 +34,7 @@ impl Page {
         Page::VirtualList,
         Page::Canvas,
         Page::Editor,
+        Page::Windows,
     ];
 
     fn title(self) -> &'static str {
@@ -46,6 +48,7 @@ impl Page {
             Page::VirtualList => "Virtual List",
             Page::Canvas => "Icon & Canvas",
             Page::Editor => "Editor",
+            Page::Windows => "Windows",
         }
     }
 
@@ -60,6 +63,7 @@ impl Page {
             Page::VirtualList => "Renders only the rows near the viewport of a long list.",
             Page::Canvas => "Path and SVG icons, vector canvas scenes, and backdrop blur.",
             Page::Editor => "A code editor on a text surface: only what is on screen is laid out.",
+            Page::Windows => "Windows beside the gallery's, each opened by a window block, all of one state.",
         }
     }
 
@@ -74,6 +78,7 @@ impl Page {
             Page::VirtualList => lucide_rs::icons::list(),
             Page::Canvas => lucide_rs::icons::shapes(),
             Page::Editor => lucide_rs::icons::file_code(),
+            Page::Windows => lucide_rs::icons::app_window(),
         }
     }
 }
@@ -562,7 +567,7 @@ fn virtual_list_page() {
                 ) {
                     virtual_list(
                         item_count: ROW_COUNT,
-                        item_height: ROW_HEIGHT,
+                        item_size: ItemSize::Fixed(ROW_HEIGHT),
                         viewport_height: 320.0,
                         render_item: render_item.clone(),
                         style: StyleOf::new().with::<container::width>(Sizing::fill()).with::<container::height>(320.0),
@@ -1011,9 +1016,141 @@ pub fn gallery() {
                         Page::VirtualList => virtual_list_page(),
                         Page::Canvas => canvas_page(),
                         Page::Editor => editor_page(),
+                        Page::Windows => windows_page(),
                     }
                 }
             }
+        }
+    }
+}
+
+// ---- windows -----------------------------------------------------------------
+
+fn muted_style() -> StyleOf<Text> {
+    StyleOf::new().with::<container::color>(color::MUTED_FOREGROUND)
+}
+
+/// What a window opened from the Windows page shows its content on: the
+/// gallery's background and colors, which its own root does not have.
+fn window_body_style() -> StyleOf<Container> {
+    StyleOf::new()
+        .with::<container::size>(Size::fill())
+        .with::<container::background>(color::BACKGROUND)
+        .with::<container::color>(color::FOREGROUND)
+        .with::<container::padding>(EdgeInsets::all(24.0))
+        .with::<container::gap>(12.0)
+        .with::<container::align>(AlignStyle::Center)
+        .with::<container::justify>(JustifyStyle::Center)
+}
+
+/// One of the Many windows example's windows: closing it, by its close
+/// button or the one inside, tells the page, which unmounts it.
+#[component]
+fn numbered_window(number: &u32, #[source] count: &i32, on_close: &Callback<u32>) {
+    view! {
+        window(
+            title: format!("Window {number}"),
+            size: (280.0, 180.0),
+            on_close_requested: |cx| on_close.call(cx, *number),
+        ) {
+            container(style: window_body_style(), flex_direction: FlexDirectionStyle::Column) {
+                text(format!("Window {number}"), style: heading_style())
+                text(format!("Count: {count}"), style: muted_style())
+                button(
+                    text: "Close",
+                    variant: ButtonVariant::Outline,
+                    size: ButtonSize::Small,
+                    on_click: |cx| on_close.call(cx, *number),
+                )
+            }
+        }
+    }
+}
+
+#[component]
+fn windows_page() {
+    let open: bool = state!(false);
+    let count: i32 = state!(0);
+    let numbers: Vec<u32> = state!(Vec::new());
+    view! {
+        page_body {
+            example(title: "A window of its own") {
+                row(gap: 8.0, flex_wrap: true, justify: JustifyStyle::Center) {
+                    button(
+                        text: if *open { "Close window" } else { "Open window" },
+                        variant: ButtonVariant::Primary,
+                        leading: lucide(lucide_rs::icons::app_window(), 16.0),
+                        on_click: |cx| open.update(cx, |open| *open = !*open),
+                    )
+                    button(
+                        text: "Count up",
+                        variant: ButtonVariant::Outline,
+                        leading: lucide(lucide_rs::icons::plus(), 16.0),
+                        on_click: |cx| count.update(cx, |count| *count += 1),
+                    )
+                }
+                text(format!("Count: {count}, here and in the window"), style: muted_style())
+                // Mounted, the block opens the window; unmounted, it closes it.
+                // Its content is this page's: it reads and writes `count`.
+                if *open {
+                    window(
+                        title: "xui gallery",
+                        size: (360.0, 220.0),
+                        on_close_requested: |cx| open.set(cx, false),
+                    ) {
+                        container(style: window_body_style(), flex_direction: FlexDirectionStyle::Column) {
+                            text(format!("Count: {count}"), style: heading_style())
+                            text("The same count as in the gallery", style: muted_style())
+                            row(gap: 8.0) {
+                                button(
+                                    text: "Count up",
+                                    variant: ButtonVariant::Primary,
+                                    on_click: |cx| count.update(cx, |count| *count += 1),
+                                )
+                                button(
+                                    text: "Close",
+                                    variant: ButtonVariant::Outline,
+                                    on_click: |cx| open.set(cx, false),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            example(title: "Many windows") {
+                row(gap: 8.0, flex_wrap: true, justify: JustifyStyle::Center) {
+                    button(
+                        text: "New window",
+                        variant: ButtonVariant::Outline,
+                        leading: lucide(lucide_rs::icons::plus(), 16.0),
+                        on_click: |cx| numbers.update(cx, |numbers| {
+                            let next = numbers.iter().max().map_or(1, |last| last + 1);
+                            numbers.push(next);
+                        }),
+                    )
+                    button(
+                        text: "Close all",
+                        variant: ButtonVariant::Ghost,
+                        on_click: |cx| numbers.set(cx, Vec::new()),
+                    )
+                }
+                text(
+                    format!("{} open: a keyed row each, closed by taking it out of the list", numbers.len()),
+                    style: muted_style(),
+                )
+                for number in numbers.clone() {
+                    numbered_window(
+                        number: *number,
+                        count: count,
+                        on_close: |cx, number| numbers.update(cx, |numbers| numbers.retain(|open| *open != number)),
+                    )
+                    .key(*number)
+                }
+            }
+            text(
+                "Leaving this page closes its windows: they are mounted with it. On Skia (--features skia) they do not open yet.",
+                style: muted_style(),
+            )
         }
     }
 }

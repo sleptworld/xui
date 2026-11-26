@@ -50,7 +50,7 @@ fn interaction() {
                 ),
                 10 => virtual_list(
                     item_count: 100_000,
-                    item_height: 20.0,
+                    item_size: ItemSize::Fixed(20.0),
                     viewport_height: 100.0,
                     render_item: VirtualItemRenderer::new(|index: usize| index.to_string().into()),
                     style: StyleOf::new().with::<container::height>(Sizing::Fill),

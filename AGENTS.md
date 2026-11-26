@@ -19,7 +19,6 @@ cargo test -p xui-components --lib --tests
 cargo doc --no-deps --open
 
 cargo run -p xui-example-app      # launch the example app (Component Gallery; XUI_THEME=dark)
-cargo run -p xui-example-app --bin flight-icing   # the aircraft icing dashboard demo
 
 cargo xui init                    # set a package up for assets (xui.toml, assets/, build.rs, xui-build dep)
 cargo xui run --release           # forwards to cargo; mounts assets/ live, copies external packages

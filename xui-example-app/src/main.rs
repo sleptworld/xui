@@ -8,8 +8,6 @@
 //! `--features skia` runs it on Skia instead of Vello).
 //! Its build script packs `assets/` through `xui-build`; `cargo xui run` works
 //! too, and additionally mounts `assets/` live in release builds.
-//!
-//! The aircraft icing dashboard demo is the `flight-icing` binary.
 
 mod gallery;
 

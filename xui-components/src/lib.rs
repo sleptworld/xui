@@ -71,7 +71,8 @@
 //! | [`overlays`](mod@crate::overlays) | [`toast`](fn@crate::overlays::toast) | A portal-mounted transient message with a semantic tone and live announcement. |
 //! | [`overlays`](mod@crate::overlays) | [`tooltip`](fn@crate::overlays::tooltip) | A non-interactive anchored hint shown on pointer hover or descendant focus. |
 //! | [`tabs`](mod@crate::tabs) | [`tabs`](fn@crate::tabs::tabs) | An accessible tab list with one mounted content panel and configurable keyboard activation. |
-//! | [`virtual_list`](mod@crate::virtual_list) | [`virtual_list`](fn@crate::virtual_list::virtual_list) | A fixed-row-height scrolling list that materializes only the visible window and overscan. |
+//! | [`virtual_list`](mod@crate::virtual_list) | [`virtual_list`](fn@crate::virtual_list::virtual_list) | A scrolling list of fixed or measured rows that materializes only the visible window and overscan. |
+//! | [`virtual_list`](mod@crate::virtual_list) | [`virtual_item`](fn@crate::virtual_list::virtual_item) | A row that reports its laid-out size to a [`Virtualizer`](xui_core::virtualize::Virtualizer), for components that virtualize their own layout. |
 //!
 //! # Aliases
 //!
@@ -97,6 +98,8 @@
 //!   restoration are not part of the current portal API.
 //! - [`virtual_list`](fn@crate::virtual_list) bounds row construction by viewport
 //!   height and overscan. Presentational tables materialize all supplied rows.
+//!   A component with its own row layout virtualizes through
+//!   [`xui_core::virtualize::Virtualizer`], which `virtual_list` is built on.
 //!
 //! # Supporting modules
 //!

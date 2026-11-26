@@ -104,7 +104,7 @@ The image component also accepts `style`, separate from pixel fitting via
 | `tree_view` | Independent controlled/default selection and expansion, expansion/selection callbacks, item styles |
 | `calendar`, `date_picker` | Month/date selection callbacks, disabled, calendar header/day/selected-day styles; picker controlled/default open state and placement |
 | `image` | Asset/URL/path source, alt text, dimensions, opacity, root/image styles, fitting/alignment/repeat/sampling, loading/fallback elements |
-| `virtual_list` | Fixed row height, count, viewport hint, overscan, renderer and item style; actual viewport size follows layout observations |
+| `virtual_list` | `ItemSize::Fixed` or `ItemSize::Estimated` rows (measured once laid out), count, viewport hint, overscan, renderer and item style; actual viewport size follows layout observations |
 
 Default dropdown and tab accessibility IDs are unique per component instance
 and stable across rerenders. Supply `id_prefix` when external references need
@@ -115,6 +115,12 @@ an application-defined ID.
 - Virtual lists memoize their visible rows. Scrolling inside the same row window
   does not invoke the row renderer; resizing updates the window without waiting
   for a wheel event. Shrinking a source clamps old scroll offsets.
+- The window logic is `xui_core::virtualize::Virtualizer`, which any component
+  can hold in a `state!` to virtualize its own layout (`virtual_item` measures a
+  row for it). Measured sizes sit in a Fenwick tree, so offsets and the row at
+  an offset cost `O(log n)`; a measured row above the first visible one moves
+  the scroll offset by its change, so the visible rows stay put. Measurements
+  belong to an index, not an item.
 - Tabs and radio groups share focus-handle storage across item callbacks instead
   of cloning the complete handle array for every item. Tab navigation avoids
   scanning disabled items for each disabled tab. Keys follow item IDs through
@@ -187,5 +193,5 @@ keyboard selection, menu navigation, tree expansion, and viewport resizing.
 
 The example application is the interactive Component Gallery:
 `cargo run -p xui-example-app`. Its test renders every page headlessly in both
-palettes; set `XUI_GALLERY_SNAPSHOT_DIR` to write the frames as PNGs. The
-aircraft icing dashboard demo is `cargo run -p xui-example-app --bin flight-icing`.
+palettes; set `XUI_GALLERY_SNAPSHOT_DIR` to write the frames as PNGs. Its
+Windows page opens windows beside the gallery's.

@@ -52,7 +52,7 @@ fn list() {
     xui! {
         <virtual_list
             item_count={ITEM_COUNT}
-            item_height={ITEM_HEIGHT}
+            item_size={ItemSize::Fixed(ITEM_HEIGHT)}
             viewport_height={VIEWPORT.height}
             render_item={render_item.clone()}
             style={style.clone()}
@@ -72,7 +72,11 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
-        let mut app = App::new(list_root);
+        Self::with_root(list_root)
+    }
+
+    fn with_root(root: AppRoot) -> Self {
+        let mut app = App::new(root);
         app.resize(app.main_window(), VIEWPORT);
         let mut harness = Self {
             app,
@@ -265,10 +269,12 @@ fn scrolling_slides_the_window_without_growing_it() {
 fn a_scroll_too_small_to_change_the_window_does_not_rebuild_rows() {
     reset_tracking();
     let mut harness = Harness::new();
+    // Into the middle of a row, so both edges straddle one.
+    harness.scroll_by(5.0);
     let calls_after_mount = render_calls();
 
-    // One pixel cannot bring a new row into range given the overscan, so the
-    // runtime should move the content without asking the component again.
+    // One pixel more cannot bring a new row into range, so the runtime
+    // should move the content without asking the component again.
     harness.scroll_by(1.0);
 
     assert_eq!(
@@ -276,4 +282,199 @@ fn a_scroll_too_small_to_change_the_window_does_not_rebuild_rows() {
         calls_after_mount,
         "a sub-row scroll rebuilt the list"
     );
+}
+
+// ---- measured rows ------------------------------------------------------
+
+/// Heights cycle 20, 30, 40: none of them the estimate's 20 on average.
+fn tall_height(index: usize) -> f32 {
+    20.0 + (index % 3) as f32 * 10.0
+}
+
+#[component]
+fn tall_row(index: &usize) {
+    view! {
+        text(
+            format!("row {index}"),
+            style: StyleOf::new().with::<container::width>(Sizing::Fill).with::<container::height>(tall_height(*index)),
+        )
+    }
+}
+
+#[component]
+fn measured_list() {
+    let render_item: VirtualItemRenderer = VirtualItemRenderer::new(|index: usize| {
+        Children::component::<TallRow>(TallRowProps { index })
+    });
+    let style: StyleOf<Container> = StyleOf::new()
+        .with::<container::width>(Sizing::Fill)
+        .with::<container::height>(VIEWPORT.height);
+    view! {
+        virtual_list(
+            item_count: ITEM_COUNT,
+            item_size: ItemSize::Estimated(ITEM_HEIGHT),
+            viewport_height: VIEWPORT.height,
+            render_item: render_item.clone(),
+            style: style.clone(),
+        )
+    }
+}
+
+fn measured_root(app: &mut App) {
+    app.mount::<MeasuredList>(MeasuredListProps {});
+}
+
+impl Harness {
+    /// Measurements land after a layout and move rows in the next one.
+    fn settle(&mut self) {
+        for _ in 0..4 {
+            self.render();
+        }
+    }
+
+    /// Each mounted row's offset from the content's origin, and its height.
+    fn row_geometry(&self) -> Vec<(f32, f32)> {
+        let (_, content) = self.list_nodes();
+        let runtime = self.app.ui_runtime();
+        let origin = runtime.node(content).expect("content").world_origin.y;
+        runtime
+            .children(content)
+            .map(|row| {
+                let node = runtime.node(row).expect("row");
+                (node.world_origin.y - origin, node.layout.height())
+            })
+            .collect()
+    }
+
+    fn content_height(&self) -> f32 {
+        let (_, content) = self.list_nodes();
+        self.app.ui_runtime().node(content).expect("content").layout.height()
+    }
+
+    fn scroll_offset(&self) -> f32 {
+        let (scroller, _) = self.list_nodes();
+        self.app.ui_runtime().node(scroller).expect("scroller").scroll_offset.y
+    }
+}
+
+#[test]
+fn measured_rows_stack_at_their_own_heights() {
+    let mut harness = Harness::with_root(measured_root);
+    harness.settle();
+
+    let rows = harness.row_geometry();
+    assert!(!rows.is_empty());
+    for (index, (_, height)) in rows.iter().enumerate() {
+        assert_eq!(*height, tall_height(index), "row {index} is not its content's height");
+    }
+    for pair in rows.windows(2) {
+        assert_eq!(pair[1].0, pair[0].0 + pair[0].1, "rows overlap or gap: {rows:?}");
+    }
+
+    // Measured rows replace the estimate in the scrollable height, including
+    // rows measured in an earlier, larger window that are no longer mounted.
+    let estimated = ITEM_COUNT as f32 * ITEM_HEIGHT;
+    let mounted: f32 = (0..rows.len()).map(|index| tall_height(index) - ITEM_HEIGHT).sum();
+    let height = harness.content_height();
+    assert!(height >= estimated + mounted, "{height} leaves out measured rows");
+    assert!(height <= estimated + 13.0 * 20.0, "{height} counts rows never mounted");
+
+    // Taller rows mean fewer of them fill the viewport: at most 10 at 20px
+    // and three of overscan, as estimated before measuring.
+    assert!(rows.len() <= 13, "measuring did not shrink the window: {}", rows.len());
+}
+
+#[test]
+fn measuring_rows_above_the_viewport_keeps_the_visible_row_in_place() {
+    let mut harness = Harness::with_root(measured_root);
+    harness.settle();
+    // Far enough that the rows mounted there have never been measured.
+    harness.scroll_by(4_000.0);
+    let before = harness.scroll_offset();
+    harness.settle();
+
+    let rows = harness.row_geometry();
+    let after = harness.scroll_offset();
+    // Three rows of overscan sit above the first visible one. They grew
+    // from the estimate once measured, and the offset grew with them.
+    let grown: f32 = rows[..3].iter().map(|(_, height)| height - ITEM_HEIGHT).sum();
+    assert!(grown > 0.0, "the rows above did not change: {rows:?}");
+    assert_eq!(after - before, grown, "the offset did not follow the rows above it");
+    let (top, height) = rows[3];
+    assert!(
+        top <= after && after < top + height,
+        "the first visible row moved off the top of the viewport: {after} in {rows:?}"
+    );
+}
+
+// ---- a component of its own on a Virtualizer -----------------------------
+
+thread_local! {
+    static CUSTOM: RefCell<Option<Signal<Virtualizer>>> = const { RefCell::new(None) };
+}
+
+/// What `virtual_list` does, written against `Virtualizer` directly: the
+/// shape any component with its own row layout takes.
+#[component]
+fn custom_list() {
+    let list: Virtualizer = state!(
+        Virtualizer::new(ITEM_COUNT, ItemSize::Fixed(ITEM_HEIGHT), 2).with_viewport(VIEWPORT.height)
+    );
+    CUSTOM.with(|slot| *slot.borrow_mut() = Some(list.clone()));
+    view! {
+        container(
+            style: StyleOf::new()
+                .with::<container::width>(Sizing::Fill)
+                .with::<container::height>(VIEWPORT.height)
+                .with::<container::scroll_direction>(ScrollDirectionStyle::Vertical),
+            scroll_controller: list.controller(),
+            on_scroll: |cx, event, event_cx| list.on_scroll(cx, event, event_cx),
+        ) {
+            container(
+                style: StyleOf::new()
+                    .with::<container::position>(PositionStyle::Relative)
+                    .with::<container::width>(Sizing::Fill)
+                    .with::<container::height>(list.total_size()),
+            ) {
+                for index in list.range().iter() {
+                    text(
+                        format!("row {index}"),
+                        style: StyleOf::new()
+                            .with::<container::position>(PositionStyle::Absolute)
+                            .with::<container::inset>(EdgeInsets::new(0.0, 0.0, list.offset_of(*index), 0.0))
+                            .with::<container::width>(Sizing::Fill)
+                            .with::<container::height>(ITEM_HEIGHT),
+                    )
+                    .key(*index)
+                }
+            }
+        }
+    }
+}
+
+fn custom_root(app: &mut App) {
+    app.mount::<CustomList>(CustomListProps {});
+}
+
+#[test]
+fn a_custom_component_scrolls_an_index_into_view() {
+    let mut harness = Harness::with_root(custom_root);
+    harness.settle();
+    assert_eq!(harness.row_count(), 12, "ten visible rows and two of overscan");
+
+    let list = CUSTOM.with(|slot| slot.borrow().clone()).expect("mounted");
+    assert!(list.with(|list| list.scroll_to_index(5_000, ScrollAlign::Start)));
+    harness.settle();
+
+    assert_eq!(harness.scroll_offset(), 5_000.0 * ITEM_HEIGHT);
+    assert_eq!(list.with(Virtualizer::range).start, 4_998);
+    let (_, content) = harness.list_nodes();
+    let runtime = harness.app.ui_runtime();
+    let origin = runtime.node(content).expect("content").world_origin.y;
+    let tops: Vec<f32> = runtime
+        .children(content)
+        .map(|row| runtime.node(row).expect("row").world_origin.y - origin)
+        .collect();
+    assert_eq!(tops.first().copied(), Some(4_998.0 * ITEM_HEIGHT));
+    assert_eq!(harness.row_count(), 14, "overscan on both sides once away from the top");
 }

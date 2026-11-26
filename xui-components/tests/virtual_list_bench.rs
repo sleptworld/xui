@@ -81,7 +81,7 @@ fn virtual_rows() {
     view! {
         virtual_list(
             item_count: *count,
-            item_height: ITEM_HEIGHT,
+            item_size: ItemSize::Fixed(ITEM_HEIGHT),
             viewport_height: VIEWPORT.height,
             render_item: render_item.clone(),
             style: StyleOf::new().with::<container::width>(Sizing::Fill).with::<container::height>(VIEWPORT.height),

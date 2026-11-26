@@ -73,7 +73,7 @@ fn catalog() {
                     width: ImageSize::from(80.0),
                     height: ImageSize::from(60.0),
                 ),
-                5 => virtual_list(item_count: 100_000, item_height: 20.0, viewport_height: 100.0, render_item: render_item.clone()),
+                5 => virtual_list(item_count: 100_000, item_size: ItemSize::Fixed(20.0), viewport_height: 100.0, render_item: render_item.clone()),
                 6 => skeleton(),
                 7 => spinner(paused: true),
                 8 => callout(title: Some("Note".to_owned())) { text("Content") },

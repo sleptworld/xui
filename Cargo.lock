@@ -1937,14 +1937,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "leanplot"
-version = "0.1.0"
-source = "git+https://github.com/sleptworld/LeanPlot.git#88d1c4526d109f83688dd81dab478041db4a303f"
-dependencies = [
- "libm",
-]
-
-[[package]]
 name = "leb128fmt"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5773,7 +5765,6 @@ dependencies = [
 name = "xui-example-app"
 version = "0.1.0"
 dependencies = [
- "leanplot",
  "lucide-rs",
  "png",
  "xui-build",

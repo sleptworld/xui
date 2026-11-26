@@ -26,8 +26,9 @@ build today:
    `widgets/roles.rs`) are `pub(crate)`, and host widgets are a closed set
    (`define_widgets!`). An external crate can only build a canvas, which sees no
    raw keys, opens no IME session and cannot hit-test its text.
-4. **Virtualized vertical layout with variable heights.** `virtual_list` assumes
-   fixed row heights. `TextHost` already has the right shape for this, a
+4. **Virtualized vertical layout with variable heights.** `virtual_list` measures
+   rows (`xui_core::virtualize`), but a text surface's paragraphs are not
+   components it could mount. `TextHost` already has the right shape for this, a
    *virtual document* (`TextDocumentId`, `ParagraphId`, a Fenwick height index,
    `paragraph_at_y`, `set_visible_paragraphs`), but nothing outside its own tests
    uses it.
