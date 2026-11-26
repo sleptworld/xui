@@ -273,6 +273,82 @@ impl PortalSpec {
     }
 }
 
+/// A `window(..) { .. }`: its content, mounted as the tree of a window of
+/// its own, and the window asked for. Built where the block is written,
+/// once, at mount; attributes are its builder methods. The window is there
+/// while the block is mounted: a host's close button only asks
+/// (`on_close_requested`), and the handler closes it by writing what shows it.
+pub struct WindowSpec {
+    pub(crate) content: Children,
+    pub(crate) options: xui_interface::WindowOptions,
+    pub(crate) on_close_requested: Option<std::rc::Rc<dyn Fn()>>,
+}
+
+impl WindowSpec {
+    pub fn new(content: Children) -> Self {
+        Self {
+            content,
+            options: xui_interface::WindowOptions::default(),
+            on_close_requested: None,
+        }
+    }
+
+    pub fn title(mut self, title: impl Into<String>) -> Self {
+        self.options.title = title.into();
+        self
+    }
+
+    /// The content area's size, `(width, height)` in logical pixels.
+    pub fn size(mut self, (width, height): (f32, f32)) -> Self {
+        self.options.inner_size = Some(crate::core::Size::new(width, height).into());
+        self
+    }
+
+    /// The smallest the content area may be resized to, in logical pixels.
+    pub fn min_size(mut self, (width, height): (f32, f32)) -> Self {
+        self.options.min_inner_size = Some(crate::core::Size::new(width, height).into());
+        self
+    }
+
+    pub fn resizable(mut self, resizable: bool) -> Self {
+        self.options.resizable = resizable;
+        self
+    }
+
+    pub fn decorations(mut self, decorations: bool) -> Self {
+        self.options.decorations = decorations;
+        self
+    }
+
+    pub fn transparent(mut self, transparent: bool) -> Self {
+        self.options.transparent = transparent;
+        self
+    }
+
+    pub fn maximized(mut self, maximized: bool) -> Self {
+        self.options.maximized = maximized;
+        self
+    }
+
+    pub fn macos(mut self, macos: xui_interface::MacOsWindowOptions) -> Self {
+        self.options.macos = macos;
+        self
+    }
+
+    /// `on_close_requested: |cx| ..`: the user asked to close the window.
+    /// It is not closed: the handler closes it by writing what shows it.
+    #[doc(hidden)]
+    pub fn __on_close_requested(
+        mut self,
+        notifier: &super::Notifier,
+        f: impl Fn(&mut Cx<'_>) + 'static,
+    ) -> Self {
+        let notifier = notifier.clone();
+        self.on_close_requested = Some(std::rc::Rc::new(move || f(&mut Cx::handler(&notifier))));
+        self
+    }
+}
+
 /// The observer that binds a host to a `size!()` source, given to its
 /// `size_observer` attribute.
 #[doc(hidden)]

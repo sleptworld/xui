@@ -9,26 +9,30 @@ use crate::ui_runtime::layout::{LayoutTree, WidgetContext};
 use crate::ui_runtime::render::RenderSystem;
 use crate::ui_runtime::state::{HostWorkFlags, UiState};
 use crate::ui_runtime::style::StyleSystem;
-use crate::ui_runtime::tree::{HostData, HostTree, NodeIds};
+use crate::ui_runtime::tree::{HostData, HostTree, NodeAlloc};
 use crate::ui_runtime::{FrameStats, UiRuntime};
 use crate::widgets::{
     ErasedDraft, OverlayEntryId, OverlayEntryOptions, OverlayModelError, OverlayScopeId, WidgetI,
     WidgetType, Widgets,
 };
 use taffy::prelude as tf;
-use xui_interface::{
-    Affine, ComputedStyle, NodeId, NodeLifecycleEvent, Theme, WidgetState, WindowId,
-};
+use xui_interface::{Affine, ComputedStyle, NodeId, NodeLifecycleEvent, Theme, WidgetState};
 
 impl UiRuntime {
-    /// A runtime whose node ids are its own: one window, or no window at all.
+    /// A runtime whose node ids are tagged 0: one window, or no window at all.
     pub(crate) fn new() -> Self {
-        Self::with_node_ids(NodeIds::default(), WindowId::default())
+        Self::with_node_ids(NodeAlloc::new(0, 0))
     }
 
-    /// A runtime for `window`, taking node ids from `ids`, which the
-    /// application's other windows share. See [`NodeIds`].
-    pub(crate) fn with_node_ids(ids: NodeIds, window: WindowId) -> Self {
+    /// Where the tree's node ids come from: its window's tag, and how far
+    /// its generations have gone.
+    pub(crate) fn node_ids(&self) -> &NodeAlloc {
+        self.hosts.ids()
+    }
+
+    /// A runtime taking node ids from `ids`, which tag them with its window.
+    /// See [`NodeAlloc`].
+    pub(crate) fn with_node_ids(ids: NodeAlloc) -> Self {
         let mut layout_tree = LayoutTree::new();
 
         // Default Theme
@@ -36,7 +40,7 @@ impl UiRuntime {
         let default_style = ComputedStyle::initial(&theme);
         let mut columns = Columns::default();
         let mut interaction_system = InteractionSystem::new();
-        let mut hosts = HostTree::with_ids(ids, window);
+        let mut hosts = HostTree::with_ids(ids);
         let root = hosts.insert_with_key(|id| {
             let draft = Box::new(crate::widgets::root_widget());
             let (widget, _) = draft.mount(id, &mut columns, &mut interaction_system.commit_cx());

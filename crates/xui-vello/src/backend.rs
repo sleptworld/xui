@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use vello::{
@@ -6,8 +7,8 @@ use vello::{
 };
 use xui_core::render::{BuiltFrame, BuiltItem, RenderBackend, damage::DamageTracker};
 use xui_core::text::TextHost;
-use xui_interface::{Color, NodeLifecycleEvent, Size, TextBackend};
-use xui_shell::SurfaceTarget;
+use xui_interface::{Color, NodeLifecycleEvent, PlatformError, Size, TextBackend, WindowId};
+use xui_shell::{SurfaceBackend, SurfaceTarget};
 use xui_wgpu_text::{AtlasOptions, TextBatch, TextRenderer};
 
 use crate::{
@@ -44,6 +45,10 @@ pub struct VelloBackendOptions {
     /// Bytes of cached layer content kept for layers that ask to be cached
     /// when it pays (`CachePolicy::Auto`), the least recently used going
     /// first. A layer that always wants it (`Always`) is not counted.
+    ///
+    /// For the whole backend, every window together: a window's frame keeps
+    /// what is left of the budget after what the other windows' caches hold,
+    /// which each gives up at its own next frame.
     pub layer_cache_budget_bytes: u64,
     /// Draw text from glyph bitmaps (`xui-wgpu-text`) when the text backend
     /// can render them, rather than as outlines through Vello. Text that is
@@ -204,34 +209,82 @@ impl Presenter {
 }
 
 pub struct VelloBackend<T: TextBackend> {
-    /// `None` for a [headless](Self::headless) backend, which renders to its
-    /// scene texture and never presents.
-    presenter: Option<Presenter>,
-    size_px: (u32, u32),
+    /// The window being drawn: the one the last frame began for.
+    surface: WindowSurface,
+    /// Its id; `None` until the shell says which window the backend was
+    /// made on, or for a [headless](Self::headless) backend.
+    window: Option<WindowId>,
+    /// Every other window's surface, waiting for a frame of its own.
+    parked: HashMap<WindowId, WindowSurface>,
+    /// What a window's surface is made with, beside the device; `None` for a
+    /// headless backend, which draws no window.
+    gpu: Option<Gpu>,
     context: WgpuContext,
     renderer: Renderer,
-    target: Option<SceneTarget>,
     fonts: FontCache<T::FontId>,
     /// Bitmap text, made on the first frame that has some.
     text_renderer: Option<TextRenderer<T::FontId>>,
     images: ImageCache,
     paths: PathCache,
     filters: FilterRenderer,
-    layer_cache: LayerCache,
-    /// What changed since the last frame, so only that is drawn again.
-    damage: DamageTracker,
-    force_full: bool,
-    /// The text backend's font epoch last frame; a change redraws everything.
-    font_epoch: Option<u64>,
-    /// A frame was drawn that the window has not been given yet.
-    needs_present: bool,
     frame_stats: FrameStats,
     textures: ExternalTextures,
     options: VelloBackendOptions,
-    scale_factor: f32,
     reported: Unsupported,
-    presented: bool,
     _text: std::marker::PhantomData<fn() -> T>,
+}
+
+/// The adapter a backend's device was opened on, and the instance it came
+/// from: what a window's surface is created against.
+struct Gpu {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+}
+
+/// One window's share of a backend: where its frames go, and what is kept
+/// of the last ones drawn there. Everything else -- the device, glyphs,
+/// images, paths, fonts, the texture pool -- the backend has for every window.
+struct WindowSurface {
+    /// `None` for a headless backend, which renders to its scene texture
+    /// and never presents.
+    presenter: Option<Presenter>,
+    size_px: (u32, u32),
+    target: Option<SceneTarget>,
+    layer_cache: LayerCache,
+    /// What changed since this window's last frame, so only that is drawn again.
+    damage: DamageTracker,
+    force_full: bool,
+    /// The text backend's font epoch at this window's last frame; a change
+    /// redraws everything.
+    font_epoch: Option<u64>,
+    /// A frame was drawn that the window has not been given yet.
+    needs_present: bool,
+    presented: bool,
+    scale_factor: f32,
+}
+
+impl WindowSurface {
+    fn new(presenter: Option<Presenter>, size_px: (u32, u32), scale_factor: f32) -> Self {
+        Self {
+            presenter,
+            size_px,
+            target: None,
+            layer_cache: LayerCache::default(),
+            damage: DamageTracker::default(),
+            force_full: true,
+            font_epoch: None,
+            needs_present: true,
+            presented: false,
+            scale_factor,
+        }
+    }
+
+    /// Forgets what is on screen, so the next frame is drawn in full.
+    fn invalidate(&mut self, filters: &mut FilterRenderer) {
+        self.damage.clear();
+        self.layer_cache.clear(filters);
+        self.force_full = true;
+    }
 }
 
 impl<T: TextBackend> VelloBackend<T> {
@@ -291,58 +344,37 @@ impl<T: TextBackend> VelloBackend<T> {
         )
         .await?;
 
-        let mut config = surface
-            .get_default_config(&adapter, size.width.max(1), size.height.max(1))
-            .ok_or(VelloBackendError::UnsupportedSurface)?;
-        // Vello's output is already sRGB-encoded, so present through a
-        // non-sRGB format and let the blit copy bytes through unchanged.
-        let formats = surface.get_capabilities(&adapter).formats;
-        let linear = config.format.remove_srgb_suffix();
-        config.format = if formats.contains(&linear) {
-            linear
-        } else {
-            formats
-                .iter()
-                .copied()
-                .find(|format| !format.is_srgb())
-                .unwrap_or(config.format)
-        };
-        config.present_mode = wgpu::PresentMode::AutoVsync;
-        config.usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
+        let config = surface_config(&adapter, &surface, size)?;
         surface.configure(&device, &config);
 
         let renderer = new_renderer(&device)?;
         let filters = FilterRenderer::new(&device, options.filter_texture_budget_bytes);
         let (blit_pipeline, blit_layout) = create_blit_pipeline(&device, config.format);
+        let size_px = (config.width, config.height);
+        let presenter = Presenter {
+            window,
+            surface,
+            config,
+            blit_pipeline,
+            blit_layout,
+        };
 
         Ok(Self {
-            size_px: (config.width, config.height),
-            presenter: Some(Presenter {
-                window,
-                surface,
-                config,
-                blit_pipeline,
-                blit_layout,
-            }),
+            surface: WindowSurface::new(Some(presenter), size_px, scale_factor),
+            window: None,
+            parked: HashMap::new(),
+            gpu: Some(Gpu { instance, adapter }),
             context: WgpuContext { device, queue },
             renderer,
-            target: None,
             fonts: FontCache::new(options.font_cache_budget_bytes),
             text_renderer: None,
             images: ImageCache::new(options.image_cache_budget_bytes),
             paths: PathCache::default(),
             filters,
-            damage: DamageTracker::default(),
-            layer_cache: LayerCache::default(),
-            force_full: true,
-            font_epoch: None,
-            needs_present: true,
             frame_stats: FrameStats::default(),
             textures: ExternalTextures::default(),
             options,
-            scale_factor,
             reported: Unsupported::default(),
-            presented: false,
             _text: std::marker::PhantomData,
         })
     }
@@ -404,27 +436,21 @@ impl<T: TextBackend> VelloBackend<T> {
         let renderer = new_renderer(&device)?;
         let filters = FilterRenderer::new(&device, options.filter_texture_budget_bytes);
         Ok(Self {
-            presenter: None,
-            size_px: (1, 1),
+            surface: WindowSurface::new(None, (1, 1), scale_factor),
+            window: None,
+            parked: HashMap::new(),
+            gpu: None,
             context: WgpuContext { device, queue },
             renderer,
-            target: None,
             fonts: FontCache::new(options.font_cache_budget_bytes),
             text_renderer: None,
             images: ImageCache::new(options.image_cache_budget_bytes),
             paths: PathCache::default(),
             filters,
-            damage: DamageTracker::default(),
-            layer_cache: LayerCache::default(),
-            force_full: true,
-            font_epoch: None,
-            needs_present: true,
             frame_stats: FrameStats::default(),
             textures: ExternalTextures::default(),
             options,
-            scale_factor,
             reported: Unsupported::default(),
-            presented: false,
             _text: std::marker::PhantomData,
         })
     }
@@ -434,7 +460,11 @@ impl<T: TextBackend> VelloBackend<T> {
     /// The values are sRGB-encoded and straight (not premultiplied) alpha is
     /// not guaranteed: the frame is opaque whenever the clear colour is.
     pub fn read_pixels_rgba8(&mut self) -> Result<Vec<u8>, VelloBackendError> {
-        let target = self.target.as_ref().ok_or(VelloBackendError::NoFrame)?;
+        let target = self
+            .surface
+            .target
+            .as_ref()
+            .ok_or(VelloBackendError::NoFrame)?;
         read_texture(&self.context, &target.texture, target.size)
     }
 
@@ -447,8 +477,14 @@ impl<T: TextBackend> VelloBackend<T> {
     /// frame, so this is exact between frames.
     pub fn resource_stats(&self) -> ResourceStats {
         let (filter_textures, filter_texture_bytes) = self.filters.pool_size();
-        let (layer_cache_entries, layer_cache_bytes) = self.layer_cache.size(&self.filters);
-        let counts = self.layer_cache.counts();
+        // Every window's, as the budget is.
+        let (layer_cache_entries, layer_cache_bytes) = std::iter::once(&self.surface)
+            .chain(self.parked.values())
+            .map(|surface| surface.layer_cache.size(&self.filters))
+            .fold((0, 0), |(entries, bytes), (more, more_bytes)| {
+                (entries + more, bytes + more_bytes)
+            });
+        let counts = self.surface.layer_cache.counts();
         ResourceStats {
             image_entries: self.images.entries(),
             image_bytes: self.images.bytes(),
@@ -480,7 +516,7 @@ impl<T: TextBackend> VelloBackend<T> {
     }
 
     pub const fn frame_size_px(&self) -> (u32, u32) {
-        self.size_px
+        self.surface.size_px
     }
 
     /// The device and queue this backend renders on. A canvas GPU painter must
@@ -489,9 +525,69 @@ impl<T: TextBackend> VelloBackend<T> {
         self.context.clone()
     }
 
+    /// Makes `window`'s surface the one frames go to. The surface the
+    /// backend was made on is taken to be the first window asked for, if the
+    /// shell never said whose it is.
+    fn select(&mut self, window: WindowId) -> Result<(), VelloBackendError> {
+        match self.window {
+            Some(active) if active == window => Ok(()),
+            None => {
+                self.window = Some(window);
+                Ok(())
+            }
+            Some(active) => {
+                let next = self
+                    .parked
+                    .remove(&window)
+                    .ok_or(VelloBackendError::UnknownWindow)?;
+                let previous = std::mem::replace(&mut self.surface, next);
+                self.parked.insert(active, previous);
+                self.window = Some(window);
+                Ok(())
+            }
+        }
+    }
+
+    /// A surface on `window`, configured as the one the backend was made on,
+    /// for frames of window `id`.
+    fn attach(
+        &mut self,
+        id: WindowId,
+        window: Arc<dyn SurfaceTarget>,
+    ) -> Result<(), VelloBackendError> {
+        let gpu = self
+            .gpu
+            .as_ref()
+            .ok_or(VelloBackendError::UnsupportedSurface)?;
+        let size = window.surface_size();
+        let scale_factor = window.scale_factor() as f32;
+        let surface = gpu.instance.create_surface(window.clone())?;
+        if !gpu.adapter.is_surface_supported(&surface) {
+            return Err(VelloBackendError::UnsupportedSurface);
+        }
+        let config = surface_config(&gpu.adapter, &surface, size)?;
+        let device = &self.context.device;
+        surface.configure(device, &config);
+        let (blit_pipeline, blit_layout) = create_blit_pipeline(device, config.format);
+        let size_px = (config.width, config.height);
+        let presenter = Presenter {
+            window,
+            surface,
+            config,
+            blit_pipeline,
+            blit_layout,
+        };
+        self.parked.insert(
+            id,
+            WindowSurface::new(Some(presenter), size_px, scale_factor),
+        );
+        Ok(())
+    }
+
     fn ensure_target(&mut self) {
-        let size = self.size_px;
+        let size = self.surface.size_px;
         if self
+            .surface
             .target
             .as_ref()
             .is_some_and(|target| target.size == size)
@@ -518,7 +614,7 @@ impl<T: TextBackend> VelloBackend<T> {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = self.presenter.as_ref().map(|presenter| {
+        let bind_group = self.surface.presenter.as_ref().map(|presenter| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("xui-vello blit"),
                 layout: &presenter.blit_layout,
@@ -528,7 +624,7 @@ impl<T: TextBackend> VelloBackend<T> {
                 }],
             })
         });
-        self.target = Some(SceneTarget {
+        self.surface.target = Some(SceneTarget {
             texture,
             view,
             bind_group,
@@ -542,9 +638,7 @@ impl<T: TextBackend> VelloBackend<T> {
     /// when something outside the scene changed it: the window's contents were
     /// lost, or a caller knows a setting (a theme, a font) changed everywhere.
     pub fn invalidate(&mut self) {
-        self.damage.clear();
-        self.layer_cache.clear(&mut self.filters);
-        self.force_full = true;
+        self.surface.invalidate(&mut self.filters);
     }
 
     /// What the last frames drew.
@@ -553,7 +647,7 @@ impl<T: TextBackend> VelloBackend<T> {
     }
 
     fn acquire(&mut self) -> Result<Option<wgpu::SurfaceTexture>, VelloBackendError> {
-        let presenter = self.presenter.as_ref().expect("presenting backend");
+        let presenter = self.surface.presenter.as_ref().expect("presenting backend");
         presenter.sync_present_mode();
         for attempt in 0..2 {
             match presenter.surface.get_current_texture() {
@@ -594,7 +688,7 @@ impl<T: TextBackend> VelloBackend<T> {
                 || (opaque(clear) && text.iter().all(|op| matches!(op, SurfaceOp::Text(_)))))
         {
             let view = match dest {
-                Dest::Root => &self.target.as_ref().expect("target").view,
+                Dest::Root => &self.surface.target.as_ref().expect("target").view,
                 Dest::Slot(slot) => self.filters.view(slot),
             };
             self.renderer.render_to_texture(
@@ -615,7 +709,7 @@ impl<T: TextBackend> VelloBackend<T> {
         let (device, queue) = (&self.context.device, &self.context.queue);
         match dest {
             Dest::Root => {
-                let view = &self.target.as_ref().expect("target").view;
+                let view = &self.surface.target.as_ref().expect("target").view;
                 self.filters
                     .finish(device, queue, composed, Finish::View(view));
             }
@@ -794,7 +888,7 @@ impl<T: TextBackend> VelloBackend<T> {
                                     content_origin,
                                 )),
                             };
-                            let slot = self.layer_cache.apply(
+                            let slot = self.surface.layer_cache.apply(
                                 &self.context.device,
                                 &self.context.queue,
                                 &mut self.filters,
@@ -837,12 +931,12 @@ impl<T: TextBackend> VelloBackend<T> {
                                                 clips: &[],
                                                 clip_mask: None,
                                             },
-                                            self.scale_factor,
+                                            self.surface.scale_factor,
                                         )?;
                                         Some((slot, origin))
                                     }
                                 };
-                                let slot = self.layer_cache.apply_filtered(
+                                let slot = self.surface.layer_cache.apply_filtered(
                                     &self.context.device,
                                     &self.context.queue,
                                     &mut self.filters,
@@ -871,7 +965,7 @@ impl<T: TextBackend> VelloBackend<T> {
                             clips: &job.clips,
                             clip_mask,
                         },
-                        self.scale_factor,
+                        self.surface.scale_factor,
                     );
                     if !cached {
                         self.filters.release(content);
@@ -929,7 +1023,7 @@ impl<T: TextBackend> VelloBackend<T> {
                         clips: &[],
                         clip_mask: None,
                     },
-                    self.scale_factor,
+                    self.surface.scale_factor,
                 )?;
                 Some(copy)
             }
@@ -952,7 +1046,7 @@ impl<T: TextBackend> VelloBackend<T> {
                 clips: &[],
                 clip_mask: None,
             },
-            self.scale_factor,
+            self.surface.scale_factor,
         );
         if let Some(copy) = traversed {
             self.filters.release(copy.slot);
@@ -1013,13 +1107,13 @@ impl<T: TextBackend> VelloBackend<T> {
     /// frame holds the layer's *result*, not the pixels it was made from.
     fn damaged_region(&mut self, frame: &BuiltFrame, size: (u32, u32)) -> Option<[i32; 4]> {
         // The tracker diffs consecutive frames, so it sees every one.
-        let damage = self.damage.update(frame);
+        let damage = self.surface.damage.update(frame);
         let whole = [0, 0, size.0 as i32, size.1 as i32];
-        if std::mem::take(&mut self.force_full) {
+        if std::mem::take(&mut self.surface.force_full) {
             return Some(whole);
         }
         let bounds = damage.bounds()?;
-        let scale = self.scale_factor;
+        let scale = self.surface.scale_factor;
         // One pixel of margin: antialiased edges reach past the exact bounds.
         let mut region = [
             ((bounds.min.x * scale).floor() as i32 - 1).max(0),
@@ -1106,7 +1200,7 @@ impl<T: TextBackend> VelloBackend<T> {
 
     /// Copies a freshly drawn region into the persistent frame.
     fn copy_into_target(&self, slot: Slot, extent: (u32, u32), at: (i32, i32)) {
-        let target = self.target.as_ref().expect("target");
+        let target = self.surface.target.as_ref().expect("target");
         let mut encoder =
             self.context
                 .device
@@ -1150,13 +1244,14 @@ impl<T: TextBackend> VelloBackend<T> {
 impl<T: TextBackend> RenderBackend<TextHost<T>> for VelloBackend<T> {
     type Error = VelloBackendError;
 
-    fn begin_frame(&mut self, size: Size<f32>) -> Result<(), Self::Error> {
-        self.presented = false;
-        let width = (size.width * self.scale_factor).round().max(1.0) as u32;
-        let height = (size.height * self.scale_factor).round().max(1.0) as u32;
-        if (width, height) != self.size_px {
-            self.size_px = (width, height);
-            if let Some(presenter) = &mut self.presenter {
+    fn begin_frame(&mut self, window: WindowId, size: Size<f32>) -> Result<(), Self::Error> {
+        self.select(window)?;
+        self.surface.presented = false;
+        let width = (size.width * self.surface.scale_factor).round().max(1.0) as u32;
+        let height = (size.height * self.surface.scale_factor).round().max(1.0) as u32;
+        if (width, height) != self.surface.size_px {
+            self.surface.size_px = (width, height);
+            if let Some(presenter) = &mut self.surface.presenter {
                 presenter.config.width = width;
                 presenter.config.height = height;
                 presenter
@@ -1170,8 +1265,9 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for VelloBackend<T> {
 
     fn submit(&mut self, frame: &BuiltFrame, text: &mut TextHost<T>) -> Result<(), Self::Error> {
         self.filters.begin_frame();
-        self.layer_cache.begin_frame();
+        self.surface.layer_cache.begin_frame();
         let size = self
+            .surface
             .target
             .as_ref()
             .expect("begin_frame ensures a target")
@@ -1179,8 +1275,8 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for VelloBackend<T> {
 
         // Fonts are not part of the scene: a different set shapes differently.
         let font_epoch = Some(text.font_epoch());
-        if self.font_epoch != font_epoch {
-            self.font_epoch = font_epoch;
+        if self.surface.font_epoch != font_epoch {
+            self.surface.font_epoch = font_epoch;
             self.invalidate();
         }
 
@@ -1196,7 +1292,7 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for VelloBackend<T> {
         self.frame_stats.last_region = region;
         self.frame_stats.last_pixels = pixels;
         self.frame_stats.total_pixels += pixels;
-        self.needs_present = true;
+        self.surface.needs_present = true;
 
         let rasterizer = if self.options.bitmap_text {
             text.backend().rasterizer().cloned()
@@ -1222,11 +1318,11 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for VelloBackend<T> {
         });
         let (surface, found) = encode_frame(
             frame,
-            self.scale_factor,
+            self.surface.scale_factor,
             region,
             device.limits().max_texture_dimension_2d,
-            &self.layer_cache,
-            &self.damage,
+            &self.surface.layer_cache,
+            &self.surface.damage,
             text,
             &mut self.fonts,
             &self.images,
@@ -1254,11 +1350,19 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for VelloBackend<T> {
             self.copy_into_target(slot, extent, (region[0], region[1]));
             self.filters.release(slot);
         }
-        self.layer_cache.finish_frame(
+        // The budget is the backend's: what the other windows' caches hold
+        // comes out of this window's share.
+        let others: u64 = self
+            .parked
+            .values()
+            .map(|surface| surface.layer_cache.size(&self.filters).1)
+            .sum();
+        let budget = self.options.layer_cache_budget_bytes.saturating_sub(others);
+        self.surface.layer_cache.finish_frame(
             frame,
-            &self.damage,
+            &self.surface.damage,
             &mut self.filters,
-            self.options.layer_cache_budget_bytes,
+            budget,
         );
         // Pending evictions apply now, so the budgets hold between frames.
         self.images.settle();
@@ -1267,16 +1371,20 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for VelloBackend<T> {
     }
 
     fn end_frame(&mut self) -> Result<(), Self::Error> {
-        if self.presenter.is_none() || !self.needs_present {
+        if self.surface.presenter.is_none() || !self.surface.needs_present {
             // Nothing new to show: the window still has the last frame.
-            self.presented = true;
+            self.surface.presented = true;
             return Ok(());
         }
         let Some(frame) = self.acquire()? else {
             return Ok(());
         };
-        let presenter = self.presenter.as_ref().expect("presenting backend");
-        let target = self.target.as_ref().expect("begin_frame ensures a target");
+        let presenter = self.surface.presenter.as_ref().expect("presenting backend");
+        let target = self
+            .surface
+            .target
+            .as_ref()
+            .expect("begin_frame ensures a target");
         let bind_group = target.bind_group.as_ref().expect("presenting target");
         let view = frame
             .texture
@@ -1310,27 +1418,115 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for VelloBackend<T> {
         }
         self.context.queue.submit([encoder.finish()]);
         self.context.queue.present(frame);
-        self.needs_present = false;
-        self.presented = true;
+        self.surface.needs_present = false;
+        self.surface.presented = true;
         Ok(())
     }
 
     fn did_present(&self) -> bool {
-        self.presented
+        self.surface.presented
     }
 
-    fn resize(&mut self, _size: Size<f32>) -> Result<(), Self::Error> {
+    fn resize(&mut self, _window: WindowId, _size: Size<f32>) -> Result<(), Self::Error> {
         // `begin_frame` reconfigures from the size it is given.
         Ok(())
     }
 
-    fn set_factor(&mut self, factor: f32) -> Result<(), Self::Error> {
-        self.scale_factor = factor;
-        self.invalidate();
+    fn set_factor(&mut self, window: WindowId, factor: f32) -> Result<(), Self::Error> {
+        let Self {
+            surface,
+            window: active,
+            parked,
+            filters,
+            ..
+        } = self;
+        let surface = if active.is_none_or(|active| active == window) {
+            surface
+        } else {
+            parked
+                .get_mut(&window)
+                .ok_or(VelloBackendError::UnknownWindow)?
+        };
+        surface.scale_factor = factor;
+        surface.invalidate(filters);
         Ok(())
     }
 
+    fn remove_surface(&mut self, window: WindowId) {
+        if let Some(mut parked) = self.parked.remove(&window) {
+            parked.layer_cache.clear(&mut self.filters);
+            return;
+        }
+        if self.window != Some(window) {
+            return;
+        }
+        // The window last drawn: another takes its place, so the backend
+        // never holds a closed window's surface.
+        let next = self.parked.keys().next().copied();
+        match next.and_then(|next| Some((next, self.parked.remove(&next)?))) {
+            Some((next, surface)) => {
+                let mut closed = std::mem::replace(&mut self.surface, surface);
+                closed.layer_cache.clear(&mut self.filters);
+                self.window = Some(next);
+            }
+            None => {
+                self.surface.layer_cache.clear(&mut self.filters);
+                self.surface = WindowSurface::new(None, (1, 1), self.surface.scale_factor);
+                self.window = None;
+            }
+        }
+    }
+
     fn handle_node_lifecycle(&mut self, _event: &NodeLifecycleEvent) {}
+}
+
+/// The configuration a window's surface is presented with, at `size`.
+fn surface_config(
+    adapter: &wgpu::Adapter,
+    surface: &wgpu::Surface<'static>,
+    size: xui_shell::PhysicalSize,
+) -> Result<wgpu::SurfaceConfiguration, VelloBackendError> {
+    let mut config = surface
+        .get_default_config(adapter, size.width.max(1), size.height.max(1))
+        .ok_or(VelloBackendError::UnsupportedSurface)?;
+    // Vello's output is already sRGB-encoded, so present through a
+    // non-sRGB format and let the blit copy bytes through unchanged.
+    let formats = surface.get_capabilities(adapter).formats;
+    let linear = config.format.remove_srgb_suffix();
+    config.format = if formats.contains(&linear) {
+        linear
+    } else {
+        formats
+            .iter()
+            .copied()
+            .find(|format| !format.is_srgb())
+            .unwrap_or(config.format)
+    };
+    config.present_mode = wgpu::PresentMode::AutoVsync;
+    config.usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
+    Ok(config)
+}
+
+/// Draws every window on one device, with one set of caches.
+impl<T: TextBackend> SurfaceBackend for VelloBackend<T> {
+    fn supports_surfaces(&self) -> bool {
+        self.gpu.is_some()
+    }
+
+    fn bind_primary(&mut self, window: WindowId) {
+        if self.window.is_none() {
+            self.window = Some(window);
+        }
+    }
+
+    fn attach_surface(
+        &mut self,
+        window: WindowId,
+        surface: Arc<dyn SurfaceTarget>,
+    ) -> Result<(), PlatformError> {
+        self.attach(window, surface)
+            .map_err(|error| PlatformError::new(error.to_string()))
+    }
 }
 
 /// Whether a band drawn on `clear` covers every pixel, so its straight alpha

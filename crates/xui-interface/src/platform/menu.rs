@@ -3,23 +3,23 @@
 
 use crate::{CommandId, Shortcut};
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MenuBar(pub Vec<Menu>);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Menu {
     pub label: String,
     pub entries: Vec<MenuEntry>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuEntry {
     Item(MenuItem),
     Separator,
     Submenu(Menu),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MenuItem {
     pub label: String,
     /// Raised as a command event when the item is chosen.
@@ -54,7 +54,10 @@ impl MenuItem {
 /// `Hidden` cannot empty a macOS menu bar, so there it is `Inherit`; on
 /// Windows only the main window shows an inherited menu, so a secondary window
 /// does not carry the whole application menu unless it asks to.
-#[derive(Debug, Clone, PartialEq, Default)]
+///
+/// The bar is shared, as the application's is: this is cloned and compared
+/// every time the shell syncs a window, and only its pointer moves then.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum WindowMenu {
     /// The application's menu bar.
     #[default]
@@ -62,7 +65,7 @@ pub enum WindowMenu {
     /// No menu for this window.
     Hidden,
     /// A menu bar of the window's own.
-    Own(MenuBar),
+    Own(std::sync::Arc<MenuBar>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -817,7 +817,8 @@ fn a_resource_starts_with_its_sources_and_writes_its_result() {
         let mut text = crate::text::TextHost::new(crate::text::testing::ZeroTextBackend);
         let mut backend = crate::render::MockRenderBackend::default();
         for _ in 0..400 {
-            app.render(&mut backend, &mut text).unwrap();
+            app.render(app.main_window(), &mut backend, &mut text)
+                .unwrap();
             if shown(app) == expected {
                 return;
             }
@@ -1086,7 +1087,8 @@ fn each_window_reads_its_own_system_keys() {
     use crate::system::{viewport::LogicalSize, window::Maximized};
 
     let mut windows = Windows::new();
-    let (main, second) = (windows.main_id(), windows.open());
+    let main = windows.main_id();
+    let second = windows.open(xui_interface::WindowOptions::default(), None);
     let mut runtime = Runtime::new();
     for (window, width) in [(main, 600.0), (second, 300.0)] {
         runtime.provide_keyed::<Maximized>(window, false);
@@ -1121,5 +1123,324 @@ fn each_window_reads_its_own_system_keys() {
     assert_eq!(
         shown(windows.ui(second), &runtime, in_second),
         "<text>false 320</text>"
+    );
+}
+
+#[component]
+fn with_settings() {
+    let open: bool = state!(false);
+    let count: i32 = state!(0);
+    view! {
+        column {
+            text(format!("count {count}"))
+            if *open {
+                window(
+                    title: "Settings",
+                    size: (300.0, 200.0),
+                    on_close_requested: |cx| open.set(cx, false),
+                ) {
+                    column {
+                        text(format!("shared {count}"))
+                        portal { text("tip") }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_window_block_mounts_its_content_as_a_window_of_its_own() {
+    use crate::windows::WindowChange;
+
+    let mut windows = Windows::new();
+    let mut runtime = Runtime::new();
+    let main = windows.main_id();
+    let root = windows.ui(main).root();
+    let id = runtime.mount::<WithSettings>(&mut windows, root, WithSettingsProps {});
+    assert!(windows.take_changes().is_empty());
+
+    let instance = runtime.instance::<WithSettings>(id).unwrap();
+    let (open, count) = (instance.open.clone(), instance.count.clone());
+    runtime.batch(&mut windows, |cx| open.set(cx, true));
+    let [WindowChange::Opened(second, options)] = &windows.take_changes()[..] else {
+        panic!("one window opened");
+    };
+    let second = *second;
+    assert_eq!(options.title, "Settings");
+    assert_eq!(
+        options.inner_size,
+        Some(crate::core::Size::new(300.0, 200.0).into())
+    );
+
+    // The content is the second window's tree, not in the main window's flow,
+    // and its portal is under the second window's overlayer.
+    assert_eq!(
+        shown(windows.ui(main), &runtime, id),
+        "<container><text>count 0</text></container>"
+    );
+    let ui = windows.ui(second);
+    let content: Vec<_> = ui
+        .children(ui.root())
+        .filter(|&child| child != ui.root_overlayer())
+        .collect();
+    assert_eq!(content.len(), 1);
+    assert_eq!(
+        markup(ui, content[0]),
+        "<container><text>shared 0</text></container>"
+    );
+    let tips: Vec<_> = ui.children(ui.root_overlayer()).collect();
+    assert_eq!(tips.len(), 1);
+    assert_eq!(markup(ui, tips[0]), "<text>tip</text>");
+    assert_eq!(
+        windows
+            .main()
+            .ui
+            .children(windows.main().ui.root_overlayer())
+            .count(),
+        0
+    );
+
+    // One state, read in both windows.
+    runtime.batch(&mut windows, |cx| count.set(cx, 3));
+    assert_eq!(
+        shown(windows.ui(main), &runtime, id),
+        "<container><text>count 3</text></container>"
+    );
+    assert_eq!(
+        markup(windows.ui(second), content[0]),
+        "<container><text>shared 3</text></container>"
+    );
+
+    // The close button asks; the handler closes it by writing `open`.
+    let ask = windows
+        .get(second)
+        .unwrap()
+        .on_close_requested
+        .clone()
+        .unwrap();
+    ask();
+    runtime.flush(&mut windows);
+    assert_eq!(windows.take_changes(), [WindowChange::Closed(second)]);
+    assert!(windows.get(second).is_none());
+    let closed = windows.take_closed();
+    assert_eq!(closed.len(), 1);
+    assert!(
+        !closed[0].ui.contains(content[0]),
+        "the content was removed, not dropped with the tree"
+    );
+    drop(closed);
+    assert_eq!(windows.try_window_of(content[0]), None);
+
+    // Opened again, then unmounted with the component: closed, and nothing left.
+    runtime.batch(&mut windows, |cx| open.set(cx, true));
+    let [WindowChange::Opened(again, _)] = &windows.take_changes()[..] else {
+        panic!("opened again");
+    };
+    let again = *again;
+    runtime.unmount(&mut windows, id);
+    assert_eq!(windows.take_changes(), [WindowChange::Closed(again)]);
+    assert!(runtime.graph().is_empty());
+}
+
+#[component]
+fn plain_window() {
+    view! {
+        window(title: "Plain") {
+            text("plain")
+        }
+    }
+}
+
+#[test]
+fn an_app_tells_its_host_about_the_windows_it_opens_and_closes() {
+    use crate::app::App;
+    use crate::render::MockRenderBackend;
+    use crate::runtime::GuiRuntime;
+    use crate::system::window::Visible;
+    use crate::text::testing::ZeroTextBackend;
+    use xui_interface::PlatformCommand;
+
+    let opened = |commands: Vec<PlatformCommand>, title: &str| match &commands[..] {
+        [PlatformCommand::OpenWindow { window, options }] => {
+            assert_eq!(options.title, title);
+            *window
+        }
+        other => panic!("expected one window opened, got {other:?}"),
+    };
+
+    let mut app = App::new(|_| {});
+    let id = app.mount::<WithSettings>(WithSettingsProps {});
+    // Mounted at once, so its window is asked for right away.
+    app.mount::<PlainWindow>(PlainWindowProps {});
+    let open = app
+        .reactive()
+        .instance::<WithSettings>(id)
+        .unwrap()
+        .open
+        .clone();
+    let mut gui = GuiRuntime::new(app, MockRenderBackend::default(), ZeroTextBackend);
+    let plain = opened(gui.take_platform_commands(), "Plain");
+
+    gui.app_mut().update(|cx| open.set(cx, true));
+    gui.frame().unwrap();
+    let settings = opened(gui.take_platform_commands(), "Settings");
+
+    // With a handler, asking runs it, and it closes the window.
+    gui.app_mut().request_close(settings);
+    gui.frame().unwrap();
+    assert_eq!(
+        gui.take_platform_commands(),
+        [PlatformCommand::CloseWindow(settings)]
+    );
+
+    // Not on screen until a host shows it.
+    assert!(!gui.app().reactive().keyed::<Visible>(plain));
+    // Without a handler, the window is hidden and kept.
+    gui.set_visible(plain, true);
+    assert!(gui.app().reactive().keyed::<Visible>(plain));
+    gui.app_mut().request_close(plain);
+    gui.frame().unwrap();
+    assert!(gui.take_platform_commands().is_empty());
+    assert!(!gui.app().reactive().keyed::<Visible>(plain));
+}
+
+#[component]
+fn two_buttons() {
+    let main_clicks: i32 = state!(0);
+    let second_clicks: i32 = state!(0);
+    view! {
+        column {
+            container(width: 100.0, height: 100.0, on_click: |cx| main_clicks.update(cx, |c| *c += 1))
+            text(format!("main {main_clicks} second {second_clicks}"))
+            window(title: "Second") {
+                container(width: 100.0, height: 100.0, on_click: |cx| second_clicks.update(cx, |c| *c += 1))
+            }
+        }
+    }
+}
+
+#[test]
+fn each_window_takes_its_own_input_and_draws_its_own_frames() {
+    use crate::app::App;
+    use crate::core::{Point, Size};
+    use crate::render::MockRenderBackend;
+    use crate::runtime::{GuiRuntime, RuntimeEvent};
+    use crate::text::testing::ZeroTextBackend;
+    use crate::ui_runtime::tests::{pointer_at, pointer_move};
+    use std::time::{Duration, Instant};
+    use xui_interface::PlatformCommand;
+    use xui_interface::events::RawEvent;
+
+    let mut app = App::new(|_| {});
+    let id = app.mount::<TwoButtons>(TwoButtonsProps {});
+    let main = app.main_window();
+    let mut gui = GuiRuntime::new(app, MockRenderBackend::default(), ZeroTextBackend);
+    let second = match &gui.take_platform_commands()[..] {
+        [PlatformCommand::OpenWindow { window, .. }] => *window,
+        other => panic!("expected one window opened, got {other:?}"),
+    };
+    let start = Instant::now();
+
+    // Not drawn until the host gives it a surface.
+    assert!(!gui.is_attached(second));
+    assert!(!gui.frame_window_at(second, start).unwrap().rendered);
+    gui.attach(second);
+    for window in [main, second] {
+        gui.handle_window_event(window, RuntimeEvent::Resize(Size::new(200.0, 200.0)));
+        assert!(gui.frame_window_at(window, start).unwrap().rendered);
+    }
+    // One backend draws both, each frame on its own window.
+    assert_eq!(gui.backend().frames_of(main), 1);
+    assert_eq!(gui.backend().frames_of(second), 1);
+
+    // A click at the same spot in the second window runs the second
+    // window's handler, not the one under it in the main window.
+    let point = Point::new(50.0, 50.0);
+    for event in [
+        pointer_move(point),
+        RawEvent::PointerDown(pointer_at(point)),
+        RawEvent::PointerUp(pointer_at(point)),
+    ] {
+        gui.handle_window_event(second, RuntimeEvent::Input(event));
+    }
+    let tick = start + Duration::from_millis(16);
+    assert!(gui.frame_window_at(main, tick).unwrap().rendered);
+    assert_eq!(
+        shown(gui.app().window_ui(main), gui.app().reactive(), id),
+        "<container><container></container><text>main 0 second 1</text></container>"
+    );
+
+    // Each window is drawn when something in it changed, and not otherwise.
+    assert!(gui.frame_window_at(second, tick).unwrap().rendered);
+    assert!(!gui.frame_window_at(second, tick).unwrap().rendered);
+    assert!(!gui.frame_window_at(main, tick).unwrap().rendered);
+
+    // Each window's frames are timed by its own clock: framing one does not
+    // move the other's.
+    let main_frame = gui.app().frame_time(main);
+    let second_frame = gui.app().frame_time(second).index();
+    gui.frame_window_at(second, tick + Duration::from_millis(16))
+        .unwrap();
+    assert_eq!(gui.app().frame_time(main), main_frame);
+    assert_eq!(gui.app().frame_time(second).index(), second_frame + 1);
+
+    // Closed with the component: the backend lets go of its surface.
+    gui.app_mut().unmount(id);
+    assert_eq!(
+        gui.take_platform_commands(),
+        [PlatformCommand::CloseWindow(second)]
+    );
+    assert!(!gui.is_attached(second));
+    assert_eq!(gui.backend().removed, [second]);
+    assert!(!gui.frame_window_at(second, tick).unwrap().rendered);
+}
+
+#[test]
+fn each_window_reaches_the_host_as_itself() {
+    use crate::app::App;
+    use crate::render::MockRenderBackend;
+    use crate::runtime::GuiRuntime;
+    use crate::text::testing::ZeroTextBackend;
+    use std::time::Instant;
+    use xui_interface::{PlatformCommand, WindowCommand};
+
+    let mut app = App::new(|_| {});
+    app.mount::<PlainWindow>(PlainWindowProps {});
+    let main = app.main_window();
+    let mut gui = GuiRuntime::new(app, MockRenderBackend::default(), ZeroTextBackend);
+    let second = match &gui.take_window_commands()[..] {
+        [(window, PlatformCommand::OpenWindow { window: opened, .. })] => {
+            assert_eq!(*window, main, "the main window's block opened it");
+            *opened
+        }
+        other => panic!("expected one window opened, got {other:?}"),
+    };
+    gui.attach(second);
+
+    // Its tree reaches the host through a handle of its own.
+    let handle = gui.app().window_platform(second);
+    assert_eq!(gui.app().window_ui(second).platform().window(), second);
+    handle.set_title("Second");
+    gui.frame_window_at(second, Instant::now()).unwrap();
+    gui.frame_window_at(main, Instant::now()).unwrap();
+    assert_eq!(
+        gui.window_platform_output(second).unwrap().title.as_deref(),
+        Some("Second")
+    );
+    assert_eq!(gui.platform_output().title, None);
+
+    // A window command is for the window that sent it: a host with the main
+    // window alone drops it rather than carry it out on the main window.
+    handle.send(PlatformCommand::Window(WindowCommand::Minimize));
+    handle.send(PlatformCommand::OpenUrl("https://example.com".into()));
+    assert_eq!(
+        gui.take_platform_commands(),
+        [PlatformCommand::OpenUrl("https://example.com".into())]
+    );
+    handle.send(PlatformCommand::Window(WindowCommand::Minimize));
+    assert_eq!(
+        gui.take_window_commands(),
+        [(second, PlatformCommand::Window(WindowCommand::Minimize))]
     );
 }

@@ -1,9 +1,9 @@
-use std::cell::{Cell, OnceCell, RefCell};
+use std::cell::{Cell, OnceCell};
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::rc::Weak;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use dispatch2::MainThreadBound;
@@ -22,7 +22,8 @@ use raw_window_handle::{
     RawWindowHandle, WindowHandle,
 };
 use xui_interface::{
-    Appearance, CursorIcon, HostCapabilities, MenuBar, PlatformCommand, Rect, WindowState,
+    Appearance, CursorIcon, HostCapabilities, MenuBar, PlatformCommand, Rect, WindowId, WindowMenu,
+    WindowState,
 };
 use xui_shell::{
     Performed, PhysicalSize, PlatformWindow, PublishedHandle, ShellEvent, SurfaceTarget,
@@ -30,7 +31,7 @@ use xui_shell::{
 };
 
 use crate::host::{self, EventSink};
-use crate::menu::{self, BuiltMenuBar};
+use crate::menu;
 use crate::perform;
 use crate::view::XuiView;
 
@@ -53,9 +54,8 @@ pub struct MacWindow {
     /// paints the new size before AppKit shows it. See
     /// [`SurfaceTarget::in_live_resize`].
     resizing: Arc<AtomicBool>,
-    /// The menu bar the application supplied, and the target its items point
-    /// at, which AppKit does not retain.
-    menu_bar: MainThreadBound<RefCell<Option<BuiltMenuBar>>>,
+    /// The window's id, from [`Self::attach`] on.
+    id: OnceLock<WindowId>,
 }
 
 impl MacWindow {
@@ -136,16 +136,36 @@ impl MacWindow {
             delegate: MainThreadBound::new(delegate, mtm),
             metrics: Mutex::new((PhysicalSize::default(), 1.0)),
             resizing,
-            menu_bar: MainThreadBound::new(RefCell::new(None), mtm),
+            id: OnceLock::new(),
         };
         this.metrics();
         Arc::new(this)
     }
 
-    /// Routes the view's and the window delegate's events to `sink`.
-    pub(crate) fn attach(&self, mtm: MainThreadMarker, sink: Weak<dyn EventSink>) {
-        self.view.get(mtm).set_sink(sink.clone());
-        self.delegate.get(mtm).set_sink(sink);
+    /// Makes this window `window`'s, and routes the view's and the window
+    /// delegate's events to `sink`, as do the callbacks that find a window by
+    /// its id.
+    pub(crate) fn attach(
+        &self,
+        mtm: MainThreadMarker,
+        window: WindowId,
+        sink: Weak<dyn EventSink>,
+    ) {
+        let _ = self.id.set(window);
+        self.view.get(mtm).set_sink(window, sink.clone());
+        self.delegate.get(mtm).set_sink(window, sink.clone());
+        host::register(window, sink);
+    }
+
+    /// Takes the window off the screen and out of the routes, for good. What
+    /// is left goes when the last reference to it does.
+    pub(crate) fn close(&self, mtm: MainThreadMarker) {
+        if let Some(&window) = self.id.get() {
+            host::unregister(window);
+            menu::forget_window(mtm, window);
+        }
+        self.view.get(mtm).invalidate_display_link();
+        self.window.get(mtm).orderOut(None);
     }
 
     /// Lets the view answer hit tests -- is this point a title bar? -- from what
@@ -272,7 +292,11 @@ impl PlatformWindow for MacWindow {
             Some(mtm) => self.view.get(mtm).request_redraw(),
             // The view cannot be touched from here; the main-queue path hops
             // over for us.
-            None => host::request_redraw(),
+            None => {
+                if let Some(&window) = self.id.get() {
+                    host::request_redraw(window);
+                }
+            }
         }
     }
 
@@ -342,7 +366,9 @@ impl PlatformWindow for MacWindow {
     }
 
     fn request_redraw_at(&self, at: Instant) {
-        host::request_redraw_at(at);
+        if let Some(&window) = self.id.get() {
+            host::request_redraw_at(window, at);
+        }
     }
 
     fn set_title(&self, title: &str) {
@@ -354,14 +380,15 @@ impl PlatformWindow for MacWindow {
     }
 
     fn set_menu_bar(&self, menu_bar: Option<&MenuBar>) {
-        let Some(mtm) = MainThreadMarker::new() else {
-            return;
-        };
-        let menus = menu::complete_menu_bar(&menu::application_name(), menu_bar);
-        let built = menu::build_menu_bar(mtm, &menus);
-        NSApplication::sharedApplication(mtm).setMainMenu(Some(&built.bar));
-        // The previous bar goes now that nothing shows it; its target with it.
-        self.menu_bar.get(mtm).replace(Some(built));
+        if let Some(mtm) = MainThreadMarker::new() {
+            menu::set_app_menu_bar(mtm, menu_bar.cloned());
+        }
+    }
+
+    fn set_menu(&self, window_menu: &WindowMenu) {
+        if let (Some(mtm), Some(&window)) = (MainThreadMarker::new(), self.id.get()) {
+            menu::set_window_menu(mtm, window, window_menu.clone());
+        }
     }
 
     fn perform(&self, command: PlatformCommand) -> Performed {
@@ -407,6 +434,8 @@ fn content_size(window: &NSWindow) -> PhysicalSize {
 
 struct WindowDelegateIvars {
     sink: OnceCell<Weak<dyn EventSink>>,
+    /// The window's id, for the menu bar, which follows the key window.
+    window: OnceCell<WindowId>,
     /// See [`MacWindow::resizing`].
     resizing: Arc<AtomicBool>,
     /// The last window state the shell was told about.
@@ -486,6 +515,10 @@ define_class!(
 
         #[unsafe(method(windowDidBecomeKey:))]
         fn window_did_become_key(&self, notification: &NSNotification) {
+            if let Some(&window) = self.ivars().window.get() {
+                host::set_key(window);
+                menu::install(MainThreadMarker::from(self));
+            }
             self.send(ShellEvent::Focused(true));
             if let Some(window) = notification_window(notification) {
                 self.place_window_buttons(&window);
@@ -528,6 +561,7 @@ impl WindowDelegate {
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(WindowDelegateIvars {
             sink: OnceCell::new(),
+            window: OnceCell::new(),
             resizing,
             state: Cell::new(WindowState::default()),
             button_margin,
@@ -535,7 +569,8 @@ impl WindowDelegate {
         unsafe { msg_send![super(this), init] }
     }
 
-    fn set_sink(&self, sink: Weak<dyn EventSink>) {
+    fn set_sink(&self, window: WindowId, sink: Weak<dyn EventSink>) {
+        let _ = self.ivars().window.set(window);
         let _ = self.ivars().sink.set(sink);
     }
 

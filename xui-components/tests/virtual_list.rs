@@ -73,7 +73,7 @@ struct Harness {
 impl Harness {
     fn new() -> Self {
         let mut app = App::new(list_root);
-        app.resize(VIEWPORT);
+        app.resize(app.main_window(), VIEWPORT);
         let mut harness = Self {
             app,
             text: TextHost::new(CosmicEngine::new(1.0)),
@@ -85,7 +85,7 @@ impl Harness {
 
     fn render(&mut self) {
         self.app
-            .render(&mut self.backend, &mut self.text)
+            .render(self.app.main_window(), &mut self.backend, &mut self.text)
             .expect("mock backend cannot fail");
     }
 
@@ -130,7 +130,8 @@ impl Harness {
             timestamp: Instant::now(),
             is_inertial: false,
         });
-        self.app.dispatch_event(event, &mut self.text);
+        self.app
+            .dispatch_event(self.app.main_window(), event, &mut self.text);
         self.render();
     }
 }

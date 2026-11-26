@@ -324,10 +324,11 @@ mod tests {
     #[test]
     fn a_wheel_over_a_row_scrolls_the_list_without_panicking() {
         let mut app = App::new(list_root);
-        app.resize(Size::new(400.0, 200.0));
+        app.resize(app.main_window(), Size::new(400.0, 200.0));
         let mut text = TextHost::new(CosmicEngine::new(1.0));
         let mut backend = MockRenderBackend::default();
-        app.render(&mut backend, &mut text).expect("mock backend");
+        app.render(app.main_window(), &mut backend, &mut text)
+            .expect("mock backend");
 
         let scroller = {
             let rt = app.ui_runtime();
@@ -343,6 +344,7 @@ mod tests {
         );
 
         app.dispatch_event(
+            app.main_window(),
             RawEvent::Wheel(RawWheel {
                 position: Point::new(10.0, 10.0),
                 delta: ScrollDelta::Pixels(Translation::new(0.0, -2_000.0)),
@@ -354,7 +356,8 @@ mod tests {
             }),
             &mut text,
         );
-        app.render(&mut backend, &mut text).expect("mock backend");
+        app.render(app.main_window(), &mut backend, &mut text)
+            .expect("mock backend");
 
         let offset = app
             .ui_runtime()

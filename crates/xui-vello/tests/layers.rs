@@ -77,7 +77,9 @@ fn draw_with(
         )
         .expect("build");
     let mut text = TextHost::new(CosmicEngine::new(1.0));
-    backend.begin_frame(Size::new(SIZE, SIZE)).unwrap();
+    backend
+        .begin_frame(xui_interface::WindowId::default(), Size::new(SIZE, SIZE))
+        .unwrap();
     backend.submit(&frame, &mut text).unwrap();
     backend.end_frame().unwrap();
     Some(Frame {
@@ -653,7 +655,9 @@ impl Session {
             )
             .expect("build");
         self.source.acknowledge(&snapshot);
-        self.backend.begin_frame(Size::new(SIZE, SIZE)).unwrap();
+        self.backend
+            .begin_frame(xui_interface::WindowId::default(), Size::new(SIZE, SIZE))
+            .unwrap();
         self.backend.submit(&frame, &mut self.text).unwrap();
         self.backend.end_frame().unwrap();
         self.backend.read_pixels_rgba8().unwrap()
@@ -673,7 +677,10 @@ impl Session {
                 &FrameProperties::default(),
             )
             .expect("build");
-        other.backend.begin_frame(Size::new(SIZE, SIZE)).unwrap();
+        other
+            .backend
+            .begin_frame(xui_interface::WindowId::default(), Size::new(SIZE, SIZE))
+            .unwrap();
         other.backend.submit(&frame, &mut other.text).unwrap();
         other.backend.end_frame().unwrap();
         other.backend.read_pixels_rgba8().unwrap()
@@ -1071,7 +1078,9 @@ fn many_draws_in_the_same_clips_are_all_drawn() {
         )
         .unwrap();
     let mut text = TextHost::new(CosmicEngine::new(1.0));
-    backend.begin_frame(Size::new(WIDTH, HEIGHT)).unwrap();
+    backend
+        .begin_frame(xui_interface::WindowId::default(), Size::new(WIDTH, HEIGHT))
+        .unwrap();
     backend.submit(&frame, &mut text).unwrap();
     backend.end_frame().unwrap();
     let pixels = backend.read_pixels_rgba8().unwrap();

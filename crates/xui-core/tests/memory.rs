@@ -203,10 +203,11 @@ fn heap_per_row() {
         ROWS.with(|cell| cell.set(rows));
         let baseline = live();
         let mut app = App::new(root);
-        app.resize(Size::new(900.0, 700.0));
+        app.resize(app.main_window(), Size::new(900.0, 700.0));
         let mut backend = MockRenderBackend::default();
         for _ in 0..3 {
-            app.render(&mut backend, &mut text).expect("mock backend");
+            app.render(app.main_window(), &mut backend, &mut text)
+                .expect("mock backend");
         }
         let mounted = live() - baseline;
         let stats = text.stats();
@@ -221,7 +222,8 @@ fn heap_per_row() {
         // afterwards should be what was held before.
         for generation in 1..=50 {
             set_generation(&mut app, generation);
-            app.render(&mut backend, &mut text).expect("mock backend");
+            app.render(app.main_window(), &mut backend, &mut text)
+                .expect("mock backend");
         }
         let after = live() - baseline;
 
@@ -295,10 +297,11 @@ fn heap_attribution() {
             TRACE_ABOVE.store(bytes, Ordering::Relaxed);
         }
         let mut app = App::new(root);
-        app.resize(Size::new(900.0, 700.0));
+        app.resize(app.main_window(), Size::new(900.0, 700.0));
         let mut backend = MockRenderBackend::default();
         for _ in 0..3 {
-            app.render(&mut backend, &mut text).expect("mock backend");
+            app.render(app.main_window(), &mut backend, &mut text)
+                .expect("mock backend");
         }
         TRACE_ABOVE.store(usize::MAX, Ordering::Relaxed);
         let mounted = live() - baseline;
@@ -340,18 +343,21 @@ fn allocations_per_render() {
     let rows = 1600;
     ROWS.with(|cell| cell.set(rows));
     let mut app = App::new(root);
-    app.resize(Size::new(900.0, 700.0));
+    app.resize(app.main_window(), Size::new(900.0, 700.0));
     let mut backend = MockRenderBackend::default();
     for _ in 0..3 {
-        app.render(&mut backend, &mut text).expect("mock backend");
+        app.render(app.main_window(), &mut backend, &mut text)
+            .expect("mock backend");
     }
     let mut renders = Vec::new();
     for generation in 1..=10 {
         set_generation(&mut app, generation);
         let calls = CALLS.load(Ordering::Relaxed);
-        app.render(&mut backend, &mut text).expect("mock backend");
+        app.render(app.main_window(), &mut backend, &mut text)
+            .expect("mock backend");
         while app.is_dirty() {
-            app.render(&mut backend, &mut text).expect("mock backend");
+            app.render(app.main_window(), &mut backend, &mut text)
+                .expect("mock backend");
         }
         renders.push(CALLS.load(Ordering::Relaxed) - calls);
     }
@@ -367,9 +373,11 @@ fn allocations_per_render() {
         set_generation(&mut app, 100);
         TRACE_ABOVE.store(1, Ordering::Relaxed);
         // Slower than a frame's budget while tracing: the render is sliced.
-        app.render(&mut backend, &mut text).expect("mock backend");
+        app.render(app.main_window(), &mut backend, &mut text)
+            .expect("mock backend");
         while app.is_dirty() {
-            app.render(&mut backend, &mut text).expect("mock backend");
+            app.render(app.main_window(), &mut backend, &mut text)
+                .expect("mock backend");
         }
         TRACE_ABOVE.store(usize::MAX, Ordering::Relaxed);
         TRACING.with(|t| t.set(true));
@@ -393,16 +401,18 @@ fn frame_time_with_real_text() {
     for rows in [100usize, 400, 1600] {
         ROWS.with(|cell| cell.set(rows));
         let mut app = App::new(root);
-        app.resize(Size::new(900.0, 700.0));
+        app.resize(app.main_window(), Size::new(900.0, 700.0));
         let mut backend = MockRenderBackend::default();
         for _ in 0..3 {
-            app.render(&mut backend, &mut text).expect("mock backend");
+            app.render(app.main_window(), &mut backend, &mut text)
+                .expect("mock backend");
         }
         let mut samples = Vec::new();
         for generation in 1..=30 {
             set_generation(&mut app, generation);
             let started = std::time::Instant::now();
-            app.render(&mut backend, &mut text).expect("mock backend");
+            app.render(app.main_window(), &mut backend, &mut text)
+                .expect("mock backend");
             samples.push(started.elapsed());
         }
         samples.sort_unstable();
@@ -410,5 +420,58 @@ fn frame_time_with_real_text() {
             "{rows},{:.3}",
             samples[samples.len() / 2].as_secs_f64() * 1000.0
         );
+    }
+}
+
+thread_local! {
+    static OPEN: std::cell::RefCell<Option<Signal<bool>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `ROWS` rows in the main window, and a window holding one empty box while
+/// `open` is set.
+#[component]
+fn rows_and_a_small_window() {
+    let open: bool = state!(false);
+    OPEN.with(|slot| *slot.borrow_mut() = Some(open.clone()));
+    let rows: usize = ROWS.with(std::cell::Cell::get);
+    view! {
+        column(width: 900.0) {
+            for index in 0..*rows {
+                bare_row(index: *index).key(*index)
+            }
+            if *open {
+                window(title: "Small") { container(width: 10.0, height: 10.0) }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "benchmark; run with --release --ignored --nocapture"]
+fn heap_of_a_small_window_after_a_large_one() {
+    let mut text = TextHost::new(text_backend());
+    println!("main_rows,main_hosts,small_window_kib");
+    for rows in [0usize, 100, 1600, 6400, 25600] {
+        ROWS.with(|cell| cell.set(rows));
+        let mut app = App::new(|app| {
+            app.mount::<RowsAndASmallWindow>(RowsAndASmallWindowProps {});
+        });
+        app.resize(app.main_window(), Size::new(900.0, 700.0));
+        let mut backend = MockRenderBackend::default();
+        app.render(app.main_window(), &mut backend, &mut text)
+            .expect("mock backend");
+
+        // Opened by the next frame's flush; never drawn, as no host made it,
+        // but its tree -- three hosts: its root, overlayer and the box -- is built.
+        let before = live();
+        let open = OPEN.with(|slot| slot.borrow().clone().expect("mounted"));
+        app.update(|cx| open.set(cx, true));
+        app.render(app.main_window(), &mut backend, &mut text)
+            .expect("mock backend");
+        let small = live() - before;
+
+        // Each row is three hosts; the column is one more.
+        println!("{rows},{},{:.1}", rows * 3 + 1, kib(small));
+        drop(app);
     }
 }

@@ -34,11 +34,11 @@ use xui_interface::events::ShortcutBinding;
 use xui_interface::events::{EventResult, PhysicalKey};
 use xui_interface::{
     ClipboardContent, ClipboardTarget, ContextMenuTrigger, PlatformCommand, PlatformReply,
-    PlatformRequest, ShortcutModifiers, Size, WindowCommand, commands,
+    PlatformRequest, ShortcutModifiers, Size, WindowCommand, WindowId, commands,
 };
 use xui_macos::{MacRunner, MacRunnerOptions, MacWindow, WindowOptions, WindowSize};
 use xui_macros::component;
-use xui_shell::{PlatformWindow, SurfaceTarget};
+use xui_shell::{PlatformWindow, SurfaceBackend, SurfaceTarget};
 
 /// What the application inside the window saw.
 #[derive(Default)]
@@ -79,16 +79,19 @@ struct Probe {
     window: Arc<MacWindow>,
 }
 
+/// The main window only: the smoke test opens no other.
+impl SurfaceBackend for Probe {}
+
 impl<T> RenderBackend<T> for Probe {
     type Error = Infallible;
 
-    fn begin_frame(&mut self, size: Size<f32>) -> Result<(), Infallible> {
+    fn begin_frame(&mut self, window: WindowId, size: Size<f32>) -> Result<(), Infallible> {
         PAINTS.with(|paints| {
             paints
                 .borrow_mut()
                 .push((size, self.window.in_live_resize()));
         });
-        RenderBackend::<T>::begin_frame(&mut self.inner, size)
+        RenderBackend::<T>::begin_frame(&mut self.inner, window, size)
     }
 
     fn submit(&mut self, frame: &BuiltFrame, text: &mut T) -> Result<(), Infallible> {

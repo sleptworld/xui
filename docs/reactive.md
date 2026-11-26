@@ -139,6 +139,7 @@ reactive` (`crates/xui-core/src/reactive/tests.rs`).
 - [x] ~~`App` async writes (`SendSignal`)~~ superseded by `resource!`: `drain_async_messages` now delivers finished resource futures
 - [x] callbacks (`reactive/pass.rs`: `Callback`, `__callback`), `children` + `slot(children)` (a row of the parent's scope, `NodeKind::Slot`)
 - [x] portals: `portal(z_index:, modal:, hit_test:, scope:, anchor:, on_dismiss: |cx, reason| ..) { .. }` → `NodeKind::Portal`, content under the overlayer as an overlay entry
+- [x] window blocks: `window(title:, size:, min_size:, resizable:, decorations:, transparent:, maximized:, macos:, on_close_requested: |cx| ..) { .. }` → `NodeKind::Window`, content as the tree of a window of its own (`docs/multi-window.md`); options are read once, at mount, as a portal's are
 - [x] `context!()` / `provide!(..)`; app contexts are signals (`Runtime::provide_context`)
 - [x] `size!()` (`SizeObserver::reactive`) — known gap: a host rebuilt whole (dynamic `style`) gets a fresh observer, so the size reads `None` until the next layout
 - [x] `ticker!(..)` (`Lane::Tick`, handle registered at create, callback bound at mount)

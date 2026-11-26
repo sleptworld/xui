@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 log = { workspace = true }
 raw-window-handle = "0.6.2"
+slotmap = "1.1.1"
 xui-core = { path = "../xui-core" }
 xui-interface = { path = "../xui-interface" }
 

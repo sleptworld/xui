@@ -131,11 +131,11 @@ fn every_component_renders_in_both_themes_and_narrow_layout() {
         for theme in [Theme::light(), Theme::dark()] {
             let mut app = App::new(root);
             app.set_themes(Themes::single(theme));
-            app.resize(Size::new(280.0, 400.0));
+            app.resize(app.main_window(), Size::new(280.0, 400.0));
             let mut text = TextHost::new(CosmicEngine::new(1.0));
             let mut backend = MockRenderBackend::default();
             for _ in 0..3 {
-                app.render(&mut backend, &mut text)
+                app.render(app.main_window(), &mut backend, &mut text)
                     .unwrap_or_else(|error| panic!("{name}: {error:?}"));
             }
             let tree = app.ui_runtime();

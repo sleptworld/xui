@@ -49,7 +49,7 @@ use xui_core::{
 use xui_interface::{
     Color, FontWeight, ImageKey, NodeLifecycleEvent, PathDataId, Size, TextBackend, VectorSceneId,
 };
-use xui_shell::SurfaceTarget;
+use xui_shell::{SurfaceBackend, SurfaceTarget};
 
 use self::{
     convert::valid_scale,
@@ -399,10 +399,17 @@ impl<T: TextBackend> SkiaBackend<T> {
     }
 }
 
+/// One surface only, for now: a window block's window is not opened on Skia.
+impl<T: TextBackend> SurfaceBackend for SkiaBackend<T> {}
+
 impl<T: TextBackend> RenderBackend<TextHost<T>> for SkiaBackend<T> {
     type Error = SkiaBackendError;
 
-    fn begin_frame(&mut self, size: Size<f32>) -> Result<(), Self::Error> {
+    fn begin_frame(
+        &mut self,
+        _window: xui_interface::WindowId,
+        size: Size<f32>,
+    ) -> Result<(), Self::Error> {
         self.ensure_surface(size)?;
         self.frame_index = self.frame_index.wrapping_add(1).max(1);
         self.frame_stats = SkiaFrameStats {
@@ -584,11 +591,19 @@ impl<T: TextBackend> RenderBackend<TextHost<T>> for SkiaBackend<T> {
         self.presented
     }
 
-    fn resize(&mut self, size: Size<f32>) -> Result<(), Self::Error> {
+    fn resize(
+        &mut self,
+        _window: xui_interface::WindowId,
+        size: Size<f32>,
+    ) -> Result<(), Self::Error> {
         self.ensure_surface(size)
     }
 
-    fn set_factor(&mut self, factor: f32) -> Result<(), Self::Error> {
+    fn set_factor(
+        &mut self,
+        _window: xui_interface::WindowId,
+        factor: f32,
+    ) -> Result<(), Self::Error> {
         self.scale_factor = valid_scale(factor);
         self.raster = None;
         self.compositor = None;

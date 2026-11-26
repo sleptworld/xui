@@ -136,7 +136,7 @@ struct Harness {
 impl Harness {
     fn new(optimizations: SkiaOptimizations) -> Self {
         let mut app = App::new(scene_root);
-        app.resize(VIEWPORT);
+        app.resize(app.main_window(), VIEWPORT);
         Self {
             app,
             text: TextHost::new(CosmicEngine::new(1.0)),
@@ -152,12 +152,13 @@ impl Harness {
 
     fn render(&mut self) {
         self.app
-            .render(&mut self.backend, &mut self.text)
+            .render(self.app.main_window(), &mut self.backend, &mut self.text)
             .expect("frame renders");
     }
 
     fn event(&mut self, event: RawEvent) {
-        self.app.dispatch_event(event, &mut self.text);
+        self.app
+            .dispatch_event(self.app.main_window(), event, &mut self.text);
     }
 
     fn pixels(&mut self) -> Vec<u8> {
@@ -210,7 +211,9 @@ fn drive(harness: &mut Harness, invalidate_each_frame: bool) {
             9 => harness.event(scroll(-30.0)),
             _ => {}
         }
-        harness.app.tick_style_animations(Duration::from_millis(16));
+        harness
+            .app
+            .tick_style_animations(harness.app.main_window(), Duration::from_millis(16));
         harness.render();
     }
     // Let any transition finish so the final frame is not a moving target.
@@ -218,7 +221,9 @@ fn drive(harness: &mut Harness, invalidate_each_frame: bool) {
         if invalidate_each_frame {
             harness.backend.invalidate();
         }
-        harness.app.tick_style_animations(Duration::from_millis(50));
+        harness
+            .app
+            .tick_style_animations(harness.app.main_window(), Duration::from_millis(50));
         harness.render();
     }
 }
@@ -337,13 +342,13 @@ fn a_resized_backend_draws_the_frame_a_fresh_one_would() {
     for _ in 0..3 {
         resized.render();
     }
-    resized.app.resize(RESIZED);
+    resized.app.resize(resized.app.main_window(), RESIZED);
     for _ in 0..3 {
         resized.render();
     }
 
     let mut fresh = Harness::new(SkiaOptimizations::default());
-    fresh.app.resize(RESIZED);
+    fresh.app.resize(fresh.app.main_window(), RESIZED);
     for _ in 0..3 {
         fresh.render();
     }
@@ -358,13 +363,16 @@ fn repeated_resizes_stay_correct() {
     let mut harness = Harness::new(SkiaOptimizations::default());
     for step in 0..8 {
         let width = 400.0 + (step % 4) as f32 * 60.0;
-        harness.app.resize(Size {
-            width,
-            height: 300.0 + (step % 3) as f32 * 40.0,
-        });
+        harness.app.resize(
+            harness.app.main_window(),
+            Size {
+                width,
+                height: 300.0 + (step % 3) as f32 * 40.0,
+            },
+        );
         harness.render();
     }
-    harness.app.resize(VIEWPORT);
+    harness.app.resize(harness.app.main_window(), VIEWPORT);
     for _ in 0..3 {
         harness.render();
     }
@@ -382,7 +390,7 @@ fn repeated_resizes_stay_correct() {
 fn steady_state_frames_reuse_pooled_surfaces() {
     let mut fast = Harness::new(SkiaOptimizations::default());
     drive(&mut fast, false);
-    fast.app.mark_needs_rebuild();
+    fast.app.mark_needs_rebuild(fast.app.main_window());
     fast.render();
     let stats = fast.stats();
     assert!(
@@ -401,7 +409,7 @@ fn steady_state_frames_reuse_pooled_surfaces() {
 fn the_scene_exercises_layers_and_backdrops() {
     let mut fast = Harness::new(SkiaOptimizations::default());
     fast.render();
-    fast.app.mark_needs_rebuild();
+    fast.app.mark_needs_rebuild(fast.app.main_window());
     fast.render();
     let stats = fast.stats();
     assert!(

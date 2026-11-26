@@ -110,7 +110,7 @@ impl Harness {
         // Components mount as the app is built, so that is part of the mount.
         let started = Instant::now();
         let mut app = App::new(root);
-        app.resize(VIEWPORT);
+        app.resize(app.main_window(), VIEWPORT);
         let mut harness = Self {
             app,
             text,
@@ -126,7 +126,7 @@ impl Harness {
 
     fn render(&mut self) {
         self.app
-            .render(&mut self.backend, &mut self.text)
+            .render(self.app.main_window(), &mut self.backend, &mut self.text)
             .expect("mock backend cannot fail");
     }
 
@@ -143,7 +143,8 @@ impl Harness {
 
     /// A frame with a layout-affecting change, which is the expensive kind.
     fn resize_frame(&mut self, width: f32) -> Duration {
-        self.app.resize(Size::new(width, VIEWPORT.height));
+        self.app
+            .resize(self.app.main_window(), Size::new(width, VIEWPORT.height));
         let started = Instant::now();
         self.render();
         started.elapsed()

@@ -14,6 +14,8 @@ pub enum VelloBackendError {
     AcquireSurface,
     #[error("no frame has been rendered yet")]
     NoFrame,
+    #[error("a frame was begun for a window whose surface the backend was not given")]
+    UnknownWindow,
     #[error("reading pixels back failed: {0}")]
     Readback(String),
     #[error("the render plan cannot be run: {0}")]

@@ -6,7 +6,7 @@ use std::time::Instant;
 use xui_core::app::AppRenderError;
 use xui_core::render::RenderBackend;
 use xui_core::text::TextHost;
-use xui_interface::TextBackend;
+use xui_interface::{TextBackend, WindowId};
 
 use crate::published::PublishedHandle;
 use crate::shell::{Shell, ShellControl, ShellEvent, ShellOutcome};
@@ -14,6 +14,7 @@ use crate::window::PlatformWindow;
 
 struct Queued {
     sequence: u64,
+    window: WindowId,
     at: Instant,
     event: ShellEvent,
 }
@@ -33,11 +34,12 @@ struct Queued {
 pub struct ShellHandle<W, B, T>
 where
     W: PlatformWindow,
-    B: RenderBackend<TextHost<T>>,
+    B: RenderBackend<TextHost<T>> + crate::window::SurfaceBackend,
     T: TextBackend,
 {
     shell: RefCell<Shell<W, B, T>>,
     window: Arc<W>,
+    main: WindowId,
     published: PublishedHandle,
     queue: RefCell<VecDeque<Queued>>,
     next_sequence: Cell<u64>,
@@ -47,12 +49,13 @@ where
 impl<W, B, T> ShellHandle<W, B, T>
 where
     W: PlatformWindow,
-    B: RenderBackend<TextHost<T>>,
+    B: RenderBackend<TextHost<T>> + crate::window::SurfaceBackend,
     T: TextBackend,
 {
     pub fn new(shell: Shell<W, B, T>) -> Self {
         Self {
             window: Arc::clone(shell.window()),
+            main: shell.main_window(),
             published: shell.published(),
             shell: RefCell::new(shell),
             queue: RefCell::new(VecDeque::new()),
@@ -76,12 +79,18 @@ where
         self.exited.get()
     }
 
-    /// Handles `event`, which happened at `at`.
+    /// Handles `event`, which happened at `at`, as the main window's.
     ///
     /// Returns what handling it meant when it ran during this call. An event
     /// that had to wait -- because it arrived inside another -- returns
     /// [`ShellOutcome::CONTINUE`], and the call it waited on handles it.
     pub fn submit(&self, at: Instant, event: ShellEvent) -> ShellOutcome {
+        self.submit_window(self.main, at, event)
+    }
+
+    /// [`Self::submit`] for window `window`, one the shell opened through its
+    /// [`crate::WindowOpener`].
+    pub fn submit_window(&self, window: WindowId, at: Instant, event: ShellEvent) -> ShellOutcome {
         if self.exited.get() {
             return Self::exited_outcome();
         }
@@ -90,6 +99,7 @@ where
         self.next_sequence.set(sequence + 1);
         self.enqueue(Queued {
             sequence,
+            window,
             at,
             event,
         });
@@ -108,7 +118,7 @@ where
             let Some(next) = next else {
                 break;
             };
-            let outcome = shell.dispatch_event(next.at, next.event);
+            let outcome = shell.dispatch_window_event(next.window, next.at, next.event);
             if outcome.control == ShellControl::Exit {
                 self.exited.set(true);
                 self.queue.borrow_mut().clear();
@@ -163,7 +173,9 @@ where
     /// or window size for every one but the last.
     fn enqueue(&self, queued: Queued) {
         let mut queue = self.queue.borrow_mut();
-        if let Some(back) = queue.back_mut() {
+        if let Some(back) = queue.back_mut()
+            && back.window == queued.window
+        {
             let same_kind = matches!(
                 (&back.event, &queued.event),
                 (

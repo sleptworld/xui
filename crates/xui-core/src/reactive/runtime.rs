@@ -168,6 +168,13 @@ pub(crate) enum Owner {
     Row { instance: InstanceId, node: u16 },
     /// A portal's content, of `instance`, under the overlayer `layer`.
     Portal { instance: InstanceId, layer: NodeId },
+    /// A window block's content, of `instance`, under the root `root` of
+    /// window `window`'s tree.
+    Window {
+        instance: InstanceId,
+        window: WindowId,
+        root: NodeId,
+    },
 }
 
 /// Where a pending mount goes. Opaque: only the runtime makes one.
@@ -239,6 +246,8 @@ pub(crate) enum NodeTag {
     /// A portal: a row too, whose hosts are under the overlayer, outside
     /// the flow of the scope's other hosts.
     Portal,
+    /// A window block: a row whose hosts are in another window's tree.
+    Window,
 }
 
 /// The newest version of a template's function pointer: under `hotpatch`,
@@ -288,6 +297,7 @@ pub(crate) trait AnyInstance {
     /// What slot `index` mounts; `None` for a block.
     fn slot(self: Rc<Self>, index: u16) -> Option<super::Children>;
     fn portal(self: Rc<Self>, index: u16, notifier: &Notifier) -> super::PortalSpec;
+    fn window(self: Rc<Self>, index: u16, notifier: &Notifier) -> super::WindowSpec;
     fn as_any(&self) -> &dyn Any;
 }
 
@@ -302,6 +312,7 @@ impl<T: HasParts> AnyInstance for T {
             NodeKind::Component(child) => NodeTag::Component(child),
             NodeKind::Block | NodeKind::Outlet(_) => NodeTag::Block,
             NodeKind::Portal(_) => NodeTag::Portal,
+            NodeKind::Window(_) => NodeTag::Window,
         };
         (tag, node.parent)
     }
@@ -384,6 +395,7 @@ impl<T: HasParts> AnyInstance for T {
                 NodeKind::Host(build) => resolves(build),
                 NodeKind::Outlet(children) => resolves(children),
                 NodeKind::Portal(spec) => resolves(spec),
+                NodeKind::Window(spec) => resolves(spec),
                 NodeKind::Component(_) | NodeKind::Block => true,
             })
             && parts.effects.iter().all(|effect| match effect.run {
@@ -405,9 +417,22 @@ impl<T: HasParts> AnyInstance for T {
             _ => unreachable!("not a portal"),
         }
     }
+    fn window(self: Rc<Self>, index: u16, notifier: &Notifier) -> super::WindowSpec {
+        match self.parts().nodes[usize::from(index)].kind {
+            NodeKind::Window(spec) => hot(spec)(&self, notifier),
+            _ => unreachable!("not a window block"),
+        }
+    }
     fn as_any(&self) -> &dyn Any {
         self
     }
+}
+
+/// A mounted window block: the window it opened.
+#[derive(Clone, Copy)]
+struct MountedWindow {
+    node: u16,
+    window: WindowId,
 }
 
 /// A mounted portal: its overlay entry and that entry's visual root.
@@ -433,6 +458,7 @@ struct Mounted {
     /// expression; effect slots after the template's.
     derived: Vec<Derived>,
     portals: Vec<MountedPortal>,
+    windows: Vec<MountedWindow>,
     /// What it provides its descendants as context.
     provided: Vec<Context>,
     /// Its tickers; dropping them unregisters them.
@@ -446,13 +472,14 @@ struct Mounted {
 type AppContexts = std::collections::HashMap<std::any::TypeId, (Box<dyn Any>, Box<dyn Any>)>;
 
 /// Writes the context under `id` in `contexts` if `value` is new, and
-/// notifies its readers; creates it on first use.
+/// notifies its readers; creates it on first use, and returns the source it
+/// created then.
 fn provide_under<T: PartialEq + 'static>(
     graph: &mut Graph,
     contexts: &mut AppContexts,
     id: std::any::TypeId,
     value: T,
-) {
+) -> Option<SourceId> {
     if let Some((_, write)) = contexts.get(&id) {
         let signal = write
             .downcast_ref::<Signal<T>>()
@@ -461,10 +488,12 @@ fn provide_under<T: PartialEq + 'static>(
         // someone reads leaves work behind, so the system's keys can be
         // written on every host event without asking for frames.
         signal.replace_if_changed(graph, value);
-        return;
+        return None;
     }
-    let signal = Signal::new(graph.insert(), value);
+    let source = graph.insert();
+    let signal = Signal::new(source, value);
     contexts.insert(id, (Box::new(signal.read_only()), Box::new(signal)));
+    Some(source)
 }
 
 /// The contexts a scope mounted at `owner` sees, looked up on demand: its
@@ -483,7 +512,8 @@ impl Contexts<'_> {
         let mut owner = self.owner;
         while let Owner::Child { instance, .. }
         | Owner::Row { instance, .. }
-        | Owner::Portal { instance, .. } = owner
+        | Owner::Portal { instance, .. }
+        | Owner::Window { instance, .. } = owner
         {
             let mounted = &self.instances[instance];
             if let Some((_, source)) = mounted.provided.iter().find(|(t, _)| *t == ty) {
@@ -514,7 +544,15 @@ pub struct Runtime {
     contexts: AppContexts,
     /// Each window's contexts under the system's keys (`system::window`,
     /// `system::viewport`): what a scope in that window reads for them.
-    window_contexts: std::collections::HashMap<WindowId, AppContexts>,
+    window_contexts: std::collections::HashMap<WindowId, WindowContexts>,
+}
+
+/// One window's system contexts, and the sources they are, to drop with
+/// the window.
+#[derive(Default)]
+struct WindowContexts {
+    contexts: AppContexts,
+    sources: Vec<SourceId>,
 }
 
 impl Runtime {
@@ -604,7 +642,7 @@ impl Runtime {
             owned: Vec::new(),
             contexts: Contexts {
                 instances: &self.instances,
-                window: self.window_contexts.get(&window),
+                window: self.window_contexts.get(&window).map(|w| &w.contexts),
                 app: &self.contexts,
                 owner: place.0,
             },
@@ -635,7 +673,7 @@ impl Runtime {
     /// Sets the app's context of type `T`, which scopes without an ancestor
     /// providing one read; a scope reading it reruns when it changes.
     pub fn provide_context<T: PartialEq + 'static>(&mut self, value: T) {
-        provide_under(
+        let _ = provide_under(
             &mut self.graph,
             &mut self.contexts,
             std::any::TypeId::of::<T>(),
@@ -647,12 +685,37 @@ impl Runtime {
     /// reads in the scopes in that window. Crate-private: the keys there are,
     /// the system's, are the host's to write, and each window has its own.
     pub(crate) fn provide_keyed<K: ContextKey>(&mut self, window: WindowId, value: K::Value) {
-        provide_under(
+        let window = self.window_contexts.entry(window).or_default();
+        let created = provide_under(
             &mut self.graph,
-            self.window_contexts.entry(window).or_default(),
+            &mut window.contexts,
             std::any::TypeId::of::<K>(),
             value,
         );
+        window.sources.extend(created);
+    }
+
+    /// What the system's keys read in window `window` before its host
+    /// reports anything.
+    pub(crate) fn provide_window_defaults(&mut self, window: WindowId) {
+        use crate::system::{viewport, window as w};
+        self.provide_keyed::<w::Fullscreen>(window, false);
+        self.provide_keyed::<w::Maximized>(window, false);
+        self.provide_keyed::<w::Minimized>(window, false);
+        self.provide_keyed::<w::Focused>(window, true);
+        self.provide_keyed::<w::Visible>(window, true);
+        self.provide_keyed::<viewport::LogicalSize>(window, crate::core::Size::<f32>::ZERO);
+        self.provide_keyed::<viewport::ScaleFactor>(window, 1.0);
+    }
+
+    /// Drops window `window`'s system contexts, once nothing in it is left
+    /// to read them.
+    fn forget_window(&mut self, window: WindowId) {
+        if let Some(contexts) = self.window_contexts.remove(&window) {
+            for source in contexts.sources {
+                self.graph.remove(source);
+            }
+        }
     }
 
     /// Window `window`'s value under the key `K`, read without subscribing.
@@ -661,7 +724,7 @@ impl Runtime {
     where
         K::Value: Clone,
     {
-        let (read, _) = &self.window_contexts[&window][&std::any::TypeId::of::<K>()];
+        let (read, _) = &self.window_contexts[&window].contexts[&std::any::TypeId::of::<K>()];
         read.downcast_ref::<super::ReadSignal<K::Value>>()
             .expect("context under another type's id")
             .get()
@@ -718,6 +781,7 @@ impl Runtime {
             blocks: Vec::new(),
             derived,
             portals: Vec::new(),
+            windows: Vec::new(),
             provided,
             ticks: Vec::new(),
             owned,
@@ -791,6 +855,7 @@ impl Runtime {
                     }
                 }
                 NodeTag::Portal => self.mount_portal(windows, id, index),
+                NodeTag::Window => self.mount_window(windows, id, index),
             }
         }
 
@@ -849,11 +914,39 @@ impl Runtime {
         });
     }
 
+    /// Opens a window for window block `node` and mounts its content as the
+    /// window's tree. The window's system keys start at their defaults.
+    fn mount_window(&mut self, windows: &mut Windows, id: InstanceId, node: u16) {
+        let spec = self.instances[id]
+            .instance
+            .clone()
+            .window(node, &self.notifier);
+        let window = windows.open(spec.options, spec.on_close_requested);
+        self.provide_window_defaults(window);
+        let root = windows.ui(window).root();
+        let row = spec.content.mount(
+            self,
+            windows,
+            Owner::Window {
+                instance: id,
+                window,
+                root,
+            },
+        );
+        let mut state = BlockState::default();
+        state.rows.extend(row);
+        self.put_block(id, node, state);
+        self.instances[id]
+            .windows
+            .push(MountedWindow { node, window });
+    }
+
     /// The window a scope mounted at `owner` is in: a root's is its host's,
     /// anything else's the scope it is mounted in.
     fn window_at(&self, windows: &Windows, owner: Owner) -> WindowId {
         match owner {
             Owner::Root(host) => windows.window_of(host),
+            Owner::Window { window, .. } => window,
             Owner::Child { instance, .. }
             | Owner::Row { instance, .. }
             | Owner::Portal { instance, .. } => self.instances[instance].window,
@@ -870,6 +963,7 @@ impl Runtime {
         match mounted.owner {
             Owner::Root(host) => host,
             Owner::Portal { layer, .. } => layer,
+            Owner::Window { root, .. } => root,
             Owner::Child { instance, node } | Owner::Row { instance, node } => {
                 self.parent_host(instance, node)
             }
@@ -892,7 +986,7 @@ impl Runtime {
             return None;
         }
         match mounted.owner {
-            Owner::Root(_) | Owner::Portal { .. } => None,
+            Owner::Root(_) | Owner::Portal { .. } | Owner::Window { .. } => None,
             Owner::Child { instance, node } => self.host_after(instance, node),
             Owner::Row { instance, node } => {
                 let rows = self.block(instance, node).map_or(&[][..], |b| &b.rows[..]);
@@ -927,7 +1021,7 @@ impl Runtime {
                 .rows
                 .iter()
                 .find_map(|row| self.first_top_host(*row)),
-            NodeTag::Portal => None,
+            NodeTag::Portal | NodeTag::Window => None,
         }
     }
 
@@ -958,7 +1052,7 @@ impl Runtime {
                         self.top_hosts(row, out);
                     }
                 }
-                NodeTag::Portal => {}
+                NodeTag::Portal | NodeTag::Window => {}
             }
         }
     }
@@ -973,13 +1067,18 @@ impl Runtime {
         self.top_hosts(id, &mut hosts);
         let mut portals = Vec::new();
         self.portals_within(id, &mut portals);
+        let mut opened = Vec::new();
+        self.windows_within(id, &mut opened);
         let window = self.instances[id].window;
         self.release(id);
         let ui = windows.ui_mut(window);
         for host in hosts {
             ui.remove_subtree(host);
         }
-        for (portal, hosts) in portals {
+        // A portal is in the window of the scope that has it, which a window
+        // block inside `id` may have opened: before that window closes.
+        for (window, portal, hosts) in portals {
+            let ui = windows.ui_mut(window);
             // Taking the entry off the overlayer detaches its root, not removes it.
             ui.unmount_overlay_entry(portal.entry)
                 .expect("portal entry missing");
@@ -988,11 +1087,45 @@ impl Runtime {
                 ui.remove_subtree(host);
             }
         }
+        // Removed rather than dropped with the tree, so what is kept per node
+        // outside it (text layouts, a backend's resources) hears they are gone.
+        for (window, hosts) in opened {
+            let ui = windows.ui_mut(window);
+            for host in hosts {
+                ui.remove_subtree(host);
+            }
+            windows.close(window);
+            self.forget_window(window);
+        }
+    }
+
+    /// The windows window blocks in `id` and in everything mounted in it
+    /// opened, each with its content's hosts, which are in that window's tree.
+    fn windows_within(&self, id: InstanceId, out: &mut Vec<(WindowId, Vec<NodeId>)>) {
+        let mounted = &self.instances[id];
+        for &MountedWindow { node, window } in &mounted.windows {
+            let mut hosts = Vec::new();
+            for &row in self.block(id, node).map_or(&[][..], |b| &b.rows[..]) {
+                self.top_hosts(row, &mut hosts);
+            }
+            out.push((window, hosts));
+        }
+        let rows = mounted
+            .blocks
+            .iter()
+            .flat_map(|(_, block)| block.rows.iter());
+        for &inner in mounted.children.iter().flatten().chain(rows) {
+            self.windows_within(inner, out);
+        }
     }
 
     /// The portals of `id` and of everything mounted in it, each with its
     /// content's hosts, which are not under any of their hosts.
-    fn portals_within(&self, id: InstanceId, out: &mut Vec<(MountedPortal, Vec<NodeId>)>) {
+    fn portals_within(
+        &self,
+        id: InstanceId,
+        out: &mut Vec<(WindowId, MountedPortal, Vec<NodeId>)>,
+    ) {
         let mounted = &self.instances[id];
         for portal in &mounted.portals {
             let mut hosts = Vec::new();
@@ -1005,6 +1138,7 @@ impl Runtime {
                 visual_root,
             } = *portal;
             out.push((
+                mounted.window,
                 MountedPortal {
                     node,
                     entry,
@@ -1256,7 +1390,8 @@ impl Runtime {
                 match self.instances[id].owner {
                     Owner::Child { instance, .. }
                     | Owner::Row { instance, .. }
-                    | Owner::Portal { instance, .. } => id = instance,
+                    | Owner::Portal { instance, .. }
+                    | Owner::Window { instance, .. } => id = instance,
                     Owner::Root(_) => return Err(()),
                 }
             }
@@ -1269,7 +1404,8 @@ impl Runtime {
                 let mut owner = self.instances[id].owner;
                 while let Owner::Child { instance, .. }
                 | Owner::Row { instance, .. }
-                | Owner::Portal { instance, .. } = owner
+                | Owner::Portal { instance, .. }
+                | Owner::Window { instance, .. } = owner
                 {
                     if changed.contains(&instance) {
                         return false;

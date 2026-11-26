@@ -28,9 +28,10 @@ fn backend(options: VelloBackendOptions) -> Option<VelloBackend<CosmicEngine>> {
 /// One frame of `root`, `size` logical pixels square, into `backend`.
 fn draw(backend: &mut VelloBackend<CosmicEngine>, root: AppRoot, size: f32) -> ResourceStats {
     let mut app = App::new(root);
-    app.resize(Size::new(size, size));
+    app.resize(app.main_window(), Size::new(size, size));
     let mut text = TextHost::new(CosmicEngine::new(1.0));
-    app.render(backend, &mut text).expect("render");
+    app.render(app.main_window(), backend, &mut text)
+        .expect("render");
     backend.resource_stats()
 }
 

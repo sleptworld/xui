@@ -5929,6 +5929,7 @@ version = "0.1.0"
 dependencies = [
  "log",
  "raw-window-handle",
+ "slotmap",
  "xui-core",
  "xui-f",
  "xui-interface",

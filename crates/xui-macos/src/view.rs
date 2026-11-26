@@ -25,7 +25,7 @@ use xui_interface::events::{KeyState, KeyText, RawIme, TextPayload};
 use xui_interface::{
     Appearance, ColorScheme, ContextMenuTrigger, CursorIcon, DragEvent, DragPayload, DropAccepts,
     DropEffect, Modifiers, Point, PointerButton, Rect, ScrollDelta, TextOffset, TextRange,
-    Translation, WindowRegion, commands,
+    Translation, WindowId, WindowRegion, commands,
 };
 use xui_shell::{FrameInfo, KeyInput, PublishedHandle, ShellEvent, ShellOutcome};
 
@@ -43,6 +43,9 @@ struct KeyDown {
 
 pub(crate) struct ViewIvars {
     sink: OnceCell<Weak<dyn EventSink>>,
+    /// The window this view is the content of, for redraws asked of the main
+    /// queue.
+    window: OnceCell<WindowId>,
     modifiers: Cell<Modifiers>,
     last_position: Cell<Option<Point>>,
     cursor: RefCell<Retained<NSCursor>>,
@@ -542,6 +545,7 @@ impl XuiView {
     pub(crate) fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ViewIvars {
             sink: OnceCell::new(),
+            window: OnceCell::new(),
             modifiers: Cell::new(Modifiers::default()),
             last_position: Cell::new(None),
             cursor: RefCell::new(NSCursor::arrowCursor()),
@@ -567,7 +571,8 @@ impl XuiView {
         this
     }
 
-    pub(crate) fn set_sink(&self, sink: Weak<dyn EventSink>) {
+    pub(crate) fn set_sink(&self, window: WindowId, sink: Weak<dyn EventSink>) {
+        let _ = self.ivars().window.set(window);
         let _ = self.ivars().sink.set(sink);
     }
 
@@ -623,7 +628,11 @@ impl XuiView {
             Some(link) => link.setPaused(false),
             // Before macOS 14 there is no display link on a view; the main
             // queue coalesces requests instead, and the presenter paces them.
-            None => host::request_redraw(),
+            None => {
+                if let Some(&window) = self.ivars().window.get() {
+                    host::request_redraw(window);
+                }
+            }
         }
     }
 

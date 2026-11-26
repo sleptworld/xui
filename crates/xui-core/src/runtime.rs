@@ -5,11 +5,12 @@ use crate::{
     app::{App, AppRenderError},
     text::{TextHost, TextLayoutSlot},
 };
+use slotmap::SecondaryMap;
 use std::collections::VecDeque;
 use std::time::Instant;
 use xui_interface::{
     Appearance, CommandId, DragEvent, EventSource, HostCapabilities, PlatformCommand,
-    PlatformOutput, PlatformReply, RequestId, TextBackend as TextBackendI, WindowState,
+    PlatformOutput, PlatformReply, RequestId, TextBackend as TextBackendI, WindowId, WindowState,
     events::{EventResult, RawEvent},
 };
 
@@ -85,23 +86,62 @@ impl EventSource for QueueEventSource {
 
 pub struct GuiRuntime<B: RenderBackend<TextHost<T>>, T: TextBackendI> {
     app: App,
+    /// Draws every window.
     backend: B,
+    /// The windows a host has given a surface: the main one from the start,
+    /// any other once [`Self::attach`]ed. One without is not drawn.
+    windows: SecondaryMap<WindowId, WindowRuntime>,
+    main: WindowId,
     control_flow: ControlFlow,
     text_backend: TextHost<T>,
+}
+
+/// What one window's frames take beside the backend: the clock its
+/// animations are sampled against, and what the host last read of it.
+///
+/// The clock is the window's own: each window has frames of its own, and
+/// two ticking one clock would split each frame's delta between them.
+struct WindowRuntime {
     frame_clock: FrameClock,
     platform_output: PlatformOutput,
 }
 
-impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
-    pub fn new(app: App, backend: B, text_backend: T) -> Self {
+impl WindowRuntime {
+    fn new() -> Self {
         Self {
-            app,
-            backend,
-            control_flow: ControlFlow::Poll,
-            text_backend: TextHost::new(text_backend),
             frame_clock: FrameClock::new(),
             platform_output: PlatformOutput::default(),
         }
+    }
+}
+
+impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
+    /// A runtime for `app`, drawing its windows with `backend`, which was
+    /// made on the main window's surface.
+    pub fn new(app: App, backend: B, text_backend: T) -> Self {
+        let main = app.main_window();
+        let mut windows = SecondaryMap::new();
+        windows.insert(main, WindowRuntime::new());
+        Self {
+            app,
+            backend,
+            windows,
+            main,
+            control_flow: ControlFlow::Poll,
+            text_backend: TextHost::new(text_backend),
+        }
+    }
+
+    /// Draws window `window`, which a window block opened, from now on,
+    /// once the host has made it and given the backend its surface. Until the
+    /// app closes it.
+    pub fn attach(&mut self, window: WindowId) {
+        self.windows.insert(window, WindowRuntime::new());
+    }
+
+    /// Whether window `window` is drawn.
+    pub fn is_attached(&self, window: WindowId) -> bool {
+        self.windows.contains_key(window)
     }
 
     pub fn app(&self) -> &App {
@@ -112,6 +152,7 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
         &mut self.app
     }
 
+    /// The backend, which draws every window.
     pub fn backend(&self) -> &B {
         &self.backend
     }
@@ -132,22 +173,23 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
         self.control_flow = control_flow;
     }
 
-    /// The clock every animation in this runtime is sampled against.
+    /// The clock the main window's animations are sampled against.
     pub fn frame_clock(&self) -> &FrameClock {
-        &self.frame_clock
+        &self.windows[self.main].frame_clock
     }
 
     pub fn frame_clock_mut(&mut self) -> &mut FrameClock {
-        &mut self.frame_clock
+        &mut self.windows[self.main].frame_clock
     }
 
-    /// The time of the frame in progress, or of the last one between frames.
+    /// The time of the main window's frame in progress, or of its last one
+    /// between frames.
     pub fn frame_time(&self) -> FrameTime {
-        self.frame_clock.frame()
+        self.frame_clock().frame()
     }
 
     pub fn window_visible(&self) -> bool {
-        self.app.window_visible()
+        self.app.window_visible(self.main)
     }
 
     /// When a frame is next owed to a deadline someone asked for with
@@ -158,10 +200,10 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
     /// instant instead of waiting indefinitely; the frame then delivers the
     /// wake. `None` while the window is off screen.
     pub fn next_wake(&self) -> Option<Instant> {
-        self.app.next_wake()
+        self.app.next_wake(self.main)
     }
 
-    /// Tells the runtime whether the window is on screen.
+    /// Tells the runtime whether the main window is on screen.
     ///
     /// Two things stop together, which is why this is one call and not two.
     /// The loop stops asking for frames on animation's behalf -- see
@@ -174,25 +216,45 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
     /// never reports it simply animates the whole time, which is what every
     /// platform did before this existed.
     pub fn set_window_visible(&mut self, visible: bool) {
-        if !visible {
-            self.frame_clock.suspend();
+        self.set_visible(self.main, visible);
+    }
+
+    /// [`Self::set_window_visible`] for window `window`.
+    pub fn set_visible(&mut self, window: WindowId, visible: bool) {
+        if !visible && let Some(state) = self.windows.get_mut(window) {
+            state.frame_clock.suspend();
         }
-        self.app.set_window_visible(visible);
+        self.app.set_window_visible(window, visible);
     }
 
-    /// Tells the runtime whether the window is minimized, which components
-    /// read as [`crate::system::window::Minimized`]. Best-effort, like
-    /// [`Self::set_window_visible`]: a host that cannot tell never calls it.
+    /// Tells the runtime whether the main window is minimized, which
+    /// components read as [`crate::system::window::Minimized`]. Best-effort,
+    /// like [`Self::set_window_visible`]: a host that cannot tell never calls it.
     pub fn set_window_minimized(&mut self, minimized: bool) {
-        self.app.set_window_minimized(minimized);
+        self.set_minimized(self.main, minimized);
     }
 
+    /// [`Self::set_window_minimized`] for window `window`.
+    pub fn set_minimized(&mut self, window: WindowId, minimized: bool) {
+        self.app.set_window_minimized(window, minimized);
+    }
+
+    /// What the host should keep true of the main window.
     pub fn platform_output(&self) -> &PlatformOutput {
-        &self.platform_output
+        &self.windows[self.main].platform_output
     }
 
-    fn refresh_platform_output(&mut self) {
-        let arena = self.app.ui_runtime();
+    /// What the host should keep true of window `window`, while it is
+    /// attached.
+    pub fn window_platform_output(&self, window: WindowId) -> Option<&PlatformOutput> {
+        self.windows.get(window).map(|state| &state.platform_output)
+    }
+
+    fn refresh_platform_output(&mut self, window: WindowId) {
+        let Some(state) = self.windows.get_mut(window) else {
+            return;
+        };
+        let arena = self.app.window_ui(window);
         let text_input = arena.focus_manager().focused().and_then(|id| {
             // Focus is cleared when its node is removed, so `id` is live.
             let node = arena.node_view(id);
@@ -207,29 +269,68 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
             node.widget.platform_text_input_session(rect, layout)
         });
         let cursor = arena.resolved_cursor();
-        let (title, menu_bar, surface) = self.app.platform().output();
-        self.platform_output = PlatformOutput {
+        let output = arena.platform().output();
+        state.platform_output = PlatformOutput {
             text_input,
             cursor,
-            title,
-            menu_bar,
-            surface,
+            title: output.title,
+            menu_bar: output.menu_bar,
+            menu: output.menu,
+            surface: output.surface,
         };
     }
 
-    /// Takes the commands and requests the application has queued for the host,
-    /// in the order they were made.
+    /// Takes the commands and requests the application has queued for the
+    /// host, in the order they were made, each with the window that sent it.
     ///
     /// The shell drains this after each event and each frame. Draining is the
-    /// only way commands leave: nothing is sent until someone asks.
-    pub fn take_platform_commands(&mut self) -> Vec<PlatformCommand> {
-        self.app.platform().take_commands()
+    /// only way commands leave: nothing is sent until someone asks. The
+    /// backend lets go of a window the app closed here, as the host hears of it.
+    pub fn take_window_commands(&mut self) -> Vec<(WindowId, PlatformCommand)> {
+        let commands = self.app.platform().take_commands();
+        for (_, command) in &commands {
+            if let PlatformCommand::CloseWindow(window) = command {
+                self.windows.remove(*window);
+                self.backend.remove_surface(*window);
+            }
+        }
+        commands
     }
 
+    /// [`Self::take_window_commands`] for a host with the main window alone:
+    /// the main window's commands and the app's (a clipboard write, a request,
+    /// a window to open), but not another window's command to its own window,
+    /// which this host has no window to carry out on.
+    pub fn take_platform_commands(&mut self) -> Vec<PlatformCommand> {
+        let main = self.main;
+        self.take_window_commands()
+            .into_iter()
+            .filter_map(|(window, command)| {
+                if window != main && crate::platform::targets_window(&command) {
+                    log::warn!("{command:?} for a window this host has not opened; dropped");
+                    return None;
+                }
+                Some(command)
+            })
+            .collect()
+    }
+
+    /// Handles `event` as the main window's.
     pub fn handle_event(&mut self, event: RuntimeEvent) -> Vec<EventResult> {
+        self.handle_window_event(self.main, event)
+    }
+
+    /// Handles `event` as window `window`'s. An event about the app rather
+    /// than a window -- a reply, the capabilities, the appearance, exiting --
+    /// is the same whichever window it comes through.
+    pub fn handle_window_event(
+        &mut self,
+        window: WindowId,
+        event: RuntimeEvent,
+    ) -> Vec<EventResult> {
         match event {
             RuntimeEvent::Resize(size) => {
-                self.app.resize(size);
+                self.app.resize(window, size);
                 Vec::new()
             }
             RuntimeEvent::Input(event) => {
@@ -237,12 +338,15 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
                     RawEvent::Keyboard(raw) => Some(*raw),
                     _ => None,
                 };
-                let mut result = self.app.dispatch_event(event, &mut self.text_backend);
+                let mut result = self
+                    .app
+                    .dispatch_event(window, event, &mut self.text_backend);
                 if !result.is_consumed()
                     && let Some(raw) = keyboard
                 {
-                    if let Some((target, binding)) = self.app.resolve_shortcut(&raw) {
+                    if let Some((target, binding)) = self.app.resolve_shortcut(window, &raw) {
                         result = self.app.dispatch_command(
+                            window,
                             target,
                             binding,
                             &raw,
@@ -258,28 +362,31 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
                 if !result.is_consumed()
                     && let Some(raw) = keyboard
                 {
-                    result = self
-                        .app
-                        .dispatch_keyboard_scroll(&raw, &mut self.text_backend);
+                    result =
+                        self.app
+                            .dispatch_keyboard_scroll(window, &raw, &mut self.text_backend);
                 }
-                self.refresh_platform_output();
+                self.refresh_platform_output(window);
                 vec![result]
             }
             RuntimeEvent::Command { command, timestamp } => {
-                let result =
-                    self.app
-                        .dispatch_platform_command(command, timestamp, &mut self.text_backend);
-                self.refresh_platform_output();
+                let result = self.app.dispatch_platform_command(
+                    window,
+                    command,
+                    timestamp,
+                    &mut self.text_backend,
+                );
+                self.refresh_platform_output(window);
                 vec![result]
             }
             RuntimeEvent::Reply(id, reply) => {
                 self.app.deliver_platform_reply(id, reply);
                 // A reply to a request a widget made is not a callback: it goes
-                // to that widget as an event.
+                // to that widget as an event, in the window it is in.
                 let result = self
                     .app
                     .deliver_node_replies(Instant::now(), &mut self.text_backend);
-                self.refresh_platform_output();
+                self.refresh_platform_output(window);
                 vec![result]
             }
             RuntimeEvent::Capabilities(capabilities) => {
@@ -291,14 +398,14 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
                 Vec::new()
             }
             RuntimeEvent::WindowState(state) => {
-                self.app.set_window_state(state);
+                self.app.set_window_state(window, state);
                 Vec::new()
             }
             RuntimeEvent::Drag(drag) => {
                 let result = self
                     .app
-                    .dispatch_external_drag(drag, &mut self.text_backend);
-                self.refresh_platform_output();
+                    .dispatch_external_drag(window, drag, &mut self.text_backend);
+                self.refresh_platform_output(window);
                 vec![result]
             }
             RuntimeEvent::RedrawRequested => Vec::new(),
@@ -309,6 +416,7 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
         }
     }
 
+    /// A frame of the main window.
     pub fn frame(&mut self) -> Result<FrameReport, AppRenderError<B::Error>> {
         self.frame_at(Instant::now())
     }
@@ -319,14 +427,33 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
     /// or a benchmark can drive whole sequences of frames at chosen instants
     /// and get the same animation out of them every run.
     pub fn frame_at(&mut self, now: Instant) -> Result<FrameReport, AppRenderError<B::Error>> {
+        self.frame_window_at(self.main, now)
+    }
+
+    /// A frame of window `window` at `now`: what the app settles first is
+    /// the app's, what is stepped and drawn is the window's. A window not
+    /// attached is not drawn.
+    pub fn frame_window_at(
+        &mut self,
+        window: WindowId,
+        now: Instant,
+    ) -> Result<FrameReport, AppRenderError<B::Error>> {
         self.app.drain_async_messages();
+        if !self.windows.contains_key(window) {
+            return Ok(FrameReport {
+                rendered: false,
+                event_results: Vec::new(),
+            });
+        }
+        let visible = self.app.window_visible(window);
         // First, so what a wake changes is part of this frame. Against `now`
         // itself rather than the frame clock: a wake is a deadline on the
         // input clock, and the frame clock stands still across the idle gap a
         // wake exists to end. Off screen nothing is delivered; the wakes wait,
         // and come due together in the first frame back.
-        if self.app.window_visible() {
-            self.app.deliver_due_wakes(now, &mut self.text_backend);
+        if visible {
+            self.app
+                .deliver_due_wakes(window, now, &mut self.text_backend);
         }
         // Sampled once and published before anything is stepped: two
         // animations in one frame have to agree on when that frame is.
@@ -334,30 +461,32 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
         // Off screen the frame still happens -- something invalidated the
         // window and the picture has to be right the instant it is revealed --
         // but no time passes in it, so nothing moves through frames nobody saw.
-        let frame = if self.app.window_visible() {
-            self.frame_clock.tick(now)
+        let clock = &mut self.windows[window].frame_clock;
+        let frame = if visible {
+            clock.tick(now)
         } else {
-            self.frame_clock.hold()
+            clock.hold()
         };
-        self.app.begin_frame(frame);
-        self.app.tick_style_animations(frame.delta());
+        self.app.begin_frame(window, frame);
+        self.app.tick_style_animations(window, frame.delta());
         // Before `is_dirty`, so whatever these two set in motion is part of
         // this frame rather than of the one after it.
-        self.app.tick_animating_canvases();
-        self.app.tick_tickers(frame);
-        let should_render = self.app.is_dirty();
+        self.app.tick_animating_canvases(window);
+        self.app.tick_tickers(window, frame);
+        let should_render = self.app.window_is_dirty(window);
         if should_render {
-            self.app.render(&mut self.backend, &mut self.text_backend)?;
+            self.app
+                .render(window, &mut self.backend, &mut self.text_backend)?;
         }
-        if !self.app.is_dirty() {
+        if !self.app.window_is_dirty(window) {
             // Nothing asked for another frame, so the loop is about to wait on
             // an event and the gap until the next frame is unbounded. Stopping
             // the clock here is what makes that gap cost nothing: whenever the
             // next frame comes, it starts a fresh delta instead of replaying
             // the idle into whatever animation the event started.
-            self.frame_clock.suspend();
+            self.windows[window].frame_clock.suspend();
         }
-        self.refresh_platform_output();
+        self.refresh_platform_output(window);
         Ok(FrameReport {
             rendered: should_render,
             event_results: Vec::new(),
@@ -405,7 +534,7 @@ impl<B: RenderBackend<TextHost<T>>, T: TextBackendI> GuiRuntime<B, T> {
             let report = self.tick(event_source)?;
             merged.rendered |= report.rendered;
             merged.event_results.extend(report.event_results);
-            if self.control_flow == ControlFlow::Exit || !self.app.is_dirty() {
+            if self.control_flow == ControlFlow::Exit || !self.app.window_is_dirty(self.main) {
                 break;
             }
         }
@@ -703,12 +832,24 @@ mod tests {
         keep_animating(&mut runtime);
 
         runtime.frame_at(start).unwrap();
-        assert_eq!(runtime.app().frame_time().index(), 1);
-        assert_eq!(runtime.app().frame_time().delta(), Duration::ZERO);
+        assert_eq!(
+            runtime
+                .app()
+                .frame_time(runtime.app().main_window())
+                .index(),
+            1
+        );
+        assert_eq!(
+            runtime
+                .app()
+                .frame_time(runtime.app().main_window())
+                .delta(),
+            Duration::ZERO
+        );
 
         runtime.frame_at(start + Duration::from_millis(16)).unwrap();
 
-        let frame = runtime.app().frame_time();
+        let frame = runtime.app().frame_time(runtime.app().main_window());
         assert_eq!(frame.index(), 2);
         assert_eq!(frame.delta(), Duration::from_millis(16));
         assert_eq!(frame.timestamp(), Duration::from_millis(16));
@@ -790,7 +931,8 @@ mod tests {
         runtime.set_window_visible(false);
         // Something invalidated the window while it was hidden -- a resize, a
         // state change. It still has to paint, and it still must not move.
-        runtime.app_mut().resize(Size::new(401.0, 300.0));
+        let main = runtime.app().main_window();
+        runtime.app_mut().resize(main, Size::new(401.0, 300.0));
         runtime.frame_at(start + Duration::from_secs(30)).unwrap();
         let held = runtime.frame_time();
         assert_eq!(held.delta(), Duration::ZERO);
@@ -895,7 +1037,8 @@ mod tests {
 
         runtime.set_window_visible(false);
         // Hidden, but something invalidated the window, so a frame still runs.
-        runtime.app_mut().resize(Size::new(401.0, 300.0));
+        let main = runtime.app().main_window();
+        runtime.app_mut().resize(main, Size::new(401.0, 300.0));
         runtime.frame_at(start + Duration::from_secs(10)).unwrap();
         assert_eq!(
             ticks().len(),
@@ -1133,7 +1276,8 @@ mod tests {
             )));
             runtime.set_window_minimized(true);
             runtime.set_window_visible(false);
-            runtime.app_mut().set_scale_factor(2.0);
+            let main = runtime.app().main_window();
+            runtime.app_mut().set_scale_factor(main, 2.0);
 
             let app = runtime.app();
             assert!(app.system::<window::Fullscreen>());

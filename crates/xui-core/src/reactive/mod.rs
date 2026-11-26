@@ -142,6 +142,7 @@ pub use graph::{EffectId, Graph, InstanceId, Notifier, SourceId};
 pub use host::{HostPatcher, HostTag, PatchScope, host, patchable};
 pub use pass::{
     __callback, __children, __size_observer, Callback, CallbackArg, Children, PortalSpec,
+    WindowSpec,
 };
 pub use props::{
     __convert, __expr, __pending_with, Component, Current, Expr, FromValue, MountDraft, PropCx,

@@ -41,6 +41,9 @@ pub struct PlatformOutput {
     /// The application's menu bar. `None` leaves the host's default. Shared,
     /// because this struct is cloned and compared on every sync.
     pub menu_bar: Option<Arc<MenuBar>>,
+    /// The menu that applies while this window is active: the application's
+    /// unless the window says otherwise.
+    pub menu: WindowMenu,
     /// What a native callback may need to know without asking the runtime.
     pub surface: PublishedSurface,
 }

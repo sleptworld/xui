@@ -37,6 +37,15 @@
 //! [`WindowOptions`] describes the window an application asks for, in terms
 //! every host can map onto its own window creation.
 //!
+//! # More than one window
+//!
+//! The shell starts on the main window. A host that can open others gives
+//! [`Shell::with_opener`] a [`WindowOpener`], which the shell calls when the
+//! application mounts a `window(..) { .. }` block, and sends each such window's
+//! events to [`Shell::dispatch_window_event`] (or
+//! [`ShellHandle::submit_window`]). A host that gives none works as a
+//! single-window host always has.
+//!
 //! The design, and what is and is not built yet, is in `docs/shell-api.md`.
 
 mod handle;
@@ -50,7 +59,7 @@ pub use raw_window_handle;
 pub use shell::{
     FrameInfo, KeyInput, Shell, ShellControl, ShellEvent, ShellOptions, ShellOutcome, TouchPhase,
 };
-pub use window::{Performed, PlatformWindow, SurfaceTarget};
+pub use window::{Performed, PlatformWindow, SurfaceBackend, SurfaceTarget, WindowOpener};
 // Defined in `xui-interface`, where the runtime can name them too; re-exported
 // so hosts keep finding them here.
 pub use xui_interface::{MacOsWindowOptions, PhysicalSize, WindowOptions, WindowSize};

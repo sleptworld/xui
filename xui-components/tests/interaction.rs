@@ -183,7 +183,8 @@ fn default_input_controller_survives_parent_rebuilds() {
     h.click();
     h.event(keyboard(None, Some("x")));
     assert_eq!(h.input_text(), "x");
-    h.runtime.app_mut().mark_needs_rebuild();
+    let main = h.runtime.app().main_window();
+    h.runtime.app_mut().mark_needs_rebuild(main);
     h.render();
     assert_eq!(h.input_text(), "x");
 }

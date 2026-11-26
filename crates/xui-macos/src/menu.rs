@@ -19,6 +19,7 @@
 //! Cmd+C and Cmd+M work out of the box.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ffi::CString;
 
 use objc2::rc::Retained;
@@ -29,7 +30,7 @@ use objc2_foundation::{NSObject, NSObjectProtocol, NSProcessInfo, NSString};
 use xui_interface::events::{NamedKey, PhysicalKey};
 use xui_interface::{
     CommandId, Menu, MenuBar, MenuEntry, MenuItem, MenuRole, Shortcut, ShortcutKey,
-    ShortcutModifiers, commands,
+    ShortcutModifiers, WindowId, WindowMenu, commands,
 };
 use xui_shell::ShellEvent;
 
@@ -334,7 +335,7 @@ define_class!(
                 .ok()
                 .and_then(|index| self.ivars().commands.borrow().get(index).copied());
             if let Some(command) = command {
-                host::send_current(ShellEvent::Command(command));
+                host::send_key(ShellEvent::Command(command));
             }
         }
     }
@@ -351,6 +352,69 @@ impl MenuTarget {
         commands.push(command);
         (commands.len() - 1) as isize
     }
+}
+
+thread_local! {
+    /// The application's menu bar: what a window that inherits shows.
+    static APP_MENU_BAR: RefCell<Option<MenuBar>> = const { RefCell::new(None) };
+    /// What each window asked to show while it is key.
+    static WINDOW_MENUS: RefCell<HashMap<WindowId, WindowMenu>> = RefCell::new(HashMap::new());
+    /// What the screen's menu bar was last built from, and the bar, which
+    /// holds the target its items point at.
+    static INSTALLED: RefCell<Option<(Option<MenuBar>, BuiltMenuBar)>> = const { RefCell::new(None) };
+}
+
+/// Sets the application's menu bar, and shows it if the key window inherits it.
+pub(crate) fn set_app_menu_bar(mtm: MainThreadMarker, menu_bar: Option<MenuBar>) {
+    APP_MENU_BAR.with(|app| *app.borrow_mut() = menu_bar);
+    install(mtm);
+}
+
+/// Sets what `window` shows while it is key.
+pub(crate) fn set_window_menu(mtm: MainThreadMarker, window: WindowId, menu: WindowMenu) {
+    WINDOW_MENUS.with(|menus| menus.borrow_mut().insert(window, menu));
+    if host::key_window() == Some(window) {
+        install(mtm);
+    }
+}
+
+/// `window` closed.
+pub(crate) fn forget_window(mtm: MainThreadMarker, window: WindowId) {
+    WINDOW_MENUS.with(|menus| menus.borrow_mut().remove(&window));
+    install(mtm);
+}
+
+/// Puts the key window's menu on the screen's menu bar: its own, or the
+/// application's. A Mac's menu bar is never empty, so `Hidden` shows the
+/// application's too. Built again only when that changed.
+pub(crate) fn install(mtm: MainThreadMarker) {
+    let own = host::key_window().and_then(|window| {
+        WINDOW_MENUS.with(|menus| match menus.borrow().get(&window) {
+            Some(WindowMenu::Own(bar)) => Some((**bar).clone()),
+            _ => None,
+        })
+    });
+    let wanted = own.or_else(|| APP_MENU_BAR.with(|app| app.borrow().clone()));
+    let unchanged = INSTALLED.with(|installed| match &*installed.borrow() {
+        Some((shown, _)) => *shown == wanted,
+        // What `run` put up: the defaults, which is what no bar asks for.
+        None => wanted.is_none(),
+    });
+    if unchanged {
+        return;
+    }
+    let menus = complete_menu_bar(&application_name(), wanted.as_ref());
+    let built = build_menu_bar(mtm, &menus);
+    objc2_app_kit::NSApplication::sharedApplication(mtm).setMainMenu(Some(&built.bar));
+    // The previous bar goes now that nothing shows it; its target with it.
+    INSTALLED.with(|installed| *installed.borrow_mut() = Some((wanted, built)));
+}
+
+/// The run is over.
+pub(crate) fn clear() {
+    APP_MENU_BAR.with(|app| *app.borrow_mut() = None);
+    WINDOW_MENUS.with(|menus| menus.borrow_mut().clear());
+    INSTALLED.with(|installed| *installed.borrow_mut() = None);
 }
 
 /// A menu bar, and the target its custom items point at. AppKit does not retain

@@ -1,7 +1,7 @@
 //! The bridge from AppKit callbacks to the [`Shell`].
 
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::{Rc, Weak};
 use std::time::Instant;
 
@@ -12,8 +12,10 @@ use objc2_foundation::NSPoint;
 use xui_core::app::AppRenderError;
 use xui_core::render::RenderBackend;
 use xui_core::text::TextHost;
-use xui_interface::TextBackend;
-use xui_shell::{PublishedHandle, ShellControl, ShellEvent, ShellHandle, ShellOutcome};
+use xui_interface::{TextBackend, WindowId};
+use xui_shell::{
+    PublishedHandle, ShellControl, ShellEvent, ShellHandle, ShellOutcome, SurfaceBackend,
+};
 
 use crate::window::MacWindow;
 
@@ -32,26 +34,78 @@ pub(crate) trait EventSink {
 }
 
 thread_local! {
-    /// The running host. A run has one window and so one sink; callbacks with
-    /// no object to hang a sink on -- dispatch blocks, the app delegate --
-    /// find it here.
-    static CURRENT: RefCell<Option<Weak<dyn EventSink>>> = const { RefCell::new(None) };
-    static REDRAW_PENDING: Cell<bool> = const { Cell::new(false) };
-    /// Bumped by every [`request_redraw_at`], so a block scheduled for a
-    /// deadline that has since been replaced does nothing when it runs.
-    static TIMED_REDRAW: Cell<u64> = const { Cell::new(0) };
+    /// Each open window's sink. Callbacks with no object to hang a sink on --
+    /// dispatch blocks, the app delegate, menu items -- find theirs here, by
+    /// the window they are for.
+    static SINKS: RefCell<HashMap<WindowId, Weak<dyn EventSink>>> = RefCell::new(HashMap::new());
+    /// The window the run started on, which gets what is no window's.
+    static MAIN: Cell<Option<WindowId>> = const { Cell::new(None) };
+    /// The window last made key, which a menu item acts on.
+    static KEY: Cell<Option<WindowId>> = const { Cell::new(None) };
+    /// Windows with a main-queue redraw scheduled.
+    static REDRAW_PENDING: RefCell<HashSet<WindowId>> = RefCell::new(HashSet::new());
+    /// Bumped, per window, by every [`request_redraw_at`], so a block scheduled
+    /// for a deadline that has since been replaced does nothing when it runs.
+    static TIMED_REDRAW: RefCell<HashMap<WindowId, u64>> = RefCell::new(HashMap::new());
 }
 
-pub(crate) fn set_current(sink: Option<Weak<dyn EventSink>>) {
-    CURRENT.with(|current| *current.borrow_mut() = sink);
+/// Routes what is for `window` to `sink` from now on. The first window
+/// registered is the main one.
+pub(crate) fn register(window: WindowId, sink: Weak<dyn EventSink>) {
+    if MAIN.get().is_none() {
+        MAIN.set(Some(window));
+        KEY.set(Some(window));
+    }
+    SINKS.with(|sinks| sinks.borrow_mut().insert(window, sink));
 }
 
-/// Sends `event` to the running host, stamped with the time it is called.
-pub(crate) fn send_current(event: ShellEvent) {
+/// `window` closed: nothing more is routed to it.
+pub(crate) fn unregister(window: WindowId) {
+    SINKS.with(|sinks| sinks.borrow_mut().remove(&window));
+    REDRAW_PENDING.with(|pending| pending.borrow_mut().remove(&window));
+    TIMED_REDRAW.with(|timed| timed.borrow_mut().remove(&window));
+    if KEY.get() == Some(window) {
+        KEY.set(MAIN.get());
+    }
+}
+
+/// The run is over: forget every window.
+pub(crate) fn clear() {
+    SINKS.with(|sinks| sinks.borrow_mut().clear());
+    MAIN.set(None);
+    KEY.set(None);
+}
+
+/// `window` became key.
+pub(crate) fn set_key(window: WindowId) {
+    KEY.set(Some(window));
+}
+
+/// The window a menu item acts on: the key window, or the main one.
+pub(crate) fn key_window() -> Option<WindowId> {
+    KEY.get().or(MAIN.get())
+}
+
+/// Sends `event` to `window`, stamped with the time it is called.
+pub(crate) fn send_to(window: WindowId, event: ShellEvent) {
     // Upgraded and released before sending: the sink may call back in here.
-    let sink = CURRENT.with(|current| current.borrow().as_ref().and_then(Weak::upgrade));
+    let sink = SINKS.with(|sinks| sinks.borrow().get(&window).and_then(Weak::upgrade));
     if let Some(sink) = sink {
         let _ = sink.send(Instant::now(), event);
+    }
+}
+
+/// Sends `event` to the main window, which gets what is the app's.
+pub(crate) fn send_current(event: ShellEvent) {
+    if let Some(main) = MAIN.get() {
+        send_to(main, event);
+    }
+}
+
+/// Sends `event` to the key window, which a menu item acts on.
+pub(crate) fn send_key(event: ShellEvent) {
+    if let Some(window) = key_window() {
+        send_to(window, event);
     }
 }
 
@@ -64,17 +118,17 @@ pub(crate) fn send_current(event: ShellEvent) {
 /// run loop's common modes, so frames keep coming during live resize and other
 /// tracking loops; pacing then comes from the presenter, whose `nextDrawable`
 /// blocks once all of the layer's drawables are in flight.
-pub(crate) fn request_redraw() {
+pub(crate) fn request_redraw(window: WindowId) {
     if MainThreadMarker::new().is_none() {
-        DispatchQueue::main().exec_async(request_redraw);
+        DispatchQueue::main().exec_async(move || request_redraw(window));
         return;
     }
-    if REDRAW_PENDING.replace(true) {
+    if !REDRAW_PENDING.with(|pending| pending.borrow_mut().insert(window)) {
         return;
     }
-    DispatchQueue::main().exec_async(|| {
-        if REDRAW_PENDING.replace(false) {
-            send_current(ShellEvent::RedrawRequested);
+    DispatchQueue::main().exec_async(move || {
+        if REDRAW_PENDING.with(|pending| pending.borrow_mut().remove(&window)) {
+            send_to(window, ShellEvent::RedrawRequested);
         }
     });
 }
@@ -85,21 +139,22 @@ pub(crate) fn request_redraw() {
 /// A block on the main queue rather than a frame from the display link: the
 /// link is for frames wanted continuously, and keeping it running until a
 /// deadline half a second away is exactly the cost this exists to avoid.
-pub(crate) fn request_redraw_at(at: Instant) {
+pub(crate) fn request_redraw_at(window: WindowId, at: Instant) {
     if MainThreadMarker::new().is_none() {
-        DispatchQueue::main().exec_async(move || request_redraw_at(at));
+        DispatchQueue::main().exec_async(move || request_redraw_at(window, at));
         return;
     }
-    let generation = TIMED_REDRAW.with(|current| {
-        let next = current.get().wrapping_add(1);
-        current.set(next);
+    let generation = TIMED_REDRAW.with(|timed| {
+        let mut timed = timed.borrow_mut();
+        let next = timed.get(&window).copied().unwrap_or(0).wrapping_add(1);
+        timed.insert(window, next);
         next
     });
     let delay = at.saturating_duration_since(Instant::now());
     let when = DispatchTime::try_from(delay).unwrap_or(DispatchTime::NOW);
     let _ = DispatchQueue::main().after(when, move || {
-        if TIMED_REDRAW.with(Cell::get) == generation {
-            send_current(ShellEvent::RedrawRequested);
+        if TIMED_REDRAW.with(|timed| timed.borrow().get(&window).copied()) == Some(generation) {
+            send_to(window, ShellEvent::RedrawRequested);
         }
     });
 }
@@ -133,7 +188,7 @@ pub(crate) fn stop_app(mtm: MainThreadMarker) {
 
 pub(crate) struct Host<B, T>
 where
-    B: RenderBackend<TextHost<T>>,
+    B: RenderBackend<TextHost<T>> + SurfaceBackend,
     T: TextBackend,
 {
     shell: RefCell<Option<Rc<ShellHandle<MacWindow, B, T>>>>,
@@ -150,7 +205,7 @@ where
 
 impl<B, T> Host<B, T>
 where
-    B: RenderBackend<TextHost<T>>,
+    B: RenderBackend<TextHost<T>> + SurfaceBackend,
     T: TextBackend,
 {
     pub(crate) fn new() -> Self {
@@ -173,7 +228,7 @@ where
             let Some((at, event)) = next else {
                 break;
             };
-            let _ = self.deliver(&shell, at, event);
+            let _ = self.deliver(&shell, None, at, event);
         }
     }
 
@@ -192,10 +247,14 @@ where
     fn deliver(
         &self,
         shell: &ShellHandle<MacWindow, B, T>,
+        window: Option<WindowId>,
         at: Instant,
         event: ShellEvent,
     ) -> ShellOutcome {
-        let outcome = shell.submit(at, event);
+        let outcome = match window {
+            Some(window) => shell.submit_window(window, at, event),
+            None => shell.submit(at, event),
+        };
         self.apply(shell, outcome.control);
         // AppKit has no "about to wait" callback worth the trouble; the moment an
         // event has been handled is the same moment for everything the shell does
@@ -217,12 +276,14 @@ where
     }
 }
 
-impl<B, T> EventSink for Host<B, T>
+impl<B, T> Host<B, T>
 where
-    B: RenderBackend<TextHost<T>>,
+    B: RenderBackend<TextHost<T>> + SurfaceBackend,
     T: TextBackend,
 {
-    fn send(&self, at: Instant, event: ShellEvent) -> ShellOutcome {
+    /// Delivers `event` to window `window` -- one the shell opened -- or, for
+    /// `None`, to the main window.
+    fn send_to(&self, window: Option<WindowId>, at: Instant, event: ShellEvent) -> ShellOutcome {
         if self.exited.get() {
             return ShellOutcome::CONTINUE;
         }
@@ -230,15 +291,55 @@ where
         // call back in here.
         let shell = self.shell.borrow().clone();
         match shell {
-            Some(shell) => self.deliver(&shell, at, event),
+            Some(shell) => self.deliver(&shell, window, at, event),
+            // Only the main window exists before the shell does.
             None => {
                 self.starting.borrow_mut().push_back((at, event));
                 ShellOutcome::CONTINUE
             }
         }
     }
+}
+
+/// The main window's sink: the host itself.
+impl<B, T> EventSink for Host<B, T>
+where
+    B: RenderBackend<TextHost<T>> + SurfaceBackend,
+    T: TextBackend,
+{
+    fn send(&self, at: Instant, event: ShellEvent) -> ShellOutcome {
+        self.send_to(None, at, event)
+    }
 
     fn published(&self) -> Option<PublishedHandle> {
         self.shell.borrow().as_ref().map(|shell| shell.published())
+    }
+}
+
+/// The sink of a window the shell opened beside the main one.
+pub(crate) struct WindowSink<B, T>
+where
+    B: RenderBackend<TextHost<T>> + SurfaceBackend,
+    T: TextBackend,
+{
+    pub(crate) host: Weak<Host<B, T>>,
+    pub(crate) window: WindowId,
+}
+
+impl<B, T> EventSink for WindowSink<B, T>
+where
+    B: RenderBackend<TextHost<T>> + SurfaceBackend,
+    T: TextBackend,
+{
+    fn send(&self, at: Instant, event: ShellEvent) -> ShellOutcome {
+        match self.host.upgrade() {
+            Some(host) => host.send_to(Some(self.window), at, event),
+            None => ShellOutcome::CONTINUE,
+        }
+    }
+
+    // Handed to the view when the window opens; nothing asks the sink.
+    fn published(&self) -> Option<PublishedHandle> {
+        None
     }
 }

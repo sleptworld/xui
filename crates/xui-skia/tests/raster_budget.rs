@@ -100,35 +100,43 @@ fn raster_budget() {
     for rows in ROW_COUNTS {
         let mut app = App::new(|_| {});
         app.mount::<Dashboard>(DashboardProps { rows });
-        app.resize(VIEWPORT);
+        app.resize(app.main_window(), VIEWPORT);
         let mut text = TextHost::new(CosmicEngine::new(1.0));
         let mut backend = SkiaBackend::<CosmicEngine>::headless(1.0, SkiaBackendOptions::default());
 
         for _ in 0..5 {
-            app.render(&mut backend, &mut text).expect("frame renders");
+            app.render(app.main_window(), &mut backend, &mut text)
+                .expect("frame renders");
         }
 
         let mut idle = Vec::new();
         for _ in 0..60 {
             let started = Instant::now();
-            app.render(&mut backend, &mut text).expect("frame renders");
+            app.render(app.main_window(), &mut backend, &mut text)
+                .expect("frame renders");
             idle.push(started.elapsed());
         }
 
         // Hover the first row through the normal event path so one row starts
         // transitioning its background.
-        app.dispatch_event(pointer_move(Point::new(60.0, 18.0)), &mut text);
-        app.render(&mut backend, &mut text).expect("frame renders");
+        app.dispatch_event(
+            app.main_window(),
+            pointer_move(Point::new(60.0, 18.0)),
+            &mut text,
+        );
+        app.render(app.main_window(), &mut backend, &mut text)
+            .expect("frame renders");
         assert!(
-            app.has_running_style_animations(),
+            app.has_running_style_animations(app.main_window()),
             "hover did not start a transition, so the samples measure idle frames"
         );
 
         let mut animating = Vec::new();
         for _ in 0..120 {
             let started = Instant::now();
-            app.tick_style_animations(FRAME_DELTA);
-            app.render(&mut backend, &mut text).expect("frame renders");
+            app.tick_style_animations(app.main_window(), FRAME_DELTA);
+            app.render(app.main_window(), &mut backend, &mut text)
+                .expect("frame renders");
             animating.push(started.elapsed());
         }
 

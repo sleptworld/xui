@@ -34,7 +34,7 @@
 |---|---|---|
 | D1 | **一个 `App`、一个 reactive runtime 管全部窗口** | `Signal` 挂在 runtime 的依赖图上；一窗一 App 就无法共享状态 |
 | D2 | **每个窗口一个 `UiRuntime`**，`UiRuntime` 仍是单根 | 不动约 150 处 `root` / `root_overlayer` 的使用；焦点、hover、capture、overlay 天然按窗口隔离 |
-| D3 | **`NodeId` 在整个 `App` 内唯一**：各 `HostTree` 共用一个分配器 | `TextHost`、后端、节点回复都按 `NodeId` 记账；共用分配器让它们不必知道窗口 |
+| D3 | **`NodeId` 在整个 `App` 内唯一，下标在窗口内稠密**：每窗口自己的分配器，窗口标签放在版本号高位 | `TextHost`、后端、节点回复都按 `NodeId` 记账；窗口的稠密表只随本窗口的节点数增长（§3.2） |
 | D4 | **窗口是组件**：`window(..) { .. }` 块，实现为 portal 的变体 | 窗口生命周期 = 挂载生命周期；context、signal 自然穿过窗口 |
 | D5 | 窗口级 system context 由**窗口作用域**提供，不再是应用级 | 两个窗口的 `LogicalSize`、`Focused` 不同 |
 | D6 | `TextHost`、frame clock、tokio、主题共享；**后端每窗口一个** | 布局与缩放无关，可共享；surface 必然按窗口 |
@@ -57,8 +57,15 @@ runtime 的图中的一个节点，订阅、调度、memo 层级都在这个图�
 
 **部分实施**（2026-11-25）：`crates/xui-core/src/windows.rs` 有 `Windows` 与 `WindowState { ui, event_translator, size }`，
 `App` 的这三个字段已换成 `windows`，目前一律经 `windows.main()` / `main_mut()` 访问，行为不变。
-`App` 的方法还没有加 `window: WindowId` 参数，`PlatformHandle` 还没拆，`attached` / `owner` / `contexts` 字段还没加——
-这些随 reactive 改造（§4.2）和窗口级 context（§5）一起做。下面是目标形状。
+
+**按窗口的方法已实施**（2026-11-26，未提交）：`App` 上按窗口的方法（`resize`、`set_scale_factor`、`dispatch_event`、
+外部拖放、wake、滚动、`begin_frame` / `frame_time` / 各 `tick_*`、`set_window_visible` / `_minimized` / `_state`、
+`render`、`mark_needs_rebuild`）都带 `window: WindowId`；新增 `App::main_window()`、`App::window_ui(window)`、
+`App::window_is_dirty(window)`，`App::is_dirty()` 看任一窗口。平台回复按节点所在的窗口投递
+（`Windows::try_window_of`，节点已不在就丢弃）。节点生命周期事件交给各窗口自己的后端；关掉的窗口的只交给 `TextHost`。
+`set_gpu_context` 给所有窗口，之后开的也补上。`PlatformHandle` 还没拆（§6.2），所以 drop targets 与窗口状态
+暂时只对主窗口写进 handle。`owner` / `contexts` 字段不需要了：窗口归属在 reactive 的 `Mounted.window`，
+system context 在 reactive 的 `window_contexts`（§5）。下面是当初的目标形状。
 
 ```rust
 new_key_type! { pub struct WindowId; }   // xui-interface::platform
@@ -97,42 +104,63 @@ pub(crate) struct WindowState {
 保留只作用于 `windows.main` 的同名便捷方法，或者全部改为显式传参——实施时二选一，倾向后者，
 调用方只有 `GuiRuntime` 和测试。
 
-### 3.2 `NodeId` 共用分配器（D3）
+### 3.2 `NodeId`：窗口内稠密、全应用唯一（D3）
 
-**已实施**（2026-11-25）：`ui_runtime/host_tree.rs` 的 `NodeIds`（`Rc<RefCell<SlotMap<NodeId, WindowId>>>`），
-`HostTree::with_ids`，`UiRuntime::with_node_ids`。`UiRuntime::new()` 仍给自己一个独立分配器，
-所以现在的单窗口应用和全部测试照旧；第 2 步的 `Windows` 改用 `with_node_ids` 传共享的那一个。
-`HostTree` 被 drop 时把仍持有的 id 还给分配器。
+**现状**（2026-11-26，未提交）：每个窗口一个自己的分配器（`ui_runtime/host_tree.rs` 的 `NodeAlloc`），
+下标在窗口内从 0 稠密分配；窗口的**标签**放在版本号高位，所以 `NodeId` 仍然全应用唯一。
 
-原来 `HostTree::nodes` 是 `SlotMap<NodeId, HostNode>`。改为：
-
-```rust
-struct HostTree {
-    alloc: Rc<RefCell<SlotMap<NodeId, WindowId>>>,  // 所有窗口共用
-    window: WindowId,
-    nodes: SecondaryMap<NodeId, HostNode>,
-    ..
-}
+```
+NodeId（slotmap 的 64 位 key）= [ 版本 32 位 ][ 下标 32 位 ]
+版本 = [ 窗口标签 10 位 ][ 代数 21 位 ][ 1 ]
 ```
 
-- 建节点：`alloc.insert(self.window)` 拿键，再 `nodes.insert(key, node)`；删节点两边都删。
-- `NodeId` 在整个 App 内唯一，于是：
-  - `TextHost` 共享不需要改键（`owners` 仍按 `NodeId`）；
-  - 后端的 `handle_node_lifecycle` 只收到自己窗口的事件，键不会撞；
-  - `NodeReply { node, .. }` 可以用 `alloc[node]` 找到窗口，不必另存；
-  - `debug_assert!(alloc[id] == self.window)` 可以放在 `UiRuntime` 的入口，抓"拿 A 窗口的 id 去 B 窗口用"这类 bug。
-- 代价：`SecondaryMap` 按全局槽位下标索引，每个窗口的 `nodes` 长度跟着全局最大下标走。
-  窗口数很少、节点数在万级，可以接受。
+- 窗口按 `NodeId` 键的稠密表（host 链接与数据、样式、布局几何与 partial、渲染绑定、6 个 dense 能力列）只随本窗口的节点数增长。
+- 共享的消费者（`TextHost`、平台回复、后端）照旧按 `NodeId` 记账，不需要窗口。`window_of` 由标签解出（`Windows` 的标签表），
+  不再有共享分配器和 `Rc<RefCell>`。
+- 槽位每次释放代数 +1；代数用满（约 200 万次复用）就退役不再复用，所以一个 id 不会发两次。
+- 标签最多 1024 个同时在用。窗口关闭时记下它用到的最高代数，下一个拿到同一标签的窗口从其上开始，所以旧窗口的过期 id
+  不会等于新窗口的任何节点（测试 `a_stale_id_of_a_closed_window_names_no_node_of_the_next_one`）。
+- **约束**：按下标定位的表（`SecondaryMap`、`SparseSecondaryMap`）只能装一个窗口的 id——两个窗口下标相同的节点会落进同一个槽位。
+  跨窗口要用哈希表。审计过：窗口之外以 `NodeId` 为键的只有 `TextHost::owners`（`FxHashMap`），没问题。
+
+**改正**：最初的设计是"所有窗口共用一个全局分配器"，并写着"窗口数很少、节点数在万级，可以接受"——那时没有测量。
+`crates/xui-core/tests/memory.rs` 的 `heap_of_a_small_window_after_a_large_one` 测出，主窗口有 N 个 host 时再开一个 3 个 host 的小窗口：
+
+| 主窗口 host | 共用全局分配器 | 窗口内稠密 + 标签 |
+|---|---|---|
+| 1 | 46 KiB | 35 KiB |
+| 301 | 1.1 MiB | 35 KiB |
+| 4 801 | 17 MiB | 35 KiB |
+| 19 201 | 69 MiB | 35 KiB |
+| 76 801 | 277 MiB | 35 KiB |
+
+原因是每张稠密表都按全局下标扩张，每个槽位约 2 KB（布局 `PartialNode` 就有 1.1 KB），加上 Vec 翻倍增长。
 
 考虑过、不采用的方案：
 
 | 方案 | 不采用的原因 |
 |---|---|
-| 每窗口一个 `TextHost` | 字体 shaping 缓存与 residency 预算被切成 N 份；同一段文字在两个窗口要排两次 |
-| 所有按 `NodeId` 记账的地方改成 `(WindowId, NodeId)` | `TextHost`、后端、event system、平台回复全部改键，改动面最大 |
-| 一个 `UiRuntime` 多个根 | 见 D2：要重写 `root` 相关的约 150 处，以及焦点、overlay、hit test 的全部按根拆分 |
+| 全局分配器（最初的做法） | 见上表 |
+| 每张稠密表加紧凑索引 | 仍随全局节点数增长（约 1/20），热路径多一次查表 |
+| 共享的消费者改按 `(WindowId, NodeId)` 记账 | `TextHost` 约 20 个方法、Skia 文字缓存、平台回复都要改键 |
+| 每窗口一个 `TextHost` | 字体 shaping 缓存与预算被切成 N 份 |
+| 一个 `UiRuntime` 多个根 | 要重写 `root` 相关的约 150 处，以及焦点、overlay、hit test 的按根拆分 |
 
 ## 4. D4 `window` 块
+
+**已实施**（2026-11-26，未提交）：
+
+- 宏：`portal` 的生成改为通用的 `elsewhere`，`window` 走同一条路；`window` 和 `slot`、`portal` 一样是保留名，组件不能叫它。
+  属性是 `WindowSpec` 的 builder：`title`、`size: (w, h)`、`min_size`、`resizable`、`decorations`、`transparent`、
+  `maximized`、`macos`；`on_close_requested: |cx| ..`。
+- runtime：`NodeKind::Window` / `NodeTag::Window`；`Owner::Window { instance, window, root }`（带上根，像 portal 带
+  `layer`，`parent_host` 不必查 `Windows`）；`mount_window` 开窗、写该窗口 system key 的默认值、挂内容；
+  卸载时 `windows_within` 收集其中开的窗口，先移除其中 portal 与内容的宿主（让 `TextHost` / 后端听到节点没了），
+  再 `Windows::close`、释放该窗口的 context signal。
+- `Windows`：`open` / `close` 记下 `WindowChange`；关掉的窗口的树留在 `closed` 里，等 `App` 把它的节点生命周期事件交出去再丢弃。
+- `App`：每次 sync 以及 `mount` / `unmount` 之后发出 `OpenWindow` / `CloseWindow`，并给新窗口的树设好平台 handle、
+  主题与唤醒；`App::request_close(window)` 跑 `on_close_requested`，没有就把它的 `window::Visible` 置 false（§12 的问题 1 暂按"隐藏并保留"）。
+- 还没有：新窗口不 attach、不绘制、不收输入（要等 §6 / §10）；`window` 块的 trybuild 诊断用例。
 
 ### 4.1 写法
 
@@ -242,6 +270,15 @@ pub enum RuntimeEvent {
 
 ### 6.2 平台 handle 拆分
 
+**已实施**（2026-11-26，未提交），形状与下表略有不同：没有拆成两个类型，而是 `PlatformHandle` 变成
+"共享的 `Bridge` + 一个 `WindowId`"。`Bridge` 里应用级的是命令队列、请求表、节点回复、默认菜单栏、capabilities、
+appearance；每个窗口一份 `WindowBridge { title, menu: WindowMenu, surface, window_state }`。每个窗口的树拿自己窗口的
+handle（`for_window`），所以 widget 经 `EventContext` 发的命令自动是它那个窗口的；`App::platform()` 是主窗口的，
+`App::window_platform(window)` 是别的窗口的。队列元素是 `(WindowId, PlatformCommand)`：`GuiRuntime::take_window_commands`
+全量交出；`take_platform_commands`（单窗口的 shell 用）交出主窗口的和应用级的，别的窗口对它自己窗口的命令
+（`Window(..)`、`ShowContextMenu`，见 `platform::targets_window`）丢弃并记日志。`PlatformOutput` 加了 `menu: WindowMenu`，
+按窗口生成；拆成 `AppOutput` / `WindowOutput` 留到 §10。窗口关闭时 `forget_window` 清掉它的 `WindowBridge`。
+
 `PlatformHandle` 现在一个 `Bridge` 装了全部（`platform.rs:30`）。拆成：
 
 | | `AppPlatform`（应用级） | `WindowPlatform`（每窗口） |
@@ -308,8 +345,16 @@ app.window(id).platform().set_menu(WindowMenu::Own(bar));
   2. 每个 *attached、可见、脏* 的窗口：`update_tree(size, text)` → lifecycle → draw 到它自己的后端。
 - `App::is_dirty` 变为 `dirty_windows() -> impl Iterator<Item = WindowId>`；
   一个窗口的 handler 写的 signal 弄脏另一个窗口时，shell 由此知道要向那个原生窗口 `request_redraw`。
-- frame clock 全局一份。全部窗口都不可见时才 `suspend`；只有部分可见时，不可见窗口的
-  `UiRuntime::set_window_visible(false)` 照旧让它不为动画请求帧。
+- **frame clock 每个窗口一个**（原设想是全局一份，实施时改了）：每个窗口有自己的帧，两个窗口轮流 `tick`
+  同一个时钟会把每帧的 delta 拆成两半，动画都变慢。窗口不可见或闲下来时只 `suspend` 它自己的时钟。
+
+**已实施**（2026-11-26，未提交）：`GuiRuntime` 按窗口存 `WindowRuntime { backend, frame_clock, platform_output }`
+（`SecondaryMap<WindowId, _>`），主窗口在 `GuiRuntime::new` 时就有；其他窗口在宿主建好原生窗口后
+`GuiRuntime::attach(window, backend)`，之前不绘制。`handle_window_event(window, event)` / `frame_window_at(window, now)`
+/ `window_platform_output(window)` / `set_visible(window, ..)` 是按窗口的入口；原有的 `handle_event` / `frame_at` /
+`platform_output` 等是主窗口的。`take_platform_commands` 看到 `CloseWindow` 时释放该窗口的后端。
+`RuntimeEvent` 没有拆成两类：窗口由调用哪个入口决定，应用级事件（回复、capabilities、appearance、退出）不论从哪个窗口进来都一样。
+`dirty_windows()` 还没做，等 shell 拆分时按需要加（`App::window_is_dirty` 已有）。
 - 宿主的重绘是按原生窗口来的（macOS 每个 view 一个 display link 回调）。`Shell::redraw(window)`
   先做第 1 步（若本轮尚未做过），再只画这个窗口；其余脏窗口通过 `request_redraw` 排到它们自己的回调里。
   这样不需要把多个窗口的 present 同步到同一时刻。
@@ -332,6 +377,12 @@ window 块卸载
 ```
 
 - `attached == false` 的窗口不做 `update_tree`、不绘制、不收输入；尺寸未知时跑布局没有意义。
+- **已做（随 §10，2026-11-26）**：`App` 在新窗口打开时就置 `Visible = false`；`Shell` 在它首帧上屏后刷新可见性，才变 `true`。
+  宿主不支持多窗口时它一直是 `false`。原记录：新窗口的 `window::Visible` 曾经开窗时就是默认的 `true`，但宿主不支持多窗口时它永远不会
+  attach、不会上屏，组件据此退回窗口内 dialog 就做不到。改为：开窗时 `Visible = false`，`GuiRuntime::attach` 之后、
+  首帧画完上屏时再置 `true`（与主窗口"首帧画完再显示"的 `pending_first_present` 同一处）。
+- `GuiRuntime::attach` 目前只有测试调用；§10 里由 `Shell` 在处理 `OpenWindow` 时调用：`PlatformHost::open_window` →
+  `make_backend` → `attach` → 该窗口的 `Resize` / scale factor → 首帧 → 显示。
 - **主窗口**由宿主在启动时创建，`App::new` 时 `windows.main` 已存在且 `owner == None`，
   `App::mount` 挂在它的根下——`#[xui::main]` 和所有现有应用不变。
 - **主窗口的关闭**和**退出策略**放在 `ShellOptions`：
@@ -365,6 +416,27 @@ window 块卸载
 - 命令队列元素 `(Target, PlatformCommand)`：在 `xui-core::platform` 内部，随 §6.2 的拆分一起做。
 
 ## 10. D7 `xui-shell` 拆分
+
+**已实施**（2026-11-26，未提交），比下面的设想小：
+
+- `Shell<W, B, T>` 不变形参，内部拆成应用级（`GuiRuntime`、选项、渲染错误、默认菜单栏的 diff、开窗器）与每窗口的
+  `WindowShell`（原生窗口、modifiers、按键、光标、平台输出 diff、`PublishedHandle`、live resize、遮挡、首帧显示、定时重绘），
+  存在 `SecondaryMap<WindowId, WindowShell<W>>`。
+- **没有 `PlatformHost`，也不需要 `SingleWindowHost`**：能开窗的宿主实现 `WindowOpener<W, B>`（`open(window, &options)
+  -> (Arc<W>, B)`，`close(window, &native)`），经 `Shell::with_opener` 交给 shell。没有开窗器的宿主（现在三个都是）
+  代码不用改：`OpenWindow` 记一条 "not implemented"，窗口不 attach、`Visible` 一直 false；请求先存着，`with_opener`
+  之后再开（根组件挂载时就有的 window 块会在 `Shell::new` 里发出请求）。
+- 事件：`dispatch_event` / `ShellHandle::submit` 是主窗口的；`dispatch_window_event` / `ShellHandle::submit_window` 按窗口。
+  非主窗口的 `CloseRequested` 调 `App::request_close`，主窗口的照旧（`exit_on_close_requested`）。`QuitPolicy` 还没做。
+- 命令：`take_window_commands` 全量取；`OpenWindow` → 开窗器 → `attach` → 尺寸与 scale factor → 首帧 → 显示；
+  `CloseWindow` → 开窗器 `close`；其余在发出它的窗口的 `PlatformWindow::perform` 上执行，应用级的发出窗口不在时交主窗口，
+  窗口级的就丢弃。
+- 状态：每个窗口各自 diff 平台输出（光标、IME、标题、`WindowMenu` → 新增的 `PlatformWindow::set_menu`，默认空）；
+  默认菜单栏是应用的，diff 一次，交主窗口的 `set_menu_bar`。
+- 测试 `crates/xui-shell/tests/multi_window.rs`：无开窗器时窗口不上屏；有开窗器时建窗、首帧、显示、可见，输入与标题各归各的窗口，
+  关闭按钮经 `on_close_requested` 在下一帧关窗并释放后端；开窗器晚给时补开。`cargo run -p xui-macos --example smoke` 28 项通过。
+
+以下是原设想，留作对照。
 
 ```rust
 pub struct Shell<H: PlatformHost, B, T> {
@@ -404,6 +476,23 @@ pub trait PlatformHost {
   所以 `xui-macos` 的 `menu.rs` 在第 2 步不用动。
   第 2 步落地时三个宿主都走这个适配器，行为与现在一致；在不支持的宿主上 `window` 块
   挂载但不 attach（`window::Visible == false`），应用可以据 capability 退回窗口内 dialog。
+
+## 10a. 第 3 步：`xui-macos`
+
+**已实施**（2026-11-26，未提交）：
+
+- `MacRunner::with_window_backends(f)`：给新窗口建后端的工厂；`runner` / `runner_with_device` / `skia_runner` 都带上。
+  有它时主窗口报告 `MULTI_WINDOW`，`Shell` 得到 `MacOpener`（`WindowOpener` 的实现：`MacWindow::new` → 接 `WindowSink`
+  → 把 `PublishedHandle` 给视图 → `f(window)` 建后端；关窗时 `orderOut`、注销路由，余下在 `MacWindow` drop 时）。
+  `WindowOpener::open` 因此多了 `published` 参数：标题栏命中测试这类原生回调要它，而它是 shell 建的。
+- `host.rs`：thread-local `CURRENT` 换成 `WindowId → sink` 表、主窗口与 key window；main queue 的重绘与定时重绘按窗口合并；
+  `send_current` 给主窗口（Quit、async wake），`send_key` 给 key window（菜单项）。
+- 菜单栏跟随 key window：`menu.rs` 记应用的菜单栏和各窗口的 `WindowMenu`，`windowDidBecomeKey:` 时装上
+  key window 的有效菜单（`Own` 用自己的，否则应用的；macOS 上 `Hidden` 同 `Inherit`），没变就不重建。
+- 每个新窗口一个 Vello 设备（没有共享设备的构造函数）。**已知限制**：canvas 的 GPU painter 拿的是主窗口的设备，
+  在别的窗口里还画不出来（§12.6）。
+- `cargo run -p xui-macos --example multi_window`：根组件挂载时的 window 块开出第二个 `NSWindow`（尺寸对），按它的关闭按钮
+  经 `on_close_requested` 关掉、主窗口还在，5 项通过。
 
 ## 11. 测试
 

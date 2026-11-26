@@ -22,7 +22,7 @@ fn app_at(scene: Scene, step: u32) -> (App, Signal<u32>) {
     let mut app = App::new(|_| {});
     let step = app.signal(step);
     scene(&mut app, &step);
-    app.resize(Size::new(SIZE, SIZE));
+    app.resize(app.main_window(), Size::new(SIZE, SIZE));
     (app, step)
 }
 
@@ -41,7 +41,8 @@ fn render_once(
     app: &mut App,
     text: &mut TextHost<CosmicEngine>,
 ) {
-    app.render(backend, text).expect("render");
+    app.render(app.main_window(), backend, text)
+        .expect("render");
 }
 
 /// Frame one at step 0, frame two at step 1, on one backend; and the same final
@@ -342,7 +343,7 @@ fn a_second_identical_frame_draws_nothing() {
     let before = backend.read_pixels_rgba8().expect("pixels");
     // Writing the value it already has changes nothing, so no region is damaged.
     app.update(|cx| step.set(cx, 0));
-    app.mark_needs_rebuild();
+    app.mark_needs_rebuild(app.main_window());
     render_once(&mut backend, &mut app, &mut text);
     let stats = backend.frame_stats();
     assert_eq!(backend.read_pixels_rgba8().expect("pixels"), before);

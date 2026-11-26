@@ -110,7 +110,7 @@ type BackendFactory<B, T> =
 /// Only the winit half lives here: the event loop, window creation, and
 /// translating winit events into [`ShellEvent`]s. Everything else is
 /// [`Shell`]'s.
-pub struct WinitRunner<B: RenderBackend<TextHost<T>>, T: TextBackend> {
+pub struct WinitRunner<B: RenderBackend<TextHost<T>> + xui_shell::SurfaceBackend, T: TextBackend> {
     f_init: Option<BackendFactory<B, T>>,
     options: WinitRunnerOptions,
     shell: Option<Shell<WinitWindow, B, T>>,
@@ -122,7 +122,7 @@ pub struct WinitRunner<B: RenderBackend<TextHost<T>>, T: TextBackend> {
     event_proxy: Option<EventLoopProxy<WinitUserEvent>>,
 }
 
-impl<B: RenderBackend<TextHost<T>>, T: TextBackend> WinitRunner<B, T> {
+impl<B: RenderBackend<TextHost<T>> + xui_shell::SurfaceBackend, T: TextBackend> WinitRunner<B, T> {
     pub fn with_backend_factory<F>(factory: F, option: Option<WinitRunnerOptions>) -> Self
     where
         F: FnOnce(Arc<WinitWindow>) -> (App, T, B) + 'static,
@@ -390,8 +390,8 @@ fn translate_ime(ime: &winit::event::Ime) -> RawIme {
     }
 }
 
-impl<B: RenderBackend<TextHost<T>>, T: TextBackend> ApplicationHandler<WinitUserEvent>
-    for WinitRunner<B, T>
+impl<B: RenderBackend<TextHost<T>> + xui_shell::SurfaceBackend, T: TextBackend>
+    ApplicationHandler<WinitUserEvent> for WinitRunner<B, T>
 {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.shell.is_some() {

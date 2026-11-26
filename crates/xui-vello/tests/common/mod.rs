@@ -89,10 +89,11 @@ pub fn render_options(
         context.device().clone(),
         context.queue().clone(),
     ));
-    app.set_scale_factor(scale);
-    app.resize(Size::new(SIZE, SIZE));
+    app.set_scale_factor(app.main_window(), scale);
+    app.resize(app.main_window(), Size::new(SIZE, SIZE));
     let mut text = TextHost::new(CosmicEngine::new(scale));
-    app.render(&mut backend, &mut text).expect("render");
+    app.render(app.main_window(), &mut backend, &mut text)
+        .expect("render");
     let (width, height) = backend.frame_size_px();
     assert_eq!(
         (width, height),

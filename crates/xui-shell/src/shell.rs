@@ -18,9 +18,19 @@ use xui_interface::{
     WindowState,
 };
 
+use slotmap::SecondaryMap;
+use xui_interface::{MenuBar, PhysicalSize, WindowId, WindowOptions};
+
 use crate::published::PublishedHandle;
-use crate::window::{Performed, PlatformWindow};
-use xui_interface::PhysicalSize;
+use crate::window::{Performed, PlatformWindow, SurfaceBackend, SurfaceTarget, WindowOpener};
+
+/// Whether `command` acts on the window it is sent for, as opposed to the app.
+fn targets_window(command: &PlatformCommand) -> bool {
+    matches!(
+        command,
+        PlatformCommand::Window(_) | PlatformCommand::ShowContextMenu { .. }
+    )
+}
 
 /// A platform event, already translated out of the host's vocabulary.
 ///
@@ -205,10 +215,16 @@ const MAX_COMMAND_ROUNDS: usize = 8;
 
 /// Drives a [`GuiRuntime`] from platform events.
 ///
-/// The host owns the event loop and the window. It hands each translated event
-/// to [`Shell::dispatch_event`], calls [`Shell::about_to_wait`] when the loop
-/// goes idle, and acts on the [`ShellOutcome`] each returns. Everything that
-/// does not depend on the platform happens here.
+/// The host owns the event loop and the windows. It hands each translated
+/// event to [`Shell::dispatch_event`] (the main window's) or
+/// [`Shell::dispatch_window_event`], calls [`Shell::about_to_wait`] when the
+/// loop goes idle, and acts on the [`ShellOutcome`] each returns. Everything
+/// that does not depend on the platform happens here.
+///
+/// The main window is the one the shell starts on. Any other is opened when
+/// the application mounts a `window(..) { .. }` block, through the
+/// [`WindowOpener`] the host gave [`Shell::with_opener`]; a host that gave
+/// none cannot open one, and such a window stays off screen.
 ///
 /// A host whose native callbacks can arrive while it is inside the shell -- all
 /// of them can -- should hold a [`crate::ShellHandle`] instead, which queues
@@ -216,12 +232,26 @@ const MAX_COMMAND_ROUNDS: usize = 8;
 pub struct Shell<W, B, T>
 where
     W: PlatformWindow,
-    B: RenderBackend<TextHost<T>>,
+    B: RenderBackend<TextHost<T>> + SurfaceBackend,
     T: TextBackend,
 {
-    window: Arc<W>,
     runtime: GuiRuntime<B, T>,
     options: ShellOptions,
+    main: WindowId,
+    windows: SecondaryMap<WindowId, WindowShell<W>>,
+    opener: Option<Box<dyn WindowOpener<W>>>,
+    /// Windows asked for while there was no opener, in order, for one given
+    /// later: a window block mounted with the root asks during [`Self::new`].
+    unopened: Vec<(WindowId, WindowOptions)>,
+    /// The application's menu bar as last applied, which is the app's rather
+    /// than any one window's.
+    last_menu_bar: Option<Arc<MenuBar>>,
+    render_error: Option<AppRenderError<B::Error>>,
+}
+
+/// What the shell keeps of one native window.
+struct WindowShell<W> {
+    native: Arc<W>,
     last_cursor_position: Option<Point>,
     modifiers: Modifiers,
     pointer_buttons: PointerButtons,
@@ -242,16 +272,37 @@ where
     /// frame: a timed frame that came before its deadline leaves the deadline
     /// pending, and it has to be asked for again rather than assumed.
     timed_redraw: Option<Instant>,
-    render_error: Option<AppRenderError<B::Error>>,
+}
+
+impl<W> WindowShell<W> {
+    fn new(native: Arc<W>, visible: bool, published: PublishedHandle) -> Self {
+        Self {
+            native,
+            last_cursor_position: None,
+            modifiers: Modifiers::default(),
+            pointer_buttons: PointerButtons::default(),
+            last_platform_output: PlatformOutput::default(),
+            published,
+            live_resize: false,
+            occluded: false,
+            pending_first_present: visible,
+            timed_redraw: None,
+        }
+    }
+
+    fn pointer_position(&self) -> Point {
+        self.last_cursor_position.unwrap_or(Point::new(0.0, 0.0))
+    }
 }
 
 impl<W, B, T> Shell<W, B, T>
 where
     W: PlatformWindow,
-    B: RenderBackend<TextHost<T>>,
+    B: RenderBackend<TextHost<T>> + SurfaceBackend,
     T: TextBackend,
 {
-    /// Starts the runtime on `window` and paints the first frame.
+    /// Starts the runtime on `window`, the main window, and paints the first
+    /// frame.
     ///
     /// The host must have created `window` hidden -- it is shown here once
     /// that frame is through the backend, if `options.visible` -- and should
@@ -264,40 +315,72 @@ where
         backend: B,
         options: ShellOptions,
     ) -> (Self, ShellControl) {
-        let scale_factor = window.scale_factor();
+        let mut backend = backend;
+        backend.bind_primary(app.main_window());
         let mut runtime = GuiRuntime::new(app, backend, text);
-        runtime.app_mut().set_scale_factor(scale_factor as f32);
+        let main = runtime.app().main_window();
         // Before the first frame, so the application's first build already
         // knows what the host can do and what the system looks like.
         runtime.handle_event(RuntimeEvent::Capabilities(window.capabilities()));
         runtime.handle_event(RuntimeEvent::Appearance(window.appearance()));
-        runtime.handle_event(RuntimeEvent::Resize(
-            window.surface_size().to_logical(scale_factor),
-        ));
+        let mut windows = SecondaryMap::new();
+        windows.insert(
+            main,
+            WindowShell::new(window, options.visible, PublishedHandle::default()),
+        );
         let mut shell = Self {
-            pending_first_present: options.visible,
-            window,
             runtime,
             options,
-            last_cursor_position: None,
-            modifiers: Modifiers::default(),
-            pointer_buttons: PointerButtons::default(),
-            last_platform_output: PlatformOutput::default(),
-            published: PublishedHandle::default(),
-            live_resize: false,
-            occluded: false,
-            timed_redraw: None,
+            main,
+            windows,
+            opener: None,
+            unopened: Vec::new(),
+            last_menu_bar: None,
             render_error: None,
         };
+        shell.size_window(main);
         // Paint before handing control back to the event loop: a hidden
         // window is not guaranteed to be sent a redraw, and this is the frame
         // that decides when it becomes visible.
-        let control = shell.render();
+        let control = shell.render(main);
         (shell, control)
     }
 
+    /// Lets the shell open the windows the application asks for beyond the
+    /// main one, if the backend can draw them. Without an opener, or with a
+    /// backend that draws one window only, such a window is never made, and
+    /// its `window::Visible` stays false.
+    pub fn with_opener(mut self, opener: impl WindowOpener<W> + 'static) -> Self {
+        self.opener = Some(Box::new(opener));
+        if self.runtime.backend().supports_surfaces() {
+            let capabilities = self.windows[self.main].native.capabilities()
+                | xui_interface::HostCapabilities::MULTI_WINDOW;
+            self.runtime
+                .handle_event(RuntimeEvent::Capabilities(capabilities));
+        }
+        // A window block mounted with the root asked before there was one.
+        for (window, options) in std::mem::take(&mut self.unopened) {
+            if let Performed::Failed(error) = self.open_window(window, options) {
+                log::warn!("opening a window failed: {error}");
+            }
+        }
+        self.settle();
+        self
+    }
+
+    /// The main window.
     pub fn window(&self) -> &Arc<W> {
-        &self.window
+        &self.windows[self.main].native
+    }
+
+    /// The main window's id.
+    pub fn main_window(&self) -> WindowId {
+        self.main
+    }
+
+    /// Window `window`'s native window, while the shell has it open.
+    pub fn native_window(&self, window: WindowId) -> Option<&Arc<W>> {
+        self.windows.get(window).map(|state| &state.native)
     }
 
     pub fn runtime(&self) -> &GuiRuntime<B, T> {
@@ -308,10 +391,18 @@ where
         &mut self.runtime
     }
 
-    /// What the runtime has published about the window's surface. The handle
-    /// stays current as the shell runs, and can be read without borrowing it.
+    /// What the runtime has published about the main window's surface. The
+    /// handle stays current as the shell runs, and can be read without
+    /// borrowing it.
     pub fn published(&self) -> PublishedHandle {
-        self.published.clone()
+        self.windows[self.main].published.clone()
+    }
+
+    /// [`Self::published`] for window `window`, while the shell has it open.
+    pub fn published_of(&self, window: WindowId) -> Option<PublishedHandle> {
+        self.windows
+            .get(window)
+            .map(|state| state.published.clone())
     }
 
     /// The error that made a frame fail, if one did.
@@ -325,123 +416,168 @@ where
         self.dispatch_event(Instant::now(), event).control
     }
 
-    /// Handles `event`, which happened at `at`.
+    /// Handles `event`, which happened at `at`, as the main window's.
     ///
     /// `at` is when the event happened natively, not when it was dequeued: an
     /// event that waited behind another keeps its own time, which is what
     /// double-click spacing and scroll velocity are measured in.
     pub fn dispatch_event(&mut self, at: Instant, event: ShellEvent) -> ShellOutcome {
+        self.dispatch_window_event(self.main, at, event)
+    }
+
+    /// Handles `event`, which happened at `at`, as window `window`'s. An event
+    /// for a window the shell does not have open is dropped.
+    pub fn dispatch_window_event(
+        &mut self,
+        window: WindowId,
+        at: Instant,
+        event: ShellEvent,
+    ) -> ShellOutcome {
+        let Some(state) = self.windows.get_mut(window) else {
+            return ShellOutcome::CONTINUE;
+        };
         let timestamp = at;
+        let modifiers = state.modifiers;
         match event {
             ShellEvent::Resized(size) => {
-                let size = size.to_logical(self.window.scale_factor());
-                let outcome = if self.live_resize {
+                let size = size.to_logical(state.native.scale_factor());
+                let outcome = if state.live_resize {
                     // The platform is showing the new geometry now. Painting
                     // here, inside the resize, is what keeps the picture and
                     // the window edge together.
-                    self.runtime.handle_event(RuntimeEvent::Resize(size));
-                    ShellOutcome::from_control(self.render())
+                    self.runtime
+                        .handle_window_event(window, RuntimeEvent::Resize(size));
+                    ShellOutcome::from_control(self.render(window))
                 } else {
-                    self.dispatch(RuntimeEvent::Resize(size))
+                    self.dispatch(window, RuntimeEvent::Resize(size))
                 };
                 // A minimized window reports no occlusion on Windows or X11;
                 // what it reports is a resize to nothing.
-                self.refresh_window_visibility();
+                self.refresh_window_visibility(window);
                 outcome
             }
             ShellEvent::ScaleFactorChanged(scale_factor) => {
-                self.set_scale_factor(scale_factor);
+                self.set_scale_factor(window, scale_factor);
                 ShellOutcome::CONTINUE
             }
-            ShellEvent::CloseRequested => self.dispatch(RuntimeEvent::Exit),
+            ShellEvent::CloseRequested if window == self.main => {
+                self.dispatch(window, RuntimeEvent::Exit)
+            }
+            ShellEvent::CloseRequested => {
+                // The application's to decide: its window block closes it, or
+                // keeps it hidden.
+                self.runtime.app_mut().request_close(window);
+                self.settle();
+                ShellOutcome {
+                    control: ShellControl::Continue,
+                    consumed: true,
+                }
+            }
             ShellEvent::Focused(focused) => {
                 let raw = RawWindowEvent {
                     timestamp,
-                    modifiers: self.modifiers,
+                    modifiers,
                 };
-                let outcome = self.dispatch(RuntimeEvent::Input(if focused {
-                    RawEvent::WindowFocus(raw)
-                } else {
-                    RawEvent::WindowBlur(raw)
-                }));
+                let outcome = self.dispatch(
+                    window,
+                    RuntimeEvent::Input(if focused {
+                        RawEvent::WindowFocus(raw)
+                    } else {
+                        RawEvent::WindowBlur(raw)
+                    }),
+                );
                 // Not itself a visibility signal, but a reliable moment at
                 // which one may have arrived unannounced.
-                self.refresh_window_visibility();
+                self.refresh_window_visibility(window);
                 outcome
             }
             ShellEvent::Occluded(occluded) => {
-                self.occluded = occluded;
-                self.refresh_window_visibility();
+                state.occluded = occluded;
+                self.refresh_window_visibility(window);
                 ShellOutcome::CONTINUE
             }
             ShellEvent::ModifiersChanged(modifiers) => {
-                self.modifiers = modifiers;
+                state.modifiers = modifiers;
                 ShellOutcome::CONTINUE
             }
             ShellEvent::PointerMoved {
                 position,
                 device_id,
             } => {
-                self.last_cursor_position = Some(position);
-                self.dispatch(RuntimeEvent::Input(RawEvent::PointerMove(RawPointerMove {
-                    position,
-                    device_id,
-                    pointer_id: XuiPointerId::new(0),
-                    kind: PointerKind::Mouse,
-                    button: None,
-                    buttons: self.pointer_buttons,
-                    modifiers: self.modifiers,
-                    timestamp,
-                })))
+                state.last_cursor_position = Some(position);
+                let buttons = state.pointer_buttons;
+                self.dispatch(
+                    window,
+                    RuntimeEvent::Input(RawEvent::PointerMove(RawPointerMove {
+                        position,
+                        device_id,
+                        pointer_id: XuiPointerId::new(0),
+                        kind: PointerKind::Mouse,
+                        button: None,
+                        buttons,
+                        modifiers,
+                        timestamp,
+                    })),
+                )
             }
             ShellEvent::PointerButton {
                 button,
                 pressed,
                 device_id,
             } => {
-                self.pointer_buttons.set(button, pressed);
+                state.pointer_buttons.set(button, pressed);
                 let raw = RawPointerButton {
-                    position: self.pointer_position(),
+                    position: state.pointer_position(),
                     pointer_id: XuiPointerId::new(0),
                     device_id,
                     kind: PointerKind::Mouse,
                     button,
-                    buttons: self.pointer_buttons,
-                    modifiers: self.modifiers,
+                    buttons: state.pointer_buttons,
+                    modifiers,
                     timestamp,
                 };
-                self.dispatch(RuntimeEvent::Input(if pressed {
-                    RawEvent::PointerDown(raw)
-                } else {
-                    RawEvent::PointerUp(raw)
-                }))
+                self.dispatch(
+                    window,
+                    RuntimeEvent::Input(if pressed {
+                        RawEvent::PointerDown(raw)
+                    } else {
+                        RawEvent::PointerUp(raw)
+                    }),
+                )
             }
             ShellEvent::Wheel {
                 delta,
                 device_id,
                 is_inertial,
-            } => self.dispatch(RuntimeEvent::Input(RawEvent::Wheel(RawWheel {
-                position: self.pointer_position(),
-                delta,
-                device_id,
-                pointer_id: Some(XuiPointerId::new(0)),
-                modifiers: self.modifiers,
-                timestamp,
-                is_inertial,
-            }))),
-            ShellEvent::Keyboard(key) => {
-                self.dispatch(RuntimeEvent::Input(RawEvent::Keyboard(RawKeyboard {
+            } => {
+                let position = state.pointer_position();
+                self.dispatch(
+                    window,
+                    RuntimeEvent::Input(RawEvent::Wheel(RawWheel {
+                        position,
+                        delta,
+                        device_id,
+                        pointer_id: Some(XuiPointerId::new(0)),
+                        modifiers,
+                        timestamp,
+                        is_inertial,
+                    })),
+                )
+            }
+            ShellEvent::Keyboard(key) => self.dispatch(
+                window,
+                RuntimeEvent::Input(RawEvent::Keyboard(RawKeyboard {
                     physical_key: key.physical_key,
                     named_key: key.named_key,
                     state: key.state,
                     text: key.text,
-                    modifiers: self.modifiers,
+                    modifiers,
                     timestamp,
                     is_repeat: key.is_repeat,
-                })))
-            }
-            ShellEvent::Ime(ime) => self.dispatch(RuntimeEvent::Input(RawEvent::Ime(ime))),
-            ShellEvent::RedrawRequested => ShellOutcome::from_control(self.render()),
+                })),
+            ),
+            ShellEvent::Ime(ime) => self.dispatch(window, RuntimeEvent::Input(RawEvent::Ime(ime))),
+            ShellEvent::RedrawRequested => ShellOutcome::from_control(self.render(window)),
             ShellEvent::Wake => {
                 self.runtime.app_mut().drain_async_messages();
                 self.settle();
@@ -449,47 +585,51 @@ where
             }
 
             ShellEvent::LiveResize(live) => {
-                self.live_resize = live;
+                state.live_resize = live;
                 ShellOutcome::CONTINUE
             }
-            ShellEvent::FrameTick(info) => {
-                ShellOutcome::from_control(self.render_at(info.target.unwrap_or_else(Instant::now)))
-            }
+            ShellEvent::FrameTick(info) => ShellOutcome::from_control(
+                self.render_at(window, info.target.unwrap_or_else(Instant::now)),
+            ),
             ShellEvent::PointerLeft => {
-                let position = self.last_cursor_position.take();
-                self.dispatch(RuntimeEvent::Input(RawEvent::PointerLeave(
-                    RawPointerLeave {
+                let position = state.last_cursor_position.take();
+                self.dispatch(
+                    window,
+                    RuntimeEvent::Input(RawEvent::PointerLeave(RawPointerLeave {
                         pointer_id: XuiPointerId::new(0),
                         device_id: None,
                         kind: PointerKind::Mouse,
                         position,
-                        modifiers: self.modifiers,
+                        modifiers,
                         timestamp,
-                    },
-                )))
+                    })),
+                )
             }
             ShellEvent::PointerCancelled => {
-                self.pointer_buttons = PointerButtons::default();
-                self.dispatch(RuntimeEvent::Input(RawEvent::PointerCancel(
-                    RawPointerCancel {
+                state.pointer_buttons = PointerButtons::default();
+                let position = state.last_cursor_position;
+                self.dispatch(
+                    window,
+                    RuntimeEvent::Input(RawEvent::PointerCancel(RawPointerCancel {
                         pointer_id: XuiPointerId::new(0),
                         device_id: None,
                         kind: PointerKind::Mouse,
-                        position: self.last_cursor_position,
-                        modifiers: self.modifiers,
+                        position,
+                        modifiers,
                         timestamp,
-                    },
-                )))
+                    })),
+                )
             }
-            ShellEvent::ContextMenuRequested { position, trigger } => {
-                self.dispatch(RuntimeEvent::Input(RawEvent::ContextMenu(RawContextMenu {
+            ShellEvent::ContextMenuRequested { position, trigger } => self.dispatch(
+                window,
+                RuntimeEvent::Input(RawEvent::ContextMenu(RawContextMenu {
                     trigger,
                     pointer: None,
                     position,
-                    modifiers: self.modifiers,
+                    modifiers,
                     timestamp,
-                })))
-            }
+                })),
+            ),
             ShellEvent::Touch {
                 id,
                 phase,
@@ -497,8 +637,8 @@ where
                 device_id,
             } => {
                 let mut outcome = ShellOutcome::CONTINUE;
-                for raw in touch_events(id, phase, position, device_id, self.modifiers, timestamp) {
-                    let step = self.dispatch(RuntimeEvent::Input(raw));
+                for raw in touch_events(id, phase, position, device_id, modifiers, timestamp) {
+                    let step = self.dispatch(window, RuntimeEvent::Input(raw));
                     outcome.consumed |= step.consumed;
                     outcome.control = step.control;
                 }
@@ -508,24 +648,27 @@ where
                 kind,
                 phase,
                 position,
-            } => self.dispatch(RuntimeEvent::Input(RawEvent::Gesture(RawGesture {
-                kind,
-                phase,
-                position,
-                modifiers: self.modifiers,
-                timestamp,
-            }))),
+            } => self.dispatch(
+                window,
+                RuntimeEvent::Input(RawEvent::Gesture(RawGesture {
+                    kind,
+                    phase,
+                    position,
+                    modifiers,
+                    timestamp,
+                })),
+            ),
             ShellEvent::Command(command) => {
-                self.dispatch(RuntimeEvent::Command { command, timestamp })
+                self.dispatch(window, RuntimeEvent::Command { command, timestamp })
             }
-            ShellEvent::Reply(id, reply) => self.dispatch(RuntimeEvent::Reply(id, reply)),
+            ShellEvent::Reply(id, reply) => self.dispatch(window, RuntimeEvent::Reply(id, reply)),
             ShellEvent::AppearanceChanged(appearance) => {
-                self.dispatch(RuntimeEvent::Appearance(appearance))
+                self.dispatch(window, RuntimeEvent::Appearance(appearance))
             }
             ShellEvent::WindowStateChanged(state) => {
-                self.dispatch(RuntimeEvent::WindowState(state))
+                self.dispatch(window, RuntimeEvent::WindowState(state))
             }
-            ShellEvent::Drag(drag) => self.dispatch(RuntimeEvent::Drag(drag)),
+            ShellEvent::Drag(drag) => self.dispatch(window, RuntimeEvent::Drag(drag)),
         }
     }
 
@@ -534,16 +677,16 @@ where
         match self.runtime.control_flow() {
             ControlFlow::Exit => ShellControl::Exit,
             ControlFlow::Poll => {
-                self.request_redraw_if_dirty();
+                self.request_redraws();
                 ShellControl::Continue
             }
             ControlFlow::Wait => ShellControl::Continue,
         }
     }
 
-    fn dispatch(&mut self, event: RuntimeEvent) -> ShellOutcome {
+    fn dispatch(&mut self, window: WindowId, event: RuntimeEvent) -> ShellOutcome {
         match event {
-            RuntimeEvent::RedrawRequested => ShellOutcome::from_control(self.render()),
+            RuntimeEvent::RedrawRequested => ShellOutcome::from_control(self.render(window)),
             RuntimeEvent::Exit if self.options.exit_on_close_requested => ShellOutcome {
                 control: ShellControl::Exit,
                 consumed: true,
@@ -551,7 +694,7 @@ where
             other => {
                 let consumed = self
                     .runtime
-                    .handle_event(other)
+                    .handle_window_event(window, other)
                     .iter()
                     .any(|result| result.is_consumed());
                 self.settle();
@@ -563,13 +706,16 @@ where
         }
     }
 
-    fn render(&mut self) -> ShellControl {
-        self.render_at(Instant::now())
+    fn render(&mut self, window: WindowId) -> ShellControl {
+        self.render_at(window, Instant::now())
     }
 
-    fn render_at(&mut self, now: Instant) -> ShellControl {
-        self.timed_redraw = None;
-        match self.runtime.frame_at(now) {
+    fn render_at(&mut self, window: WindowId, now: Instant) -> ShellControl {
+        let Some(state) = self.windows.get_mut(window) else {
+            return ShellControl::Continue;
+        };
+        state.timed_redraw = None;
+        match self.runtime.frame_window_at(window, now) {
             Err(error) => {
                 self.render_error = Some(error);
                 ShellControl::Exit
@@ -578,7 +724,7 @@ where
                 // Unconditionally, not only when the frame drew something: an
                 // app whose first frame has nothing to draw still gets its
                 // window, rather than staying hidden forever.
-                self.show_window_once_painted();
+                self.show_window_once_painted(window);
                 self.settle();
                 ShellControl::Continue
             }
@@ -587,38 +733,92 @@ where
 
     /// Everything that follows a step of the runtime: the host is handed what
     /// the application asked of it, the state the runtime wants shown is applied,
-    /// and a frame is requested if one is owed.
+    /// and a frame is requested of every window that owes one.
     ///
     /// In that order, because answering a request can change the state.
     fn settle(&mut self) {
         self.flush_platform_commands();
         self.sync_platform_output();
-        self.request_redraw_if_dirty();
+        self.request_redraws();
     }
 
-    fn set_scale_factor(&mut self, scale_factor: f64) {
+    /// Tells the runtime window `window`'s size and scale factor, as its
+    /// native window has them now.
+    fn size_window(&mut self, window: WindowId) {
+        let native = &self.windows[window].native;
+        let scale_factor = native.scale_factor();
+        let size = native.surface_size().to_logical(scale_factor);
+        self.runtime
+            .app_mut()
+            .set_scale_factor(window, scale_factor as f32);
+        self.runtime
+            .handle_window_event(window, RuntimeEvent::Resize(size));
+    }
+
+    fn set_scale_factor(&mut self, window: WindowId, scale_factor: f64) {
         let factor = scale_factor as f32;
-        let _ = self.runtime.backend_mut().set_factor(factor);
-        self.runtime.app_mut().set_scale_factor(factor);
-        let size = self.window.surface_size().to_logical(scale_factor);
-        self.runtime.handle_event(RuntimeEvent::Resize(size));
-        self.runtime.app_mut().mark_needs_rebuild();
-        self.request_redraw_if_dirty();
+        let _ = self.runtime.backend_mut().set_factor(window, factor);
+        self.size_window(window);
+        self.runtime.app_mut().mark_needs_rebuild(window);
+        self.request_redraw_if_dirty(window);
     }
 
-    fn pointer_position(&self) -> Point {
-        self.last_cursor_position.unwrap_or(Point::new(0.0, 0.0))
-    }
-
-    /// Reveals the window once its first frame has been through the backend.
-    fn show_window_once_painted(&mut self) {
-        if !self.pending_first_present {
+    /// Reveals the window once its first frame has been through the backend,
+    /// and tells the runtime it is on screen.
+    fn show_window_once_painted(&mut self, window: WindowId) {
+        let state = &mut self.windows[window];
+        if !state.pending_first_present {
             return;
         }
-        self.pending_first_present = false;
-        self.window.set_visible(true);
+        state.pending_first_present = false;
+        state.native.set_visible(true);
         // A window ordered in after creation is not made key on its own.
-        self.window.focus();
+        state.native.focus();
+        self.refresh_window_visibility(window);
+    }
+
+    /// Opens the window the application asked for, if the host can, and
+    /// paints its first frame, which shows it.
+    fn open_window(&mut self, window: WindowId, options: WindowOptions) -> Performed {
+        let Some(opener) = self.opener.as_mut() else {
+            self.unopened.push((window, options));
+            return Performed::Unsupported;
+        };
+        if !self.runtime.backend().supports_surfaces() {
+            return Performed::Unsupported;
+        }
+        let published = PublishedHandle::default();
+        let native = match opener.open(window, &options, &published) {
+            Ok(native) => native,
+            Err(error) => return Performed::Failed(error),
+        };
+        let surface: Arc<dyn SurfaceTarget> = native.clone();
+        if let Err(error) = self.runtime.backend_mut().attach_surface(window, surface) {
+            opener.close(window, &native);
+            return Performed::Failed(error);
+        }
+        self.runtime.attach(window);
+        let scale_factor = native.scale_factor() as f32;
+        self.windows
+            .insert(window, WindowShell::new(native, options.visible, published));
+        self.size_window(window);
+        let _ = self.runtime.backend_mut().set_factor(window, scale_factor);
+        // As for the main window: painted before it is shown.
+        let _ = self.render(window);
+        Performed::Done
+    }
+
+    /// Destroys the native window the application closed.
+    fn close_window(&mut self, window: WindowId) -> Performed {
+        let Some(state) = self.windows.remove(window) else {
+            // Never opened: the host could not, or not yet.
+            self.unopened.retain(|(waiting, _)| *waiting != window);
+            return Performed::Done;
+        };
+        if let Some(opener) = self.opener.as_mut() {
+            opener.close(window, &state.native);
+        }
+        Performed::Done
     }
 
     /// Hands the host what the application has asked of it, and delivers the
@@ -629,19 +829,38 @@ where
     /// handing over its command list at that point and must not be re-entered.
     fn flush_platform_commands(&mut self) {
         for _ in 0..MAX_COMMAND_ROUNDS {
-            let commands = self.runtime.take_platform_commands();
+            let commands = self.runtime.take_window_commands();
             if commands.is_empty() {
                 return;
             }
 
             let mut replies = Vec::new();
-            for command in commands {
+            for (sender, command) in commands {
                 let request = match &command {
                     PlatformCommand::Request(id, _) => Some(*id),
                     _ => None,
                 };
                 let label = command_label(&command);
-                match (self.window.perform(command), request) {
+                let performed = match command {
+                    PlatformCommand::OpenWindow { window, options } => {
+                        self.open_window(window, options)
+                    }
+                    PlatformCommand::CloseWindow(window) => self.close_window(window),
+                    command => {
+                        // A window's command is carried out on that window; the
+                        // app's on whichever window sent it, or the main one.
+                        let target = if self.windows.contains_key(sender) {
+                            sender
+                        } else if targets_window(&command) {
+                            log::warn!("{label} for a window the host has not opened; dropped");
+                            continue;
+                        } else {
+                            self.main
+                        };
+                        self.windows[target].native.perform(command)
+                    }
+                };
+                match (performed, request) {
                     (Performed::Done, None) | (Performed::Pending, Some(_)) => {}
                     (Performed::Done, Some(id)) => {
                         log::error!("host completed a {label} without replying to it");
@@ -673,7 +892,8 @@ where
             }
 
             for (id, reply) in replies {
-                self.runtime.handle_event(RuntimeEvent::Reply(id, reply));
+                self.runtime
+                    .handle_window_event(self.main, RuntimeEvent::Reply(id, reply));
             }
         }
         log::warn!(
@@ -683,42 +903,23 @@ where
     }
 
     fn sync_platform_output(&mut self) {
-        let next = self.runtime.platform_output().clone();
-
-        if self.last_platform_output.text_input.is_some() != next.text_input.is_some() {
-            self.window.set_ime_allowed(next.text_input.is_some());
+        let Self {
+            runtime, windows, ..
+        } = self;
+        for (window, state) in windows.iter_mut() {
+            if let Some(next) = runtime.window_platform_output(window) {
+                sync_window_output(state, next);
+            }
         }
-
-        let previous_area = self
-            .last_platform_output
-            .text_input
-            .as_ref()
-            .map(|session| session.cursor_area);
-        let next_area = next.text_input.as_ref().map(|session| session.cursor_area);
-        if previous_area != next_area
-            && let Some(area) = next_area
-        {
-            self.window.set_ime_cursor_area(area);
+        // The app's, applied once, to the main window, which is the one a
+        // host with a single menu bar has it on.
+        let menu_bar = &self.runtime.platform_output().menu_bar;
+        if self.last_menu_bar != *menu_bar {
+            self.windows[self.main]
+                .native
+                .set_menu_bar(menu_bar.as_deref());
+            self.last_menu_bar = menu_bar.clone();
         }
-
-        if self.last_platform_output.cursor != next.cursor {
-            self.window.set_cursor(next.cursor);
-        }
-
-        // A title the runtime stops asking for is left as it was: `None` means
-        // "no opinion", not "clear it".
-        if self.last_platform_output.title != next.title
-            && let Some(title) = &next.title
-        {
-            self.window.set_title(title);
-        }
-
-        if self.last_platform_output.menu_bar != next.menu_bar {
-            self.window.set_menu_bar(next.menu_bar.as_deref());
-        }
-
-        self.published.set(&next.surface);
-        self.last_platform_output = next;
     }
 
     /// Tells the runtime whether the window can be seen, from whatever the
@@ -727,39 +928,119 @@ where
     /// No single event covers this. macOS and Wayland report occlusion; a
     /// minimized window on Windows and X11 instead reports a resize to nothing
     /// and answers `is_minimized`. So this asks all three and takes the
-    /// pessimistic answer.
+    /// pessimistic answer. A window still waiting for its first frame is not
+    /// on screen either.
     ///
     /// Every path is best-effort. A platform that reports nothing leaves the
     /// window permanently visible.
-    fn refresh_window_visibility(&mut self) {
-        let size = self.window.surface_size();
-        let minimized = self.window.is_minimized();
+    fn refresh_window_visibility(&mut self, window: WindowId) {
+        let Some(state) = self.windows.get(window) else {
+            return;
+        };
+        let size = state.native.surface_size();
+        let minimized = state.native.is_minimized();
+        let held_back = state.pending_first_present;
+        let occluded = state.occluded;
         if let Some(minimized) = minimized {
-            self.runtime.set_window_minimized(minimized);
+            self.runtime.set_minimized(window, minimized);
         }
-        let visible =
-            !self.occluded && !minimized.unwrap_or(false) && size.width > 0 && size.height > 0;
+        // The main window counts as on screen while it waits for its first
+        // frame, as it always has: that frame is what shows it.
+        let visible = !occluded
+            && !minimized.unwrap_or(false)
+            && size.width > 0
+            && size.height > 0
+            && (window == self.main || !held_back);
 
-        if self.runtime.window_visible() == visible {
+        if self.runtime.app().window_visible(window) == visible {
             return;
         }
-        self.runtime.set_window_visible(visible);
+        self.runtime.set_visible(window, visible);
         // Coming back needs a frame to restart the loop from: the animations
         // that wanted one are still recorded, but nothing has asked since.
-        self.request_redraw_if_dirty();
+        self.request_redraw_if_dirty(window);
     }
 
-    /// Asks for a frame now if one is owed, and otherwise for one at the next
-    /// deadline anything is waiting on.
-    fn request_redraw_if_dirty(&mut self) {
-        if self.runtime.app().is_dirty() {
-            self.window.request_redraw();
-        } else if let Some(at) = self.runtime.next_wake()
-            && self.timed_redraw != Some(at)
-        {
-            self.timed_redraw = Some(at);
-            self.window.request_redraw_at(at);
+    /// Asks every window that owes a frame for one.
+    ///
+    /// Every window, not only the one an event came to: a signal written in
+    /// one may be read in any other.
+    fn request_redraws(&mut self) {
+        let Self {
+            runtime, windows, ..
+        } = self;
+        for (window, state) in windows.iter_mut() {
+            request_redraw_if_dirty(runtime.app(), window, state);
         }
+    }
+
+    /// Asks for a frame of `window` now if one is owed, and otherwise for one
+    /// at the next deadline anything in it is waiting on.
+    fn request_redraw_if_dirty(&mut self, window: WindowId) {
+        if let Some(state) = self.windows.get_mut(window) {
+            request_redraw_if_dirty(self.runtime.app(), window, state);
+        }
+    }
+}
+
+/// Applies to `state`'s native window what changed in its output since the
+/// last sync. Nothing is read or copied when nothing changed, which is the
+/// usual case for every window but the one an event came to.
+fn sync_window_output<W: PlatformWindow>(state: &mut WindowShell<W>, next: &PlatformOutput) {
+    let last = &state.last_platform_output;
+    if last == next {
+        return;
+    }
+    let native = &state.native;
+
+    if last.text_input.is_some() != next.text_input.is_some() {
+        native.set_ime_allowed(next.text_input.is_some());
+    }
+
+    let previous_area = last.text_input.as_ref().map(|session| session.cursor_area);
+    let next_area = next.text_input.as_ref().map(|session| session.cursor_area);
+    if previous_area != next_area
+        && let Some(area) = next_area
+    {
+        native.set_ime_cursor_area(area);
+    }
+
+    if last.cursor != next.cursor {
+        native.set_cursor(next.cursor);
+    }
+
+    // A title the runtime stops asking for is left as it was: `None` means
+    // "no opinion", not "clear it".
+    if last.title != next.title
+        && let Some(title) = &next.title
+    {
+        native.set_title(title);
+    }
+
+    if last.menu != next.menu {
+        native.set_menu(&next.menu);
+    }
+
+    if last.surface != next.surface {
+        state.published.set(&next.surface);
+    }
+    state.last_platform_output = next.clone();
+}
+
+/// Asks for a frame of `window` now if one is owed, and otherwise for one at
+/// the next deadline anything in it is waiting on.
+fn request_redraw_if_dirty<W: PlatformWindow>(
+    app: &App,
+    window: WindowId,
+    state: &mut WindowShell<W>,
+) {
+    if app.window_is_dirty(window) {
+        state.native.request_redraw();
+    } else if let Some(at) = app.next_wake(window)
+        && state.timed_redraw != Some(at)
+    {
+        state.timed_redraw = Some(at);
+        state.native.request_redraw_at(at);
     }
 }
 

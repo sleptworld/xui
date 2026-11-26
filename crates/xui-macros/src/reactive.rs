@@ -645,7 +645,10 @@ impl Gen<'_> {
             return self.slot(scope, out, element, parent);
         }
         if element.tag.is_ident("portal") {
-            return self.portal(scope, out, element, parent);
+            return self.elsewhere(scope, out, element, parent, Elsewhere::Portal);
+        }
+        if element.tag.is_ident("window") {
+            return self.elsewhere(scope, out, element, parent, Elsewhere::Window);
         }
         match host_kind(&element.tag) {
             Some(kind) => self.host(scope, out, element, kind, parent),
@@ -653,25 +656,30 @@ impl Gen<'_> {
         }
     }
 
-    /// `portal(z_index: 10, modal: true, on_dismiss: |cx, reason| ..) { .. }`:
-    /// content mounted under the overlayer. Attributes are evaluated once, at
-    /// mount, as `PortalSpec` builder calls.
-    fn portal(
+    /// Content mounted somewhere other than where it is written:
+    ///
+    /// - `portal(z_index: 10, modal: true, on_dismiss: |cx, reason| ..) { .. }`,
+    ///   under the overlayer;
+    /// - `window(title: "Settings", size: (480.0, 360.0), on_close_requested: |cx| ..) { .. }`,
+    ///   as the tree of a window of its own.
+    ///
+    /// Attributes are evaluated once, at mount, as builder calls on the
+    /// `PortalSpec` or `WindowSpec`.
+    fn elsewhere(
         &mut self,
         scope: &Scope,
         out: &mut Out,
         element: &Element,
         parent: Option<u16>,
+        kind: Elsewhere,
     ) -> Result<()> {
         let k = self.k.clone();
         let index = out.nodes.len() as u16;
         out.nodes.push(TokenStream::new());
         let Body::Children(list) = &element.body else {
-            return Err(Error::new(
-                element.tag.span(),
-                "a portal's content is its children: `portal { .. }`",
-            ));
+            return Err(Error::new(element.tag.span(), kind.no_children()));
         };
+        let (handler, handler_args) = kind.handler();
         let inner = self.row_scope(scope, quote!(()), &[]);
         let template = self.row_template(&inner, list)?;
         let (param, notifier, spec) = (scope.param(), hidden("__notifier"), hidden("__spec"));
@@ -679,20 +687,19 @@ impl Gen<'_> {
         for attr in &element.attrs {
             let name = &attr.name;
             let expr = attr_expr(&attr.value)?;
-            match (&expr, name == "on_dismiss") {
+            match (&expr, name == handler) {
                 (Expr::Closure(closure), true) => {
-                    if closure.inputs.len() > 2 {
-                        return Err(Error::new(
-                            closure.inputs.span(),
-                            "`on_dismiss` takes the `Cx` and the reason: `|cx, reason| ..`",
-                        ));
+                    if closure.inputs.len() > handler_args.len() + 1 {
+                        return Err(Error::new(closure.inputs.span(), kind.handler_shape()));
                     }
                     let (_, body) = self.with_cx(scope, VIEW, closure, false)?;
-                    let (kept, cx, arg) = (hidden("__kept_scope"), hidden("__cx"), hidden("__arg"));
+                    let (kept, cx) = (hidden("__kept_scope"), hidden("__cx"));
+                    let setter = format_ident!("__{}", handler);
+                    let args = handler_args.iter().map(|arg| hidden(arg));
                     calls.push(quote! {
                         let #spec = {
                             let #kept = ::std::rc::Rc::clone(#param);
-                            #spec.__on_dismiss(#notifier, move |#cx: &mut #k::reactive::Cx<'_>, #arg| {
+                            #spec.#setter(#notifier, move |#cx: &mut #k::reactive::Cx<'_> #(, #args)*| {
                                 #[allow(unused_variables)]
                                 let #param = &#kept;
                                 #body
@@ -700,7 +707,12 @@ impl Gen<'_> {
                         };
                     });
                 }
-                (_, true) => return Err(Error::new(name.span(), "`on_dismiss` takes a closure")),
+                (_, true) => {
+                    return Err(Error::new(
+                        name.span(),
+                        format!("`{handler}` takes a closure"),
+                    ));
+                }
                 (_, false) => {
                     let uses = self.uses(scope, VIEW, &[(&expr, &[])])?;
                     let prelude = self.prelude(scope, &uses, Mode::Tracked);
@@ -711,10 +723,11 @@ impl Gen<'_> {
         }
         let header = scope.header(&k, quote!(#notifier: &#k::reactive::Notifier));
         let parent = option_u16(parent);
+        let (variant, ty) = kind.names();
         out.nodes[usize::from(index)] = quote! {
             #k::reactive::StaticNode {
-                kind: #k::reactive::NodeKind::Portal(#header -> #k::reactive::PortalSpec {
-                    let #spec = #k::reactive::PortalSpec::new(#k::reactive::__children(#param, #template));
+                kind: #k::reactive::NodeKind::#variant(#header -> #k::reactive::#ty {
+                    let #spec = #k::reactive::#ty::new(#k::reactive::__children(#param, #template));
                     #(#calls)*
                     #spec
                 }),
@@ -1910,7 +1923,7 @@ pub fn expand(function: ItemFn) -> Result<TokenStream> {
     let mut generics = Generics::new(&sig.generics)?;
     // A component may share a host's name (`xui_components::image::image`):
     // only a qualified path reaches it, since a bare tag of that name is the host.
-    if sig.ident == "slot" || sig.ident == "portal" {
+    if sig.ident == "slot" || sig.ident == "portal" || sig.ident == "window" {
         return Err(Error::new(
             sig.ident.span(),
             format!(
@@ -2588,6 +2601,49 @@ fn protocol(
                 let __draft = self.storage.props;
                 #k::reactive::__pending_with::<#instance #args>(move |__cx| #props_name { #(#resolve,)* })
             }
+        }
+    }
+}
+
+/// Where an element's content goes when it is not where it is written.
+#[derive(Clone, Copy)]
+enum Elsewhere {
+    /// `portal { .. }`: under the overlayer.
+    Portal,
+    /// `window { .. }`: as the tree of a window of its own.
+    Window,
+}
+
+impl Elsewhere {
+    /// The `NodeKind` variant and the spec type.
+    fn names(self) -> (Ident, Ident) {
+        let (variant, ty) = match self {
+            Self::Portal => ("Portal", "PortalSpec"),
+            Self::Window => ("Window", "WindowSpec"),
+        };
+        (format_ident!("{}", variant), format_ident!("{}", ty))
+    }
+
+    /// The attribute taking a handler, and the arguments it gets after the
+    /// `Cx`.
+    fn handler(self) -> (&'static str, &'static [&'static str]) {
+        match self {
+            Self::Portal => ("on_dismiss", &["__arg"]),
+            Self::Window => ("on_close_requested", &[]),
+        }
+    }
+
+    fn handler_shape(self) -> &'static str {
+        match self {
+            Self::Portal => "`on_dismiss` takes the `Cx` and the reason: `|cx, reason| ..`",
+            Self::Window => "`on_close_requested` takes the `Cx`: `|cx| ..`",
+        }
+    }
+
+    fn no_children(self) -> &'static str {
+        match self {
+            Self::Portal => "a portal's content is its children: `portal { .. }`",
+            Self::Window => "a window's content is its children: `window(title: ..) { .. }`",
         }
     }
 }

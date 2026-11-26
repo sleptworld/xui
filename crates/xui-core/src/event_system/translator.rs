@@ -1955,7 +1955,11 @@ mod tests {
 
     impl<T> RenderBackend<T> for NullBackend {
         type Error = Infallible;
-        fn begin_frame(&mut self, _size: Size<f32>) -> Result<(), Self::Error> {
+        fn begin_frame(
+            &mut self,
+            _window: xui_interface::WindowId,
+            _size: Size<f32>,
+        ) -> Result<(), Self::Error> {
             Ok(())
         }
         fn submit(&mut self, _frame: &BuiltFrame, _text: &mut T) -> Result<(), Self::Error> {
@@ -2040,11 +2044,12 @@ mod tests {
         let mut app = App::new(|app| {
             app.mount_static(controlled_scroll_root());
         });
-        app.resize(Size::new(200.0, 200.0));
+        app.resize(app.main_window(), Size::new(200.0, 200.0));
         let mut text = TextHost::new(ZeroTextBackend);
         let mut backend = NullBackend;
         for _ in 0..3 {
-            app.render(&mut backend, &mut text).expect("null backend");
+            app.render(app.main_window(), &mut backend, &mut text)
+                .expect("null backend");
         }
 
         let controller = SCROLL_CONTROLLER.with(Clone::clone);
@@ -2052,7 +2057,8 @@ mod tests {
         assert!(controller.scroll_to_y(120.0));
         assert!(app.is_dirty(), "a pending request must schedule a frame");
 
-        app.render(&mut backend, &mut text).expect("null backend");
+        app.render(app.main_window(), &mut backend, &mut text)
+            .expect("null backend");
 
         let node = controller.node_id().expect("still bound");
         assert_eq!(app.ui_runtime().node(node).unwrap().scroll_offset.y, 120.0);
@@ -2104,22 +2110,25 @@ mod tests {
         let mut app = App::new(|app| {
             app.mount_static(filling_scroll_root());
         });
-        app.resize(Size::new(200.0, 200.0));
+        app.resize(app.main_window(), Size::new(200.0, 200.0));
         let mut text = TextHost::new(ZeroTextBackend);
         let mut backend = NullBackend;
         for _ in 0..3 {
-            app.render(&mut backend, &mut text).expect("null backend");
+            app.render(app.main_window(), &mut backend, &mut text)
+                .expect("null backend");
         }
 
         let controller = CLAMP_CONTROLLER.with(Clone::clone);
         assert_eq!(controller.metrics().max_offset.y, 200.0);
         assert!(controller.scroll_to_end());
-        app.render(&mut backend, &mut text).expect("null backend");
+        app.render(app.main_window(), &mut backend, &mut text)
+            .expect("null backend");
         assert_eq!(controller.offset().y, 200.0);
 
         // 350px of viewport over 400px of content leaves only 50px of offset.
-        app.resize(Size::new(200.0, 350.0));
-        app.render(&mut backend, &mut text).expect("null backend");
+        app.resize(app.main_window(), Size::new(200.0, 350.0));
+        app.render(app.main_window(), &mut backend, &mut text)
+            .expect("null backend");
 
         assert_eq!(controller.offset().y, 50.0);
         CLAMP_SCROLLS.with(|scrolls| {
@@ -2146,11 +2155,12 @@ mod tests {
             let mut app = App::new(|app| {
                 app.mount_static(nested_scroll_root());
             });
-            app.resize(Size::new(200.0, 200.0));
+            app.resize(app.main_window(), Size::new(200.0, 200.0));
             let mut text = TextHost::new(ZeroTextBackend);
             let mut backend = NullBackend;
             for _ in 0..3 {
-                app.render(&mut backend, &mut text).expect("null backend");
+                app.render(app.main_window(), &mut backend, &mut text)
+                    .expect("null backend");
             }
             let (outer, inner) = {
                 let rt = app.ui_runtime();
@@ -2177,9 +2187,10 @@ mod tests {
                 timestamp: Instant::now(),
                 is_inertial: false,
             });
-            self.app.dispatch_event(event, &mut self.text);
             self.app
-                .render(&mut self.backend, &mut self.text)
+                .dispatch_event(self.app.main_window(), event, &mut self.text);
+            self.app
+                .render(self.app.main_window(), &mut self.backend, &mut self.text)
                 .expect("null backend");
         }
 

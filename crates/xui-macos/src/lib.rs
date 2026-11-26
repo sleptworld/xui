@@ -28,7 +28,12 @@
 //!   [`MacWindow::ns_view`]) for anything AppKit offers beyond
 //!   `xui_shell::WindowOptions`.
 //!
-//! One window per run. The crate is empty on other platforms.
+//! A run starts on one window. The application's `window(..) { .. }` blocks
+//! open more, each an `NSWindow` of its own, drawn by the backend that draws
+//! the main one when it can (Vello can; Skia draws one window only for now).
+//! The screen's menu bar follows the key window, and a menu item acts on it.
+//! `cargo run -p xui-macos --example multi_window` checks it against real
+//! AppKit. The crate is empty on other platforms.
 //!
 //! # Features
 //!

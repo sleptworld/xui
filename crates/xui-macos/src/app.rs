@@ -12,14 +12,19 @@ use objc2_app_kit::{
     NSApplicationTerminateReply, NSEvent, NSEventModifierFlags, NSEventType, NSResponder,
 };
 use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol};
+use std::collections::HashMap;
 use xui_core::App;
 use xui_core::app::AppRenderError;
 use xui_core::render::RenderBackend;
 use xui_core::text::TextHost;
-use xui_interface::TextBackend;
-use xui_shell::{Shell, ShellEvent, ShellHandle, ShellOptions, WindowOptions};
 
-use crate::host::{self, EventSink, Host};
+use xui_interface::{PlatformError, TextBackend, WindowId};
+use xui_shell::{
+    PublishedHandle, Shell, ShellEvent, ShellHandle, ShellOptions, SurfaceBackend, WindowOpener,
+    WindowOptions,
+};
+
+use crate::host::{self, EventSink, Host, WindowSink};
 use crate::menu;
 use crate::window::MacWindow;
 
@@ -89,7 +94,9 @@ where
 type BackendFactory<B, T> =
     Box<dyn FnOnce(Arc<MacWindow>) -> Result<(App, T, B), MacBackendInitError> + 'static>;
 
-/// Hosts an [`App`] in a native AppKit window.
+/// Hosts an [`App`] in native AppKit windows: the main one, and those its
+/// `window(..) { .. }` blocks open, which the same backend draws if it can
+/// ([`SurfaceBackend`]).
 pub struct MacRunner<B: RenderBackend<TextHost<T>>, T: TextBackend> {
     factory: BackendFactory<B, T>,
     options: MacRunnerOptions,
@@ -97,7 +104,7 @@ pub struct MacRunner<B: RenderBackend<TextHost<T>>, T: TextBackend> {
 
 impl<B, T> MacRunner<B, T>
 where
-    B: RenderBackend<TextHost<T>> + 'static,
+    B: RenderBackend<TextHost<T>> + SurfaceBackend + 'static,
     T: TextBackend + 'static,
 {
     pub fn with_options<F>(factory: F, options: MacRunnerOptions) -> Self
@@ -153,7 +160,8 @@ where
         app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         app.run();
         app.setDelegate(None);
-        host::set_current(None);
+        host::clear();
+        menu::clear();
 
         if let Some(error) = state.init_error.take() {
             return Err(MacRunError::BackendInit(error));
@@ -172,7 +180,7 @@ where
 /// What the launch callback leaves behind for `run` to collect.
 struct Launch<B, T>
 where
-    B: RenderBackend<TextHost<T>>,
+    B: RenderBackend<TextHost<T>> + SurfaceBackend,
     T: TextBackend,
 {
     host: RefCell<Option<Rc<Host<B, T>>>>,
@@ -185,7 +193,7 @@ fn launch<B, T>(
     options: MacRunnerOptions,
     state: &Launch<B, T>,
 ) where
-    B: RenderBackend<TextHost<T>> + 'static,
+    B: RenderBackend<TextHost<T>> + SurfaceBackend + 'static,
     T: TextBackend + 'static,
 {
     let window = MacWindow::new(mtm, &options.window);
@@ -204,14 +212,18 @@ fn launch<B, T>(
     let host = Rc::new(Host::<B, T>::new());
     let weak = Rc::downgrade(&host);
     let sink: Weak<dyn EventSink> = weak;
-    window.attach(mtm, sink.clone());
-    host::set_current(Some(sink));
+    window.attach(mtm, app.main_window(), sink);
 
     let shell_options = ShellOptions {
         visible: options.window.visible,
         exit_on_close_requested: options.exit_on_close_requested,
     };
     let (shell, control) = Shell::new(window.clone(), app, text, backend, shell_options);
+    let shell = shell.with_opener(MacOpener {
+        mtm,
+        host: Rc::downgrade(&host),
+        sinks: HashMap::new(),
+    });
     host.install(ShellHandle::new(shell), control);
     // From here the view can answer "is this a title bar?" from what the runtime
     // published, without calling into the shell.
@@ -219,6 +231,47 @@ fn launch<B, T>(
         window.set_published(mtm, published);
     }
     state.host.replace(Some(host));
+}
+
+/// Opens the windows the application's window blocks ask for.
+struct MacOpener<B, T>
+where
+    B: RenderBackend<TextHost<T>> + SurfaceBackend,
+    T: TextBackend,
+{
+    mtm: MainThreadMarker,
+    host: Weak<Host<B, T>>,
+    /// Each open window's sink, which its view and delegate hold weakly.
+    sinks: HashMap<WindowId, Rc<WindowSink<B, T>>>,
+}
+
+impl<B, T> WindowOpener<MacWindow> for MacOpener<B, T>
+where
+    B: RenderBackend<TextHost<T>> + SurfaceBackend + 'static,
+    T: TextBackend + 'static,
+{
+    fn open(
+        &mut self,
+        window: WindowId,
+        options: &WindowOptions,
+        published: &PublishedHandle,
+    ) -> Result<Arc<MacWindow>, PlatformError> {
+        let native = MacWindow::new(self.mtm, options);
+        let sink = Rc::new(WindowSink {
+            host: self.host.clone(),
+            window,
+        });
+        let weak: Weak<WindowSink<B, T>> = Rc::downgrade(&sink);
+        native.attach(self.mtm, window, weak);
+        native.set_published(self.mtm, published.clone());
+        self.sinks.insert(window, sink);
+        Ok(native)
+    }
+
+    fn close(&mut self, window: WindowId, native: &Arc<MacWindow>) {
+        native.close(self.mtm);
+        self.sinks.remove(&window);
+    }
 }
 
 define_class!(
@@ -353,6 +406,8 @@ pub fn runner(
 
 /// [`runner`], on a device that also gives the app's canvas GPU painters
 /// what `needs` asks, where the adapter can.
+///
+/// The backend draws every window the app opens, on this one device.
 #[cfg(feature = "vello")]
 pub fn runner_with_device(
     app: xui_core::app::AppRoot,

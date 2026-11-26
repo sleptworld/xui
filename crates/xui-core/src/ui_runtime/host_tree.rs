@@ -1,9 +1,7 @@
-use std::cell::RefCell;
 use std::ops::{Index, IndexMut};
-use std::rc::Rc;
 
-use slotmap::{SecondaryMap, SlotMap};
-use xui_interface::{NodeId, WidgetState, WindowId};
+use slotmap::SecondaryMap;
+use xui_interface::{NodeId, WidgetState};
 
 use crate::caps::CapMask;
 use crate::ui_runtime::state::HostWorkFlags;
@@ -67,71 +65,157 @@ impl HostNode {
     }
 }
 
-/// Where every [`NodeId`] of an application comes from, whichever window's
-/// tree the node is in, and which window that is.
+/// Bits of a [`NodeId`]'s version that name the window the node is in.
+pub(crate) const TAG_BITS: u32 = 10;
+/// How many windows can be open at once: one tag each.
+pub(crate) const TAGS: usize = 1 << TAG_BITS;
+/// Bits of a version that count a slot's reuses within its window.
+const GENERATION_BITS: u32 = 21;
+/// The last generation a slot is given. A slot freed at it is not reused.
+pub(crate) const MAX_GENERATION: u32 = (1 << GENERATION_BITS) - 1;
+
+/// Where one window's [`NodeId`]s come from.
 ///
-/// One allocator for all the trees keeps an id meaning one node app-wide, so
-/// what is keyed by `NodeId` outside a tree -- the text host's layouts, a
-/// backend's per-node resources, a platform reply on its way back to a node --
-/// needs no window beside it. Trees that share nothing still work, each with an
-/// allocator of its own: that is [`HostTree::new`].
+/// The index of an id is the window's own, dense from 0, so every table a
+/// window keys by node id is as long as the window has nodes, not as the
+/// whole app has. The window is in the id's version instead -- its tag, in
+/// the top [`TAG_BITS`] -- so an id still names one node app-wide, and what
+/// is keyed by `NodeId` outside a window (the text host, a platform reply)
+/// needs no window beside it. Below the tag is the slot's generation, bumped
+/// each time the slot is freed; a slot whose generation runs out is retired
+/// rather than reused, so an id is never given out twice.
+///
+/// A table keyed by index (`SecondaryMap`, `SparseSecondaryMap`) must hold
+/// one window's ids only: two windows' nodes with the same index would share
+/// its slot. Across windows, key a hash map.
 ///
 /// See `docs/multi-window.md` (D3).
-#[derive(Clone, Default)]
-pub(crate) struct NodeIds(Rc<RefCell<SlotMap<NodeId, WindowId>>>);
+pub(crate) struct NodeAlloc {
+    tag: u32,
+    /// Each slot's generation: the one its live node has, or the one the
+    /// next node in it will.
+    generations: Vec<u32>,
+    free: Vec<u32>,
+    /// The generation slots start at. A window given a tag another had starts
+    /// above every generation that one gave out, so the other's stale ids
+    /// never name one of its nodes.
+    floor: u32,
+    /// One past the highest generation given out or set for reuse.
+    next_floor: u32,
+}
 
-impl NodeIds {
-    fn insert(&self, window: WindowId) -> NodeId {
-        self.0.borrow_mut().insert(window)
+impl NodeAlloc {
+    /// Ids for the window tagged `tag`, from generation `floor` on.
+    pub(crate) fn new(tag: u32, floor: u32) -> Self {
+        debug_assert!((tag as usize) < TAGS);
+        debug_assert!(floor <= MAX_GENERATION);
+        Self {
+            tag,
+            generations: Vec::new(),
+            free: Vec::new(),
+            floor,
+            next_floor: floor,
+        }
     }
 
-    fn remove(&self, id: NodeId) {
-        self.0.borrow_mut().remove(id);
+    fn insert(&mut self) -> NodeId {
+        let index = match self.free.pop() {
+            Some(index) => index,
+            None => {
+                self.generations.push(self.floor);
+                (self.generations.len() - 1) as u32
+            }
+        };
+        let generation = self.generations[index as usize];
+        self.next_floor = self.next_floor.max(generation + 1);
+        encode(self.tag, generation, index)
     }
 
-    /// The window whose tree `id` is in; `None` once it is removed.
-    pub(crate) fn window_of(&self, id: NodeId) -> Option<WindowId> {
-        self.0.borrow().get(id).copied()
+    fn remove(&mut self, id: NodeId) {
+        let (tag, generation, index) = decode(id);
+        debug_assert_eq!(tag, self.tag, "an id of another window");
+        let next = generation + 1;
+        self.next_floor = self.next_floor.max(next + 1);
+        self.generations[index as usize] = next;
+        if next <= MAX_GENERATION {
+            self.free.push(index);
+        }
     }
+
+    /// The window's tag.
+    pub(crate) fn tag(&self) -> u32 {
+        self.tag
+    }
+
+    /// Where a window given this tag next should start: above every
+    /// generation this one gave out.
+    pub(crate) fn next_floor(&self) -> u32 {
+        self.next_floor.min(MAX_GENERATION + 1)
+    }
+}
+
+fn encode(tag: u32, generation: u32, index: u32) -> NodeId {
+    let version = (tag << (GENERATION_BITS + 1)) | (generation << 1) | 1;
+    NodeId::from(slotmap::KeyData::from_ffi(
+        (u64::from(version) << 32) | u64::from(index),
+    ))
+}
+
+/// `(tag, generation, index)` of `id`.
+fn decode(id: NodeId) -> (u32, u32, u32) {
+    let ffi = slotmap::Key::data(&id).as_ffi();
+    let (version, index) = ((ffi >> 32) as u32, ffi as u32);
+    (
+        version >> (GENERATION_BITS + 1),
+        (version >> 1) & MAX_GENERATION,
+        index,
+    )
+}
+
+/// The tag of the window `id` was made in.
+pub(crate) fn tag_of(id: NodeId) -> u32 {
+    decode(id).0
 }
 
 /// Generational host identity/topology plus a secondary core-data cache.
 ///
-/// The ids come from a [`NodeIds`] that other trees may share; the tree hands
-/// back the ones it still holds when it is dropped.
+/// The ids come from the tree's own [`NodeAlloc`].
 ///
 /// # Preconditions
 ///
 /// Every method taking a `NodeId` requires it to be live -- present in the
 /// tree -- and panics otherwise, except the one that exists to ask:
-/// [`Self::contains_key`]. An id live in another tree sharing the allocator is
-/// not live in this one.
+/// [`Self::contains_key`]. An id of another window's tree is never live in
+/// this one.
 pub(crate) struct HostTree<D> {
-    ids: NodeIds,
-    window: WindowId,
+    ids: NodeAlloc,
     nodes: Links,
     data: SecondaryMap<NodeId, D>,
 }
 
 impl<D> HostTree<D> {
-    /// A tree with an allocator of its own.
+    /// A tree whose ids are tagged 0.
     #[cfg(test)]
     pub fn new() -> Self {
-        Self::with_ids(NodeIds::default(), WindowId::default())
+        Self::with_ids(NodeAlloc::new(0, 0))
     }
 
-    /// A tree for `window`, taking its ids from `ids`.
-    pub fn with_ids(ids: NodeIds, window: WindowId) -> Self {
+    /// A tree taking its ids from `ids`.
+    pub fn with_ids(ids: NodeAlloc) -> Self {
         Self {
             ids,
-            window,
             nodes: SecondaryMap::new(),
             data: SecondaryMap::new(),
         }
     }
 
+    /// Where the tree's ids come from.
+    pub(crate) fn ids(&self) -> &NodeAlloc {
+        &self.ids
+    }
+
     pub fn insert_with_key(&mut self, make_data: impl FnOnce(NodeId) -> D) -> NodeId {
-        let id = self.ids.insert(self.window);
+        let id = self.ids.insert();
         self.nodes.insert(id, HostNode::new());
         self.data.insert(id, make_data(id));
         id
@@ -248,17 +332,6 @@ impl<D> HostTree<D> {
         self.nodes.remove(id);
         self.ids.remove(id);
         self.data.remove(id).expect("host data is dense")
-    }
-}
-
-impl<D> Drop for HostTree<D> {
-    /// Hands the ids still in the tree back, so a closed window's do not stay
-    /// taken in an allocator the others go on using.
-    fn drop(&mut self) {
-        let mut ids = self.ids.0.borrow_mut();
-        for (id, _) in self.nodes.iter() {
-            ids.remove(id);
-        }
     }
 }
 
@@ -390,31 +463,56 @@ mod tests {
     }
 
     #[test]
-    fn trees_sharing_an_allocator_never_hand_out_the_same_id() {
-        let ids = NodeIds::default();
-        let mut windows = SlotMap::<WindowId, ()>::with_key();
-        let (first, second) = (windows.insert(()), windows.insert(()));
-        let mut a = HostTree::with_ids(ids.clone(), first);
-        let mut b = HostTree::with_ids(ids.clone(), second);
+    fn two_windows_ids_never_collide_though_their_indices_do() {
+        let mut a = HostTree::with_ids(NodeAlloc::new(0, 0));
+        let mut b = HostTree::with_ids(NodeAlloc::new(1, 0));
         let in_a: Vec<_> = (0..8).map(|_| a.insert_with_key(|_| ())).collect();
         let in_b: Vec<_> = (0..8).map(|_| b.insert_with_key(|_| ())).collect();
 
+        // Dense within each window, from 0: the same indices in both.
+        let index = |id: NodeId| decode(id).2;
+        assert_eq!(
+            in_a.iter().map(|&id| index(id)).collect::<Vec<_>>(),
+            (0..8).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            in_b.iter().map(|&id| index(id)).collect::<Vec<_>>(),
+            (0..8).collect::<Vec<_>>()
+        );
+        // Yet every id is its window's alone.
         assert!(in_a.iter().all(|id| !in_b.contains(id)));
         assert!(
             in_a.iter()
                 .all(|id| a.contains_key(*id) && !b.contains_key(*id))
         );
-        assert_eq!(ids.window_of(in_a[0]), Some(first));
-        assert_eq!(ids.window_of(in_b[0]), Some(second));
+        assert_eq!(tag_of(in_a[0]), 0);
+        assert_eq!(tag_of(in_b[0]), 1);
+    }
 
-        // A removed id is free again in the allocator, not only in its tree.
-        a.remove(in_a[7]);
-        assert_eq!(ids.window_of(in_a[7]), None);
+    #[test]
+    fn a_reused_slot_gives_a_new_id_and_a_spent_one_is_retired() {
+        let mut ids = NodeAlloc::new(3, MAX_GENERATION - 1);
+        let first = ids.insert();
+        ids.remove(first);
+        let second = ids.insert();
+        assert_eq!(decode(second).2, decode(first).2, "the slot is reused");
+        assert_ne!(second, first);
+        assert_eq!(decode(second).1, MAX_GENERATION);
+        // Freed at the last generation: retired, so the next id is a new slot.
+        ids.remove(second);
+        let third = ids.insert();
+        assert_ne!(decode(third).2, decode(second).2);
+        assert_eq!(tag_of(third), 3);
+    }
 
-        // Dropping a tree frees every id it still held.
-        drop(b);
-        assert!(in_b.iter().all(|id| ids.window_of(*id).is_none()));
-        assert_eq!(ids.window_of(in_a[0]), Some(first));
+    #[test]
+    fn a_tag_reused_from_its_floor_never_repeats_an_old_id() {
+        let mut old = NodeAlloc::new(5, 0);
+        let old_ids: Vec<_> = (0..4).map(|_| old.insert()).collect();
+        old.remove(old_ids[1]);
+        let mut new = NodeAlloc::new(5, old.next_floor());
+        let new_ids: Vec<_> = (0..4).map(|_| new.insert()).collect();
+        assert!(new_ids.iter().all(|id| !old_ids.contains(id)));
     }
 
     #[test]

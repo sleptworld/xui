@@ -108,6 +108,8 @@ pub enum NodeKind<I> {
     Outlet(fn(&Rc<I>) -> super::Children),
     /// `portal { .. }`: content mounted under the overlayer.
     Portal(fn(&Rc<I>, &Notifier) -> super::PortalSpec),
+    /// `window(..) { .. }`: content mounted as the tree of a window of its own.
+    Window(fn(&Rc<I>, &Notifier) -> super::WindowSpec),
 }
 
 /// Nodes are in preorder, so a parent always precedes its children.

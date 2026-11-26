@@ -1167,8 +1167,9 @@ mod smoke_tests {
                 let mut backend = MockRenderBackend::default();
                 let mut text = TextHost::new(CosmicEngine::new(1.0));
                 for width in [1280.0, 820.0] {
-                    app.resize(Size::new(width, 860.0));
-                    app.render(&mut backend, &mut text).expect("gallery scene");
+                    app.resize(app.main_window(), Size::new(width, 860.0));
+                    app.render(app.main_window(), &mut backend, &mut text)
+                        .expect("gallery scene");
                     let tree = app.ui_runtime();
                     let mut pending = vec![tree.root()];
                     let mut count = 0;
