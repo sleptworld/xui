@@ -88,6 +88,10 @@ pub struct UiRuntime {
     /// `is_dirty` -- consulted after every batch of events -- stays O(1)
     /// instead of borrowing every canvas widget to ask.
     pub(super) canvases_wanting_repaint: SparseSecondaryMap<NodeId, ()>,
+    /// Whether some node was shown, hidden, or moved this frame, which can
+    /// bring back a canvas set aside while it was not drawn. See
+    /// `sync_dirty_canvases`.
+    pub(super) drawn_set_moved: bool,
     /// Whether the window is on screen. Only the animation loop consults it:
     /// a canvas that asked for another frame gets none while nothing can be
     /// seen. Defaults to true, so a platform that never reports occlusion

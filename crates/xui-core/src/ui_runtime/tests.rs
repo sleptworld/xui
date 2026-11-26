@@ -4127,3 +4127,234 @@ fn a_theme_switch_redraws_every_painter_once() {
         "the same theme changes nothing"
     );
 }
+
+// ---------------------------------------------------------------------
+// Canvas: what re-runs a painter, and what it is bound to
+// ---------------------------------------------------------------------
+
+fn sized_canvas(
+    controller: &CanvasController,
+    width: f32,
+    height: f32,
+) -> Draft<crate::widgets::canvas::Canvas> {
+    canvas()
+        .with::<canvas::controller>(controller.clone())
+        .with::<canvas::width>(width)
+        .with::<canvas::height>(height)
+}
+
+fn canvas_pick_at(arena: &UiRuntime, id: NodeId, point: Point) -> Option<u32> {
+    arena.hosts[id].widget.with_widgets(|widget| match widget {
+        Widgets::Canvas(canvas) => canvas.state.pick(point),
+        _ => panic!("not a canvas node"),
+    })
+}
+
+/// `color` reaches the canvas by inheritance, which never marks the canvas's
+/// own style: the painter has to hear about it anyway, or `p.color()` stays
+/// whatever it was on mount.
+#[test]
+fn a_painter_redraws_when_an_inherited_color_moves() {
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let sink = seen.clone();
+    let controller = CanvasController::with_painter(move |p| sink.borrow_mut().push(p.color()));
+    let mut arena = UiRuntime::new();
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    let parent_style = |color: Color| {
+        container()
+            .with::<container::width>(80.0)
+            .with::<container::height>(80.0)
+            .with::<container::color>(color)
+    };
+    let parent = create_host(&mut arena, parent_style(Color::BLACK));
+    child_of(&mut arena, parent, sized_canvas(&controller, 10.0, 10.0));
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+
+    update_host(&mut arena, parent, parent_style(Color::WHITE));
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+
+    assert_eq!(*seen.borrow(), vec![Color::BLACK, Color::WHITE]);
+}
+
+/// While the parent transitions, what the painter drew is what the canvas
+/// shows, frame by frame.
+#[test]
+fn a_painter_follows_an_inherited_color_transition() {
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let sink = seen.clone();
+    let controller = CanvasController::with_painter(move |p| sink.borrow_mut().push(p.color()));
+    let mut arena = UiRuntime::new();
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    let transition = Transition::new(Duration::from_millis(100)).ease(Easing::Linear);
+    let parent = create_host(
+        &mut arena,
+        container()
+            .with::<container::width>(80.0)
+            .with::<container::height>(80.0)
+            .with::<container::transition>(transition)
+            .with::<container::style>(
+                StyleOf::<Container>::new()
+                    .with::<container::color>(Color::BLACK)
+                    .when(
+                        crate::style::WidgetStateMatcher::new(
+                            WidgetState::HOVERED,
+                            crate::style::WidgetState::empty(),
+                        ),
+                        |l| {
+                            l.set::<container::color>(Color::WHITE);
+                        },
+                    ),
+            ),
+    );
+    let id = child_of(&mut arena, parent, sized_canvas(&controller, 10.0, 10.0));
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    arena.set_widget_state_flag(parent, WidgetState::HOVERED, true);
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+
+    for _ in 0..3 {
+        arena.tick_style_animations(Duration::from_millis(20));
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+        let shown = arena.style_system.effective(id).text.color;
+        assert_eq!(seen.borrow().last(), Some(&shown));
+    }
+}
+
+/// The other half of redrawing on every style move: a mark whose inputs did
+/// not move redoes nothing.
+#[test]
+fn a_mark_that_moves_none_of_its_inputs_does_not_rerun_the_painter() {
+    let runs = Rc::new(Cell::new(0));
+    let counter = runs.clone();
+    let controller = CanvasController::with_painter(move |_| counter.set(counter.get() + 1));
+    let mut arena = UiRuntime::new();
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    let id = create_host(&mut arena, sized_canvas(&controller, 40.0, 40.0));
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    assert_eq!(runs.get(), 1);
+
+    arena.request_update(
+        id,
+        WidgetUpdateFlags::STYLE_TARGET | WidgetUpdateFlags::TEXT_SHAPE,
+    );
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    assert_eq!(runs.get(), 1, "same size, style, and revision");
+
+    controller.invalidate();
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    assert_eq!(runs.get(), 2, "an invalidation always redraws");
+}
+
+/// Every window has its own tree, so two windows' canvases can have the same
+/// node id: a controller drawn in both has to tell them apart by window.
+#[test]
+fn a_controller_drawn_in_two_windows_repaints_both() {
+    let runs = Rc::new(Cell::new(0));
+    let counter = runs.clone();
+    let controller = CanvasController::with_painter(move |_| counter.set(counter.get() + 1));
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    let mut first = UiRuntime::new();
+    let mut second = UiRuntime::new();
+    let in_first = create_host(&mut first, sized_canvas(&controller, 10.0, 10.0));
+    let in_second = create_host(&mut second, sized_canvas(&controller, 10.0, 10.0));
+    assert_eq!(in_first, in_second, "the case this guards against");
+    first.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    second.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    assert_eq!(runs.get(), 2);
+
+    controller.invalidate();
+    first.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    second.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    assert_eq!(runs.get(), 4, "each window redraws its own canvas once");
+
+    // Leaving one window leaves the other bound.
+    first.remove_subtree(in_first);
+    controller.invalidate();
+    assert!(first.canvas_invalidations.is_empty());
+    second.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    assert_eq!(runs.get(), 5);
+}
+
+/// Two canvases of different sizes on one controller record different
+/// regions; each answers for its own.
+#[test]
+fn canvases_sharing_a_controller_hit_test_their_own_regions() {
+    let controller = CanvasController::with_painter(|p| {
+        let bounds = p.bounds();
+        p.pick(7, bounds);
+    });
+    let mut arena = UiRuntime::new();
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    let small = create_host(&mut arena, sized_canvas(&controller, 10.0, 10.0));
+    let large = create_host(&mut arena, sized_canvas(&controller, 60.0, 60.0));
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+
+    let point = Point::new(30.0, 30.0);
+    assert_eq!(canvas_pick_at(&arena, small, point), None);
+    assert_eq!(canvas_pick_at(&arena, large, point), Some(7));
+}
+
+/// Nothing shows what a hidden canvas draws, so it must not keep the frame
+/// loop running; shown again, it picks its animation back up.
+#[test]
+fn a_hidden_animating_canvas_stops_the_loop_until_it_is_shown() {
+    let runs = Rc::new(Cell::new(0));
+    let counter = runs.clone();
+    let controller = CanvasController::with_painter(move |p| {
+        counter.set(counter.get() + 1);
+        p.request_repaint();
+    });
+    let mut arena = UiRuntime::new();
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    let pane = |display| {
+        container()
+            .with::<container::width>(80.0)
+            .with::<container::height>(80.0)
+            .with::<container::display>(display)
+    };
+    let parent = create_host(&mut arena, pane(xui_interface::DisplayStyle::Visible));
+    child_of(&mut arena, parent, sized_canvas(&controller, 10.0, 10.0));
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    assert!(arena.has_animating_canvases());
+
+    update_host(&mut arena, parent, pane(xui_interface::DisplayStyle::None));
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    let hidden_at = runs.get();
+    for _ in 0..3 {
+        arena.tick_animating_canvases();
+        arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    }
+    assert!(!arena.has_animating_canvases());
+    assert_eq!(runs.get(), hidden_at);
+
+    update_host(
+        &mut arena,
+        parent,
+        pane(xui_interface::DisplayStyle::Visible),
+    );
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    assert_eq!(runs.get(), hidden_at + 1);
+    assert!(arena.has_animating_canvases());
+}
+
+/// Moving a set-aside canvas out from under a hidden parent shows it as
+/// surely as showing the parent does.
+#[test]
+fn a_set_aside_canvas_moved_under_a_drawn_parent_compiles() {
+    let runs = Rc::new(Cell::new(0));
+    let counter = runs.clone();
+    let controller = CanvasController::with_painter(move |_| counter.set(counter.get() + 1));
+    let mut arena = UiRuntime::new();
+    let mut measurer = TextHost::new(ZeroTextBackend);
+    let hidden = create_host(
+        &mut arena,
+        container().with::<container::display>(xui_interface::DisplayStyle::None),
+    );
+    let shown = create_host(&mut arena, container().with::<container::width>(80.0));
+    let id = child_of(&mut arena, hidden, sized_canvas(&controller, 10.0, 10.0));
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    assert_eq!(runs.get(), 0, "set aside while not drawn");
+
+    arena.place(shown, id, None);
+    arena.update_tree(Size::new(100.0, 100.0), &mut measurer);
+    assert_eq!(runs.get(), 1);
+}

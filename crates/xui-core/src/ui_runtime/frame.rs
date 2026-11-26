@@ -71,7 +71,7 @@ impl UiRuntime {
             } else {
                 work.remove(HostWorkFlags::RECALC_LAYOUT);
             }
-            self.mark_work(id, work);
+            self.mark_style_moved(id, diff, work);
         }
         self.sync_pending_inheritance();
         !changed.is_empty()

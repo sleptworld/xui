@@ -3,9 +3,35 @@
 use crate::ui_runtime::UiRuntime;
 use crate::ui_runtime::state::HostWorkFlags;
 use crate::widgets::WidgetType;
-use xui_interface::NodeId;
+use xui_interface::{NodeId, StyleDiffFlags};
 
 impl UiRuntime {
+    /// Schedules `work` for a move in `id`'s effective style.
+    ///
+    /// A canvas redraws too: its painter reads the style, and the moves that
+    /// arrive here -- an inherited value from an ancestor, a transition's
+    /// sample -- never mark the canvas's own `RECALC_STYLE`, which is all
+    /// `mark_work` looks for. The painter's input check skips the redraw if
+    /// the move was one it does not see.
+    ///
+    /// # Preconditions
+    /// - `id` is live.
+    ///
+    /// A node shown or hidden is also noted: it can bring back canvases under
+    /// it that were set aside while not drawn.
+    pub(super) fn mark_style_moved(
+        &mut self,
+        id: NodeId,
+        diff: StyleDiffFlags,
+        work: HostWorkFlags,
+    ) {
+        self.drawn_set_moved |= diff.intersects(StyleDiffFlags::VISIBILITY);
+        if self.hosts[id].node_type == WidgetType::Canvas {
+            self.ui_state.mark_canvas_dirty(id);
+        }
+        self.mark_work(id, work);
+    }
+
     /// Schedules `flags` on `id` and summarizes them up its ancestors.
     ///
     /// Only work not already scheduled is queued, so marking the same node

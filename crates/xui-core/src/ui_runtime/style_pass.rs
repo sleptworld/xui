@@ -110,7 +110,7 @@ impl UiRuntime {
                 self.refresh_taffy_context(id);
                 work |= HostWorkFlags::RELAYOUT;
             }
-            self.mark_work(id, work);
+            self.mark_style_moved(id, diff, work);
         }
         diff.intersects(xui_interface::StyleDiffFlags::INHERITED)
     }
@@ -238,7 +238,11 @@ impl UiRuntime {
         }
 
         self.refresh_taffy_context(id);
-        self.mark_work(id, work_flags);
+        if effective_diff.is_empty() {
+            self.mark_work(id, work_flags);
+        } else {
+            self.mark_style_moved(id, effective_diff, work_flags);
+        }
 
         self.ui_state.mark_inheritance_sync(
             id,

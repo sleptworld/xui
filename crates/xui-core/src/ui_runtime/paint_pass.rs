@@ -387,24 +387,50 @@ impl UiRuntime {
     /// `activate_final_text_layouts` uses: a painter needs the size Taffy just
     /// committed, and the text boxes it produces have to reach the shaper
     /// before the node is repainted.
+    ///
+    /// A canvas that is not drawn -- hidden, or under something that is -- is
+    /// set aside instead of compiled: nothing would show what its painter
+    /// drew, and an animating one would keep the frame loop running for it.
+    /// It compiles on the first frame it is drawn again. Only a frame that
+    /// showed, hid, or moved some node can be that frame, so only such a
+    /// frame looks for them.
     pub(super) fn sync_dirty_canvases<T: TextBackend>(&mut self, measurer: &mut TextHost<T>) {
-        let dirty = self.ui_state.drain_canvas_dirty_list();
+        let mut dirty = self.ui_state.drain_canvas_dirty_list();
+        if std::mem::take(&mut self.drawn_set_moved) {
+            let shown = self.canvas_nodes.keys().filter(|&id| {
+                self.hosts[id].widget.with_widgets(
+                    |node| matches!(node, Widgets::Canvas(canvas) if canvas.state.is_suspended()),
+                ) && self.is_rendered(id)
+            });
+            dirty.extend(shown);
+        }
         if dirty.is_empty() {
             return;
         }
-        let mut compiled = Vec::with_capacity(dirty.len());
+        let mut seen = slotmap::SparseSecondaryMap::<NodeId, ()>::with_capacity(dirty.len());
         for id in dirty {
-            if compiled.contains(&id) {
+            if seen.insert(id, ()).is_some() {
                 continue;
             }
             if self.canvas_nodes.contains_key(id) {
-                compiled.push(id);
-                self.compile_canvas(id, measurer);
+                if self.is_rendered(id) {
+                    self.compile_canvas(id, measurer);
+                } else {
+                    self.suspend_canvas(id);
+                }
             } else if self.surface_nodes.contains_key(id) {
-                compiled.push(id);
                 self.sync_surface(id, measurer);
             }
         }
+    }
+
+    fn suspend_canvas(&mut self, id: NodeId) {
+        self.canvases_wanting_repaint.remove(id);
+        self.hosts[id].widget.with_widgets_mut(|node| {
+            if let Widgets::Canvas(canvas) = node {
+                canvas.state.suspend();
+            }
+        });
     }
 
     /// Lays a text surface's viewport out against its final size, and
@@ -447,7 +473,8 @@ impl UiRuntime {
         let font_context = measurer.font_epoch();
 
         let mut wants_repaint = false;
-        let text_boxes = widget.with_widgets_mut(|node| match node {
+        let mut rebuilt = false;
+        let text_inputs = widget.with_widgets_mut(|node| match node {
             Widgets::Canvas(canvas) => {
                 let mut measure_text = |text_id, props: &TextProps, constraints| {
                     let input =
@@ -460,19 +487,31 @@ impl UiRuntime {
                         line_count: metrics.line_count,
                     }
                 };
-                canvas.state.compile(
+                rebuilt = canvas.state.compile(
                     crate::widgets::CanvasFrame {
                         size,
                         style: &style,
                         theme: &theme,
                         scale_factor,
+                        font_epoch: font_context,
                         time: frame_time,
                         gpu: gpu_context.as_ref(),
                     },
                     &mut measure_text,
                 );
                 wants_repaint = canvas.state.wants_repaint();
-                canvas.state.text_boxes()
+                if !rebuilt {
+                    return Vec::new();
+                }
+                canvas
+                    .state
+                    .text_boxes()
+                    .map(|(text_id, _, props, constraints)| {
+                        let input =
+                            TextLayoutInput::from_props(props.clone(), constraints, font_context);
+                        (canvas_text_slot(text_id), input)
+                    })
+                    .collect()
             }
             _ => Vec::new(),
         });
@@ -481,19 +520,17 @@ impl UiRuntime {
         } else {
             self.canvases_wanting_repaint.remove(id);
         }
-
-        measurer.retain_direct_slots(
-            id,
-            text_boxes
-                .iter()
-                .map(|(text_id, _, _, _)| canvas_text_slot(*text_id)),
-        );
-        for (text_id, _bounds, props, constraints) in text_boxes {
-            let input = TextLayoutInput::from_props(props, constraints, font_context);
-            measurer.get_or_shape_slot(id, canvas_text_slot(text_id), input);
+        // Repainted either way: what marked it may have moved its box.
+        self.mark_work(id, HostWorkFlags::REBUILD_PAINT);
+        // Nothing was redrawn, so the text it places is already shaped.
+        if !rebuilt {
+            return;
         }
 
-        self.mark_work(id, HostWorkFlags::REBUILD_PAINT);
+        measurer.retain_direct_slots(id, text_inputs.iter().map(|(slot, _)| *slot));
+        for (slot, input) in text_inputs {
+            measurer.get_or_shape_slot(id, slot, input);
+        }
     }
 }
 

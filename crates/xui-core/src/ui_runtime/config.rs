@@ -51,8 +51,17 @@ impl UiRuntime {
     /// Called once by the renderer at startup. It must be the *renderer's*
     /// device: a texture from any other one cannot be composited without a
     /// copy, which is the point of this path.
+    ///
+    /// A GPU painter that compiled before it arrived drew nothing, so every
+    /// canvas is marked; the others find their inputs unchanged and keep
+    /// their drawing.
     pub(crate) fn set_gpu_context(&mut self, context: crate::widgets::CanvasGpuContext) {
         self.gpu_context = Some(context);
+        let canvases: Vec<_> = self.canvas_nodes.keys().collect();
+        for id in canvases {
+            self.ui_state.mark_canvas_dirty(id);
+            self.mark_work(id, HostWorkFlags::REBUILD_PAINT);
+        }
     }
 
     /// Tells the runtime whether the window is on screen.

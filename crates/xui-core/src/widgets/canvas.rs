@@ -169,8 +169,11 @@ pub(crate) struct CanvasFrame<'a> {
     /// The node's measured size, in logical pixels.
     pub size: Size<f32>,
     pub style: &'a ComputedStyle,
-    pub theme: &'a Theme,
+    pub theme: &'a Rc<Theme>,
     pub scale_factor: f32,
+    /// The text backend's font epoch. Metrics a painter measured are only
+    /// good while it holds.
+    pub font_epoch: u64,
     /// The frame's time, sampled once by the runtime. See
     /// [`CanvasPainter::time`].
     pub time: FrameTime,
@@ -434,7 +437,13 @@ impl<'a> CanvasPainter<'a> {
         id
     }
 
+    /// Keys share the id space with a namespace bit, so only the low 31 bits
+    /// are the key's own: `k` and `k | 1 << 31` would name one slot.
     fn keyed_text_id(key: u32) -> CanvasTextId {
+        debug_assert!(
+            key & KEYED_TEXT_ID_BIT == 0,
+            "canvas text key {key:#x} uses bit 31, which keys do not have"
+        );
         CanvasTextId::new((key & !KEYED_TEXT_ID_BIT) | KEYED_TEXT_ID_BIT)
     }
 
@@ -624,6 +633,9 @@ impl<'a> CanvasPainter<'a> {
     /// Places a text box under a caller-chosen key, for labels whose emission
     /// order changes between frames. Keys are namespaced away from the
     /// automatic ids, so the two schemes can be mixed in one drawing.
+    ///
+    /// A key is 31 bits, and unique within one drawing: two boxes under one
+    /// key share a shaping slot, so both would show the second one's text.
     pub fn text_keyed(&mut self, key: u32, bounds: Bounds, props: TextProps) -> CanvasTextId {
         let id = Self::keyed_text_id(key);
         self.push_text(id, bounds, props);
@@ -903,6 +915,10 @@ fn compile_commands(
     let mut batches = Vec::new();
     let mut shapes: Vec<ShapePrimitive> = Vec::new();
     let mut vectors: Vec<VectorCommand> = Vec::new();
+    // `VectorScene::new` catches this for a retained scene; a painter's
+    // commands never pass through it.
+    #[cfg(debug_assertions)]
+    let mut text_ids = std::collections::HashSet::new();
 
     fn flush_shapes(batches: &mut Vec<CanvasBatch>, shapes: &mut Vec<ShapePrimitive>) {
         if !shapes.is_empty() {
@@ -945,6 +961,12 @@ fn compile_commands(
                 vectors.push(command.clone());
             }
             VectorCommand::TextBox { id, bounds, props } => {
+                #[cfg(debug_assertions)]
+                debug_assert!(
+                    text_ids.insert(*id),
+                    "canvas text id {} placed twice in one drawing",
+                    id.get()
+                );
                 flush_shapes(&mut batches, &mut shapes);
                 flush_vectors(&mut batches, &mut vectors);
                 let constraints = text_constraints
@@ -981,6 +1003,11 @@ pub(crate) struct CanvasInvalidator {
 }
 
 impl CanvasInvalidator {
+    /// Whether the two are the same queue, which is to say the same window.
+    pub(crate) fn same_queue(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.pending, &other.pending)
+    }
+
     pub(crate) fn set_wake(&self, wake: Rc<dyn Fn()>) {
         *self.wake.borrow_mut() = Some(wake);
     }
@@ -1005,10 +1032,13 @@ impl CanvasInvalidator {
 struct CanvasControllerState {
     content: CanvasContent,
     revision: u64,
-    /// Every mounted node drawing this controller. Usually one; a controller
-    /// shared by two canvases invalidates both.
-    bindings: Vec<NodeId>,
-    invalidator: Option<CanvasInvalidator>,
+    /// Every mounted node drawing this controller, each with the queue of the
+    /// window it is in. Usually one; a controller shared by two canvases
+    /// invalidates both. A node id alone does not name a canvas: every window
+    /// has its own tree, and their ids collide.
+    bindings: Vec<(NodeId, CanvasInvalidator)>,
+    /// What the canvas that compiled last published. See
+    /// [`CanvasController::pick`].
     picks: Vec<CanvasPick>,
     size: Size<f32>,
 }
@@ -1111,7 +1141,6 @@ impl CanvasController {
                 content,
                 revision: 1,
                 bindings: Vec::new(),
-                invalidator: None,
                 picks: Vec::new(),
                 size: Size::new(0.0, 0.0),
             })),
@@ -1182,15 +1211,12 @@ impl CanvasController {
     /// Marks every canvas drawing this controller for a repaint, re-running the
     /// painter if there is one.
     pub fn invalidate(&self) {
-        let (invalidator, bindings) = {
+        let bindings = {
             let mut state = self.inner.borrow_mut();
             state.revision = state.revision.wrapping_add(1);
-            (state.invalidator.clone(), state.bindings.clone())
+            state.bindings.clone()
         };
-        let Some(invalidator) = invalidator else {
-            return;
-        };
-        for id in bindings {
+        for (id, invalidator) in bindings {
             invalidator.push(
                 id,
                 WidgetUpdateFlags::PAINT_OUTPUT | WidgetUpdateFlags::TEXT_SHAPE,
@@ -1199,6 +1225,9 @@ impl CanvasController {
     }
 
     /// The size the drawing was last compiled for.
+    ///
+    /// With several canvases drawing this controller, the one that compiled
+    /// last; each canvas's own is on its state.
     pub fn size(&self) -> Size<f32> {
         self.inner.borrow().size
     }
@@ -1212,6 +1241,11 @@ impl CanvasController {
     ///
     /// The last region emitted that contains the point wins, matching paint
     /// order.
+    ///
+    /// Answers for the canvas that compiled last. A controller drawn by
+    /// several canvases of different sizes has different regions on each:
+    /// hit-test those from the canvas's own handler with
+    /// [`crate::event_system::EventContext::canvas_pick`].
     pub fn pick(&self, point: Point) -> Option<CanvasPickTag> {
         self.inner
             .borrow()
@@ -1224,18 +1258,20 @@ impl CanvasController {
 
     pub(crate) fn bind(&self, id: NodeId, invalidator: CanvasInvalidator) {
         let mut state = self.inner.borrow_mut();
-        if !state.bindings.contains(&id) {
-            state.bindings.push(id);
+        let bound = state
+            .bindings
+            .iter()
+            .any(|(node, queue)| *node == id && queue.same_queue(&invalidator));
+        if !bound {
+            state.bindings.push((id, invalidator));
         }
-        state.invalidator = Some(invalidator);
     }
 
-    pub(crate) fn unbind(&self, id: NodeId) {
-        let mut state = self.inner.borrow_mut();
-        state.bindings.retain(|bound| *bound != id);
-        if state.bindings.is_empty() {
-            state.invalidator = None;
-        }
+    pub(crate) fn unbind(&self, id: NodeId, invalidator: &CanvasInvalidator) {
+        self.inner
+            .borrow_mut()
+            .bindings
+            .retain(|(node, queue)| !(*node == id && queue.same_queue(invalidator)));
     }
 
     fn publish_compiled(&self, size: Size<f32>, picks: Option<Vec<CanvasPick>>) {
@@ -1315,10 +1351,56 @@ pub struct CanvasState {
     /// Whether the last painter asked to draw again. Read once a frame by the
     /// runtime, which is what keeps an animating canvas scheduled.
     wants_repaint: bool,
+    /// What the drawing was last produced from. A painter re-runs only when
+    /// one of these moved, it asked to animate, or its controller was
+    /// invalidated -- not each time something marks the canvas.
+    inputs: Option<CanvasInputs>,
+    /// The regions this canvas's last drawing recorded. Its own, unlike the
+    /// controller's copy, which a second canvas drawing it overwrites.
+    picks: Vec<CanvasPick>,
+    /// Set aside while not drawn: it was marked, but nothing would show what
+    /// it drew. The runtime compiles it once it is drawn again.
+    suspended: bool,
     /// The host node this widget is mounted on, and the channel its controller
     /// invalidates through. Held here so that swapping the controller can move
     /// the binding without the pipeline having to know it happened.
     binding: Option<(NodeId, CanvasInvalidator)>,
+}
+
+/// Everything a painter's drawing is a function of, besides the frame's time,
+/// which only an animating painter reads and which re-runs it anyway.
+struct CanvasInputs {
+    revision: u64,
+    size: Size<f32>,
+    style: ComputedStyle,
+    theme: Rc<Theme>,
+    scale_factor: f32,
+    font_epoch: u64,
+    has_gpu: bool,
+}
+
+impl CanvasInputs {
+    fn of(revision: u64, frame: &CanvasFrame<'_>) -> Self {
+        Self {
+            revision,
+            size: frame.size,
+            style: frame.style.clone(),
+            theme: frame.theme.clone(),
+            scale_factor: frame.scale_factor,
+            font_epoch: frame.font_epoch,
+            has_gpu: frame.gpu.is_some(),
+        }
+    }
+
+    fn matches(&self, revision: u64, frame: &CanvasFrame<'_>) -> bool {
+        self.revision == revision
+            && self.size == frame.size
+            && self.scale_factor == frame.scale_factor
+            && self.font_epoch == frame.font_epoch
+            && self.has_gpu == frame.gpu.is_some()
+            && (Rc::ptr_eq(&self.theme, frame.theme) || *self.theme == **frame.theme)
+            && self.style == *frame.style
+    }
 }
 
 /// A canvas GPU painter's render target.
@@ -1350,6 +1432,9 @@ impl CanvasState {
             #[cfg(feature = "wgpu")]
             gpu_revision: 0,
             wants_repaint: false,
+            inputs: None,
+            picks: Vec::new(),
+            suspended: false,
             binding: None,
         }
     }
@@ -1363,16 +1448,26 @@ impl CanvasState {
             return;
         }
         let binding = self.binding.clone();
-        if let Some((id, _)) = &binding {
-            self.controller.unbind(*id);
+        if let Some((id, invalidator)) = &binding {
+            self.controller.unbind(*id, invalidator);
         }
         self.controller = next.clone();
         if let Some((id, invalidator)) = binding {
             self.controller.bind(id, invalidator);
         }
         self.compiled = CompiledCanvas::default();
+        self.inputs = None;
+        self.picks.clear();
+        // The old painter's target; a new one allocates its own.
+        #[cfg(feature = "wgpu")]
+        {
+            self.gpu_target = None;
+        }
     }
 
+    /// Brings the drawing up to date with `frame`. Returns whether it was
+    /// rebuilt; when not, the text it places and the picture it paints are
+    /// the ones already handed out.
     pub(crate) fn compile(
         &mut self,
         frame: CanvasFrame<'_>,
@@ -1381,7 +1476,8 @@ impl CanvasState {
             &TextProps,
             TextLayoutConstraints,
         ) -> CanvasTextMetrics,
-    ) {
+    ) -> bool {
+        self.suspended = false;
         let size = frame.size;
         let content = self.controller.content();
         let revision = self.controller.revision();
@@ -1390,14 +1486,26 @@ impl CanvasState {
         // a theme change must not rebuild it: rebuilding would mint new scene
         // ids and throw away every compiled path the backend has cached for
         // them, to arrive at exactly the same picture.
-        if !content.is_size_dependent()
-            && self.compiled.generation != 0
-            && self.compiled.revision == revision
-        {
+        let unchanged = if content.is_size_dependent() {
+            // A painter is a function of its inputs, so marking a canvas whose
+            // inputs did not move -- a restyle that resolved to the same
+            // style, a relayout that kept its size -- has nothing to redo. An
+            // animating one is the exception: its time moved.
+            !self.wants_repaint
+                && self
+                    .inputs
+                    .as_ref()
+                    .is_some_and(|inputs| inputs.matches(revision, &frame))
+        } else {
+            self.compiled.generation != 0 && self.compiled.revision == revision
+        };
+        if unchanged {
             self.compiled.size = size;
-            self.controller.publish_compiled(size, None);
-            return;
+            self.controller
+                .publish_compiled(size, Some(self.picks.clone()));
+            return false;
         }
+        self.inputs = Some(CanvasInputs::of(revision, &frame));
 
         self.wants_repaint = false;
         let (mut batches, picks) = match content {
@@ -1427,7 +1535,8 @@ impl CanvasState {
             }
         };
 
-        self.controller.publish_compiled(size, Some(picks));
+        self.controller.publish_compiled(size, Some(picks.clone()));
+        self.picks = picks;
         reuse_vector_scenes(&self.compiled.batches, &mut batches);
         self.compiled = CompiledCanvas {
             batches,
@@ -1436,6 +1545,28 @@ impl CanvasState {
             generation: self.compiled.generation.wrapping_add(1),
             content: RefCell::new(None),
         };
+        true
+    }
+
+    /// Hit-tests this canvas's own regions. See [`CanvasController::pick`].
+    pub(crate) fn pick(&self, point: Point) -> Option<CanvasPickTag> {
+        self.picks
+            .iter()
+            .rev()
+            .find(|pick| pick.bounds.contains(point))
+            .map(|pick| pick.tag)
+    }
+
+    /// Stops the animation loop for a canvas that is not drawn. Its drawing
+    /// is redone, at whatever time it is by then, once it is drawn again.
+    pub(crate) fn suspend(&mut self) {
+        self.suspended = true;
+        self.wants_repaint = false;
+        self.inputs = None;
+    }
+
+    pub(crate) fn is_suspended(&self) -> bool {
+        self.suspended
     }
 
     /// Allocates the target if needed, runs the painter, and lowers the result
@@ -1547,18 +1678,17 @@ impl CanvasState {
     }
 
     pub(crate) fn unbind(&mut self) {
-        if let Some((id, _)) = self.binding.take() {
-            self.controller.unbind(id);
+        if let Some((id, invalidator)) = self.binding.take() {
+            self.controller.unbind(id, &invalidator);
         }
     }
 
+    /// Every text box the drawing places: its id, its box, what it is shaped
+    /// from, and the constraint it is shaped under.
     pub(crate) fn text_boxes(
         &self,
-    ) -> Vec<(CanvasTextId, Bounds, TextProps, TextLayoutConstraints)> {
-        self.compiled
-            .text_boxes()
-            .map(|(id, bounds, props, constraints)| (id, bounds, props.clone(), constraints))
-            .collect()
+    ) -> impl Iterator<Item = (CanvasTextId, Bounds, &TextProps, TextLayoutConstraints)> {
+        self.compiled.text_boxes()
     }
 }
 
@@ -1646,7 +1776,7 @@ mod tests {
 
     /// `compile`, with the frame's time chosen by the caller.
     fn compile_at(widget: &mut CanvasState, size: Size<f32>, time: FrameTime) {
-        let theme = StyleTheme::default();
+        let theme = Rc::new(StyleTheme::default());
         let style = ComputedStyle::initial(&theme);
         let mut measure_text = |_, _: &TextProps, _| CanvasTextMetrics {
             size: Size::<f32>::ZERO,
@@ -1659,6 +1789,7 @@ mod tests {
                 style: &style,
                 theme: &theme,
                 scale_factor: 2.0,
+                font_epoch: 0,
                 time,
                 gpu: None,
             },
@@ -1723,7 +1854,7 @@ mod tests {
 
         let mut render_scene = RenderScene::new();
         let parent = render_scene.insert_group();
-        let theme = StyleTheme::default();
+        let theme = Rc::new(StyleTheme::default());
         let style = ComputedStyle::initial(&theme);
         let rect = Bounds::from_origin_size((5.0, 7.0), (100.0, 100.0));
         for _ in 0..3 {
@@ -1785,20 +1916,26 @@ mod tests {
         let mut widget = CanvasState::new(controller);
 
         compile(&mut widget, Size::new(100.0, 100.0));
-        let first: Vec<_> = widget
-            .text_boxes()
-            .into_iter()
-            .map(|(id, _, _, _)| id.get())
-            .collect();
+        let first: Vec<_> = widget.text_boxes().map(|(id, _, _, _)| id.get()).collect();
         assert_eq!(first, vec![1, 2, KEYED_TEXT_ID_BIT | 1]);
 
         compile(&mut widget, Size::new(100.0, 100.0));
-        let second: Vec<_> = widget
-            .text_boxes()
-            .into_iter()
-            .map(|(id, _, _, _)| id.get())
-            .collect();
+        let second: Vec<_> = widget.text_boxes().map(|(id, _, _, _)| id.get()).collect();
         assert_eq!(first, second, "a recompile must not move shaping slots");
+    }
+
+    /// A painter's commands never pass through `VectorScene::new`, which is
+    /// where a retained scene's duplicates are caught.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "placed twice in one drawing")]
+    fn a_painter_placing_one_key_twice_is_caught_in_development() {
+        let controller = CanvasController::with_painter(|p| {
+            let bounds = Bounds::from_origin_size((0.0, 0.0), (10.0, 10.0));
+            p.text_keyed(3, bounds, TextProps::new("a"));
+            p.text_keyed(3, bounds, TextProps::new("b"));
+        });
+        compile(&mut CanvasState::new(controller), Size::new(100.0, 100.0));
     }
 
     #[test]
@@ -1815,7 +1952,7 @@ mod tests {
             p.draw_text(Point::new(12.0, 20.0), layout);
         });
         let mut widget = CanvasState::new(controller);
-        let theme = StyleTheme::default();
+        let theme = Rc::new(StyleTheme::default());
         let style = ComputedStyle::initial(&theme);
         let mut measure_text =
             |id: CanvasTextId, props: &TextProps, constraints: TextLayoutConstraints| {
@@ -1835,6 +1972,7 @@ mod tests {
                 style: &style,
                 theme: &theme,
                 scale_factor: 2.0,
+                font_epoch: 0,
                 time: FrameTime::ZERO,
                 gpu: None,
             },
@@ -1849,7 +1987,7 @@ mod tests {
                 line_count: 1,
             })
         );
-        let text_boxes = widget.text_boxes();
+        let text_boxes: Vec<_> = widget.text_boxes().collect();
         let [(id, bounds, _, constraints)] = text_boxes.as_slice() else {
             panic!("expected exactly one laid-out text box");
         };
@@ -2067,7 +2205,7 @@ mod tests {
     fn render_batch(widget: &CanvasState, rect: Bounds) -> (ClipShape, BatchPrimitive) {
         let mut render_scene = RenderScene::new();
         let parent = render_scene.insert_group();
-        let theme = StyleTheme::default();
+        let theme = Rc::new(StyleTheme::default());
         let style = ComputedStyle::initial(&theme);
         let mut writer = RenderTreeWriter::new(&mut render_scene, parent);
         widget.paint(xui_interface::NodeId::null(), rect, &style, &mut writer);
@@ -2334,7 +2472,7 @@ mod tests {
             gpu: &CanvasGpuContext,
             time: FrameTime,
         ) {
-            let theme = StyleTheme::default();
+            let theme = Rc::new(StyleTheme::default());
             let style = ComputedStyle::initial(&theme);
             let mut measure_text = |_, _: &TextProps, _| CanvasTextMetrics {
                 size: Size::<f32>::ZERO,
@@ -2347,6 +2485,7 @@ mod tests {
                     style: &style,
                     theme: &theme,
                     scale_factor: 2.0,
+                    font_epoch: 0,
                     time,
                     gpu: Some(gpu),
                 },
@@ -2447,6 +2586,7 @@ mod tests {
             };
 
             // Same size: the painter runs again, but into the same texture.
+            widget.controller.invalidate();
             compile_gpu(&mut widget, Size::new(10.0, 10.0), &gpu);
             let VectorCommand::Texture {
                 id: second_id,
@@ -2513,6 +2653,7 @@ mod tests {
             ));
 
             compile_gpu(&mut widget, Size::new(10.0, 10.0), &gpu);
+            widget.controller.invalidate();
             compile_gpu(&mut widget, Size::new(10.0, 10.0), &gpu);
             // A resize reallocates the target, but nothing about a pipeline
             // depends on size, so the state has to come through untouched.
@@ -2549,6 +2690,7 @@ mod tests {
             compile_gpu(&mut widget, Size::new(10.0, 10.0), &gpu);
             assert_eq!(inits.get(), 1);
             clear_next.set(true);
+            widget.controller.invalidate();
             compile_gpu(&mut widget, Size::new(10.0, 10.0), &gpu);
             assert_eq!(inits.get(), 2, "clearing the state rebuilds it");
         }
@@ -2570,6 +2712,7 @@ mod tests {
                     recorded
                         .borrow_mut()
                         .push(painter.time().timestamp() - started);
+                    painter.request_repaint();
                 },
             ));
 

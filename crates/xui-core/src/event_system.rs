@@ -242,6 +242,23 @@ impl<'a> EventContext<'a> {
         self.node_ref.id
     }
 
+    /// Hit-tests the regions this node's canvas last drew, at a point in its
+    /// local coordinates -- the `current_local` a pointer event carries.
+    /// `None` off every region, and on a node that is not a canvas.
+    ///
+    /// The canvas's own regions, where
+    /// [`crate::widgets::CanvasController::pick`] answers for whichever canvas
+    /// drawing the controller compiled last.
+    pub fn canvas_pick(
+        &self,
+        point: xui_interface::Point,
+    ) -> Option<crate::widgets::CanvasPickTag> {
+        self.node_ref.widget.with_widgets(|widget| match widget {
+            crate::widgets::Widgets::Canvas(canvas) => canvas.state.pick(point),
+            _ => None,
+        })
+    }
+
     pub fn text_layout(&self) -> Option<&'a dyn TextLayoutQuery> {
         self.text_layout
     }

@@ -79,6 +79,7 @@ impl UiRuntime {
             text_font_context: None,
             canvas_nodes: slotmap::SparseSecondaryMap::new(),
             canvases_wanting_repaint: slotmap::SparseSecondaryMap::new(),
+            drawn_set_moved: false,
             window_visible: true,
             frame_time: crate::clock::FrameTime::ZERO,
             canvas_invalidations: crate::widgets::CanvasInvalidator::default(),
@@ -326,6 +327,8 @@ impl UiRuntime {
         self.hosts.insert(parent, child, before);
         self.layout_tree.insert(parent, child, before);
         if old_parent != Some(parent) {
+            // Under a new parent it can be drawn where it was not.
+            self.drawn_set_moved |= old_parent.is_some();
             self.mark_work(child, HostWorkFlags::REPARENTED);
         }
         self.mark_work(parent, HostWorkFlags::CHILDREN_CHANGED);
